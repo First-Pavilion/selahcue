@@ -1907,7 +1907,11 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # renamed section is reported under its new name only (1) and still shows its line (1), the Summary
 # caveat is reported by its fixed label (1) with a blank summary sent as null (1), and a draft with no
 # caveat reports an empty list (1). Net 4 - 2 + 6 = +8; measured by a clean run, not hand-summed.
-EXPECTED_MIN_CHECKS = 2289  # measured: 2289 checks, 0 FAIL
+#
+# 2289 -> 2290 (86akmfn54 round 1 review, Cody 6): the Scripture references label was reported by
+# the same line as Summary but no check covered it (removing it from transcripts.js left the gate
+# green). +1 check that the save reports it; measured by a clean run.
+EXPECTED_MIN_CHECKS = 2290  # measured: 2290 checks, 0 FAIL
 
 
 def find_chrome():
@@ -8693,7 +8697,7 @@ DRIVER = r"""
       // The two requested fields that are not sections (summary, scripture references) are reported
       // too, by their fixed labels. Re-open transcript 7 with a blank summary that carries the caveat.
       window.__TR.detail[7].draft.summary = "";
-      window.__TR.detail[7].draft.caveats = [{kind: "section_empty", heading: "Summary"}].concat(window.__TR.detail[7].draft.caveats || []);
+      window.__TR.detail[7].draft.caveats = [{kind: "section_empty", heading: "Summary"}, {kind: "section_empty", heading: "Scripture references"}].concat(window.__TR.detail[7].draft.caveats || []);
       el("tr-detail-back").click();
       await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
       el('tr-list').querySelector('.tr-card[data-id="7"] .tr-card-open').click();
@@ -8708,6 +8712,8 @@ DRIVER = r"""
          trSummaryCall.args.requestedEmpty.indexOf("Prayers") !== -1,
          "TR notes (86akmfn54): the save reports the non-section Summary caveat by its fixed label, " +
          "alongside the section one");
+      ok(trSummaryCall.args.requestedEmpty.indexOf("Scripture references") !== -1,
+         "TR notes (86akmfn54): the save reports the Scripture references caveat by its fixed label too");
       ok(trSummaryCall.args.summary === null,
          "TR notes (86akmfn54): a blank summary is sent as null (the backend keeps the Summary caveat for it)");
 

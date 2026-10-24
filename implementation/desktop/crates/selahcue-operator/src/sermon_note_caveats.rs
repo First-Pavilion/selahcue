@@ -17,14 +17,24 @@
 //! - No new column, no migration, no `selahcue-lan` wire change. `sections_json` is already
 //!   opaque to the store and to the LAN protocol (the codec for it lives in this crate), and
 //!   it is already size-capped (`MAX_SECTIONS_JSON_BYTES`), so this adds no unbounded storage.
-//! - A draft that records no caveat is written in the OLD shape (a bare JSON array of
-//!   sections), byte for byte, so every row written before this ticket loads exactly as it
-//!   did and every row without a caveat is still readable by an older build.
-//! - A draft that does record one is written as `{"sections":[...],"requested_empty":[...]}`.
-//!   `requested_empty` is the list of headings, in generation order, that [`DraftCaveat`]
-//!   carried. It includes the two fixed labels for the requested fields that are not
-//!   sections (`Summary`, `Scripture references`), which is why the flag cannot simply live
-//!   on each section object.
+//! - The stored value is ALWAYS the legacy array of section objects. A draft that records no
+//!   caveat is written exactly as before this ticket, byte for byte.
+//! - A draft that records caveats adds ONE extra key, `requested_empty` (the list of headings,
+//!   in generation order, that [`DraftCaveat`] carried), to the FIRST section object. It
+//!   includes the two fixed labels for requested fields that are not sections (`Summary`,
+//!   `Scripture references`), which have no section object of their own, which is why the list
+//!   is draft-level rather than a flag on each section. Only a draft with no sections at all
+//!   uses an object, `{"sections":[],"requested_empty":[...]}`.
+//!
+//! # Downgrade safety
+//!
+//! A build from before this ticket reads `sections_json` as `Vec<NoteSectionInput>`, which
+//! ignores unknown keys, and a build that cannot read a value at all treats it as "no
+//! sections". The array shape therefore keeps every real section readable by an older build,
+//! and an edit-save there rewrites the array without the extra key (the caveat is lost, no
+//! section is). The one object shape is only used when there is no section to lose. Pinned by
+//! decoding the stored value with the old reader's exact type. Future changes to this value
+//! must stay additive in the same way: new keys only, never a new top-level shape.
 //!
 //! # One source of truth
 //!
@@ -40,24 +50,36 @@
 //! summary is blank, the scripture list is empty. So filling a section in, typing a summary,
 //! or renaming a heading removes the caveat on the next save or load without anyone having
 //! to remember to clear it, and a stale or hostile stored heading can never mark a populated
-//! section "nothing came back" (which would hide its content).
+//! section "nothing came back" (which would hide its content). "Requested" is therefore
+//! advisory presentation state, not an authorization: the webview reports what it showed, and
+//! the server honours it only as far as the content agrees.
+//!
+//! # Reading is bounded like writing
+//!
+//! The write path never stores more than `MAX_SECTIONS_JSON_BYTES`. The read path refuses to
+//! look for caveats in anything larger (a row from a build with the old 200 000-byte cap, or a
+//! LAN writer): such a value is read exactly as it always was, sections only, and carries no
+//! caveat. Within the cap, the shape is chosen by the first non-space byte, and at most
+//! [`MAX_STORED_HEADINGS`] entries of the list are collected.
 
-use crate::NoteSectionInput;
 use selahcue_core::providers::{
     DraftCaveat, NoteDraft, NoteSection, SCRIPTURE_REFERENCES_CAVEAT_HEADING,
     SUMMARY_CAVEAT_HEADING,
 };
 
-/// Most stored headings looked at when reading `requested_empty`. A draft has a few dozen
-/// sections at the very most (the generator's table is fixed), so this is far above any
-/// honest value; it exists so a hostile or corrupt column cannot make the reload loop over an
-/// arbitrarily long list. Whatever is kept is further limited to headings that match actual
-/// content, so the result is never longer than `sections.len() + 2`.
+/// Most stored headings collected from `requested_empty`. A draft has a few dozen sections at
+/// the very most (the generator's table is fixed), so this is far above any honest value; it
+/// exists so a hostile or corrupt column cannot make the reload build an arbitrarily long
+/// list. Whatever is kept is further limited to headings that match actual content, so the
+/// result is never longer than `sections.len() + 2`.
 const MAX_STORED_HEADINGS: usize = 256;
+
+/// The extra key that carries the caveats (see the module docs).
+const REQUESTED_EMPTY_KEY: &str = "requested_empty";
 
 /// True when a section carries no content: no non-blank flat item, and no outline point with
 /// non-blank text or a non-blank sub-point. Judged on content only, never the heading. The
-/// same test `transcripts.js`'s `isStillEmpty` applies on the client.
+/// server alone judges emptiness; the webview only reports the caveats it was shown.
 pub(crate) fn section_is_empty(s: &NoteSection) -> bool {
     s.items().iter().all(|i| i.trim().is_empty())
         && s.points()
@@ -68,14 +90,18 @@ pub(crate) fn section_is_empty(s: &NoteSection) -> bool {
 /// The subset of `candidates` that is still a true "requested but came back empty" statement
 /// about this content, de-duplicated, in the order given.
 ///
-/// - `Summary` is true while the summary is absent or blank.
+/// - A blank heading names nothing and is dropped.
+/// - `Summary` is true while the summary is absent or blank. A whitespace-only summary counts
+///   as blank here although `transcripts.js` renders any non-empty summary string: the caveat
+///   then sits beside an invisible summary, which is the honest reading of it.
 /// - `Scripture references` is true while the scripture list has no non-blank entry.
 /// - Anything else names a section: true while at least one section with exactly that heading
 ///   is empty. With duplicate headings, the empty ones are the ones the caveat describes; a
 ///   populated namesake is untouched (see `draft_json`, which flags per section).
 ///
-/// A heading that matches nothing is dropped. At most [`MAX_STORED_HEADINGS`] candidates are
-/// examined.
+/// The two labels are reserved: a section renamed to `Summary` is judged by the SUMMARY, not
+/// by its own content. A heading that matches nothing is dropped. At most
+/// [`MAX_STORED_HEADINGS`] candidates are examined.
 pub(crate) fn still_requested_empty<'a>(
     candidates: impl IntoIterator<Item = &'a str>,
     summary: Option<&str>,
@@ -84,7 +110,7 @@ pub(crate) fn still_requested_empty<'a>(
 ) -> Vec<String> {
     let mut kept: Vec<String> = Vec::new();
     for heading in candidates.into_iter().take(MAX_STORED_HEADINGS) {
-        if kept.iter().any(|k| k == heading) {
+        if heading.trim().is_empty() || kept.iter().any(|k| k == heading) {
             continue;
         }
         let still_empty = if heading == SUMMARY_CAVEAT_HEADING {
@@ -107,20 +133,30 @@ pub(crate) fn still_requested_empty<'a>(
 /// them when it is non-empty. `requested_empty` must already have been through
 /// [`still_requested_empty`].
 ///
-/// Empty `requested_empty` writes the legacy bare array (see the module docs). Otherwise the
-/// envelope is used, unless it would exceed the store's own cap, in which case the caveat
-/// yields rather than the draft: the empty caveated sections are left out and the legacy
-/// array is written, which is exactly what was persisted before this ticket. A caveat must
-/// never be the reason a draft is refused.
+/// Empty `requested_empty` writes the legacy array unchanged (see the module docs). Otherwise
+/// the list rides on the first section object (an object only when there is no section). If
+/// that would exceed the store's own cap, the caveat yields rather than the draft: the empty
+/// caveated sections are left out and the plain array is written, which is exactly what was
+/// persisted before this ticket. A caveat must never be the reason a draft is refused.
 fn encode_sections(sections: &[NoteSection], requested_empty: &[String]) -> String {
     if requested_empty.is_empty() {
         return crate::sections_to_json(sections);
     }
-    let envelope = serde_json::json!({
-        "sections": crate::sections_to_values(sections),
-        "requested_empty": requested_empty,
-    });
-    let full = serde_json::to_string(&envelope).unwrap_or_default();
+    let mut values = crate::sections_to_values(sections);
+    let full = match values
+        .first_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        Some(first) => {
+            first.insert(REQUESTED_EMPTY_KEY.to_string(), requested_empty.into());
+            serde_json::to_string(&values)
+        }
+        None => serde_json::to_string(&serde_json::json!({
+            "sections": values,
+            "requested_empty": requested_empty,
+        })),
+    }
+    .unwrap_or_default();
     if !full.is_empty() && full.len() <= selahcue_data::sermon_note_repo::MAX_SECTIONS_JSON_BYTES {
         return full;
     }
@@ -189,62 +225,147 @@ pub(crate) fn draft_input_for(
     }
 }
 
-/// The store input for an operator edit (`update_sermon_note_draft`). `requested_empty` is the
-/// headings of the requested-but-empty caveats the operator was shown, by their current names
-/// (the edit form can rename a heading); `None` is an older caller that sends none. Each is
-/// kept only while the edited content is still empty.
+/// The store input for an operator edit (`update_sermon_note_draft`).
+///
+/// `requested_empty` is authoritative when present: the headings of the requested-but-empty
+/// caveats the operator was shown, by their current names (the edit form can rename a
+/// heading), each kept only while the edited content is still empty. `Some(&[])` clears every
+/// caveat. When it is absent (`None`) the caller does not know, and the caveats already stored
+/// in `stored_sections_json` are kept for as long as they are still true; absent is never
+/// read as "none", because the webview ships with this binary and omitting the argument can
+/// only be a bug.
 pub(crate) fn edit_input_for(
     title: String,
     summary: Option<String>,
-    sections: Vec<NoteSectionInput>,
+    sections: Vec<crate::NoteSectionInput>,
     scriptures: &[String],
     requested_empty: Option<&[String]>,
+    stored_sections_json: Option<&str>,
 ) -> selahcue_lan::protocol::SermonNoteEditInput {
     let sections = crate::sections_from_input(sections);
+    let candidates: Vec<String> = match requested_empty {
+        Some(list) => list.to_vec(),
+        None => stored_sections_json
+            .map(|json| decode_sections(json).1)
+            .unwrap_or_default(),
+    };
     selahcue_lan::protocol::SermonNoteEditInput {
-        sections_json: edited_sections_json(
-            &sections,
-            summary.as_deref(),
-            scriptures,
-            requested_empty.unwrap_or_default(),
-        ),
+        sections_json: edited_sections_json(&sections, summary.as_deref(), scriptures, &candidates),
         title,
         summary,
         scriptures_json: crate::scriptures_to_json(scriptures),
     }
 }
 
-/// Read a `sections_json` value back: the sections, and the headings stored with them.
-/// Reads both the legacy bare array and the envelope. Anything unreadable degrades to
-/// nothing, as it always has (a corrupt column must not fail the whole draft load); an
-/// unreadable `requested_empty` entry degrades only the caveat, never the sections.
-pub(crate) fn decode_sections(json: &str) -> (Vec<NoteSectionInput>, Vec<String>) {
+/// One stored section object: the fields the pre-change reader knew (`NoteSectionInput`,
+/// which ignores unknown keys, so any future additive key is ignored too) plus the extra key.
+#[derive(serde::Deserialize)]
+struct StoredSection {
+    #[serde(flatten)]
+    section: crate::NoteSectionInput,
+    #[serde(default, deserialize_with = "lenient_headings")]
+    requested_empty: Vec<String>,
+}
+
+/// The object shape, used only for a draft with no sections.
+#[derive(serde::Deserialize)]
+struct StoredNoSections {
+    #[serde(default)]
+    sections: Vec<crate::NoteSectionInput>,
+    #[serde(default, deserialize_with = "lenient_headings")]
+    requested_empty: Vec<String>,
+}
+
+/// Read the `requested_empty` field leniently: a list yields at most [`MAX_STORED_HEADINGS`]
+/// of its string entries (collection stops there; every other entry is skipped), and ANY other
+/// type (null, a string, a number, an object) yields no headings instead of failing, so a
+/// damaged field can cost the caveats but never the sections that sit beside it.
+fn lenient_headings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct Bounded(Vec<String>);
+
+    impl<'de> serde::Deserialize<'de> for Bounded {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct ListVisitor;
+            impl<'de> serde::de::Visitor<'de> for ListVisitor {
+                type Value = Bounded;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("a list of headings")
+                }
+                fn visit_seq<A>(self, mut seq: A) -> Result<Bounded, A::Error>
+                where
+                    A: serde::de::SeqAccess<'de>,
+                {
+                    let mut out = Vec::new();
+                    let mut examined = 0usize;
+                    while examined < MAX_STORED_HEADINGS {
+                        match seq.next_element::<serde_json::Value>()? {
+                            Some(serde_json::Value::String(s)) => out.push(s),
+                            Some(_) => {}
+                            None => return Ok(Bounded(out)),
+                        }
+                        examined += 1;
+                    }
+                    // Past the window: consume without keeping anything.
+                    while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                    Ok(Bounded(out))
+                }
+            }
+            deserializer.deserialize_seq(ListVisitor)
+        }
+    }
+
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
-    enum Stored {
-        Legacy(Vec<NoteSectionInput>),
-        Envelope {
-            sections: Vec<NoteSectionInput>,
-            #[serde(default)]
-            requested_empty: Vec<serde_json::Value>,
-        },
+    enum Field {
+        List(Bounded),
+        Other(serde::de::IgnoredAny),
     }
-    match serde_json::from_str::<Stored>(json) {
-        Ok(Stored::Legacy(sections)) => (sections, Vec::new()),
-        Ok(Stored::Envelope {
-            sections,
-            requested_empty,
-        }) => (
-            sections,
-            requested_empty
-                .into_iter()
-                .filter_map(|v| match v {
-                    serde_json::Value::String(s) => Some(s),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        Err(_) => (Vec::new(), Vec::new()),
+
+    use serde::Deserialize as _;
+    Ok(match Field::deserialize(deserializer)? {
+        Field::List(Bounded(list)) => list,
+        Field::Other(_) => Vec::new(),
+    })
+}
+
+/// Read a `sections_json` value back: the sections, and the headings stored with them.
+///
+/// Anything unreadable degrades to nothing, as it always has (a corrupt column must not fail
+/// the whole draft load); a damaged `requested_empty` degrades only the caveats. A value over
+/// the write cap is read exactly as before this ticket (sections only, no caveats), so the
+/// new work is bounded by the same cap the writer obeys. Within the cap the shape is chosen by
+/// the first non-space byte.
+pub(crate) fn decode_sections(json: &str) -> (Vec<crate::NoteSectionInput>, Vec<String>) {
+    if json.len() > selahcue_data::sermon_note_repo::MAX_SECTIONS_JSON_BYTES {
+        return (
+            serde_json::from_str::<Vec<crate::NoteSectionInput>>(json).unwrap_or_default(),
+            Vec::new(),
+        );
+    }
+    match json.trim_start().as_bytes().first() {
+        Some(b'[') => match serde_json::from_str::<Vec<StoredSection>>(json) {
+            Ok(stored) => {
+                // Only the first section object carries the list; the key anywhere else is
+                // ignored.
+                let headings = stored
+                    .first()
+                    .map(|s| s.requested_empty.clone())
+                    .unwrap_or_default();
+                (stored.into_iter().map(|s| s.section).collect(), headings)
+            }
+            Err(_) => (Vec::new(), Vec::new()),
+        },
+        Some(b'{') => match serde_json::from_str::<StoredNoSections>(json) {
+            Ok(stored) => (stored.sections, stored.requested_empty),
+            Err(_) => (Vec::new(), Vec::new()),
+        },
+        _ => (Vec::new(), Vec::new()),
     }
 }
 
@@ -267,8 +388,33 @@ pub(crate) fn reloaded_caveats(
     .collect()
 }
 
+/// Helpers shared by both test modules below.
+#[cfg(test)]
+mod support {
+    use super::DraftCaveat;
+    use serde_json::Value;
+
+    pub(super) fn caveat(heading: &str) -> DraftCaveat {
+        DraftCaveat::SectionRequestedEmpty {
+            heading: heading.to_string(),
+        }
+    }
+
+    /// `kind: section_empty` headings of a wire draft, in order.
+    pub(super) fn caveat_headings(j: &Value) -> Vec<String> {
+        j["caveats"]
+            .as_array()
+            .expect("caveats is an array")
+            .iter()
+            .filter(|c| c["kind"] == "section_empty")
+            .map(|c| c["heading"].as_str().expect("heading").to_string())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::support::{caveat, caveat_headings};
     use super::*;
     use crate::{draft_json, scriptures_to_json, sections_from_input, sermon_note_draft_json};
     use selahcue_core::providers::{NotePoint, OUTLINE_HEADING};
@@ -278,12 +424,6 @@ mod tests {
 
     const SUMMARY: &str = SUMMARY_CAVEAT_HEADING;
     const SCRIPTURES: &str = SCRIPTURE_REFERENCES_CAVEAT_HEADING;
-
-    fn caveat(heading: &str) -> DraftCaveat {
-        DraftCaveat::SectionRequestedEmpty {
-            heading: heading.to_string(),
-        }
-    }
 
     fn draft(
         summary: Option<&str>,
@@ -333,17 +473,6 @@ mod tests {
     /// What the console receives when it reloads `d` from storage.
     fn reload(d: &NoteDraft) -> Value {
         sermon_note_draft_json(&persisted_view(d), &[]).0
-    }
-
-    /// `kind: section_empty` headings of a wire draft, in order.
-    fn caveat_headings(j: &Value) -> Vec<String> {
-        j["caveats"]
-            .as_array()
-            .expect("caveats is an array")
-            .iter()
-            .filter(|c| c["kind"] == "section_empty")
-            .map(|c| c["heading"].as_str().expect("heading").to_string())
-            .collect()
     }
 
     /// Headings of the sections the wire marks `empty_requested`, in order.
@@ -518,6 +647,16 @@ mod tests {
             persisted_sections_json(&d),
             crate::sections_to_json(&d.sections)
         );
+        // ... and the claim itself, as a literal rather than a call to the function under
+        // test: these are the exact bytes a build from before this ticket wrote.
+        assert_eq!(
+            persisted_sections_json(&d),
+            concat!(
+                r#"[{"heading":"Illustrations","items":["a lantern"],"points":[]},"#,
+                r#"{"heading":"Main points","items":[],"points":"#,
+                r#"[{"sub_points":["In little"],"text":"Be faithful"}]}]"#
+            )
+        );
         assert!(persisted_sections_json(&d).starts_with('['));
         assert_eq!(caveat_headings(&reload(&d)), Vec::<String>::new());
     }
@@ -585,15 +724,15 @@ mod tests {
     }
 
     #[test]
-    fn the_legacy_shape_and_the_envelope_decode_to_the_same_sections() {
-        // Equivalence between the two stored shapes: only the caveat list may differ.
+    fn the_plain_array_and_the_caveat_carrying_array_decode_to_the_same_sections() {
+        // Equivalence between the two stored forms: only the caveat list may differ.
         let sections = vec![
             NoteSection::flat("Illustrations", vec!["a lantern".into()]),
             NoteSection::flat("Chapter markers", Vec::new()),
         ];
         let legacy = crate::sections_to_json(&sections);
         let envelope = encode_sections(&sections, &strings(&["Chapter markers"]));
-        assert!(envelope.starts_with('{'));
+        assert!(envelope.starts_with('['), "still an array of sections");
         let (from_legacy, legacy_headings) = decode_sections(&legacy);
         let (from_envelope, envelope_headings) = decode_sections(&envelope);
         assert_eq!(
@@ -852,7 +991,7 @@ mod tests {
 
     #[test]
     fn a_stored_heading_naming_nothing_is_ignored() {
-        let json = r#"{"sections":[{"heading":"Illustrations","items":["a lantern"],"points":[]}],"requested_empty":["Chapter markers","Nonsense"]}"#;
+        let json = r#"[{"heading":"Illustrations","items":["a lantern"],"points":[],"requested_empty":["Chapter markers","Nonsense"]}]"#;
         let (j, _) = sermon_note_draft_json(&view(json.to_string(), None, &[]), &[]);
         assert_eq!(caveat_headings(&j), Vec::<String>::new());
         assert_eq!(j["sections"][0]["items"], json!(["a lantern"]));
@@ -870,26 +1009,76 @@ mod tests {
         assert_eq!(caveat_headings(&j), Vec::<String>::new());
     }
 
+    /// A stored array of two empty sections whose first carries `list` as `requested_empty`.
+    fn stored_with_list(list: &[Value]) -> String {
+        json!([
+            {"heading": "Chapter markers", "items": [], "points": [], "requested_empty": list},
+            {"heading": "Prayer points", "items": [], "points": []},
+        ])
+        .to_string()
+    }
+
     #[test]
-    fn a_hostile_heading_list_is_bounded_by_the_content_it_can_match() {
-        // 200_000 entries, a few of them real. The result may never exceed the number of
-        // distinct headings the draft actually has (+ the two fixed labels).
+    fn a_long_heading_list_within_the_cap_is_collected_only_up_to_the_window() {
+        // Bounded-memory test that bites: ~1,500 entries (about 12 KB, so UNDER the 15 KB read
+        // cap and parsed for caveats) must come out as at most MAX_STORED_HEADINGS strings.
+        // Removing the collection window turns this red (it would return all 1,500).
+        let mut list: Vec<Value> = (0..1_500).map(|i| json!(format!("j{i}"))).collect();
+        list.insert(0, json!("Chapter markers"));
+        list.push(json!("Prayer points")); // real, but past the window
+        let stored = stored_with_list(&list);
+        assert!(
+            stored.len() < MAX_SECTIONS_JSON_BYTES,
+            "premise: under the cap, got {}",
+            stored.len()
+        );
+        let (sections, headings) = decode_sections(&stored);
+        assert_eq!(
+            sections.len(),
+            2,
+            "the sections are untouched by the window"
+        );
+        assert!(
+            headings.len() <= MAX_STORED_HEADINGS,
+            "collected {} entries",
+            headings.len()
+        );
+        assert_eq!(headings.len(), MAX_STORED_HEADINGS);
+        let (j, _) = sermon_note_draft_json(&view(stored, None, &[]), &[]);
+        assert_eq!(
+            caveat_headings(&j),
+            ["Chapter markers"],
+            "only the window counts; Prayer points is past it"
+        );
+    }
+
+    #[test]
+    fn a_value_over_the_write_cap_is_read_for_sections_only_never_for_caveats() {
+        // A row from a build with the old 200 000-byte cap, or a LAN writer: 200,000 junk
+        // entries, a real heading FIRST (so a window alone would still honour it). Over the
+        // cap the new work is not done at all, but the sections load exactly as they always
+        // did. Removing the size check turns this red.
         let mut list: Vec<Value> = (0..200_000).map(|i| json!(format!("junk {i}"))).collect();
         list.insert(0, json!("Chapter markers"));
-        list.push(json!("Prayer points")); // real, but past the examined window
-        let stored = json!({
-            "sections": [
-                {"heading": "Chapter markers", "items": [], "points": []},
-                {"heading": "Prayer points", "items": [], "points": []},
-            ],
-            "requested_empty": list,
-        })
-        .to_string();
+        let stored = stored_with_list(&list);
+        assert!(
+            stored.len() > MAX_SECTIONS_JSON_BYTES * 100,
+            "premise: far over the cap"
+        );
+        let (sections, headings) = decode_sections(&stored);
+        assert_eq!(
+            sections.len(),
+            2,
+            "sections still load, as before this ticket"
+        );
+        assert!(headings.is_empty(), "no caveat work over the cap");
         let (j, _) = sermon_note_draft_json(&view(stored, None, &[]), &[]);
-        let got = caveat_headings(&j);
-        assert!(got.len() <= 2 + 2, "unbounded: {}", got.len());
-        assert_eq!(got, ["Chapter markers"], "only the examined window counts");
-        // And the examined window itself is a fixed constant, independent of the input size.
+        assert_eq!(caveat_headings(&j), Vec::<String>::new());
+        assert_eq!(j["sections"][1]["heading"], "Prayer points");
+    }
+
+    #[test]
+    fn the_candidate_window_is_a_constant_not_a_function_of_the_input() {
         let many: Vec<String> = (0..MAX_STORED_HEADINGS * 4)
             .map(|i| format!("h{i}"))
             .collect();
@@ -903,7 +1092,7 @@ mod tests {
 
     #[test]
     fn non_string_entries_degrade_only_the_caveat_never_the_sections() {
-        let json = r#"{"sections":[{"heading":"Chapter markers","items":[],"points":[]}],"requested_empty":[7,null,{"a":1},["x"],"Chapter markers"]}"#;
+        let json = r#"[{"heading":"Chapter markers","items":[],"points":[],"requested_empty":[7,null,{"a":1},["x"],"Chapter markers"]}]"#;
         let (j, _) = sermon_note_draft_json(&view(json.to_string(), None, &[]), &[]);
         assert_eq!(j["sections"][0]["heading"], "Chapter markers");
         assert_eq!(caveat_headings(&j), ["Chapter markers"]);
@@ -919,7 +1108,6 @@ mod tests {
             "{}",
             "[1,2]",
             r#"{"sections":"nope"}"#,
-            r#"{"requested_empty":["Summary"]}"#,
             r#"{"sections":[{"no_heading":true}],"requested_empty":[]}"#,
             "{\"sections\":[",
         ] {
@@ -949,16 +1137,19 @@ mod tests {
     }
 
     #[test]
-    fn an_envelope_exactly_at_the_cap_is_kept() {
+    fn a_draft_exactly_at_the_cap_keeps_its_caveat() {
         let d = padded_draft_with_envelope_of(MAX_SECTIONS_JSON_BYTES);
         let stored = persisted_sections_json(&d);
         assert_eq!(stored.len(), MAX_SECTIONS_JSON_BYTES);
-        assert!(stored.starts_with('{'), "at the cap the caveat still fits");
+        assert!(
+            stored.contains("requested_empty"),
+            "at the cap the caveat still fits"
+        );
         assert_eq!(caveat_headings(&reload(&d)), ["Chapter markers"]);
     }
 
     #[test]
-    fn an_envelope_one_byte_over_the_cap_yields_the_caveat_not_the_draft() {
+    fn a_draft_one_byte_over_the_cap_yields_the_caveat_not_the_draft() {
         let d = padded_draft_with_envelope_of(MAX_SECTIONS_JSON_BYTES + 1);
         let stored = persisted_sections_json(&d);
         assert!(
@@ -973,7 +1164,10 @@ mod tests {
             d.sections[0].items()[0].len().into(),
             "the populated content is intact"
         );
-        // The documented degrade: exactly what was stored before this ticket.
+        // The documented degrade: exactly what was stored before this ticket, so the bare
+        // caveated heading is OMITTED, not kept as an unexplained empty section.
+        assert!(!stored.contains("requested_empty"));
+        assert_eq!(reloaded["sections"].as_array().expect("array").len(), 1);
         assert_eq!(caveat_headings(&reloaded), Vec::<String>::new());
     }
 
@@ -1056,6 +1250,7 @@ mod tests {
             form_sections(),
             &[],
             Some(&req),
+            None,
         );
         assert_eq!(input.title, "New title");
         assert_eq!(input.summary, None);
@@ -1065,13 +1260,66 @@ mod tests {
     }
 
     #[test]
-    fn an_edit_from_a_caller_that_reports_no_caveats_stores_the_old_shape() {
-        // `requested_empty` omitted (an older caller) means "none", exactly the pre-ticket
-        // behaviour, and never an error.
-        let input = edit_input_for("t".to_string(), None, form_sections(), &[], None);
-        assert!(input.sections_json.starts_with('['));
-        let j = sermon_note_draft_json(&view(input.sections_json, None, &[]), &[]).0;
-        assert_eq!(caveat_headings(&j), Vec::<String>::new());
+    fn an_edit_that_omits_the_list_and_has_nothing_stored_stores_the_plain_array() {
+        let input = edit_input_for("t".to_string(), None, form_sections(), &[], None, None);
+        assert_eq!(
+            input.sections_json,
+            r#"[{"heading":"Illustrations","items":["a lantern"],"points":[]},{"heading":"Chapter markers","items":[],"points":[]}]"#
+        );
+    }
+
+    #[test]
+    fn an_edit_that_omits_the_list_keeps_the_stored_caveats_that_are_still_true() {
+        // `None` means "unknown", never "none": the webview ships with this binary, so an
+        // omitted argument can only be a bug, and a bug must not silently wipe caveats.
+        let stored = encode_sections(
+            &[
+                NoteSection::flat("Illustrations", vec!["a lantern".into()]),
+                NoteSection::flat("Chapter markers", Vec::new()),
+                NoteSection::flat("Prayer points", Vec::new()),
+            ],
+            &strings(&["Chapter markers", "Prayer points", SUMMARY]),
+        );
+        // The edit fills Prayer points in and types a summary; Chapter markers stays empty.
+        let sections: Vec<crate::NoteSectionInput> = serde_json::from_value(json!([
+            {"heading": "Illustrations", "items": ["a lantern"], "points": []},
+            {"heading": "Chapter markers", "items": [], "points": []},
+            {"heading": "Prayer points", "items": ["Thank God"], "points": []},
+        ]))
+        .expect("sections");
+        let input = edit_input_for(
+            "t".to_string(),
+            Some("Now a summary".to_string()),
+            sections,
+            &[],
+            None,
+            Some(&stored),
+        );
+        let j =
+            sermon_note_draft_json(&view(input.sections_json, Some("Now a summary"), &[]), &[]).0;
+        assert_eq!(caveat_headings(&j), ["Chapter markers"]);
+    }
+
+    #[test]
+    fn an_edit_that_reports_an_empty_list_clears_every_caveat() {
+        // `Some(&[])` is authoritative, unlike `None`.
+        let stored = encode_sections(
+            &[NoteSection::flat("Chapter markers", Vec::new())],
+            &strings(&["Chapter markers"]),
+        );
+        let sections: Vec<crate::NoteSectionInput> = serde_json::from_value(json!([
+            {"heading": "Chapter markers", "items": [], "points": []},
+        ]))
+        .expect("sections");
+        let input = edit_input_for(
+            "t".to_string(),
+            None,
+            sections,
+            &[],
+            Some(&[]),
+            Some(&stored),
+        );
+        assert!(!input.sections_json.contains("requested_empty"));
     }
 
     #[test]
@@ -1083,9 +1331,295 @@ mod tests {
             Vec::new(),
             &[],
             Some(&req),
+            None,
         );
         assert_eq!(input.summary.as_deref(), Some("Now there is one."));
         assert_eq!(input.sections_json, "[]");
+    }
+
+    // --- downgrade safety: what a build from BEFORE this ticket makes of the stored value ------
+
+    /// The pre-change reader, verbatim: `sermon_note_draft_json` used to do exactly
+    /// `serde_json::from_str::<Vec<NoteSectionInput>>(&v.sections_json).unwrap_or_default()`.
+    fn old_reader(sections_json: &str) -> Vec<NoteSection> {
+        let input: Vec<crate::NoteSectionInput> =
+            serde_json::from_str(sections_json).unwrap_or_default();
+        sections_from_input(input)
+    }
+
+    #[test]
+    fn an_older_build_still_reads_every_section_of_a_draft_that_carries_caveats() {
+        let sections = vec![
+            NoteSection::flat("Illustrations", vec!["a lantern".into()]),
+            NoteSection::flat("Chapter markers", Vec::new()),
+            NoteSection::outline(
+                OUTLINE_HEADING,
+                vec![NotePoint {
+                    text: "Be faithful".into(),
+                    sub_points: vec!["In little".into()],
+                }],
+            ),
+            NoteSection::flat("Prayer points", Vec::new()),
+        ];
+        let d = draft(
+            None,
+            sections.clone(),
+            &[],
+            vec![
+                caveat("Chapter markers"),
+                caveat("Prayer points"),
+                caveat(SUMMARY),
+            ],
+        );
+        let stored = persisted_sections_json(&d);
+        assert!(
+            stored.contains("requested_empty"),
+            "premise: caveats were recorded"
+        );
+        assert_eq!(
+            old_reader(&stored),
+            sections,
+            "an older build must get every section back, populated ones included"
+        );
+        // Without caveats it is the plain array, trivially readable.
+        let plain = persisted_sections_json(&draft(None, sections.clone(), &[], vec![]));
+        assert_eq!(old_reader(&plain), sections);
+    }
+
+    #[test]
+    fn an_older_build_that_edit_saves_a_caveat_carrying_draft_loses_the_caveat_and_no_section() {
+        // The downgrade-then-edit consequence, end to end: older build reads, edits the title,
+        // writes with the OLD serialiser. Real sections survive; only the caveat is gone.
+        let sections = vec![
+            NoteSection::flat("Illustrations", vec!["a lantern".into()]),
+            NoteSection::flat("Chapter markers", Vec::new()),
+        ];
+        let stored = persisted_sections_json(&draft(
+            None,
+            sections.clone(),
+            &[],
+            vec![caveat("Chapter markers")],
+        ));
+        let written_by_old_build = crate::sections_to_json(&old_reader(&stored));
+        assert_eq!(old_reader(&written_by_old_build), sections);
+        assert!(!written_by_old_build.contains("requested_empty"));
+        // And this build, reading what the old build wrote, simply shows no caveat.
+        let (j, _) = sermon_note_draft_json(&view(written_by_old_build, None, &[]), &[]);
+        assert_eq!(caveat_headings(&j), Vec::<String>::new());
+        assert_eq!(j["sections"].as_array().expect("array").len(), 2);
+    }
+
+    #[test]
+    fn a_draft_with_no_sections_uses_the_object_shape_and_loses_nothing_to_an_older_build() {
+        // The one object shape: only when there is no section an older build could lose.
+        let d = draft(None, vec![], &[], vec![caveat(SUMMARY), caveat(SCRIPTURES)]);
+        let stored = persisted_sections_json(&d);
+        assert_eq!(
+            stored,
+            r#"{"requested_empty":["Summary","Scripture references"],"sections":[]}"#
+        );
+        assert_eq!(old_reader(&stored), Vec::<NoteSection>::new());
+        assert_eq!(caveat_headings(&reload(&d)), [SUMMARY, SCRIPTURES]);
+    }
+
+    #[test]
+    fn the_extra_key_is_only_honoured_on_the_first_section() {
+        let json = r#"[{"heading":"A","items":[],"points":[]},{"heading":"B","items":[],"points":[],"requested_empty":["B"]}]"#;
+        let (j, _) = sermon_note_draft_json(&view(json.to_string(), None, &[]), &[]);
+        assert_eq!(caveat_headings(&j), Vec::<String>::new());
+        assert_eq!(j["sections"].as_array().expect("array").len(), 2);
+    }
+
+    #[test]
+    fn unknown_keys_in_the_stored_value_are_ignored() {
+        // Forward compatibility depends on this: a future additive key must not break a reader
+        // built from this code. Unknown keys on a section, on the no-sections object, and a
+        // deeply nested one.
+        let on_section = r#"[{"heading":"A","items":["kept"],"points":[],"requested_empty":["A"],"future":{"x":[[[[1]]]]}}]"#;
+        let (sections, headings) = decode_sections(on_section);
+        assert_eq!(sections_from_input(sections)[0].items(), ["kept"]);
+        assert!(headings.contains(&"A".to_string()));
+        let on_object = r#"{"sections":[],"requested_empty":["Summary"],"future":[1,2,3]}"#;
+        assert_eq!(decode_sections(on_object).1, ["Summary"]);
+    }
+
+    // --- a damaged requested_empty field costs the caveats, never the sections ----------------
+
+    #[test]
+    fn a_wrong_typed_requested_empty_field_never_costs_the_sections() {
+        for bad in [
+            r#""text""#,
+            "null",
+            "7",
+            r#"{"a":1}"#,
+            "true",
+            "[[1]]",
+            r#"[{"a":1}]"#,
+        ] {
+            let on_section = format!(
+                r#"[{{"heading":"A","items":["kept"],"points":[],"requested_empty":{bad}}}]"#
+            );
+            let (sections, headings) = decode_sections(&on_section);
+            assert_eq!(sections.len(), 1, "sections lost for requested_empty={bad}");
+            assert!(headings.is_empty(), "requested_empty={bad}");
+            let (j, _) = sermon_note_draft_json(&view(on_section, None, &[]), &[]);
+            assert_eq!(
+                j["sections"][0]["items"],
+                json!(["kept"]),
+                "requested_empty={bad}"
+            );
+
+            let on_object = format!(r#"{{"sections":[],"requested_empty":{bad}}}"#);
+            let (sections, headings) = decode_sections(&on_object);
+            assert!(
+                sections.is_empty() && headings.is_empty(),
+                "object, requested_empty={bad}"
+            );
+        }
+    }
+
+    // --- the shape is chosen by the first non-space byte -------------------------------------
+
+    #[test]
+    fn leading_whitespace_does_not_change_how_the_value_is_read() {
+        let arr = format!(
+            "  \n\t{}",
+            r#"[{"heading":"A","items":[],"points":[],"requested_empty":["A"]}]"#
+        );
+        assert_eq!(decode_sections(&arr).1, ["A"]);
+        let obj = format!("\n {}", r#"{"sections":[],"requested_empty":["Summary"]}"#);
+        assert_eq!(decode_sections(&obj).1, ["Summary"]);
+        for other in ["", "   ", "null", "\"x\"", "7", "true", "x"] {
+            let (s, h) = decode_sections(other);
+            assert!(s.is_empty() && h.is_empty(), "{other:?}");
+        }
+    }
+
+    // --- the "empty" rule, and the corners around it -------------------------------------------
+
+    #[test]
+    fn an_outline_point_with_blank_text_but_a_real_sub_point_is_not_empty() {
+        // The sub-point arm of `section_is_empty`: dropping it would let a stale caveat mark
+        // this populated outline "nothing came back" and hide the sub-point.
+        let outline = NoteSection::outline(
+            OUTLINE_HEADING,
+            vec![NotePoint {
+                text: String::new(),
+                sub_points: vec!["real".into()],
+            }],
+        );
+        assert!(!section_is_empty(&outline));
+        let d = draft(None, vec![outline], &[], vec![caveat(OUTLINE_HEADING)]);
+        let reloaded = reload(&d);
+        assert_eq!(caveat_headings(&reloaded), Vec::<String>::new());
+        assert_eq!(reloaded["sections"][0]["empty_requested"], false);
+        assert_eq!(
+            reloaded["sections"][0]["points"][0]["sub_points"],
+            json!(["real"])
+        );
+        // The mirror: blank text AND only blank sub-points is empty.
+        let blank = NoteSection::outline(
+            OUTLINE_HEADING,
+            vec![NotePoint {
+                text: " ".into(),
+                sub_points: vec!["  ".into()],
+            }],
+        );
+        assert!(section_is_empty(&blank));
+    }
+
+    #[test]
+    fn a_blank_heading_names_nothing_and_is_never_a_caveat() {
+        // Decision (Quinn X2): an empty section whose heading was blanked in the edit form is
+        // not given a caveat, whatever is stored, because there is no name to show it under.
+        for h in ["", "  ", "\t"] {
+            let sections = vec![NoteSection::flat(h, Vec::new())];
+            let stored = edited_sections_json(&sections, None, &[], &[h.to_string()]);
+            assert_eq!(stored, crate::sections_to_json(&sections), "heading {h:?}");
+            let (j, _) = sermon_note_draft_json(&view(stored, None, &[]), &[]);
+            assert_eq!(caveat_headings(&j), Vec::<String>::new(), "heading {h:?}");
+        }
+    }
+
+    #[test]
+    fn the_reserved_labels_win_over_a_section_with_the_same_name() {
+        // Pinned behaviours (Quinn X4b, Cody N4), not endorsements.
+        //
+        // 1. An EMPTY section renamed "Summary" while the summary has text: the label is judged
+        //    by the SUMMARY, so the caveat is dropped and a bare heading remains.
+        let sections = vec![NoteSection::flat("Summary", Vec::new())];
+        let stored = edited_sections_json(&sections, Some("has text"), &[], &strings(&["Summary"]));
+        let (j, _) = sermon_note_draft_json(&view(stored, Some("has text"), &[]), &[]);
+        assert_eq!(caveat_headings(&j), Vec::<String>::new());
+        assert_eq!(j["sections"][0]["empty_requested"], false);
+        // 2. The same empty section while the summary is blank: the Summary caveat holds, and
+        //    draft_json also flags the empty namesake section.
+        let stored = edited_sections_json(&sections, None, &[], &strings(&["Summary"]));
+        let (j, _) = sermon_note_draft_json(&view(stored, None, &[]), &[]);
+        assert_eq!(caveat_headings(&j), ["Summary"]);
+        assert_eq!(j["sections"][0]["empty_requested"], true);
+        // 3. A POPULATED section named "Summary" is never hidden by the Summary caveat.
+        let populated = vec![NoteSection::flat("Summary", vec!["real".into()])];
+        let stored = edited_sections_json(&populated, None, &[], &strings(&["Summary"]));
+        let (j, _) = sermon_note_draft_json(&view(stored, None, &[]), &[]);
+        assert_eq!(j["sections"][0]["empty_requested"], false);
+        assert_eq!(j["sections"][0]["items"], json!(["real"]));
+    }
+
+    #[test]
+    fn a_whitespace_only_summary_is_blank_to_the_server() {
+        // `transcripts.js` renders any non-empty summary string, so a "   " summary shows as a
+        // blank line next to the caveat; the server's reading (blank) is the honest one.
+        assert_eq!(
+            still_requested_empty([SUMMARY], Some("   \n"), &[], &[]),
+            [SUMMARY]
+        );
+        assert!(still_requested_empty([SUMMARY], Some("x"), &[], &[]).is_empty());
+    }
+
+    // --- the size fallback ---------------------------------------------------------------------
+
+    #[test]
+    fn the_size_fallback_keeps_a_populated_namesake_of_an_empty_caveated_section() {
+        // Over the cap the empty caveated sections are left out, but a POPULATED section that
+        // shares a heading with one of them must stay. Removing the emptiness half of the
+        // fallback filter would drop it.
+        let build = |pad: usize| {
+            vec![
+                NoteSection::flat("Key lessons", vec!["x".repeat(pad)]),
+                NoteSection::flat("Key lessons", Vec::new()),
+            ]
+        };
+        let req = strings(&["Key lessons"]);
+        let base = edited_sections_json(&build(10), None, &[], &req).len();
+        let over = build(10 + MAX_SECTIONS_JSON_BYTES + 1 - base);
+        let stored = edited_sections_json(&over, None, &[], &req);
+        assert!(stored.len() <= MAX_SECTIONS_JSON_BYTES);
+        let got = old_reader(&stored);
+        assert_eq!(got.len(), 1, "only the empty namesake is left out");
+        assert_eq!(got[0].items()[0].len(), over[0].items()[0].len());
+    }
+
+    #[test]
+    fn the_edit_path_has_the_same_cap_boundary_as_the_generate_path() {
+        for over in [0usize, 1] {
+            let build = |pad: usize| {
+                vec![
+                    NoteSection::flat("Illustrations", vec!["x".repeat(pad)]),
+                    NoteSection::flat("Chapter markers", Vec::new()),
+                ]
+            };
+            let req = strings(&["Chapter markers"]);
+            let base = edited_sections_json(&build(10), None, &[], &req).len();
+            let stored = edited_sections_json(
+                &build(10 + MAX_SECTIONS_JSON_BYTES + over - base),
+                None,
+                &[],
+                &req,
+            );
+            assert!(stored.len() <= MAX_SECTIONS_JSON_BYTES, "over={over}");
+            assert_eq!(stored.contains("requested_empty"), over == 0, "over={over}");
+        }
     }
 }
 
@@ -1095,18 +1629,15 @@ mod tests {
 /// the disk and the console, loses the caveat again.
 #[cfg(test)]
 mod store_tests {
+    use super::support::{caveat, caveat_headings};
     use super::*;
     use crate::{build_transcript_detail_view, sermon_note_draft_json, sermon_note_view_ok_json};
+    #[cfg(feature = "openai-notes")]
+    use selahcue_core::providers::IncludeInNotes;
     use selahcue_data::sermon_note_repo::{self, DraftEdit, NewSermonNote, PendingRegeneration};
     use selahcue_data::{transcript_repo, Database};
     use selahcue_lan::protocol::SermonNoteDraftView;
     use serde_json::Value;
-
-    fn caveat(heading: &str) -> DraftCaveat {
-        DraftCaveat::SectionRequestedEmpty {
-            heading: heading.to_string(),
-        }
-    }
 
     /// A generated draft with `Chapter markers` and `Prayer points` requested but empty.
     fn generated_with_two_empty() -> NoteDraft {
@@ -1187,16 +1718,6 @@ mod store_tests {
             .expect("find")
             .expect("a draft is stored");
         sermon_note_draft_json(&view_of(&record), &[]).0
-    }
-
-    fn caveat_headings(j: &Value) -> Vec<String> {
-        j["caveats"]
-            .as_array()
-            .expect("caveats array")
-            .iter()
-            .filter(|c| c["kind"] == "section_empty")
-            .map(|c| c["heading"].as_str().expect("heading").to_string())
-            .collect()
     }
 
     #[test]
@@ -1407,7 +1928,6 @@ mod store_tests {
     #[cfg(feature = "openai-notes")]
     #[test]
     fn a_really_parsed_response_keeps_every_kind_of_caveat_across_a_restart() {
-        use selahcue_core::providers::IncludeInNotes;
         let all_on = IncludeInNotes {
             prayer_points: true,
             scripture_extraction: true,
@@ -1469,6 +1989,51 @@ mod store_tests {
         assert_eq!(caveat_headings(&reloaded), fresh_caveats);
         assert_eq!(reloaded["sections"], fresh["sections"]);
         assert_eq!(reloaded["summary"], fresh["summary"]);
+    }
+
+    #[test]
+    fn stage_discard_stage_confirm_on_a_real_file_with_a_restart_between_every_step() {
+        // The regeneration lifecycle (FR-129) against a real file, reopened after EVERY step,
+        // so each caveat read below came off the disk and not out of a live connection.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("selahcue.db");
+        let first = generated_with_two_empty();
+        let mut second = generated_with_two_empty();
+        second.caveats = vec![caveat("Prayer points")];
+        second.sections[1] = NoteSection::flat("Chapter markers", vec!["Opening prayer".into()]);
+
+        let id = {
+            let db = Database::open(&path).expect("open");
+            let id = new_transcript(&db);
+            sermon_note_repo::create(&db, &note_of(id, &first)).expect("persist");
+            id
+        };
+        let reopen = || Database::open(&path).expect("reopen");
+        sermon_note_repo::stage_regeneration(&reopen(), id, &pending_of(&second)).expect("stage");
+        assert_eq!(
+            caveat_headings(&loaded(&reopen(), id)),
+            ["Chapter markers", "Prayer points"],
+            "the accepted draft is unchanged by a staged regeneration, across a restart"
+        );
+        sermon_note_repo::discard_regeneration(&reopen(), id).expect("discard");
+        assert_eq!(
+            caveat_headings(&loaded(&reopen(), id)),
+            ["Chapter markers", "Prayer points"],
+            "and by discarding it"
+        );
+        sermon_note_repo::stage_regeneration(&reopen(), id, &pending_of(&second)).expect("stage");
+        sermon_note_repo::confirm_regeneration(&reopen(), id).expect("confirm");
+        let j = loaded(&reopen(), id);
+        assert_eq!(
+            caveat_headings(&j),
+            ["Prayer points"],
+            "confirmed, across a restart"
+        );
+        assert_eq!(
+            j["sections"][1]["items"],
+            serde_json::json!(["Opening prayer"])
+        );
+        assert_eq!(j["sections"][2]["empty_requested"], true);
     }
 
     #[test]
