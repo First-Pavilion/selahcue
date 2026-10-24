@@ -1,11 +1,11 @@
-# Mutation run against code head 845e4695a570ca713ac6b5a41aec46c553460d47, 2026-10-24
-# command: SQL_ENGINE=django.db.backends.postgresql ... python mutate.py --python $VENV_PYTHON --postgres
+# Mutation run against code head c4f57d016b3b936fd198962f493ac17b65704c80, 2026-10-24 (later commits change docs only)
+# command: SQL_ENGINE=django.db.backends.postgresql SQL_HOST=... python mutate.py --python $VENV_PYTHON --postgres
 # exit code: 0
-# (SKIPPED lines are the mutants belonging to the other mode, listed by the script)
-P01 KILLED: the writer no longer locks the licence row | 10 failed, 8 passed in 367.73s (0:06:07) | 8 red
-P02 KILLED: the writer never recognises a retry (lookup disabled) | 3 failed, 15 passed in 45.83s | 2 red
-P03 KILLED: the retry lookup runs BEFORE the row lock (the pre-lock shape this PR replaced) | 3 failed, 15 passed in 38.10s | 2 red
-P04 KILLED: actor ids longer than the audit column are accepted (Postgres: the DENIED row is lost) | 1 failed, 1 passed in 9.23s | 1 red
+# (SKIPPED lines are the other mode's mutants, listed by the script)
+P01 KILLED: the writer no longer locks the licence row | 10 failed, 8 passed in 379.81s (0:06:19) | 8 red
+P02 KILLED: the writer never recognises a retry (lookup disabled) | 3 failed, 15 passed in 347.19s (0:05:47) | 2 red
+P03 KILLED: the retry lookup runs BEFORE the row lock (the pre-lock shape this PR replaced) | 3 failed, 15 passed in 226.37s (0:03:46) | 2 red
+P04 KILLED: actor ids longer than the audit column are accepted (Postgres: the DENIED row is lost) | 1 failed, 1 passed in 30.21s | 1 red
 M01 SKIPPED: remove the staff permission gate (SQLite mutant)
 M02 SKIPPED: suspend is gated by the REVOKE permission instead (SQLite mutant)
 M03 SKIPPED: reinstate is gated by the SUSPEND permission instead (SQLite mutant)
@@ -42,3 +42,10 @@ M33 SKIPPED: the commercial gate ignores the licence window (SQLite mutant)
 M34 SKIPPED: the manifest route is declared allowed while suspended but still enforces (SQLite mutant)
 M35 SKIPPED: a device-token route stops declaring a licence gate (SQLite mutant)
 M36 SKIPPED: assign the licence status directly instead of going through the writer (SQLite mutant)
+M37 SKIPPED: a v1 route is added to the URLconf with no contract entry (review round 2, R3) (SQLite mutant)
+M38 SKIPPED: the reinstate payload is widened back to the full licence view, customer included (round 2, X2) (SQLite mutant)
+M39 SKIPPED: the reinstate payload never reports a replay (round 2, R4) (SQLite mutant)
+M40 SKIPPED: any no-change result is flagged as a replay (round 2, Q3) (SQLite mutant)
+M41 SKIPPED: the writer does not refresh the caller's instance on a replay (round 2, Q9) (SQLite mutant)
+M42 SKIPPED: session activation also admits SUSPENDED licences (SQLite mutant)
+M43 SKIPPED: refresh reports every licence as valid now (SQLite mutant)

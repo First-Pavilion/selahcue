@@ -1,22 +1,25 @@
-# Mutation run against code head 845e4695a570ca713ac6b5a41aec46c553460d47, 2026-10-24
-# command: python mutate.py --python $VENV_PYTHON --only M19..M36 --allow-skip
+# Mutation run against code head c4f57d016b3b936fd198962f493ac17b65704c80, 2026-10-24 (later commits change docs only)
+# command: python mutate.py --python $VENV_PYTHON --only M23,M24,M25,M26,M27,M28,M29,M30,M31,M32,M33,M34,M35,M36,M37,M38,M39,M40,M41,M42,M43 --allow-skip
 # exit code: 0
-# (SKIPPED lines are the mutants belonging to the other mode, listed by the script)
-M19 KILLED: one throttle bucket shared by every staff member | 1 failed, 167 passed in 48.28s | 1 red
-M20 KILLED: the throttle is spent before the permission gate | 6 failed, 162 passed in 59.24s | 6 red
-M21 KILLED: the shipped budget default is ten times too generous | 1 failed, 167 passed in 59.79s | 1 red
-M22 KILLED: lenient licence-id parsing | 5 failed, 163 passed in 45.37s | 2 red
-M23 KILLED: an unknown licence is VALIDATION_FAILED instead of NOT_FOUND | 5 failed, 163 passed in 55.36s | 2 red
-M24 KILLED: the NOT_FOUND refusal carries a bespoke message (a lookup oracle) | 23 failed, 145 passed in 56.19s | 2 red
-M25 KILLED: idempotency keys are not validated | 4 failed, 164 passed in 48.11s | 1 red
-M26 KILLED: the writer is handed a different reason | 15 failed, 153 passed in 51.20s | 4 red
-M27 KILLED: the admin read type reports no prior status | 1 failed, 167 passed in 171.06s (0:02:51) | 1 red
-M28 KILLED: the suspend payload returns the full licence view, customer included | 1 failed, 167 passed in 160.41s (0:02:40) | 1 red
-M29 KILLED: a replayed request is never flagged | 1 failed, 167 passed in 103.01s (0:01:43) | 1 red
-M30 KILLED: actor ids longer than the audit column are accepted (service gate) | 1 failed, 167 passed in 91.28s (0:01:31) | 1 red
-M31 KILLED: actor ids longer than the audit column are accepted (header bridge) | 1 failed, 167 passed in 184.25s (0:03:04) | 1 red
-M32 KILLED: the commercial gate admits any licence status | 11 failed, 157 passed in 318.06s (0:05:18) | 7 red
-M33 KILLED: the commercial gate ignores the licence window | 2 failed, 166 passed in 106.26s (0:01:46) | 1 red
-M34 KILLED: the manifest route is declared allowed while suspended but still enforces | 1 failed, 167 passed in 87.82s (0:01:27) | 1 red
-M35 KILLED: a device-token route stops declaring a licence gate | 2 failed, 166 passed in 192.99s (0:03:12) | 2 red
-M36 KILLED: assign the licence status directly instead of going through the writer | 31 failed, 265 passed in 251.75s (0:04:11) | 23 red
+# (SKIPPED lines are the other mode's mutants, listed by the script)
+M23 KILLED: an unknown licence is VALIDATION_FAILED instead of NOT_FOUND | 5 failed, 173 passed in 115.61s (0:01:55) | 2 red
+M24 KILLED: the NOT_FOUND refusal carries a bespoke message (a lookup oracle) | 23 failed, 155 passed in 49.04s | 2 red
+M25 KILLED: idempotency keys are not validated | 4 failed, 174 passed in 66.01s (0:01:06) | 1 red
+M26 KILLED: the writer is handed a different reason | 15 failed, 163 passed in 110.70s (0:01:50) | 4 red
+M27 KILLED: the admin read type reports no prior status | 1 failed, 177 passed in 267.54s (0:04:27) | 1 red
+M28 KILLED: the suspend payload returns the full licence view, customer included | 3 failed, 175 passed in 79.81s (0:01:19) | 2 red
+M29 KILLED: a replayed request is never flagged | 2 failed, 176 passed in 201.50s (0:03:21) | 2 red
+M30 KILLED: actor ids longer than the audit column are accepted (service gate) | 1 failed, 177 passed in 140.29s (0:02:20) | 1 red
+M31 KILLED: actor ids longer than the audit column are accepted (header bridge) | 1 failed, 177 passed in 115.67s (0:01:55) | 1 red
+M32 KILLED: the commercial gate admits any licence status | 14 failed, 164 passed in 59.99s | 9 red
+M33 KILLED: the commercial gate ignores the licence window | 2 failed, 176 passed in 90.95s (0:01:30) | 1 red
+M34 KILLED: the manifest route is declared allowed while suspended but still enforces | 1 failed, 177 passed in 92.98s (0:01:32) | 1 red
+M35 KILLED: a device-token route stops declaring a licence gate | 2 failed, 176 passed in 94.19s (0:01:34) | 2 red
+M36 KILLED: assign the licence status directly instead of going through the writer | 33 failed, 273 passed in 172.73s (0:02:52) | 25 red
+M37 KILLED: a v1 route is added to the URLconf with no contract entry (review round 2, R3) | 1 failed, 177 passed in 197.61s (0:03:17) | 1 red
+M38 KILLED: the reinstate payload is widened back to the full licence view, customer included (round 2, X2) | 2 failed, 176 passed in 180.00s (0:03:00) | 1 red
+M39 KILLED: the reinstate payload never reports a replay (round 2, R4) | 1 failed, 177 passed in 95.29s (0:01:35) | 1 red
+M40 KILLED: any no-change result is flagged as a replay (round 2, Q3) | 1 failed, 177 passed in 76.27s (0:01:16) | 1 red
+M41 KILLED: the writer does not refresh the caller's instance on a replay (round 2, Q9) | 1 failed, 177 passed in 73.28s (0:01:13) | 1 red
+M42 KILLED: session activation also admits SUSPENDED licences | 1 failed, 177 passed in 87.09s (0:01:27) | 1 red
+M43 KILLED: refresh reports every licence as valid now | 3 failed, 175 passed in 124.66s (0:02:04) | 2 red

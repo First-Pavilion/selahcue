@@ -43,7 +43,7 @@ Verified on origin/main 12359b95 (and re-verified after merging origin/main 09c6
 - Service functions `suspend_license_key` / `reinstate_license_key` and the two GraphQL mutations; `prior_status` on the admin read type; payloads return a licence view WITHOUT the customer and a `replayed` flag.
 - Gate with `require_staff_permission` before the writer; per-staff-actor throttle (FR-539); fail-closed guard when called inside a transaction; actor ids longer than the audit column refused at the boundary.
 - Retry recognition INSIDE the writer under the row lock: an additive optional `recognise_retry` parameter on `apply_license_status_transition` (opt-in; device activation does not use it).
-- One named enforcement point for commercial device calls (`devices.services.require_commercial_service`) and a `licence_gate` declaration on every bearer-token route in `graphql/route_contracts.py`, swept by a test.
+- One named enforcement point for commercial device calls (`devices.services.require_commercial_service`) and a `license_gate` declaration on every route whose auth context is `device_token` in `graphql/route_contracts.py`, swept by a test and tied to the URLconf by a second test.
 - Narrowing of the revocation cascade so a licence suspended from an ACTIVATABLE status keeps its device tokens (needed to honour this ticket's token-survival criteria; accepted by the orchestrator to stay in this PR).
 - Tests, including Postgres races; the mutation script and its logs are committed under `docs/delivery/goals/86ak5mn0c-evidence/`.
 
@@ -67,6 +67,8 @@ Verified on origin/main 12359b95 (and re-verified after merging origin/main 09c6
 - ASSUMED: 30 requests / 60 s per staff actor is comfortable; tunable in settings.
 - KNOWN LIMIT: a request that was itself a no-op (the licence was already suspended) wrote no audit row, so a later retry of it cannot be recognised and applies if the licence has since moved. Deliberately not fixed: an audit row for a no-op is not wanted. Pinned by `test_a_retry_of_a_request_that_was_itself_a_no_op_is_not_recognised`.
 - KNOWN LIMIT: the staff authenticator is still the `X-SelahCue-*` header bridge (17tnw2az0n5).
+- KNOWN, PRE-EXISTING, OUT OF SCOPE: what a suspend-only actor can read through the summary view is the masked key, prefix, suffix, feature scope, dates and prior status, and on an already-suspended licence that read writes no audit row. `AdminLicenseKey.customer` is still not permission-gated for generate-only actors (that path writes a licence and an audit row). Neither is changed here.
+- KNOWN LIMIT: the retry lookup has no composite index; the planner may use the `(action, created_at)` index and filter, moving to the `request_id` index as the action grows (checked at 200k rows by Vera). Revisit if the audit table gets very large (noted on 86ak1099u by the orchestrator).
 
 ## Dependencies and approvals
 
@@ -89,13 +91,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. Test names below are 
 | C-009 | yes | Suspension leaves device tokens valid through a cascade run; REVOKED kills; manifest and activation refused while suspended; recovery without re-activation or slot use; cached entitlement unchanged | `pytest ... -k "device or token or cascade or manifest or activation or recovery or cached"` | exit 0 | section 5 of the module | PASS |
 | C-010 | yes | Audit rows pair suspend/reinstate and carry no secret | `pytest ... -k "cycle or secret"` | exit 0 | the matching tests | PASS |
 | C-011 | yes | Races on Postgres: suspend vs first activation (both orders), vs revoke (both orders), vs itself, vs reinstate, and a duplicate with another action between | `SQL_ENGINE=django.db.backends.postgresql ... pytest tests/test_concurrency_postgres.py` | exit 0 | 18 passed | PASS |
-| C-012 | yes | Mutation checks turn the guarding tests red; no unexplained survivor | `python docs/delivery/goals/86ak5mn0c-evidence/mutate.py --python "$VENV_PYTHON" [--postgres]` | every non-equivalent mutant KILLED, exit 0 | `docs/delivery/goals/86ak5mn0c-evidence/mutation-sqlite-a.txt`, `mutation-sqlite-b.txt` and `mutation-postgres.txt`; one declared equivalent survivor (M11, retry lookup counting non-SUCCESS rows: refusal rows carry a different action name, so the filter is redundant) | PASS |
-| C-013 | yes | `manage.py check`, `makemigrations --check --dry-run`, the full SQLite suite and the Postgres concurrency file plus the new module exit 0 at the final code head | commands in the PR body | all exit 0 | PR body, by head SHA. Honesty note: an earlier full run (head 1abc328b) failed one test, `test_cache_socket_timeouts` (20 s subprocess watchdog, machine load average about 45), and the reviewers saw `test_resend_verification` (a millisecond assertion) fail once under load; both pass when their file is rerun alone. At code head 845e4695 the full run was green (1117 passed, 19 skipped, 1 xfailed, exit 0). After merging origin/main (infrastructure only: `make api-check`, no API source) the full run failed one wall-clock test in `test_cache_socket_timeouts.py` at machine load 45-57; that file failed a different test on one rerun and passed on the next, and passes on origin/main under the same load, so it is recorded as a load flake, not a green run | PASS |
-| C-014 | yes | Ticket criterion 8, "cloud features are refused while suspended and resume on reinstatement": satisfied by ONE named enforcement point (`require_commercial_service`) used by activation and the manifest, plus a sweep over `desktop_command_contracts()` that fails when a bearer-token route declares neither `commercial` nor `allowed_while_suspended` and calls each route against a suspended licence. No cloud endpoint exists in this API yet, so the first real one is held to the same rule by the sweep (follow-up filed by the orchestrator) | `pytest ... -k "declares or declaration or enforcement_point or sweep"` | exit 0 | section 6 of the module | PASS |
+| C-012 | yes | Mutation checks turn the guarding tests red; no unexplained survivor; a stale "equivalent" declaration also fails | `python docs/delivery/goals/86ak5mn0c-evidence/mutate.py --python "$VENV_PYTHON" --allow-skip` for the SQLite mutants, then `python docs/delivery/goals/86ak5mn0c-evidence/mutate.py --python "$VENV_PYTHON" --postgres` (SQL_* pointing at a disposable Postgres) | both exit 0: 46 mutants KILLED (43 SQLite + 4 Postgres, minus the one equivalent) and one declared equivalent survivor | `docs/delivery/goals/86ak5mn0c-evidence/mutation-sqlite-a.txt`, `mutation-sqlite-b.txt`, `mutation-postgres.txt`, each stamped with the code head it ran against (c4f57d01). The equivalent survivor is M11 (the retry lookup counting non-SUCCESS rows: refusal rows carry a different action name, so the filter is redundant). The retry-lookup-before-the-lock mutant (P03) and the lookup-disabled mutant (P02) were run three times in total (twice on 845e4695, once on c4f57d01) and the between-the-copies race test was red every time | PASS |
+| C-013 | yes | `manage.py check`, `makemigrations --check --dry-run`, the full SQLite suite and the Postgres concurrency file plus the new module exit 0 | commands in the PR body | all exit 0 at the code head | PASS AT CODE HEAD c4f57d01 (production source identical to the final head; the later commits change docs and evidence only): check 0, makemigrations 0, full SQLite 1127 passed / 19 skipped / 1 xfailed exit 0, Postgres concurrency 18 passed exit 0, new module on Postgres 178 passed exit 0. Earlier heads, for honesty: at 845e4695 the full SQLite run was also green (1117 passed); at the merged head 87de5da4 one wall-clock test in `test_cache_socket_timeouts.py` failed at machine load 45-57 and the file passed on rerun (a load flake, not a green run); the round-2 reviewers saw `test_resend_verification` (a millisecond assertion) fail once under load. No flake fired at c4f57d01 | PASS |
+| C-014 | yes | Ticket criterion 8, "cloud features are refused while suspended and resume on reinstatement": ONE named enforcement point (`require_commercial_service`, over the shared predicate `license_allows_commercial_service`) used by activation and the manifest; every route whose auth context is exactly `device_token` declares `license_gate` in `graphql/route_contracts.py`; and three tests guard that: a sweep that fails on an undeclared route, a walk of the URL resolver that fails when a `v1/` route has no contract entry (or the reverse), and a behavioural check that calls each declared route with a suspended licence's token. Limits, stated plainly: no cloud endpoint exists in this API yet; the three 501 routes are declared but the sweep can only check that they refuse once they answer; a route registered outside `v1/` is not seen; the account-session bearer on `activations:with-session` is gated through activation (and answers NOT_FOUND, not POLICY_DENIED, on a suspended licence: pinned by a test, behaviour unchanged) | `pytest ... -k "declares or declaration or enforcement_point or sweep or urlconf or session_activation"` | exit 0 | section 6 and 7 of the module | PASS |
 | C-015 | yes | New activations RESUME after reinstatement (device_limit 2, and first activation of an ISSUED licence) | `pytest ... -k "admitted_after_reinstatement or first_activated"` | exit 0 | section 7 of the module | PASS |
 | C-016 | yes | The cascade spares a suspended licence's tokens only when it was suspended from an activatable status; EXPIRED and CONVERTED still die | `pytest ... -k cascade` and `tests/test_revocation_cascade.py` | exit 0 | section 8 of the module and the parametrised test in `tests/test_revocation_cascade.py` | PASS |
-| C-017 | yes | The lifecycle payloads do not widen what a lifecycle permission can read (no customer) | `pytest ... -k no_customer_details` | exit 0 | `test_a_suspend_only_actor_cannot_read_customer_details_through_the_payload` | PASS |
+| C-017 | yes | Neither lifecycle payload widens what a lifecycle permission can read: a suspend-only or reinstate-only actor cannot ask for the customer (direct selection or inline fragment) | `pytest ... -k "customer_details"` | exit 0 | `test_a_suspend_only_actor_cannot_read_customer_details_through_the_payload`, `test_neither_lifecycle_payload_can_be_asked_for_customer_details` | PASS |
 | C-018 | yes | Actor ids longer than the audit column are refused before any write; at the limit a refusal keeps its DENIED row (Postgres included) | `pytest ... -k "actor_id or header_bridge"` on SQLite and Postgres | exit 0 | section 9 of the module | PASS |
+| C-019 | yes | The `replayed` flag is exact on both mutations over HTTP: true only for a request that already took effect (suspend and reinstate), false for a plain no-op, and a replay refreshes the caller's in-memory licence | `pytest ... -k "replay or no_op"` | exit 0 | `test_graphql_retry_reports_changed_false`, `test_graphql_reinstate_retry_is_flagged_as_a_replay`, `test_graphql_a_plain_no_op_is_not_flagged_as_a_replay`, `test_a_replay_refreshes_the_callers_licence_instance` | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -103,7 +106,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Focused verification: new test module (SQLite and Postgres) and the Postgres race tests.
 - Broader regression verification: full API suite on SQLite; concurrency file on Postgres 16.
-- Independent verifier: Cody, Shadow, Vera, Quinn (dispatched by the orchestrator); round 1 complete, round 2 pending.
+- Independent verifier: Cody, Shadow, Vera, Quinn (dispatched by the orchestrator); rounds 1 and 2 complete, round 3 (verification of this update) pending.
 - Required environment: own venv, throwaway postgres:16-alpine.
 
 ## Iteration ledger
@@ -124,8 +127,18 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: moving the retry lookup under the row lock, adding one enforcement point with a swept declaration, scoping the cascade exemption by prior status and trimming the payload closes every finding without widening scope.
 - Change or investigation: see PR #218 (origin/main 09c69736 merged first).
 - Verifier executed: gates and mutation run by head SHA in the PR body.
-- Result: all gates exit 0; every non-equivalent mutant killed.
+- Result: gates green at 845e4695 and, after the merge, one load-flake failure recorded in C-013; every non-equivalent mutant killed.
 - New evidence: the mutation logs under `docs/delivery/goals/86ak5mn0c-evidence/`.
+- Decision: iterate (round 2 conditions)
+
+### Iteration 3
+
+- Target criterion: C-012, C-013, C-014, C-017, C-019 and every round 2 finding
+- Hypothesis: tying the sweep to the URLconf, pinning the reinstate twin of each regression, and sharing one predicate closes the round 2 conditions without a behaviour change.
+- Change or investigation: see PR #218 (origin/main merged again at c4f57d01; it brought a Django 6.1.2 pin).
+- Verifier executed: gates and the extended mutation run at c4f57d01, recorded in the PR body and the evidence directory.
+- Result: all gates exit 0 at c4f57d01; 46 mutants killed, one declared equivalent survivor.
+- New evidence: `docs/delivery/goals/86ak5mn0c-evidence/mutation-*.txt` stamped c4f57d01.
 - Decision: gate-review
 
 ## Risks and rollback
@@ -141,7 +154,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5mn0c-suspend-reinstate.md`
 - Validator result: OK (structural)
-- Independent verification result: round 1 complete (all PASS WITH CONDITIONS), round 2 pending
+- Independent verification result: round 1 all PASS WITH CONDITIONS; round 2 Cody and Shadow APPROVE WITH CONDITIONS, Vera and Quinn APPROVE; those conditions are applied in this update and await re-verification
 - Terminal state: GATE_REVIEW
 - Remaining failed or blocked criteria: none known
 - ClickUp final evidence comment: posted by the orchestrator
