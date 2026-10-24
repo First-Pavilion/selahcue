@@ -50,12 +50,20 @@ Requires `SELAHCUE_ENTITLEMENT_SIGNING_KEY` (see `docs/ops/DEPLOYMENT.md` §6a).
 
 ## Local verification
 
-Mirrors the `api` job in `.github/workflows/ci.yml`. From this directory:
+From the repository root, `make api-check` runs the same three commands as the `api` job in `.github/workflows/ci.yml`, and `make ci` includes it:
 
 ```bash
-/private/tmp/selahcue-api-venv/bin/python manage.py check
-/private/tmp/selahcue-api-venv/bin/python manage.py makemigrations --check --noinput
-/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q
+make api-check
+```
+
+It builds a virtualenv at `implementation/api/.venv` on first use (needs Python 3.14 on PATH, or `API_PYTHON=/path/to/python`, and the network once) and rebuilds it when `pyproject.toml` changes. The venv is per checkout on purpose: the API is installed editable, so a venv made in another checkout would silently test that checkout's code. It runs on SQLite, so the tests that need Postgres or Redis (`tests/test_concurrency_postgres.py`, one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; only CI runs them.
+
+By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run in this checkout:
+
+```bash
+.venv/bin/python manage.py check
+.venv/bin/python manage.py makemigrations --check --noinput
+.venv/bin/python -m pytest tests -q
 ```
 
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.
