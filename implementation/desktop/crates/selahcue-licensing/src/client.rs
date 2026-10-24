@@ -7,15 +7,26 @@
 //! # Both paths, permanently
 //!
 //! - [`LicensingClient::sign_in`] then [`LicensingClient::activate_with_session`] is the
-//!   **primary** path (DEC-005/007, DEC-011 pt 3). It is implemented and contract-tested,
-//!   but **blocked against the deployed API by CSRF on `/graphql/account` (86ak5t1gw)** —
-//!   see the crate docs. Treat it as not yet reachable in production.
+//!   **primary** path (DEC-005/007, DEC-011 pt 3): `POST /v1/sessions`, then
+//!   `POST /v1/activations:with-session` with the session as a bearer. These are the
+//!   server's native-client routes (86ak5t1gw, ADR-0029). They need no cookie and no CSRF
+//!   token, and this client sends neither: the transport seam can carry a bearer and
+//!   nothing else, and `tests/test_client.rs` pins that nothing here names a cookie, a CSRF
+//!   header or the browser's `/graphql/account` route.
 //! - [`LicensingClient::activate_with_enrollment_key`] is the **delegation** path, and is
 //!   not legacy. It exists for the case DEC-011 records: a volunteer setting up machines
 //!   in the sound booth, who would otherwise need the administrator's account password on
 //!   every device. An enrolment key is the credential that does exactly one thing.
 //!
 //! Removing either path was considered and rejected by the owner. Both stay.
+//!
+//! # What a response is allowed to become
+//!
+//! A response body is untrusted text: the API's, but equally a proxy's, a WAF's or Django's
+//! CSRF page. It is read by the transport under a hard byte cap, refused here above
+//! [`MAX_RESPONSE_BODY_BYTES`] without being parsed, and never copied into a failure — see
+//! [`crate::error`]. A body that is not the API's coded envelope is classified by its
+//! HTTP status alone.
 //!
 //! # Nothing here gates anything
 //!
@@ -25,10 +36,9 @@
 //! which permits presentation.
 
 use crate::contract::{
-    ActivateDeviceInput, ActivateDevicePayload, ActivateWithSessionData, ActivationRequest,
-    ActivationResponse, ApiErrorEnvelope, ErrorCode, GraphQlRequest, GraphQlResponse,
-    InputVariables, LicenseDto, LoginData, LoginInput, LoginPayload, TokenMetaDto,
-    ACCOUNT_GRAPHQL_PATH, ACTIVATE_WITH_SESSION_MUTATION, ACTIVATIONS_PATH, LOGIN_MUTATION,
+    ActivationRequest, ActivationResponse, ApiErrorEnvelope, ErrorCode, LicenseDto,
+    SessionActivationRequest, SessionRequest, SessionResponse, TokenMetaDto, ACTIVATIONS_PATH,
+    ACTIVATIONS_WITH_SESSION_PATH, SESSIONS_PATH,
 };
 use crate::custody::DeviceCredentials;
 use crate::device::{DeviceIdentity, IdempotencyKey};
@@ -36,10 +46,19 @@ use crate::error::ActivationFailure;
 use selahcue_cloud::{HttpResponse, HttpTransport, SecretError, SecretStore, Token};
 use serde::de::DeserializeOwned;
 
+/// The most response body this client will parse.
+///
+/// Every success body here is a few hundred bytes and every coded error is under 200, so
+/// 64 KiB is two orders of magnitude of headroom. The transport already refuses to *read*
+/// more than `MAX_TRANSPORT_RESPONSE_BYTES` (4 MiB) off the socket; this is the second,
+/// tighter bound for what is handed to a parser, and it holds for any transport, including
+/// a test double. A body over it is refused unparsed and is never quoted.
+pub const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024;
+
 /// Which path produced an activation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivationPath {
-    /// Account sign-in (GraphQL `activateDeviceWithSession`) — the primary path.
+    /// Account sign-in (`POST /v1/activations:with-session`) — the primary path.
     AccountSession,
     /// Enrollment key (`POST /v1/activations`) — the delegation path.
     EnrollmentKey,
@@ -85,13 +104,8 @@ pub enum PersistOutcome {
     MissingLocally,
 }
 
-/// A successful activation, normalised across the two paths.
-///
-/// Fields the GraphQL payload does not carry are `None` rather than defaulted — the
-/// session path returns only `fullToken`, `created`, `devicePublicId` and `platform`
-/// (`account_schema.py:122-128`), so inventing a `reminted: false` or an empty licence
-/// block for it would be a fabricated value that later code could not tell from a real
-/// one.
+/// A successful activation. Both paths answer with the same body, so every field is
+/// present whichever way the device was activated.
 #[derive(Debug, Clone)]
 pub struct Activation {
     /// Which path was used.
@@ -100,15 +114,15 @@ pub struct Activation {
     pub token: Option<Token>,
     /// True on a first activation.
     pub created: bool,
-    /// True when a replacement token was minted for an existing device. **REST path
-    /// only**; `None` on the session path, which does not report it.
-    pub reminted: Option<bool>,
+    /// True when a replacement token was minted for an existing device because its own was
+    /// expired or revoked. A `true` here means the previously cached token is now revoked.
+    pub reminted: bool,
     pub device_public_id: String,
     pub platform: String,
-    /// Non-secret token metadata. REST path only.
-    pub token_meta: Option<TokenMetaDto>,
-    /// The backing licence. REST path only.
-    pub license: Option<LicenseDto>,
+    /// Non-secret token metadata.
+    pub token_meta: TokenMetaDto,
+    /// The backing licence.
+    pub license: LicenseDto,
 }
 
 impl Activation {
@@ -118,22 +132,6 @@ impl Activation {
             Some(token) => TokenDisposition::Store(token.clone()),
             None => TokenDisposition::KeepExisting,
         }
-    }
-
-    /// Whether the server **told us** this activation replaced a previously-issued token.
-    ///
-    /// Named for what it actually answers. `reminted` is `None` for *every* session
-    /// activation — the payload simply does not carry the field — and a session activation
-    /// genuinely can be a re-mint, because that path delegates into the same
-    /// `_activate_device_for_key`. So `false` here means "not known to be a re-mint", not
-    /// "not a re-mint", and the old name `is_remint` quietly asserted the stronger claim.
-    ///
-    /// Nothing depends on this for correctness: [`Activation::persist`] decides from the
-    /// presence of a token, which is reported on both paths. Read
-    /// [`Activation::reminted`] directly when the difference between `false` and unknown
-    /// matters.
-    pub fn is_known_remint(&self) -> bool {
-        self.reminted.unwrap_or(false)
     }
 
     /// The licensing status this activation establishes.
@@ -211,77 +209,60 @@ impl<T: HttpTransport> LicensingClient<T> {
 
     /// Sign in with email and password, returning an account session.
     ///
-    /// The password is used once, here, and is never stored: only the returned session
-    /// token is persisted, and only in the OS secret store.
+    /// `POST /v1/sessions`. The password is used once, here, and is never stored: only the
+    /// returned session token is persisted, and only in the OS secret store.
+    ///
+    /// A refusal is classified by [`ActivationFailure::from_sign_in_code`], not by
+    /// `from_code`: a wrong password is [`ActivationFailure::InvalidCredentials`], not "the
+    /// session is not valid".
     pub fn sign_in(
         &self,
         email: &str,
         password: &Token,
     ) -> Result<AccountSession, ActivationFailure> {
-        let request = GraphQlRequest {
-            query: LOGIN_MUTATION,
-            variables: InputVariables {
-                input: LoginInput {
-                    email: email.to_string(),
-                    password: password.expose().to_string(),
-                },
-            },
+        let request = SessionRequest {
+            email: email.to_string(),
+            password: password.expose().to_string(),
         };
-        let payload: LoginPayload = self
-            .graphql::<_, LoginData>(&request, None, ActivationPath::AccountSession)
-            .map(|data| data.login)?;
+        let body = Self::encode(&request)?;
+        let response = self.post(SESSIONS_PATH, &body, None)?;
+        let parsed: SessionResponse = Self::decode(response, ActivationFailure::from_sign_in_code)?;
 
         Ok(AccountSession {
-            token: payload.session_token,
-            expires_at: payload.expires_at,
-            role: payload.role,
-            org_id: payload.org_id,
+            token: parsed.session_token,
+            expires_at: parsed.expires_at,
+            role: parsed.role,
+            org_id: parsed.org_id,
         })
     }
 
     /// Activate this device against a signed-in account session — the **primary**
     /// activation path.
     ///
-    /// The caller's org is resolved server-side from the session, so no key and no org id
-    /// are sent. The server requires the session's role to be ADMIN.
+    /// `POST /v1/activations:with-session` with the session as the bearer. The caller's org
+    /// is resolved server-side from the session, so no key and no org id are sent. The
+    /// server requires the session's role to be ADMIN (a MEMBER is
+    /// [`ActivationFailure::PermissionDenied`]).
     pub fn activate_with_session(
         &self,
         session: &Token,
         identity: &DeviceIdentity,
         idempotency_key: &IdempotencyKey,
     ) -> Result<Activation, ActivationFailure> {
-        let request = GraphQlRequest {
-            query: ACTIVATE_WITH_SESSION_MUTATION,
-            variables: InputVariables {
-                input: ActivateDeviceInput {
-                    idempotency_key: idempotency_key.as_str().to_string(),
-                    device_fingerprint: identity.fingerprint.clone(),
-                    platform: identity.platform.clone(),
-                    app_version: identity.app_version.clone(),
-                    display_name: identity.display_name.clone(),
-                },
-            },
+        let request = SessionActivationRequest {
+            idempotency_key: idempotency_key.as_str().to_string(),
+            device_fingerprint: identity.fingerprint.clone(),
+            platform: identity.platform.clone(),
+            app_version: identity.app_version.clone(),
+            display_name: identity.display_name.clone(),
         };
+        let body = Self::encode(&request)?;
+        let response = self.post(ACTIVATIONS_WITH_SESSION_PATH, &body, Some(session))?;
+        let parsed: ActivationResponse = Self::decode(response, |code| {
+            ActivationFailure::from_code(code, ActivationPath::AccountSession)
+        })?;
 
-        let payload: ActivateDevicePayload = self
-            .graphql::<_, ActivateWithSessionData>(
-                &request,
-                Some(session),
-                ActivationPath::AccountSession,
-            )
-            .map(|data| data.activate_device_with_session)?;
-
-        Ok(Activation {
-            path: ActivationPath::AccountSession,
-            token: payload.full_token,
-            created: payload.created,
-            // Not reported on this path — see `Activation::reminted`.
-            reminted: None,
-            device_public_id: payload.device_public_id,
-            platform: payload.platform,
-            token_meta: None,
-            license: None,
-        })
+        Ok(Self::activation(ActivationPath::AccountSession, parsed))
     }
 
     // -----------------------------------------------------------------------
@@ -307,124 +288,142 @@ impl<T: HttpTransport> LicensingClient<T> {
             app_version: identity.app_version.clone(),
             display_name: identity.display_name.clone(),
         };
-        let body = serde_json::to_string(&request)
-            .map_err(|e| ActivationFailure::Malformed(e.to_string()))?;
+        let body = Self::encode(&request)?;
+        let response = self.post(ACTIVATIONS_PATH, &body, None)?;
+        let parsed: ActivationResponse = Self::decode(response, |code| {
+            ActivationFailure::from_code(code, ActivationPath::EnrollmentKey)
+        })?;
 
-        let response = self
-            .transport
-            .post_json(&self.url(ACTIVATIONS_PATH), &body, None)
-            .map_err(|e| ActivationFailure::Unreachable(e.to_string()))?;
-
-        let parsed: ActivationResponse =
-            Self::decode_rest(response, ActivationPath::EnrollmentKey)?;
-
-        Ok(Activation {
-            path: ActivationPath::EnrollmentKey,
-            token: parsed.activation_token,
-            created: parsed.created,
-            reminted: Some(parsed.reminted),
-            device_public_id: parsed.device.device_public_id,
-            platform: parsed.device.platform,
-            token_meta: Some(parsed.token),
-            license: Some(parsed.license),
-        })
+        Ok(Self::activation(ActivationPath::EnrollmentKey, parsed))
     }
 
     // -----------------------------------------------------------------------
     // Transport plumbing
     // -----------------------------------------------------------------------
 
-    /// Issue a GraphQL request and unwrap `data`, mapping `errors` onto coded failures.
-    ///
-    /// A GraphQL refusal arrives as HTTP 200 with an `errors` array, so errors are checked
-    /// **before** `data` — a body carrying both must be treated as the failure it is.
-    fn graphql<V: serde::Serialize, D: DeserializeOwned>(
+    /// The one place a request leaves this crate: a JSON `POST`, with the session token as
+    /// the only credential header there can be. The transport seam carries a bearer and
+    /// nothing else — no cookie jar, no CSRF header, no `Origin`/`Referer` — which is the
+    /// property the native routes' CSRF exemption rests on.
+    fn post(
         &self,
-        request: &GraphQlRequest<V>,
+        path: &str,
+        body: &str,
         bearer: Option<&Token>,
-        path: ActivationPath,
-    ) -> Result<D, ActivationFailure> {
-        let body = serde_json::to_string(request)
-            .map_err(|e| ActivationFailure::Malformed(e.to_string()))?;
+    ) -> Result<HttpResponse, ActivationFailure> {
+        self.transport
+            .post_json(&self.url(path), body, bearer.map(Token::expose))
+            .map_err(|e| ActivationFailure::Unreachable(e.to_string()))
+    }
 
-        let response = self
-            .transport
-            .post_json(
-                &self.url(ACCOUNT_GRAPHQL_PATH),
-                &body,
-                bearer.map(Token::expose),
-            )
-            .map_err(|e| ActivationFailure::Unreachable(e.to_string()))?;
+    fn encode<R: serde::Serialize>(request: &R) -> Result<String, ActivationFailure> {
+        // A request of plain strings cannot fail to encode; if it somehow does, the
+        // serializer's message is not forwarded, since it is written against our own value.
+        serde_json::to_string(request)
+            .map_err(|_| ActivationFailure::Malformed("the request could not be encoded".into()))
+    }
 
-        // The body is parsed BEFORE the status is consulted, and that ordering is the whole
-        // point. This surface reports a refusal in the body with HTTP 200 in the ordinary
-        // case, but when the view itself rejects the request it answers a non-2xx whose
-        // body is *still* the GraphQL error shape — `safe_error_payload` builds
-        // `{"errors": [{"message", "extensions": {"code"}}]}`, not the REST
-        // `{"error": {...}}` envelope (`graphql/views.py:52-54`). Classifying a non-2xx by
-        // status first would therefore throw away a perfectly good coded error and report
-        // contract drift instead.
-        match serde_json::from_str::<GraphQlResponse<D>>(&response.body) {
-            Ok(parsed) => {
-                if let Some(errors) = parsed.errors.filter(|e| !e.is_empty()) {
-                    let code = errors
-                        .iter()
-                        .find_map(|e| e.code())
-                        .unwrap_or(ErrorCode::Unknown("GRAPHQL_ERROR".to_string()));
-                    return Err(ActivationFailure::from_code(code, path));
-                }
-                parsed.data.ok_or_else(|| {
-                    ActivationFailure::Malformed(
-                        "GraphQL response carried neither data nor errors".into(),
-                    )
-                })
-            }
-            // Not a GraphQL body at all — a proxy error page, or a 405 from the wrong
-            // method. Fall back to classifying by status.
-            Err(e) => {
-                if !(200..300).contains(&response.status) {
-                    Err(Self::rest_error(&response, path))
-                } else {
-                    Err(ActivationFailure::Malformed(e.to_string()))
-                }
-            }
+    fn activation(path: ActivationPath, response: ActivationResponse) -> Activation {
+        Activation {
+            path,
+            token: response.activation_token,
+            created: response.created,
+            reminted: response.reminted,
+            device_public_id: response.device.device_public_id,
+            platform: response.device.platform,
+            token_meta: response.token,
+            license: response.license,
         }
     }
 
-    /// Decode a REST response, mapping non-2xx onto coded failures.
-    fn decode_rest<D: DeserializeOwned>(
+    /// Decode a response, mapping non-2xx onto coded failures with `classify`.
+    ///
+    /// Nothing in the body reaches the returned failure except a code that has passed
+    /// [`ErrorCode::parse`]'s shape check; see the module docs.
+    fn decode<D: DeserializeOwned>(
         response: HttpResponse,
-        path: ActivationPath,
+        classify: impl Fn(ErrorCode) -> ActivationFailure,
     ) -> Result<D, ActivationFailure> {
-        if !(200..300).contains(&response.status) {
-            return Err(Self::rest_error(&response, path));
+        let ok = (200..300).contains(&response.status);
+        if response.body.len() > MAX_RESPONSE_BODY_BYTES {
+            // Refused unparsed: no allocation proportional to the body, and no echo of it.
+            return Err(if ok {
+                ActivationFailure::Malformed(format!(
+                    "the response was larger than the {MAX_RESPONSE_BODY_BYTES}-byte limit"
+                ))
+            } else {
+                Self::status_failure(response.status)
+            });
         }
-        serde_json::from_str(&response.body)
-            .map_err(|e| ActivationFailure::Malformed(e.to_string()))
+        if !ok {
+            return Err(Self::error(&response, classify));
+        }
+        serde_json::from_str(&response.body).map_err(|e| Self::malformed(&e))
     }
 
     /// Classify a non-2xx response.
     ///
     /// The coded body is authoritative when present. It is not always present: a wrong
-    /// HTTP method yields a bare Django 405 with an HTML body, so an unparseable error is
-    /// classified by status rather than being reported as contract drift.
-    fn rest_error(response: &HttpResponse, path: ActivationPath) -> ActivationFailure {
+    /// HTTP method yields a bare Django 405 with an HTML body, and a proxy or WAF answers
+    /// with its own page, so an unparseable error is classified by status rather than
+    /// being reported as contract drift.
+    fn error(
+        response: &HttpResponse,
+        classify: impl Fn(ErrorCode) -> ActivationFailure,
+    ) -> ActivationFailure {
         match serde_json::from_str::<ApiErrorEnvelope>(&response.body) {
-            Ok(envelope) => {
-                ActivationFailure::from_code(ErrorCode::parse(&envelope.error.code), path)
-            }
-            // Not a coded body. A 5xx is the server failing; anything else at a non-2xx is
-            // something in FRONT of the application answering — a proxy page, a Django
-            // middleware rejection, a wrong-method 405. Neither is contract drift, and
-            // calling them `Malformed` sent the reader hunting for a schema change that
-            // does not exist.
-            Err(_) => {
-                if (500..600).contains(&response.status) {
-                    ActivationFailure::Server(response.status)
-                } else {
-                    ActivationFailure::UnexpectedStatus(response.status)
-                }
-            }
+            Ok(envelope) => classify(ErrorCode::parse(&envelope.error.code)),
+            Err(_) => Self::status_failure(response.status),
         }
     }
+
+    /// A 5xx is the server failing; anything else at a non-2xx is something in FRONT of the
+    /// application answering — a proxy page, a Django middleware rejection, a wrong-method
+    /// 405. Neither is contract drift, and calling them `Malformed` sent the reader hunting
+    /// for a schema change that does not exist.
+    fn status_failure(status: u16) -> ActivationFailure {
+        if (500..600).contains(&status) {
+            ActivationFailure::Server(status)
+        } else {
+            ActivationFailure::UnexpectedStatus(status)
+        }
+    }
+
+    /// Describe a parse failure WITHOUT quoting the body.
+    ///
+    /// `serde_json::Error`'s own message is not safe to forward: for a type mismatch it
+    /// quotes the offending value (`invalid type: string "SC-DEV-...", expected a boolean`),
+    /// so a body that put a credential-shaped string in the wrong field would carry it into
+    /// an error message and from there into a log. This keeps the error's category and
+    /// position, plus the name of a missing field (which comes from this crate's own struct
+    /// definitions, not from the body).
+    fn malformed(error: &serde_json::Error) -> ActivationFailure {
+        use serde_json::error::Category;
+        let what = match error.classify() {
+            Category::Syntax => "was not valid JSON",
+            Category::Data => "did not have the shape the contract defines",
+            Category::Eof => "ended early",
+            Category::Io => "could not be read",
+        };
+        let field = missing_field(&error.to_string())
+            .map(|name| format!(", missing field `{name}`"))
+            .unwrap_or_default();
+        ActivationFailure::Malformed(format!(
+            "the response body {what} (line {}, column {}{field})",
+            error.line(),
+            error.column()
+        ))
+    }
+}
+
+/// The field name in a serde `missing field `name`` message, when it is one and the name is
+/// plainly an identifier. Anything else yields `None`, so no free text from a message is
+/// ever forwarded.
+fn missing_field(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("missing field `")?;
+    let name = &rest[..rest.find('`')?];
+    let identifier = !name.is_empty()
+        && name.len() <= 40
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    identifier.then_some(name)
 }

@@ -1,17 +1,19 @@
 //! Both activation paths, the replay/re-mint decision table, and failure classification.
 //!
-//! Every fixture body here is shaped from the shipped server's own source — the REST
-//! payload from `platform/views.py:83-110`, the GraphQL payloads from
-//! `graphql/account_schema.py:76-128`, the error envelope from
-//! `platform/responses.py:33-42`. Where the server emits a value with an unusual shape
+//! Every fixture body here is shaped from the shipped server's own source — the activation
+//! payload from `platform/views.py::_activation_payload`, the sign-in payload from
+//! `platform/views.py::create_session`, the error envelope from
+//! `platform/responses.py::command_error_response`. Where the server emits a value with an unusual shape
 //! (Python `isoformat()` with microseconds and a `+00:00` offset rather than `Z`) the
 //! fixture keeps that shape, because a client that only ever sees `Z` in its tests is a
 //! client that has not been tested.
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_licensing::client::{ActivationPath, PersistOutcome, TokenDisposition};
-use selahcue_licensing::contract::{ACCOUNT_GRAPHQL_PATH, ACTIVATIONS_PATH};
+use selahcue_licensing::client::{
+    ActivationPath, PersistOutcome, TokenDisposition, MAX_RESPONSE_BODY_BYTES,
+};
+use selahcue_licensing::contract::ACTIVATIONS_PATH;
 use selahcue_licensing::{
     ActivationFailure, DeviceCredentials, DeviceIdentity, IdempotencyKey, InMemorySecretStore,
     LicensingClient, LicensingStatus, ScriptedTransport, Token,
@@ -36,8 +38,27 @@ fn credentials() -> DeviceCredentials<InMemorySecretStore> {
     DeviceCredentials::new(InMemorySecretStore::new())
 }
 
-/// A REST activation success body.
+/// A REST activation success body, as `POST /v1/activations` answers it.
 fn rest_body(created: bool, reminted: bool, token: Option<&str>) -> String {
+    activation_body("activation", created, reminted, token)
+}
+
+/// The same body as `POST /v1/activations:with-session` answers it: identical but for the
+/// `operation` label (`platform/views.py::_activation_payload`).
+fn session_activation_body(created: bool, reminted: bool, token: Option<&str>) -> String {
+    activation_body("activation_with_session", created, reminted, token)
+}
+
+/// A `POST /v1/sessions` success body (`platform/views.py::create_session`), including the
+/// two unsigned labels the view appends.
+fn session_body() -> String {
+    format!(
+        r#"{{"session_token":"{SESSION}","expires_at":"2026-11-23T10:11:12.123456+00:00",
+        "role":"ADMIN","org_id":"org_1","surface":"desktop","operation":"session_login"}}"#
+    )
+}
+
+fn activation_body(operation: &str, created: bool, reminted: bool, token: Option<&str>) -> String {
     let token_field = match token {
         Some(t) => format!("\"{t}\""),
         None => "null".to_string(),
@@ -48,16 +69,31 @@ fn rest_body(created: bool, reminted: bool, token: Option<&str>) -> String {
         "token":{{"masked":"SC-DEV-A1B2...Q7R8","prefix":"SC-DEV-A1B2","suffix":"Q7R8",
         "fingerprint":"{fp}","expires_at":"2026-09-24T10:11:12.123456+00:00"}},
         "license":{{"status":"ACTIVATED","expires_at":"2026-12-31T23:59:59.999999+00:00"}},
-        "surface":"desktop","operation":"activation"}}"#,
+        "surface":"desktop","operation":"{operation}"}}"#,
         fp = "a".repeat(64)
     )
 }
 
-/// A coded REST error body.
+/// A coded REST error body, as the enrollment-key route answers it.
 fn rest_error(code: &str, message: &str) -> String {
+    coded_error("activation", code, message)
+}
+
+/// A coded error body for any `/v1` operation (`platform/responses.py::command_error_response`).
+fn coded_error(operation: &str, code: &str, message: &str) -> String {
     format!(
-        r#"{{"error":{{"code":"{code}","message":"{message}"}},"surface":"desktop","operation":"activation"}}"#
+        r#"{{"error":{{"code":"{code}","message":"{message}"}},"surface":"desktop","operation":"{operation}"}}"#
     )
+}
+
+/// A coded error from `POST /v1/activations:with-session`.
+fn session_error(code: &str, message: &str) -> String {
+    coded_error("activation_with_session", code, message)
+}
+
+/// A coded error from `POST /v1/sessions`.
+fn sign_in_error(code: &str, message: &str) -> String {
+    coded_error("session_login", code, message)
 }
 
 // ---------------------------------------------------------------------------
@@ -67,20 +103,8 @@ fn rest_error(code: &str, message: &str) -> String {
 #[test]
 fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
     let transport = ScriptedTransport::new();
-    transport.push_response(
-        200,
-        format!(
-            r#"{{"data":{{"login":{{"sessionToken":"{SESSION}",
-            "expiresAt":"2026-09-24T10:11:12.123456+00:00","role":"ADMIN","orgId":"org_1"}}}}}}"#
-        ),
-    );
-    transport.push_response(
-        200,
-        format!(
-            r#"{{"data":{{"activateDeviceWithSession":{{"fullToken":"{TOKEN_A}","created":true,
-            "devicePublicId":"{DEVICE_ID}","platform":"macos"}}}}}}"#
-        ),
-    );
+    transport.push_response(200, session_body());
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
 
     let client = LicensingClient::new(transport, BASE);
     let creds = credentials();
@@ -90,6 +114,8 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
         .expect("sign-in should succeed");
     assert_eq!(session.role, "ADMIN");
     assert_eq!(session.org_id, "org_1");
+    assert_eq!(session.token.expose(), SESSION);
+    assert_eq!(session.expires_at, "2026-11-23T10:11:12.123456+00:00");
 
     let activation = client
         .activate_with_session(&session.token, &identity(), &idem())
@@ -105,32 +131,116 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
     );
     assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
 
-    // What actually left the device.
+    // What actually left the device. The paths are spelled out as literals on purpose: the
+    // server's routes are the contract, and a test that read them back from the same
+    // constant the client uses could never notice the constant drifting.
+    assert_eq!(client.transport().request_count(), 2);
     let login = client.transport().request(0).unwrap();
-    assert_eq!(login.url, format!("{BASE}{ACCOUNT_GRAPHQL_PATH}"));
+    assert_eq!(login.method, "POST");
+    assert_eq!(login.url, format!("{BASE}/v1/sessions"));
     assert!(
         !login.had_bearer,
         "sign-in must not send a bearer — it is the call that obtains one"
     );
+    let login_body: serde_json::Value = serde_json::from_str(&login.body).unwrap();
+    let login_keys: Vec<&str> = login_body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        login_keys,
+        ["email", "password"],
+        "the sign-in body is exactly email + password: {login_body}"
+    );
+    assert_eq!(login_body["email"], "admin@example.test");
+    assert_eq!(login_body["password"], "correct-horse");
 
     let activate = client.transport().request(1).unwrap();
-    assert_eq!(activate.url, format!("{BASE}{ACCOUNT_GRAPHQL_PATH}"));
+    assert_eq!(activate.method, "POST");
+    assert_eq!(activate.url, format!("{BASE}/v1/activations:with-session"));
     assert!(
         activate.had_bearer,
         "session activation must authenticate with the session token"
     );
-    assert!(
-        activate
-            .body
-            .contains("\"deviceFingerprint\":\"fp-booth-mac-01\""),
-        "the GraphQL input must be camelCased: {}",
-        activate.body
+    let body: serde_json::Value = serde_json::from_str(&activate.body).unwrap();
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "app_version",
+            "device_fingerprint",
+            "display_name",
+            "idempotency_key",
+            "platform"
+        ],
+        "the session body is the activation body minus license_key, snake_case: {body}"
     );
+    assert_eq!(body["device_fingerprint"], "fp-booth-mac-01");
     assert!(
         !activate.body.contains("license_key") && !activate.body.contains("licenseKey"),
         "the session path sends no key — the org comes from the session: {}",
         activate.body
     );
+}
+
+#[test]
+fn a_session_activation_reports_everything_the_enrollment_path_does() {
+    // 86ak5t1gw: `/v1/activations:with-session` answers with exactly the
+    // `/v1/activations` shape, so the primary path can now report `reminted`, the token
+    // metadata and the licence block, which the old GraphQL payload never carried (all three
+    // were `None` on this path, and a re-mint could not be told from "not reported").
+    let transport =
+        ScriptedTransport::responding(200, session_activation_body(false, true, Some(TOKEN_B)));
+    let client = LicensingClient::new(transport, BASE);
+
+    let activation = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+
+    assert_eq!(activation.path, ActivationPath::AccountSession);
+    assert!(activation.reminted);
+    assert_eq!(activation.platform, "macos");
+    let meta = &activation.token_meta;
+    assert_eq!(meta.prefix.as_deref(), Some("SC-DEV-A1B2"));
+    assert_eq!(
+        meta.expires_at.as_deref(),
+        Some("2026-09-24T10:11:12.123456+00:00")
+    );
+    assert_eq!(activation.license.status, "ACTIVATED");
+
+    // A re-mint over this path must overwrite, exactly as over the key path.
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+    assert_eq!(activation.persist(&creds).unwrap(), PersistOutcome::Stored);
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_B);
+}
+
+#[test]
+fn a_session_activation_replay_keeps_the_token_the_device_already_holds() {
+    let transport = ScriptedTransport::responding(200, session_activation_body(false, false, None));
+    let client = LicensingClient::new(transport, BASE);
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+
+    let activation = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .expect("a replay is a success");
+
+    assert!(!activation.reminted);
+    assert_eq!(activation.disposition(), TokenDisposition::KeepExisting);
+    assert_eq!(
+        activation.persist(&creds).unwrap(),
+        PersistOutcome::KeptExisting
+    );
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
 }
 
 #[test]
@@ -157,12 +267,7 @@ fn an_activation_reports_a_status_that_still_permits_presentation() {
 
 #[test]
 fn the_password_is_used_once_and_never_persisted() {
-    let transport = ScriptedTransport::responding(
-        200,
-        format!(
-            r#"{{"data":{{"login":{{"sessionToken":"{SESSION}","expiresAt":"x","role":"ADMIN","orgId":"o"}}}}}}"#
-        ),
-    );
+    let transport = ScriptedTransport::responding(200, session_body());
     let client = LicensingClient::new(transport, BASE);
     let creds = credentials();
 
@@ -199,12 +304,11 @@ fn the_enrollment_key_path_activates_the_same_machine() {
 
     assert_eq!(activation.path, ActivationPath::EnrollmentKey);
     assert!(activation.created);
-    assert_eq!(activation.reminted, Some(false));
+    assert!(!activation.reminted);
     assert_eq!(activation.device_public_id, DEVICE_ID);
     assert_eq!(
-        activation.license.as_ref().unwrap().status,
-        "ACTIVATED",
-        "the REST path reports the backing licence; the session path does not"
+        activation.license.status, "ACTIVATED",
+        "the backing licence is reported on this path"
     );
     assert_eq!(activation.persist(&creds).unwrap(), PersistOutcome::Stored);
     assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
@@ -262,7 +366,7 @@ fn a_replay_keeps_the_token_the_device_already_holds() {
         .expect("a replay is a success");
 
     assert!(!activation.created);
-    assert!(!activation.is_known_remint());
+    assert!(!activation.reminted);
     assert_eq!(activation.disposition(), TokenDisposition::KeepExisting);
     assert_eq!(
         activation.persist(&creds).unwrap(),
@@ -289,10 +393,7 @@ fn a_remint_overwrites_the_cached_token_because_the_old_one_is_revoked() {
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
         .unwrap();
 
-    assert!(
-        activation.is_known_remint(),
-        "the server reported a re-mint"
-    );
+    assert!(activation.reminted, "the server reported a re-mint");
     assert_eq!(
         activation.disposition(),
         TokenDisposition::Store(Token::new(TOKEN_B))
@@ -367,7 +468,7 @@ fn a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
         .unwrap();
 
-    assert!(activation.is_known_remint());
+    assert!(activation.reminted);
     assert_eq!(activation.persist(&creds).unwrap(), PersistOutcome::Stored);
     assert_eq!(
         creds.device_token().unwrap().unwrap().expose(),
@@ -426,9 +527,8 @@ fn not_found_on_the_session_path_means_no_active_plan_not_a_bad_key() {
     // Before this, a signed-in admin whose plan had lapsed was told to check their
     // enrollment key for typos — a key that path never uses and they may never have had.
     let transport = ScriptedTransport::responding(
-        200,
-        r#"{"data":null,"errors":[{"message":"The requested resource was not found.",
-        "extensions":{"code":"NOT_FOUND"}}]}"#,
+        404,
+        session_error("NOT_FOUND", "The requested resource was not found."),
     );
     let client = LicensingClient::new(transport, BASE);
 
@@ -528,9 +628,8 @@ fn permission_denied_is_not_collapsed_into_policy_denied() {
 #[test]
 fn an_expired_account_session_asks_for_a_new_sign_in() {
     let transport = ScriptedTransport::responding(
-        200,
-        r#"{"data":null,"errors":[{"message":"Authentication is required.",
-        "extensions":{"code":"UNAUTHENTICATED"}}]}"#,
+        401,
+        session_error("UNAUTHENTICATED", "Authentication is required."),
     );
     let client = LicensingClient::new(transport, BASE);
 
@@ -542,57 +641,96 @@ fn an_expired_account_session_asks_for_a_new_sign_in() {
 }
 
 #[test]
-fn a_graphql_refusal_arrives_as_http_200_and_is_still_a_failure() {
-    // GraphQL returns 200 with an `errors` array. A client that checked only the status
-    // would read this as success and then find `data` missing.
-    let transport = ScriptedTransport::responding(
-        200,
-        r#"{"data":null,"errors":[{"message":"The current policy does not allow this action.",
-        "extensions":{"code":"POLICY_DENIED"}}]}"#,
+fn a_member_account_is_refused_by_permission_not_by_policy() {
+    // The server requires ADMIN to activate a device, and answers a MEMBER with
+    // `403 PERMISSION_DENIED`. The instance limit is ALSO a 403, with `POLICY_DENIED`. The
+    // two must stay apart: one is "your account may not do this", the other is "your plan
+    // does not allow it", and the next step for the person differs.
+    let member = LicensingClient::new(
+        ScriptedTransport::responding(
+            403,
+            session_error(
+                "PERMISSION_DENIED",
+                "You do not have permission to perform this action.",
+            ),
+        ),
+        BASE,
     );
-    let client = LicensingClient::new(transport, BASE);
-
-    assert_eq!(
-        client
-            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
-            .unwrap_err(),
-        ActivationFailure::PolicyDenied
+    let at_limit = LicensingClient::new(
+        ScriptedTransport::responding(
+            403,
+            session_error(
+                "POLICY_DENIED",
+                "The current policy does not allow this action.",
+            ),
+        ),
+        BASE,
     );
-}
 
-#[test]
-fn a_non_2xx_graphql_response_still_yields_its_coded_error() {
-    // The GraphQL view answers a non-2xx with the GRAPHQL error shape, not the REST one:
-    // `safe_error_payload` builds `{"errors": [...]}` (`graphql/views.py:52-54`). A client
-    // that classified non-2xx by status first would discard the code and report contract
-    // drift — turning "sign in again" into "something is broken".
-    let transport = ScriptedTransport::responding(
-        400,
-        r#"{"errors":[{"message":"The request is invalid.",
-        "extensions":{"code":"VALIDATION_FAILED"}}]}"#,
-    );
-    let client = LicensingClient::new(transport, BASE);
-
-    let failure = client
+    let member_failure = member
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    let limit_failure = at_limit
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
 
-    assert_eq!(
-        failure,
-        ActivationFailure::ValidationFailed,
-        "the coded error in the body must win over the HTTP status"
+    assert_eq!(member_failure, ActivationFailure::PermissionDenied);
+    assert_eq!(limit_failure, ActivationFailure::PolicyDenied);
+    assert_ne!(member_failure, limit_failure);
+    for failure in [&member_failure, &limit_failure] {
+        assert!(!matches!(failure, ActivationFailure::Malformed(_)));
+        assert!(failure.permits_presentation());
+    }
+}
+
+#[test]
+fn a_coded_session_refusal_is_classified_by_its_code_whatever_the_status() {
+    // The code is authoritative; the status is not consulted when a coded body is present.
+    // A 400 `VALIDATION_FAILED` and a 429 `RATE_LIMITED` are the two a native caller can
+    // reach before any credential check.
+    let invalid = LicensingClient::new(
+        ScriptedTransport::responding(
+            400,
+            session_error("VALIDATION_FAILED", "The request is invalid."),
+        ),
+        BASE,
     );
+    let failure = invalid
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(failure, ActivationFailure::ValidationFailed);
     assert!(
         !matches!(failure, ActivationFailure::Malformed(_)),
         "a well-formed coded refusal must never be reported as contract drift"
     );
+
+    let limited = LicensingClient::new(
+        ScriptedTransport::responding(429, session_error("RATE_LIMITED", "Too many requests.")),
+        BASE,
+    );
+    let failure = limited
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(failure, ActivationFailure::RateLimited);
+    assert!(failure.is_retryable());
+
+    // The code wins over the status: a coded `NOT_FOUND` is believed even when the status
+    // says 500, because the body is the application speaking and the status is not.
+    let odd = LicensingClient::new(
+        ScriptedTransport::responding(500, session_error("NOT_FOUND", "x")),
+        BASE,
+    );
+    assert_eq!(
+        odd.activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap_err(),
+        ActivationFailure::NoActiveLicense
+    );
 }
 
 #[test]
-fn a_non_graphql_error_page_still_falls_back_to_status_classification() {
-    // Positive control for the fallback: when the body genuinely is not a GraphQL
-    // response — a proxy error page — status classification must still apply, or the
-    // ordering fix above would have simply swapped one blind spot for another.
+fn a_proxy_error_page_on_the_session_path_is_classified_by_status() {
+    // Positive control for the fallback: when the body is not a coded error at all — a
+    // proxy error page — status classification must still apply.
     let transport = ScriptedTransport::responding(502, "<html>502 Bad Gateway</html>");
     let client = LicensingClient::new(transport, BASE);
 
@@ -655,10 +793,9 @@ fn a_bare_405_html_body_is_classified_by_status_not_reported_as_contract_drift()
 
 #[test]
 fn an_html_403_is_reported_as_an_unexpected_status_not_as_contract_drift() {
-    // The live shape of this is 86ak5t1gw: Django's CSRF middleware answers the GraphQL
-    // surface with an HTML 403. Until that is settled server-side the client cannot
-    // succeed, but it can at least say something true about what happened rather than
-    // sending the reader hunting for a schema change.
+    // The shape that 86ak5t1gw was: Django's CSRF middleware answering with an HTML 403.
+    // The client no longer reaches that route, but a 403 page can still come from a
+    // proxy or a WAF in front of the API, and it must still be said truthfully.
     let transport = ScriptedTransport::responding(
         403,
         "<html><body>CSRF verification failed. Request aborted.</body></html>",
@@ -687,73 +824,6 @@ fn a_5xx_html_body_is_a_retryable_server_error() {
 }
 
 #[test]
-fn errors_win_over_data_when_a_response_carries_both() {
-    // Every other GraphQL fixture here has `"data":null`, so the ordering rule — check
-    // `errors` BEFORE `data` — was never actually exercised. A body carrying both is the
-    // only shape that can tell a correct implementation from one that happens to work
-    // because data was always absent when errors were present.
-    let transport = ScriptedTransport::responding(
-        200,
-        format!(
-            r#"{{"data":{{"activateDeviceWithSession":{{"fullToken":"{TOKEN_A}","created":true,
-            "devicePublicId":"{DEVICE_ID}","platform":"macos"}}}},
-            "errors":[{{"message":"The current policy does not allow this action.",
-            "extensions":{{"code":"POLICY_DENIED"}}}}]}}"#
-        ),
-    );
-    let client = LicensingClient::new(transport, BASE);
-
-    let result = client.activate_with_session(&Token::new(SESSION), &identity(), &idem());
-
-    assert_eq!(
-        result.unwrap_err(),
-        ActivationFailure::PolicyDenied,
-        "a populated `errors` array must lose nothing to a populated `data`"
-    );
-}
-
-#[test]
-fn a_session_activation_reports_remint_as_unknown_rather_than_false() {
-    // F6: `reminted` is None for EVERY session activation, and a session activation
-    // genuinely can be a re-mint — that path delegates into the same
-    // `_activate_device_for_key`. `is_known_remint()` answering false must not be read as
-    // the server saying "no".
-    let transport = ScriptedTransport::responding(
-        200,
-        format!(
-            r#"{{"data":{{"activateDeviceWithSession":{{"fullToken":"{TOKEN_A}","created":false,
-            "devicePublicId":"{DEVICE_ID}","platform":"macos"}}}}}}"#
-        ),
-    );
-    let client = LicensingClient::new(transport, BASE);
-    let activation = client
-        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
-        .unwrap();
-
-    assert_eq!(
-        activation.reminted, None,
-        "the session payload carries no `reminted`, so it must stay unknown, not false"
-    );
-    assert!(
-        !activation.is_known_remint(),
-        "unknown is not a known re-mint..."
-    );
-    // ...and the REST path, which does report it, must still distinguish a real false.
-    let rest = LicensingClient::new(
-        ScriptedTransport::responding(200, rest_body(false, false, None)),
-        BASE,
-    );
-    let rest_activation = rest
-        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
-        .unwrap();
-    assert_eq!(
-        rest_activation.reminted,
-        Some(false),
-        "a reported false must remain distinguishable from unknown"
-    );
-}
-
-#[test]
 fn an_unknown_error_code_is_kept_rather_than_collapsed() {
     let transport = ScriptedTransport::responding(
         403,
@@ -769,4 +839,475 @@ fn an_unknown_error_code_is_kept_rather_than_collapsed() {
         ActivationFailure::Coded(code) => assert_eq!(code.as_str(), "SOME_FUTURE_CODE"),
         other => panic!("a newer server's code must remain reportable, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sign-in failures: each is its own typed state, none is "Malformed"
+// ---------------------------------------------------------------------------
+
+fn sign_in_failure(status: u16, body: String) -> ActivationFailure {
+    LicensingClient::new(ScriptedTransport::responding(status, body), BASE)
+        .sign_in("admin@example.test", &Token::new("correct-horse"))
+        .unwrap_err()
+}
+
+#[test]
+fn a_wrong_password_is_invalid_credentials_not_an_expired_session() {
+    // `POST /v1/sessions` answers an unknown email, a wrong password and a locked account
+    // identically: `401 UNAUTHENTICATED`. The activation call answers an expired session
+    // with the same code. Telling a person who has just typed a password that "the account
+    // session is not valid" is wrong, so the two calls classify the code differently.
+    let failure = sign_in_failure(
+        401,
+        sign_in_error("UNAUTHENTICATED", "Authentication is required."),
+    );
+
+    assert_eq!(failure, ActivationFailure::InvalidCredentials);
+    assert_ne!(failure, ActivationFailure::Unauthenticated);
+    assert!(!matches!(failure, ActivationFailure::Malformed(_)));
+    assert!(
+        failure.to_string().contains("password"),
+        "the copy should talk about the password, got: {failure}"
+    );
+    assert!(
+        !failure.is_retryable(),
+        "retrying a wrong password is how accounts get locked"
+    );
+    assert!(failure.permits_presentation());
+
+    // The other half: the SAME code on the activation call is still an expired session.
+    let activation = LicensingClient::new(
+        ScriptedTransport::responding(
+            401,
+            session_error("UNAUTHENTICATED", "Authentication is required."),
+        ),
+        BASE,
+    )
+    .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+    .unwrap_err();
+    assert_eq!(activation, ActivationFailure::Unauthenticated);
+}
+
+#[test]
+fn an_unverified_account_is_not_active_rather_than_over_its_plan_limit() {
+    // `403 POLICY_DENIED` from sign-in means the password was right and the account is
+    // unverified or disabled. The same code from activation means the plan's device limit
+    // or an unactivatable licence, and "device limit reached" would be a baffling thing to
+    // tell someone who has not yet confirmed their email address.
+    let failure = sign_in_failure(
+        403,
+        sign_in_error(
+            "POLICY_DENIED",
+            "The current policy does not allow this action.",
+        ),
+    );
+
+    assert_eq!(failure, ActivationFailure::AccountNotActive);
+    assert_ne!(failure, ActivationFailure::PolicyDenied);
+    assert!(
+        failure.to_string().contains("verified"),
+        "the copy should say what to do, got: {failure}"
+    );
+    assert!(!failure.is_retryable());
+}
+
+#[test]
+fn the_other_sign_in_refusals_are_typed_too() {
+    assert_eq!(
+        sign_in_failure(
+            400,
+            sign_in_error("VALIDATION_FAILED", "The request is invalid.")
+        ),
+        ActivationFailure::ValidationFailed
+    );
+
+    let limited = sign_in_failure(429, sign_in_error("RATE_LIMITED", "Too many requests."));
+    assert_eq!(limited, ActivationFailure::RateLimited);
+    assert!(limited.is_retryable());
+
+    // This route never answers NOT_FOUND. If it ever did, "your plan has lapsed" would be
+    // the wrong reading of a failed sign-in, so it stays an uninterpreted coded refusal.
+    let failure = sign_in_failure(404, sign_in_error("NOT_FOUND", "x"));
+    assert_ne!(failure, ActivationFailure::NoActiveLicense);
+    assert_ne!(failure, ActivationFailure::UnknownKey);
+    assert!(
+        matches!(failure, ActivationFailure::Coded(_)),
+        "got {failure:?}"
+    );
+
+    assert_eq!(
+        sign_in_failure(500, sign_in_error("INTERNAL", "x")),
+        ActivationFailure::Server(500)
+    );
+}
+
+#[test]
+fn an_unreachable_platform_during_sign_in_is_unreachable() {
+    let client = LicensingClient::new(ScriptedTransport::failing("dns error"), BASE);
+    let failure = client
+        .sign_in("admin@example.test", &Token::new("correct-horse"))
+        .unwrap_err();
+    assert!(matches!(failure, ActivationFailure::Unreachable(_)));
+    assert!(failure.is_retryable());
+}
+
+// ---------------------------------------------------------------------------
+// A response body is never quoted
+// ---------------------------------------------------------------------------
+
+/// Unique enough that it cannot appear in a failure's text by coincidence.
+const LEAK: &str = "LEAK-MARKER-7f3a9c";
+
+/// Every shape of "something other than the API's coded envelope" the client can meet on a
+/// credential path, each carrying [`LEAK`]: Django's CSRF page (the original 86ak5t1gw
+/// body), a proxy page, a captive portal answering 200, a WAF's JSON block, an envelope
+/// whose `code` is free text, and a 200 whose fields have the wrong types.
+fn hostile_responses() -> Vec<(&'static str, u16, String)> {
+    vec![
+        (
+            "django csrf page",
+            403,
+            format!("<html><body><h1>Forbidden (403)</h1><p>CSRF verification failed. {LEAK}</p></body></html>"),
+        ),
+        ("proxy 502 page", 502, format!("<html>502 Bad Gateway {LEAK}</html>")),
+        ("proxy 429 page", 429, format!("Too Many Requests {LEAK}")),
+        ("captive portal answering 200", 200, format!("<html>Sign in to the wifi {LEAK}</html>")),
+        ("waf json block", 403, format!(r#"{{"detail":"blocked {LEAK}","ray":"{LEAK}"}}"#)),
+        (
+            "envelope with a free-text code",
+            403,
+            format!(r#"{{"error":{{"code":"<html>{LEAK}</html>","message":"{LEAK}"}}}}"#),
+        ),
+        (
+            "envelope with a code-shaped but oversized code",
+            403,
+            format!(r#"{{"error":{{"code":"{}","message":"{LEAK}"}}}}"#, "A".repeat(4000)),
+        ),
+        (
+            "200 with a string where a bool belongs",
+            200,
+            format!(
+                r#"{{"created":"{LEAK}","reminted":false,"activation_token":null,
+                "device":{{"device_public_id":"d","status":"ACTIVE","platform":"p"}},
+                "token":{{}},"license":{{"status":"ACTIVATED","expires_at":"x"}}}}"#
+            ),
+        ),
+        ("200 with a truncated body", 200, format!(r#"{{"session_token":"{LEAK}"#)),
+        ("200 with an empty body", 200, String::new()),
+    ]
+}
+
+/// The three calls a credential travels in.
+#[derive(Debug, Clone, Copy)]
+enum Call {
+    SignIn,
+    ActivateWithSession,
+    ActivateWithEnrollmentKey,
+}
+
+impl Call {
+    const ALL: [Call; 3] = [
+        Call::SignIn,
+        Call::ActivateWithSession,
+        Call::ActivateWithEnrollmentKey,
+    ];
+
+    /// Run this call against `client` and return the failure it must produce.
+    fn run(self, client: &LicensingClient<ScriptedTransport>) -> ActivationFailure {
+        match self {
+            Call::SignIn => client
+                .sign_in("admin@example.test", &Token::new("pw-LEAK-PASSWORD"))
+                .unwrap_err(),
+            Call::ActivateWithSession => client
+                .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+                .unwrap_err(),
+            Call::ActivateWithEnrollmentKey => client
+                .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+                .unwrap_err(),
+        }
+    }
+}
+
+#[test]
+fn no_failure_quotes_the_response_body_on_any_call() {
+    // THE 86ak5t1gw REGRESSION CLASS. The user-visible symptom of the original defect was
+    // an HTML page being classified; the lasting risk is that any such page, or any
+    // attacker-influenced body, reaches an operator's screen or a log. Swept across all
+    // three calls and every failure rendering a caller can obtain.
+    let mut exercised = 0usize;
+    for (label, status, body) in hostile_responses() {
+        for call in Call::ALL {
+            let client =
+                LicensingClient::new(ScriptedTransport::responding(status, body.clone()), BASE);
+            let failure = call.run(&client);
+            let rendered = [format!("{failure}"), format!("{failure:?}")];
+            for text in &rendered {
+                for secret in [LEAK, "LEAK-PASSWORD", SESSION, ENROLLMENT_KEY] {
+                    assert!(
+                        !text.contains(secret),
+                        "{call:?} on `{label}` put {secret:?} into a failure: {text}"
+                    );
+                }
+                assert!(
+                    text.len() < 600,
+                    "{call:?} on `{label}` produced a {}-byte failure; a body is leaking in",
+                    text.len()
+                );
+                assert!(
+                    !text.contains("<html") && !text.contains("</"),
+                    "{call:?} on `{label}` let markup into a failure: {text}"
+                );
+            }
+            assert!(failure.permits_presentation());
+            exercised += 1;
+        }
+    }
+    assert_eq!(
+        exercised,
+        hostile_responses().len() * Call::ALL.len(),
+        "the sweep covered fewer cases than it lists"
+    );
+}
+
+#[test]
+fn the_body_quoting_sweep_can_fail() {
+    // Positive control for the sweep above: serde's own message DOES quote the value, so
+    // forwarding `e.to_string()` is exactly what the sweep catches. If this stops being
+    // true the sweep's premise is gone and it should be re-examined, not trusted.
+    let body = format!(
+        r#"{{"created":"{LEAK}","reminded":false,"activation_token":null,"device":{{}},"token":{{}},"license":{{}}}}"#
+    );
+    let raw = serde_json::from_str::<selahcue_licensing::contract::ActivationResponse>(&body)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        raw.contains(LEAK),
+        "serde no longer quotes the offending value ({raw}); re-derive what the sweep protects"
+    );
+
+    // ...and the client, handed that same body, does not forward it.
+    let failure = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    match &failure {
+        ActivationFailure::Malformed(why) => {
+            assert!(!why.contains(LEAK), "{why}");
+            assert!(
+                why.contains("line 1"),
+                "position is kept for diagnosis: {why}"
+            );
+        }
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_missing_field_is_named_because_the_name_comes_from_this_crate() {
+    // The one piece of a parse error that IS worth keeping: which field the contract
+    // expected. It comes from our own struct definitions, never from the body.
+    let failure = LicensingClient::new(
+        ScriptedTransport::responding(
+            200,
+            r#"{"expires_at":"x","role":"ADMIN","org_id":"o","surface":"desktop"}"#,
+        ),
+        BASE,
+    )
+    .sign_in("admin@example.test", &Token::new("correct-horse"))
+    .unwrap_err();
+
+    match failure {
+        ActivationFailure::Malformed(why) => assert!(why.contains("`session_token`"), "{why}"),
+        other => panic!("expected Malformed, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_unknown_code_from_a_proxy_is_reported_as_unrecognised_not_echoed() {
+    let failure = LicensingClient::new(
+        ScriptedTransport::responding(
+            403,
+            format!(r#"{{"error":{{"code":"<html>{LEAK}</html>"}}}}"#),
+        ),
+        BASE,
+    )
+    .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+    .unwrap_err();
+
+    match &failure {
+        ActivationFailure::Coded(code) => assert_eq!(code.as_str(), "UNRECOGNISED"),
+        other => panic!("expected a Coded refusal, got {other:?}"),
+    }
+    assert!(!failure.to_string().contains(LEAK));
+}
+
+// ---------------------------------------------------------------------------
+// Bounded: a response over the cap is refused unparsed
+// ---------------------------------------------------------------------------
+
+// The premise, pinned at compile time so changing a cap cannot quietly turn the tests below
+// vacuous: the parse cap must sit BELOW the transport's read cap (it is the tighter bound),
+// and above the largest legitimate body by a wide margin.
+const _: () =
+    assert!(MAX_RESPONSE_BODY_BYTES < selahcue_cloud::transport::MAX_TRANSPORT_RESPONSE_BYTES);
+const _: () = assert!(MAX_RESPONSE_BODY_BYTES >= 16 * 1024);
+
+#[test]
+fn a_success_body_over_the_cap_is_refused_and_one_at_the_cap_is_not() {
+    // Whitespace padding after a COMPLETE, valid body: the only thing that differs between
+    // the two cases is the length, so a refusal can only be the cap. (Without the positive
+    // control, "refused" would be indistinguishable from "this fixture never parsed".)
+    let valid = session_activation_body(true, false, Some(TOKEN_A));
+    let padded = |total: usize| format!("{valid}{}", " ".repeat(total - valid.len()));
+
+    let at_cap = padded(MAX_RESPONSE_BODY_BYTES);
+    assert_eq!(at_cap.len(), MAX_RESPONSE_BODY_BYTES);
+    LicensingClient::new(ScriptedTransport::responding(200, at_cap), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .expect("a body exactly at the cap is still read: the cap must not truncate");
+
+    let over = padded(MAX_RESPONSE_BODY_BYTES + 1);
+    let failure = LicensingClient::new(ScriptedTransport::responding(200, over), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    match &failure {
+        ActivationFailure::Malformed(why) => {
+            assert!(why.contains("larger than"), "{why}");
+            assert!(!why.contains(TOKEN_A), "{why}");
+        }
+        other => panic!("an over-cap body must be refused as Malformed, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
+    // A perfectly good coded envelope, padded past the cap. If it were parsed, the code
+    // would win (`PERMISSION_DENIED`); refused unparsed, only the status is left.
+    let envelope = session_error(
+        "PERMISSION_DENIED",
+        "You do not have permission to perform this action.",
+    );
+    let at_cap = format!(
+        "{envelope}{}",
+        " ".repeat(MAX_RESPONSE_BODY_BYTES - envelope.len())
+    );
+    let over = format!("{at_cap} ");
+
+    let read = LicensingClient::new(ScriptedTransport::responding(403, at_cap), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(
+        read,
+        ActivationFailure::PermissionDenied,
+        "positive control: at the cap the code is read"
+    );
+
+    let refused = LicensingClient::new(ScriptedTransport::responding(403, over), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(refused, ActivationFailure::UnexpectedStatus(403));
+
+    let refused_5xx = LicensingClient::new(
+        ScriptedTransport::responding(503, "x".repeat(MAX_RESPONSE_BODY_BYTES + 1)),
+        BASE,
+    )
+    .sign_in("admin@example.test", &Token::new("correct-horse"))
+    .unwrap_err();
+    assert_eq!(refused_5xx, ActivationFailure::Server(503));
+}
+
+// ---------------------------------------------------------------------------
+// The native client has no cookie and no CSRF ceremony, and never targets /graphql
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_request_goes_to_a_cookie_free_v1_route_and_carries_no_browser_ceremony() {
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_body());
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, rest_body(true, false, Some(TOKEN_B)));
+    let client = LicensingClient::new(transport, BASE);
+
+    let session = client
+        .sign_in("admin@example.test", &Token::new("correct-horse"))
+        .unwrap();
+    client
+        .activate_with_session(&session.token, &identity(), &idem())
+        .unwrap();
+    client
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap();
+
+    let sent = client.transport().recorded();
+    assert_eq!(sent.len(), 3);
+    for request in &sent {
+        assert_eq!(request.method, "POST");
+        assert!(
+            request.url.starts_with(&format!("{BASE}/v1/")),
+            "{} is not on the /v1 device surface",
+            request.url
+        );
+        assert!(
+            !request.url.contains("graphql"),
+            "{} targets a GraphQL route",
+            request.url
+        );
+    }
+    // The transport seam is `post_json(url, body, bearer)`: a bearer is the ONLY header the
+    // client can influence, so there is no cookie, CSRF token, Origin or Referer to send.
+    // Recorded as a flag, so this asserts WHICH calls carry the one credential header.
+    assert_eq!(
+        sent.iter().map(|r| r.had_bearer).collect::<Vec<_>>(),
+        [false, true, false],
+        "sign-in and the key path carry no Authorization; the session activation carries it"
+    );
+}
+
+#[test]
+fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
+    // The seam already cannot carry these; this makes the absence a tripwire for whoever
+    // widens the seam or adds a second transport. Comment lines are skipped because the docs
+    // deliberately NAME these things to explain their absence (and a guard silenced by
+    // deleting a comment would be measuring the wrong thing).
+    const FORBIDDEN: &[&str] = &[
+        "graphql",
+        "cookie",
+        "csrf",
+        "x-csrftoken",
+        "referer",
+        "origin:",
+        "\"origin\"",
+    ];
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = 0usize;
+    let mut saw_sessions_route = false;
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        scanned += 1;
+        let body = std::fs::read_to_string(&path).unwrap();
+        for (lineno, line) in body.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            let code = code.split("//").next().unwrap_or("").to_lowercase();
+            saw_sessions_route |= code.contains("\"/v1/sessions\"");
+            for pattern in FORBIDDEN {
+                assert!(
+                    !code.contains(pattern),
+                    "{}:{} names {pattern:?}; the native client must not take part in the \
+                     browser's cookie/CSRF surface (86ak5t1gw):\n  {code}",
+                    path.display(),
+                    lineno + 1
+                );
+            }
+        }
+    }
+    assert_eq!(scanned, 9, "expected to scan 9 modules, scanned {scanned}");
+    assert!(
+        saw_sessions_route,
+        "the scan never saw the sign-in route, so it was not reading the right files"
+    );
 }

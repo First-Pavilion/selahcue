@@ -127,6 +127,8 @@ fn every_failure_variant() -> Vec<ActivationFailure> {
         ActivationFailure::UnknownKey => {}
         ActivationFailure::PolicyDenied => {}
         ActivationFailure::Unauthenticated => {}
+        ActivationFailure::InvalidCredentials => {}
+        ActivationFailure::AccountNotActive => {}
         ActivationFailure::PermissionDenied => {}
         ActivationFailure::ValidationFailed => {}
         ActivationFailure::RateLimited => {}
@@ -142,6 +144,8 @@ fn every_failure_variant() -> Vec<ActivationFailure> {
         ActivationFailure::UnknownKey,
         ActivationFailure::PolicyDenied,
         ActivationFailure::Unauthenticated,
+        ActivationFailure::InvalidCredentials,
+        ActivationFailure::AccountNotActive,
         ActivationFailure::PermissionDenied,
         ActivationFailure::ValidationFailed,
         ActivationFailure::RateLimited,
@@ -157,7 +161,7 @@ fn every_activation_failure_permits_presentation() {
     let variants = every_failure_variant();
     assert_eq!(
         variants.len(),
-        12,
+        14,
         "the variant list drifted from the exhaustive match above"
     );
 

@@ -15,8 +15,8 @@
 
 use selahcue_licensing::client::{Activation, ActivationPath};
 use selahcue_licensing::contract::{
-    ActivateDevicePayload, ActivateWithSessionData, ActivationRequest, ActivationResponse,
-    DeviceDto, GraphQlResponse, LicenseDto, LoginData, LoginInput, LoginPayload, TokenMetaDto,
+    ActivationRequest, ActivationResponse, DeviceDto, LicenseDto, SessionRequest, SessionResponse,
+    TokenMetaDto,
 };
 use selahcue_licensing::{
     AccountSession, DeviceCredentials, DeviceIdentity, IdempotencyKey, InMemorySecretStore,
@@ -30,14 +30,14 @@ const EXPECTED_SRC_MODULES: usize = 9;
 
 /// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
 /// quietly disappear from it.
-const SWEPT_RENDERINGS: usize = 14;
+const SWEPT_RENDERINGS: usize = 10;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
 /// Each one hands out a raw credential. All three are "attach this to an outbound request",
 /// and none may be a formatter:
 ///
-/// - `client.rs` — the password into the sign-in mutation's variables
+/// - `client.rs` — the password into the sign-in request body
 /// - `client.rs` — the enrollment key into the activation request body
 /// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
@@ -217,11 +217,11 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
                 path: ActivationPath::EnrollmentKey,
                 token: Some(Token::new(DEVICE_TOKEN)),
                 created: true,
-                reminted: Some(false),
+                reminted: false,
                 device_public_id: "dev_00000000000000000000000000000000".into(),
                 platform: "macos".into(),
-                token_meta: None,
-                license: None,
+                token_meta: TokenMetaDto::default(),
+                license: LicenseDto::default(),
             }
         ),
     ));
@@ -242,10 +242,10 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         ),
     ));
     formatted.push((
-        "LoginInput/Debug",
+        "SessionRequest/Debug",
         format!(
             "{:?}",
-            LoginInput {
+            SessionRequest {
                 email: "admin@example.test".into(),
                 password: PASSWORD.into(),
             }
@@ -275,48 +275,13 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         format!("{activation_response:?}"),
     ));
 
-    let login_payload = LoginPayload {
+    let session_response = SessionResponse {
         session_token: Token::new(SESSION_TOKEN),
         expires_at: "2026-09-24T10:11:12.123456+00:00".into(),
         role: "ADMIN".into(),
         org_id: "org_1".into(),
     };
-    formatted.push(("LoginPayload/Debug", format!("{login_payload:?}")));
-
-    let activate_payload = ActivateDevicePayload {
-        full_token: Some(Token::new(DEVICE_TOKEN)),
-        created: true,
-        device_public_id: "dev_1".into(),
-        platform: "macos".into(),
-    };
-    formatted.push((
-        "ActivateDevicePayload/Debug",
-        format!("{activate_payload:?}"),
-    ));
-
-    // ...and the wrappers that print them transitively. A leak-free leaf is worth nothing
-    // if the envelope around it re-exposes the value.
-    let login_data = LoginData {
-        login: login_payload,
-    };
-    formatted.push(("LoginData/Debug", format!("{login_data:?}")));
-
-    let activate_data = ActivateWithSessionData {
-        activate_device_with_session: activate_payload,
-    };
-    formatted.push((
-        "ActivateWithSessionData/Debug",
-        format!("{activate_data:?}"),
-    ));
-
-    let graphql_envelope: GraphQlResponse<LoginData> = GraphQlResponse {
-        data: Some(login_data),
-        errors: None,
-    };
-    formatted.push((
-        "GraphQlResponse<LoginData>/Debug",
-        format!("{graphql_envelope:?}"),
-    ));
+    formatted.push(("SessionResponse/Debug", format!("{session_response:?}")));
 
     // --- the test-support transport ----------------------------------------------------
     // `ScriptedTransport` records request bodies verbatim, and those bodies carry the
@@ -331,8 +296,7 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
     transport.push_response(
         200,
         format!(
-            r#"{{"data":{{"login":{{"sessionToken":"{SESSION_TOKEN}","expiresAt":"x",
-            "role":"ADMIN","orgId":"o"}}}}}}"#
+            r#"{{"session_token":"{SESSION_TOKEN}","expires_at":"x","role":"ADMIN","org_id":"o"}}"#
         ),
     );
     transport.push_response(
