@@ -70,19 +70,19 @@ Verified on origin/main 12359b95:
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Suspend succeeds from ISSUED/ACTIVATED/EXPIRING/EXPIRED/CONVERTED, records prior status and one SUCCESS audit row | `pytest tests/test_license_suspend_reinstate.py -k suspend_succeeds` | exit 0 | PR body | PENDING |
-| C-002 | yes | Suspend of REVOKED/ARCHIVED is refused CONFLICT and leaves a durable DENIED row | `pytest ... -k terminal_licence` | exit 0 | PR body | PENDING |
-| C-003 | yes | Reinstate returns the exact prior status for every suspendable source, proven separately for ACTIVATED and EXPIRING | `pytest ... -k reinstate_returns` | exit 0 | PR body | PENDING |
-| C-004 | yes | Unauthorised actors (none, customer, device, service, staff without the specific permission, staff with revoke only) get UNAUTHENTICATED / PERMISSION_DENIED and no transition or audit row | `pytest ... -k "refused_to_anyone or oracle"` | exit 0 | PR body | PENDING |
-| C-005 | yes | Retry with the same key takes effect once, including a stale retry after an intervening reinstate/suspend | `pytest ... -k "retry or stale"` | exit 0 | PR body | PENDING |
-| C-006 | yes | Reason and key validation, uniform NOT_FOUND for any reference that names nothing | `pytest ... -k "reason or idempotency or names_nothing or spellings"` | exit 0 | PR body | PENDING |
-| C-007 | yes | Called inside a transaction the mutations fail closed before any change | `pytest ... -k inside_a_transaction` | exit 0 | PR body | PENDING |
-| C-008 | yes | Throttled per staff actor under the shared lifecycle budget, gate first | `pytest ... -k "rate_limited or budget or throttle"` | exit 0 | PR body | PENDING |
-| C-009 | yes | Suspension leaves device tokens valid through a cascade run; REVOKED kills; activation and manifest refused while suspended; recovery without re-activation or slot use; cached entitlement unchanged | `pytest ... -k "device or token or cascade or manifest or activation or recovery or cached"` | exit 0 | PR body | PENDING |
-| C-010 | yes | Audit rows pair suspend/reinstate and carry no secret | `pytest ... -k "cycle or secret"` | exit 0 | PR body | PENDING |
-| C-011 | yes | Races on Postgres: suspend vs first activation (both orders), vs revoke (both orders), vs itself, vs reinstate | `SQL_ENGINE=... pytest tests/test_concurrency_postgres.py` | exit 0 | PR body | PENDING |
-| C-012 | yes | Mutation checks turn the named tests red | `86ak5mn0c-mutate.py` | each mutant killed | PR body | PENDING |
-| C-013 | yes | `manage.py check`, `makemigrations --check --dry-run`, full pytest on SQLite exit 0 | commands | exit 0 | PR body | PENDING |
+| C-001 | yes | Suspend succeeds from ISSUED/ACTIVATED/EXPIRING/EXPIRED/CONVERTED, records prior status and one SUCCESS audit row | `pytest tests/test_license_suspend_reinstate.py -k suspend_succeeds` | exit 0 | PR body | PASS |
+| C-002 | yes | Suspend of REVOKED/ARCHIVED is refused CONFLICT and leaves a durable DENIED row | `pytest ... -k terminal_licence` | exit 0 | PR body | PASS |
+| C-003 | yes | Reinstate returns the exact prior status for every suspendable source, proven separately for ACTIVATED and EXPIRING | `pytest ... -k reinstate_returns` | exit 0 | PR body | PASS |
+| C-004 | yes | Unauthorised actors (none, customer, device, service, staff without the specific permission, staff with revoke only) get UNAUTHENTICATED / PERMISSION_DENIED and no transition or audit row | `pytest ... -k "refused_to_anyone or oracle"` | exit 0 | PR body | PASS |
+| C-005 | yes | Retry with the same key takes effect once, including a stale retry after an intervening reinstate/suspend | `pytest ... -k "retry or stale"` | exit 0 | PR body | PASS |
+| C-006 | yes | Reason and key validation, uniform NOT_FOUND for any reference that names nothing | `pytest ... -k "reason or idempotency or names_nothing or spellings"` | exit 0 | PR body | PASS |
+| C-007 | yes | Called inside a transaction the mutations fail closed before any change | `pytest ... -k inside_a_transaction` | exit 0 | PR body | PASS |
+| C-008 | yes | Throttled per staff actor under the shared lifecycle budget, gate first | `pytest ... -k "rate_limited or budget or throttle"` | exit 0 | PR body | PASS |
+| C-009 | yes | Suspension leaves device tokens valid through a cascade run; REVOKED kills; activation and manifest refused while suspended; recovery without re-activation or slot use; cached entitlement unchanged | `pytest ... -k "device or token or cascade or manifest or activation or recovery or cached"` | exit 0 | PR body | PASS |
+| C-010 | yes | Audit rows pair suspend/reinstate and carry no secret | `pytest ... -k "cycle or secret"` | exit 0 | PR body | PASS |
+| C-011 | yes | Races on Postgres: suspend vs first activation (both orders), vs revoke (both orders), vs itself, vs reinstate | `SQL_ENGINE=... pytest tests/test_concurrency_postgres.py` | exit 0 | PR body | PASS |
+| C-012 | yes | Mutation checks turn the named tests red | `86ak5mn0c-mutate.py` | each mutant killed | PR body | PASS |
+| C-013 | yes | `manage.py check`, `makemigrations --check --dry-run`, full pytest on SQLite exit 0 | commands | exit 0 | PR body | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -117,8 +117,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5mn0c-suspend-reinstate.md`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
+- Validator result: OK (structural)
+- Independent verification result: pending (Cody, Shadow, Vera, Quinn dispatched by the orchestrator)
+- Terminal state: implementation VERIFIED_COMPLETE; awaiting independent review
 - Remaining failed or blocked criteria: none known
 - ClickUp final evidence comment: pending
