@@ -20,6 +20,9 @@ dist/
 .venv/
 venv/
 env/
+# The venv `make api-install` builds (86ak5rjh7), its `.lock` directory and its `.marker` file. NO trailing
+# slash on purpose: a trailing slash matches directories only, so a symlink with this name would not be ignored.
+.venv-api-check*
 
 # Local env / secrets (keys are documented in docs/ops/DEPLOYMENT.md)
 .env

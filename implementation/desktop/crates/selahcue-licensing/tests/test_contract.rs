@@ -9,10 +9,10 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_licensing::contract::{
-    ActivateDeviceInput, ActivateWithSessionData, ActivationRequest, ActivationResponse,
-    ApiErrorEnvelope, EntitlementEnvelope, ErrorCode, GraphQlResponse, InputVariables, LoginData,
-    ACCOUNT_GRAPHQL_PATH, ACTIVATIONS_PATH, ENTITLEMENT_MANIFEST_PATH, ENVELOPE_ALG,
-    ENVELOPE_VERSION,
+    ActivationRequest, ActivationResponse, ApiErrorEnvelope, EntitlementEnvelope, ErrorCode,
+    SessionActivationRequest, SessionRequest, SessionResponse, ACTIVATIONS_PATH,
+    ACTIVATIONS_WITH_SESSION_PATH, ENTITLEMENT_MANIFEST_PATH, ENVELOPE_ALG, ENVELOPE_VERSION,
+    MAX_CODE_LEN, SESSIONS_PATH, UNRECOGNISED_CODE,
 };
 use selahcue_licensing::Token;
 
@@ -24,7 +24,28 @@ fn the_endpoint_paths_match_the_servers_routes() {
     assert_eq!(ACTIVATIONS_PATH, "/v1/activations");
     assert!(!ACTIVATIONS_PATH.ends_with('/'));
     assert_eq!(ENTITLEMENT_MANIFEST_PATH, "/v1/entitlements/manifest");
-    assert_eq!(ACCOUNT_GRAPHQL_PATH, "/graphql/account");
+
+    // The native sign-in pair (`platform/urls.py`, 86ak5t1gw). Spelled out in full: the
+    // colon in `activations:with-session` is part of the route, and `sessions` has no
+    // trailing slash for the same reason `activations` has none.
+    assert_eq!(SESSIONS_PATH, "/v1/sessions");
+    assert_eq!(
+        ACTIVATIONS_WITH_SESSION_PATH,
+        "/v1/activations:with-session"
+    );
+    assert!(!SESSIONS_PATH.ends_with('/'));
+    assert!(!ACTIVATIONS_WITH_SESSION_PATH.ends_with('/'));
+    for path in [
+        SESSIONS_PATH,
+        ACTIVATIONS_WITH_SESSION_PATH,
+        ACTIVATIONS_PATH,
+    ] {
+        assert!(
+            path.starts_with("/v1/"),
+            "{path}: the native client lives on the cookie-free /v1 surface, never on the \
+             browser's /graphql/account (86ak5t1gw)"
+        );
+    }
 }
 
 #[test]
@@ -164,69 +185,148 @@ fn the_coded_error_envelope_parses_and_every_code_round_trips() {
 }
 
 #[test]
-fn the_graphql_input_is_camel_cased() {
-    // Strawberry auto-camel-cases and this schema uses the default config
-    // (`account_schema.py:258-261`). A snake_case input is rejected as an unknown argument.
-    let variables = InputVariables {
-        input: ActivateDeviceInput {
-            idempotency_key: "idem-0123456789ab".into(),
-            device_fingerprint: "fp-1".into(),
-            platform: "macos".into(),
-            app_version: "1.0.0".into(),
-            display_name: "Booth".into(),
-        },
-    };
-    let json = serde_json::to_string(&variables).unwrap();
+fn the_sign_in_request_serializes_to_exactly_email_and_password() {
+    // `platform/views.py::create_session` reads exactly these two keys and refuses any
+    // other shape. A third field here would be a field the server silently ignores.
+    let json = serde_json::to_value(SessionRequest {
+        email: "admin@example.test".into(),
+        password: "pw".into(),
+    })
+    .unwrap();
+    let object = json.as_object().unwrap();
+    assert_eq!(object.len(), 2, "unexpected sign-in field: {json}");
+    assert_eq!(object["email"], "admin@example.test");
+    assert_eq!(object["password"], "pw");
+}
 
-    for key in [
-        "\"idempotencyKey\"",
-        "\"deviceFingerprint\"",
-        "\"appVersion\"",
-        "\"displayName\"",
-    ] {
-        assert!(json.contains(key), "expected {key} in {json}");
-    }
+#[test]
+fn the_session_activation_request_is_the_activation_request_without_the_key() {
+    // ADR-0029: "the `POST /v1/activations` body minus `license_key`", snake_case. Derived
+    // from `ActivationRequest` here so the claim is checked, not restated: if the key-path
+    // body gains a field, this fails until the session path is decided deliberately.
+    let with_key = serde_json::to_value(ActivationRequest {
+        idempotency_key: "idem-0123456789ab".into(),
+        license_key: "SC-TRIAL-KEY".into(),
+        device_fingerprint: "fp-1".into(),
+        platform: "macos".into(),
+        app_version: "1.0.0".into(),
+        display_name: "Booth".into(),
+    })
+    .unwrap();
+    let without_key = serde_json::to_value(SessionActivationRequest {
+        idempotency_key: "idem-0123456789ab".into(),
+        device_fingerprint: "fp-1".into(),
+        platform: "macos".into(),
+        app_version: "1.0.0".into(),
+        display_name: "Booth".into(),
+    })
+    .unwrap();
+
+    let mut expected = with_key.as_object().unwrap().clone();
+    expected.remove("license_key");
+    assert_eq!(without_key.as_object().unwrap(), &expected);
     assert!(
-        !json.contains("idempotency_key"),
-        "snake_case would be an unknown argument to the GraphQL schema: {json}"
+        !without_key.to_string().contains("idempotencyKey"),
+        "snake_case on the wire; camelCase was the GraphQL spelling"
     );
 }
 
 #[test]
-fn graphql_payloads_parse_from_their_camel_cased_wire_form() {
-    let login = r#"{"data": {"login": {"sessionToken": "sess-abc",
-      "expiresAt": "2026-09-24T10:11:12.123456+00:00", "role": "ADMIN", "orgId": "org_1"}}}"#;
-    let parsed: GraphQlResponse<LoginData> = serde_json::from_str(login).unwrap();
-    let payload = parsed.data.unwrap().login;
-    assert_eq!(payload.session_token.expose(), "sess-abc");
-    assert_eq!(payload.role, "ADMIN");
+fn a_real_sign_in_success_body_parses() {
+    // Shaped from `platform/views.py::create_session`: the four fields plus the unsigned
+    // `surface` / `operation` labels the view appends, which must be ignored, not rejected.
+    let body = r#"{"session_token": "sess-abc",
+      "expires_at": "2026-11-23T10:11:12.123456+00:00", "role": "ADMIN", "org_id": "org_1",
+      "surface": "desktop", "operation": "session_login"}"#;
+    let parsed: SessionResponse = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed.session_token.expose(), "sess-abc");
+    assert_eq!(parsed.expires_at, "2026-11-23T10:11:12.123456+00:00");
+    assert_eq!(parsed.role, "ADMIN");
+    assert_eq!(parsed.org_id, "org_1");
+}
 
-    let activate = r#"{"data": {"activateDeviceWithSession": {"fullToken": "SC-DEV-XYZ",
-      "created": true, "devicePublicId": "dev_1", "platform": "macos"}}}"#;
-    let parsed: GraphQlResponse<ActivateWithSessionData> = serde_json::from_str(activate).unwrap();
-    let payload = parsed.data.unwrap().activate_device_with_session;
+#[test]
+fn a_sign_in_body_missing_a_field_is_contract_drift_not_a_blank_default() {
+    // The old GraphQL payload defaulted `role` and `org_id` to "". A defaulted org id is a
+    // value later code would send as if it were real, so the server's four fields are all
+    // required and a short body fails loudly.
+    for body in [
+        r#"{"expires_at": "x", "role": "ADMIN", "org_id": "o"}"#,
+        r#"{"session_token": "s", "role": "ADMIN", "org_id": "o"}"#,
+        r#"{"session_token": "s", "expires_at": "x", "org_id": "o"}"#,
+        r#"{"session_token": "s", "expires_at": "x", "role": "ADMIN"}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<SessionResponse>(body).is_err(),
+            "{body} must not parse"
+        );
+    }
+}
+
+#[test]
+fn the_session_activation_answer_is_the_activation_shape() {
+    // `activate_device_with_session` answers with `_activation_payload`, the same function
+    // as `POST /v1/activations`, labelled `activation_with_session`.
+    let body = r#"{
+      "created": true, "reminted": false,
+      "activation_token": "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8",
+      "device": {"device_public_id": "dev_0123456789abcdef0123456789abcdef",
+                 "status": "ACTIVE", "platform": "macos"},
+      "token": {"masked": "SC-DEV-A1B2...Q7R8", "prefix": "SC-DEV-A1B2", "suffix": "Q7R8",
+                "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "expires_at": "2026-09-24T10:11:12.123456+00:00"},
+      "license": {"status": "ACTIVATED", "expires_at": "2026-12-31T23:59:59.999999+00:00"},
+      "surface": "desktop", "operation": "activation_with_session"
+    }"#;
+    let parsed: ActivationResponse = serde_json::from_str(body).unwrap();
+    assert!(parsed.created);
+    assert!(parsed.activation_token.is_some());
+    assert_eq!(parsed.license.status, "ACTIVATED");
+    assert_eq!(parsed.token.prefix.as_deref(), Some("SC-DEV-A1B2"));
+}
+
+#[test]
+fn an_error_code_that_is_not_shaped_like_a_code_is_never_carried() {
+    // The envelope comes from a body anything in front of the API can write, and an unknown
+    // code is later printed. Only a code-shaped string survives; everything else collapses
+    // to a fixed marker, so a proxy's JSON page cannot ride a `code` field to a screen.
+    let hostile = [
+        "<html><body>Access denied by WAF, ray 8a7f</body></html>",
+        "lowercase_is_not_a_code",
+        "CODE WITH SPACES",
+        "",
+        "9STARTS_WITH_DIGIT",
+        "CODE\nNEWLINE",
+    ];
+    for value in hostile {
+        match ErrorCode::parse(value) {
+            ErrorCode::Unknown(kept) => assert_eq!(
+                kept, UNRECOGNISED_CODE,
+                "{value:?} is not code-shaped and must not be carried"
+            ),
+            other => panic!("{value:?} parsed as {other:?}"),
+        }
+    }
+
+    // Length: at the cap is kept, one over is not.
+    let at_cap = format!("X{}", "A".repeat(MAX_CODE_LEN - 1));
+    assert_eq!(at_cap.len(), MAX_CODE_LEN);
     assert_eq!(
-        payload.full_token.as_ref().map(Token::expose),
-        Some("SC-DEV-XYZ")
+        ErrorCode::parse(&at_cap),
+        ErrorCode::Unknown(at_cap.clone()),
+        "a code-shaped value at the cap is kept"
     );
-    assert!(payload.created);
+    let over = format!("{at_cap}A");
+    assert_eq!(
+        ErrorCode::parse(&over),
+        ErrorCode::Unknown(UNRECOGNISED_CODE.to_string())
+    );
 
-    // The device token is `fullToken` here and `activation_token` over REST. Same secret,
-    // two names, because neither may be called `device_token` without tripping the
-    // server's own redaction guard.
-    assert!(!activate.contains("deviceToken"));
-}
-
-#[test]
-fn a_graphql_error_carries_its_code_in_extensions() {
-    let body = r#"{"data": null, "errors": [{"message": "Authentication is required.",
-      "extensions": {"code": "UNAUTHENTICATED"}}]}"#;
-    let parsed: GraphQlResponse<LoginData> = serde_json::from_str(body).unwrap();
-
-    let errors = parsed.errors.unwrap();
-    assert_eq!(errors.len(), 1);
-    assert_eq!(errors[0].code(), Some(ErrorCode::Unauthenticated));
-    assert!(parsed.data.is_none());
+    // Positive control: a plausible newer-server code is still reportable.
+    assert_eq!(
+        ErrorCode::parse("QUOTA_EXCEEDED_V2"),
+        ErrorCode::Unknown("QUOTA_EXCEEDED_V2".to_string())
+    );
 }
 
 // ---------------------------------------------------------------------------

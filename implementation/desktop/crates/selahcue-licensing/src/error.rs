@@ -16,6 +16,15 @@
 //!   Enforcement is a separate ticket (86ak5mn1t) and a separate, *deliberately* ladder-
 //!   shaped decision (FR-520); this crate obtains credentials and reports state.
 //!
+//! # No failure carries, or prints, a response body
+//!
+//! A response body is whatever the thing answering wrote — and after 86ak5t1gw that includes
+//! Django's CSRF page, a proxy's error page and a WAF's block page, none of which belong on
+//! an operator's screen or in a log. So no variant here holds a body, and none is built from
+//! one: a failure carries a status number, a code that passed
+//! [`crate::contract::ErrorCode::parse`]'s shape check, or a fixed description of *where*
+//! parsing stopped (never the value that stopped it — serde's own messages quote it).
+//!
 //! # What this client can and cannot tell apart — and why it is path-aware
 //!
 //! The account-setup design (`ACCOUNT-SETUP-HANDOFF.md` §5) specifies distinct frames for
@@ -84,14 +93,47 @@ pub enum ActivationFailure {
     ///
     /// Note this says nothing about the **device** token: an expired account session never
     /// revokes a device token (DEC-007, FR-542) and never stops the app presenting.
+    ///
+    /// Reported for the *activation* call only. The same server code on the sign-in call
+    /// means something else and is [`Self::InvalidCredentials`].
     Unauthenticated,
+
+    /// **Sign-in only.** The email and password were not accepted. The server collapses an
+    /// unknown email, a wrong password and a locked account into one answer on purpose
+    /// (no account-existence oracle), so this client cannot and must not say which.
+    ///
+    /// Distinct from [`Self::Unauthenticated`] because "the account session is not valid;
+    /// sign in again" is the wrong thing to tell someone who has just typed a password.
+    InvalidCredentials,
+
+    /// **Sign-in only.** The password was right but the account cannot be used yet: the
+    /// email address is unverified, or the account is disabled. The server answers this
+    /// only *after* the password checks out, so it reveals nothing to a guesser.
+    AccountNotActive,
 
     /// The signed-in account lacks the role activation requires (the server requires
     /// ADMIN on the session path, `devices/services.py:541`).
     PermissionDenied,
 
-    /// The request was malformed. A client-side bug, not an operator error.
+    /// The server rejected an **activation** request as invalid. A client-side bug, not an
+    /// operator error: the client builds every field itself and validates the device
+    /// identity and idempotency key locally first.
+    ///
+    /// Not reported for sign-in, where the person typed the input: that is
+    /// [`Self::SignInInvalidInput`].
     ValidationFailed,
+
+    /// **Sign-in only.** The server rejected the email or password as unacceptable (empty,
+    /// over-long, or not text) before checking them. Unlike [`Self::ValidationFailed`] this
+    /// is an operator input error, and the client deliberately sends what was typed rather
+    /// than pre-judging it, so the server's answer is the first anyone hears of it.
+    SignInInvalidInput,
+
+    /// **Sign-in only.** Too many sign-in attempts from this network (the server allows 10 a
+    /// minute per address). Not [`Self::RateLimited`], which is retried silently: a person
+    /// who has just typed a password is waiting on the answer, and a silent retry loop of
+    /// password attempts is exactly what the limit exists to stop.
+    SignInRateLimited,
 
     /// Too many attempts. The activation endpoint allows 10 per minute per IP.
     RateLimited,
@@ -116,10 +158,35 @@ pub enum ActivationFailure {
 
     /// The response did not parse as the contract. Kept distinct from `Server` because it
     /// means the contract drifted, which is a developer-facing problem.
+    ///
+    /// The string is a fixed description of where parsing stopped, built by the client from
+    /// the error's *category and position* — never from the error's own message, which for a
+    /// type mismatch quotes the offending value, and never from the body.
     Malformed(String),
 }
 
 impl ActivationFailure {
+    /// Map a coded server error from the **sign-in** call (`POST /v1/sessions`).
+    ///
+    /// Not [`Self::from_code`], because three codes mean something else here:
+    /// `UNAUTHENTICATED` is a bad email/password rather than an expired session,
+    /// `POLICY_DENIED` is an unverified or disabled account rather than a plan limit,
+    /// `VALIDATION_FAILED` is something the person typed rather than a client bug,
+    /// `RATE_LIMITED` is not to be retried silently, and
+    /// `NOT_FOUND` is not something this route answers at all — mapping it to
+    /// [`Self::NoActiveLicense`] would tell a person whose sign-in failed that their plan
+    /// had lapsed.
+    pub fn from_sign_in_code(code: ErrorCode) -> Self {
+        match code {
+            ErrorCode::Unauthenticated => ActivationFailure::InvalidCredentials,
+            ErrorCode::PolicyDenied => ActivationFailure::AccountNotActive,
+            ErrorCode::ValidationFailed => ActivationFailure::SignInInvalidInput,
+            ErrorCode::RateLimited => ActivationFailure::SignInRateLimited,
+            ErrorCode::NotFound => ActivationFailure::Coded(ErrorCode::NotFound),
+            other => Self::from_code(other, ActivationPath::AccountSession),
+        }
+    }
+
     /// Map a coded server error onto a classified failure, for the path it arrived on.
     ///
     /// The path is not decoration: `NOT_FOUND` means "no active licence" on the session
@@ -154,8 +221,12 @@ impl ActivationFailure {
             ActivationFailure::UnknownKey => true,
             ActivationFailure::PolicyDenied => true,
             ActivationFailure::Unauthenticated => true,
+            ActivationFailure::InvalidCredentials => true,
+            ActivationFailure::AccountNotActive => true,
             ActivationFailure::PermissionDenied => true,
             ActivationFailure::ValidationFailed => true,
+            ActivationFailure::SignInInvalidInput => true,
+            ActivationFailure::SignInRateLimited => true,
             ActivationFailure::RateLimited => true,
             ActivationFailure::Server(_) => true,
             ActivationFailure::Coded(_) => true,
@@ -169,6 +240,10 @@ impl ActivationFailure {
     /// FR-523: "Airplane-mode refresh = silent retry, no operator-facing warning".
     /// Network trouble and server trouble are transient; a coded refusal is a decision
     /// somebody made, and is surfaced between sessions.
+    ///
+    /// The sign-in failures are deliberately absent, [`Self::SignInRateLimited`] included: a
+    /// person is waiting on a password check, and retrying one silently is not what they asked
+    /// for.
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -200,6 +275,16 @@ impl core::fmt::Display for ActivationFailure {
             ActivationFailure::Unauthenticated => {
                 write!(f, "the account session is not valid; sign in again")
             }
+            ActivationFailure::InvalidCredentials => write!(
+                f,
+                "that email and password were not accepted \
+                 (or the account is temporarily locked after too many attempts)"
+            ),
+            ActivationFailure::AccountNotActive => write!(
+                f,
+                "this account cannot sign in yet: its email address is not verified, \
+                 or the account has been disabled"
+            ),
             ActivationFailure::PermissionDenied => write!(
                 f,
                 "this account does not have permission to activate a device"
@@ -207,6 +292,15 @@ impl core::fmt::Display for ActivationFailure {
             ActivationFailure::ValidationFailed => {
                 write!(f, "the activation request was rejected as invalid")
             }
+            ActivationFailure::SignInInvalidInput => write!(
+                f,
+                "the email address or password is not in a form the platform accepts; \
+                 check both and try again"
+            ),
+            ActivationFailure::SignInRateLimited => write!(
+                f,
+                "too many sign-in attempts from this network; wait a minute before trying again"
+            ),
             ActivationFailure::RateLimited => {
                 write!(f, "too many activation attempts; try again shortly")
             }
