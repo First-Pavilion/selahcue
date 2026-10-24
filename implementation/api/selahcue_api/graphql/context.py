@@ -24,6 +24,12 @@ class StaffPermission(str, Enum):
     GENERATE_LICENSE_KEY = "generate_license_key"
     EXTEND_LICENSE_KEY = "extend_license_key"
     REVOKE_LICENSE_KEY = "revoke_license_key"
+    # Their own authorities, deliberately NOT folded into REVOKE_LICENSE_KEY (86ak5mn0c): a
+    # suspension is a reversible commercial hold, a revocation is the permanent kill, and one
+    # permission for both would let anyone entitled to hold a licence also destroy it and
+    # leave an audit trail unable to say which authority was used (FLOW-506).
+    SUSPEND_LICENSE_KEY = "suspend_license_key"
+    REINSTATE_LICENSE_KEY = "reinstate_license_key"
     GRANT_ENTITLEMENT = "grant_entitlement"
     REVOKE_ENTITLEMENT = "revoke_entitlement"
     VIEW_DIAGNOSTICS = "view_diagnostics"
@@ -38,6 +44,14 @@ class ActorContext:
     staff_permissions: frozenset[StaffPermission] = frozenset()
     # Customer-user role (ADMIN/MEMBER) for CUSTOMER actors; None for staff/device/service.
     role: str | None = None
+
+
+# The width of `AuditEvent.actor_id`. An actor id longer than this cannot be audited: Postgres
+# raises `DataError` when the row is written, which on a refusal path destroys the DENIED row
+# and turns a clean CONFLICT into VALIDATION_FAILED (86ak5mn0c, Shadow L3). Kept here as a
+# constant, not read off the model, because the audit app imports this module;
+# `tests/test_license_suspend_reinstate.py` pins it equal to the column.
+ACTOR_ID_MAX_LENGTH = 128
 
 
 # Cookie carrying the opaque account session token for browser clients (HttpOnly/Secure/SameSite).
@@ -121,7 +135,7 @@ def actor_from_request(request) -> ActorContext | None:
 
     kind_value = request.headers.get("X-SelahCue-Actor-Kind")
     actor_id = request.headers.get("X-SelahCue-Actor-Id")
-    if not kind_value or not actor_id:
+    if not kind_value or not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH:
         return None
     try:
         kind = ActorKind(kind_value)
@@ -152,6 +166,10 @@ def require_staff_permission(
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if actor.kind is not ActorKind.STAFF:
         raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+    # An identity that cannot be written to the audit trail cannot act: refused here, before
+    # any state is touched, rather than failing inside a writer's transaction.
+    if not actor.actor_id or len(actor.actor_id) > ACTOR_ID_MAX_LENGTH:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if permission not in actor.staff_permissions:
         raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
     return actor

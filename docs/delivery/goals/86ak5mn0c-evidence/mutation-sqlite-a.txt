@@ -1,0 +1,26 @@
+# Mutation run against code head c4f57d016b3b936fd198962f493ac17b65704c80, 2026-10-24 (later commits change docs only)
+# command: python mutate.py --python $VENV_PYTHON --only M01,M02,M03,M04,M05,M06,M07,M08,M09,M10,M11,M12,M13,M14,M15,M16,M17,M18,M19,M20,M21,M22 --allow-skip
+# exit code: 0
+# (SKIPPED lines are the other mode's mutants, listed by the script)
+M01 KILLED: remove the staff permission gate | 25 failed, 153 passed in 116.58s (0:01:56) | 10 red
+M02 KILLED: suspend is gated by the REVOKE permission instead | 122 failed, 56 passed in 52.07s | 69 red
+M03 KILLED: reinstate is gated by the SUSPEND permission instead | 4 failed, 174 passed in 65.20s (0:01:05) | 4 red
+M04 KILLED: customer actors pass the kind check (service-level customer test must bite alone) | 10 failed, 168 passed in 129.99s (0:02:09) | 4 red
+M05 KILLED: remove the in-transaction guard | 1 failed, 177 passed in 260.63s (0:04:20) | 1 red
+M06 KILLED: the writer never recognises a retry (lookup disabled) | 10 failed, 168 passed in 118.62s (0:01:58) | 10 red
+M07 KILLED: the service does not ask the writer to recognise retries | 10 failed, 168 passed in 162.93s (0:02:42) | 10 red
+M08 KILLED: retry lookup ignores the action | 1 failed, 177 passed in 135.61s (0:02:15) | 1 red
+M09 KILLED: retry lookup ignores the actor | 2 failed, 176 passed in 110.05s (0:01:50) | 2 red
+M10 KILLED: retry lookup ignores the licence | 1 failed, 177 passed in 62.10s (0:01:02) | 1 red
+M11 EQUIVALENT-SURVIVED: retry lookup counts non-SUCCESS rows (EQUIVALENT: refusal rows carry a different action name) | 178 passed in 80.33s (0:01:20) | 0 red
+M12 KILLED: reinstate targets a hardcoded ACTIVATED instead of the recorded status | 39 failed, 139 passed in 81.57s (0:01:21) | 27 red
+M13 KILLED: reinstate always lands on EXPIRED (activations then stay refused) | 23 failed, 155 passed in 105.39s (0:01:45) | 19 red
+M14 KILLED: the cascade kills SUSPENDED tokens again | 11 failed, 188 passed in 114.94s (0:01:54) | 8 red
+M15 KILLED: the cascade spares SUSPENDED whatever it was suspended from | 5 failed, 194 passed in 165.35s (0:02:45) | 3 red
+M16 KILLED: the cascade also spares EXPIRED licences | 3 failed, 196 passed in 251.65s (0:04:11) | 2 red
+M17 KILLED: suspending a licence revokes its device tokens | 25 failed, 153 passed in 106.75s (0:01:46) | 14 red
+M18 KILLED: no throttle | 5 failed, 173 passed in 76.79s (0:01:16) | 5 red
+M19 KILLED: one throttle bucket shared by every staff member | 1 failed, 177 passed in 74.99s (0:01:14) | 1 red
+M20 KILLED: the throttle is spent before the permission gate | 6 failed, 172 passed in 77.40s (0:01:17) | 6 red
+M21 KILLED: the shipped budget default is ten times too generous | 1 failed, 177 passed in 132.13s (0:02:12) | 1 red
+M22 KILLED: lenient licence-id parsing | 5 failed, 173 passed in 80.05s (0:01:20) | 2 red

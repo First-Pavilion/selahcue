@@ -54,12 +54,11 @@ from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.services import resolve_entitlement
 from selahcue_api.apps.devices.models import Device, DeviceStatus
 from selahcue_api.apps.devices.services import (
-    ACTIVATABLE_KEY_STATUSES,
     authenticate_device_token,
+    require_commercial_service,
 )
 from selahcue_api.apps.entitlements.signing import load_signing_key, sign_envelope
 from selahcue_api.graphql.context import ActorContext, ActorKind
-from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
 logger = logging.getLogger(__name__)
@@ -99,14 +98,10 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
     license_key = device.license_key
     now = timezone.now()
 
-    # Allow-list, not a deny-list: a status added to LicenseKeyStatus later denies by
-    # default instead of silently qualifying for a signed entitlement.
-    valid_now = (
-        license_key.status in ACTIVATABLE_KEY_STATUSES
-        and license_key.starts_at <= now < license_key.expires_at
-    )
-    if not valid_now:
-        raise SafeAPIError(ErrorCode.POLICY_DENIED)
+    # The shared enforcement point for commercial device calls (allow-list, not a deny-list:
+    # a status added to LicenseKeyStatus later denies by default instead of silently
+    # qualifying for a signed entitlement). Past it, the licence is valid now by definition.
+    require_commercial_service(license_key)
 
     instances_used = Device.objects.filter(
         license_key=license_key, status=DeviceStatus.ACTIVE
@@ -138,7 +133,7 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "device_fingerprint": device.device_fingerprint,
         "customer_org_id": str(license_key.customer_id),
         "license_status": license_key.status,
-        "license_valid_now": valid_now,
+        "license_valid_now": True,  # past the gate above, the licence is valid now by definition
         "license_starts_at": license_key.starts_at.isoformat(),
         "license_expires_at": license_key.expires_at.isoformat(),
         # Display labels, both of them. Kept for humans and for backward compatibility;

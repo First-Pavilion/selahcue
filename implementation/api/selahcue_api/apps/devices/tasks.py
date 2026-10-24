@@ -17,19 +17,50 @@ from __future__ import annotations
 
 from celery import shared_task
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.devices.models import DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.services import ACTIVATABLE_KEY_STATUSES
+from selahcue_api.apps.license_keys.models import LicenseKeyStatus
 from selahcue_api.graphql.context import ActorContext, ActorKind
 
 # The cascade acts on its own authority, on a schedule, with no request behind it.
 CASCADE_ACTOR_ID = "revocation-cascade"
 
 
+def _licenses_whose_tokens_survive() -> Q:
+    """Licences whose device tokens the cascade LEAVES alone.
+
+    Every activatable status, plus SUSPENDED **when it was suspended from an activatable
+    status**. Decided (D3 / DEC-010, FR-504): a suspension is a reversible commercial hold, so
+    "running devices keep working" — refusing a NEW activation and killing an EXISTING token
+    are separate mechanisms, and suspension does only the first. Before this the cascade
+    treated SUSPENDED exactly like REVOKED (both sit outside the activatable set), which would
+    have made the suspend mutation token-killing the moment it shipped.
+
+    The qualifier matters: suspending an EXPIRED or CONVERTED licence must not rescue tokens
+    the cascade would otherwise have killed. A licence suspended from such a status keeps
+    being treated as the status it came from, so its tokens still die — and the exemption
+    stays deny-by-default, keyed on the recorded `prior_status`.
+
+    Narrowed here, in the smallest possible way, because 86ak5mn0c cannot honour its own
+    acceptance criteria (tokens survive a suspension; SUSPENDED and REVOKED differ observably)
+    otherwise. The rest of the cascade rework — row locking and the key-driven scan — stays on
+    86ak1099u.
+    """
+    activatable = list(ACTIVATABLE_KEY_STATUSES)
+    return Q(device__license_key__status__in=activatable) | Q(
+        device__license_key__status=LicenseKeyStatus.SUSPENDED,
+        device__license_key__prior_status__in=activatable,
+    )
+
+
 def cascade_license_revocations(batch_size: int = 500) -> int:
-    """Revoke ACTIVE device tokens whose licence has left an activatable status.
+    """Revoke ACTIVE device tokens whose licence has left an activatable status — except a
+    licence SUSPENDED from an activatable status, a reversible hold that must not kill a
+    running device (D3).
 
     Idempotent: already-revoked tokens are excluded by the `status=ACTIVE` filter, so a
     redelivered run (CELERY_TASK_ACKS_LATE) finds nothing and writes no second audit row.
@@ -39,7 +70,7 @@ def cascade_license_revocations(batch_size: int = 500) -> int:
     stale = list(
         DeviceToken.objects.select_related("device__license_key")
         .filter(status=DeviceTokenStatus.ACTIVE)
-        .exclude(device__license_key__status__in=list(ACTIVATABLE_KEY_STATUSES))
+        .exclude(_licenses_whose_tokens_survive())
         .order_by("id")[:batch_size]
     )
     now = timezone.now()
