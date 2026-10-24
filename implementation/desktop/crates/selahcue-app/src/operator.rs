@@ -7,6 +7,8 @@
 //! logic is verified independently of any GUI (which can't be runtime-tested here).
 
 use crate::controller::LiveController;
+#[cfg(feature = "server")]
+use crate::operator_reply as reply;
 use selahcue_lan::protocol::{
     AutosaveSlotView, Command, ContentLinkView, DetectionView, ImportItemView, OperatorStateView,
     OutputHealthView, PlanItemView, PlanSummaryView, PlanTemplateView, PublishStateView,
@@ -1059,18 +1061,7 @@ impl RemoteOperator {
     pub async fn new_pairing_code(
         &mut self,
     ) -> Result<(String, String, u64, Option<String>), selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(Command::NewPairingCode).await? {
-            ServerMessage::PairingCode {
-                code,
-                fingerprint,
-                expires_in_secs,
-                uri,
-            } => Ok((code, fingerprint, expires_in_secs, uri)),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected pairing_code, got: {other:?}"
-            ))),
-        }
+        reply::expect_pairing_code(self.client.command(Command::NewPairingCode).await?)
     }
 
     /// Send a device-management command and parse the host's `RemoteDevices` snapshot reply.
@@ -1078,13 +1069,7 @@ impl RemoteOperator {
         &mut self,
         cmd: Command,
     ) -> Result<RemoteSnapshot, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(cmd).await? {
-            ServerMessage::RemoteDevices { devices, pending } => Ok((devices, pending)),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected remote_devices, got: {other:?}"
-            ))),
-        }
+        reply::expect_remote_devices(self.client.command(cmd).await?)
     }
 
     /// Stage a specific plan item (by id) in the host's Preview.
@@ -1252,13 +1237,7 @@ impl RemoteOperator {
     pub async fn list_autosave_slots(
         &mut self,
     ) -> Result<Vec<AutosaveSlotView>, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(Command::ListAutosaveSlots).await? {
-            ServerMessage::AutosaveSlots { slots } => Ok(slots),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected autosave_slots, got: {other:?}"
-            ))),
-        }
+        reply::expect_autosave_slots(self.client.command(Command::ListAutosaveSlots).await?)
     }
 
     /// Restore the host's plan + session position from a specific autosave slot (an id from
@@ -1644,13 +1623,9 @@ impl RemoteOperator {
     pub async fn active_transcript_id(
         &mut self,
     ) -> Result<Option<i64>, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(Command::GetActiveTranscriptId).await? {
-            ServerMessage::ActiveTranscriptId { transcript_id } => Ok(transcript_id),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected active_transcript_id, got: {other:?}"
-            ))),
-        }
+        reply::expect_active_transcript_id(
+            self.client.command(Command::GetActiveTranscriptId).await?,
+        )
     }
 
     /// Load the persisted sermon-note draft for `transcript_id` on the host, if any
@@ -1660,17 +1635,11 @@ impl RemoteOperator {
         transcript_id: i64,
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::LoadSermonNoteDraft { transcript_id })
-            .await?
-        {
-            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_draft, got: {other:?}"
-            ))),
-        }
+        reply::expect_sermon_note_draft(
+            self.client
+                .command(Command::LoadSermonNoteDraft { transcript_id })
+                .await?,
+        )
     }
 
     /// Whether sending `command` right now would build a wire frame the host's control-link
@@ -1706,7 +1675,6 @@ impl RemoteOperator {
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
         let command = Command::SaveSermonNoteDraft {
             transcript_id,
             draft,
@@ -1714,13 +1682,7 @@ impl RemoteOperator {
         if Self::would_exceed_wire_cap(&command)? {
             return Ok(None);
         }
-        match self.client.command(command).await? {
-            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
-            ServerMessage::Denied { .. } => Ok(None),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_draft, got: {other:?}"
-            ))),
-        }
+        reply::expect_sermon_note_draft_or_denied(self.client.command(command).await?)
     }
 
     /// Apply an operator edit to the persisted draft's text for `transcript_id` on the host
@@ -1734,7 +1696,6 @@ impl RemoteOperator {
         edit: selahcue_lan::protocol::SermonNoteEditInput,
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
         let command = Command::UpdateSermonNoteDraft {
             transcript_id,
             edit,
@@ -1742,13 +1703,7 @@ impl RemoteOperator {
         if Self::would_exceed_wire_cap(&command)? {
             return Ok(None);
         }
-        match self.client.command(command).await? {
-            ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
-            ServerMessage::Denied { .. } => Ok(None),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_draft, got: {other:?}"
-            ))),
-        }
+        reply::expect_sermon_note_draft_or_denied(self.client.command(command).await?)
     }
 
     /// Stage a freshly (re)generated draft against `transcript_id` on the host WITHOUT
@@ -1762,7 +1717,6 @@ impl RemoteOperator {
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
         let command = Command::StageSermonNoteRegeneration {
             transcript_id,
             draft,
@@ -1770,18 +1724,7 @@ impl RemoteOperator {
         if Self::would_exceed_wire_cap(&command)? {
             return Ok(None);
         }
-        match self.client.command(command).await? {
-            ServerMessage::SermonNoteRegenerationState {
-                current, pending, ..
-            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
-                current,
-                pending,
-            })),
-            ServerMessage::Denied { .. } => Ok(None),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_regeneration_state, got: {other:?}"
-            ))),
-        }
+        reply::expect_regeneration_state(self.client.command(command).await?)
     }
 
     /// Accept the pending regeneration for `transcript_id` on the host (FR-129), replacing
@@ -1792,23 +1735,11 @@ impl RemoteOperator {
         transcript_id: i64,
     ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::ConfirmSermonNoteRegeneration { transcript_id })
-            .await?
-        {
-            ServerMessage::SermonNoteRegenerationState {
-                current, pending, ..
-            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
-                current,
-                pending,
-            })),
-            ServerMessage::Denied { .. } => Ok(None),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_regeneration_state, got: {other:?}"
-            ))),
-        }
+        reply::expect_regeneration_state(
+            self.client
+                .command(Command::ConfirmSermonNoteRegeneration { transcript_id })
+                .await?,
+        )
     }
 
     /// Discard the pending regeneration for `transcript_id` on the host (FR-129), leaving
@@ -1818,23 +1749,11 @@ impl RemoteOperator {
         transcript_id: i64,
     ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
     {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::DiscardSermonNoteRegeneration { transcript_id })
-            .await?
-        {
-            ServerMessage::SermonNoteRegenerationState {
-                current, pending, ..
-            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
-                current,
-                pending,
-            })),
-            ServerMessage::Denied { .. } => Ok(None),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected sermon_note_regeneration_state, got: {other:?}"
-            ))),
-        }
+        reply::expect_regeneration_state(
+            self.client
+                .command(Command::DiscardSermonNoteRegeneration { transcript_id })
+                .await?,
+        )
     }
 
     /// Search scripture on the host; returns stageable display references.
@@ -1843,36 +1762,14 @@ impl RemoteOperator {
         query: &str,
         translation: Option<&str>,
     ) -> Result<Vec<selahcue_lan::protocol::ScriptureHitView>, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::ScriptureSearch {
-                query: query.into(),
-                translation: translation.map(Into::into),
-            })
-            .await?
-        {
-            ServerMessage::ScriptureResults {
-                hits, references, ..
-            } => {
-                // A pre-7ad host sends only bare references: synthesize
-                // text-less hits so results still render (snippets empty).
-                if hits.is_empty() && !references.is_empty() {
-                    Ok(references
-                        .into_iter()
-                        .map(|reference| selahcue_lan::protocol::ScriptureHitView {
-                            reference,
-                            text: String::new(),
-                        })
-                        .collect())
-                } else {
-                    Ok(hits)
-                }
-            }
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected scripture_results, got: {other:?}"
-            ))),
-        }
+        reply::expect_scripture_results(
+            self.client
+                .command(Command::ScriptureSearch {
+                    query: query.into(),
+                    translation: translation.map(Into::into),
+                })
+                .await?,
+        )
     }
 
     /// Fetch the host's current Preview + Live output as downscaled thumbnails (86ajtwq28),
@@ -1890,17 +1787,11 @@ impl RemoteOperator {
         ),
         selahcue_lan::TransportError,
     > {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::GetConsoleThumbnails { max_w, max_h })
-            .await?
-        {
-            ServerMessage::ConsoleThumbnails { preview, live } => Ok((preview, live)),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected console_thumbnails, got: {other:?}"
-            ))),
-        }
+        reply::expect_console_thumbnails(
+            self.client
+                .command(Command::GetConsoleThumbnails { max_w, max_h })
+                .await?,
+        )
     }
 
     /// Fetch a named Audience screen's LIVE content rendered under its per-screen theme, as a
@@ -1912,21 +1803,15 @@ impl RemoteOperator {
         max_w: u32,
         max_h: u32,
     ) -> Result<Option<selahcue_lan::protocol::ThumbView>, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::GetScreenFrame {
-                screen: screen.to_string(),
-                max_w,
-                max_h,
-            })
-            .await?
-        {
-            ServerMessage::ScreenFrame { frame, .. } => Ok(frame),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected screen_frame, got: {other:?}"
-            ))),
-        }
+        reply::expect_screen_frame(
+            self.client
+                .command(Command::GetScreenFrame {
+                    screen: screen.to_string(),
+                    max_w,
+                    max_h,
+                })
+                .await?,
+        )
     }
 
     /// Send a mutating command, then read back the fresh authoritative view. A command
@@ -1936,26 +1821,15 @@ impl RemoteOperator {
         &mut self,
         command: Command,
     ) -> Result<OperatorView, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(command).await? {
-            ServerMessage::Ack { .. } | ServerMessage::Denied { .. } => {}
-            other => {
-                return Err(selahcue_lan::TransportError::Protocol(format!(
-                    "unexpected reply to command: {other:?}"
-                )))
-            }
-        }
+        reply::expect_ack_or_denied(self.client.command(command).await?)?;
         self.request_state().await
     }
 
     async fn request_state(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
-        use selahcue_lan::protocol::ServerMessage;
-        match self.client.command(Command::GetOperatorState).await? {
-            ServerMessage::OperatorState { view } => Ok(view.into()),
-            other => Err(selahcue_lan::TransportError::Protocol(format!(
-                "expected operator_state, got: {other:?}"
-            ))),
-        }
+        Ok(
+            reply::expect_operator_state(self.client.command(Command::GetOperatorState).await?)?
+                .into(),
+        )
     }
 }
 
