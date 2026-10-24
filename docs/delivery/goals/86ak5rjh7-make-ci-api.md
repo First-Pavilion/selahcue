@@ -57,7 +57,7 @@ Non-goals (17tnw2b9aaw, 17tnw2b9aax).
 
 - `make api-install` (the one step that installs) and `make api-check` (system checks, migrations committed, pytest, on SQLite, never installs, refuses an untrustworthy venv); `scripts/api_venv.py` holds the logic.
 - `make ci` calls `api-check`.
-- An exact `setuptools` pin in `implementation/api/pyproject.toml`'s `[build-system]` (owner-conditioned interim).
+- An exact `setuptools` pin in `implementation/api/pyproject.toml`'s `[build-system]` (owner-conditioned interim). Known advisory, accepted by the owner: GHSA-xmj3-9gf7-h52w (LOW, CWE-22, a wheel `namespace_packages.txt` path escape on Windows through setuptools' legacy egg install path; affects 38.2.2 up to but not including 84.1.0, fixed 2026-10-19). It does not apply: editable PEP 517/660 builds on macOS, Linux CI and Linux Docker, no egg install, no `setup_requires`. 84.1.0 is inside the two-week window; bump to 84.1.0 or later on or after 2026-11-02 (the bump is also noted on 17tnw2az0kw's scope).
 - The Makefile header, the targets' help text, `CLAUDE.md` and `implementation/api/README.md` state what is and is not covered, and what the install does and does not guarantee.
 - `scripts/check_api_gate.py`: self-test of the targets' logic, a comparison with `ci.yml`'s `api` job, and a mutation proof.
 - Linked follow-up tickets for the acceptance criteria not in this PR.
@@ -151,6 +151,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier executed: see the PR description for exit codes and counts at the head SHA.
 - Result: all rows above PASS at the PR head; counts and exit codes are in the PR description.
 - New evidence: GNU Make 3.81 exports `export VAR` placed before `VAR ?= x` as an empty string; the default interpreter is defined first and a case plus a mutation pin it.
+- Decision: gate-review
+
+### Iteration 4 (round 2 review, last push)
+
+- Target criterion: C-004, C-005, C-006, C-010, C-012
+- Hypothesis: the install must take its lock first and mark its directory before creating content, so any interruption or failed `python -m venv` leaves something the next `make api-install` may clear.
+- Change or investigation: lock first, then the exists/marker check; the marker is now a file next to the venv (`.venv-api-check.marker`), written before `python -m venv --clear`; one-line refusals for a read-only checkout and for SIGINT; `verify` compares the Python minor version (a patch update is fine), refuses a non-object stamp, and its API_PYTHON message says to keep it exported; `api-check` runs before the self-test in `make ci`; `.gitignore` and `.dockerignore` use `.venv-api-check*`; the setuptools advisory is recorded above the pin; new cases and mutations for each.
+- Verifier executed: self-test, mutation proof, `make api-install` then `make api-check`, guards, `make -n ci`, `make ci` (counts in the PR description).
+- Result: all rows above PASS at the PR head.
+- New evidence: the old install order really did strand an unmarked directory and make the loser of a race print the wrong message (reviewer reproductions); both are now cases.
 - Decision: gate-review
 
 ## Risks and rollback

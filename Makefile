@@ -672,8 +672,10 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # desktop developer never gets packages installed by surprise. The venv comes from a deliberate
 # `make api-install` (needs the network; Python 3.14 on PATH, or API_PYTHON=/path/to/python >=3.12), and
 # `api-check` REFUSES, naming `make api-install`, when the venv is missing, was not made by api-install,
-# is a symlink, was built with another interpreter, or pyproject.toml changed since it was installed
-# (SHA-256 of the file, so a content-neutral `touch` does not refuse). A fresh worktree therefore needs
+# is a symlink, was built with another Python minor version, or pyproject.toml changed since it was
+# installed (SHA-256 of the file, so a content-neutral `touch` does not refuse, and neither does a patch
+# update such as 3.14.5 to 3.14.6). If the venv was built with an interpreter other than the default
+# python3.14, keep API_PYTHON exported for api-check too, or it will see the mismatch. A fresh worktree therefore needs
 # `make api-install` once, then again after a pyproject.toml change. The logic lives in
 # scripts/api_venv.py; its header explains every guard.
 #
@@ -692,8 +694,9 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # so the install sees the developer's full environment.
 #
 # THE VENV is `implementation/api/.venv-api-check`: a name only this target uses (a developer's own
-# `.venv` is never touched), gitignored and dockerignored, per checkout. api-install only ever rebuilds a
-# directory that carries its marker file. The first recipe line of api-check also asserts, on every run,
+# `.venv` is never touched), gitignored and dockerignored, per checkout. api-install takes a lock, then
+# only ever rebuilds a directory whose marker file (`.venv-api-check.marker`, written before any venv
+# content) exists, so an interrupted install can always be retried. The first recipe line of api-check also asserts, on every run,
 # that `selahcue_api` imports from THIS checkout (python -I). That is not because a borrowed venv would
 # test the other checkout's code (the cwd and pytest.ini's `pythonpath = .` win on sys.path); it is
 # because the venv's third-party packages would have been resolved from ANOTHER tree's pyproject.toml.
@@ -817,13 +820,14 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	# recursive-make pattern as marketing-check, and like it this NEVER installs: a fresh worktree runs
 	# `make api-install` once (network, Python 3.14), and api-check refuses with that instruction until
 	# then. See the api-check comment above for everything it does and does not cover.
-	# The gate's own logic, tested against a fake API in a scratch repo (offline): that the
+	$(MAKE_RECURSE) --no-print-directory api-check
+	# After api-check on purpose: a fresh worktree is told to run `make api-install` at once instead of waiting
+	# for this to finish first. The gate's own logic, tested against a fake API in a scratch repo (offline): that the
 	# targets refuse, install, reuse, rebuild, refuse a venv from another checkout, go red on a failing
 	# test / missing migration / failed install, and never skip. `--mutation-proof` (by hand, after
 	# editing the api targets or scripts/api_venv.py) breaks them on purpose and requires each case to
 	# go red.
 	python3 scripts/check_api_gate.py --self-test
-	$(MAKE_RECURSE) --no-print-directory api-check
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings

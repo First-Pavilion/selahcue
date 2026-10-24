@@ -14,14 +14,21 @@ Paths come as arguments from Makefile variables that are `override`-protected.
 
 WHY EACH GUARD EXISTS (every one has a case in scripts/check_api_gate.py and a mutation that removes it):
 
-  * A directory name only this target uses (`.venv-api-check`), and a marker file inside it. `install`
-    only ever `--clear`s a directory that carries the marker; anything else at that path is refused,
-    never wiped. A developer's own `.venv` is a different name and is never touched.
+  * A directory name only this target uses (`.venv-api-check`), and a marker file NEXT TO it
+    (`.venv-api-check.marker`). `install` takes the lock first, then only ever `--clear`s a directory whose
+    marker exists; anything else at that path is refused, never wiped. The marker is written BEFORE any
+    venv content is created, so an interrupted or failed `python -m venv` leaves a marked directory that
+    the next install may clear, never an unmarked one it must refuse. A developer's own `.venv` is a
+    different name and is never touched.
   * A symlink at the venv path is refused. A link can point at another checkout's venv, whose
     third-party packages came from another tree's pyproject.toml.
   * The stamp is written LAST and records the interpreter version and the SHA-256 of pyproject.toml.
-    `verify` recomputes both: a changed dependency pin or a different interpreter is a refusal, a
-    content-neutral `touch` is not. An interrupted install leaves no stamp, so it is never trusted.
+    `verify` recomputes both: a changed dependency pin or a different Python MINOR version is a refusal;
+    a content-neutral `touch` and a patch update of the same minor (Homebrew 3.14.5 to 3.14.6) are not.
+    An interrupted install leaves no stamp, so it is never trusted. The stamp, not the environment, governs
+    `verify`: an `API_PYTHON` that does not resolve (python3.99) is ignored on purpose, while one that
+    resolves to a different minor than the venv's is a refusal, so keep `API_PYTHON` exported for
+    `make api-check` if the venv was built with anything but the default `python3.14`.
   * `install` takes a lock directory, so two first runs at once cannot both rewrite the venv.
   * `verify` imports `selahcue_api` with `python -I` and requires the exact file under this checkout's
     implementation/api, so a venv installed from another checkout is refused. (Not because it would
@@ -44,7 +51,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-MARKER = ".selahcue-api-check-venv"
+MARKER_SUFFIX = ".marker"
 STAMP = ".selahcue-api-installed"
 MIN_VERSION = (3, 12)
 
@@ -56,6 +63,10 @@ def die(msg):
 
 def venv_python(venv):
     return venv / "bin" / "python"
+
+
+def marker_path(venv):
+    return venv.with_name(venv.name + MARKER_SUFFIX)
 
 
 def pyproject_sha(api):
@@ -105,28 +116,37 @@ def cmd_install(api, venv):
         die("Python %s is too old -- implementation/api needs Python >=3.12 (CI pins 3.14).\n"
             "  Run: make api-install API_PYTHON=/path/to/python3.14" % full)
     check_venv_path(venv)
-    exists = venv.exists()
-    if exists and not (venv.is_dir() and (venv / MARKER).is_file()):
-        die("%s exists but was not created by `make api-install` (no %s inside) -- refusing to clear it.\n"
-            "  Move or delete it yourself if you are sure, then run: make api-install" % (venv, MARKER))
     lock = Path(str(venv) + ".lock")
+    marker = marker_path(venv)
     try:
         os.mkdir(str(lock))
     except FileExistsError:
         die("%s exists: another `make api-install` is running, or a previous one was killed.\n"
             "  If none is running, remove that directory and run again." % lock)
+    except OSError as e:
+        die("cannot create %s (%s) -- is this checkout read-only?\n"
+            "  Run `make api-install` from a writable checkout." % (lock, e.strerror or e))
     try:
+        # The lock is held, so nobody else is mid-way through this directory: what is here is ours or foreign.
+        if venv.exists() and not (venv.is_dir() and marker.is_file()):
+            die("%s exists but was not created by `make api-install` (no %s next to it) -- refusing to clear it.\n"
+                "  Move or delete it yourself if you are sure, then run: make api-install" % (venv, marker.name))
         print("api-install: building %s with Python %s and running pip install -e \".[dev]\" "
               "(needs the network; direct dependencies are pinned, transitive ones are not locked)" % (venv, full))
-        args = [exe, "-m", "venv"] + (["--clear"] if exists else []) + [str(venv)]
-        subprocess.run(args, check=True)
-        (venv / MARKER).write_text("created by make api-install\n")
+        marker.write_text("created by make api-install\n")  # BEFORE any venv content exists
+        subprocess.run([exe, "-m", "venv", "--clear", str(venv)], check=True)
         subprocess.run([str(venv_python(venv)), "-m", "pip", "install", "--disable-pip-version-check", "--quiet",
                         "-e", ".[dev]"], cwd=str(api), check=True)
         (venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api)}) + "\n")
     except subprocess.CalledProcessError as e:
         die("`%s` failed (exit %d); the venv is incomplete and has no stamp, so api-check will not trust it.\n"
-            "  Fix the cause (network?) and run: make api-install" % (" ".join(map(str, e.cmd[:4])), e.returncode))
+            "  Fix the cause (network? a missing python3-venv package?) and run: make api-install"
+            % (" ".join(map(str, e.cmd[:4])), e.returncode))
+    except KeyboardInterrupt:
+        die("interrupted: the venv is partial and has no stamp, so api-check will not trust it.\n"
+            "  Run: make api-install  (it rebuilds the partial directory)")
+    except OSError as e:
+        die("%s: %s\n  Fix the cause and run: make api-install" % (e.filename or venv, e.strerror or e))
     finally:
         shutil.rmtree(str(lock), ignore_errors=True)
     print("api-install: done -- Python %s in %s" % (full, venv))
@@ -137,17 +157,19 @@ def cmd_verify(api, venv):
     check_venv_path(venv)
     if not venv.is_dir():
         die("%s does not exist.\n  %s" % (venv, again))
-    if not (venv / MARKER).is_file():
-        die("%s was not created by `make api-install` (no %s inside).\n  %s" % (venv, MARKER, again))
+    if not marker_path(venv).is_file():
+        die("%s was not created by `make api-install` (no %s next to it).\n  %s" % (venv, marker_path(venv).name, again))
     try:
         stamp = json.loads((venv / STAMP).read_text())
     except (OSError, ValueError):
+        stamp = None
+    if not isinstance(stamp, dict):
         die("%s has no valid install stamp: the install was interrupted or never finished.\n  %s" % (venv, again))
     py = venv_python(venv)
     actual = interpreter_version(py)
     if actual is None:
         die("%s cannot run: its interpreter is gone or broken.\n  %s" % (py, again))
-    if stamp.get("python") != actual[0]:
+    if str(stamp.get("python")).split(".")[:2] != actual[0].split(".")[:2]:
         die("the venv was built with Python %s but now runs Python %s (the interpreter changed in place).\n  %s"
             % (stamp.get("python"), actual[0], again))
     wanted = os.environ.get("API_PYTHON", "").strip()
@@ -155,7 +177,8 @@ def cmd_verify(api, venv):
         exe = shutil.which(wanted)
         found = interpreter_version(exe) if exe else None
         if found is not None and found[1] != actual[1]:
-            die("the venv was built with Python %s.%s but API_PYTHON is Python %s.%s.\n  %s"
+            die("the venv was built with Python %s.%s but API_PYTHON is Python %s.%s (the default is python3.14).\n"
+                "  Keep API_PYTHON exported to the interpreter you built with (export API_PYTHON=...), or rebuild.\n  %s"
                 % (actual[1][0], actual[1][1], found[1][0], found[1][1], again))
     if stamp.get("pyproject_sha256") != pyproject_sha(api):
         die("implementation/api/pyproject.toml changed since the venv was installed (dependency pins may differ).\n  %s"

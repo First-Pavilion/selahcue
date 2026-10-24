@@ -25,24 +25,29 @@ Makefile defaults to. Not found is an error, never a skip. The script itself is 
 """
 
 import argparse
+import fnmatch
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
+import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MAKEFILE = REPO / "Makefile"
 HELPER = REPO / "scripts" / "api_venv.py"
+GITIGNORE = REPO / "implementation" / "api" / ".gitignore"
+DOCKERIGNORE = REPO / "implementation" / "api" / ".dockerignore"
 CI_YML = REPO / ".github" / "workflows" / "ci.yml"
 
 VENV_NAME = ".venv-api-check"
 STAMP_NAME = ".selahcue-api-installed"
-MARKER_NAME = ".selahcue-api-check-venv"
+MARKER_SUFFIX = ".marker"  # the marker is a file NEXT TO the venv directory
 
 # Variables that must never reach the test commands, whatever the caller exported.
 LEAKY = ["SQL_ENGINE", "SQL_HOST", "CACHE_URL", "CELERY_BROKER_URL", "SECRET_KEY", "PYTHONPATH"]
@@ -90,7 +95,6 @@ EXTRA_DEP = "extradep"
 
 
 def build_wheelhouse(directory):
-    import zipfile
     directory.mkdir(parents=True, exist_ok=True)
     name = "%s-1.0" % EXTRA_DEP
     files = {
@@ -194,17 +198,36 @@ def find_python():
              "cannot build the scratch venvs. This is an error, not a skip -- `make api-install` needs it too.")
 
 
-def fake_interpreter(real, path, version_tuple):
-    """A script that behaves as the real interpreter but reports itself as `version_tuple`."""
+def real_version(python):
+    out = subprocess.run([python, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+                         capture_output=True, text=True).stdout.strip()
+    return tuple(int(x) for x in out.split("."))
+
+
+def fake_interpreter(real, path, version_tuple, venv_mode=None):
+    """A script that behaves as the real interpreter but reports itself as `version_tuple`.
+
+    `venv_mode` changes only what `-m venv <dir>` does: "fail-partial" leaves a half-built directory and
+    exits 1, "fail-empty" exits 1 having created nothing, "hold:N" creates the directory, sleeps N seconds
+    (holding the install lock) and then builds the venv for real.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     banner = "Python %d.%d.%d" % version_tuple
+    venv_branch = ""
+    if venv_mode == "fail-partial":
+        venv_branch = 'mkdir -p "$last"; echo partial > "$last/junk"; exit 1'
+    elif venv_mode == "fail-empty":
+        venv_branch = "exit 1"
+    elif venv_mode and venv_mode.startswith("hold:"):
+        venv_branch = 'mkdir -p "$last"; sleep %s' % venv_mode.split(":")[1]
     path.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  --version) echo '%s' ;;\n"
         '  -c) exec "%s" -c "import sys; sys.version_info = (%d, %d, %d, \'final\', 0)\n$2" ;;\n'
+        '  -m) if [ "$2" = venv ]; then for a in "$@"; do last="$a"; done; %s; fi; exec "%s" "$@" ;;\n'
         '  *) exec "%s" "$@" ;;\n'
-        "esac\n" % (banner, real, version_tuple[0], version_tuple[1], version_tuple[2], real)
+        "esac\n" % (banner, real, version_tuple[0], version_tuple[1], version_tuple[2], venv_branch or ":", real, real)
     )
     path.chmod(0o755)
     return str(path)
@@ -234,7 +257,8 @@ class Repo:
         (self.api / "tests" / "test_ok.py").write_text("")
         self.venv = self.api / VENV_NAME
         self.stamp = self.venv / STAMP_NAME
-        self.marker = self.venv / MARKER_NAME
+        self.marker = Path(str(self.venv) + MARKER_SUFFIX)
+        self.lock = Path(str(self.venv) + ".lock")
 
     def log_lines(self):
         log = self.api / "calls.log"
@@ -251,14 +275,18 @@ class Repo:
             (self.api / f).unlink(missing_ok=True)
         (self.api / "tests" / "test_broken.py").unlink(missing_ok=True)
 
-    def make(self, *args, python=None, env=None, cwd=None, makefile=None, timeout=600):
-        """`python=None` passes this fixture's interpreter, `python=False` passes none at all."""
+    def base_env(self, env=None):
         e = dict(os.environ)
         for k in ["API_PYTHON", "MAKEFLAGS", "MAKELEVEL", "MFLAGS", "SQL_DATABASE"] + LEAKY:
             e.pop(k, None)
         e["PIP_NO_INDEX"] = "1"  # pip install runs with the developer's environment: here, offline
         e["PIP_FIND_LINKS"] = str(self.wheelhouse)
         e.update(env or {})
+        return e
+
+    def make(self, *args, python=None, env=None, cwd=None, makefile=None, timeout=600):
+        """`python=None` passes this fixture's interpreter, `python=False` passes none at all."""
+        e = self.base_env(env)
         cmd = ["make"]
         cmd += ["-f", str(makefile)] if makefile else ["-C", str(self.root)]
         cmd += list(args)
@@ -477,6 +505,7 @@ def wrong_tree_venv_is_refused(ctx):
     a = shared_repo(ctx)
     b = new_repo(ctx, "othertree")
     shutil.copytree(str(a.venv), str(b.venv), symlinks=True)
+    shutil.copy(str(a.marker), str(b.marker))
     rc, out = b.check_gate()
     check(rc != 0, "a venv installed from another checkout was accepted:\n" + out)
     check("another checkout" in out, "the wrong-tree refusal is not explained:\n" + out)
@@ -508,6 +537,7 @@ def foreign_directory_is_never_cleared(ctx):
     check(rc != 0, "api-install cleared a directory it did not create:\n" + out)
     check((r.venv / "keep.txt").exists(), "api-install deleted a foreign file")
     check("not created by" in out, "the refusal does not say why:\n" + out)
+    check(not r.marker.exists(), "a marker was written for a directory that is not ours")
     own = new_repo(ctx, "owndotvenv")
     (own.api / ".venv").mkdir()
     (own.api / ".venv" / "keep.txt").write_text("my venv")
@@ -628,6 +658,146 @@ def broken_venv_is_refused_with_the_fix(ctx):
         check(r.calls() == [], "commands ran: %r" % r.calls())
 
 
+def failed_venv_creation_can_be_retried(ctx):
+    """`python -m venv` itself failing (half-built directory or nothing) never strands an unmarked directory."""
+    real = real_version(ctx["python"])
+    for mode in ("fail-partial", "fail-empty"):
+        r = new_repo(ctx, "venvfail-" + mode)
+        bad = fake_interpreter(ctx["python"], Path(ctx["tmp"]) / ("py-" + mode) / "python3", real, venv_mode=mode)
+        rc, out = r.install(python=bad)
+        check(rc != 0, "a failing `python -m venv` still exited 0 (%s):\n%s" % (mode, out))
+        check(not r.lock.exists(), "the lock was left behind after a failed venv creation (%s)" % mode)
+        check(r.marker.exists(), "no marker after a failed venv creation (%s): the next install would refuse its own debris" % mode)
+        rc, out = r.install()
+        check(rc == 0 and "not created by" not in out, "the retry after a failed venv creation (%s) did not succeed:\n%s" % (mode, out))
+        rc, out = r.check_gate()
+        check(rc == 0, out)
+
+
+def interrupted_install_can_be_retried(ctx):
+    """SIGINT during the venv build: a one-line refusal (no traceback), no lock left, the retry succeeds."""
+    r = new_repo(ctx, "sigint")
+    slow = fake_interpreter(ctx["python"], Path(ctx["tmp"]) / "py-slow" / "python3", real_version(ctx["python"]), venv_mode="hold:30")
+    p = subprocess.Popen(["make", "-C", str(r.root), "api-install", "API_PYTHON=%s" % slow], stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True, env=r.base_env())
+    deadline = time.time() + 30
+    while not r.lock.exists() and time.time() < deadline and p.poll() is None:
+        time.sleep(0.05)
+    check(r.lock.exists(), "the install never took its lock")
+    time.sleep(0.7)  # inside `python -m venv`
+    os.killpg(p.pid, signal.SIGINT)
+    out = p.communicate(timeout=60)[0]
+    check(p.returncode != 0, "an interrupted install exited 0:\n" + out)
+    check("Traceback" not in out, "SIGINT printed a traceback instead of a refusal:\n" + out)
+    check("interrupted" in out and "make api-install" in out, "the interruption is not explained with the fix:\n" + out)
+    check(not r.lock.exists(), "the lock survived an interrupted install")
+    check(r.marker.exists(), "no marker after an interrupted install")
+    rc, out = r.install()
+    check(rc == 0 and "not created by" not in out, "the retry after SIGINT did not succeed:\n" + out)
+
+
+def concurrent_loser_prints_the_lock_message(ctx):
+    """While one install is building, a second prints the lock message (not 'not created by') and changes nothing."""
+    r = new_repo(ctx, "race")
+    slow = fake_interpreter(ctx["python"], Path(ctx["tmp"]) / "py-hold4" / "python3", real_version(ctx["python"]), venv_mode="hold:4")
+    winner = subprocess.Popen(["make", "-C", str(r.root), "api-install", "API_PYTHON=%s" % slow], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, env=r.base_env())
+    deadline = time.time() + 30
+    while not r.lock.exists() and time.time() < deadline and winner.poll() is None:
+        time.sleep(0.05)
+    time.sleep(0.5)  # the winner has made a half-built directory by now
+    rc, out = r.install()
+    wout = winner.communicate(timeout=120)[0]
+    check(rc != 0 and "another" in out, "the second install did not print the lock message:\n" + out)
+    check("not created by" not in out, "the second install blamed a half-built directory instead of the lock:\n" + out)
+    check(winner.returncode == 0, "the first install did not finish cleanly:\n" + wout)
+    rc, out = r.check_gate()
+    check(rc == 0, out)
+
+
+def read_only_checkout_is_a_one_line_refusal(ctx):
+    """api-install in a read-only checkout names the path and the fix; no traceback."""
+    check(os.geteuid() != 0, "cannot test a read-only checkout as root: run this self-test as a normal user")
+    r = new_repo(ctx, "readonly")
+    os.chmod(str(r.api), 0o555)
+    try:
+        rc, out = r.install()
+    finally:
+        os.chmod(str(r.api), 0o755)
+    check(rc != 0, "api-install in a read-only checkout exited 0:\n" + out)
+    check("Traceback" not in out and "PermissionError" not in out, "a raw traceback instead of a refusal:\n" + out)
+    check("read-only" in out and VENV_NAME in out, "the refusal does not name the path and the cause:\n" + out)
+
+
+def venv_without_marker_is_refused(ctx):
+    """A venv with a valid stamp but no marker is not ours: api-check refuses and names api-install."""
+    r = installed_repo(ctx, "nomarker")
+    r.marker.unlink()
+    rc, out = r.check_gate()
+    check(rc != 0, "a venv with no marker was accepted:\n" + out)
+    check("make api-install" in out and "not created by" in out, "the refusal is not actionable:\n" + out)
+    check(r.calls() == [], "commands ran: %r" % r.calls())
+
+
+def patch_update_of_the_interpreter_is_not_refused(ctx):
+    """The same Python minor with another patch version (3.14.5 to 3.14.6) does not force a networked reinstall."""
+    r = shared_repo(ctx)
+    original = r.stamp.read_text()
+    try:
+        major_minor = ".".join(str(x) for x in real_version(ctx["python"])[:2])
+        r.stamp.write_text(re.sub(r'"python": "[^"]*"', '"python": "%s.99"' % major_minor, original))
+        rc, out = r.check_gate()
+    finally:
+        r.stamp.write_text(original)
+    check(rc == 0, "a patch-version change was refused:\n" + out)
+
+
+def stamp_that_is_not_an_object_is_refused(ctx):
+    """A stamp holding valid JSON that is not an object is a refusal naming the fix, not a traceback."""
+    r = shared_repo(ctx)
+    original = r.stamp.read_text()
+    try:
+        r.stamp.write_text("[]\n")
+        rc, out = r.check_gate()
+    finally:
+        r.stamp.write_text(original)
+    check(rc != 0 and "make api-install" in out, "a non-object stamp was not refused with the fix:\n" + out)
+    check("Traceback" not in out and "AttributeError" not in out, "a traceback instead of a refusal:\n" + out)
+
+
+def unresolvable_api_python_is_ignored_by_check(ctx):
+    """api-check ignores an API_PYTHON that does not resolve (python3.99): the stamp governs, on purpose."""
+    r = shared_repo(ctx)
+    rc, out = r.check_gate(python="python3.99")
+    check(rc == 0, "an unresolvable API_PYTHON broke api-check:\n" + out)
+
+
+def ignore_files_cover_the_venv_names(ctx):
+    """.gitignore ignores the venv, its lock and its marker, also as a symlink; .dockerignore lists them."""
+    names = [VENV_NAME, VENV_NAME + ".lock", VENV_NAME + MARKER_SUFFIX]
+    for kind in ("directories", "symlink"):
+        repo = Path(ctx["tmp"]) / ("gitignore-" + kind)
+        api = repo / "implementation" / "api"
+        api.mkdir(parents=True)
+        (api / ".gitignore").write_text(ctx["gitignore_text"])
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        if kind == "directories":
+            (api / names[0]).mkdir()
+            (api / names[0] / "f").write_text("x")
+            (api / names[1]).mkdir()
+        else:
+            (api / "elsewhere").mkdir()
+            os.symlink(str(api / "elsewhere"), str(api / names[0]))
+        (api / names[2]).write_text("x")
+        out = subprocess.run(["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+                             capture_output=True, text=True).stdout
+        shown = [l for l in out.splitlines() if "venv-api-check" in l]
+        check(not shown, "git would show %s as untracked (%s case): %r" % (names, kind, shown))
+    patterns = [l.strip().rstrip("/") for l in ctx["dockerignore_text"].splitlines() if l.strip() and not l.startswith("#")]
+    for n in names:
+        check(any(fnmatch.fnmatchcase(n, pat) for pat in patterns), ".dockerignore does not cover %s" % n)
+
+
 def old_interpreter_fails_loudly(ctx):
     """Python below 3.12: non-zero, fix named, no venv."""
     r = new_repo(ctx, "oldpython")
@@ -641,7 +811,7 @@ def old_interpreter_fails_loudly(ctx):
 def interpreter_path_with_spaces_works(ctx):
     """An interpreter path containing spaces is data: it works."""
     r = new_repo(ctx, "spaces")
-    spaced = fake_interpreter(ctx["python"], Path(ctx["tmp"]) / "dir with spaces" / "python3", (3, 14, 0))
+    spaced = fake_interpreter(ctx["python"], Path(ctx["tmp"]) / "dir with spaces" / "python3", real_version(ctx["python"]))
     rc, out = r.install(python=spaced)
     check(rc == 0, "an interpreter path with spaces failed:\n" + out)
 
@@ -803,6 +973,15 @@ CASES = [
     api_install_rebuilds_cleanly,
     api_check_output_states_the_skips,
     default_interpreter_is_python3_14,
+    failed_venv_creation_can_be_retried,
+    interrupted_install_can_be_retried,
+    concurrent_loser_prints_the_lock_message,
+    read_only_checkout_is_a_one_line_refusal,
+    venv_without_marker_is_refused,
+    patch_update_of_the_interpreter_is_not_refused,
+    stamp_that_is_not_an_object_is_refused,
+    unresolvable_api_python_is_ignored_by_check,
+    ignore_files_cover_the_venv_names,
     blank_interpreter_never_refreshes_a_stale_venv,
     api_recipes_do_not_start_with_a_user_variable,
     broken_venv_is_refused_with_the_fix,
@@ -837,13 +1016,14 @@ CASES = [
 ]
 
 
-def run_cases(makefile_path, helper_path, only=None, quiet=False):
+def run_cases(makefile_path, helper_path, only=None, quiet=False, gitignore_path=GITIGNORE, dockerignore_path=DOCKERIGNORE):
     """Returns {case name: None (pass) or failure text}."""
     python = find_python()
     results = {}
     with tempfile.TemporaryDirectory(prefix="check_api_gate_") as tmp:
         ctx = {"tmp": tmp, "python": python, "makefile_path": str(makefile_path),
                "makefile_text": Path(makefile_path).read_text(), "helper_text": Path(helper_path).read_text(),
+               "gitignore_text": Path(gitignore_path).read_text(), "dockerignore_text": Path(dockerignore_path).read_text(),
                "wheelhouse": Path(tmp) / "wheelhouse"}
         build_wheelhouse(ctx["wheelhouse"])
         for fn in CASES:
@@ -868,7 +1048,7 @@ def run_cases(makefile_path, helper_path, only=None, quiet=False):
 # (what is broken, file, [(old, new) or (old, new, count) replacements], the case that must go red).
 # Each `old` must occur exactly `count` (default 1) times, so a refactor that moves the line breaks the
 # proof loudly instead of silently proving nothing.
-M, H = "Makefile", "scripts/api_venv.py"
+M, H, G, D = "Makefile", "scripts/api_venv.py", "implementation/api/.gitignore", "implementation/api/.dockerignore"
 _ENV = 'env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:'
 _STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api)}) + "\\n")'
 MUTATIONS = [
@@ -910,14 +1090,31 @@ MUTATIONS = [
                                                        ('        subprocess.run([str(venv_python(venv)), "-m", "pip"',
                                                         "        " + _STAMP_LINE + '\n        subprocess.run([str(venv_python(venv)), "-m", "pip"')],
      "failed_rebuild_from_a_good_venv_is_not_trusted"),
-    ("--clear dropped", H, [('(["--clear"] if exists else [])', "[]")], "api_install_rebuilds_cleanly"),
-    ("marker check before clearing removed", H, [("    if exists and not (venv.is_dir() and (venv / MARKER).is_file()):", "    if False:")],
+    ("--clear dropped", H, [('[exe, "-m", "venv", "--clear", str(venv)]', '[exe, "-m", "venv", str(venv)]')], "api_install_rebuilds_cleanly"),
+    ("marker check before clearing removed", H, [("        if venv.exists() and not (venv.is_dir() and marker.is_file()):", "        if False:")],
      "foreign_directory_is_never_cleared"),
+    ("marker written after the venv exists", H, [('        marker.write_text("created by make api-install\\n")  # BEFORE any venv content exists\n', ""),
+                                               ('        subprocess.run([str(venv_python(venv)), "-m", "pip"',
+                                                '        marker.write_text("created by make api-install\\n")\n        subprocess.run([str(venv_python(venv)), "-m", "pip"')],
+     "failed_venv_creation_can_be_retried"),
+    ("verify no longer needs the marker", H, [("    if not marker_path(venv).is_file():", "    if False:")], "venv_without_marker_is_refused"),
+    ("full interpreter version compared (a patch update refuses)", H,
+     [('    if str(stamp.get("python")).split(".")[:2] != actual[0].split(".")[:2]:', '    if str(stamp.get("python")) != actual[0]:')],
+     "patch_update_of_the_interpreter_is_not_refused"),
+    ("non-object stamp trusted", H, [("    if not isinstance(stamp, dict):", "    if False:")], "stamp_that_is_not_an_object_is_refused"),
+    ("lock failure not caught as a refusal", H, [('    except OSError as e:\n        die("cannot create', '    except ZeroDivisionError as e:\n        die("cannot create')],
+     "read_only_checkout_is_a_one_line_refusal"),
+    ("SIGINT not caught", H, [("    except KeyboardInterrupt:", "    except ZeroDivisionError:")], "interrupted_install_can_be_retried"),
+    ("unresolvable API_PYTHON becomes a refusal", H, [("        if found is not None and found[1] != actual[1]:", "        if found is None or found[1] != actual[1]:")],
+     "unresolvable_api_python_is_ignored_by_check"),
+    (".gitignore pattern would miss a symlink or the lock", G, [(".venv-api-check*\n", ".venv-api-check/\n")], "ignore_files_cover_the_venv_names"),
+    (".dockerignore drops the venv names", D, [(".venv-api-check*\n", "")], "ignore_files_cover_the_venv_names"),
     ("symlink refusal removed", H, [("    if os.path.islink(str(venv)):", "    if False:")], "symlinked_venv_is_refused"),
     ("pyproject hash check removed", H, [('    if stamp.get("pyproject_sha256") != pyproject_sha(api):', "    if False:")], "changed_pyproject_is_refused"),
     ("pyproject check refuses every time", H, [('    if stamp.get("pyproject_sha256") != pyproject_sha(api):', "    if True:")],
      "touching_pyproject_does_not_refuse"),
-    ("interpreter-in-place check removed", H, [('    if stamp.get("python") != actual[0]:', "    if False:")], "interpreter_changed_in_place_is_refused"),
+    ("interpreter-in-place check removed", H, [('    if str(stamp.get("python")).split(".")[:2] != actual[0].split(".")[:2]:', "    if False:")],
+     "interpreter_changed_in_place_is_refused"),
     ("API_PYTHON mismatch check removed", H, [("        if found is not None and found[1] != actual[1]:", "        if False:")],
      "api_python_of_another_version_is_refused"),
     ("missing stamp trusted (a matching one is made up)", H,
@@ -927,6 +1124,7 @@ MUTATIONS = [
      "incomplete_install_is_refused"),
     ("wrong-tree assertion neutered", H, [("assert p == root / 'selahcue_api' / '__init__.py', ", "assert 1, ")], "wrong_tree_venv_is_refused"),
     ("install lock removed", H, [("        os.mkdir(str(lock))", "        pass")], "concurrent_install_is_refused"),
+    ("install lock removed (the loser's message)", H, [("        os.mkdir(str(lock))", "        pass")], "concurrent_loser_prints_the_lock_message"),
     ("interpreter version check removed", H, [("    if major_minor < MIN_VERSION:", "    if False:")], "old_interpreter_fails_loudly"),
     ("interpreter presence check removed", H, [("    if exe is None:", "    if False:")], "missing_interpreter_fails_loudly"),
     ("API_PYTHON spliced into shell text", M, [("\t$(API_HELPER) install", "\t$(API_PYTHON) -c pass; $(API_HELPER) install")],
@@ -945,23 +1143,26 @@ MUTATIONS = [
 ]
 
 
-def apply_mutation(tmp, mutation, makefile_text, helper_text):
+def apply_mutation(tmp, mutation, texts):
+    """texts: {file key: original text}. Returns ({file key: path to use}, error)."""
     label, which, pairs, _case = mutation
-    text = makefile_text if which == M else helper_text
+    text = texts[which]
     for pair in pairs:
         old, new = pair[0], pair[1]
         count = pair[2] if len(pair) > 2 else 1
         if text.count(old) != count:
             return None, "%s: the text to mutate occurs %d times, not %d: %r" % (label, text.count(old), count, old[:70])
         text = text.replace(old, new)
-    mk, hp = Path(tmp) / "Makefile.mutated", Path(tmp) / "api_venv.mutated.py"
-    mk.write_text(text if which == M else makefile_text)
-    hp.write_text(text if which == H else helper_text)
-    return (mk, hp), None
+    paths = {}
+    for key, original in texts.items():
+        path = Path(tmp) / ("mutated-" + key.replace("/", "_"))
+        path.write_text(text if key == which else original)
+        paths[key] = path
+    return paths, None
 
 
 def mutation_proof():
-    makefile_text, helper_text = MAKEFILE.read_text(), HELPER.read_text()
+    texts = {M: MAKEFILE.read_text(), H: HELPER.read_text(), G: GITIGNORE.read_text(), D: DOCKERIGNORE.read_text()}
     failures, caught = [], 0
     with tempfile.TemporaryDirectory(prefix="check_api_gate_mut_") as tmp:
         base = run_cases(MAKEFILE, HELPER, quiet=True)
@@ -971,12 +1172,12 @@ def mutation_proof():
             sys.exit("baseline is not green, so a mutation result would mean nothing: %s" % bad)
         covered = set(m[3] for m in MUTATIONS)
         for m in MUTATIONS:
-            paths, err = apply_mutation(tmp, m, makefile_text, helper_text)
+            paths, err = apply_mutation(tmp, m, texts)
             if err:
                 failures.append(err)
                 print("  BROKEN PROOF %s" % m[0])
                 continue
-            res = run_cases(paths[0], paths[1], only=[m[3]], quiet=True)
+            res = run_cases(paths[M], paths[H], only=[m[3]], quiet=True, gitignore_path=paths[G], dockerignore_path=paths[D])
             if res.get(m[3]) is None:
                 failures.append("%s: case %s stayed GREEN with the behaviour removed" % (m[0], m[3]))
                 print("  NOT CAUGHT   %-55s -> %s" % (m[0], m[3]))

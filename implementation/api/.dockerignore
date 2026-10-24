@@ -65,8 +65,7 @@ htmlcov/
 .venv/
 venv/
 env/
-.venv-api-check
-.venv-api-check.lock
+.venv-api-check*
 
 # --- VCS, editor and OS noise ------------------------------------------------
 .git
