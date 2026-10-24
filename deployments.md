@@ -23,6 +23,8 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `SECURE_HSTS_SECONDS` | no | no | `31536000` (prod) / `0` (debug) | HSTS max-age. |
 | `SECURE_HSTS_INCLUDE_SUBDOMAINS` | no | no | `true` when not DEBUG | HSTS includeSubDomains. |
 | `SECURE_HSTS_PRELOAD` | no | no | `true` when not DEBUG | HSTS preload. |
+| `SELAHCUE_TRUST_FORWARDED_PROTO` | **prod behind a TLS proxy: yes** | no | `false` | Trust `X-Forwarded-Proto: https` (sets Django `SECURE_PROXY_SSL_HEADER`); on = `1`/`true`/`yes`/`on`, anything else off. Without it a browser `Origin: https://...` is refused by CSRF and HSTS is never sent. **Opt-in**: only where every route to Django goes through a proxy that overwrites the header, else a client can forge `https`. See `docs/ops/DEPLOYMENT.md` §6c. |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | only if `Origin` differs from the forwarded `Host` | no | `` (empty) | Space- or comma-separated exact `https://host[:port]` origins (no `*`, no path); a bad entry refuses to boot. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DJANGO_DEBUG` | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity. **MUST be `false`/unset in prod.** DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
