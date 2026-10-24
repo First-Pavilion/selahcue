@@ -42,8 +42,9 @@ ACTIVATABLE_KEY_STATUSES = frozenset(
 )
 
 # The mandatory `reason` (>= 8 characters) the licence audit row carries for the automated
-# ISSUED -> ACTIVATED move; there is no operator to supply one.
-FIRST_ACTIVATION_REASON = "First device activation of the enrollment key."
+# ISSUED -> ACTIVATED move; there is no operator to supply one. Worded to be true on both
+# entry points (enrollment key and signed-in account), so it names neither.
+FIRST_ACTIVATION_REASON = "First device activation of this licence."
 
 
 @dataclass(frozen=True)

@@ -38,12 +38,13 @@ Verified on origin/main f176db35: `apps/devices/services.py` `_activate_device_f
 - Actor is the same actor the existing `device.activated` row uses (the device, or the signed-in customer on the account path); request id is the activation idempotency key; source surface is the activation's; reason is a fixed automated-activation string.
 - Keep the `device.activated` row unchanged.
 - Remove the activation entry from `_KNOWN_DIRECT_WRITES`; update the state machine docstring that described the bypass.
-- Tests: new `tests/test_activation_licence_transition.py`; a Postgres race test in `tests/test_concurrency_postgres.py`.
+- Tests: new `tests/test_activation_licence_transition.py` (both entry points, every other licence status, validity window, device limit, replays, atomicity, secret-free audit row, tenant and role boundaries); Postgres races in `tests/test_concurrency_postgres.py`; one added assertion in `tests/test_device_activation_slice.py`.
 
 ### Non-goals
 
 - Changing activation's instance-limit, re-mint, idempotency or token logic.
-- Changing the state machine's refusal-audit durability decision (recorded in its docstring; not reopened here).
+- Changing the state machine's refusal-audit durability decision. Its docstring now names device activation as the one deliberate wrapped caller and says why that is safe there; the decision itself is not reopened.
+- Extending the writer-discipline scan's blind spots (aliased queryset or related-manager update, `update(**{...})`, `setattr`, import alias). The docstring now says so; a follow-up ticket owns it.
 - Any other licence mutation (revoke, extend, expire, suspend, convert), or `settings.py`.
 
 ### Constraints
@@ -55,7 +56,7 @@ Verified on origin/main f176db35: `apps/devices/services.py` `_activate_device_f
 ### Assumptions and unknowns
 
 - ASSUMED, validated by test: `ActorKind.DEVICE` is correct for the enrollment-key path (it is the actor the existing row carries); the account-session path keeps its CUSTOMER actor.
-- ASSUMED, validated on Postgres: re-locking the same row inside one transaction (the machine's `select_for_update` in a nested atomic block) neither deadlocks nor blocks.
+- ASSUMED, validated on Postgres: re-locking the same row inside one transaction (the machine's `select_for_update` in a nested atomic block) is a same-transaction re-entry and cannot self-deadlock; the Postgres suite shows activations parked behind a held row lock all complete once it is released, and that exactly one transition is written.
 - The machine's DENIED row on a refusal rolls back with the wrapping activation transaction. This can only happen if the table loses the ISSUED to ACTIVATED edge, and the activation then fails closed. Accepted per the decision already recorded in the state machine docstring (no new owner decision needed).
 
 ## Dependencies and approvals
@@ -65,28 +66,30 @@ Verified on origin/main f176db35: `apps/devices/services.py` `_activate_device_f
 
 ## Completion predicate
 
-All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
+All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. Every Verifier is a command run from `implementation/api` with a venv built from this worktree; the Postgres runs set `SQL_ENGINE=django.db.backends.postgresql SQL_DATABASE=selahcue_test SQL_USER=selahcue SQL_PASSWORD=selahcue SQL_HOST=<host> SQL_PORT=<port>` against a Postgres 16 container. Results and exit codes by head SHA are in the PR #214 "Evidence" section.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | After first activation an `app_license_key` audit row exists with actor, before ISSUED, after ACTIVATED, reason (>= 8 chars) and request id = idempotency key | `pytest tests/test_activation_licence_transition.py::test_first_activation_writes_a_licence_level_transition_row` | exits 0; fails against the pre-fix code and against a direct-assignment mutant | red run and mutant run logs | PASS |
-| C-002 | yes | The existing `device.activated` row is still written and unchanged | `pytest tests/test_activation_licence_transition.py::test_the_device_level_row_is_still_written_and_unchanged` | exits 0 | green run log | PASS |
-| C-003 | yes | A retry or second device writes no second ISSUED to ACTIVATED row; activating against ACTIVATED or EXPIRING writes none | `pytest tests/test_activation_licence_transition.py -k "retry or non_issued"` | exits 0 | green run log | PASS |
-| C-004 | yes | Activation consults `LEGAL_TRANSITIONS`: with the edge removed, activation is refused and nothing is written | `pytest tests/test_activation_licence_transition.py::test_activation_consults_the_transition_table` | exits 0; fails against the pre-fix code | red run log | PASS |
-| C-005 | yes | The licence transition is atomic with device and token creation | `pytest tests/test_activation_licence_transition.py::test_the_licence_transition_rolls_back_with_the_activation` | exits 0 | green run log | PASS |
-| C-006 | yes | Account-session path audits the customer as actor | `pytest tests/test_activation_licence_transition.py::test_the_account_session_path_audits_the_customer_as_actor` | exits 0 | green run log | PASS |
-| C-007 | yes | The activation site is no longer a known direct write, and the scan still passes and still catches bypass shapes | `pytest tests/test_license_state_machine.py` | exits 0; the writer-discipline test goes red under the direct-assignment mutant | full run and mutant logs | PASS |
-| C-008 | yes | On real Postgres the nested lock does not deadlock, the instance limit and re-mint races still hold, and concurrent first activations write exactly one licence transition | `pytest tests/test_concurrency_postgres.py` with `SQL_ENGINE=django.db.backends.postgresql` | exits 0, none skipped | Postgres run log | PASS |
-| C-009 | yes | Django checks and migrations are clean, and the full suite is green on SQLite and on Postgres 16 | `manage.py check`; `makemigrations --check --noinput`; `pytest tests` on both engines | all exit 0 | gate logs | PASS |
-| C-010 | yes | Diff contains no stray non-ASCII characters | grep -nP for non-ASCII over the added lines of `git diff origin/main -U0` | only visible, intentional characters (em dash, rightwards arrow, matching the surrounding comments) | command output | PASS |
-| C-011 | yes | Independent review (Cody, Shadow, Vera, Quinn) clears | orchestrator-dispatched reviews | all verdicts recorded | review report | PENDING |
+| C-001 | yes | After first activation, on both entry points, one `app_license_key` audit row exists with actor, before ISSUED, after ACTIVATED, pinned reason text, request id = idempotency key and the right source surface | `pytest tests/test_activation_licence_transition.py -k "writes_a_licence_level_transition_row or account_session_path_audits"` | exits 0; red against the pre-fix code and against a direct-assignment mutant | PR #214 Evidence (failing-first and mutation lists) | PASS |
+| C-002 | yes | The existing `device.activated` row is still written, with its payload keys pinned | `pytest tests/test_activation_licence_transition.py -k "device_level_row"` | exits 0 | PR #214 Evidence | PASS |
+| C-003 | yes | A retry, a retry from a different install, a known install re-enrolling and a second device write no second ISSUED to ACTIVATED row, on both entry points; the same request id on a different licence is not a replay | `pytest tests/test_activation_licence_transition.py -k "retry or re_enrolling or second_device or different_licence or different_install"` | exits 0 | PR #214 Evidence | PASS |
+| C-004 | yes | A licence in each non-ISSUED status (ACTIVATED, EXPIRING activate; EXPIRED, SUSPENDED, REVOKED, CONVERTED, ARCHIVED are refused) behaves as before and writes no transition and no extra audit row, on both entry points; an ISSUED licence outside its validity window or at its device limit is refused and stays ISSUED | `pytest tests/test_activation_licence_transition.py -k "any_other_status or validity_window or device_limit"` | exits 0 | PR #214 Evidence | PASS |
+| C-005 | yes | Activation consults `LEGAL_TRANSITIONS`: with the edge removed, activation fails closed with CONFLICT, nothing is written (the machine's DENIED row included, asserted), and the same request succeeds once the table is whole | `pytest tests/test_activation_licence_transition.py -k consults_the_transition_table` | exits 0; red against the pre-fix code | PR #214 Evidence | PASS |
+| C-006 | yes | The licence transition is atomic with device and token creation, whichever audit write fails and in the production (autocommit) shape | `pytest tests/test_activation_licence_transition.py -k "rolls_back or rolls_the_licence"` and `tests/test_device_activation_slice.py::test_activation_rolls_back_when_audit_write_fails` | exits 0 | PR #214 Evidence | PASS |
+| C-007 | yes | The licence row holds no secret material on either entry point; non-admin and cross-tenant sessions cannot trigger the transition | `pytest tests/test_activation_licence_transition.py -k "secret_material or non_admin or another_tenants"` | exits 0 | PR #214 Evidence | PASS |
+| C-008 | yes | The activation site is no longer a known direct write, and the scan still passes and still catches bypass shapes | `pytest tests/test_license_state_machine.py` | exits 0; the writer-discipline test goes red under the direct-assignment mutant | PR #214 Evidence | PASS |
+| C-009 | yes | On real Postgres, with the overlap forced (both requests parked on the licence-row lock via pg_stat_activity before it is released): the instance limit holds on a one-seat ISSUED licence, first activations (same licence, in-flight retry, enrollment against account) complete and write exactly one licence transition, activations of different licences do not interfere, and the re-mint and revoke races still hold. Removing the outer lock turns the limit and in-flight tests red; removing both locks turns all forced-overlap tests red | `pytest tests/test_concurrency_postgres.py` against Postgres 16 | exits 0, none skipped; repeated runs stay green | PR #214 Evidence | PASS |
+| C-010 | yes | Django checks and migrations are clean, and the full suite is green on SQLite and on Postgres 16 | `python manage.py check`; `python manage.py makemigrations --check --dry-run`; `pytest` on both engines | all exit 0 | PR #214 Evidence | PASS |
+| C-011 | yes | Diff contains no stray non-ASCII characters | grep -nP for non-ASCII over the added lines of `git diff origin/main -U0` | only visible, intentional characters (em dash, rightwards arrow, matching the surrounding text) | PR #214 Evidence | PASS |
+| C-012 | yes | Independent review (Cody, Shadow, Vera, Quinn) clears, including the re-check of round-1 findings | orchestrator-dispatched reviews | all verdicts recorded | review report | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
 ## Verification plan
 
 - Focused verification: the new test module, `test_license_state_machine.py`, `test_concurrency_postgres.py`, `test_device_activation_slice.py`.
-- Broader regression verification: full `pytest tests` on SQLite and on a throwaway Postgres 16 container.
+- Broader regression verification: full `pytest` on SQLite and on a throwaway Postgres 16 container.
+- Mutation checks: each production line the change relies on is altered in turn (direct assignment, wrong actor, fixed request id, dropped surface, dropped device link, unconditional call, secret in the row, no atomic block, no limit check, no window check, any status activatable, no row lock, no idempotent replay, replay ignoring the licence, reworded reason, swallowed refusal, no admin check, resolver ignoring org, window or status) and the suites must go red; the list and results are in the PR body.
 - Independent verifier: the four-reviewer gate dispatched by the orchestrator.
 - Required environment: venv built from this worktree's `implementation/api` (`pip install -e ".[dev]"` plus `psycopg[binary]`); Docker Postgres 16 (matches the CI service). Redis-only tests skip locally and run in CI.
 
@@ -94,12 +97,20 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ### Iteration 1
 
-- Target criterion: C-001 to C-008
+- Target criterion: C-001 to C-009
 - Hypothesis: replacing the inline assignment with one call to the audited writer, placed where the assignment was, satisfies the ticket without disturbing lock order.
 - Change or investigation: wrote failing tests first (5 of 8 red for the right reasons: no licence row, table not consulted, audit failure did not roll back); then changed `_activate_device_for_key`; narrowed `_KNOWN_DIRECT_WRITES`; updated the state machine docstring; added a Postgres race test.
 - Verifier executed: focused tests, mutation runs (direct assignment, dropped source surface, dropped device link), full suites.
 - Result: all green; each mutant turns at least one test red.
-- New evidence: see Final evaluation.
+- Decision: gate-review
+
+### Iteration 2
+
+- Target criterion: C-003 to C-009, plus review round 1 (Cody, Quinn, Shadow: 0 blockers)
+- Hypothesis: the round-1 conditions are documentation and coverage gaps, not behaviour gaps.
+- Change or investigation: state machine docstring names the deliberate wrapped caller and softens the scan claim; the DENIED row loss is asserted; imports hoisted; every non-ISSUED status, the validity window and the device limit are covered on both entry points; reason text made path-neutral and pinned; extra concurrency cases. A mutation run found that removing the idempotency-key replay branch stayed green (the fingerprint branch shadowed it), which is why the "same request from a different install" case was added.
+- Verifier executed: all of the above, mutation list re-run on the final tests.
+- Result: see PR #214 body.
 - Decision: gate-review
 
 ## Risks and rollback
@@ -116,7 +127,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5v7av-activation-state-machine.md`
 - Validator result: OK (structural), exit 0.
-- Independent verification result: pending the orchestrator's four-reviewer gate.
-- Terminal state: implementation VERIFIED_COMPLETE; contract stays open on C-011.
-- Remaining failed or blocked criteria: C-011 (independent review).
-- ClickUp final evidence comment: posted on the ticket when the PR opens.
+- Independent verification result: round 1 returned no blockers; the re-check after this push is pending.
+- Terminal state: GATE_REVIEW (implementation complete; VERIFIED_COMPLETE needs all four reviews finished).
+- Remaining failed or blocked criteria: C-012 (independent review).
+- ClickUp final evidence comment: owned by the orchestrator.

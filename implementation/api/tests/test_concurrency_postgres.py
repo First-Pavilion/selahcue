@@ -6,19 +6,31 @@ they would pass there for the wrong reason and hide the very races they exist to
 """
 
 import threading
+import time
 from datetime import timedelta
 
 import pytest
-from django.db import connection, connections
+from django.db import connection, connections, transaction
 from django.utils import timezone
 
+from selahcue_api.apps.accounts.models import CustomerRole, CustomerUser, CustomerUserStatus
+from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import (
     Device,
     DeviceStatus,
     DeviceToken,
     DeviceTokenStatus,
 )
-from selahcue_api.apps.devices.services import ActivateDeviceData, activate_device
+from selahcue_api.apps.devices.services import (
+    ActivateDeviceData,
+    ActivateDeviceWithSessionData,
+    activate_device,
+    activate_device_with_session,
+)
+from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.license_keys.state_machine import AUDIT_TARGET_TYPE
+from selahcue_api.graphql.context import ActorContext, ActorKind
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = [
     pytest.mark.django_db(transaction=True),
@@ -82,55 +94,123 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
     return result.license_key, result.full_key
 
 
-def test_concurrent_activations_cannot_exceed_the_device_limit():
-    key, full_key = _seed_license_key(tag="conc", device_limit=1)
+def _licence_row_waiters():
+    """How many backends are parked on a lock inside a licence-row query.
 
+    Matched on the start of the query text and the table name, never on the trailing
+    `FOR UPDATE`: `pg_stat_activity.query` is truncated at 1024 bytes and Django's licence
+    SELECT is longer than that, so the end of the statement is not reliably visible."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT count(*) FROM pg_stat_activity
+               WHERE datname = current_database() AND pid <> pg_backend_pid()
+                 AND wait_event_type = 'Lock' AND query ILIKE %s""",
+            [f"SELECT%{AppLicenseKey._meta.db_table}%"],
+        )
+        return cursor.fetchone()[0]
+
+
+def _race_behind_row_lock(key, targets):
+    """Run `targets` concurrently with the overlap at the licence-row lock GUARANTEED.
+
+    A barrier only lines the threads up at the start. Each activation then spends ~0.4 s in
+    PBKDF2 before it reaches the lock, so whether two of them actually contend there is down
+    to scheduling, and a test built on that passes whether or not the lock exists. Here a
+    third connection holds `FOR UPDATE` on the licence row, every target is started, and
+    this waits (polling `pg_stat_activity`) until all of them are provably parked on a lock;
+    only then is the row released. Returns (errors, waiting): `waiting` is how many were
+    parked at release time, for the caller to assert, so that "the race never formed" fails
+    loudly instead of reading as a pass.
+    """
+    holding = threading.Event()
+    release = threading.Event()
     errors = []
-    # Without this the two threads may run start-to-finish one after the other and still
-    # satisfy both assertions below — the test would pass having never produced a race at all.
-    # The barrier makes both threads enter `activate_device` together, so the select_for_update
-    # window is genuinely contended. Timeout so a thread that dies before arriving fails the
-    # test instead of hanging the suite.
-    start = threading.Barrier(2, timeout=30)
 
-    barrier_failures = []
-
-    def activate(n):
+    def hold():
         try:
-            start.wait()
-        except threading.BrokenBarrierError as exc:
-            # Kept OUT of `errors`: a barrier that never formed means the race never ran, and
-            # counting it as a rejected activation would be the false pass this guards against.
-            barrier_failures.append(exc)
+            with transaction.atomic():
+                AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
             connections.close_all()
-            return
+
+    def run(target):
         try:
-            activate_device(
-                ActivateDeviceData(
-                    # Must stay >= 12 chars: validate_idempotency_key rejects anything
-                    # shorter with VALIDATION_FAILED, which would make BOTH activations
-                    # fail and the race never run.
-                    idempotency_key=f"conc-activation-{n}",
-                    presented_key=full_key,
-                    device_fingerprint=f"fp-conc-{n}",
-                    platform="macos",
-                )
-            )
+            target()
         except Exception as exc:
             errors.append(exc)
         finally:
             connections.close_all()
 
-    threads = [threading.Thread(target=activate, args=(n,)) for n in range(2)]
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert holding.wait(30), "the holder never took the licence-row lock"
+    threads = [threading.Thread(target=run, args=(target,)) for target in targets]
     for t in threads:
         t.start()
+    deadline = time.monotonic() + 15
+    while _licence_row_waiters() < len(targets) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    waiting = _licence_row_waiters()
+    release.set()
+    holder.join(timeout=60)
     for t in threads:
-        t.join()
+        t.join(timeout=60)
+    assert not holder.is_alive() and not any(t.is_alive() for t in threads), (
+        "an activation did not complete once the licence row was released"
+    )
+    return errors, waiting
 
-    assert barrier_failures == [], f"the two activations never overlapped: {barrier_failures}"
+
+def _enroll(full_key, *, idem, fingerprint):
+    return lambda: activate_device(
+        ActivateDeviceData(
+            # Must stay >= 12 chars: validate_idempotency_key rejects anything shorter with
+            # VALIDATION_FAILED, which would make BOTH activations fail and the race never run.
+            idempotency_key=idem,
+            presented_key=full_key,
+            device_fingerprint=fingerprint,
+            platform="macos",
+        )
+    )
+
+
+def _licence_transitions(key):
+    """How many ISSUED -> ACTIVATED rows this licence carries."""
+    return AuditEvent.objects.filter(
+        target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), action="license_key.activated"
+    ).count()
+
+
+def test_concurrent_activations_cannot_exceed_the_device_limit():
+    """DEC-004. Two devices race for the one seat of a still-ISSUED licence, both parked on
+    the licence-row lock before either is let through (see `_race_behind_row_lock`).
+
+    Removing the activation's outer `select_for_update` fails this deterministically: both
+    requests then insert a device before anything serialises them, and the licence ends up
+    with two ACTIVE devices on a one-seat plan. The winner's activation is also the
+    licence's ONE ISSUED -> ACTIVATED move, and the loser's refusal leaves nothing behind
+    (86ak5v7av).
+    """
+    key, full_key = _seed_license_key(tag="conc", device_limit=1)
+
+    errors, waiting = _race_behind_row_lock(
+        key,
+        [
+            _enroll(full_key, idem=f"conc-activation-{n}", fingerprint=f"fp-conc-{n}")
+            for n in range(2)
+        ],
+    )
+
+    assert waiting == 2, f"both activations should be parked on the licence-row lock: {waiting}"
     active = Device.objects.filter(license_key=key, status=DeviceStatus.ACTIVE).count()
     assert active == 1, f"instance limit exceeded: {active} active devices, errors={errors}"
     assert len(errors) == 1, "exactly one activation should have been rejected"
+    assert isinstance(errors[0], SafeAPIError) and errors[0].code == ErrorCode.POLICY_DENIED
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert _licence_transitions(key) == 1
 
 
 def test_concurrent_remints_leave_exactly_one_live_token():
@@ -308,29 +388,17 @@ def test_concurrent_transitions_write_exactly_one_audit_row():
 
 
 # --- 86ak5v7av: first activation goes through the state machine, under a real race -------
-def test_concurrent_first_activations_write_exactly_one_licence_transition():
-    """Two desktops presenting the same, still-ISSUED enrollment key at the same instant are
-    two legitimate devices (the limit allows both), but the licence moves ISSUED -> ACTIVATED
-    exactly once and that move is audited exactly once.
-
-    `_activate_device_for_key` holds `select_for_update` on the licence row, and the state
-    machine then locks the same row inside the same transaction. The loser re-reads the row
-    after the winner commits, sees ACTIVATED and never calls the machine, so this also proves
-    the nested lock neither deadlocks (the barrier-gated threads would hang past `join`'s
-    timeout) nor double-audits.
-    """
-    from selahcue_api.apps.audit.models import AuditEvent
-    from selahcue_api.apps.license_keys.models import LicenseKeyStatus
-    from selahcue_api.apps.license_keys.state_machine import AUDIT_TARGET_TYPE
-
-    key, full_key = _seed_license_key(tag="firstconc", device_limit=3)
-    assert key.status == LicenseKeyStatus.ISSUED
-
+def _run_in_threads(targets):
+    """Start every callable at the same instant behind a barrier, join them, and return
+    (errors, barrier_failures). A barrier only aligns the START, so this proves nothing about
+    contention at a lock: use it only where the property under test does not depend on
+    overlap (activations of unrelated licences). Where it does, use `_race_behind_row_lock`.
+    A thread still alive after the join timeout fails here, not as a hang."""
     errors = []
-    start = threading.Barrier(2, timeout=30)
     barrier_failures = []
+    start = threading.Barrier(len(targets), timeout=30)
 
-    def activate(n):
+    def run(target):
         try:
             start.wait()
         except threading.BrokenBarrierError as exc:
@@ -338,35 +406,143 @@ def test_concurrent_first_activations_write_exactly_one_licence_transition():
             connections.close_all()
             return
         try:
-            activate_device(
-                ActivateDeviceData(
-                    idempotency_key=f"first-conc-activation-{n}",
-                    presented_key=full_key,
-                    device_fingerprint=f"fp-first-conc-{n}",
-                    platform="macos",
-                )
-            )
+            target()
         except Exception as exc:
             errors.append(exc)
         finally:
             connections.close_all()
 
-    threads = [threading.Thread(target=activate, args=(n,)) for n in range(2)]
+    threads = [threading.Thread(target=run, args=(target,)) for target in targets]
     for t in threads:
         t.start()
     for t in threads:
         t.join(timeout=60)
+    assert not any(t.is_alive() for t in threads), "activation did not complete"
+    return errors, barrier_failures
 
-    assert not any(t.is_alive() for t in threads), "activation deadlocked on the nested lock"
-    assert barrier_failures == [], f"the two activations never overlapped: {barrier_failures}"
+
+def _session_admin(key, *, tag):
+    user = CustomerUser.objects.create(
+        customer=key.customer,
+        email=f"admin+{tag}@conc.example",
+        email_fingerprint=f"fp-conc-admin-{tag}",
+        password_hash="unused",
+        status=CustomerUserStatus.ACTIVE,
+        role=CustomerRole.ADMIN,
+        created_by_actor_id="test",
+        idempotency_key=f"conc-session-user-{tag}",
+    )
+    return ActorContext(
+        kind=ActorKind.CUSTOMER,
+        actor_id=str(user.id),
+        org_id=str(key.customer_id),
+        role=CustomerRole.ADMIN,
+    )
+
+
+def test_concurrent_first_activations_write_exactly_one_licence_transition():
+    """Two desktops present the same, still-ISSUED enrollment key and are both parked on the
+    licence-row lock before either is let through. The limit allows both devices, but the
+    licence moves ISSUED -> ACTIVATED exactly once and that move is audited exactly once.
+
+    What this proves: with the row released, both requests complete without error, both devices
+    exist, and one transition row is written. What it does NOT prove, on purpose:
+
+    * It does not guard the activation's outer lock on its own. Either lock alone makes the
+      loser re-read ACTIVATED and skip the transition, so removing just the outer lock leaves
+      this test green; `test_concurrent_activations_cannot_exceed_the_device_limit` (limit 1,
+      so a missing outer lock yields two devices) is the guard for that.
+    * It does not guard the state machine's inner lock on its own: on this path that lock is
+      redundant, and it is guarded where it is NOT redundant, by
+      `test_concurrent_transitions_write_exactly_one_audit_row`.
+    * Removing BOTH locks fails the "parked" assertion below, because nothing then waits.
+    """
+    key, full_key = _seed_license_key(tag="firstconc", device_limit=3)
+    assert key.status == LicenseKeyStatus.ISSUED
+
+    errors, waiting = _race_behind_row_lock(
+        key,
+        [
+            _enroll(full_key, idem=f"first-conc-activation-{n}", fingerprint=f"fp-first-conc-{n}")
+            for n in range(2)
+        ],
+    )
+
+    assert waiting == 2, f"both activations should be parked on the licence-row lock: {waiting}"
     assert errors == [], f"both devices fit under the limit; neither may fail: {errors}"
-
     key.refresh_from_db()
     assert key.status == LicenseKeyStatus.ACTIVATED
     assert Device.objects.filter(license_key=key).count() == 2
-    transitions = AuditEvent.objects.filter(
-        target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), action="license_key.activated"
-    ).count()
-    assert transitions == 1, (
-        f"one ISSUED -> ACTIVATED move produced {transitions} audit rows (NFR-506)"
+    assert _licence_transitions(key) == 1, "one ISSUED -> ACTIVATED move must audit once"
+
+
+def test_concurrent_first_activations_of_different_licences_each_transition_once():
+    """Two churches activating at the same instant share nothing: each licence is locked
+    separately, so neither may block, fail or borrow the other's transition. (No lock is
+    contended here by design, so the barrier is the right tool.)"""
+    key_a, full_key_a = _seed_license_key(tag="diff-a", device_limit=1)
+    key_b, full_key_b = _seed_license_key(tag="diff-b", device_limit=1)
+
+    errors, barrier_failures = _run_in_threads(
+        [
+            # The SAME request id and fingerprint on both: only the licence differs.
+            _enroll(full_key, idem="diff-licence-activation", fingerprint="fp-diff-licence")
+            for full_key in (full_key_a, full_key_b)
+        ]
     )
+
+    assert barrier_failures == [], f"the two activations never overlapped: {barrier_failures}"
+    assert errors == [], f"activations of different licences must not interfere: {errors}"
+    for key in (key_a, key_b):
+        key.refresh_from_db()
+        assert key.status == LicenseKeyStatus.ACTIVATED
+        assert Device.objects.filter(license_key=key).count() == 1
+        assert _licence_transitions(key) == 1
+
+
+def test_a_first_activation_retried_while_in_flight_writes_one_transition():
+    """A client that times out and resends the SAME request while the first is still running:
+    both are parked on the licence-row lock, then one device, one transition, and the second
+    call is the idempotent replay rather than an IntegrityError on the (licence, idempotency
+    key) constraint. Removing the outer lock fails this deterministically: both requests then
+    insert a device under the same key."""
+    key, full_key = _seed_license_key(tag="inflight", device_limit=3)
+    activate = _enroll(full_key, idem="inflight-activation-1", fingerprint="fp-inflight")
+
+    errors, waiting = _race_behind_row_lock(key, [activate, activate])
+
+    assert waiting == 2, f"both requests should be parked on the licence-row lock: {waiting}"
+    assert errors == [], f"a retried request must replay, not fail: {errors}"
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert _licence_transitions(key) == 1
+
+
+def test_an_enrollment_activation_racing_an_account_activation_writes_one_transition():
+    """The two entry points converge on one core and one row lock: whichever wins performs
+    the transition, the other finds ACTIVATED, and both devices exist."""
+    key, full_key = _seed_license_key(tag="mixed", device_limit=3)
+    admin = _session_admin(key, tag="mixed")
+
+    def by_session():
+        return activate_device_with_session(
+            admin,
+            ActivateDeviceWithSessionData(
+                idempotency_key="mixed-session-activation",
+                device_fingerprint="fp-mixed-session",
+                platform="macos",
+            ),
+        )
+
+    by_enrollment = _enroll(
+        full_key, idem="mixed-enroll-activation", fingerprint="fp-mixed-enroll"
+    )
+    errors, waiting = _race_behind_row_lock(key, [by_enrollment, by_session])
+
+    assert waiting == 2, f"both activations should be parked on the licence-row lock: {waiting}"
+    assert errors == [], f"both devices fit under the limit; neither may fail: {errors}"
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert Device.objects.filter(license_key=key).count() == 2
+    assert _licence_transitions(key) == 1
