@@ -4,6 +4,8 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from selahcue_api.apps.audit.models import AuditEvent
+
 
 @pytest.fixture(autouse=True)
 def _fresh_throttle_budget():
@@ -366,8 +368,14 @@ def test_activation_rolls_back_when_audit_write_fails(monkeypatch):
 
     assert Device.objects.count() == 0
     assert DeviceToken.objects.count() == 0
-    # The ISSUED->ACTIVATED flip is inside the same atomic block, so it rolled back too.
+    # The ISSUED->ACTIVATED flip is inside the same atomic block, so it rolled back too ...
     assert AppLicenseKey.objects.get().status == LicenseKeyStatus.ISSUED
+    # ... and so did the licence-level audit row it wrote (86ak5v7av): the device.activated
+    # write fails AFTER the transition, so a surviving row would claim a first activation
+    # that never happened.
+    assert not AuditEvent.objects.filter(
+        target_type="app_license_key", action="license_key.activated"
+    ).exists()
 
 
 @pytest.mark.django_db

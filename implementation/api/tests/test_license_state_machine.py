@@ -872,16 +872,11 @@ _QUERYSET_WRITERS = frozenset(
 # writes are the sanctioned ones by definition. Every other module is pinned site by site.
 _THE_WRITER = "selahcue_api/apps/license_keys/state_machine.py"
 
-# The two writes that predate this module, named individually. A third anywhere fails.
+# The one write that predates this module, named individually. A second anywhere fails.
 _KNOWN_DIRECT_WRITES = {
     # Staff issuance seeds ISSUED onto a new, unsaved row (apps/license_keys/services.py).
     # Not a transition — there is no prior status to move from.
     ("selahcue_api/apps/license_keys/services.py", "construct", "AppLicenseKey(status=...)"),
-    # First activation flips ISSUED -> ACTIVATED inline and audits it as target_type="device".
-    # The one real bypass of the state machine; tracked as 86ak5v7av, deliberately not changed
-    # by this ticket. If it is ever routed through the writer, DELETE this entry — do not
-    # leave it behind, or the slot stays open for a new bypass.
-    ("selahcue_api/apps/devices/services.py", "assign", "license_key.status"),
 }
 
 
