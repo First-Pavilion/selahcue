@@ -1,7 +1,9 @@
 //! A provider that someone else installed first is kept, not replaced, and reported as such.
 //!
-//! In the operator the LAN transport or the Deepgram transport may install `ring` before the cloud
-//! client is first used. `install_default` then returns `Err`, which is success for us, but it must
+//! In the operator the Deepgram transport (`selahcue-stt-cloud`, the only crate in the workspace
+//! that installs a default provider; the LAN transport builds its configs with
+//! `builder_with_provider` and never does) may install `ring` before the cloud client is first
+//! used. `install_default` then returns `Err`, which is success for us, but it must
 //! be (a) not a panic, (b) not a replacement of the provider the other code is already using, and
 //! (c) visible: the caller is told it was `AlreadyInstalled`, not `InstalledRing`.
 //!

@@ -208,8 +208,10 @@ impl SessionConfig {
 /// loopback `ws://` and never build a TLS session at all. It was found by running against the
 /// live service, which is the entire reason that measurement exists.
 ///
-/// `install_default` returns `Err` if a provider is already installed — by the LAN transport,
-/// say, in the same process. That is success for our purposes, not failure.
+/// `install_default` returns `Err` if a provider is already installed - by the cloud HTTP client
+/// (`selahcue-cloud`'s `ensure_crypto_provider`), say, in the same process. (The LAN transport
+/// never installs a default: it builds its configs with `builder_with_provider`.) That is
+/// success for our purposes, not failure.
 ///
 /// **Returns whether a provider is installed afterwards**, which is the whole reason this is
 /// public and non-`()`. Without an observable, removing the body left the entire suite green:

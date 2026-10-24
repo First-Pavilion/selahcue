@@ -24,6 +24,11 @@
 //! trusted" is a documented consequence rather than a test. Linux's "no CA bundle" and Windows'
 //! verifier are not exercised here at all: only the host the test runs on is.
 //!
+//! NO CA BUNDLE. On a Linux host whose system has no CA bundle (a bare container), every test that
+//! calls `ReqwestTransport::new()` fails, the plaintext loopback ones in `tests/test_wire.rs`
+//! included, because `new()` itself returns an error by design (DEC-019: fail closed). Install
+//! `ca-certificates`, or point `SSL_CERT_FILE` at any PEM file, before running them there.
+//!
 //! PROXIES. As in `tests/test_wire.rs`, a proxy variable without a loopback bypass would send these
 //! loopback requests to the proxy; run with `NO_PROXY=127.0.0.1,localhost` (the Makefile and CI do).
 
@@ -311,6 +316,18 @@ fn a_server_signed_by_a_root_outside_the_store_is_refused_and_sees_no_request() 
     let err = post(&t, &server.url())
         .expect_err("a certificate from a root the machine does not trust must be refused");
     must_not_have_leaked(&err);
+    // The text a user sees must say WHY (a bare "error sending request" cannot tell a certificate
+    // problem from a dead network), while still naming the URL as before and nothing the request
+    // carried.
+    let shown = err.to_string();
+    assert!(
+        shown.starts_with("error sending request for url ("),
+        "the URL-bearing first line should be kept as it was: {shown}"
+    );
+    assert!(
+        shown.contains("invalid peer certificate"),
+        "the send error dropped the certificate cause: {shown}"
+    );
     assert!(
         matches!(server.outcome(), Seen::HandshakeFailed),
         "first connection"
@@ -425,4 +442,65 @@ fn two_production_transports_in_one_process_both_work() {
     let a = ReqwestTransport::new().expect("first");
     let b = ReqwestTransport::new().expect("second");
     drop((a, b));
+}
+
+#[test]
+fn the_shipped_connect_timeout_is_on_the_client_builder() {
+    // `build()` configures its builder through `shipped_builder`; reading that builder back pins
+    // that the shipped connect timeout reaches it, not merely that the constant exists. A connect
+    // that hangs cannot be provoked deterministically in a unit test (it needs a black-hole
+    // address), so this read-back is the guard for the connect timeout.
+    //
+    // KNOWN GAP: reqwest's blocking builder does not print its TOTAL timeout, so the value
+    // `shipped_builder` passes for it is not read back; the next test proves `configured_builder`
+    // applies a total timeout (removing it hangs), but a wrong value written in `shipped_builder`
+    // would survive.
+    let shown = format!("{:?}", ReqwestTransport::shipped_builder(&[]));
+    let connect = format!(
+        "connect_timeout: {:?}",
+        Duration::from_secs(super::CONNECT_TIMEOUT_SECS)
+    );
+    assert!(
+        shown.contains(&connect),
+        "no connect timeout on the builder: {shown}"
+    );
+}
+
+#[test]
+fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
+    assert_loopback_is_not_proxied();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        // Accept, say nothing, hold the connection open for longer than the test waits.
+        let held = listener.accept();
+        std::thread::sleep(Duration::from_secs(8));
+        drop(held);
+    });
+    let t = ReqwestTransport::from_builder(ReqwestTransport::configured_builder(
+        &[],
+        Duration::from_millis(300),
+        Duration::from_millis(500),
+    ))
+    .expect("transport with short timeouts");
+    let (tx, rx) = mpsc::channel();
+    let url = format!("http://127.0.0.1:{port}/stall");
+    let started = std::time::Instant::now();
+    std::thread::spawn(move || {
+        let _ = tx.send(t.get(&url, None));
+    });
+    // Without a request timeout reqwest's blocking client waits 30 s; a hang here is the failure.
+    let outcome = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the request was still pending after 5 s: no request timeout took effect");
+    let err = outcome.expect_err("a peer that never answers must be an error");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        err.to_string().to_lowercase().contains("timed out"),
+        "the failure should say it timed out: {err}"
+    );
 }
