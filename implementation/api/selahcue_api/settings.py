@@ -539,6 +539,16 @@ SELAHCUE_RESET_SEND_DEGRADED_CEILING = (20, 3600)
 # an unauthenticated endpoint being hammered, not a response to a specific measured gap.
 SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 
+# Per-staff-actor budget for the admin licence-lifecycle mutations (86ak5mn0c, FR-539):
+# `adminSuspendLicenseKey` and `adminReinstateLicenseKey` share ONE bucket, and the sibling
+# lifecycle mutations (revoke / extend / convert / archive) are meant to draw on it too.
+# The identity is the AUTHENTICATED staff actor, never the client IP: these sit behind the
+# staff gate, so the thing worth bounding is one account (or one stolen staff credential)
+# hammering licence state, and an IP key would let a whole support floor behind one NAT
+# throttle each other. 30 a minute is far above a human working a queue of billing holds and
+# far below a script. Fails OPEN when the cache is down, like every budget in this file.
+SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (30, 60)
+
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates
 # (docs/design/TRANSACTIONAL-EMAIL-spec.md) can be verified end to end before any provider

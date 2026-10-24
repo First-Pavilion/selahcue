@@ -574,3 +574,294 @@ def test_an_enrollment_activation_racing_an_account_activation_writes_one_transi
     assert key.status == LicenseKeyStatus.ACTIVATED
     assert Device.objects.filter(license_key=key).count() == 2
     assert _licence_transitions(key) == 1
+
+
+# --- 86ak5mn0c: staff suspend / reinstate under a real race -------------------------------
+def _lifecycle_staff(actor_id="staff_race_susp"):
+    from selahcue_api.graphql.context import StaffPermission
+
+    return ActorContext(
+        kind=ActorKind.STAFF,
+        actor_id=actor_id,
+        staff_permissions=frozenset(
+            {StaffPermission.SUSPEND_LICENSE_KEY, StaffPermission.REINSTATE_LICENSE_KEY}
+        ),
+    )
+
+
+RACE_REASON = "Race battery: holding the licence while billing follows up."
+
+
+def _suspend_call(key, idem, *, actor_id="staff_race_susp"):
+    from selahcue_api.apps.license_keys.services import SuspendLicenseKeyData, suspend_license_key
+
+    return lambda: suspend_license_key(
+        _lifecycle_staff(actor_id),
+        SuspendLicenseKeyData(
+            idempotency_key=idem, license_key_id=str(key.pk), reason=RACE_REASON
+        ),
+    )
+
+
+def _reinstate_call(key, idem, *, actor_id="staff_race_susp"):
+    from selahcue_api.apps.license_keys.services import (
+        ReinstateLicenseKeyData,
+        reinstate_license_key,
+    )
+
+    return lambda: reinstate_license_key(
+        _lifecycle_staff(actor_id),
+        ReinstateLicenseKeyData(
+            idempotency_key=idem, license_key_id=str(key.pk), reason=RACE_REASON
+        ),
+    )
+
+
+def _revoke_call(key, idem):
+    """The revoke mutation (86ak1090r) is a sibling ticket; its writer call is this."""
+    from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
+
+    return lambda: apply_license_status_transition(
+        key,
+        to_status=LicenseKeyStatus.REVOKED,
+        actor=ActorContext(kind=ActorKind.STAFF, actor_id="staff_race_revoke"),
+        reason=RACE_REASON,
+        request_id=idem,
+    )
+
+
+def _race_in_arrival_order(key, targets):
+    """`_race_behind_row_lock`, but the targets are released into the lock queue ONE AT A TIME,
+    each parked before the next is started, so the order they are granted the row is the order
+    given. Postgres queues row-lock waiters, so the first parked is the first served.
+
+    That is what lets a test name BOTH outcomes of a race instead of asserting a disjunction
+    over whichever one the scheduler happened to pick: suspend-wins and activation-wins are
+    different states, and each is checked against its own expectation.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+    results, errors = [], []
+
+    def hold():
+        try:
+            with transaction.atomic():
+                AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
+            connections.close_all()
+
+    def run(index, target):
+        try:
+            results.append((index, target()))
+        except Exception as exc:
+            errors.append((index, exc))
+        finally:
+            connections.close_all()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    threads = []
+    waiting = 0
+    try:
+        assert holding.wait(30), "the holder never took the licence-row lock"
+        for index, target in enumerate(targets):
+            thread = threading.Thread(target=run, args=(index, target))
+            threads.append(thread)
+            thread.start()
+            deadline = time.monotonic() + 15
+            while _licence_row_waiters() < index + 1 and time.monotonic() < deadline:
+                time.sleep(0.02)
+        waiting = _licence_row_waiters()
+    finally:
+        release.set()
+        holder.join(timeout=60)
+        for t in threads:
+            t.join(timeout=60)
+    assert not holder.is_alive() and not any(t.is_alive() for t in threads)
+    return sorted(results, key=lambda r: r[0]), sorted(errors, key=lambda e: e[0]), waiting
+
+
+def _lifecycle_rows(key, **filters):
+    return AuditEvent.objects.filter(
+        target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), **filters
+    ).order_by("id")
+
+
+def _error_codes(errors):
+    return [exc.code for _, exc in errors if isinstance(exc, SafeAPIError)]
+
+
+def test_a_suspension_that_wins_the_race_against_a_first_activation_refuses_the_device():
+    """Suspend and a first activation are both parked on the licence row; the suspension is
+    served first. The activation then re-reads under the lock, finds SUSPENDED and is refused:
+    no device, no token, no ISSUED -> ACTIVATED move. A suspension must never be overtaken by
+    an activation that read the licence before it."""
+    key, full_key = _seed_license_key(tag="susfirst", device_limit=3)
+    assert key.status == LicenseKeyStatus.ISSUED
+
+    results, errors, waiting = _race_in_arrival_order(
+        key,
+        [
+            _suspend_call(key, "susfirst-suspend-0001"),
+            _enroll(full_key, idem="susfirst-activation-1", fingerprint="fp-susfirst"),
+        ],
+    )
+
+    assert waiting == 2, f"both callers should be parked on the licence-row lock: {waiting}"
+    assert _error_codes(errors) == [ErrorCode.POLICY_DENIED], errors
+    assert [index for index, _ in results] == [0]
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.SUSPENDED
+    assert key.prior_status == "ISSUED"
+    assert Device.objects.filter(license_key=key).count() == 0
+    assert DeviceToken.objects.filter(device__license_key=key).count() == 0
+    assert _licence_transitions(key) == 0, "the refused activation made no licence move"
+    assert _lifecycle_rows(key, action="license_key.suspended").count() == 1
+
+
+def test_a_suspension_that_loses_the_race_against_a_first_activation_suspends_the_activated_licence():
+    """The other order: the activation is served first and moves the licence ISSUED ->
+    ACTIVATED, so the suspension that was waiting behind it records ACTIVATED — the status
+    the licence actually held when the suspension took effect, not the one it held when the
+    request arrived. The device that just activated keeps its token."""
+    key, full_key = _seed_license_key(tag="actfirst", device_limit=3)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key,
+        [
+            _enroll(full_key, idem="actfirst-activation-1", fingerprint="fp-actfirst"),
+            _suspend_call(key, "actfirst-suspend-0001"),
+        ],
+    )
+
+    assert waiting == 2
+    assert errors == [], f"both are legal in this order: {errors}"
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.SUSPENDED
+    assert key.prior_status == "ACTIVATED"
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert (
+        DeviceToken.objects.filter(device__license_key=key, status=DeviceTokenStatus.ACTIVE).count()
+        == 1
+    ), "suspending must not kill the token the racing activation just issued"
+    assert _licence_transitions(key) == 1
+    suspension = _lifecycle_rows(key, action="license_key.suspended").get()
+    assert suspension.before["status"] == "ACTIVATED"
+
+
+def test_a_suspension_racing_a_revoke_leaves_a_consistent_trail_whichever_wins():
+    """Revoke is terminal and suspend is not, so the two orders genuinely differ.
+
+    Revoke served first: REVOKED, and the waiting suspension is REFUSED (REVOKED -> SUSPENDED
+    is illegal) with one durable DENIED row and no SUCCESS suspension row.
+    Suspend served first: SUSPENDED, then the revoke is legal (SUSPENDED -> REVOKED) — both
+    succeed, two SUCCESS rows, and the final REVOKED row carries no stale prior status, which
+    the schema's check constraint would reject otherwise.
+    """
+    # --- revoke first -----------------------------------------------------------------
+    key, _ = _seed_license_key(tag="revfirst")
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_revoke_call(key, "revfirst-revoke-0001"), _suspend_call(key, "revfirst-suspend-01")]
+    )
+    assert waiting == 2
+    assert len(errors) == 1 and errors[0][0] == 1
+    assert errors[0][1].code == ErrorCode.CONFLICT
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED and key.prior_status == ""
+    assert _lifecycle_rows(key, action="license_key.revoked").count() == 1
+    assert _lifecycle_rows(key, action="license_key.suspended").count() == 0
+    denied = _lifecycle_rows(key, result="DENIED").get()
+    assert denied.after["requested_status"] == "SUSPENDED"
+    assert denied.request_id == "revfirst-suspend-01", "the refusal survived the racing request"
+
+    # --- suspend first ----------------------------------------------------------------
+    key, _ = _seed_license_key(tag="susrev")
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_suspend_call(key, "susrev-suspend-0001"), _revoke_call(key, "susrev-revoke-00001")]
+    )
+    assert waiting == 2
+    assert errors == []
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED and key.prior_status == ""
+    assert [r.action for r in _lifecycle_rows(key, result="SUCCESS")][-2:] == [
+        "license_key.suspended",
+        "license_key.revoked",
+    ]
+    assert not _lifecycle_rows(key, result="DENIED").exists()
+
+
+@pytest.mark.parametrize("same_key", [True, False], ids=["retry-same-key", "two-staff-actions"])
+def test_two_concurrent_suspensions_write_exactly_one_audit_row(same_key):
+    """A retry racing its own original (same key) and two staff members suspending at once
+    (different keys) both end the same way: one status change, one SUCCESS row, the second
+    caller a harmless no-op that reports `changed=False`."""
+    key, _ = _seed_license_key(tag=f"twosus-{same_key}")
+    keys = ["twosus-request-0001"] * 2 if same_key else ["twosus-request-0001", "twosus-request-0002"]
+    results = []
+
+    def collect(idem):
+        call = _suspend_call(key, idem)
+        return lambda: results.append(call())
+
+    errors, waiting = _race_behind_row_lock(key, [collect(idem) for idem in keys])
+
+    assert waiting == 2, f"both suspensions should be parked on the licence-row lock: {waiting}"
+    assert errors == [], f"a legal suspend must not race into an error: {errors}"
+    assert sorted(r.changed for r in results) == [False, True]
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.SUSPENDED and key.prior_status == "ISSUED"
+    assert _lifecycle_rows(key, action="license_key.suspended", result="SUCCESS").count() == 1
+    assert not _lifecycle_rows(key, result="DENIED").exists()
+
+
+def test_a_reinstate_retried_while_the_original_is_in_flight_succeeds_once_and_never_errors():
+    """The retry hazard the pre-check alone cannot cover. Two copies of the SAME reinstate are
+    both past the "have I already done this?" check (nothing has committed yet) and parked on
+    the licence row. The first reinstates; the second then finds a licence that is no longer
+    suspended — an ordinary reinstatement would refuse that, but this is the same request, so
+    the caller must get the original success back, not a CONFLICT for a request that worked."""
+    key, _ = _seed_license_key(tag="reinretry")
+    suspender = _suspend_call(key, "reinretry-suspend-0001")
+    suspender()
+    results = []
+    retry = _reinstate_call(key, "reinretry-reinstate-01")
+
+    errors, waiting = _race_behind_row_lock(
+        key, [lambda: results.append(retry()), lambda: results.append(retry())]
+    )
+
+    assert waiting == 2
+    assert errors == [], f"a retried reinstatement must replay, not fail: {errors}"
+    assert sorted(r.changed for r in results) == [False, True]
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ISSUED and key.prior_status == ""
+    assert _lifecycle_rows(key, action="license_key.reinstated", result="SUCCESS").count() == 1
+
+
+def test_a_suspend_and_a_reinstate_racing_each_other_end_in_a_state_the_trail_explains():
+    """A suspended licence receives a reinstate and a fresh suspend at once. Served
+    reinstate-first: ISSUED -> back, then SUSPENDED again (two SUCCESS rows). Served
+    suspend-first: already suspended, so a no-op, then the reinstate (one SUCCESS row, final
+    ISSUED). Either way the final status is what the LAST SUCCESS row says it is."""
+    for order, tag in (("reinstate-first", "srA"), ("suspend-first", "srB")):
+        key, _ = _seed_license_key(tag=tag)
+        _suspend_call(key, f"{tag}-seed-suspend-01")()
+        calls = [
+            _reinstate_call(key, f"{tag}-reinstate-0001"),
+            _suspend_call(key, f"{tag}-suspend-000002"),
+        ]
+        if order == "suspend-first":
+            calls.reverse()
+
+        results, errors, waiting = _race_in_arrival_order(key, calls)
+
+        assert waiting == 2 and errors == [], (order, errors)
+        key.refresh_from_db()
+        successes = list(_lifecycle_rows(key, result="SUCCESS"))
+        last_lifecycle = [r for r in successes if r.action != "license_key.generated"][-1]
+        assert key.status == last_lifecycle.after["status"], order
+        assert key.prior_status == last_lifecycle.after["prior_status"], order
+        expected_final = "SUSPENDED" if order == "reinstate-first" else "ISSUED"
+        assert key.status == expected_final, order

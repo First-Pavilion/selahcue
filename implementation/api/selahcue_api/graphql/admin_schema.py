@@ -14,7 +14,11 @@ from selahcue_api.apps.accounts.services import (
 from selahcue_api.apps.license_keys.models import AppLicenseKey
 from selahcue_api.apps.license_keys.services import (
     GenerateLicenseKeyData,
+    ReinstateLicenseKeyData,
+    SuspendLicenseKeyData,
     generate_license_key,
+    reinstate_license_key,
+    suspend_license_key,
 )
 from selahcue_api.graphql.context import (
     StaffPermission,
@@ -64,11 +68,30 @@ class AdminGenerateLicenseKeyInput:
     reason: str
 
 
+@strawberry.input
+class AdminSuspendLicenseKeyInput:
+    # Retry key: the same key on the same licence is the same request and takes effect once.
+    idempotency_key: str
+    license_key_id: strawberry.ID
+    # Mandatory (FR-504); recorded on the audit row beside the acting staff member.
+    reason: str
+
+
+@strawberry.input
+class AdminReinstateLicenseKeyInput:
+    idempotency_key: str
+    license_key_id: strawberry.ID
+    reason: str
+
+
 @strawberry.type
 class AdminLicenseKey:
     id: strawberry.ID
     key_type: str
     status: str
+    # The status a SUSPENDED licence returns to on reinstatement; empty for every other
+    # status. Surfaced so the console can say where a reinstatement will land (FR-526).
+    prior_status: str
     key_prefix: str
     key_suffix: str
     masked_key: str
@@ -132,6 +155,20 @@ class AdminGenerateLicenseKeyPayload:
     created: bool
 
 
+@strawberry.type
+class AdminSuspendLicenseKeyPayload:
+    license_key: AdminLicenseKey
+    # False when nothing changed: the licence was already suspended, or this was a retry of a
+    # request that had already taken effect.
+    changed: bool
+
+
+@strawberry.type
+class AdminReinstateLicenseKeyPayload:
+    license_key: AdminLicenseKey
+    changed: bool
+
+
 def customer_to_type(customer: CustomerOrg) -> AdminCustomer:
     return AdminCustomer(
         id=strawberry.ID(str(customer.id)),
@@ -152,6 +189,7 @@ def license_key_to_type(license_key: AppLicenseKey) -> AdminLicenseKey:
         id=strawberry.ID(str(license_key.id)),
         key_type=license_key.key_type,
         status=license_key.status,
+        prior_status=license_key.prior_status,
         key_prefix=license_key.key_prefix,
         key_suffix=license_key.key_suffix,
         masked_key=license_key.masked_key,
@@ -242,6 +280,44 @@ class AdminMutation:
             license_key=license_key_to_type(result.license_key),
             full_key=result.full_key,
             created=result.created,
+        )
+
+    @strawberry.mutation
+    def admin_suspend_license_key(
+        self,
+        info: strawberry.Info,
+        input: AdminSuspendLicenseKeyInput,
+    ) -> AdminSuspendLicenseKeyPayload:
+        result = suspend_license_key(
+            actor_from_info(info),
+            SuspendLicenseKeyData(
+                idempotency_key=input.idempotency_key,
+                license_key_id=str(input.license_key_id),
+                reason=input.reason,
+            ),
+        )
+        return AdminSuspendLicenseKeyPayload(
+            license_key=license_key_to_type(result.license_key),
+            changed=result.changed,
+        )
+
+    @strawberry.mutation
+    def admin_reinstate_license_key(
+        self,
+        info: strawberry.Info,
+        input: AdminReinstateLicenseKeyInput,
+    ) -> AdminReinstateLicenseKeyPayload:
+        result = reinstate_license_key(
+            actor_from_info(info),
+            ReinstateLicenseKeyData(
+                idempotency_key=input.idempotency_key,
+                license_key_id=str(input.license_key_id),
+                reason=input.reason,
+            ),
+        )
+        return AdminReinstateLicenseKeyPayload(
+            license_key=license_key_to_type(result.license_key),
+            changed=result.changed,
         )
 
 

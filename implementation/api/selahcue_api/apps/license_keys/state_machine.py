@@ -36,10 +36,10 @@ What each caller owes:
 * **System callers** must pass a non-staff `ActorContext` that names the job, the way the
   revocation cascade does (`ActorKind.SERVICE`, `actor_id="revocation-cascade"`), so the
   trail distinguishes an automated move from a person's.
-* **`StaffPermission` has no suspend, reinstate, convert or archive permission yet** — only
-  `generate_license_key`, `extend_license_key` and `revoke_license_key` exist. Downstream
-  tickets must ADD the permission they need rather than reusing `REVOKE_LICENSE_KEY`, which
-  would let a licence be suspended by anyone entitled to revoke one and make the audit trail
+* **`StaffPermission` has no convert or archive permission yet.** Suspend and reinstate have
+  theirs (`suspend_license_key`, `reinstate_license_key`, 86ak5mn0c). Downstream tickets
+  must ADD the permission they need rather than reusing `REVOKE_LICENSE_KEY`, which would
+  let a licence be suspended by anyone entitled to revoke one and make the audit trail
   unable to tell the two authorities apart.
 
 Calling contract — durability of refusals
@@ -60,7 +60,8 @@ wrapping a transition at all.
 
 The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
 autocommit and gets the durable case for free. Admin mutations should assert
-`not connection.in_atomic_block` at their boundary rather than assume it.
+`not connection.in_atomic_block` at their boundary rather than assume it; suspend and
+reinstate do (`license_keys.services._require_autocommit`, 86ak5mn0c).
 
 **The one deliberate wrapped caller is device activation** (`_activate_device_for_key`,
 86ak5v7av), which transitions ISSUED -> ACTIVATED inside its own `atomic()` block because the

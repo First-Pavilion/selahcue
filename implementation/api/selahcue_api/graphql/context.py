@@ -24,6 +24,12 @@ class StaffPermission(str, Enum):
     GENERATE_LICENSE_KEY = "generate_license_key"
     EXTEND_LICENSE_KEY = "extend_license_key"
     REVOKE_LICENSE_KEY = "revoke_license_key"
+    # Their own authorities, deliberately NOT folded into REVOKE_LICENSE_KEY (86ak5mn0c): a
+    # suspension is a reversible commercial hold, a revocation is the permanent kill, and one
+    # permission for both would let anyone entitled to hold a licence also destroy it and
+    # leave an audit trail unable to say which authority was used (FLOW-506).
+    SUSPEND_LICENSE_KEY = "suspend_license_key"
+    REINSTATE_LICENSE_KEY = "reinstate_license_key"
     GRANT_ENTITLEMENT = "grant_entitlement"
     REVOKE_ENTITLEMENT = "revoke_entitlement"
     VIEW_DIAGNOSTICS = "view_diagnostics"
