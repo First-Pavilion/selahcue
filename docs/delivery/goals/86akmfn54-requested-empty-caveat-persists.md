@@ -6,7 +6,7 @@
 - Parent goal ID: 86akc0tua
 - Title: The "requested but nothing came back" caveat on a sermon-note draft survives being saved, reloaded, edit-saved and regenerated, in a stored format an older build can still read
 - Role: backend-engineer
-- Status: IN_REVIEW
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akmfn54
 - Created: 2026-10-24
@@ -70,13 +70,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | A requested-empty section / Summary / Scripture caveat survives persist and reload, through a real file and a restart | `cargo test -p selahcue-operator sermon_note_caveats` | exit 0, all pass | PR #221 body | PASS |
+| C-001 | yes | A requested-empty section / Summary / Scripture caveat survives persist and reload, through a real file and a restart | `cargo test -p selahcue-operator sermon_note_caveats` | exit 0, all pass | operator suite 348 passed (352 with `openai-notes`) on 6e819988 | PASS |
 | C-002 | yes | The command hookups carry it: generate-persist seam, `update_sermon_note_draft` (list given, empty, omitted), load, confirm, discard | `cargo test -p selahcue-operator regenerate_with_retention_tests` | exit 0; mutants that bypass `draft_input_for` or pass `None` go red | PR #221 body | PASS |
 | C-003 | yes | A draft with no caveat is stored byte for byte as before; an older build reads every section of a draft that has caveats | the literal-bytes test and the old-reader test | exit 0 | PR #221 body | PASS |
-| C-004 | yes | A damaged `requested_empty` costs only the caveats; the read path is bounded (size check, first-byte shape, collection window) | wrong-typed, window and over-cap tests | exit 0; removing each bound turns one red | PR #221 body | PASS |
+| C-004 | yes | A damaged `requested_empty` costs only the caveats; the read path is bounded (size check, first-byte shape, 256-entry result window) | wrong-typed, window and over-cap tests | exit 0; removing each bound turns one red | PR #221 body | PASS |
+| C-008 | yes | The reader never shows fewer sections than the pre-change reader (a list of `NoteSectionInput`), whatever the caveat key looks like (duplicate key, deep nesting, 1e999, lone surrogate, tuple form) | the 42-row differential test against the old reader | exit 0; a mutant that decodes sections through flatten / `Value` again turns it red | PR #221 body | PASS |
 | C-005 | yes | A caveat is dropped once its content is filled, and a stale heading never hides populated content | filled / namesake / sub-point tests | exit 0 | PR #221 body | PASS |
-| C-006 | yes | The webview reports the caveats it shows (rename, Summary, Scripture, none) | `python3 scripts/operator_headless.py` | `=== 2290 checks, 0 FAIL ===` | PR #221 body | PASS |
-| C-007 | yes | Repo gates | `make ci` | exit 0 | PR #221 body | PASS |
+| C-006 | yes | The webview reports the caveats it shows (rename, Summary, Scripture, none) | `python3 scripts/operator_headless.py` | `=== 2290 checks, 0 FAIL ===` | exit 0, 2290 checks on 6e819988 | PASS |
+| C-007 | yes | Repo gates | `make ci` (now includes the API and marketing gates) | exit 0, "ALL GREEN" | `make ci` exit 0 on 6e819988, the code of the final head (the commits after it edit only this file and the PR text); earlier: exit 0 on 47eabdd0 | PASS |
 
 ## Verification plan
 
@@ -105,11 +106,21 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Verifier executed: as above.
 - Result: see PR #221 body.
 - New evidence: mutation results in the PR body.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-008
+- Hypothesis: decode the sections with exactly the pre-change type and read the caveat headings in a separate best-effort pass, so the reader can never be stricter than the one it replaces.
+- Change or investigation: removed the flatten / untagged-enum decode; headings now come from `serde_json::Value` (first section, 256-entry result window); differential test over 42 rows plus the object-shape duplicate-key case.
+- Verifier executed: operator tests both ways, clippy both ways, headless, `make ci`, 10 further mutants.
+- Result: all pass; round 2 reviewers: Cody APPROVE, Shadow and Quinn APPROVE WITH CONDITIONS (the condition is this iteration).
+- New evidence: a mutant that decodes sections through flatten again fails 4 tests; one that couples sections to the heading pass fails 2.
 - Decision: handoff
 
 ## Risks and rollback
 
-- Risks: a stored `requested_empty` key on the first section is a convention an older build ignores; a draft within a few hundred bytes of the cap loses its caveat (not the draft).
+- Risks: a stored `requested_empty` key on the first section is a convention an older build ignores; a draft within a few hundred bytes of the cap loses its caveat (not the draft); a Transcribe-tier LAN device can write any `sections_json` (it can only label genuinely empty content, never hide content).
 - Rollback or recovery: revert the PR. Drafts written with the key stay readable by the reverted build (the key is ignored); no data migration is involved.
 
 ## Pause and escalation conditions
@@ -120,7 +131,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86akmfn54-requested-empty-caveat-persists.md`
 - Validator result: OK (structural): satisfies the Goal Contract schema
-- Independent verification result: pending round 2
-- Terminal state: IN_REVIEW
+- Independent verification result: round 1 three APPROVE WITH CONDITIONS; round 2 Cody APPROVE, Shadow and Quinn APPROVE WITH CONDITIONS (fixed in iteration 3); round 3 pending
+- Terminal state: GATE_REVIEW
 - Remaining failed or blocked criteria: none known
 - ClickUp final evidence comment: on the ticket
