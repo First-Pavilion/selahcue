@@ -837,6 +837,35 @@ pub enum ServerMessage {
     Error { message: String },
 }
 
+impl ServerMessage {
+    /// The variant's stable wire label (the `event` tag it serializes under) and NOTHING ELSE:
+    /// never a field value. This is the only form of a `ServerMessage` that may appear in an
+    /// error string, a log line or a panic message (FR-082; 17tnw2axppb): `Debug` on a
+    /// `ServerMessage` dumps its whole payload, and `OperatorState`/`SermonNoteDraft`/`Error`/
+    /// `PairingCode` carry live transcript, detection, note, pairing and host-supplied text
+    /// verbatim. The match is exhaustive on purpose (no wildcard arm), so a new variant cannot
+    /// compile until it has a label, and its label cannot be a payload.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ServerMessage::Ack { .. } => "ack",
+            ServerMessage::Denied { .. } => "denied",
+            ServerMessage::State { .. } => "state",
+            ServerMessage::ScriptureResults { .. } => "scripture_results",
+            ServerMessage::Chapter { .. } => "chapter",
+            ServerMessage::OperatorState { .. } => "operator_state",
+            ServerMessage::ConsoleThumbnails { .. } => "console_thumbnails",
+            ServerMessage::ScreenFrame { .. } => "screen_frame",
+            ServerMessage::RemoteDevices { .. } => "remote_devices",
+            ServerMessage::PairingCode { .. } => "pairing_code",
+            ServerMessage::ActiveTranscriptId { .. } => "active_transcript_id",
+            ServerMessage::SermonNoteDraft { .. } => "sermon_note_draft",
+            ServerMessage::SermonNoteRegenerationState { .. } => "sermon_note_regeneration_state",
+            ServerMessage::AutosaveSlots { .. } => "autosave_slots",
+            ServerMessage::Error { .. } => "error",
+        }
+    }
+}
+
 /// Bound on [`AutosaveSlotView::label`]'s wire length (Sana, PR #102 security review — N-2):
 /// every slot is unlabelled today (labelling a checkpoint is not yet an operator action, so
 /// nothing on this path can currently produce a long value), but the field exists for that
