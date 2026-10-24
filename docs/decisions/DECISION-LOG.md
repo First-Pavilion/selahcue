@@ -4,6 +4,37 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-019 - The cloud client trusts the operating-system certificate store; ring stays the only crypto provider (reqwest 0.13)
+
+- **Date:** 2026-10-24
+- **Stage:** Dependency maintenance - Dependabot PR #190 (reqwest 0.12.28 to 0.13.5), ClickUp [17tnw2b9ax2](https://app.clickup.com/t/17tnw2b9ax2)
+- **Decided by:** User (product owner)
+- **Type:** Security posture / architecture
+- **Status:** DECIDED
+
+**Decision.** `selahcue-cloud`'s HTTP transport (`ReqwestTransport`, feature `http`) trusts the **operating system's certificate store**, through `rustls-platform-verifier`, which is reqwest 0.13's own default. It no longer carries a bundled Mozilla root set. `ring` remains the **only** rustls crypto provider in the workspace: reqwest is built with `rustls-no-provider` and the transport installs ring itself, once per process, before the first client is built. The owner chose this over keeping the bundled `webpki-roots` set (reqwest 0.13 `tls_backend_preconfigured`), which was built and tested as the alternative.
+
+**Why it was needed at all.** reqwest 0.13 renamed the `rustls-tls` feature to `rustls`, removed the bundled-roots features, and made aws-lc-rs the default provider. Dependabot's PR #190 asked for the old feature name, so `cargo metadata` failed in the workspace and in `selahcue-operator`. Keeping ring needed `rustls-no-provider`; keeping the bundled roots needed extra code.
+
+**Consequences accepted.**
+- **A root the operating system trusts for this user is trusted by this client, including a TLS-inspecting (man-in-the-middle) root.** Trust depends on the machine, and getting a root in needs no administrator rights: on macOS a standard user can mark a root "Always Trust" in their own login keychain (user-domain trust settings); on Windows a user can add a root to the current-user store (after a confirmation dialog); on Linux and the BSDs `SSL_CERT_FILE` and `SSL_CERT_DIR` REPLACE the system bundle for the process (rustls-native-certs 0.8.4, `lib.rs` lines 118-125: when either is set it is used exclusively). It is a same-user vector, not a privilege escalation, and the Linux test (`tests/test_tls_system_store_linux.rs`) uses exactly this mechanism. The macOS and Windows mechanisms are the platforms' documented behaviour and were not exercised. The previous bundled-roots model did not have this property.
+- **What a trusted inspecting proxy can now read.** Before this change an inspecting proxy broke the handshake, because its root was not in the bundled set. Now it can read: the `Authorization: Bearer <account token>` on the quota and generate calls and the full sermon transcript (`selahcue-cloud/src/client.rs` lines 102 and 147); on `openai-notes` developer builds the OpenAI developer key and the transcript (`openai.rs` line 1118); and, because `selahcue-licensing` is written to receive this same `ReqwestTransport` (`selahcue-licensing/Cargo.toml` line 22), whatever it sends when it is wired in: email and password (`POST /v1/sessions`), enrollment and licence keys and device tokens. Not affected: entitlement signatures (the trusted keys are compiled in). A plain CONNECT proxy still sees only host and port, before and after.
+- **Revocation is now checked, where the bundled-roots client checked none.** Observed (QA run, reproduced by the author with the same probe against 0.12.28 and this build): `revoked.badssl.com` is refused on macOS by this build (cause "Revoked"; QA measured about 0.9 s) and was accepted by reqwest 0.12.28; Linux accepts it on both (QA run). The OS verifier's checks mean OCSP/CRL requests from the user's machine to the certificate authority's responder (the authority learns which certificate is being checked; no user data is sent) and an extra source of handshake latency. On Windows, from the verifier's source (`windows.rs` around lines 461-469, not run): the end certificate is checked online with a 10 s URL-retrieval budget in total and is accepted if no answer arrives; whether a network that silently drops port 80 pushes a handshake past reqwest's 10 s connect timeout is unverified.
+- **Linux, macOS and Windows verification.** Run: the macOS host (the full suite, a live GET to a public host) and a Debian bookworm arm64 container (the full selahcue-cloud suite plus the system-store test: an empty CA bundle makes `new()` fail closed with "No CA certificates were loaded from the system"). Not run: Windows, and the ubuntu CI runner. Windows is the open item (ticket follow-up).
+- **Bundled-root exposure goes down, with a Linux residue.** `main` bundled the emSign root affected by RUSTSEC-2026-0381 on every operating system. Now macOS and Windows defer to the operating system's own distrust decisions, and only a Linux machine whose CA bundle still carries that root is exposed (rustls-webpki 0.103.15, RUSTSEC-2026-0382, is still the chain validator there; the fixed 0.103.16 was published 2026-10-20, so under the 14-day rule the bump is on or after 2026-11-03).
+- The workspace gains the `rustls-platform-verifier` family of crates and the lock files lose reqwest 0.12's `quinn` entries (five advisories reported by `cargo audit`; `cargo tree` shows the crate was not in the resolved build graph for any target). No aws-lc crate is added.
+- Unchanged and still open: a redirect replays a 307/308 request body to another host (17tnw2b9aaz).
+
+**Enforcement.** `scripts/import_guards.sh` fails the build if aws-lc, a webpki-roots bundle (`webpki-roots`, `webpki-root-certs`), a native-tls backend (`native-tls`, `hyper-tls`, `tokio-native-tls`) or OpenSSL enters `selahcue-cloud --features http`'s resolved graph for three target triples, `x86_64-pc-windows-msvc`, `aarch64-apple-darwin` and `x86_64-unknown-linux-gnu` (a `cfg(windows)` dependency is invisible to a host-only walk), or if any committed `Cargo.lock` contains aws-lc or a native-tls backend. Known limits of the guard: a dependency gated to another architecture (for example `webpki-roots` on aarch64 Linux, or `webpki-root-certs` on Intel macOS) is not walked; the lock-level checks (aws-lc and the native-tls family) cover any architecture, but they match the canonical `name = "x"` line only, so a hand-respaced lock entry would pass until cargo rewrites it on the next unlocked resolve. The three triples match the platforms CI (ubuntu x86_64), the Windows installer build and the macOS arm64 developer machines use. `selahcue-cloud/src/transport/tls_tests.rs` pins that an unknown signer, a wrong name and an expired certificate are refused before any request byte is sent. Known gap: no automated test on macOS or Windows shows the OS store is consulted at all (a client that trusts nothing from the OS passes the macOS suite); the Linux test and the `#[ignore]`d live probe (`tests/test_tls_live_probe.rs`, run by hand before a release) are the pins.
+
+**Affected items.**
+- `implementation/desktop/crates/selahcue-cloud` (Cargo.toml, `transport.rs`, tests), both `deny.toml` files (comments), `scripts/import_guards.sh`.
+- Dependabot PR #190, superseded by the PR that records this decision.
+
+**Reversibility.** Reversible: the bundled-roots alternative is about ten lines (`tls_backend_preconfigured` with `webpki-roots` and ring); switching back changes only which roots are trusted.
+
+---
+
 ## DEC-018 — The media panel's Import copies images into app storage (OVERRIDES the in-place reference of design §8.5)
 
 - **Date:** 2026-10-01

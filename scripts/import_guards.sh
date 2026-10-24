@@ -424,4 +424,47 @@ if [ -n "$INSTALLED_UNEXPECTED" ]; then
   fail "the installed-translation loader's dependency graph grew. The output host links it, so review each addition (it must not open a socket) and add it to INSTALLED_ALLOWED in this script if it is intended"
 fi
 
+# --- the cloud client's TLS posture: OS trust store, ring only (DEC-019, 17tnw2b9ax2) -------
+# The owner decided that `selahcue-cloud --features http` (reqwest 0.13) trusts the operating
+# system's certificate store and that `ring` stays the ONLY crypto provider in the workspace.
+# Both are one Cargo feature away from silently reverting, in a way no test would notice:
+#   - reqwest's `rustls` feature (the obvious fix when `rustls-no-provider` looks fiddly) adds
+#     aws-lc-rs and aws-lc-sys, a second provider and a C/cmake/NASM build on the Windows installer;
+#   - a webpki-roots bundle (the old trust model) can come back through a feature or a new HTTP
+#     client, and would turn the OS-store decision into "Mozilla's list as of the last build";
+#   - reqwest's `native-tls` feature, behind `cfg(windows)`, would make Windows use SChannel instead
+#     of rustls and ring (reqwest 0.13's default backend switches to native-tls when that feature
+#     is unified in), and CI is Ubuntu-only, so nothing else would notice.
+# Asked of cargo's resolved graph for ALL THREE desktop targets (not just the host: a
+# `cfg(windows)` dependency is invisible to a host-only walk), not of Cargo.toml, with positive
+# controls proving each target was really walked; and of every committed lock file, because the
+# operator and the STT crate are separate roots that `cargo tree -p selahcue-cloud` never visits.
+echo ">> checking the cloud client's TLS posture: OS trust store, ring the only provider (DEC-019)"
+CLOUD_PKGS=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-cloud --features http -e normal --prefix none \
+  --target x86_64-pc-windows-msvc --target aarch64-apple-darwin --target x86_64-unknown-linux-gnu \
+  | awk 'NF {print $1}' | sort -u)
+# reqwest, ring, rustls and the OS verifier prove the walk resolved the graph at all; windows-sys
+# exists only on the Windows target, security-framework only on Apple's and rustls-native-certs only
+# on Linux/BSD's, so each proves its target was walked and a graph walked for the host alone fails.
+for want in reqwest ring rustls rustls-platform-verifier windows-sys security-framework rustls-native-certs; do
+  echo "$CLOUD_PKGS" | grep -qx "$want" \
+    || fail "the three-target dependency walk for selahcue-cloud --features http did not find '$want', so it is not resolving every target (or the TLS posture changed) and the check below proves nothing"
+done
+for crate in aws-lc-rs aws-lc-sys aws-lc-fips-sys webpki-roots webpki-root-certs native-tls hyper-tls tokio-native-tls openssl openssl-sys; do
+  if echo "$CLOUD_PKGS" | grep -qx "$crate"; then
+    "$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-cloud --features http -e normal -i "$crate" \
+      --target x86_64-pc-windows-msvc --target aarch64-apple-darwin --target x86_64-unknown-linux-gnu >&2 || true
+    fail "'$crate' is in selahcue-cloud's --features http dependency graph (Windows, macOS or Linux): DEC-019 says the cloud client trusts the operating-system store (no bundled root set, no native-tls backend) with ring as the only crypto provider"
+  fi
+done
+for lock in "$DESKTOP/Cargo.lock" "$DESKTOP/crates/selahcue-operator/Cargo.lock" "$DESKTOP/crates/selahcue-stt/Cargo.lock"; do
+  grep -q '^name = "ring"$' "$lock" \
+    || fail "$lock has no 'ring' package, so the checks below could not tell a clean lock from an unreadable one"
+  for crate in aws-lc-rs aws-lc-sys aws-lc-fips-sys native-tls hyper-tls tokio-native-tls; do
+    if grep -q "^name = \"$crate\"\$" "$lock"; then
+      fail "$lock contains '$crate': a second crypto provider (aws-lc) or a native-tls backend has entered the workspace. DEC-019: ring is the only provider and reqwest uses rustls-no-provider, not rustls or native-tls"
+    fi
+  done
+done
+
 echo "== import guards: OK =="

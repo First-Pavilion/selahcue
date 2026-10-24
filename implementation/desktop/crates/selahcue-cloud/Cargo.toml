@@ -9,10 +9,21 @@ description = "SelahCue-hosted cloud client: the versioned note-generation / clo
 
 [features]
 default = []
-# Real network transport (reqwest, rustls TLS). Off by default so the workspace
+# Real network transport: reqwest 0.13 over rustls. Off by default so the workspace
 # build + tests stay light and deterministic (they use the in-crate MockTransport);
 # the operator/desktop build turns it on to reach the live SelahCue service.
-http = ["dep:reqwest"]
+#
+# TLS POSTURE (owner decision 2026-10-24, DEC-019, ClickUp 17tnw2b9ax2):
+#   * Trust roots are the OPERATING SYSTEM store, through rustls-platform-verifier (reqwest
+#     0.13's own default). There is no bundled Mozilla root set in this client. A TLS-inspecting
+#     root installed on a machine is therefore trusted by it.
+#   * `ring` is the ONLY crypto provider in the workspace (selahcue-lan and selahcue-stt-cloud
+#     already use it). reqwest's own `rustls` feature would add aws-lc-rs (a C/cmake/NASM build and
+#     a second provider), so we use `rustls-no-provider` and install ring ourselves, once, in
+#     `ReqwestTransport::new()` (`transport::ensure_crypto_provider`).
+#   * `scripts/import_guards.sh` fails the build if aws-lc or the webpki-roots bundle re-enter
+#     this crate's `http` tree.
+http = ["dep:reqwest", "dep:rustls"]
 # Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
 # Off by default: the shipping path proxies notes through the SelahCue platform API, so
 # a default build must not contain a direct-to-provider path at all. It pulls NO new
@@ -29,16 +40,34 @@ keyring = ["dep:keyring"]
 selahcue-core = { path = "../selahcue-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false, features = [
+# `rustls-no-provider`, NOT `rustls`: see the `http` feature comment. reqwest 0.13 renamed 0.12's
+# `rustls-tls` to `rustls` and made aws-lc-rs its provider; this feature keeps ring. Without a
+# provider installed first, building a Client PANICS, which `ensure_crypto_provider` prevents.
+reqwest = { version = "0.13", default-features = false, features = [
     "blocking",
-    "rustls-tls",
+    "rustls-no-provider",
     "json",
 ], optional = true }
+# Same features as selahcue-lan and selahcue-stt-cloud, so the workspace links one rustls build
+# and one crypto provider. A DIRECT dependency because installing the provider needs the crate.
+rustls = { version = "0.23", optional = true, default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
 keyring = { version = "3", features = [
     "apple-native",
     "windows-native",
     "sync-secret-service",
 ], optional = true }
+
+[dev-dependencies]
+# A throwaway certificate authority for the TLS trust tests (`transport.rs` unit tests): it signs
+# a loopback server certificate so "signed by a root we were given" and "signed by an unknown
+# root" can both be exercised against the real client. Same version and features as
+# selahcue-lan's, so no new crate enters any lock file. Dev-only: never part of a build.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [lints]
 workspace = true

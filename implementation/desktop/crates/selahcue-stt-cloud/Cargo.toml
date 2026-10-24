@@ -24,10 +24,12 @@ selahcue-core = { path = "../selahcue-core" }
 serde_json = "1"
 
 # --- `deepgram` feature: the async TLS WebSocket transport ---
-# Every crate here is ALREADY in `Cargo.lock` via `selahcue-lan --features server` and
-# `selahcue-cloud --features http`, and `webpki-roots`' CDLA-Permissive-2.0 licence is
-# already allowlisted in `deny.toml`. Pinned to the same majors the LAN transport uses so
-# the workspace does not carry two copies of a TLS stack.
+# Every crate here is ALREADY in `Cargo.lock` via `selahcue-lan --features server` (and,
+# for the TLS stack, `selahcue-cloud --features http`), and `webpki-roots`' CDLA-Permissive-2.0
+# licence is already allowlisted in `deny.toml`. Since DEC-019 the cloud HTTP client trusts the
+# operating-system store and no longer carries `webpki-roots`; this Deepgram transport is the
+# one place that still does. Pinned to the same majors the LAN transport uses so the workspace
+# does not carry two copies of a TLS stack.
 tokio = { version = "1", optional = true, default-features = false, features = [
     "rt",
     # The session builds its own current-thread runtime, so production does not need this.

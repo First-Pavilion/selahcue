@@ -24,8 +24,11 @@ allow = [
   "OFL-1.1", # font data
   "Ubuntu-font-1.0",
   # Community Data License Agreement – Permissive 2.0 — permissive, no copyleft. Carried
-  # by webpki-roots (Mozilla's bundled root-CA data set) via selahcue-cloud → reqwest →
-  # hyper-rustls (the SelahCue cloud client's TLS trust roots).
+  # by webpki-roots (Mozilla's bundled root-CA data set) via selahcue-stt-cloud ->
+  # tokio-tungstenite (the Deepgram transport's TLS trust roots), and by webpki-root-certs
+  # (rustls-platform-verifier's wasm32-only fallback root set, in the lock but not compiled for
+  # desktop targets). The SelahCue cloud client (selahcue-cloud -> reqwest 0.13) does NOT carry a
+  # bundled root set: it trusts the operating-system store (DEC-019).
   "CDLA-Permissive-2.0",
   # The Unlicense — public-domain dedication (OSI approved, FSF Free/Libre, no copyleft).
   # Carried by whisper-rs / whisper-rs-sys via selahcue-stt (the operator's on-device STT

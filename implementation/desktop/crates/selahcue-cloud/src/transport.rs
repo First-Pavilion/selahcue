@@ -69,8 +69,46 @@ pub trait HttpTransport {
 /// which is a better diagnostic than a truncated read.
 pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
-/// The production transport over `reqwest` (blocking, rustls TLS). Compiled only with
+/// The production transport over `reqwest` 0.13 (blocking, rustls). Compiled only with
 /// the `http` feature so the default workspace build/tests stay light and offline.
+///
+/// # TLS posture (owner decision 2026-10-24, DEC-019, ClickUp 17tnw2b9ax2)
+///
+/// - **Trust roots are the operating system's store**, through `rustls-platform-verifier`
+///   (reqwest 0.13's own default). There is no bundled Mozilla root set in this client, so a
+///   root the operating system trusts *for this user* is a root this client trusts. That
+///   includes a TLS-inspecting (man-in-the-middle) root. Getting one in needs no administrator
+///   rights: on macOS a standard user can mark a root "Always Trust" in their own login keychain
+///   (user-domain trust settings), on Windows a user can add a root to the current-user store
+///   (after a confirmation dialog), and on Linux and the BSDs `SSL_CERT_FILE` and `SSL_CERT_DIR`
+///   REPLACE the system bundle for the process (rustls-native-certs 0.8.4, `lib.rs`
+///   `load_native_certs`: when either is set it is used exclusively). The macOS and Windows
+///   mechanisms are the platform's documented behaviour and were not exercised here. This is a
+///   same-user vector, not a privilege escalation, and `tests/test_tls_system_store_linux.rs`
+///   uses exactly the Linux mechanism.
+/// - **`ring` is the only crypto provider.** reqwest's own `rustls` feature would add aws-lc-rs;
+///   we use `rustls-no-provider` and install ring ourselves ([`ensure_crypto_provider`]). A client
+///   built before a provider is installed panics, so every constructor goes through it.
+/// - **A machine with no usable roots fails closed.** On Linux the verifier reads the CA bundle
+///   through `rustls-native-certs`; when it finds none, building the client fails with
+///   "No CA certificates were loaded from the system", and [`ReqwestTransport::new`] returns a
+///   [`TransportError`] saying so. It never falls back to trusting everything, and the message
+///   carries no request data. Run: on a macOS host and in a Debian bookworm arm64 container
+///   (`tests/test_tls_system_store_linux.rs`). Not run: Windows and the ubuntu CI runner. macOS
+///   and Windows use the system verifier APIs, which have no such load step. A consequence for
+///   anyone running the tests on a Linux host with no CA bundle: every test that calls `new()`
+///   fails, including the plaintext loopback ones, because `new()` itself errors by design.
+/// - **Revocation is now checked, where the old bundled-roots client checked none.** Observed on
+///   macOS: a revoked certificate is refused (cause "Revoked"); Linux accepted it. From the
+///   verifier's source (`windows.rs`, around lines 461-469, not run): on Windows the end
+///   certificate is checked online with a 10 s URL-retrieval budget and accepted if no answer
+///   arrives. The checks send OCSP/CRL requests from the user's machine to the CA's responder
+///   (no user data, but the CA learns which certificate is being checked) and are an extra source
+///   of latency. Whether a network that silently drops port 80 pushes a handshake past
+///   [`CONNECT_TIMEOUT_SECS`] is unverified.
+/// - **Certificates are checked, not skipped**: an unknown signer, a wrong name and an expired
+///   certificate are each refused before a single request byte is written. Pinned in
+///   `transport/tls_tests.rs`.
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
@@ -107,19 +145,144 @@ pub const CONNECT_TIMEOUT_SECS: u64 = 10;
 #[cfg(feature = "http")]
 pub const REQUEST_TIMEOUT_SECS: u64 = 60;
 
+/// How this process came to have a rustls crypto provider; see [`ensure_crypto_provider`].
+#[cfg(feature = "http")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CryptoProviderInstall {
+    /// Nothing was installed, so this call installed `ring` as the process default.
+    InstalledRing,
+    /// A default provider was already installed by someone else (in this workspace only
+    /// `selahcue-stt-cloud`'s Deepgram transport does that; `selahcue-lan` builds its configs with
+    /// `builder_with_provider` and never installs a default). It is **kept, never replaced**, and
+    /// not inspected: reqwest uses whichever default is installed. In this workspace that can only be `ring`, because
+    /// `scripts/import_guards.sh` refuses any lock file that contains aws-lc.
+    AlreadyInstalled,
+}
+
+/// Install `ring` as rustls' process-wide crypto provider, once, and say how it came about.
+///
+/// reqwest 0.13's `rustls-no-provider` feature builds no provider of its own and **panics at
+/// `Client` construction** when none is installed, so every [`ReqwestTransport`] constructor
+/// calls this first. It is idempotent and safe to call from any number of threads: the first
+/// caller does the work, concurrent callers wait for it, and every caller gets the same answer
+/// (the outcome of that first install, not a fresh probe). `install_default` returns `Err` when
+/// a provider is already installed; that is success for our purposes and is reported as
+/// [`CryptoProviderInstall::AlreadyInstalled`] rather than treated as a failure or, worse,
+/// replaced.
+#[cfg(feature = "http")]
+pub fn ensure_crypto_provider() -> CryptoProviderInstall {
+    static OUTCOME: std::sync::OnceLock<CryptoProviderInstall> = std::sync::OnceLock::new();
+    *OUTCOME.get_or_init(
+        || match rustls::crypto::ring::default_provider().install_default() {
+            Ok(()) => CryptoProviderInstall::InstalledRing,
+            Err(_already_installed) => CryptoProviderInstall::AlreadyInstalled,
+        },
+    )
+}
+
+/// How many causes of an error [`cause_chain`] will print. A rustls or hyper chain is two or
+/// three deep; the bound only keeps a pathological chain from producing an unbounded message.
+#[cfg(feature = "http")]
+const MAX_CAUSES: usize = 8;
+
+/// The causes of `e` (not `e` itself), each preceded by ": ", at most [`MAX_CAUSES`] of them.
+///
+/// reqwest's own `Display` stops at the top of the chain: a builder error reads only "builder
+/// error" and a send error only "error sending request for url (...)", so an operator whose note
+/// generation fails cannot tell "the certificate is for another name" from "the network is down".
+/// The causes of a *builder* error come from TLS set-up and the causes of a *send* error from the
+/// connection and the TLS handshake (for example "invalid peer certificate: UnknownIssuer" or
+/// "Revoked"); none of them carries a request header, a request body or a credential (the bearer
+/// is a header, and a header is not part of an error). The URL in the top-level text is as it
+/// always was.
+#[cfg(feature = "http")]
+fn cause_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut text = String::new();
+    let mut cause = e.source();
+    let mut shown = 0;
+    while let Some(c) = cause {
+        if shown == MAX_CAUSES {
+            text.push_str(": ...");
+            break;
+        }
+        text.push_str(": ");
+        text.push_str(&c.to_string());
+        cause = c.source();
+        shown += 1;
+    }
+    text
+}
+
+/// The reason a client could not be built, from reqwest's error and its causes.
+#[cfg(feature = "http")]
+fn describe_build_error(e: &reqwest::Error) -> String {
+    format!("could not set up TLS{}", cause_chain(e))
+}
+
+/// A failed send: reqwest's one-line text (with the URL, as before) plus the causes.
+#[cfg(feature = "http")]
+fn describe_send_error(e: &reqwest::Error) -> String {
+    format!("{e}{}", cause_chain(e))
+}
+
 #[cfg(feature = "http")]
 impl ReqwestTransport {
     /// A transport that is bounded at both the connect phase and the whole request, so a
-    /// stalling peer always fails rather than hanging the caller.
+    /// stalling peer always fails rather than hanging the caller. Trusts the operating
+    /// system's certificate store and nothing else (see the type documentation).
     pub fn new() -> Result<Self, TransportError> {
-        let client = reqwest::blocking::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        Self::build(&[])
+    }
+
+    /// The one place a production client is built. `extra_roots` is always empty in production;
+    /// the TLS tests pass a throwaway CA so that "signed by a root we were given" can be exercised
+    /// against the real client. The function is private and its only non-test caller is
+    /// [`ReqwestTransport::new`] passing `&[]`, so no release code path can widen the trust set.
+    fn build(extra_roots: &[reqwest::Certificate]) -> Result<Self, TransportError> {
+        Self::from_builder(Self::shipped_builder(extra_roots))
+    }
+
+    /// The builder `build` uses: the shipped timeouts, [`CONNECT_TIMEOUT_SECS`] and
+    /// [`REQUEST_TIMEOUT_SECS`], applied by [`ReqwestTransport::configured_builder`]. A separate
+    /// function so a test can read back what `build` configures (the `Debug` text of a reqwest
+    /// builder carries both timeouts) instead of trusting that the constants were passed on.
+    fn shipped_builder(extra_roots: &[reqwest::Certificate]) -> reqwest::blocking::ClientBuilder {
+        Self::configured_builder(
+            extra_roots,
+            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS),
+        )
+    }
+
+    /// The client builder before `.build()`, with the two timeouts as arguments so a test can prove
+    /// they take effect without waiting ten or sixty seconds.
+    fn configured_builder(
+        extra_roots: &[reqwest::Certificate],
+        connect_timeout: std::time::Duration,
+        timeout: std::time::Duration,
+    ) -> reqwest::blocking::ClientBuilder {
+        let mut builder = reqwest::blocking::Client::builder()
+            .connect_timeout(connect_timeout)
+            .timeout(timeout);
+        if !extra_roots.is_empty() {
+            builder = builder.tls_certs_merge(extra_roots.iter().cloned());
+        }
+        builder
+    }
+
+    /// Install the crypto provider, then build. Reqwest 0.13 with `rustls-no-provider` panics at
+    /// this point if no provider is installed, so nothing builds a client without going through here.
+    fn from_builder(builder: reqwest::blocking::ClientBuilder) -> Result<Self, TransportError> {
+        ensure_crypto_provider();
+        let client = builder
             .build()
-            .map_err(|e| TransportError(e.to_string()))?;
+            .map_err(|e| TransportError(describe_build_error(&e)))?;
         Ok(ReqwestTransport { client })
     }
 }
+
+#[cfg(all(test, feature = "http"))]
+mod tls_tests;
 
 /// Read at most `cap` bytes from `r`, refusing anything larger, and giving up at `deadline`.
 ///
@@ -245,7 +408,9 @@ impl HttpTransport for ReqwestTransport {
         if let Some(t) = bearer {
             req = req.bearer_auth(t);
         }
-        let resp = req.send().map_err(|e| TransportError(e.to_string()))?;
+        let resp = req
+            .send()
+            .map_err(|e| TransportError(describe_send_error(&e)))?;
         read_bounded(resp)
     }
 
@@ -254,7 +419,9 @@ impl HttpTransport for ReqwestTransport {
         if let Some(t) = bearer {
             req = req.bearer_auth(t);
         }
-        let resp = req.send().map_err(|e| TransportError(e.to_string()))?;
+        let resp = req
+            .send()
+            .map_err(|e| TransportError(describe_send_error(&e)))?;
         read_bounded(resp)
     }
 }
