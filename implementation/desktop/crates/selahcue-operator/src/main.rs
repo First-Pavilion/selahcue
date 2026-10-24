@@ -76,6 +76,9 @@ mod media_store;
 /// magic-byte type allowlist, ahead of and separate from `selahcue_engine`'s own decode hardening.
 mod safe_import;
 
+/// Requested-but-empty caveats on the persisted sermon-note draft (86akmfn54).
+mod sermon_note_caveats;
+
 /// Developer AI provider keys from the repo-root `.env` (feature `dev-keys`; OFF by default, and
 /// the file read is not compiled in without it). Temporary scaffolding for the developer-key
 /// phase — the module's own docs name what replaces it.
@@ -7338,7 +7341,13 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
             // nothing at all — distinct from a section the operator left off, which never
             // reaches `sections` in the first place. Computed here, once, so `settings.js`
             // never has to re-derive it by cross-referencing headings itself.
-            "empty_requested": empty_headings.iter().any(|h| *h == s.heading),
+            // 86akmfn54: AND the section is actually empty. The console renders a flagged
+            // section as "nothing came back" INSTEAD of its items, so a stale or colliding
+            // caveat heading (a reloaded draft whose operator renamed a populated section
+            // to a caveated name) must never be able to hide real content. A fresh
+            // generation only ever caveats a section it left empty, so this is a no-op there.
+            "empty_requested": sermon_note_caveats::section_is_empty(s)
+                && empty_headings.iter().any(|h| *h == s.heading),
         })).collect::<Vec<_>>(),
         // Unchanged shape (a flat string array) — this is a PINNED cross-path contract
         // with `sermon_note_draft_json` (the persisted-draft-reload path), which reads the
@@ -7408,185 +7417,10 @@ fn transcript_segments_for(
 // operator already depends on `serde_json` for the wire to the JS UI.
 // ---------------------------------------------------------------------------------
 
-/// The sections to persist for a draft (86akc0tua remediation — Cody's blocking finding
-/// on PR #46).
-///
-/// `caveats`/`empty_requested` are computed only for the LIVE `draft_json` response and
-/// are not carried by the persisted wire shape (`SermonNoteDraftView` has no such field —
-/// deliberately out of this ticket's footprint, see the Goal Contract's non-goals). Left
-/// unaddressed, persisting a caveated-empty `NoteSection` verbatim — which this ticket
-/// newly started pushing instead of omitting — would reappear after a reload or the next
-/// edit-save as a bare heading over a silently empty list, with NONE of the explanation
-/// the live view showed: worse than this ticket's OWN pre-fix behaviour (fully silent),
-/// not merely as good.
-///
-/// So a section this call generated purely to hold a `SectionRequestedEmpty` caveat's
-/// place (see `openai.rs::parse_draft`) is filtered out before it reaches the persisted
-/// columns, restoring the exact pre-86akc0tua persisted shape for exactly those sections.
-/// This is a narrower, more conservative fix than threading caveats through the wire
-/// protocol (a cross-language contract change — see CLAUDE.md), and it trades "the
-/// improvement doesn't survive a reload" (already an accepted, disclosed limitation) for
-/// "a reload never shows a worse, unexplained state than before this ticket existed."
-///
-/// Deliberately NOT a blanket "drop every empty section": `local.rs`'s offline scaffold
-/// pushes intentionally empty placeholder headings (`NoteSection::flat("Prayer points",
-/// Vec::new())`) as honest, empty-for-the-operator-to-fill sections — those are NOT
-/// caveated (local.rs never populates `caveats`) and must keep persisting exactly as they
-/// did before this ticket.
-fn sections_to_persist(
-    draft: &selahcue_core::providers::NoteDraft,
-) -> Vec<selahcue_core::providers::NoteSection> {
-    // `.filter_map`, as the comment this replaced predicted: 86akby820 added a second
-    // `DraftCaveat` variant, `ScriptureUnverified`, which is about a single reference, not
-    // a whole section — it names nothing that ever matches a `NoteSection::heading`, so it
-    // has no heading to contribute here and is skipped rather than persisted-out-of-
-    // existence. Only `SectionRequestedEmpty` still identifies a section to drop.
-    let empty_caveated_headings: Vec<&str> = draft
-        .caveats
-        .iter()
-        .filter_map(|c| match c {
-            selahcue_core::providers::DraftCaveat::SectionRequestedEmpty { heading } => {
-                Some(heading.as_str())
-            }
-            selahcue_core::providers::DraftCaveat::ScriptureUnverified { .. } => None,
-            // Draft-wide (86akgqdwc); names no section either.
-            selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete => None,
-        })
-        .collect();
-    draft
-        .sections
-        .iter()
-        .filter(|s| !empty_caveated_headings.contains(&s.heading.as_str()))
-        .cloned()
-        .collect()
-}
-
-#[cfg(test)]
-mod sections_to_persist_tests {
-    use super::sections_to_persist;
-    use selahcue_core::providers::{DraftCaveat, NoteDraft, NoteSection};
-
-    fn draft(sections: Vec<NoteSection>, caveats: Vec<DraftCaveat>) -> NoteDraft {
-        NoteDraft {
-            title: "t".into(),
-            summary: None,
-            sections,
-            scriptures: Vec::new(),
-            caveats,
-            scripture_verdicts: Vec::new(),
-            timestamps: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_caveated_empty_section_is_dropped_before_persisting() {
-        // Cody's blocking finding on PR #46: persisting this section verbatim would
-        // reappear after a reload as a bare heading over an empty list with NO
-        // explanation — worse than the pre-86akc0tua silent omission. Dropping it here
-        // restores that exact pre-fix persisted shape for exactly this section.
-        let d = draft(
-            vec![
-                NoteSection::flat("Illustrations", vec!["a lantern".into()]),
-                NoteSection::flat("Chapter markers", Vec::new()),
-            ],
-            vec![DraftCaveat::SectionRequestedEmpty {
-                heading: "Chapter markers".to_string(),
-            }],
-        );
-        let persisted = sections_to_persist(&d);
-        assert_eq!(persisted.len(), 1);
-        assert_eq!(persisted[0].heading, "Illustrations");
-    }
-
-    #[test]
-    fn an_uncaveated_empty_section_such_as_locals_honest_placeholder_still_persists() {
-        // The narrower-than-a-blanket-filter requirement: `local.rs`'s deliberately
-        // empty "fill this in yourself" placeholders (never caveated) must NOT be
-        // caught by this filter — dropping them would be a NEW, unrelated regression.
-        let d = draft(
-            vec![NoteSection::flat("Prayer points", Vec::new())],
-            Vec::new(),
-        );
-        let persisted = sections_to_persist(&d);
-        assert_eq!(
-            persisted.len(),
-            1,
-            "an empty section with NO caveat must still persist — only a CAVEATED \
-             empty section is filtered"
-        );
-    }
-
-    #[test]
-    fn a_scripture_unverified_caveat_drops_nothing_it_names_no_section_at_all() {
-        // 86akby820 added `DraftCaveat::ScriptureUnverified`, which this function's
-        // `filter_map` must skip (it has no `heading` field to compare against — it
-        // names a reference, not a section). Without this arm the match would not
-        // compile at all (the compile error this test guards against); with a `_ => None`
-        // wildcard instead of an explicit arm, a THIRD future caveat variant could
-        // silently fall through unnoticed — this exhaustive match is what forces that
-        // to be revisited too. A section sharing NO heading with any caveat must survive.
-        let d = draft(
-            vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
-            vec![DraftCaveat::ScriptureUnverified {
-                reference: "3 John 4:12".to_string(),
-            }],
-        );
-        let persisted = sections_to_persist(&d);
-        assert_eq!(
-            persisted.len(),
-            1,
-            "a ScriptureUnverified caveat must never cause an unrelated section to be \
-             dropped — it names a reference, not a heading"
-        );
-    }
-
-    #[test]
-    fn a_scripture_verification_incomplete_caveat_drops_nothing_either() {
-        // 86akgqdwc added `DraftCaveat::ScriptureVerificationIncomplete` (Sana F2 on PR
-        // #48) — draft-wide, names no section and no reference. Same exhaustive-match
-        // discipline as the `ScriptureUnverified` test above: without this arm the match
-        // in `sections_to_persist` would not compile.
-        let d = draft(
-            vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
-            vec![DraftCaveat::ScriptureVerificationIncomplete],
-        );
-        let persisted = sections_to_persist(&d);
-        assert_eq!(
-            persisted.len(),
-            1,
-            "a ScriptureVerificationIncomplete caveat must never cause an unrelated \
-             section to be dropped — it names nothing"
-        );
-    }
-
-    #[test]
-    fn a_populated_section_is_never_filtered_even_if_its_heading_matches_a_caveat() {
-        // Defensive: the filter matches by heading text, so a populated section must
-        // never accidentally collide with a stale/unrelated caveat heading. (In
-        // practice `parse_draft` never emits both for the same heading, but the filter
-        // itself should not rely on that invariant holding elsewhere.)
-        let d = draft(
-            vec![NoteSection::flat(
-                "Chapter markers",
-                vec!["Opening prayer".into()],
-            )],
-            vec![DraftCaveat::SectionRequestedEmpty {
-                heading: "Chapter markers".to_string(),
-            }],
-        );
-        let persisted = sections_to_persist(&d);
-        assert_eq!(
-            persisted.len(),
-            0,
-            "documenting actual behaviour: the filter is heading-keyed and does not \
-             also check emptiness — this is safe ONLY because parse_draft never \
-             produces this combination for real; see the caveat above"
-        );
-    }
-}
-
-fn sections_to_json(sections: &[selahcue_core::providers::NoteSection]) -> String {
-    let v: Vec<serde_json::Value> = sections
+fn sections_to_values(
+    sections: &[selahcue_core::providers::NoteSection],
+) -> Vec<serde_json::Value> {
+    sections
         .iter()
         .map(|s| {
             serde_json::json!({
@@ -7597,8 +7431,13 @@ fn sections_to_json(sections: &[selahcue_core::providers::NoteSection]) -> Strin
                 })).collect::<Vec<_>>(),
             })
         })
-        .collect();
-    serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string())
+        .collect()
+}
+
+/// The legacy `sections_json` shape: a bare JSON array of sections. Requested-but-empty
+/// caveats are recorded alongside it by [`sermon_note_caveats`], never in here.
+fn sections_to_json(sections: &[selahcue_core::providers::NoteSection]) -> String {
+    serde_json::to_string(&sections_to_values(sections)).unwrap_or_else(|_| "[]".to_string())
 }
 
 fn scriptures_to_json(scriptures: &[String]) -> String {
@@ -7667,15 +7506,21 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
 /// row in a real launch; persistence now goes through `Backend`'s LAN commands, which
 /// execute against the desktop's authoritative store).
 ///
-/// 86akby820 (Sana F4 on PR #47): scripture verdicts are NOT persisted (same non-goal as
-/// 86akc0tua's caveats, and for the same cross-language-wire-contract reason), but unlike
-/// that ticket's empty-section caveats — which are deliberately never written to storage
-/// at all (`sections_to_persist`) — the raw material this check needs (`scriptures`,
-/// `sections`) IS still here on every load. `verify_scriptures` is pure and offline, so
-/// re-running it fresh on every load/edit-save costs nothing a live generation didn't
-/// already pay, and it closes the exact "the safety check doesn't survive a reload" gap
-/// Cody blocked 86akc0tua on — for the harm this ticket's own PRD cites (a pastor reading
-/// from a RELOADED Sunday-morning draft), not only the just-generated one.
+/// 86akby820 (Sana F4 on PR #47): scripture verdicts are NOT persisted, but the raw material
+/// this check needs (`scriptures`, `sections`) IS still here on every load.
+/// `verify_scriptures` is pure and offline, so re-running it fresh on every load/edit-save
+/// costs nothing a live generation didn't already pay, and it closes the exact "the safety
+/// check doesn't survive a reload" gap Cody blocked 86akc0tua on, for the harm this ticket's
+/// own PRD cites (a pastor reading from a RELOADED Sunday-morning draft), not only the
+/// just-generated one.
+///
+/// 86akmfn54: the requested-but-empty caveats (86akc0tua) ARE persisted, as the list of
+/// headings stored with the sections (see [`sermon_note_caveats`]), because unlike a scripture
+/// verdict they cannot be recomputed from what is stored: whether an empty section was
+/// *requested* depends on the settings in force when it was generated. They are read back here
+/// into the same `DraftCaveat` a fresh generation raises, so `draft_json` derives `caveats` and
+/// `empty_requested` for a reloaded draft with exactly the code that does it for a new one.
+///
 /// Returns the draft JSON (in `draft_json`'s own shape) alongside the address-only
 /// verification-scope note, gated exactly like the removed `generate_sermon_notes`'s own response:
 /// present only when at least one reference was actually (re-)checked. One return value,
@@ -7693,8 +7538,7 @@ fn sermon_note_draft_json(
     v: &selahcue_lan::protocol::SermonNoteDraftView,
     segments: &[selahcue_core::transcript::TranscriptSegment],
 ) -> (serde_json::Value, Option<&'static str>) {
-    let sections: Vec<NoteSectionInput> =
-        serde_json::from_str(&v.sections_json).unwrap_or_default();
+    let (sections, stored_requested_empty) = sermon_note_caveats::decode_sections(&v.sections_json);
     let sections = sections_from_input(sections);
     let scriptures: Vec<String> = serde_json::from_str(&v.scriptures_json).unwrap_or_default();
 
@@ -7704,15 +7548,19 @@ fn sermon_note_draft_json(
         });
     let note =
         (!verdicts.is_empty()).then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING);
-    let mut caveats: Vec<selahcue_core::providers::DraftCaveat> = verdicts
-        .iter()
-        .filter(|v| !v.verified)
-        .map(
-            |v| selahcue_core::providers::DraftCaveat::ScriptureUnverified {
-                reference: v.reference.clone(),
-            },
-        )
-        .collect();
+    // Requested-but-empty first, in generation order, then the per-reference scripture ones:
+    // the order a fresh generation produces them in.
+    let mut caveats = sermon_note_caveats::reloaded_caveats(
+        &stored_requested_empty,
+        v.summary.as_deref(),
+        &sections,
+        &scriptures,
+    );
+    caveats.extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
+        selahcue_core::providers::DraftCaveat::ScriptureUnverified {
+            reference: v.reference.clone(),
+        }
+    }));
     // 86akgqdwc (Sana F2 on PR #48): a reload must carry the same "some references were
     // never checked at all" signal a fresh generation does — re-verification runs fresh
     // here (see this function's own doc comment above) and can hit the same budget.
@@ -8384,24 +8232,11 @@ async fn transcript_generate_notes(
             // (17tnw2b0ntd) but the linking behaviour is unchanged.
             link_note_timestamps(&mut outcome.draft, &after.segments);
 
-            // 86akc0tua: persist through `sections_to_persist`, exactly as the now-removed
-            // live-tail `generate_sermon_notes` command (removed in 17tnw2b0ntd) did — a section that exists only to
-            // carry a `SectionRequestedEmpty` caveat's place must not survive into the
-            // persisted row, or a reload shows a bare empty heading with none of the
-            // explanation the live response gave it. This entrypoint is now the only one, so
-            // it must keep the same persist-time filter the live-tail path applied.
-            let draft = selahcue_lan::protocol::SermonNoteDraftInput {
-                title: outcome.draft.title.clone(),
-                summary: outcome.draft.summary.clone(),
-                sections_json: sections_to_json(&sections_to_persist(&outcome.draft)),
-                scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
-                ai_generated: outcome.ai_generated,
-                disclosure: outcome.disclosure.map(str::to_string),
-                provider: outcome.provider_label.clone(),
-                // See the removed `generate_sermon_notes`'s identical field: no `NoteProvider` exposes a
-                // model id through `GenerationOutcome` today.
-                model: None,
-            };
+            // 86akmfn54: the requested-but-empty caveats (86akc0tua) are persisted WITH the
+            // sections, so a reload, restart, edit-save or regenerate-confirm shows the same
+            // "nothing came back" the live response did. (They used to be filtered out here,
+            // which is what made them vanish.)
+            let draft = sermon_note_caveats::draft_input_for(&outcome);
             let persist = persist_generated_draft(&state, id, draft).await;
 
             Ok(serde_json::json!({
@@ -8913,6 +8748,11 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
 /// disclosure; this command's own response echoes them back unchanged (re-read from
 /// the host) so the UI never has to assume that rather than see it.
 ///
+/// `requested_empty` (86akmfn54) is the headings of the requested-but-empty caveats the
+/// operator was shown, by their current names (the edit form can rename a heading); omitted by
+/// an older caller it means "none". Each is kept only while the edited content is still empty,
+/// so filling a section in or typing a summary clears its caveat.
+///
 /// A malformed `sections`/`points` shape (wrong JSON types) is rejected by Tauri's
 /// own IPC deserialization before this function body ever runs. Goes through
 /// `Backend`'s LAN commands — see `persist_generated_draft`'s doc comment for why (PR #33
@@ -8927,15 +8767,16 @@ async fn update_sermon_note_draft(
     summary: Option<String>,
     sections: Vec<NoteSectionInput>,
     scriptures: Vec<String>,
+    requested_empty: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let sections = sections_from_input(sections);
-    let edit = selahcue_lan::protocol::SermonNoteEditInput {
+    let edit = sermon_note_caveats::edit_input_for(
         title,
         summary,
-        sections_json: sections_to_json(&sections),
-        scriptures_json: scriptures_to_json(&scriptures),
-    };
+        sections,
+        &scriptures,
+        requested_empty.as_deref(),
+    );
     match state
         .backend
         .update_sermon_note_draft(transcript_id, edit)
