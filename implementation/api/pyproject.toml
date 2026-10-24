@@ -13,7 +13,7 @@
 # this file is only ever built as an editable PEP 517/660 install on macOS, Linux CI and Linux Docker, with no
 # egg install and no setup_requires. Bump to 84.1.0 or later on or after 2026-11-02.
 # Dependabot (pip, this directory) may propose a bump of this pin; take it as an ordinary reviewed PR.
-requires = ["setuptools==84.0.0"]
+requires = ["setuptools==84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
