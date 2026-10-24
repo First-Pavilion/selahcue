@@ -76,19 +76,19 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Sign-in is `POST /v1/sessions` with exactly `{email, password}`, no bearer, and parses the server's real body (including the unsigned `surface`/`operation` labels) | `cargo test -p selahcue-licensing --test test_client a_fresh_install_activates` and `--test test_contract a_real_sign_in_success_body_parses` | both pass | test output | PENDING |
-| C-002 | yes | Session activation is `POST /v1/activations:with-session` with the session as bearer, body = activation body minus `license_key` (snake_case), and returns `reminted`, token metadata and the licence block | `--test test_client a_session_activation_reports_everything` and `a_fresh_install_activates` | pass | test output | PENDING |
-| C-003 | yes | No code in the crate names `/graphql/account`, GraphQL, a cookie, a CSRF header, Origin or Referer; every request is a `/v1` JSON POST | `--test test_client the_source_names_no_cookie_csrf_origin_or_graphql_route` and `every_request_goes_to_a_cookie_free_v1_route` | pass; mutation M5 turns both red | test output + mutation log | PENDING |
-| C-004 | yes | A MEMBER (PERMISSION_DENIED), a wrong password (UNAUTHENTICATED at sign-in), an unverified account (POLICY_DENIED at sign-in) and an account with no active licence (NOT_FOUND at activation) are four distinct typed failures, none `Malformed`; the same code means the right thing on each call | `--test test_client a_member_account`, `a_wrong_password`, `an_unverified_account`, `not_found_on_the_session_path`, `the_other_sign_in_refusals` | pass; mutations M3, M7 turn them red | test output + mutation log | PENDING |
-| C-005 | yes | No failure's `Display` or `Debug` contains any part of a response body (HTML 403/502/200, JSON non-envelope, free-text code, wrong-typed field, truncated, empty) nor the password/session/enrollment key, on all three calls | `--test test_client no_failure_quotes_the_response_body_on_any_call`, `the_body_quoting_sweep_can_fail`, `an_unknown_code_from_a_proxy...`; `--test test_contract an_error_code_that_is_not_shaped_like_a_code` | pass; mutations M1, M4 turn them red | test output + mutation log | PENDING |
-| C-006 | yes | A response over `MAX_RESPONSE_BODY_BYTES` (64 KiB, below the transport's 4 MiB read cap) is refused unparsed, success or error, while one exactly at the cap is read | `--test test_client a_success_body_over_the_cap...`, `an_error_body_over_the_cap...` | pass; mutations M2, M6 turn them red | test output + mutation log | PENDING |
-| C-007 | yes | Credential-hygiene sweeps (formatted-types sweep, `expose()` site pin, Token-typed fields, never-blank enumeration) still pass and cover the new wire types | `cargo test -p selahcue-licensing` | all tests pass | test output | PENDING |
-| C-008 | yes | The enrollment-key path still works: same URL, body, no bearer; its tests pass | `--test test_client the_enrollment_key_*` and live run (C-009) | pass | test output + live log | PENDING |
-| C-009 | yes | Against a RUNNING API seeded with a verified admin, a MEMBER, an unverified user, a no-licence admin and one real licence key, the real `ReqwestTransport` client completes sign-in then activation, the minted token works on `/v1/license:refresh`, and the failure cases come back typed; the old route is shown returning 403 HTML | scratchpad harness `17tnw2b1we2-live-harness` run against `manage.py runserver` | output as posted on the ticket | `docs/delivery/goals/17tnw2b1we2-native-signin.md` evidence section + ClickUp comment | PENDING |
-| C-010 | yes | `cargo fmt --check`; `cargo clippy -D warnings` (debug and `--release`) on `selahcue-licensing`; workspace clippy and tests via one `make ci` | commands in the PR body | all exit 0 | PR body with exit codes | PENDING |
-| C-011 | yes | Diff has no stray non-ASCII | grep for non-ASCII bytes in the added lines of `git diff origin/main -U0` | no output | command output | PENDING |
-| C-012 | yes | 86ak5mn11's "both activation paths work" claim is re-verified against the live server and the result is posted on that ticket | ClickUp comment on 86ak5mn11 | comment present | ClickUp | PENDING |
-| C-013 | yes | Owner rule 2b: every applicable happy-path and edge case has a test that goes red when its behaviour is mutated (case list below; 19 mutations, all caught) | `python3 17tnw2b1we2-mutate.py` (scratchpad) | each mutation fails at least one named test | PR body mutation table | PENDING |
+| C-001 | yes | Sign-in is `POST /v1/sessions` with exactly `{email, password}`, no bearer, and parses the server's real body (including the unsigned `surface`/`operation` labels) | `cargo test -p selahcue-licensing --test test_client a_fresh_install_activates` and `--test test_contract a_real_sign_in_success_body_parses` | both pass | test output | PASS |
+| C-002 | yes | Session activation is `POST /v1/activations:with-session` with the session as bearer, body = activation body minus `license_key` (snake_case), and returns `reminted`, token metadata and the licence block | `--test test_client a_session_activation_reports_everything` and `a_fresh_install_activates` | pass | test output | PASS |
+| C-003 | yes | No code in the crate names `/graphql/account`, GraphQL, a cookie, a CSRF header, Origin or Referer; every request is a `/v1` JSON POST | `--test test_client the_source_names_no_cookie_csrf_origin_or_graphql_route` and `every_request_goes_to_a_cookie_free_v1_route` | pass; mutation M5 turns both red | test output + mutation log | PASS |
+| C-004 | yes | A MEMBER (PERMISSION_DENIED), a wrong password (UNAUTHENTICATED at sign-in), an unverified account (POLICY_DENIED at sign-in) and an account with no active licence (NOT_FOUND at activation) are four distinct typed failures, none `Malformed`; the same code means the right thing on each call | `--test test_client a_member_account`, `a_wrong_password`, `an_unverified_account`, `not_found_on_the_session_path`, `the_other_sign_in_refusals` | pass; mutations M3, M7 turn them red | test output + mutation log | PASS |
+| C-005 | yes | No failure's `Display` or `Debug` contains any part of a response body (HTML 403/502/200, JSON non-envelope, free-text code, wrong-typed field, truncated, empty) nor the password/session/enrollment key, on all three calls | `--test test_client no_failure_quotes_the_response_body_on_any_call`, `the_body_quoting_sweep_can_fail`, `an_unknown_code_from_a_proxy...`; `--test test_contract an_error_code_that_is_not_shaped_like_a_code` | pass; mutations M1, M4 turn them red | test output + mutation log | PASS |
+| C-006 | yes | A response over `MAX_RESPONSE_BODY_BYTES` (64 KiB, below the transport's 4 MiB read cap) is refused unparsed, success or error, while one exactly at the cap is read | `--test test_client a_success_body_over_the_cap...`, `an_error_body_over_the_cap...` | pass; mutations M2, M6 turn them red | test output + mutation log | PASS |
+| C-007 | yes | Credential-hygiene sweeps (formatted-types sweep, `expose()` site pin, Token-typed fields, never-blank enumeration) still pass and cover the new wire types | `cargo test -p selahcue-licensing` | all tests pass | test output | PASS |
+| C-008 | yes | The enrollment-key path still works: same URL, body, no bearer; its tests pass | `--test test_client the_enrollment_key_*` and live run (C-009) | pass | test output + live log | PASS |
+| C-009 | yes | Against a RUNNING API seeded with a verified admin, a MEMBER, an unverified user, a no-licence admin and one real licence key, the real `ReqwestTransport` client completes sign-in then activation, the minted token works on `/v1/license:refresh`, and the failure cases come back typed; the old route is shown returning 403 HTML | scratchpad harness `17tnw2b1we2-live-harness` run against `manage.py runserver` | output as posted on the ticket | `docs/delivery/goals/17tnw2b1we2-native-signin.md` evidence section + ClickUp comment | PASS |
+| C-010 | yes | `cargo fmt --check`; `cargo clippy -D warnings` (debug and `--release`) on `selahcue-licensing`; workspace clippy and tests via one `make ci` | commands in the PR body | all exit 0 | PR body with exit codes | PASS |
+| C-011 | yes | Diff has no stray non-ASCII | grep for non-ASCII bytes in the added lines of `git diff origin/main -U0` | no output | command output | PASS |
+| C-012 | yes | 86ak5mn11's "both activation paths work" claim is re-verified against the live server and the result is posted on that ticket | ClickUp comment on 86ak5mn11 | comment present | ClickUp | PASS |
+| C-013 | yes | Owner rule 2b: every applicable happy-path and edge case has a test that goes red when its behaviour is mutated (case list below; 19 mutations, all caught) | `python3 17tnw2b1we2-mutate.py` (scratchpad) | each mutation fails at least one named test | PR body mutation table | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -114,6 +114,31 @@ Deliberately not covered:
 - A blank `activation_token` string: the key-path behaviour is unchanged and `is_activated` already treats an empty stored token as not activated; changing it would alter the enrollment path.
 - Real timeouts and the 4 MiB socket read cap: owned by `selahcue-cloud` (`test_transport.rs`); here the transport is injected and reports them as errors, which is what is tested.
 - Redirect handling: a shared-transport behaviour, measured and filed as 17tnw2b9aaz.
+
+## Live-run evidence (C-009)
+
+Real client (`selahcue-licensing` over the production `ReqwestTransport`) against `manage.py runserver` on origin/main `f176db35`, throwaway SQLite seeded with a verified ADMIN, a MEMBER, an unverified user, a verified ADMIN with no licence key and one real licence key. Harness lives outside the repo (scratchpad); it prints outcomes only, never a token, password or body.
+
+```
+[control] POST /graphql/account (old route) -> HTTP 403 ; html_body=true
+[admin] sign_in OK: role=ADMIN org_id=1 expires_at=2026-11-23T05:15:13.474911+00:00 session_token_len=50
+[admin] activate_with_session OK: path=AccountSession created=true reminted=false device=dev_f3ac31bc382adedebcd6a30e87d695c7 platform=macos token_issued=true token_prefix=Some(<masked>) license_status=ACTIVATED license_expires=2026-11-23T05:14:11+00:00
+[admin] persist -> Stored; device token held in store: true
+[admin] minted device token against POST /v1/license:refresh -> HTTP 200
+[admin] replay: created=false reminted=false token_issued=false disposition=KeepExisting persist=KeptExisting
+[wrong password] -> InvalidCredentials | permits_presentation=true retryable=false | "that email and password were not accepted (or the account is temporarily locked after too many attempts)"
+[unknown email] -> InvalidCredentials | permits_presentation=true retryable=false | "that email and password were not accepted (or the account is temporarily locked after too many attempts)"
+[unverified account] -> AccountNotActive | permits_presentation=true retryable=false | "this account cannot sign in yet: its email address is not verified, or the account has been disabled"
+[member] sign_in OK: role=MEMBER
+[MEMBER activation] -> PermissionDenied | permits_presentation=true retryable=false | "this account does not have permission to activate a device"
+[no-licence admin] sign_in OK: role=ADMIN
+[no active licence] -> NoActiveLicense | permits_presentation=true retryable=false | "this account has no active SelahCue plan; renew it to activate a device"
+[bad session token] -> Unauthenticated | permits_presentation=true retryable=false | "the account session is not valid; sign in again"
+[enrollment key] OK: path=EnrollmentKey created=true reminted=false device=dev_dba6ddc483233652a00ad843df73ad61 token_issued=true license_status=ACTIVATED
+[enrollment key (wrong key)] -> UnknownKey | permits_presentation=true retryable=false | "that enrollment key was not recognised"
+```
+
+Server log for the run: `POST /v1/sessions` 200/401/401/403/200/200, `POST /v1/activations:with-session` 200/200/403/404/401, `POST /v1/license:refresh` 200, `POST /v1/activations` 200/404; the only 403 HTML responses are the two deliberate probes of the old `/graphql/account` route.
 
 ## Verification plan
 
@@ -157,8 +182,8 @@ Deliberately not covered:
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1we2-native-signin.md`
-- Validator result: PENDING
-- Independent verification result: PENDING (reviewers dispatched by the orchestrator)
-- Terminal state: PENDING
+- Validator result: structural and `--completion` both OK (see PR)
+- Independent verification result: PENDING (Cody, Shadow, Vera, Quinn are dispatched by the orchestrator; this author does not self-certify)
+- Terminal state: implementation VERIFIED_COMPLETE; awaiting independent review
 - Remaining failed or blocked criteria: none known
-- ClickUp final evidence comment: PENDING
+- ClickUp final evidence comment: posted on 17tnw2b1we2 (live run) and 86ak5mn11 (re-verification)
