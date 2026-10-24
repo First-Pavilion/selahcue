@@ -54,22 +54,29 @@
 //! advisory presentation state, not an authorization: the webview reports what it showed, and
 //! the server honours it only as far as the content agrees.
 //!
-//! # Reading is bounded like writing
+//! # Reading is bounded like writing, and never stricter than before
 //!
 //! The write path never stores more than `MAX_SECTIONS_JSON_BYTES`. The read path refuses to
 //! look for caveats in anything larger (a row from a build with the old 200 000-byte cap, or a
 //! LAN writer): such a value is read exactly as it always was, sections only, and carries no
-//! caveat. Within the cap, the shape is chosen by the first non-space byte, and at most
-//! [`MAX_STORED_HEADINGS`] entries of the list are collected.
+//! caveat. Within the cap, the shape is chosen by the first non-space byte, the sections are
+//! decoded by the old reader's exact type (so a row an older build shows in full is shown in
+//! full here, whatever its caveat key looks like), and the heading list comes from a separate
+//! best-effort pass whose result is limited to [`MAX_STORED_HEADINGS`] entries. Memory in that
+//! pass is bounded by the byte cap, not by the window.
+//!
+//! This module also hosts `draft_input_for` and `edit_input_for`, which map a whole draft to
+//! its store input (not only the caveats), so that the two Tauri commands that call them stay
+//! one line each and can be tested without a live model.
 
 use selahcue_core::providers::{
     DraftCaveat, NoteDraft, NoteSection, SCRIPTURE_REFERENCES_CAVEAT_HEADING,
     SUMMARY_CAVEAT_HEADING,
 };
 
-/// Most stored headings collected from `requested_empty`. A draft has a few dozen sections at
-/// the very most (the generator's table is fixed), so this is far above any honest value; it
-/// exists so a hostile or corrupt column cannot make the reload build an arbitrarily long
+/// Most stored headings taken from `requested_empty`. A draft has a few dozen sections at the
+/// very most (the generator's table is fixed), so this is far above any honest value; it
+/// exists so a hostile or corrupt column cannot make the reload return an arbitrarily long
 /// list. Whatever is kept is further limited to headings that match actual content, so the
 /// result is never longer than `sections.len() + 2`.
 const MAX_STORED_HEADINGS: usize = 256;
@@ -257,90 +264,36 @@ pub(crate) fn edit_input_for(
     }
 }
 
-/// One stored section object: the fields the pre-change reader knew (`NoteSectionInput`,
-/// which ignores unknown keys, so any future additive key is ignored too) plus the extra key.
-#[derive(serde::Deserialize)]
-struct StoredSection {
-    #[serde(flatten)]
-    section: crate::NoteSectionInput,
-    #[serde(default, deserialize_with = "lenient_headings")]
-    requested_empty: Vec<String>,
-}
-
-/// The object shape, used only for a draft with no sections.
-#[derive(serde::Deserialize)]
-struct StoredNoSections {
-    #[serde(default)]
-    sections: Vec<crate::NoteSectionInput>,
-    #[serde(default, deserialize_with = "lenient_headings")]
-    requested_empty: Vec<String>,
-}
-
-/// Read the `requested_empty` field leniently: a list yields at most [`MAX_STORED_HEADINGS`]
-/// of its string entries (collection stops there; every other entry is skipped), and ANY other
-/// type (null, a string, a number, an object) yields no headings instead of failing, so a
-/// damaged field can cost the caveats but never the sections that sit beside it.
-fn lenient_headings<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct Bounded(Vec<String>);
-
-    impl<'de> serde::Deserialize<'de> for Bounded {
-        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            struct ListVisitor;
-            impl<'de> serde::de::Visitor<'de> for ListVisitor {
-                type Value = Bounded;
-                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                    f.write_str("a list of headings")
-                }
-                fn visit_seq<A>(self, mut seq: A) -> Result<Bounded, A::Error>
-                where
-                    A: serde::de::SeqAccess<'de>,
-                {
-                    let mut out = Vec::new();
-                    let mut examined = 0usize;
-                    while examined < MAX_STORED_HEADINGS {
-                        match seq.next_element::<serde_json::Value>()? {
-                            Some(serde_json::Value::String(s)) => out.push(s),
-                            Some(_) => {}
-                            None => return Ok(Bounded(out)),
-                        }
-                        examined += 1;
-                    }
-                    // Past the window: consume without keeping anything.
-                    while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-                    Ok(Bounded(out))
-                }
-            }
-            deserializer.deserialize_seq(ListVisitor)
-        }
-    }
-
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum Field {
-        List(Bounded),
-        Other(serde::de::IgnoredAny),
-    }
-
-    use serde::Deserialize as _;
-    Ok(match Field::deserialize(deserializer)? {
-        Field::List(Bounded(list)) => list,
-        Field::Other(_) => Vec::new(),
-    })
+/// The headings carried by a stored `requested_empty` value, best effort: a list yields at
+/// most [`MAX_STORED_HEADINGS`] of its string entries (every other entry is skipped), and ANY
+/// other type (null, a string, a number, an object) or no value at all yields none.
+fn headings_in(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(serde_json::Value::as_array)
+        .map(|list| {
+            list.iter()
+                .take(MAX_STORED_HEADINGS)
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Read a `sections_json` value back: the sections, and the headings stored with them.
 ///
-/// Anything unreadable degrades to nothing, as it always has (a corrupt column must not fail
-/// the whole draft load); a damaged `requested_empty` degrades only the caveats. A value over
-/// the write cap is read exactly as before this ticket (sections only, no caveats), so the
-/// new work is bounded by the same cap the writer obeys. Within the cap the shape is chosen by
-/// the first non-space byte.
+/// The SECTIONS are decoded by exactly the type the pre-change reader used,
+/// `Vec<NoteSectionInput>`, and by nothing stricter, so this build can never show fewer
+/// sections than an older one: a duplicate key, a deeply nested unknown value, an out-of-range
+/// number or a lone surrogate that the old reader skips are skipped here too. The heading list
+/// is read in a SEPARATE best-effort pass in which any failure means "no caveats", never "no
+/// sections". Anything unreadable degrades to nothing, as it always has (a corrupt column must
+/// not fail the whole draft load).
+///
+/// A value over the write cap is read exactly as before this ticket (sections only, no
+/// caveats), so the new work is bounded by the same cap the writer obeys. Within the cap the
+/// shape is chosen by the first non-space byte. The second pass parses the row into
+/// `serde_json::Value`, so its memory is bounded by that cap (a small multiple of 15,000 bytes);
+/// the 256-entry window bounds the RESULT.
 pub(crate) fn decode_sections(json: &str) -> (Vec<crate::NoteSectionInput>, Vec<String>) {
     if json.len() > selahcue_data::sermon_note_repo::MAX_SECTIONS_JSON_BYTES {
         return (
@@ -349,22 +302,34 @@ pub(crate) fn decode_sections(json: &str) -> (Vec<crate::NoteSectionInput>, Vec<
         );
     }
     match json.trim_start().as_bytes().first() {
-        Some(b'[') => match serde_json::from_str::<Vec<StoredSection>>(json) {
-            Ok(stored) => {
-                // Only the first section object carries the list; the key anywhere else is
-                // ignored.
-                let headings = stored
-                    .first()
-                    .map(|s| s.requested_empty.clone())
-                    .unwrap_or_default();
-                (stored.into_iter().map(|s| s.section).collect(), headings)
+        Some(b'[') => {
+            let sections =
+                serde_json::from_str::<Vec<crate::NoteSectionInput>>(json).unwrap_or_default();
+            if sections.is_empty() {
+                return (sections, Vec::new());
             }
-            Err(_) => (Vec::new(), Vec::new()),
-        },
-        Some(b'{') => match serde_json::from_str::<StoredNoSections>(json) {
-            Ok(stored) => (stored.sections, stored.requested_empty),
-            Err(_) => (Vec::new(), Vec::new()),
-        },
+            // Only the first section object carries the list; the key anywhere else is
+            // ignored.
+            let headings = serde_json::from_str::<Vec<serde_json::Value>>(json)
+                .ok()
+                .map(|all| {
+                    headings_in(all.first().and_then(|first| first.get(REQUESTED_EMPTY_KEY)))
+                })
+                .unwrap_or_default();
+            (sections, headings)
+        }
+        Some(b'{') => {
+            // The object shape (a draft with no sections). Never written with real sections,
+            // and an older build reads it as "no sections", so nothing here can show fewer.
+            let Ok(object) = serde_json::from_str::<serde_json::Value>(json) else {
+                return (Vec::new(), Vec::new());
+            };
+            let sections = object
+                .get("sections")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            (sections, headings_in(object.get(REQUESTED_EMPTY_KEY)))
+        }
         _ => (Vec::new(), Vec::new()),
     }
 }
@@ -648,7 +613,9 @@ mod tests {
             crate::sections_to_json(&d.sections)
         );
         // ... and the claim itself, as a literal rather than a call to the function under
-        // test: these are the exact bytes a build from before this ticket wrote.
+        // test: these are the exact bytes a build from before this ticket wrote. (Key order is
+        // serde_json's alphabetical default, which is also what that build used; enabling
+        // `preserve_order` would change this serializer and the old one alike.)
         assert_eq!(
             persisted_sections_json(&d),
             concat!(
@@ -1019,10 +986,11 @@ mod tests {
     }
 
     #[test]
-    fn a_long_heading_list_within_the_cap_is_collected_only_up_to_the_window() {
-        // Bounded-memory test that bites: ~1,500 entries (about 12 KB, so UNDER the 15 KB read
+    fn a_long_heading_list_within_the_cap_yields_at_most_the_window() {
+        // Bounded-result test that bites: ~1,500 entries (about 12 KB, so UNDER the 15 KB read
         // cap and parsed for caveats) must come out as at most MAX_STORED_HEADINGS strings.
-        // Removing the collection window turns this red (it would return all 1,500).
+        // Removing the window turns this red (it would return all 1,500). Memory while parsing
+        // is bounded by the byte cap (see the next test), not by the window.
         let mut list: Vec<Value> = (0..1_500).map(|i| json!(format!("j{i}"))).collect();
         list.insert(0, json!("Chapter markers"));
         list.push(json!("Prayer points")); // real, but past the window
@@ -1414,10 +1382,13 @@ mod tests {
         // The one object shape: only when there is no section an older build could lose.
         let d = draft(None, vec![], &[], vec![caveat(SUMMARY), caveat(SCRIPTURES)]);
         let stored = persisted_sections_json(&d);
+        // Compared as parsed values, not bytes, so the test does not depend on serde_json's
+        // key order (alphabetical today; it would flip under `preserve_order`).
         assert_eq!(
-            stored,
-            r#"{"requested_empty":["Summary","Scripture references"],"sections":[]}"#
+            serde_json::from_str::<Value>(&stored).expect("valid json"),
+            json!({"requested_empty": ["Summary", "Scripture references"], "sections": []})
         );
+        assert!(stored.starts_with('{'));
         assert_eq!(old_reader(&stored), Vec::<NoteSection>::new());
         assert_eq!(caveat_headings(&reload(&d)), [SUMMARY, SCRIPTURES]);
     }
@@ -1620,6 +1591,125 @@ mod tests {
             assert!(stored.len() <= MAX_SECTIONS_JSON_BYTES, "over={over}");
             assert_eq!(stored.contains("requested_empty"), over == 0, "over={over}");
         }
+    }
+
+    // --- never stricter than the pre-change reader ---------------------------------------------
+
+    /// Rows the pre-change reader (`old_reader`: `Vec<NoteSectionInput>`, nothing stricter)
+    /// handles in some way: well-formed, malformed, adversarial. Cody's 32-row corpus, the nine
+    /// rows of Shadow's probe, and Quinn's duplicate-key row.
+    fn differential_corpus() -> Vec<String> {
+        let sec = r#"{"heading":"A","items":["x"],"points":[]}"#;
+        let a = r#"{"heading":"A","items":["kept"],"points":[]"#;
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let mut rows: Vec<String> = [
+            "[]",
+            "[ ]",
+            r#"[{"heading":"A"}]"#,
+            r#"[{"heading":"A","items":null}]"#,
+            r#"[{"heading":"A","items":["x"],"items":["y"]}]"#,
+            r#"[{"heading":"A","heading":"B"}]"#,
+            r#"[{"heading":1}]"#,
+            r#"[{"items":["x"]}]"#,
+            r#"[{"heading":"A","items":["x"],"points":[{"text":"t","sub_points":["s"]}]}]"#,
+            r#"[{"heading":"A","points":[{"text":"t"}]}]"#,
+            r#"[{"heading":"A","points":[{"text":"t","sub_points":null}]}]"#,
+            r#"[{"heading":"A","extra":{"deep":[[[[[1]]]]]},"items":["é"]}]"#,
+            r#"[{"heading":"A","items":["x"]},{"heading":"B","items":[]},null]"#,
+            r#"[{"heading":"A","items":["x"]},7]"#,
+            "[1,2]",
+            "[[]]",
+            r#"[{"heading":"A","items":[1]}]"#,
+            r#"[{"heading":"A","items":["x"],"points":{}}]"#,
+            r#"[{"heading":"A","requested_empty":["A"]}]"#,
+            r#"[{"heading":"A","requested_empty":["A"],"requested_empty":["A"]}]"#,
+            r#"[{"heading":"A","requested_empty":null,"requested_empty":null}]"#,
+            r#"[{"heading":"A","requested_empty":"x"}]"#,
+            r#"[{"heading":"A","requested_empty":[["A"]]}]"#,
+            r#"[{"heading":"A","requested_empty":["A"]},{"heading":"B","requested_empty":7}]"#,
+            r#"[{"heading":"A","requested_empty":["A"],"items":["unterminated"#,
+            r#"[{"heading":"A"}] trailing"#,
+            r#"[{"heading":"A"}],"#,
+            "\u{feff}[]",
+            " \u{a0}[]",
+            "\t\n[]\n",
+            r#"[{"heading":"A","items":["x"]},{"heading":"A","items":[]}]"#,
+            // Quinn B1: duplicate key on the first section, with a second section behind it.
+            r#"[{"heading":"A","items":["kept"],"points":[],"requested_empty":["B"],"requested_empty":["B"]},{"heading":"B","items":[],"points":[]}]"#,
+            // Shadow's probe (the same eight shapes, as the review ran them).
+            r#"[["A",["kept"],[]]]"#,
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        rows.push(format!("[{sec},{sec}]"));
+        rows.push(format!(r#"[{a},"requested_empty":["A"]}}]"#));
+        rows.push(format!(
+            r#"[{a},"requested_empty":["A"],"requested_empty":["A"]}}]"#
+        ));
+        rows.push(format!(
+            r#"[{a}}},{{"heading":"B","items":["b"],"points":[],"requested_empty":[],"requested_empty":[]}}]"#
+        ));
+        rows.push(format!(r#"[{a},"requested_empty":{deep}}}]"#));
+        rows.push(format!(r#"[{a},"future":{deep}}}]"#));
+        rows.push(format!(r#"[{a},"requested_empty":1e999}}]"#));
+        rows.push(format!(r#"[{a},"requested_empty":["\ud800"]}}]"#));
+        rows.push(format!(r#"[{a},"future":"\ud800"}}]"#));
+        rows
+    }
+
+    #[test]
+    fn the_reader_never_shows_fewer_sections_than_the_pre_change_reader() {
+        let rows = differential_corpus();
+        assert!(rows.len() >= 40, "premise: the corpus is the reviewed one");
+        let mut with_sections = 0;
+        for json in &rows {
+            let old = old_reader(json);
+            if !old.is_empty() {
+                with_sections += 1;
+            }
+            let (decoded, _) = decode_sections(json);
+            assert!(
+                sections_from_input(decoded) == old,
+                "decode_sections differs from the pre-change reader for {:?}",
+                json.chars().take(80).collect::<String>()
+            );
+            // And the console gets the same count end to end.
+            let (wire, _) = sermon_note_draft_json(&view(json.clone(), None, &[]), &[]);
+            assert_eq!(
+                wire["sections"].as_array().expect("sections array").len(),
+                old.len(),
+                "console sections for {:?}",
+                json.chars().take(80).collect::<String>()
+            );
+        }
+        assert!(
+            with_sections >= 20,
+            "premise: most of the corpus is readable by the old reader, got {with_sections}"
+        );
+    }
+
+    #[test]
+    fn a_duplicate_key_on_the_object_shape_does_not_cost_the_sections_it_can_read() {
+        // The object shape (no sections written). serde_json::Value keeps the last duplicate.
+        let (s, h) = decode_sections(
+            r#"{"sections":[],"sections":[{"heading":"A","items":["k"],"points":[]}],"requested_empty":["Summary"],"requested_empty":["Summary"]}"#,
+        );
+        assert_eq!(s.len(), 1);
+        assert_eq!(h, ["Summary"]);
+    }
+
+    #[test]
+    fn a_failing_heading_pass_costs_only_the_caveats() {
+        // A row the old reader reads fully but the heading pass cannot (nested 200 deep, past
+        // serde_json's recursion limit for `Value`): sections intact, no caveats.
+        let deep = format!("{}{}", "[".repeat(200), "]".repeat(200));
+        let row = format!(
+            r#"[{{"heading":"A","items":["kept"],"points":[],"requested_empty":["A"],"future":{deep}}}]"#
+        );
+        let (sections, headings) = decode_sections(&row);
+        assert_eq!(sections.len(), 1);
+        assert!(headings.is_empty());
     }
 }
 

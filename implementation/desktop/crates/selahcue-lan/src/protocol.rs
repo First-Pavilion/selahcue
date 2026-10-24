@@ -576,7 +576,8 @@ pub enum Command {
 ///
 /// `sections_json`/`scriptures_json` are themselves opaque JSON (`selahcue_core::providers::
 /// NoteSection`'s items-XOR-points shape, FR-122; `sections_json` may also carry the
-/// requested-but-empty caveats as one extra `requested_empty` key on its first section,
+/// requested-but-empty caveats as one extra `requested_empty` key on its first section, or,
+/// for a draft with no sections at all, as the object `{"sections":[],"requested_empty":[..]}`,
 /// 86akmfn54, documented in `selahcue-operator`'s `sermon_note_caveats`) — this crate does not
 /// interpret them, the same
 /// "opaque to the wire" precedent as [`Command::SetCustomTheme`]'s `theme_json` and

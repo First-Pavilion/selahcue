@@ -8786,7 +8786,10 @@ async fn update_sermon_note_draft(
     requested_empty: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    // Only when the caller did not say: read what is stored so its caveats can be kept.
+    // Only when the caller did not say: read what is stored so its caveats can be kept. An
+    // unreadable stored draft (`.ok().flatten()` swallows the load error) means "no caveats to
+    // keep", which is acceptable: the edit then saves exactly what the operator sent, no worse
+    // than the pre-ticket behaviour, and the failure to read is not an edit failure.
     let stored_sections_json = if requested_empty.is_none() {
         state
             .backend
@@ -9575,6 +9578,57 @@ mod regenerate_with_retention_tests {
             "what was SAVED carries the caveat, not only the reply"
         );
         assert_eq!(loaded["draft"]["sections"][1]["empty_requested"], true);
+    }
+
+    #[tokio::test]
+    async fn the_generate_reply_carries_degraded_quota_and_clamp_and_the_ai_fields() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let mut outcome = outcome_with_empties(&["Chapter markers"], "Illustrations");
+        outcome.degraded = true;
+        outcome.quota = Some(selahcue_core::providers::Quota {
+            used: 3,
+            limit: 10,
+            resets_label: "Sep 1".to_string(),
+        });
+        let clamp = Some(TranscriptClampNotice {
+            total_chars: 500_000,
+            dropped_chars: 100_000,
+            max_chars: 400_000,
+        });
+        let reply = save_and_describe_generated_notes(&state, id, &outcome, &clamp).await;
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["degraded"], true);
+        assert_eq!(
+            reply["degraded_notice"],
+            selahcue_core::providers::DEGRADED_FALLBACK_NOTICE
+        );
+        assert_eq!(
+            reply["quota"],
+            serde_json::json!({"used": 3, "limit": 10, "remaining": 7, "resets_label": "Sep 1"})
+        );
+        assert_eq!(
+            reply["clamp"],
+            serde_json::json!({"total_chars": 500_000, "dropped_chars": 100_000, "max_chars": 400_000})
+        );
+        assert_eq!(reply["provider"], "SelahCue AI");
+        assert_eq!(reply["ai_generated"], true);
+        assert_eq!(reply["transcript_id"], id);
+        assert_eq!(reply["pending_confirmation"], false);
+        // And the absent case: no quota, no clamp, not degraded.
+        let (app2, id2) = state_with_transcript(true);
+        let state2 = app2.state::<AppState>();
+        let plain = save_and_describe_generated_notes(
+            &state2,
+            id2,
+            &outcome_with_empties(&["Chapter markers"], "Illustrations"),
+            &None,
+        )
+        .await;
+        assert_eq!(plain["degraded"], false);
+        assert!(plain["degraded_notice"].is_null());
+        assert!(plain["quota"].is_null());
+        assert!(plain["clamp"].is_null());
     }
 
     #[tokio::test]
