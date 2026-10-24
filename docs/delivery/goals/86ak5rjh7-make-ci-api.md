@@ -96,7 +96,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-009 | yes | Guards that read the Makefile stay green | `check_launch_reachability.py` (self-test and real), `check_dependency_audit_coverage.py` (self-test and real) | all exit 0 | PR description | PASS |
 | C-010 | yes | CI workflow is unchanged and no macOS or extra job is added | `git diff origin/main --stat -- .github` | empty | `git diff` | PASS |
 | C-011 | yes | Ticket criteria not in this PR are tracked, not dropped | ClickUp search, then follow-ups | 17tnw2b9aaw (selahcue-stt), 17tnw2b9aax (run every gate, path-aware dispatch) created and linked | ClickUp | PASS |
-| C-012 | yes | A full `make ci` on the branch head exits 0 with `api-check` inside it | `make ci`, one at a time, output to a file, exit code captured unpiped | exit 0; `ALL GREEN` | PR description | PENDING |
+| C-012 | yes | A full `make ci` on the branch head exits 0 with `api-check` inside it | `make ci`, one at a time, output to a file, exit code captured unpiped | exit 0; `ALL GREEN` | PR description: head f84338f7, exit 0, `check_api_gate: 18 cases, 0 failed`, `709 passed, 4 skipped, 1 xfailed`, `ALL GREEN` | PASS |
 | C-014 | yes | The target's logic is covered by tests that can fail: 18 cases (fresh worktree, reuse, rebuild on pyproject change, wrong-tree venv, failing test, missing migration, system check failure, missing pytest, no interpreter, old interpreter, failed install, scrubbed environment, venv path override, other working directory, wrong-directory `make -f`, `make -n ci` wiring, help text, skip statement) | `python3 scripts/check_api_gate.py --self-test`, then `--mutation-proof` | self-test exit 0, 18 cases; mutation proof exit 0, 16 of 16 mutations caught (one real gap found and fixed: the old-interpreter fake could not tell a missing version check from a failing one) | PR description | PASS |
 | C-013 | yes | No stray non-ASCII in the diff, no tracked virtualenv | grep the added lines of `git diff origin/main -U0` for non-ASCII characters; `git status --short` | only U+2014 in `CLAUDE.md` (the file's own style); only 4 paths changed | PR description | PASS |
 
@@ -127,7 +127,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: wiring into `make ci`, updating the documentation and filing follow-ups completes the in-scope criteria without touching CI.
 - Change or investigation: `ci` calls `api-check`; header, help, `CLAUDE.md`, README updated; two follow-up tickets created and linked.
 - Verifier executed: `make -n ci`, guards, full `make ci`.
-- Result: see C-012.
+- Result: full `make ci` exit 0 at f84338f7 (see C-012).
 - New evidence: a `make ci` from another worktree was already running; this one waited for it.
 - Decision: complete
 
@@ -146,6 +146,6 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5rjh7-make-ci-api.md`
 - Validator result: see PR description
 - Independent verification result: pending the four-reviewer gate
-- Terminal state: pending C-012 and review
+- Terminal state: VERIFIED_COMPLETE for the implementation; review pending
 - Remaining failed or blocked criteria: none known
 - ClickUp final evidence comment: posted with the PR link
