@@ -225,13 +225,15 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
+| `SELAHCUE_TRUST_FORWARDED_PROTO` | `0` (off) | Set `1` behind a TLS-terminating proxy that overwrites `X-Forwarded-Proto`, else browser CSRF fails and HSTS is never sent. Opt-in because the header is forgeable. See §6c |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Public origins **with scheme**, only if the browser `Origin` differs from the forwarded `Host`. See §6c |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` / `MAIL_PASSWORD` | mailhog on `:1025` in dev | **Required** to send email |
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
 | `SENTRY_DSN` | empty | Set in staging/prod only; never locally |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Comma-separated origins for the web client |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` | **Must be false.** See below |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
-| `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default |
+| `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
 
 > **`SQL_ENGINE` must be Postgres in production, not merely preferred.** The DEC-004 device
 > instance limit is enforced with `select_for_update`, which SQLite silently no-ops
@@ -448,6 +450,77 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   30 s in two separate test runs), while an unknown address is answered after the cache timeouts
   (about 1.5 s at the defaults). Response time then shows whether an account exists. Tracked in
   17tnw2b2k4x.
+
+---
+
+## 6c. Ops requirements — Django behind a TLS-terminating proxy
+
+In production TLS ends at the edge and Django receives plain HTTP. Django is not told otherwise
+unless you tell it, and when it is not told, two things fail without any error at boot:
+
+- **Browser account and admin mutations are refused with 403.** A browser served over TLS sends
+  `Origin: https://<host>`; Django's CSRF check compares that with `http://<host>` (because
+  `request.is_secure()` is false) and refuses it, even with a valid `csrftoken` cookie and
+  `X-CSRFToken` header. Sign-in, sign-up and every other `/graphql/account` mutation break for
+  every real browser. (17tnw2b1wtr)
+- **HSTS is never sent.** `SecurityMiddleware` emits `Strict-Transport-Security` only over a
+  request it believes is secure, so `SECURE_HSTS_SECONDS` and its siblings do nothing.
+
+The fix is two environment variables on the API host:
+
+| Variable | Default | Production |
+|----------|---------|-----------|
+| `SELAHCUE_TRUST_FORWARDED_PROTO` | `0` (off) | `1` **only if** every route to Django goes through a proxy that overwrites `X-Forwarded-Proto`. See below |
+| `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Only when the browser's `Origin` differs from `<scheme>://<Host header>`. Space-separated (commas tolerated), each entry **with a scheme**, e.g. `https://selahcue.example`. A missing scheme fails `manage.py check` |
+
+`SELAHCUE_TRUST_FORWARDED_PROTO=1` sets Django's `SECURE_PROXY_SSL_HEADER` to
+`("HTTP_X_FORWARDED_PROTO", "https")`: a request counts as secure only when that header is exactly
+`https`. `http`, any other value and an absent header all leave it insecure.
+
+### Why it is off by default
+
+`X-Forwarded-Proto` is an ordinary request header. If a client can reach Django without passing
+through a proxy that **replaces** the header, it can send `https` itself and be believed: Django
+would treat a plain-HTTP request as secure (HSTS, the CSRF origin comparison and secure-redirect
+logic all read it). So the app never assumes a proxy exists. It is a separate switch from
+`SELAHCUE_TRUSTED_PROXY_COUNT` (§6b) on purpose: that one decides how many `X-Forwarded-For`
+entries to believe for rate limiting, this one decides whether to believe a different header, and
+turning on the first must not quietly decide the second. Local development and the compose stack
+leave it off and are unchanged.
+
+### What the proxy must do before you turn it on
+
+1. **Overwrite, never append or pass through, `X-Forwarded-Proto`** with the scheme the *client*
+   used. A proxy that forwards whatever the client sent is exactly the forgery described above.
+   With nginx that is `proxy_set_header X-Forwarded-Proto <value>;` (it replaces any inbound
+   copy). With Traefik/Coolify and Cloudflare the edge sets it itself.
+2. **Make that proxy the only way in.** Django's port must not be published to the internet or to
+   any network a client can reach, and any intermediate hop (the marketing nginx container) must
+   be reachable only from the TLS edge. Verify with a request that goes around the proxy and
+   sends `X-Forwarded-Proto: https` by hand: with the flag on, anything that answers it as secure
+   is a hole.
+3. **Forward the public `Host`** (`proxy_set_header Host $host;`, already done by
+   `implementation/marketing/nginx.conf`). Then the browser's `Origin` equals
+   `https://<host>` and `DJANGO_CSRF_TRUSTED_ORIGINS` can stay empty. Set it only when the proxy
+   rewrites `Host` to an internal name.
+4. **Chain correctly when there are two hops.** Browser traffic reaches Django through the
+   marketing nginx (the same-origin `/graphql/` proxy), which sits behind the TLS edge. nginx's own
+   `$scheme` is `http` there (the edge already terminated TLS), so `implementation/marketing/nginx.conf` passes the edge's
+   `X-Forwarded-Proto` through when it is `https` and falls back to `$scheme` otherwise. That
+   makes the nginx container a trusted hop: rule 2 applies to it. Native clients (`/v1/...`) do
+   not go through nginx; their route to Django is the edge directly, and the same two rules hold.
+
+### Verify after deploying
+
+- `curl -si https://<host>/graphql/csrf` shows `Strict-Transport-Security: max-age=31536000;
+  includeSubDomains; preload`.
+- Sign in from a browser: the `/graphql/account` POST returns 200, not 403.
+- `curl -si http://<django-internal-host>:8000/graphql/csrf -H 'X-Forwarded-Proto: https'` from
+  outside the proxy is **unreachable** (rule 2). If it answers, the flag is unsafe in that
+  environment until that is fixed.
+
+The native `/v1` routes (`POST /v1/sessions`, `POST /v1/activations:with-session`) are
+`csrf_exempt` and unaffected either way.
 
 ---
 

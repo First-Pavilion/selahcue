@@ -14,6 +14,13 @@ def env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_list(name: str, default: str = "") -> list[str]:
+    """Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
+    Commas are also tolerated so an older comma-separated value cannot silently collapse into a
+    single bogus entry."""
+    return [item for item in os.getenv(name, default).replace(",", " ").split() if item]
+
+
 def _database_config() -> dict:
     """Discrete ``SQL_*`` variables, matching the First Pavilion house convention (see
     yharah-logistics `core/settings.py`) rather than a `DATABASE_URL` DSN.
@@ -54,16 +61,7 @@ if not SECRET_KEY:
         )
     SECRET_KEY = "selahcue-dev-only-insecure-key"
 
-# Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
-# Commas are also tolerated so an older comma-separated value cannot silently collapse into a
-# single bogus host.
-ALLOWED_HOSTS = [
-    host
-    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
-    .replace(",", " ")
-    .split()
-    if host
-]
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -138,6 +136,35 @@ CSRF_COOKIE_SAMESITE = "Strict"
 SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0"))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", not DEBUG)
 SECURE_HSTS_PRELOAD = env_bool("SECURE_HSTS_PRELOAD", not DEBUG)
+
+# --- Behind a TLS-terminating proxy (17tnw2b1wtr) ---------------------------------------------
+# In production TLS ends at the edge (Cloudflare / Coolify's proxy, then the marketing nginx)
+# and Django receives plain HTTP, so `request.is_secure()` is False for every request. Two
+# things then break without any error at boot: CsrfViewMiddleware compares a browser's
+# `Origin: https://<host>` with `http://<host>` and 403s every account/admin mutation, and
+# SecurityMiddleware never emits Strict-Transport-Security (it only does so over a secure
+# request, so the SECURE_HSTS_* values above are dead).
+#
+# OPT-IN, DEFAULT OFF, because the fix is a trust decision. `X-Forwarded-Proto` is a request
+# header: a client that reaches Django without passing through a proxy that OVERWRITES it can
+# send `https` and be believed. Set `SELAHCUE_TRUST_FORWARDED_PROTO=1` only in an environment
+# where every path to Django goes through such a proxy (docs/ops/DEPLOYMENT.md section 6c). It
+# is deliberately separate from SELAHCUE_TRUSTED_PROXY_COUNT below: that setting is about how
+# many X-Forwarded-For entries to believe, this one is about a different header, and setting
+# the first must not silently decide the second.
+SELAHCUE_TRUST_FORWARDED_PROTO = env_bool("SELAHCUE_TRUST_FORWARDED_PROTO", False)
+if SELAHCUE_TRUST_FORWARDED_PROTO:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+else:
+    SECURE_PROXY_SSL_HEADER = None
+
+# Public origins (scheme included, e.g. `https://selahcue.example`) whose browsers may POST to
+# the CSRF-enforced surfaces. Needed only when the Origin a browser sends differs from
+# `<scheme>://<Host header>`, i.e. when the proxy does not forward the public Host. Empty by
+# default: an entry here is a cross-origin trust grant, so list only the SPA's own origin.
+# Django's system check (4_0.E001) fails `manage.py check` on an entry without a scheme.
+CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"
