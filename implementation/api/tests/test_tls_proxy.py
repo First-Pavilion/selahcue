@@ -128,7 +128,7 @@ def test_https_origin_through_a_trusted_proxy_passes_csrf_and_gets_hsts(settings
     assert response[HSTS] == EXPECTED_HSTS
 
 
-def test_hsts_is_emitted_on_every_proxied_secure_response(settings):
+def test_hsts_header_carries_the_configured_value_on_a_proxied_secure_get(settings):
     _trust_the_proxy(settings)
 
     response = Client().get("/graphql/csrf", **HTTPS_VIA_PROXY)
@@ -382,6 +382,19 @@ def test_a_listed_origin_does_not_admit_a_different_scheme_or_port(settings):
     assert _attempt(origin="https://app.example.com.evil.example").status_code == 403
 
 
+def test_django_reads_a_leading_dot_trusted_origin_as_every_subdomain(settings):
+    """WHY settings.py refuses `https://.example.com`: injected directly (the validator would
+    stop it at boot), Django's Referer fallback treats the leading-dot host as 'this domain and
+    every subdomain', so a POST from an attacker's subdomain with no Origin passes CSRF. If a
+    Django upgrade ever changes this, the validator rule can be revisited."""
+    _trust_the_proxy(settings)
+    settings.CSRF_TRUSTED_ORIGINS = ["https://.example.com"]
+
+    assert _attempt(referer="https://attacker.example.com/x").status_code == 200
+    assert _attempt(referer="https://example.com/x").status_code == 200
+    assert _attempt(referer="https://evil.test/x").status_code == 403  # the control
+
+
 # --- the native routes are untouched ----------------------------------------------------------
 NATIVE_EMAIL = "pastor@grace.example"
 NATIVE_PASSWORD = "correct-horse-battery"
@@ -599,7 +612,6 @@ FLAG_OFF_CASES = [
 ]
 DEFAULT_CASE = _case()
 PROD_DEFAULT_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x")
-PROD_DEBUG_OFF_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x", DEBUG="0")
 PROD_OPT_IN_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x", SELAHCUE_TRUST_FORWARDED_PROTO="1")
 
 
@@ -620,7 +632,6 @@ def test_the_shipped_default_is_untrusted_even_in_a_production_environment():
     assert _settings_for(DEFAULT_CASE)["header"] is None
     # A prod-looking environment still does not opt in by itself: this is an explicit decision.
     assert _settings_for(PROD_DEFAULT_CASE)["header"] is None
-    assert _settings_for(PROD_DEBUG_OFF_CASE)["header"] is None
 
 
 def test_the_opt_in_works_in_a_production_environment_and_sets_the_exact_django_header_pair():
@@ -635,6 +646,7 @@ A = "https://a.example.com"
 B = "https://b.example.com"
 C = "https://c.example.com"
 PATH_MESSAGE = "path, query or fragment"
+DOT_MESSAGE = "must not start or end with a dot or contain an empty label"
 ORIGIN_CASES = [
     # accepted, and the positive controls
     (None, "0", [], "unset"),
@@ -655,6 +667,9 @@ ORIGIN_CASES = [
     ("https://[::1]:8443", "0", ["https://[::1]:8443"], "ipv6"),
     ("http://localhost:5173", "1", ["http://localhost:5173"], "http-in-debug"),
     ("https://localhost:5173", "1", ["https://localhost:5173"], "https-in-debug"),
+    ("https://a.example.com:80", "0", ["https://a.example.com:80"], "other-scheme-default-port"),
+    ("http://localhost:8080", "1", ["http://localhost:8080"], "http-non-default-port-in-debug"),
+    ("https://1.2.3.4:8443", "0", ["https://1.2.3.4:8443"], "ipv4"),
     # refused
     ("http://localhost:5173", "0", "scheme must be https", "http-not-in-debug"),
     ("a.example.com", "0", "scheme must be https", "scheme-less"),
@@ -671,6 +686,24 @@ ORIGIN_CASES = [
     ("https://a.example.com#frag", "0", PATH_MESSAGE, "fragment"),
     ("https://user@a.example.com", "0", "credentials", "userinfo"),
     ("https://a.example.com:99999", "0", "not a valid URL", "bad-port"),
+    # a host Django would read as a wildcard, or that no browser Origin can contain
+    ("https://.example.com", "0", DOT_MESSAGE, "leading-dot-host"),
+    ("https://.com", "0", DOT_MESSAGE, "leading-dot-tld"),
+    ("https://a..example.com", "0", DOT_MESSAGE, "empty-label"),
+    ("https://example.com.", "0", DOT_MESSAGE, "trailing-dot-host"),
+    ("https://example.com./", "0", DOT_MESSAGE, "trailing-dot-host-and-slash"),
+    ("https://.", "0", DOT_MESSAGE, "dot-only-host"),
+    # an entry that could never equal a browser's Origin, so it would silently never match
+    ("https://a.example.com:443", "0", "default port :443", "default-https-port"),
+    ("https://a.example.com:443/", "0", "default port :443", "default-https-port-and-slash"),
+    ("http://a.example.com:80", "1", "default port :80", "default-http-port-in-debug"),
+    ("https://a.example.com:0", "0", "port 0", "port-zero"),
+    ("https://a.example.com\\x", "0", "backslash", "backslash-in-path"),
+    ("https://a\\.example.com", "0", "backslash", "backslash-in-host"),
+    ("https:\\\\a.example.com", "0", "backslash", "backslash-scheme-separator"),
+    ("https://caf" + chr(0xE9) + ".example.com", "0", "punycode (xn--)", "non-ascii-host"),
+    ("https://" + chr(0x0430) + ".example.com", "0", "punycode (xn--)", "cyrillic-lookalike-host"),
+    ("https://xn--caf-dma.example.com", "0", ["https://xn--caf-dma.example.com"], "punycode-host"),
     (f"{A} https://bad.example.com/x {B}", "0", "https://bad.example.com/x", "bad-among-good"),
 ]
 ORIGIN_PARAMS = [
@@ -691,6 +724,44 @@ def test_csrf_trusted_origins_are_parsed_normalised_and_validated(env, expected)
     assert "DJANGO_CSRF_TRUSTED_ORIGINS" in error
     assert expected in error
     assert "section 6c" in error
+
+
+# A pasted `https://user:secret@host` is refused, and the message (which lands in logs and
+# terminals) must not echo the secret: everything before the last `@` becomes `***`.
+SECRET = "hunter2"
+CREDENTIAL_ENTRIES = [
+    f"https://user:{SECRET}@a.example.com",
+    f"https://:{SECRET}@a.example.com",
+    f"user:{SECRET}@a.example.com",
+    f"https://user:p@{SECRET}@a.example.com",
+    f"https://user:{SECRET}@a.example.com:443",
+    f"https://user:{SECRET}@a.example.com/path",
+    f"https://user:pa/{SECRET}@a.example.com",
+    f"https://user:{SECRET}@.example.com",
+]
+CREDENTIAL_PARAMS = [
+    pytest.param(_case(DJANGO_CSRF_TRUSTED_ORIGINS=entry), id=entry.replace(SECRET, "SECRET"))
+    for entry in CREDENTIAL_ENTRIES
+]
+
+
+@pytest.mark.parametrize("env", CREDENTIAL_PARAMS)
+def test_a_refused_entry_never_echoes_a_password(env):
+    error = _settings_for(env).get("error", "")
+
+    assert error.startswith("ImproperlyConfigured"), error
+    assert "DJANGO_CSRF_TRUSTED_ORIGINS" in error
+    assert SECRET not in error
+    assert "***@" in error
+    assert "a.example.com" in error or ".example.com" in error  # still identifies the entry
+
+
+def test_a_refused_credential_entry_leaks_nothing_through_manage_py_either():
+    refused = _run_manage_check(DJANGO_CSRF_TRUSTED_ORIGINS=f"https://user:{SECRET}@a.example.com")
+
+    assert refused.returncode != 0
+    assert "ImproperlyConfigured" in refused.stderr
+    assert SECRET not in refused.stdout + refused.stderr
 
 
 @pytest.mark.parametrize("entry", ["app.example.com", "*", "https://*.example.com"])
@@ -740,7 +811,9 @@ def test_manage_py_check_warns_in_a_deployed_environment_that_has_not_opted_in()
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, result.stderr  # a Warning, never an Error
-    assert W002 in output
+    # The id as it prefixes the warning itself, not as it appears inside the hint (which names it
+    # again in its SILENCED_SYSTEM_CHECKS advice, so a bare substring survives a rename).
+    assert f"?: ({W002}) SELAHCUE_TRUST_FORWARDED_PROTO is off" in output
     assert "section 6c" in output
 
 

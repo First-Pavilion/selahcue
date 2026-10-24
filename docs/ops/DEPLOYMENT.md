@@ -487,8 +487,15 @@ therefore fails closed: you keep the original 403 rather than silently trusting 
 whitespace (space, tab, newline); empty entries are ignored and duplicates are merged. Each entry
 must be `https://host` or `https://host:port`: no `*` or wildcard subdomain, no path, no query,
 no credentials, and no trailing slash (one is forgiven and removed, since a browser's `Origin`
-never has a path). The host is lowercased. `http://` is accepted only when `DEBUG` is on. A bad
-entry makes the API refuse to boot with an error naming the variable and the entry, so a typo
+never has a path). The host is lowercased. `http://` is accepted only when `DEBUG` is on. The
+API also refuses, at boot, entries that no browser `Origin` can ever equal, so they cannot sit
+there silently never matching: the default port (`:443` on https, `:80` on http; write the origin
+without it), port `0`, a backslash anywhere, and a non-ASCII host (use the punycode `xn--` form,
+which is what a browser sends). A host with a leading dot (`https://.example.com`), a trailing dot
+or an empty label (`a..b`) is refused too: Django reads a leading-dot host as "this domain and
+every subdomain", so it would behave as the wildcard the previous rule forbids. A bad entry makes
+the API refuse to boot with an error naming the variable and the entry (a pasted
+`https://user:secret@host` is shown as `https://***@host`, never with the password), so a typo
 cannot silently weaken or disable the check. The only intended value is the SPA's own public
 origin; every entry is a cross-origin trust grant.
 
@@ -530,14 +537,15 @@ leave it off and are unchanged.
    rewrites `Host` to an internal name, and also when the public site is on a non-default port:
    nginx's `$host` drops the port, so a browser `Origin` of `https://selahcue.example:8443` no
    longer matches the forwarded Host.
-4. **Know what the edge reports.** Browser traffic reaches Django through the marketing nginx (the
+4. **Know what each hop reports.** Browser traffic reaches Django through the marketing nginx (the
    same-origin `/graphql/` proxy), which sits behind the TLS edge, so nginx's own `$scheme` is
-   `http` and the edge's `X-Forwarded-Proto` is the only source of `https`. An edge that does not
-   send it will report `http` and the flag then cannot fix the 403: Cloudflare in "Flexible" mode
-   (it speaks plain HTTP to the origin) and a default Traefik that trusts no inbound forwarded
-   headers are the two to check. That fails closed (you keep the 403), never open. Native clients
-   (`/v1/...`) do not go through nginx; their route to Django is the edge directly, and the same
-   two rules hold.
+   `http` and the `X-Forwarded-Proto` the edge side sends is the only source of `https`. If any hop
+   does not preserve it, Django sees `http` and the flag cannot fix the 403. Check the hop after
+   Cloudflare first: Cloudflare sends the header, but the next hop (for example a Traefik that
+   trusts no inbound forwarded headers) may replace it with the scheme of its own plain-HTTP
+   connection. Cloudflare in "Flexible" mode (plain HTTP to the origin) can have the same effect.
+   That fails closed (you keep the 403), never open. Native clients (`/v1/...`) do not go through
+   nginx; their route to Django is the edge directly, and the same two rules hold.
 
 ### HSTS goes live the first time you turn this on
 
@@ -545,15 +553,22 @@ The HSTS defaults in §6 were never in effect behind the proxy, so enabling the 
 **one-year, `includeSubDomains`, `preload`** policy for the first time. Browsers that see it will
 refuse plain HTTP to the host and every subdomain for that long, so roll it out deliberately:
 
-1. Confirm every subdomain of the host serves valid HTTPS before enabling.
-2. Start with `SECURE_HSTS_SECONDS=300` (five minutes), watch for breakage, then raise it in steps
-   to the one-year default.
-3. Set `SECURE_HSTS_PRELOAD=0` until you have decided, on purpose, to submit the domain to the
+1. Confirm every subdomain of the host serves valid HTTPS before enabling `includeSubDomains`.
+2. Start small and narrow: `SECURE_HSTS_SECONDS=300` (five minutes),
+   `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and `SECURE_HSTS_PRELOAD=0`. Watch for breakage, then raise
+   `SECURE_HSTS_SECONDS` in steps to the one-year default.
+3. Switch `SECURE_HSTS_INCLUDE_SUBDOMAINS` back on only once step 1 is true for every subdomain, and
+   `SECURE_HSTS_PRELOAD` on only when you have decided, on purpose, to submit the domain to the
    browser preload list. Removal from that list takes months.
-4. Roll back by turning the flag off (or `SECURE_HSTS_SECONDS=0`) and restarting. That stops
-   Django sending the header, but browsers keep enforcing a policy they already cached until its
-   `max-age` runs out, which is why step 2 starts small. To clear a cached policy actively, the
-   host must serve `Strict-Transport-Security: max-age=0` over HTTPS.
+4. **Rollback.** Turning the flag off, or setting `SECURE_HSTS_SECONDS=0`, only makes Django stop
+   *sending* the header. It does not send `max-age=0`, so browsers that already cached a policy keep
+   enforcing it until its `max-age` runs out. The in-app way to shorten what browsers hold is to
+   deploy `SECURE_HSTS_SECONDS=1` together with `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and
+   `SECURE_HSTS_PRELOAD=0`: every returning browser replaces its stored policy with a one-second,
+   host-only one on its next HTTPS response. Leave that in place for as long as the old `max-age`
+   (so returning visitors pick it up), and only then turn the flag off. A true
+   `Strict-Transport-Security: max-age=0` must be served by the edge. Starting small (step 2) is
+   what keeps this recoverable; a policy already on the preload list cannot be rolled back this way.
 
 ### Non-browser clients must send an Origin
 

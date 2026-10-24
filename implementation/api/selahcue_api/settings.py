@@ -160,6 +160,17 @@ else:
     SECURE_PROXY_SSL_HEADER = None
 
 
+def _without_credentials(entry: str) -> str:
+    """`entry` safe to print: anything before the last `@` (the userinfo of a pasted
+    `https://user:secret@host`) is replaced with `***`, keeping a leading `scheme://`. A refusal
+    message ends up in logs and terminals, so it must never echo a password."""
+    head, at, tail = entry.rpartition("@")
+    if not at:
+        return entry
+    scheme, sep, _ = head.partition("://")
+    return f"{scheme}://***@{tail}" if sep else f"***@{tail}"
+
+
 def _exact_origin(name: str, entry: str, debug: bool) -> str:
     """One `scheme://host[:port]` origin from the environment, or a refusal to boot.
 
@@ -167,35 +178,65 @@ def _exact_origin(name: str, entry: str, debug: bool) -> str:
     value anyone should ever need here is the SPA's own public origin. So the entry must be that
     shape exactly: `https` (`http` only under DEBUG, for a local proxy), a host, an optional
     port, and nothing else. One trailing `/` is forgiven (a browser's Origin never has a path, so
-    `https://x/` could never match and would fail closed with no hint). Wildcards are refused
-    outright: `https://*.example.com` would admit every subdomain AND the apex, and `*` alone is
-    not even a valid origin. The host is lowercased, because browsers send it lowercase and
-    Django compares the strings exactly."""
-    candidate = entry[:-1] if entry.endswith("/") else entry
+    `https://x/` could never match and would fail closed with no hint). The host is lowercased,
+    because browsers send it lowercase and Django compares the strings exactly.
+
+    Refused outright, each for a reason:
+    - wildcards: `https://*.example.com` would admit every subdomain AND the apex;
+    - a host with a leading dot (`https://.example.com`, `https://.com`): Django's Referer
+      fallback reads it as 'this domain and every subdomain', i.e. a wildcard in disguise, so
+      an attacker's page on any subdomain would pass the check; and an empty label (`a..b`) or a
+      trailing dot, which no browser Origin contains;
+    - the default port (`:443` on https, `:80` on http) and port 0: a browser omits the default
+      port from its Origin and never uses port 0, so the entry could never match and would fail
+      closed with no hint (the entry is refused rather than silently rewritten);
+    - a backslash anywhere, and a non-ASCII host (use the punycode `xn--` form, which is what
+      a browser sends): URL parsers disagree about both;
+    - credentials, path, query and fragment.
+    The refusal message never echoes credentials (`_without_credentials`)."""
+    shown = _without_credentials(entry)
 
     def refuse(reason: str):
         raise ImproperlyConfigured(
-            f"{name} entry {entry!r} is not accepted: {reason}. Each entry must be an exact "
+            f"{name} entry {shown!r} is not accepted: {reason}. Each entry must be an exact "
             "origin, scheme://host[:port] with no path, query or wildcard "
             "(for example 'https://selahcue.example'); see docs/ops/DEPLOYMENT.md section 6c."
-        )
+        ) from None
 
+    candidate = entry[:-1] if entry.endswith("/") else entry
+    if "\\" in entry:
+        refuse("it contains a backslash")
+    if not entry.isascii():
+        refuse("it contains non-ASCII characters; use the punycode (xn--) form of the host")
     if "*" in candidate:
         refuse("wildcards are not allowed, list each origin")
     try:
         parts = urlsplit(candidate)
-        parts.port  # noqa: B018  (raises ValueError on a malformed or out-of-range port)
+        port = parts.port
     except ValueError:
         refuse("it is not a valid URL")
     allowed = ("https", "http") if debug else ("https",)
     if parts.scheme not in allowed:
         refuse(f"the scheme must be {' or '.join(allowed)}")
-    if not parts.hostname:
+    host = parts.hostname
+    if not host:
         refuse("it has no host")
     if "@" in parts.netloc:
         refuse("it must not carry credentials")
+    if host.startswith(".") or host.endswith(".") or ".." in host:
+        refuse(
+            "the host must not start or end with a dot or contain an empty label "
+            "(a leading dot is read by Django as 'every subdomain')"
+        )
     if parts.path or parts.query or parts.fragment:
         refuse("it must not have a path, query or fragment")
+    if port == 0:
+        refuse("port 0 is not valid")
+    if port == {"https": 443, "http": 80}[parts.scheme]:
+        refuse(
+            f"the default port :{port} is never part of a browser Origin, so this could never "
+            f"match; write the origin without ':{port}'"
+        )
     return f"{parts.scheme}://{parts.netloc.lower()}"
 
 

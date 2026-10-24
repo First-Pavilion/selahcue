@@ -169,6 +169,11 @@ def test_untrusted_proxy_proto_warning_fires_in_a_deployed_environment(settings,
     issues = forwarded_proto_is_trusted_behind_a_tls_proxy(None)
 
     assert [issue.id for issue in issues] == [UNTRUSTED_PROXY_PROTO_WARNING]
+    # The id is part of the operator-facing contract (docs/ops/DEPLOYMENT.md names it, and
+    # SILENCED_SYSTEM_CHECKS takes it), so pin the literal rather than the constant, and keep the
+    # id the hint tells people to silence in step with the id the warning carries.
+    assert issues[0].id == "selahcue_accounts.W002"
+    assert issues[0].id in issues[0].hint
     # A Warning, not an Error: Django may terminate TLS itself, and the failure is closed.
     assert issues[0].level < 40, "an Error here would fail every non-dev `manage.py check`"
     assert "docs/ops/DEPLOYMENT.md section 6c" in issues[0].hint
