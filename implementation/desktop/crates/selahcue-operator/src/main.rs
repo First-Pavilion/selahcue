@@ -2802,17 +2802,16 @@ async fn transcript_get(
     // degrades to "no draft", the same honest floor `notes_generated_for` already established for
     // its own boolean.
     //
-    // The error is deliberately NOT interpolated (Sana, PR #50 F1): `Backend::load_sermon_note_
-    // draft`'s `Remote` path stringifies whatever `TransportError` `RemoteOperator::
-    // load_sermon_note_draft` returns, and its non-conforming-reply branch
-    // (`selahcue-app/src/operator.rs`) builds that via `TransportError::Protocol(format!("expected
-    // sermon_note_draft, got: {other:?}"))` — a `Debug` dump of the ENTIRE unexpected
-    // `ServerMessage`, which can be `OperatorState` carrying live `transcript`/`partial_transcript`/
-    // `detections` text verbatim. Reaching this needs a non-conforming host reply (version skew, a
-    // host bug, or a request/response desync — `ControlClient::command` does not correlate
-    // `request_id`), but FR-082 (no transcript/detection text reaches a diagnostic verbatim) covers
-    // that text the same as draft text, so this path drops the error entirely rather than assume
-    // any given `TransportError` variant is safe to print.
+    // The error is deliberately NOT interpolated (Sana, PR #50 F1), and that stays as defence in
+    // depth. History: `Backend::load_sermon_note_draft`'s `Remote` path stringifies whatever
+    // `TransportError` `RemoteOperator::load_sermon_note_draft` returns, and its non-conforming-
+    // reply branch used to be a `Debug` dump of the ENTIRE unexpected `ServerMessage` (which can
+    // be `OperatorState` carrying live `transcript`/`partial_transcript`/`detections` text).
+    // 17tnw2axppb closed that Protocol-error class at its source: `selahcue-app/src/
+    // operator_reply.rs` now names the variant only. It did NOT close every `TransportError`:
+    // `TransportError::Json` still quotes a mistyped serde value (tracked in 17tnw2b9aec), so no
+    // `TransportError` variant is assumed safe to print. FR-082 (no transcript/detection text
+    // reaches a diagnostic verbatim) covers that text the same as draft text.
     let draft_view = match state.backend.load_sermon_note_draft(id).await {
         Ok(view) => view,
         Err(_) => {
@@ -8144,9 +8143,10 @@ async fn persist_generated_draft(
                     }
                 }
                 Err(_) => {
-                    // Deliberately NOT interpolated — the same TransportError::Protocol
-                    // Debug-dump-of-a-whole-ServerMessage risk Sana's F1 fixed elsewhere in
-                    // this file; see `transcript_get`'s doc comment for the full call chain.
+                    // Deliberately NOT interpolated, as defence in depth: the Protocol-error
+                    // Debug dump Sana's F1 found is closed at its source (17tnw2axppb) but
+                    // `TransportError::Json` can still quote a serde value (17tnw2b9aec); see
+                    // `transcript_get`'s comment.
                     eprintln!("selahcue-operator: failed to stage sermon-note regeneration");
                     PersistOutcome {
                         transcript_id: None,
@@ -8895,9 +8895,10 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
         Err(_) => {
             // Deliberately NOT interpolated (Sana, PR #50 F1, mirrored from `transcript_get`'s
-            // identical fix): this error can carry a `Debug`-dumped `ServerMessage::OperatorState`
-            // with live transcript/detection text (FR-082) — see `transcript_get`'s doc comment
-            // for the full call chain.
+            // fix), as defence in depth: the `Debug`-dumped `ServerMessage::OperatorState` this
+            // error used to be able to carry (live transcript/detection text, FR-082) is closed at
+            // its source (17tnw2axppb), but `TransportError::Json` can still quote a serde value
+            // (17tnw2b9aec) -- see `transcript_get`'s comment.
             eprintln!("selahcue-operator: failed to load sermon-note draft");
             Ok(serde_json::json!({ "ok": false }))
         }
@@ -8964,10 +8965,11 @@ async fn update_sermon_note_draft(
         })),
         Err(_) => Ok(serde_json::json!({
             // Deliberately NOT the raw error string (Quinn, PR #50, 86akgqdxr four-reviewer-gate
-            // remediation — the same F1-class risk Sana found elsewhere in this file, but WORSE
-            // here: this "message" is rendered directly on the operator's own screen via
-            // showGenError/saveDraftEdit (role="alert"), not merely logged. See transcript_get's
-            // doc comment for the full TransportError::Protocol Debug-dump call chain.
+            // remediation): this "message" is rendered directly on the operator's own screen via
+            // showGenError/saveDraftEdit (role="alert"), not merely logged, so a payload-bearing
+            // error would be shown, not just written. The Protocol-error Debug dump is closed at
+            // its source (17tnw2axppb) but `TransportError::Json` can still quote a serde value
+            // (17tnw2b9aec), which is why this stays a fixed message. See transcript_get's comment.
             "ok": false, "error": "storage_error",
             "message": "The host reported a connection or protocol problem while saving this \
                 edit. Check the connection and try again.",
@@ -9015,7 +9017,8 @@ async fn confirm_sermon_note_regeneration(
                 AI-generated draft.",
         })),
         Err(_) => Ok(serde_json::json!({
-            // Same Debug-dump-avoidance discipline as `update_sermon_note_draft` above.
+            // Same fixed-message discipline as `update_sermon_note_draft` above (defence in
+            // depth: see its comment for the residual `TransportError::Json` quoting).
             "ok": false, "error": "storage_error",
             "message": "The host reported a connection or protocol problem while confirming \
                 this regeneration. Check the connection and try again.",
