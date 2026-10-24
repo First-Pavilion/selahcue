@@ -1,3 +1,14 @@
+[build-system]
+# EXACT pin (86ak5rjh7, owner-accepted interim, 2026-10-24). Without this table pip builds the editable
+# install with whatever setuptools is newest on PyPI at install time, in an isolated environment, so the
+# one piece of code that runs at install time was the one thing not pinned. 84.0.0 is a PyPI release from
+# 2026-08-08 (more than two weeks old when chosen), supports PEP 660 editable installs and Python 3.14.
+# Every installer that reads this file gets it: the CI `api` job, the Dockerfile and `make api-install`.
+# It is NOT hash-locked and the transitive dependencies are still unlocked: that is ClickUp 17tnw2az0kw.
+# Dependabot (pip, this directory) may propose a bump of this pin; take it as an ordinary reviewed PR.
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "selahcue-api"
 version = "0.1.0"

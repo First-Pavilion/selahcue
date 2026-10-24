@@ -278,7 +278,7 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -664,67 +664,71 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # The Django + Strawberry platform API (implementation/api). `api-check` is the local mirror of the
 # `api (django)` job in .github/workflows/ci.yml and is called by `make ci` (86ak5rjh7, API half):
 # Django system checks, `makemigrations --check --noinput` (a model shipped without its hand-written
-# migration fails here, not only in CI), then the pytest suite. The three commands are copied from
-# that job on purpose -- change one place, change the other.
+# migration fails here, not only in CI), then the pytest suite. The three commands are written here AND
+# in ci.yml's `api` job; scripts/check_api_gate.py compares the two (its ci.yml case) so a change to one
+# that is not made to the other fails `make ci`.
+#
+# NEVER INSTALLS, like `marketing-check`. `make ci` and `make api-check` are offline and deterministic; a
+# desktop developer never gets packages installed by surprise. The venv comes from a deliberate
+# `make api-install` (needs the network; Python 3.14 on PATH, or API_PYTHON=/path/to/python >=3.12), and
+# `api-check` REFUSES, naming `make api-install`, when the venv is missing, was not made by api-install,
+# is a symlink, was built with another interpreter, or pyproject.toml changed since it was installed
+# (SHA-256 of the file, so a content-neutral `touch` does not refuse). A fresh worktree therefore needs
+# `make api-install` once, then again after a pyproject.toml change. The logic lives in
+# scripts/api_venv.py; its header explains every guard.
 #
 # WHAT IT DOES NOT COVER, stated here, in the target's help text and in CLAUDE.md so the absence is a
-# known limit and not a silent hole: it runs on SQLite with Django's local-memory cache, no Postgres,
-# no Redis. Four tests SKIP by design (709 pass, 4 skipped, 1 xfailed when this was written): the three
-# in `tests/test_concurrency_postgres.py` (the DEC-004 device instance-limit race; select_for_update is
-# a no-op on SQLite) and the real-Redis one in `tests/test_cache_socket_timeouts.py`. `-rfEs` prints
-# each skip with its reason and each failure by test name, so nothing is silent. CI's `api` job runs
-# them against Postgres 16 + Redis 7.
+# known limit and not a silent hole: it runs on SQLite (in memory) with Django's local-memory cache, no
+# Postgres, no Redis. Four tests SKIP by design when this was written: the three in
+# `tests/test_concurrency_postgres.py` (the DEC-004 device instance-limit race; select_for_update is a
+# no-op on SQLite) and the real-Redis one in `tests/test_cache_socket_timeouts.py`. `-rfEs` prints each
+# skip with its reason and each failure by test name, so nothing is silent. CI's `api` job runs them
+# against Postgres 16 + Redis 7.
 #
-# The environment is scrubbed (`env -i`) so a shell that sourced a docker-style .env
-# (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn this into a different,
-# confusing failure: the gate means the same thing on every machine.
+# The three commands run in a scrubbed environment (`env -i`, plus SQL_DATABASE=:memory:) so a shell that
+# sourced a docker-style .env (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn
+# this into a different, confusing failure, and a developer's own implementation/api/db.sqlite3 cannot
+# leak in. `pip install` in api-install is NOT scrubbed: pip needs HOME, proxy and certificate settings,
+# so the install sees the developer's full environment.
+#
+# THE VENV is `implementation/api/.venv-api-check`: a name only this target uses (a developer's own
+# `.venv` is never touched), gitignored and dockerignored, per checkout. api-install only ever rebuilds a
+# directory that carries its marker file. The first recipe line of api-check also asserts, on every run,
+# that `selahcue_api` imports from THIS checkout (python -I). That is not because a borrowed venv would
+# test the other checkout's code (the cwd and pytest.ini's `pythonpath = .` win on sys.path); it is
+# because the venv's third-party packages would have been resolved from ANOTHER tree's pyproject.toml.
+#
+# WHAT THE INSTALL IS: direct dependencies are pinned exactly and the build backend is pinned in
+# pyproject.toml's [build-system]; TRANSITIVE dependencies are neither locked nor hashed. The venv holds
+# whatever resolved on the day it was built, while CI re-resolves on every run, so the two can differ.
+# The owner accepted that interim on 2026-10-24 until the hash-locked requirements file of ClickUp
+# 17tnw2az0kw lands.
+#
+# Every variable that decides what runs is `override`, so `make api-check API_VPY=/usr/bin/true`,
+# `API_ENV=` or `API=<elsewhere>` cannot weaken the gate. Only API_PYTHON is yours to set; it is passed
+# to the helper through the environment, never spliced into shell text.
 #
 # THE TARGET'S OWN LOGIC is tested by `scripts/check_api_gate.py --self-test` (run by `make ci`, offline,
-# about 15 seconds): it copies this Makefile into a scratch repo with a fake API and runs `make api-check`
-# through 18 cases (fresh build, reuse, rebuild, wrong-tree venv, failing test, missing migration, failed
-# install, no/old interpreter, scrubbed environment, other working directory, ...). `--mutation-proof`
-# breaks this Makefile on purpose, 16 ways, and requires the named case to go red each time. Run it
-# after editing anything between here and the end of `api-check`.
-#
-# THE VIRTUALENV is `implementation/api/.venv`: gitignored (api/.gitignore) and therefore PER
-# CHECKOUT. That is the point. The API is installed editable (`pip install -e`), and an editable
-# install points at the source tree it was run in -- so a venv shared with another checkout (the main
-# checkout's implementation/api/venv, say) silently tests THAT checkout's code while reporting on this
-# one. The first recipe line re-checks, on every run, that `selahcue_api` imports from this tree
-# (python -I, so neither the cwd nor PYTHONPATH can answer for it).
-#
-# It builds the venv itself the first time (this is the one step that needs the network, for the pinned
-# dependencies in pyproject.toml) and REBUILDS it whenever pyproject.toml is newer than the install
-# stamp, so a Dependabot bump or a branch switch cannot leave the gate running on packages CI is not
-# using -- the same stale-install false green the marketing gate and the Rust toolchain pin close. It
-# never skips: no Python 3.14 (CI pins 3.14; pyproject needs >=3.12), no network, or a failed install is
-# a hard error with the fix named. The stamp is written LAST, so an interrupted install is retried.
-API        := implementation/api
+# seconds): it copies this Makefile and the helper into a scratch repo with a fake API and runs the
+# targets through every situation listed in its docstring. `--mutation-proof` breaks this Makefile and the
+# helper on purpose and requires the named case to go red each time. Run it after editing anything
+# between here and the end of `api-install`.
+# Defined BEFORE the export: GNU Make 3.81 (macOS's make) exports an `export VAR` that precedes its
+# `?=` as an EMPTY string and then never assigns the default.
 API_PYTHON ?= python3.14
-# `override` so a command-line API_VENV=... cannot point `venv --clear` at a directory that is not ours.
-override API_VENV := $(API)/.venv
-API_STAMP  := $(API_VENV)/.selahcue-api-installed
-API_VPY    := $(CURDIR)/$(API_VENV)/bin/python
-API_ENV    := env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL"
+export API_PYTHON
+override API        := implementation/api
+override API_VENV   := $(API)/.venv-api-check
+override API_VPY    := $(CURDIR)/$(API_VENV)/bin/python
+override API_HELPER := python3 scripts/api_venv.py
+override API_ENV    := env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:
 
-$(API_STAMP): $(API)/pyproject.toml
-	@command -v $(API_PYTHON) >/dev/null 2>&1 || { \
-	  echo "ERROR: '$(API_PYTHON)' is not on PATH -- the API gate needs Python 3.14 (CI pins 3.14; pyproject needs >=3.12)."; \
-	  echo "  Install it (macOS: brew install python@3.14), or run: make api-check API_PYTHON=/path/to/python3.13"; \
-	  exit 1; }
-	@$(API_PYTHON) -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' || { \
-	  echo "ERROR: $$($(API_PYTHON) --version) is too old -- implementation/api needs Python >=3.12 (CI pins 3.14)."; \
-	  echo "  Run: make api-check API_PYTHON=/path/to/python3.14"; \
-	  exit 1; }
-	@echo "api-check: building $(API_VENV) with $$($(API_PYTHON) --version) and installing the pinned dependencies (needs the network once)"
-	rm -f $@
-	$(API_PYTHON) -m venv --clear $(API_VENV)
-	cd $(API) && "$(API_VPY)" -m pip install --disable-pip-version-check --quiet -e ".[dev]"
-	touch $@
+api-install: ## Build the Django API venv (implementation/api/.venv-api-check) and pip install -e ".[dev]": the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
+	$(API_HELPER) install --api $(API) --venv $(API_VENV)
 
-api-check: $(API_STAMP) ## Django API gate: check + migrations committed + pytest on SQLite (the Postgres/Redis-only tests SKIP here; CI runs them)
-	cd $(API) && "$(API_VPY)" -I -c 'import pathlib, selahcue_api; p = pathlib.Path(selahcue_api.__file__).resolve(); root = pathlib.Path(".").resolve(); assert root in p.parents, f"selahcue_api imports from {p}, not from this checkout ({root}): the venv was installed from another tree; delete $(API_VENV) and re-run"'
-	@echo "api-check: SQLite + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
+api-check: ## Django API gate: check + migrations committed + pytest on SQLite; never installs (run `make api-install` first); the Postgres/Redis-only tests SKIP here, CI runs them
+	$(API_HELPER) verify --api $(API) --venv $(API_VENV)
+	@echo "api-check: SQLite in memory + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py check
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput
 	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -q -rfEs
@@ -741,7 +745,9 @@ api-check: $(API_STAMP) ## Django API gate: check + migrations committed + pytes
 # (type-check, lint, node tests, build) via `marketing-check`, and the `api (django)`
 # job's three commands (system checks, migrations committed, pytest) via `api-check`,
 # both below. `api-check` runs on SQLite and local cache, so the Postgres/Redis-only
-# tests SKIP here (named in its output and in its comment above).
+# tests SKIP here (named in its output and in its comment above). It NEVER installs:
+# a fresh worktree runs `make api-install` once first (network, Python 3.14), and
+# `make ci` stops at `api-check` with that instruction until it has.
 #
 # Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
@@ -760,7 +766,7 @@ api-check: $(API_STAMP) ## Django API gate: check + migrations committed + pytes
 # marketing or API gate below stops the run before any cargo gate. Nor is the target
 # path-aware: it runs every area every time. Both -- run every gate, collect, exit
 # non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
-ci: ## Run the local CI gate: Rust, Flutter, marketing and Django API (see the header for what CI runs that this does not)
+ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `make api-install` once). NOT covered: audit/deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
@@ -808,14 +814,14 @@ ci: ## Run the local CI gate: Rust, Flutter, marketing and Django API (see the h
 	$(MAKE_RECURSE) --no-print-directory marketing-check
 	# 86ak5rjh7 (API half): `make ci` ran NOTHING for implementation/api, so a failing Django test or a
 	# model shipped without its migration passed here and failed only in CI's `api (django)` job. Same
-	# recursive-make pattern as marketing-check, same position (before the long cargo gates) so an API
-	# error fails in about two minutes instead of after the whole Rust run. First run builds the
-	# gitignored per-checkout venv and needs the network once; see the api-check comment above.
-	# The gate's own logic, tested against a fake API in a scratch repo (about 15 seconds, offline): that
-	# api-check builds the venv, reuses it, rebuilds it, refuses a venv from another checkout, goes red
-	# on a failing test / missing migration / failed install, and never skips. `--mutation-proof`
-	# (by hand, after editing the api-check target) breaks the Makefile on purpose and requires each
-	# case to go red.
+	# recursive-make pattern as marketing-check, and like it this NEVER installs: a fresh worktree runs
+	# `make api-install` once (network, Python 3.14), and api-check refuses with that instruction until
+	# then. See the api-check comment above for everything it does and does not cover.
+	# The gate's own logic, tested against a fake API in a scratch repo (offline, seconds): that the
+	# targets refuse, install, reuse, rebuild, refuse a venv from another checkout, go red on a failing
+	# test / missing migration / failed install, and never skip. `--mutation-proof` (by hand, after
+	# editing the api targets or scripts/api_venv.py) breaks them on purpose and requires each case to
+	# go red.
 	python3 scripts/check_api_gate.py --self-test
 	$(MAKE_RECURSE) --no-print-directory api-check
 	cd $(DESKTOP) && $(CARGO) fmt --check

@@ -50,20 +50,25 @@ Requires `SELAHCUE_ENTITLEMENT_SIGNING_KEY` (see `docs/ops/DEPLOYMENT.md` §6a).
 
 ## Local verification
 
-From the repository root, `make api-check` runs the same three commands as the `api` job in `.github/workflows/ci.yml`, and `make ci` includes it:
+From the repository root:
 
 ```bash
-make api-check
+make api-install   # once per checkout, and after pyproject.toml changes: builds the venv, needs the network
+make api-check     # django check + migrations committed + pytest, the same three commands as the CI `api` job
 ```
 
-It builds a virtualenv at `implementation/api/.venv` on first use (needs Python 3.14 on PATH, or `API_PYTHON=/path/to/python`, and the network once) and rebuilds it when `pyproject.toml` changes. The venv is per checkout on purpose: the API is installed editable, so a venv made in another checkout would silently test that checkout's code. It runs on SQLite, so the tests that need Postgres or Redis (`tests/test_concurrency_postgres.py`, one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; only CI runs them.
+`make ci` runs `make api-check`; it never installs, so on a fresh worktree it stops with an instruction to run `make api-install`. `api-install` needs Python 3.14 on PATH (CI's version) or `API_PYTHON=/path/to/python` for any 3.12 or newer.
+
+- The venv is `implementation/api/.venv-api-check`, a name only these targets use (your own `.venv` is never touched), gitignored and per checkout. `api-check` refuses it when it is a symlink, was built with another interpreter or from another checkout, or `pyproject.toml` changed since (content hash, so a `touch` is fine).
+- It runs on SQLite in memory, so the tests that need Postgres or Redis (`tests/test_concurrency_postgres.py`, one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; only CI runs them.
+- The install is not locked: direct dependencies and the build backend (`[build-system]`) are pinned exactly, transitive dependencies are not locked or hashed, so the venv holds whatever resolved when you ran `make api-install` while CI re-resolves each run (ClickUp 17tnw2az0kw).
 
 By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run in this checkout:
 
 ```bash
-.venv/bin/python manage.py check
-.venv/bin/python manage.py makemigrations --check --noinput
-.venv/bin/python -m pytest tests -q
+.venv-api-check/bin/python manage.py check
+.venv-api-check/bin/python manage.py makemigrations --check --noinput
+.venv-api-check/bin/python -m pytest tests -q
 ```
 
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.
