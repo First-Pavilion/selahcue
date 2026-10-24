@@ -72,7 +72,7 @@ Footprint:
 
 ## Completion predicate
 
-All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. This contract stops at `GATE_REVIEW`: C-013 is open by design and C-014 is blocked.
+All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. This contract stops at `GATE_REVIEW`: C-014 (Windows) is blocked, so it cannot be `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
@@ -82,16 +82,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. This contract stops a
 | C-004 | yes | A certificate from an unknown signer, for another name, expired, or signed by a different root than the one trusted is refused before any request byte is sent, with a positive control (a server signed by a root the client was given is accepted) and a check that the failure is a certificate failure | `cargo test -p selahcue-cloud --features http --lib` (`transport::tls_tests`) | exit 0; 8 TLS tests (10 tests in the module with the two timeout tests) | iterations 2 and 5 | PASS |
 | C-005 | yes | A root handed to one client does not leak into a production client; a client that cannot be built is a `TransportError` with a reason, not a panic; on Linux an empty CA bundle fails closed and a bundle holding the CA is honoured by the production constructor | the same `--lib` run; `test_tls_system_store_linux` in a `rust:1.98.0-slim-bookworm` container | exit 0; the Linux test passed in the container (not run on macOS: compiled out) | iterations 2 and 3 | PASS |
 | C-006 | yes | Proxy, cookie, header and redirect-credential behaviour is unchanged from reqwest 0.12.28 | `test_proxy_env`, `test_redirect_credentials`, the existing `test_wire`; the probe of 2026-10-24 on 0.12.28 and 0.13.5 | exit 0; the probe results identical | iteration 2 | PASS |
-| C-007 | yes | Every new test fails when the behaviour it names is altered | the mutation sets M1 to M15 and L1, L2 (iteration 3) and R01 to R21 and G1 to G8 (iteration 5; PR description) | each mutation turns the named test(s) red; the tree is restored. Known survivor: a production client that trusts nothing from the OS (`tls_certs_only` on every build) passes the whole macOS suite; only the Linux system-store test and the `#[ignore]`d live probe (`test_tls_live_probe.rs`, run by hand) catch it. Known gap: the total timeout value passed by `shipped_builder` is not read back (reqwest does not print it), so a wrong value there would survive; removing it, or the connect timeout, is red | iterations 3 and 5 | PASS |
+| C-007 | yes | Every new test fails when the behaviour it names is altered | the mutation sets M1 to M15 and L1, L2 (iteration 3) and R01 to R21 and G1 to G8 (iteration 5; PR description) | each mutation turns the named test(s) red; the tree is restored. Known survivor: a production client that trusts nothing from the OS (`tls_certs_only` on every build) passes the whole macOS suite; only the Linux system-store test and the `#[ignore]`d live probe (`test_tls_live_probe.rs`, run by hand) catch it. Known gaps (2): (a) the total timeout value passed by `shipped_builder` is not read back (reqwest does not print it), so a wrong value there would survive; removing it, or the connect timeout, is red; (b) nothing proves `build()` passes the values from `shipped_builder`: `build()` calling `configured_builder` directly with different timeouts keeps all 50 tests green (Quinn mutation N8). A human checks both by reading `build()` and `shipped_builder` | iterations 3 and 5 | PASS |
 | C-008 | yes | `scripts/import_guards.sh` fails when reqwest's `rustls` feature, a webpki-roots bundle (direct, or behind `cfg(windows)`), `webpki-root-certs`, a Windows-only reqwest `native-tls`, or an aws-lc or native-tls lock entry appears, under both `sh` (dash on Ubuntu) and `bash` | mutations G1 to G8 (iteration 5); the earlier M13 to M15 | exit 1 with the named message each time; exit 0 on the real tree under bash, macOS sh and Debian dash | iterations 3 and 5 | PASS |
 | C-009 | yes | fmt, clippy -D warnings (cloud `http` and `openai`; operator default, `openai-notes`, `cloud-live`, `dev-keys,openai-notes`), tests, `cargo deny check licenses sources bans` in both roots, `check_launch_reachability.py` | the commands in the PR description | all exit 0 | iteration 4 | PASS |
 | C-010 | yes | `cargo audit` is not worse than `origin/main` in any root | `cargo audit` before and after, three roots | workspace 8 to 3, operator 8 to 3, stt 2 to 2 vulnerabilities; no new warning | iteration 4 | PASS |
 | C-011 | yes | The decision is recorded and the stale text is fixed | DEC-019 in `DECISION-LOG.md`; both `deny.toml` comments, `selahcue-cloud/Cargo.toml`, `transport.rs` docs, `selahcue-stt-cloud/Cargo.toml` | present; a grep for the old feature name and the old comment wording finds none outside history | iteration 1 | PASS |
-| C-015 | yes | A refused certificate shows the user its cause: the send error carries the bounded cause chain (URL line kept, no credential) | `transport::tls_tests::a_server_signed_by_a_root_outside_the_store_is_refused_and_sees_no_request` | exit 0; red when the chain walk is removed (R13) | iteration 5 | PASS |
+| C-015 | yes | A refused certificate's cause is carried on the `TransportError` the transport returns: the send error includes the bounded cause chain (URL line kept, no credential). Scope: this helps diagnostics and future callers such as `selahcue-licensing`. In the sermon-notes flow both providers wrap a send failure as `NoteError::Transport` and `generate_sermon_notes` (`selahcue-cloud/src/lib.rs` around line 124) discards the text and serves the local draft, so a notes user sees the "Local draft" badge and no reason; only a client-BUILD failure ("could not set up TLS: ...") reaches the UI `message` (`selahcue-operator/src/main.rs` around line 8240) | `transport::tls_tests::a_server_signed_by_a_root_outside_the_store_is_refused_and_sees_no_request` | exit 0; red when the chain walk is removed (R13) | iteration 5 | PASS |
 | C-016 | yes | The connect and total request timeouts exist and take effect | `the_shipped_connect_timeout_is_on_the_client_builder`, `a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout` | exit 0 in about half a second; red when both builder calls are removed (R14), either alone (R15, R16) or the connect value is wrong in `shipped_builder` (R17) | iteration 5 | PASS |
 | C-017 | yes | `NO_PROXY` and the redirect limit are pinned | `test_proxy_env`, `test_redirect_limit` | exit 0; red when NO_PROXY is ignored (R18) and when redirects are never followed or the limit is 50 (R19, R20) | iteration 5 | PASS |
 | C-012 | yes | One `make ci` at the end is green | `make ci` | exit 0 | `make ci` ALL GREEN at 3e394fd6 (the code head of round 0; round 1 changed locks, the guard, the cloud crate and its tests, verified by the targeted gates of iteration 5, `make ci` not re-run): 5,690 Rust tests passed, 0 failed; Flutter 380 passed; API 1,127 passed, 19 skipped, 1 xfailed; import guards and launch reachability OK; `make ci` rewrote `pubspec.lock` (a Flutter version stamp), reverted and not committed | PASS |
-| C-013 | yes | Independent review passed (code, security, QA) at the head SHA | review report pages | verdicts recorded, zero open blocking findings | round 1 at ef89294c: Cody APPROVE WITH CONDITIONS (0 blocker, 0 high, 2 medium, 4 low, 2 nit), Shadow PASS WITH CONDITIONS (0/0/1/3/1), Quinn PASS WITH CONDITIONS (0/0/2/4/1); remediation in iteration 5; delta re-check pending | PENDING |
+| C-013 | yes | Independent review passed (code, security, QA) at the head SHA | review report pages | verdicts recorded, zero open blocking findings | round 1 at ef89294c: Cody APPROVE WITH CONDITIONS (0 blocker, 0 high, 2 medium, 4 low, 2 nit), Shadow PASS WITH CONDITIONS (0/0/1/3/1), Quinn PASS WITH CONDITIONS (0/0/2/4/1); remediation in iteration 5. Round 2 at ee3198f2: Cody APPROVE WITH CONDITIONS (the one required item, the iteration 4 "lock-only" sentence, is fixed in iteration 6), Shadow PASS, Quinn PASS. The remaining findings are low or nit and are tracked as follow-ups B1 to B4 in the PR description | PASS |
 | C-014 | no | Windows behaviour of the chosen option is checked on Windows | a Windows build and the TLS suite | pass | no Windows host available to this role | BLOCKED |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -142,7 +142,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Change or investigation: full gate set; audit before and after; one `make ci`
 - Verifier executed: see the PR description
 - Result: every gate green; `make ci` ALL GREEN; audit workspace 8 to 3, operator 8 to 3, stt 2 to 2 vulnerabilities
-- New evidence: the three remaining findings (`webpki-roots`, `rustls-webpki`, `ctutils`) are lock-only and outside this change
+- New evidence: the three remaining findings (`webpki-roots`, `rustls-webpki`, `ctutils`) are lock-only and outside this change (corrected in iteration 5: not lock-only)
 - Decision: gate-review
 
 ### Iteration 5 (round-1 review remediation)
@@ -153,6 +153,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Verifier executed: mutation sets R01 to R21 and G1 to G8, the gate set of the PR description, the Debian container (tests, clippy, the guard under dash)
 - Result: every new or changed test red under its mutation and restored; one survivor and one gap recorded in C-007; no gate regressed
 - New evidence: reqwest's blocking builder does not print its total timeout, so only the connect timeout can be read back; macOS now refuses `revoked.badssl.com`, which reqwest 0.12.28 accepted
+- Decision: gate-review
+
+### Iteration 6 (round-2 review, documentation only)
+
+- Target criterion: C-007, C-013, C-015
+- Hypothesis: the round-2 conditions are wording and bookkeeping and need no code change, so the push can be verified by reading the diff
+- Change or investigation: fixed the iteration 4 "lock-only" sentence; narrowed C-015 to what is true (the `TransportError` carries the cause; the notes flow discards it and shows the local draft); named the three triples the import guard walks and its known limits in DEC-019; recorded the second timeout gap in C-007; recorded the cause-text length limit and the untested 8-cause bound, and follow-up B4, in the PR description; recorded the round-2 verdicts
+- Verifier executed: both goal-contract validators; `git diff --stat ee3198f2..HEAD` lists documentation files only
+- Result: no `.rs`, `.sh` or lock file changed in this push
+- New evidence: none new; code items (B1 to B4) go to follow-up tickets
 - Decision: gate-review
 
 ## Risks and rollback
@@ -169,7 +179,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9ax2-reqwest-os-trust-store.md`
 - Validator result: recorded in the PR description
-- Independent verification result: pending
+- Independent verification result: round 1 (ef89294c) three PASS WITH CONDITIONS; round 2 (ee3198f2) Cody APPROVE WITH CONDITIONS, Shadow PASS, Quinn PASS
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-013 pending (reviewers), C-014 blocked (no Windows host)
+- Remaining failed or blocked criteria: C-014 blocked (no Windows host); C-013 passed with follow-ups B1 to B4
 - ClickUp final evidence comment: written by the coordinator
