@@ -509,8 +509,8 @@ impl DeckLibrary {
     /// **The adopted deck always gets a FRESH identity**, whatever uid it arrives carrying. A uid
     /// is an unauthenticated claim: a deck from outside can name any uid, including one that
     /// belongs to a presentation at another church, and honouring it would let that deck answer
-    /// the plan links meant for the real one. See
-    /// [`adopt_trusted_identity`](Self::adopt_trusted_identity) for the one path that keeps it.
+    /// the plan links meant for the real one. `adopt_trusted_identity` (compiled in tests only,
+    /// until an ingress records its trust decision) is the one path that keeps it.
     pub fn adopt(&mut self, deck: SlideDeck) -> SlideDeck {
         self.adopt_keep_both(deck, false)
     }
@@ -523,7 +523,12 @@ impl DeckLibrary {
     /// carries a deck between machines yet. Whoever adds one must make and record a trust decision
     /// first -- who may assert "this is presentation U" -- because the first deck to claim a uid
     /// wins it (ADR-0031, "A uid is a claim"). Until then every caller uses [`adopt`].
-    #[allow(dead_code)] // no ingress yet (ADR-0031); exercised by the two-library tests
+    ///
+    /// **Compiled in tests only** (`#[cfg(test)]`), on purpose: with no ingress, a production
+    /// caller would be a silent trust decision made by whoever typed the call. Gated this way it
+    /// fails to compile, so adding one forces the decision through review; lift the gate in the
+    /// change that records it.
+    #[cfg(test)]
     pub fn adopt_trusted_identity(&mut self, deck: SlideDeck) -> SlideDeck {
         self.adopt_keep_both(deck, true)
     }
@@ -564,6 +569,9 @@ impl DeckLibrary {
     ///
     /// **When the name is free, every policy behaves identically** — the deck is adopted under the
     /// name it carries. A policy is a collision *rule*, not a mode.
+    ///
+    /// **Identity.** A deck this adds always gets a FRESH uid, whatever uid it arrives carrying
+    /// (see [`adopt`](Self::adopt)); `Replace` keeps the target deck's own uid instead.
     ///
     /// On any `Err` nothing was mutated: no deck added, no id minted, no row written.
     #[allow(dead_code)] // consumed by the import commands in main.rs (ADR-0024)

@@ -1151,6 +1151,188 @@ fn the_backfill_never_overwrites_a_row_other_than_the_one_it_read() {
     );
 }
 
+fn rows_of(t: &TempDb) -> Vec<(String, String)> {
+    deck_repo::load_all(&t.open()).unwrap()
+}
+
+/// Launch the library twice over `t` (counting entropy) and, after each launch, assert every row is
+/// byte-identical to `before` and the decks read are exactly `expected_slides` (sorted).
+fn assert_rows_untouched_across_two_launches(
+    t: &TempDb,
+    before: &[(String, String)],
+    expected_slides: &[usize],
+) {
+    for launch in 1..=2 {
+        let (lib, stats) = DeckLibrary::load_reporting(Some(t.open()), counting_entropy);
+        let mut slides: Vec<usize> = lib.list().iter().map(|m| m.slides).collect();
+        slides.sort_unstable();
+        assert_eq!(
+            slides, expected_slides,
+            "launch {launch}: a deck was lost or doubled"
+        );
+        assert!(
+            lib.list().iter().all(|m| lib.uid_of(m.id).is_some()),
+            "launch {launch}: every deck is still identified in memory"
+        );
+        assert_eq!(stats.attempted, 0, "launch {launch}: something was written");
+        drop(lib);
+        assert_eq!(
+            rows_of(t),
+            before,
+            "launch {launch}: a row was written, added or removed"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_row_never_shifts_which_row_a_deck_is_written_to() {
+    // Row "A" cannot be parsed and is skipped. If its key were still recorded, every later deck
+    // would be paired with the PREVIOUS row's key: the deck named "B" (read from row "C") would be
+    // paired with key "B", look like it belongs there, and be written over row "B", destroying
+    // that row's real presentation "Q".
+    let t = TempDb::new("unreadable-shift");
+    {
+        let db = t.open();
+        deck_repo::save_one(&db, "A", "{this is not json").unwrap();
+        deck_repo::save_one(&db, "B", &legacy_row(1, "Q", 1)).unwrap();
+        deck_repo::save_one(&db, "C", &legacy_row(2, "B", 3)).unwrap();
+    }
+    let before = rows_of(&t);
+    assert_eq!(before.len(), 3);
+    assert_rows_untouched_across_two_launches(&t, &before, &[1, 3]);
+}
+
+#[test]
+fn a_healed_name_equal_to_an_unreadable_rows_key_never_writes_over_that_row() {
+    // The same pairing hazard in the shape where the colliding key belongs to the unreadable row
+    // itself: the deck read from row "X" is healed in memory to "Untitled presentation", which is
+    // exactly the key of a row that cannot be read. Writing it by name would replace that row.
+    let t = TempDb::new("unreadable-collide");
+    {
+        let db = t.open();
+        deck_repo::save_one(&db, "X", &legacy_row(1, "", 2)).unwrap();
+        deck_repo::save_one(&db, "Untitled presentation", "{not json").unwrap();
+        deck_repo::save_one(&db, "Alpha", &legacy_row(2, "Zed", 1)).unwrap();
+        deck_repo::save_one(&db, "Zed", &legacy_row(3, "Zed", 3)).unwrap();
+        deck_repo::save_one(&db, "Zed (2)", "{also not json").unwrap();
+    }
+    let before = rows_of(&t);
+    assert_eq!(before.len(), 5);
+    assert_rows_untouched_across_two_launches(&t, &before, &[1, 2, 3]);
+}
+
+#[test]
+fn a_key_that_differs_from_the_name_only_by_case_or_a_space_is_never_written_as_a_second_row() {
+    // SQLite keys are case- and space-sensitive, so a write by the JSON name would be a SECOND row.
+    // A guard that compared the key and the name case-insensitively or trimmed would allow it.
+    let t = TempDb::new("case-only");
+    deck_repo::save_one(&t.open(), "zed", &legacy_row(1, "Zed", 2)).unwrap();
+    deck_repo::save_one(&t.open(), "Gamma ", &legacy_row(2, "Gamma", 1)).unwrap();
+    let before = rows_of(&t);
+    assert_rows_untouched_across_two_launches(&t, &before, &[1, 2]);
+}
+
+#[test]
+fn a_mismatched_key_with_no_row_at_the_deck_name_does_not_multiply_the_library() {
+    // Row "Alpha" holds a deck named "Gamma" and no row "Gamma" exists: a write by name would
+    // create one, and the library would then hold the same presentation twice.
+    let t = TempDb::new("no-multiply");
+    deck_repo::save_one(&t.open(), "Alpha", &legacy_row(1, "Gamma", 2)).unwrap();
+    deck_repo::save_one(&t.open(), "Beta", &legacy_row(2, "Beta", 1)).unwrap();
+    let before = rows_of(&t);
+    for launch in 1..=3 {
+        let (lib, _) = DeckLibrary::load_reporting(Some(t.open()), counting_entropy);
+        assert_eq!(lib.list().len(), 2, "launch {launch}: decks multiplied");
+        drop(lib);
+        let after = rows_of(&t);
+        assert_eq!(after.len(), 2, "launch {launch}: rows multiplied");
+        assert_eq!(
+            after.iter().find(|(k, _)| k == "Alpha"),
+            before.iter().find(|(k, _)| k == "Alpha"),
+            "launch {launch}: the mismatched row was rewritten"
+        );
+    }
+}
+
+#[test]
+fn a_three_way_name_collision_loses_nothing_and_writes_only_the_deck_that_owns_its_row() {
+    // Rows "Mid" and "Zed" both hold a deck named "Zed"; row "Zed (2)" holds one named "Zed (2)".
+    // In memory the later "Zed" becomes "Zed (3)". Only the deck whose in-memory name still equals
+    // its own row key ("Zed (2)") may be written, and then only to gain its uid.
+    let t = TempDb::new("three-way");
+    deck_repo::save_one(&t.open(), "Mid", &legacy_row(1, "Zed", 1)).unwrap();
+    deck_repo::save_one(&t.open(), "Zed", &legacy_row(2, "Zed", 3)).unwrap();
+    deck_repo::save_one(&t.open(), "Zed (2)", &legacy_row(3, "Zed (2)", 5)).unwrap();
+    let before = rows_of(&t);
+    let without_uid = |json: &str| {
+        let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
+        v.as_object_mut().unwrap().remove("uid");
+        v
+    };
+    for launch in 1..=2 {
+        let lib = DeckLibrary::load_inner(Some(t.open()), counting_entropy);
+        let mut slides: Vec<usize> = lib.list().iter().map(|m| m.slides).collect();
+        slides.sort_unstable();
+        assert_eq!(slides, vec![1, 3, 5], "launch {launch}: a deck was lost");
+        drop(lib);
+        let after = rows_of(&t);
+        assert_eq!(
+            after.len(),
+            3,
+            "launch {launch}: a row appeared or vanished"
+        );
+        for key in ["Mid", "Zed"] {
+            assert_eq!(
+                after.iter().find(|(k, _)| k == key),
+                before.iter().find(|(k, _)| k == key),
+                "launch {launch}: row {key} was written"
+            );
+        }
+        let find = |rows: &[(String, String)]| {
+            without_uid(&rows.iter().find(|(k, _)| k == "Zed (2)").unwrap().1)
+        };
+        assert_eq!(
+            find(&after),
+            find(&before),
+            "launch {launch}: more than the uid changed"
+        );
+    }
+}
+
+#[test]
+fn duplicate_stored_numbers_are_healed_persisted_and_stable() {
+    let t = TempDb::new("dup-ids");
+    deck_repo::save_one(&t.open(), "One", &legacy_row(1, "One", 1)).unwrap();
+    deck_repo::save_one(&t.open(), "Two", &legacy_row(1, "Two", 2)).unwrap();
+    let facts = |lib: &DeckLibrary| -> Vec<(String, u64, Option<DeckUid>)> {
+        lib.list()
+            .iter()
+            .map(|m| (m.name.clone(), m.id.0, lib.uid_of(m.id)))
+            .collect()
+    };
+    let first = DeckLibrary::load(Some(t.open()));
+    let a = facts(&first);
+    drop(first);
+    let b = facts(&DeckLibrary::load(Some(t.open())));
+    assert_eq!(
+        a, b,
+        "the healed numbers and identities are stable across launches"
+    );
+    assert_ne!(a[0].1, a[1].1, "the duplicate number was healed");
+}
+
+#[test]
+fn a_deck_deleted_and_re_created_under_the_same_name_is_a_new_presentation() {
+    let mut lib = DeckLibrary::load(None);
+    let id = lib.create("Communion").id();
+    let link = lib.export_link(&deck_link(&lib, "Communion")).unwrap();
+    assert!(lib.delete(id));
+    lib.create("Communion");
+    // The old link names the deleted presentation, which is neither in the library nor (as a
+    // trashed deck) claimable: it must not bind to the new one that merely shares a name.
+    assert_eq!(lib.import_link(&link).1, DeckLinkMatch::NotInLibrary);
+}
+
 #[test]
 fn a_blank_named_row_never_gains_a_second_row_and_its_identity_is_new_each_launch() {
     // A row whose name had to be healed in memory cannot be written back without creating a second
