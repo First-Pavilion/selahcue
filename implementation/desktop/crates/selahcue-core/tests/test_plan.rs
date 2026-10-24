@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use selahcue_core::deck_ref::UNRESOLVED_DECK_ID;
 use selahcue_core::plan::{
     plan_label_valid, ItemContent, ItemId, ItemKind, LinkResolution, PlanError, PlanItem,
     ServicePlan, VerseNumbers, MAX_LINK_LABEL_LEN, MAX_PLAN_LABEL_LEN,
@@ -1538,4 +1539,54 @@ fn the_codec_preserves_orthographic_joiners_in_a_stored_label() {
         Some("DeckName"),
         "a direction override must still be stripped from a stored label"
     );
+}
+
+// --- a link that bound to no deck keeps no other link's name (86ak196cr) ---------------------
+
+#[test]
+fn a_nameless_missing_link_never_inherits_another_missing_links_name() {
+    // Every link that bound to no deck shares the unresolved number, so "same number as before"
+    // proves nothing about it being the same presentation.
+    let mut p = ServicePlan::new("Sunday");
+    let item = p.add_item(ItemKind::SlideGroup, "Slot");
+    let missing = |label: Option<&str>| ItemContent::Deck {
+        deck_id: UNRESOLVED_DECK_ID,
+        slide_count: None,
+        label: label.map(str::to_string),
+    };
+    let label_of = |p: &ServicePlan| match p.get(item).unwrap().content.as_ref().unwrap() {
+        ItemContent::Deck { label, .. } => label.clone(),
+        other => panic!("expected a deck link, got {other:?}"),
+    };
+
+    p.set_item_content(item, Some(missing(Some("Communion"))))
+        .unwrap();
+    assert_eq!(label_of(&p), Some("Communion".to_string()));
+    p.set_item_content(item, Some(missing(None))).unwrap();
+    assert_eq!(
+        label_of(&p),
+        None,
+        "a nameless missing link took the previous one's name"
+    );
+    p.set_item_content(item, Some(missing(Some("Communion"))))
+        .unwrap();
+    p.set_item_content(item, Some(missing(Some("   "))))
+        .unwrap();
+    assert_eq!(
+        label_of(&p),
+        None,
+        "a blank name is no name, and must not carry one forward"
+    );
+
+    // Positive control: for a REAL deck number the carry-forward still works, so the guard above
+    // is not simply turning the whole feature off.
+    let real = |label: Option<&str>| ItemContent::Deck {
+        deck_id: 7,
+        slide_count: None,
+        label: label.map(str::to_string),
+    };
+    p.set_item_content(item, Some(real(Some("Sermon"))))
+        .unwrap();
+    p.set_item_content(item, Some(real(None))).unwrap();
+    assert_eq!(label_of(&p), Some("Sermon".to_string()));
 }
