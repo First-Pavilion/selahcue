@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::compose::compose_authored_slide;
 use crate::slide::Slide;
 use crate::theme::{Background, Element, Theme, MAX_ELEMENTS};
+use selahcue_core::deck_ref::DeckUid;
 use selahcue_core::media::{MediaId, MediaLibrary};
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_engine::scene::Frame;
@@ -55,6 +56,39 @@ impl DeckId {
     /// assigned an id serialises byte-identically to the pre-`id` format (`{name,slides,next_id}`).
     fn is_unassigned(&self) -> bool {
         self.0 == 0
+    }
+}
+
+/// Serde for [`SlideDeck`]'s optional [`DeckUid`]: written as its 32-digit string, read
+/// **leniently**.
+///
+/// A stored identity that is not a string, or not a valid [`DeckUid`] (`null`, a number, an object,
+/// upper-case, the wrong length, all zero), reads as `None` rather than as an error. An error here
+/// would make the whole deck fail to deserialise — and the library skips a deck it cannot read — so
+/// one damaged field would cost an operator their presentation. As `None` the library simply
+/// mints a new identity on load.
+mod uid_serde {
+    use super::DeckUid;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(uid: &Option<DeckUid>, s: S) -> Result<S::Ok, S::Error> {
+        match uid {
+            Some(u) => s.serialize_str(u.as_str()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DeckUid>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Text(String),
+            Other(serde::de::IgnoredAny),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Text(s) => DeckUid::parse(&s),
+            Raw::Other(_) => None,
+        })
     }
 }
 
@@ -199,6 +233,14 @@ pub struct SlideDeck {
     /// has persisted carries its real id and round-trips it.
     #[serde(default, skip_serializing_if = "DeckId::is_unassigned")]
     id: DeckId,
+    /// The deck's globally unique identity (see [`DeckUid`]) — what a plan link is translated
+    /// through when it crosses a machine boundary, because `id` above is only a per-library
+    /// counter (ClickUp 86ak196cr · `FINDING-LIB-07`). Additive and optional: omitted while unset,
+    /// so a deck that never had one serialises byte-identically to the pre-`uid` format, and read
+    /// **leniently** (see [`uid_serde`]) so a damaged value costs the deck its identity, never the
+    /// deck itself.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "uid_serde")]
+    uid: Option<DeckUid>,
     slides: Vec<AuthoredSlide>,
     /// The next id to assign — monotonic, never reused (mirrors `ServicePlan::next_id`).
     next_id: u64,
@@ -211,6 +253,7 @@ impl SlideDeck {
         SlideDeck {
             name: name.into(),
             id: DeckId(0),
+            uid: None,
             slides: Vec::new(),
             next_id: 1,
         }
@@ -224,6 +267,18 @@ impl SlideDeck {
     /// Set the stable deck id (the owning library assigns it on create / self-heal on load).
     pub fn set_id(&mut self, id: DeckId) {
         self.id = id;
+    }
+
+    /// The deck's globally unique identity, or `None` while the owning library has not given it one
+    /// (a deck built in memory, or stored before identities existed).
+    pub fn uid(&self) -> Option<&DeckUid> {
+        self.uid.as_ref()
+    }
+
+    /// Set (or clear) the deck's identity. Only the owning library should call this: it is the
+    /// authority that keeps every saved deck's identity distinct.
+    pub fn set_uid(&mut self, uid: Option<DeckUid>) {
+        self.uid = uid;
     }
 
     /// The slides in order.

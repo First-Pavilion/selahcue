@@ -58,7 +58,7 @@ default = ["read-encrypted-transcripts"]
 # RELEASE: SAFE — the key comes from the OS secret store or an Argon2id-derived passphrase,
 # never a developer `.env`/shell-exported credential; no release-boundary concern. Confirmed NOT
 # a member of the Makefile's `RELEASE_UNSAFE_FEATURES` registry (86akgrz3b).
-read-encrypted-transcripts = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getrandom", "dep:zeroize"]
+read-encrypted-transcripts = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:zeroize"]
 # On-device speech-to-text as the live-transcript source. OFF by default so the operator's
 # compile-check (CI) needs no native whisper toolchain or model; enable on a whisper-capable
 # machine (`cargo run --features stt`) to drive real transcription from "Start listening".
@@ -168,7 +168,10 @@ selahcue-data = { path = "../selahcue-data" }
 # `selahcue-desktop/Cargo.toml`'s twin declarations, for the duplicated `src/keys.rs` module.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
 argon2 = { version = "0.6", optional = true }
-getrandom = { version = "0.4", optional = true }
+# NOT optional: the deck library mints each presentation's globally unique identity from OS
+# randomness (`deck_library::os_entropy`, 86ak196cr), which every build needs — not only one that
+# reads the encrypted transcript store. Same crate and version the `keys.rs` twin already used.
+getrandom = "0.4"
 zeroize = { version = "1", optional = true }
 # Providers & Privacy: the SelahCue-hosted cloud client (note-generation seam), consent-gated
 # egress, graceful local fallback, and the account-token secret store (node 338:124). Default
