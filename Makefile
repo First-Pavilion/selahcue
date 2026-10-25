@@ -283,6 +283,12 @@ ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SE
 # "ALL GREEN" without saying what was not checked. A variable (not inline text) because the text has
 # a comma, which would split the arguments of the $(if ...) that uses it.
 AUDIT_SKIPPED_NOTE = except the RustSec audit, which was SKIPPED (AUDIT=skip)
+
+# Non-empty when make was started with -i / --ignore-errors (alone or combined, e.g. -ik). Under -i a
+# failing gate, the audit included, does not stop the run, so the closing banner must not say ALL GREEN.
+# The short flags are the FIRST word of MAKEFLAGS (no leading dash); a first word that starts with a
+# dash is a long option such as --no-print-directory, whose letters (print, directory) must not match.
+CI_ERRORS_IGNORED := $(findstring i,$(filter-out -%,$(firstword $(MAKEFLAGS))))
 .PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy audit fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
@@ -777,7 +783,9 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # that is the signal to refresh the locks, not a flaky test. `AUDIT=skip make ci` is the documented
 # offline opt-out; it prints a loud notice on stderr and repeats it in the closing banner, and it
 # only ever skips the audit (an unrecognised AUDIT value warns and runs the audit anyway). `make
-# audit` itself has no opt-out. The script's offline self-test, check_cargo_audit_all.py, is an
+# audit` itself has no opt-out. Under `make -i ci` (errors ignored, which is how a whole log gets read)
+# a failing audit does not stop the run, like any other gate; the closing banner then says errors were
+# ignored instead of ALL GREEN. The script's offline self-test, check_cargo_audit_all.py, is an
 # earlier line of this target and also covers this wiring with `make -n ci`.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
@@ -994,7 +1002,8 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the R
 	# fetches the advisory database on every run, hence the opt-out for offline machines:
 	# `AUDIT=skip make ci` prints the notice below (stderr, plus the closing banner) and does NOT fail.
 	# Only the exact value `skip` skips; any other non-empty value is warned about and the audit RUNS,
-	# because a typo must never turn into a silent skip. The branch is chosen by make itself, not by a
+	# because a typo must never turn into a silent skip (the closing banner applies the SAME whole-string
+	# test, so `AUDIT="skip x"` is warned about and does not claim a skip). The branch is chosen by make itself, not by a
 	# shell `case`, so `make -n ci` shows exactly what a run would do (check_cargo_audit_all.py
 	# --self-test asserts it for each AUDIT value). `make audit` ignores AUDIT.
 ifeq ($(strip $(AUDIT)),skip)
@@ -1006,7 +1015,11 @@ endif
 	$(MAKE_RECURSE) --no-print-directory audit
 endif
 	@echo ""
-	@echo "== local Rust/Flutter/marketing/API gate: ALL GREEN$(if $(filter skip,$(strip $(AUDIT))), $(AUDIT_SKIPPED_NOTE)) (see the ci: header for CI-only gates) =="
+ifneq ($(CI_ERRORS_IGNORED),)
+	@echo "== local Rust/Flutter/marketing/API gate: NOT A PASS, errors ignored (-i): a failing gate above did not stop this run, read the log above =="
+else
+	@echo "== local Rust/Flutter/marketing/API gate: ALL GREEN$(if $(subst xskip,,x$(strip $(AUDIT))),, $(AUDIT_SKIPPED_NOTE)) (see the ci: header for CI-only gates) =="
+endif
 
 nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
 	sh scripts/measure_nfr.sh

@@ -28,17 +28,25 @@ It also holds the Makefile half of the same promise, with `make -n ci` (a dry ru
 builds): the audit is the LAST gate of `make ci`, so it can never hide an earlier gate (make stops at
 the first failing line); `AUDIT=skip` is the one documented offline opt-out and is LOUD (a message on
 stderr, repeated in the closing banner) and never silent; an unrecognised `AUDIT` value is never
-treated as a skip; and `make audit` itself ignores the opt-out.
+treated as a skip (and the banner agrees with the branch about which values those are); `make audit`
+itself ignores the opt-out; nothing in the Makefile may swallow a failing audit (a `-` prefix on the
+audit line, a `.IGNORE` target), and `make -i` makes the closing banner say errors were ignored.
+
+The script must also be stoppable: SIGINT, SIGTERM and SIGHUP end it with 130, 143 and 129 and remove
+its temporary file, instead of being absorbed by a trap that lets the audit carry on to "OK".
 
 Standard library only; needs `git`, `make` and a POSIX `sh`, so it is skipped on Windows (as CI does).
 """
 
 import os
+import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,14 +61,31 @@ STUB = """#!/bin/sh
 [ "$1" = "audit" ] || { echo "fakecargo: unexpected args: $*" >&2; exit 99; }
 if [ "${2:-}" = "--version" ]; then
   [ -n "${FAKE_NO_AUDIT:-}" ] && { echo "error: no such command: audit" >&2; exit 101; }
+  if [ -n "${FAKE_ALIAS_ENV:-}" ]; then
+    echo "warning: user-defined alias 'audit' is shadowing an external subcommand found at: '/x/cargo-audit'" >&2
+    echo "error: unexpected argument '--version' found" >&2
+    exit 1
+  fi
+  if [ -e ALIASWARN ]; then
+    echo "warning: user-defined alias 'audit' is shadowing an external subcommand found at: '/x/cargo-audit'" >&2
+  fi
   if [ -e ALIAS ]; then echo "cargo 9.9.9 (fake)"; exit 0; fi
   echo "cargo-audit-audit 0.0.0-fake"
   exit 0
 fi
 echo "fakecargo audit in: $(pwd)"
 pwd >> "$FAKE_LOG"
+if [ -n "${FAKE_SLEEP:-}" ]; then sleep "$FAKE_SLEEP"; fi
 if [ -e FAIL ]; then exit "${FAKE_RC:-1}"; fi
 exit 0
+"""
+
+# A cargo whose `audit` always fails, but which identifies itself as cargo-audit, so the script gets
+# as far as running it. Used to prove a failing audit is not swallowed on the way out through make.
+FAILING_STUB = """#!/bin/sh
+if [ "$1" = "audit" ] && [ "${2:-}" = "--version" ]; then echo "cargo-audit-audit 0.0.0-fake"; exit 0; fi
+if [ "$1" = "audit" ]; then echo "fakecargo: 1 vulnerability found" >&2; exit 1; fi
+exit 99
 """
 
 
@@ -79,11 +104,13 @@ class Fixture:
         self.cargo_home = os.path.join(self.home, ".cargo")
         self.log = os.path.join(self.base, "audited.log")
         self.stub = os.path.join(self.base, "fakecargo.sh")
+        self.failing_stub = os.path.join(self.base, "failingcargo.sh")
         os.makedirs(self.repo)
         os.makedirs(self.cargo_home)
-        with open(self.stub, "w") as f:
-            f.write(STUB)
-        os.chmod(self.stub, os.stat(self.stub).st_mode | stat.S_IXUSR)
+        for path, text in ((self.stub, STUB), (self.failing_stub, FAILING_STUB)):
+            with open(path, "w") as f:
+                f.write(text)
+            os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
         open(self.log, "w").close()
         self._git("init", "-q")
 
@@ -106,7 +133,7 @@ class Fixture:
         env.update(extra)
         return env
 
-    def lock(self, rel_dir, *, fail=False, alias=False, track=True, name="Cargo.lock"):
+    def lock(self, rel_dir, *, fail=False, alias=False, aliaswarn=False, track=True, name="Cargo.lock"):
         """Create <rel_dir>/<name> (rel_dir "" is the repo root) and optionally `git add` it."""
         d = os.path.join(self.repo, rel_dir) if rel_dir else self.repo
         os.makedirs(d, exist_ok=True)
@@ -117,6 +144,8 @@ class Fixture:
             open(os.path.join(d, "FAIL"), "w").close()
         if alias:
             open(os.path.join(d, "ALIAS"), "w").close()
+        if aliaswarn:
+            open(os.path.join(d, "ALIASWARN"), "w").close()
         if track:
             self._git("add", "--", os.path.relpath(path, self.repo))
         return path
@@ -128,10 +157,12 @@ class Fixture:
             f.write(text)
         return path
 
-    def run(self, cargo=None, repo_arg=True, **env_extra):
+    def run(self, cargo=None, repo_arg=True, unset=(), **env_extra):
         """Run the script; returns (exit code, combined output, [directories the stub audited])."""
         open(self.log, "w").close()
         env = self.env(CARGO=cargo or self.stub, **env_extra)
+        for key in unset:
+            env.pop(key, None)
         cmd = [SHELL_UNDER_TEST, SCRIPT] + ([self.repo] if repo_arg else [])
         p = subprocess.run(
             cmd,
@@ -464,7 +495,7 @@ def make_ci_audit_skip_is_loud_and_skips_only_the_audit(fx):
 
 
 def make_ci_unknown_audit_value_never_skips(fx):
-    for value in ("0", "no", "skipp", "SKIP", "false"):
+    for value in ("0", "no", "skipp", "SKIP", "false", "skip x", "x skip", "skip skip"):
         label = "AUDIT=%s" % value
         rc, lines, out = make_dry_run("ci", "AUDIT=" + value)
         expect(rc == 0, "%s: expected exit 0 from the dry run, got %d" % (label, rc), out)
@@ -499,6 +530,28 @@ def make_audit_target_ignores_the_opt_out(fx):
     expect(rc == 0, "make -n audit AUDIT=skip: expected exit 0, got %d" % rc, out)
     expect(any("cargo_audit_all.sh" in l for l in lines), "make audit must still run the script when AUDIT=skip is given", out)
     expect(not any("SKIPPED" in l for l in lines), "make audit must not carry an opt-out", out)
+    # A dry run cannot tell `sh scripts/cargo_audit_all.sh` from `if [ AUDIT = skip ]; then :; else ...`.
+    # So run the REAL target, with the stub as cargo, against this checkout's own locks.
+    git = subprocess.run(
+        ["git", "-C", REPO, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*Cargo.lock"],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    expected = sorted(os.path.dirname(f) or "." for f in git.stdout.split("\0") if f == "Cargo.lock" or f.endswith("/Cargo.lock"))
+    open(fx.log, "w").close()
+    p = subprocess.run(
+        ["make", "-C", REPO, "audit", "AUDIT=skip", "CARGO=" + fx.stub],
+        env=fx.env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+    )
+    with open(fx.log) as f:
+        audited = sorted(os.path.relpath(norm(l.rstrip("\n")), norm(REPO)) for l in f if l.strip())
+    expect(p.returncode == 0, "make audit AUDIT=skip (stub cargo, real script): expected exit 0, got %d" % p.returncode, p.stdout[-600:])
+    expect(expected != [] and audited == expected, "make audit AUDIT=skip must audit every root of this checkout %r, audited %r" % (expected, audited), p.stdout[-600:])
+    expect("SKIPPED" not in p.stdout, "make audit AUDIT=skip must not skip anything", p.stdout[-600:])
+    expect(p.stdout.count("PASS") == len(expected), "make audit AUDIT=skip: expected one PASS line per root", p.stdout[-600:])
 
 
 def make_help_lists_audit_and_the_opt_out(fx):
@@ -508,6 +561,151 @@ def make_help_lists_audit_and_the_opt_out(fx):
     expect(len(audit) == 1, "make help: expected one `audit` line, found %d" % len(audit), p.stdout)
     expect(len(ci) == 1 and "AUDIT=skip" in ci[0], "make help: the `ci` line must mention the AUDIT=skip opt-out", p.stdout)
     expect(len(audit) == 1 and "last step of `make ci`" in audit[0], "make help: the `audit` line must say it is the last step of `make ci`", p.stdout)
+
+
+# --- cannot be stopped / cannot be fooled: signals, Makefile swallowing, CARGO_HOME, alias warnings ----
+
+
+def _default_signals():
+    # A background job of a non-interactive shell starts with SIGINT ignored, and an ignored signal
+    # cannot be trapped; give the script the same defaults a terminal run has.
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
+
+
+def signals_stop_the_script_and_clean_up(fx):
+    # A trap that only removes the temp file lets the script carry on after the signal: it audited
+    # every remaining root, printed OK and exited 0 (and Ctrl-C had to be pressed once per root).
+    fx.lock("a")
+    fx.lock("b")
+    fx.lock("c")
+    for name, sig, code in (("TERM", signal.SIGTERM, 143), ("INT", signal.SIGINT, 130), ("HUP", signal.SIGHUP, 129)):
+        tmp = os.path.join(fx.base, "tmp-" + name)
+        os.makedirs(tmp)
+        open(fx.log, "w").close()
+        proc = subprocess.Popen(
+            [SHELL_UNDER_TEST, SCRIPT, fx.repo],
+            cwd=fx.base,
+            env=fx.env(CARGO=fx.stub, FAKE_SLEEP="2", TMPDIR=tmp),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            preexec_fn=_default_signals,
+        )
+        deadline = time.time() + 20
+        while time.time() < deadline and os.path.getsize(fx.log) == 0:
+            time.sleep(0.05)  # the first audit has started: the script is inside its loop
+        started = os.path.getsize(fx.log) > 0
+        proc.send_signal(sig)
+        try:
+            out, _ = proc.communicate(timeout=20)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, _ = proc.communicate()
+            timed_out = True
+        with open(fx.log) as f:
+            audits = len([l for l in f if l.strip()])
+        expect(started, "SIG%s: the first audit never started" % name, out)
+        expect(not timed_out, "SIG%s: the script did not stop" % name, out)
+        expect(proc.returncode == code, "SIG%s: expected exit %d, got %s" % (name, code, proc.returncode), out)
+        expect("OK: every Cargo root passed" not in out, "SIG%s: a signalled run must never print the all-clear line" % name, out)
+        expect(audits == 1, "SIG%s: the remaining roots must not be audited after the signal, %d were" % (name, audits), out)
+        expect(os.listdir(tmp) == [], "SIG%s: the temporary file must be removed, found %r" % (name, os.listdir(tmp)), out)
+
+
+def makefile_cannot_swallow_a_failing_audit(fx):
+    with open(os.path.join(REPO, "Makefile")) as f:
+        lines = f.read().splitlines()
+    exact = "\t$(MAKE_RECURSE) --no-print-directory audit"
+    calls = [l for l in lines if "--no-print-directory audit" in l and not l.lstrip().startswith("#")]
+    expect(calls == [exact], "the audit line in the ci recipe must be exactly a tab and `$(MAKE_RECURSE) --no-print-directory audit` (no -, @- or +- prefix), found %r" % calls)
+    ignore = [l for l in lines if re.match(r"\s*\.IGNORE\b", l)]
+    expect(ignore == [], "the Makefile must not have an .IGNORE target (it makes make exit 0 past a failing audit), found %r" % ignore)
+    targets = [i for i, l in enumerate(lines) if l.startswith("audit:")]
+    expect(len(targets) == 1, "expected exactly one `audit:` target, found %d" % len(targets))
+    if len(targets) == 1:
+        recipe = lines[targets[0] + 1]
+        expect(recipe == '\tCARGO="$(CARGO)" sh scripts/cargo_audit_all.sh', "the audit target's recipe line must have no ignore-errors prefix, got %r" % recipe)
+
+
+def make_audit_fails_when_cargo_audit_fails(fx):
+    # Behavioural twin of the text checks above: run the real target with a cargo whose audit fails.
+    p = subprocess.run(
+        ["make", "-C", REPO, "audit", "CARGO=" + fx.failing_stub],
+        env=fx.env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+    )
+    expect(p.returncode != 0, "make audit with a failing cargo audit must exit non-zero, got 0", p.stdout[-600:])
+    expect("did not pass" in p.stdout, "make audit: the script itself must have run and reported the failure (not a precondition error)", p.stdout[-600:])
+    expect("OK: every Cargo root passed" not in p.stdout, "make audit: a failing audit must never print the all-clear line", p.stdout[-600:])
+
+
+def relative_cargo_home_is_exit_2(fx):
+    # cargo-audit resolves a relative CARGO_HOME against the lock directory, the script against its
+    # own cwd, so `<lockdir>/.cx/audit.toml` could silently ignore advisories while the script said PASS.
+    fx.lock("a")
+    fx.write("a/.cx/audit.toml", "[advisories]\nignore = []\n")
+    for value in (".cx", "relative/home", "~/.cargo"):
+        rc, out, audited = fx.run(CARGO_HOME=value)
+        expect(rc == 2, "CARGO_HOME=%s: expected exit 2, got %d" % (value, rc), out)
+        expect(audited == [], "CARGO_HOME=%s: nothing may be audited" % value, out)
+        expect("CARGO_HOME" in out and "absolute" in out, "CARGO_HOME=%s: the message must say CARGO_HOME has to be absolute" % value, out)
+
+
+def unset_or_relative_home_without_cargo_home_is_exit_2(fx):
+    fx.lock("a")
+    for label, kwargs in (("HOME unset", dict(unset=("HOME", "CARGO_HOME"))), ("HOME empty", dict(unset=("CARGO_HOME",), HOME="")), ("HOME relative", dict(unset=("CARGO_HOME",), HOME="rel/home"))):
+        rc, out, audited = fx.run(**kwargs)
+        expect(rc == 2, "%s: expected exit 2, got %d" % (label, rc), out)
+        expect(audited == [], "%s: nothing may be audited" % label, out)
+        expect("HOME" in out, "%s: the message must name HOME" % label, out)
+
+
+def absolute_or_empty_cargo_home_is_accepted(fx):
+    fx.lock("a")
+    rc, out, _ = fx.run(unset=("HOME",))  # CARGO_HOME (absolute) alone is enough
+    expect(rc == 0, "absolute CARGO_HOME without HOME: expected exit 0, got %d" % rc, out)
+    rc, out, _ = fx.run(CARGO_HOME="")  # empty means unset: falls back to $HOME/.cargo
+    expect(rc == 0, "empty CARGO_HOME with a good HOME: expected exit 0, got %d" % rc, out)
+    with open(os.path.join(fx.cargo_home, "audit.toml"), "w") as f:
+        f.write("[advisories]\nignore = []\n")
+    rc, out, audited = fx.run(CARGO_HOME="")
+    expect(rc == 2 and audited == [], "empty CARGO_HOME must still look under $HOME/.cargo for audit.toml, got exit %d" % rc, out)
+
+
+def alias_warning_on_stderr_is_exit_2(fx):
+    # Cargo says so on stderr when an alias shadows the external subcommand. Even if stdout still
+    # looks like cargo-audit, that warning means `cargo audit` is not (only) the tool.
+    fx.lock("a")
+    fx.lock("b", aliaswarn=True)
+    rc, out, audited = fx.run()
+    expect(rc == 2, "alias warning: expected exit 2, got %d" % rc, out)
+    expect(audited == [], "alias warning: nothing may be audited, got %r" % audited, out)
+    expect("alias" in out.lower() and "b" in out, "alias warning: the message must name the alias and the root", out)
+
+
+def alias_that_breaks_the_global_check_is_named_as_an_alias(fx):
+    fx.lock("a")
+    rc, out, audited = fx.run(FAKE_ALIAS_ENV="1")
+    expect(rc == 2, "environment alias: expected exit 2, got %d" % rc, out)
+    expect(audited == [], "environment alias: nothing may be audited", out)
+    expect("alias" in out.lower(), "environment alias: the message must say an alias is involved, not only that cargo audit is unavailable", out)
+
+
+def make_ci_banner_admits_ignored_errors_under_make_i(fx):
+    # `make -i` (the team reads whole logs with it) ignores a failing gate, audit included, and would
+    # otherwise end on "ALL GREEN". Short, long and combined spellings must all be caught...
+    for flags in (["-i"], ["--ignore-errors"], ["-i", "-k"], ["-ki"]):
+        rc, lines, out = make_dry_run(*(flags + ["ci"]))
+        expect(rc == 0, "make -n %s ci: expected exit 0, got %d" % (" ".join(flags), rc), out)
+        expect("errors ignored (-i)" in lines[-1] and "ALL GREEN" not in lines[-1], "make %s: the closing banner must say errors were ignored and must not say ALL GREEN, got %r" % (" ".join(flags), lines[-1]), out)
+    # ...and flags that merely contain the letter i somewhere (--no-print-directory) must not be.
+    for flags in ([], ["-k"], ["--no-print-directory"], ["-s"]):
+        rc, lines, out = make_dry_run(*(flags + ["ci"]))
+        expect("ALL GREEN" in lines[-1] and "errors ignored" not in lines[-1], "make %s: the banner must be the plain ALL GREEN, got %r" % (" ".join(flags) or "(no flags)", lines[-1]), out)
 
 
 CASES = [
@@ -538,6 +736,15 @@ CASES = [
     make_ci_skip_and_warning_lines_really_run_and_never_fail,
     make_audit_target_ignores_the_opt_out,
     make_help_lists_audit_and_the_opt_out,
+    signals_stop_the_script_and_clean_up,
+    makefile_cannot_swallow_a_failing_audit,
+    make_audit_fails_when_cargo_audit_fails,
+    relative_cargo_home_is_exit_2,
+    unset_or_relative_home_without_cargo_home_is_exit_2,
+    absolute_or_empty_cargo_home_is_accepted,
+    alias_warning_on_stderr_is_exit_2,
+    alias_that_breaks_the_global_check_is_named_as_an_alias,
+    make_ci_banner_admits_ignored_errors_under_make_i,
 ]
 
 

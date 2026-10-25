@@ -20,11 +20,16 @@
 # IT MUST NOT SAY "PASS" WHEN IT HAS NOT CHECKED. Each of these exits 2 ("cannot run") before any
 # root is audited, never 0:
 #   * `cargo audit` is not available, or CARGO is not a single executable path;
-#   * `cargo audit --version`, run in a root, does not identify itself as cargo-audit. A
-#     `[alias] audit = "version"` in any .cargo/config.toml makes `cargo audit` run something else
-#     entirely and exit 0, which would print PASS for an unchecked root;
-#   * an `audit.toml` exists in ${CARGO_HOME:-$HOME/.cargo} or in <root>/.cargo, because it can
-#     silently ignore advisories, so a local PASS could disagree with CI;
+#   * `cargo audit --version`, run in a root, does not identify itself as cargo-audit, or cargo
+#     says on stderr that an alias is shadowing the external subcommand. A `[alias] audit =
+#     "version"` in any .cargo/config.toml makes `cargo audit` run something else entirely and
+#     exit 0, which would print PASS for an unchecked root;
+#   * an `audit.toml` exists in ${CARGO_HOME:-$HOME/.cargo}, in <repo>/.cargo or in <root>/.cargo,
+#     because it can silently ignore advisories, so a local PASS could disagree with CI;
+#   * CARGO_HOME is set but is not an absolute path, or (CARGO_HOME empty) HOME is not set to an
+#     absolute path. cargo-audit resolves a relative CARGO_HOME against the lock directory and an
+#     unset HOME through the password database, while this script would look somewhere else, so it
+#     could miss an audit.toml that cargo-audit then obeys;
 #   * no Cargo.lock is found, `.gitmodules` exists (git cannot list a submodule's files), a lock's
 #     path contains a newline, or a lock git lists is missing from the working tree (cargo-audit
 #     would generate a fresh lock there and audit that instead).
@@ -56,7 +61,12 @@
 #
 # Tested offline by scripts/check_cargo_audit_all.py --self-test (wired into `make ci` and CI).
 #
-# Exit codes: 0 every root passed, 1 at least one root did not pass, 2 cannot run (see above).
+# Signals: SIGINT, SIGTERM and SIGHUP stop the script (exit 130, 143, 129) and remove its temporary
+# file. A shell defers a trap until the foreground command finishes, so the exit follows the root
+# being audited at that moment, not the remaining ones.
+#
+# Exit codes: 0 every root passed, 1 at least one root did not pass, 2 cannot run (see above),
+# 129/130/143 stopped by SIGHUP/SIGINT/SIGTERM.
 
 set -u
 
@@ -72,9 +82,18 @@ die() {
   exit 2
 }
 
-if ! "$CARGO" audit --version >/dev/null 2>&1 </dev/null; then
+version_out=$(cd "$ROOT" && "$CARGO" audit --version 2>&1 </dev/null)
+version_status=$?
+if [ "$version_status" -ne 0 ]; then
   {
     echo "ERROR: 'cargo audit' is not available (CARGO=$CARGO)."
+    case $version_out in
+      *lias*)
+        echo "  cargo mentioned an alias, so this may be an alias for 'audit' (an [alias] audit = ... in a"
+        echo "  .cargo/config.toml, or CARGO_ALIAS_AUDIT in the environment) that replaces the cargo-audit"
+        echo "  subcommand. cargo said: $(printf '%s\n' "$version_out" | head -n 1)"
+        ;;
+    esac
     echo "  Install it once with:  cargo install cargo-audit --locked"
     echo "  CI installs the same tool with taiki-e/install-action (tool: cargo-audit)."
     echo "  CARGO must be a single executable path; arguments such as '+toolchain' are not accepted."
@@ -88,7 +107,13 @@ if [ -e "$ROOT/.gitmodules" ]; then
 fi
 
 listing=$(mktemp "${TMPDIR:-/tmp}/cargo-audit-all.XXXXXX") || die "cannot create a temporary file"
-trap 'rm -f "$listing"' EXIT HUP INT TERM
+# EXIT removes the file. A signal must END the script, not just run a handler and carry on (a trap
+# whose handler returns resumes the script where it was interrupted), so each signal exits with the
+# conventional 128+n status, which in turn runs the EXIT trap.
+trap 'rm -f "$listing"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # NUL-separated, so git quotes and splits nothing. The pathspec only narrows what git has to list;
 # the exact-basename filter below is what decides what is a root.
@@ -125,9 +150,25 @@ root_dir() {
 
 # --- precondition pass: nothing is audited until every root can be audited honestly ------------
 
-cargo_home="${CARGO_HOME:-${HOME:-}/.cargo}"
 bad=0
-if [ -e "$cargo_home/audit.toml" ]; then
+cargo_home=""
+case ${CARGO_HOME:-} in
+  "")
+    case ${HOME:-} in
+      /*) cargo_home="$HOME/.cargo" ;;
+      *)
+        printf '%s\n' "ERROR: CARGO_HOME is not set and HOME is '${HOME:-unset}', not an absolute path, so this script cannot tell where cargo-audit will look for audit.toml (it would use the password-database home, not HOME). Set CARGO_HOME or HOME to an absolute path." >&2
+        bad=1
+        ;;
+    esac
+    ;;
+  /*) cargo_home=$CARGO_HOME ;;
+  *)
+    printf '%s\n' "ERROR: CARGO_HOME='$CARGO_HOME' is not an absolute path. cargo-audit resolves a relative CARGO_HOME against each lock directory, so an audit.toml there would be obeyed and this script would not see it. Set CARGO_HOME to an absolute path or unset it." >&2
+    bad=1
+    ;;
+esac
+if [ -n "$cargo_home" ] && [ -e "$cargo_home/audit.toml" ]; then
   printf '%s\n' "ERROR: $cargo_home/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI. Move it aside, or run cargo audit by hand." >&2
   bad=1
 fi
@@ -146,6 +187,11 @@ while IFS= read -r lock; do
   fi
   if [ "$dir" != "." ] && [ -e "$ROOT/$dir/.cargo/audit.toml" ]; then
     printf '%s\n' "ERROR: $dir/.cargo/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI." >&2
+    bad=1
+  fi
+  shadow=$( (cd "$ROOT/$dir" && "$CARGO" audit --version 2>&1 >/dev/null </dev/null) | grep -c 'is shadowing an external subcommand')
+  if [ "$shadow" != "0" ]; then
+    printf '%s\n' "ERROR: in $dir, cargo warns that a user-defined alias 'audit' is shadowing the external cargo-audit subcommand. 'cargo audit' there runs the alias, not the audit, and could exit 0 without auditing anything. Remove the [alias] audit entry from the .cargo/config.toml that defines it (or unset CARGO_ALIAS_AUDIT)." >&2
     bad=1
   fi
   first=$( (cd "$ROOT/$dir" && "$CARGO" audit --version 2>/dev/null </dev/null) | head -n 1)
