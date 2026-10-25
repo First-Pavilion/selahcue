@@ -12,7 +12,7 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 
 ### 1a. Core (WIRED — read in `selahcue_api/settings.py`)
 
-> **The names below are exactly what the API reads, and `implementation/api/tests/test_deployment_env_docs.py` fails the build if this table and `settings.py` disagree** (a documented name nothing reads, a variable the API reads that has no row here, or a stale name in any default column or sentence of §1a–1c). The API does **not** read `DJANGO_SECRET_KEY`, `DJANGO_DEBUG` or `DATABASE_URL`; setting them does nothing. Of the Django-prefixed names only `DJANGO_ALLOWED_HOSTS` and `DJANGO_CSRF_TRUSTED_ORIGINS` are real.
+> **The names below are exactly what the API reads, and `implementation/api/tests/test_deployment_env_docs.py` fails the build if this table and `settings.py` disagree** (a documented name nothing reads, a variable the API reads that has no row here, or a stale name in any default column or sentence of §1a–1c). The API does **not** read `DJANGO_SECRET_KEY`, `DJANGO_DEBUG` or `DATABASE_URL`; setting them does nothing. The only operator-set names with a Django prefix are `DJANGO_ALLOWED_HOSTS` and `DJANGO_CSRF_TRUSTED_ORIGINS`.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
