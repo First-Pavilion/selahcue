@@ -135,7 +135,8 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 |---|---|---|---|
 | `SELAHCUE_CLOUD_URL` | for cloud-live | no | Base URL of the SelahCue cloud service (Providers & Privacy / AI notes; operator `--features cloud-live`). Empty ⇒ cloud shows honest "not configured". |
 | `SELAHCUE_PASSPHRASE` | no | **SECRET** | Passphrase deriving the at-rest DB encryption key (Argon2id) when no OS keychain path is used (`selahcue-desktop/src/keys.rs`). |
-| `SELAHCUE_STT_MODEL` | no | no | Override path to the on-device Whisper model file. |
+| `SELAHCUE_STT_MODEL` | no | no | **Development builds only.** Path to a local Whisper model file to load instead of the pinned download; needs `SELAHCUE_STT_MODEL_SHA256`. A release build (`--release`, `make launch RELEASE=1`, the installer) ignores it, prints one line on stderr and uses the pinned, hash-checked model (17tnw2b0prh). Never set it on a production machine. |
+| `SELAHCUE_STT_MODEL_SHA256` | with `SELAHCUE_STT_MODEL` | no | **Development builds only.** SHA-256 the `SELAHCUE_STT_MODEL` file must match. It proves the file is the one you meant, not that SelahCue ships it, which is why release builds ignore the pair. |
 | `SELAHCUE_STT_CACHE` | no | no | Override the on-device STT model cache directory. |
 | `SELAHCUE_SMOKE` | no | no | Test/smoke-run flag. |
 

@@ -35,7 +35,7 @@ These facts come from reading the code at `b73d389`. The evaluation must reprodu
 **Model loading (`implementation/desktop/crates/selahcue-operator/src/listening.rs`, `load_recognizer`)**
 
 - The file is fetched on first use through `selahcue_stt::fetch_model_phased`, SHA-256-verified, installed into `default_cache_dir()`, loaded, and cached as one resident context for the session.
-- `SELAHCUE_STT_MODEL` plus `SELAHCUE_STT_MODEL_SHA256` override the download with any local file, integrity-checked against the caller-supplied hash. This is **not** gated to debug builds. For the evaluation it is useful: candidate models can be A/B'd in the real app with no code change.
+- `SELAHCUE_STT_MODEL` plus `SELAHCUE_STT_MODEL_SHA256` override the download with any local file, integrity-checked against the caller-supplied hash. **Since 17tnw2b0prh this works in debug builds only** (`make launch`, `cargo run`). A release build ignores both variables, prints one line on stderr and loads the pinned model, because a hash supplied by the same caller proves nothing about where the file came from. For the evaluation it is still useful: candidate models can be A/B'd in a debug build of the real app with no code change. Two limits follow. A debug build hashes the file about 19 times slower than release (about a minute for the 1.6 GB file before the mic opens). And latency measured in a debug build is not valid, so latency numbers come from the stage 2 harness (§4.1), never from the app.
 
 **Decoding (`implementation/desktop/crates/selahcue-stt/src/recognizer.rs`, `WhisperRecognizer::transcribe`)**
 
@@ -446,7 +446,7 @@ A candidate ships for a hardware tier only if **all** of the following hold on t
   - the Windows installer hardcodes `--features stt`, so it would need editing there too, or Windows (the main beneficiary) would silently not get it
   - Avoiding the flag avoids all three traps.
 - **Release safety.** A tuned model reads no developer credential, so it is `RELEASE: SAFE` by nature. The concern is licence cleanliness (§3.5), which no build flag can enforce. Add a model card (training data sources, licences, consent scope, eval results) next to each hosted file. The release checklist should require the card's licence section to be signed off.
-- **The `SELAHCUE_STT_MODEL` override** stays as the QA and eval path for side-loading candidates in real builds.
+- **The `SELAHCUE_STT_MODEL` override** stays as the QA and eval path for side-loading candidates, in **debug builds only**; release builds ignore it (17tnw2b0prh). Shipping a tuned model therefore means changing the pinned asset (`WhisperModel::asset()`: URL, SHA-256, size), reviewed like any other change, never setting a variable on a user's machine.
 
 ### 6.3 Quality monitoring after ship
 

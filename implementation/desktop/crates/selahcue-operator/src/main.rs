@@ -51,6 +51,14 @@ mod capture_handoff;
 #[cfg(any(test, feature = "stt"))]
 mod transcription_route;
 
+/// Which on-device model file to load: the pinned download, or the development-only
+/// `SELAHCUE_STT_MODEL` override that a release build ignores (17tnw2b0prh). Consumed by the
+/// `stt`-gated worker and `stt_ready`; compiled for every test build too, like
+/// `transcription_route` above, so the operator's existing `--release` test line (which does not
+/// build whisper.cpp) runs its release-arm wiring test.
+#[cfg(any(test, feature = "stt"))]
+mod stt_model_source;
+
 /// The Presentation & Media editing workspace (Design 2.0, node 329:124) — the authored deck +
 /// media library the console edits, behind the deck/media Tauri commands.
 mod deck_workspace;
@@ -1267,15 +1275,19 @@ struct SttReadyReply {
 
 /// Report on-device STT readiness WITHOUT loading the native whisper context or opening audio:
 /// resolve the SAME model + path the worker would use and check the file is present at the pinned
-/// size. An explicit `SELAHCUE_STT_MODEL` override wins (mirrors `listening.rs`).
+/// size. In a debug build an explicit `SELAHCUE_STT_MODEL` override wins; a release build ignores
+/// it. Both decided by the same `stt_model_source` call the worker makes (17tnw2b0prh).
 #[cfg(feature = "stt")]
 #[tauri::command]
 fn stt_ready() -> SttReadyReply {
     let selection = selahcue_stt::HardwareProbe::detect().select_model();
     let asset = selection.model.asset();
-    let path = std::env::var_os("SELAHCUE_STT_MODEL")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| selahcue_stt::default_cache_dir().join(asset.file_name));
+    let path = match stt_model_source::model_source_from_env() {
+        stt_model_source::ModelSource::DeveloperOverride { path, .. } => path,
+        stt_model_source::ModelSource::Pinned => {
+            selahcue_stt::default_cache_dir().join(asset.file_name)
+        }
+    };
     let model = format!("{:?}", selection.model);
     match selahcue_stt::model_readiness(&path, asset.size_bytes) {
         selahcue_stt::ModelReadiness::Present => SttReadyReply {
