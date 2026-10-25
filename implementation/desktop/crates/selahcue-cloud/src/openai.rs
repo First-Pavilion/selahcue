@@ -905,7 +905,6 @@ fn extract_output_text(root: &serde_json::Value) -> Result<String, NoteError> {
 /// a bare `402 | 429` match would — turns a two-second throttle into "your monthly quota
 /// is exhausted".
 pub fn map_error_status(status: u16, body: &str) -> NoteError {
-    let code = error_code(body);
     match status {
         401 | 403 => NoteError::NotConfigured,
         // A model id the account cannot reach is a misconfiguration, not a network
@@ -914,10 +913,9 @@ pub fn map_error_status(status: u16, body: &str) -> NoteError {
         404 => NoteError::NotConfigured,
         402 => NoteError::QuotaExceeded,
         429 => {
-            if matches!(
-                code.as_deref(),
-                Some("insufficient_quota") | Some("credit_balance_exhausted")
-            ) {
+            // The terminal-vs-transient decision is made in ONE place, shared with the hosted
+            // client (86akbzxjg): see `provider_error`.
+            if crate::provider_error::ErrorFields::parse(body).is_terminal_exhaustion() {
                 NoteError::QuotaExceeded
             } else {
                 NoteError::Transport("provider rate limit".to_string())
@@ -927,25 +925,6 @@ pub fn map_error_status(status: u16, body: &str) -> NoteError {
         500..=599 => NoteError::Transport(format!("provider server status {status}")),
         other => NoteError::Malformed(format!("unexpected provider status {other}")),
     }
-}
-
-/// `error.type` or `error.code` from an error body, if it parses. Only these two
-/// machine-readable fields are ever read — never `error.message`, which is free text the
-/// provider composes and has been observed to contain key material.
-fn error_code(body: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    let e = v.get("error")?;
-    for key in ["type", "code"] {
-        if let Some(s) = e.get(key).and_then(|x| x.as_str()) {
-            if s == "insufficient_quota" || s == "credit_balance_exhausted" {
-                return Some(s.to_string());
-            }
-        }
-    }
-    e.get("type")
-        .or_else(|| e.get("code"))
-        .and_then(|x| x.as_str())
-        .map(str::to_string)
 }
 
 // ---------------------------------------------------------------------------

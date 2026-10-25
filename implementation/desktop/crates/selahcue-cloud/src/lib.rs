@@ -29,6 +29,7 @@ pub mod mock;
 /// platform API. See the module docs.
 #[cfg(feature = "openai")]
 pub mod openai;
+pub(crate) mod provider_error;
 pub mod secret;
 /// The note-generation transcript-length clamp — always compiled (86akcffy0). See the module
 /// docs for why this had to move out from behind the `openai` feature.
