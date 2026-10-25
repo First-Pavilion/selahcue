@@ -567,8 +567,13 @@ launch-release: run-release ## Alias for `run-release` (optimized output window 
 output-release: ## Run only the output window as an optimized release build
 	@$(MAKE) --no-print-directory output RELEASE=1
 
-output: ## Run only the output window (native audience output + LAN control server; NDI auto)
-	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
+# Extra arguments for the output window, e.g. `make output OUTPUT_ARGS=--print-token` (debug builds
+# only: prints the live Operator token in the startup banner, off by default because stdout can be a
+# log file; 17tnw2b9aga). `make remote` reads the token from the endpoint file and needs no flag.
+OUTPUT_ARGS ?=
+
+output: ## Run only the output window (native audience output + LAN control server; NDI auto; OUTPUT_ARGS=... passes flags, see --help)
+	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) $(if $(OUTPUT_ARGS),-- $(OUTPUT_ARGS))
 
 ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for this OS
 	@test -f "$(NDI_DIR)/include/Processing.NDI.Lib.h" || { \

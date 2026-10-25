@@ -4025,6 +4025,68 @@ impl ApplicationHandler for App {
 type BindFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<TcpListener>> + Send>>;
 
+/// The developer flag that makes the host print its live Operator token in the startup banner.
+const PRINT_TOKEN_FLAG: &str = "--print-token";
+
+/// What `--help` prints. The flag's reason lives here on purpose: the help text is the one place
+/// a developer reaching for the flag will read.
+const USAGE: &str = "\
+selahcue-output - the SelahCue output window and LAN control server
+
+USAGE:
+    selahcue-output [OPTIONS]
+
+OPTIONS:
+    --print-token   DEVELOPER ONLY. Print the live Operator bearer token in the startup
+                    banner so it can be pasted into the `remote` example CLI.
+                    Off by default and ignored in release builds: the token is a
+                    never-expiring Operator credential for the LAN control server, and
+                    stdout can be a terminal, a journal or a log file. Normally read it
+                    from the owner-only endpoint file (`make remote` does).
+    --smoke         Launch, present one frame, then exit (used by CI).
+    -h, --help      Print this help and exit.
+";
+
+/// Whether the startup banner may carry the live Operator bearer token (17tnw2b9aga).
+///
+/// The packaged operator starts this process with inherited stdio, so anything the banner prints
+/// lands in a terminal, the systemd journal or a redirected log file, while the token is pinned
+/// (idle expiry never reclaims it) on a control server bound to every interface. The default is
+/// therefore [`TokenDisclosure::Redacted`], and `Print` is reachable only by passing
+/// [`PRINT_TOKEN_FLAG`] to a debug build: nothing in the packaged path passes it, and a release
+/// build ignores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenDisclosure {
+    Redacted,
+    Print,
+}
+
+impl TokenDisclosure {
+    /// `requested`: the flag was on the command line. `debug_build`: `cfg!(debug_assertions)`,
+    /// a parameter so both profiles are testable from one build.
+    fn resolve(requested: bool, debug_build: bool) -> Self {
+        if requested && debug_build {
+            TokenDisclosure::Print
+        } else {
+            TokenDisclosure::Redacted
+        }
+    }
+
+    /// The production decision, from the real command line and the real build profile. A flag
+    /// that was asked for but refused is said so on stderr (never the token itself).
+    fn from_command_line(mut args: impl Iterator<Item = String>) -> Self {
+        let requested = args.any(|a| a == PRINT_TOKEN_FLAG);
+        let disclosure = Self::resolve(requested, cfg!(debug_assertions));
+        if requested && disclosure == TokenDisclosure::Redacted {
+            eprintln!(
+                "SelahCue: {PRINT_TOKEN_FLAG} is only honoured in debug builds; the token stays in \
+                 the endpoint file."
+            );
+        }
+        disclosure
+    }
+}
+
 /// Everything `run_server` does that reaches OUTSIDE this process — the LAN socket, the mDNS
 /// multicast, the outbound-interface probe behind the pairing QR, and the endpoint descriptor
 /// (a bearer token) in the shared OS temp dir. Production wires the real thing
@@ -4044,6 +4106,11 @@ struct ServerIo {
     /// Where to publish the loopback endpoint descriptor the operator shell auto-discovers.
     /// `None` writes nothing.
     endpoint_file: Option<std::path::PathBuf>,
+    /// Where the "remote control ready" banner is written. Production: stdout.
+    banner: Box<dyn std::io::Write + Send>,
+    /// Whether that banner may carry the live Operator token. Production: redacted unless a
+    /// debug build was started with [`PRINT_TOKEN_FLAG`].
+    token_disclosure: TokenDisclosure,
 }
 
 /// What [`start_remote_control_in`] runs: the one-time scripture warm-up plus the I/O seams.
@@ -4055,7 +4122,7 @@ struct ServerEnv {
 }
 
 impl ServerEnv {
-    fn production() -> Self {
+    fn production(token_disclosure: TokenDisclosure) -> Self {
         ServerEnv {
             warm: Box::new(selahcue_scripture::warm),
             io: ServerIo {
@@ -4063,6 +4130,8 @@ impl ServerEnv {
                 lan_ip,
                 advertise_mdns: true,
                 endpoint_file: Some(endpoint_path()),
+                banner: Box::new(std::io::stdout()),
+                token_disclosure,
             },
         }
     }
@@ -4072,7 +4141,8 @@ impl ServerEnv {
 /// runtime, driving the shared `controller`. If it can't start, the window still runs
 /// under local keyboard control.
 fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<RemoteShared>) {
-    start_remote_control_in(controller, remote, ServerEnv::production());
+    let disclosure = TokenDisclosure::from_command_line(std::env::args());
+    start_remote_control_in(controller, remote, ServerEnv::production(disclosure));
 }
 
 /// [`start_remote_control`] against an explicit [`ServerEnv`] — the body, split out so the
@@ -4121,7 +4191,7 @@ fn start_remote_control_in(
 async fn run_server(
     controller: Arc<Mutex<LiveController>>,
     remote: Arc<RemoteShared>,
-    io: ServerIo,
+    mut io: ServerIo,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let identity = SelfSigned::generate(vec!["localhost".into()])
         .map_err(|e| format!("tls identity: {e:?}"))?;
@@ -4130,8 +4200,11 @@ async fn run_server(
     // A host-local operator session (for the operator shell on this machine): a fresh
     // random token per run — never a fixed value, since we bind beyond loopback now.
     let device = "operator-shell";
-    let token = generate_token();
-    if token.is_empty() {
+    // Kept as a `SessionToken` (Debug redacts, no Display) so it cannot be formatted into a log
+    // line by accident; the only places that read the text are the registry, the owner-only
+    // endpoint file and, behind `--print-token`, the banner (17tnw2b9aga).
+    let token = SessionToken::new(generate_token());
+    if token.as_str().is_empty() {
         return Err("could not generate an operator token".into());
     }
     {
@@ -4141,7 +4214,7 @@ async fn run_server(
         reg.redeem(
             "host-local",
             DeviceId(device.to_string()),
-            SessionToken::new(token.clone()),
+            token.clone(),
             now,
         )
         .map_err(|e| format!("pairing: {e:?}"))?;
@@ -4179,11 +4252,23 @@ async fn run_server(
     };
     // Local clients (operator shell / CLI) connect via loopback.
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
-    let endpoint = io
-        .endpoint_file
-        .as_deref()
-        .and_then(|path| endpoint::write_endpoint(path, local, &pin.to_hex(), device, &token));
-    print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
+    let endpoint = io.endpoint_file.as_deref().and_then(|path| {
+        endpoint::write_endpoint(path, local, &pin.to_hex(), device, token.as_str())
+    });
+    // The banner is only HANDED the token when a developer asked for it; otherwise it has no
+    // way to print it.
+    let shown_token = match io.token_disclosure {
+        TokenDisclosure::Print => Some(&token),
+        TokenDisclosure::Redacted => None,
+    };
+    let _ = write_connect_banner(
+        &mut io.banner,
+        local,
+        &pin.to_hex(),
+        device,
+        shown_token,
+        endpoint.as_deref(),
+    );
     server
         .run(listener)
         .await
@@ -4205,7 +4290,7 @@ async fn run_server(
 mod remote_control_warmup_tests {
     use super::{
         demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
-        ServerIo, SessionRegistry, Theme,
+        ServerIo, SessionRegistry, Theme, TokenDisclosure,
     };
     use crate::endpoint::test_support::Scratch;
     use crate::endpoint::{is_complete_descriptor, json_field};
@@ -4302,7 +4387,7 @@ mod remote_control_warmup_tests {
     /// `ingest_transcript`); the ordering test above is deliberately free of that dependency.
     #[test]
     fn the_production_warm_hook_builds_the_scripture_quote_index() {
-        (ServerEnv::production().warm)();
+        (ServerEnv::production(TokenDisclosure::Redacted).warm)();
 
         let started = Instant::now();
         selahcue_scripture::warm();
@@ -4351,6 +4436,8 @@ mod remote_control_warmup_tests {
                 lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
                 advertise_mdns: false,
                 endpoint_file: Some(endpoint.to_path_buf()),
+                banner: Box::new(std::io::sink()),
+                token_disclosure: TokenDisclosure::Redacted,
             },
         };
         let remote = fresh_remote();
@@ -4677,6 +4764,201 @@ fn print_pairing_block(uri: &str, code: &str) {
     println!();
 }
 
+/// 17tnw2b9aga: the live Operator bearer token must not reach the host's stdout.
+///
+/// The packaged operator spawns the output window with inherited stdio, so whatever the banner
+/// prints lands in a terminal, the systemd journal or a redirected log file (`make nfr`
+/// redirects it into one), while the token is a pinned, never-expiring Operator credential on a
+/// control server that listens on every interface. These tests start the REAL host thread (real
+/// `run_server`, real token, real endpoint file) through [`ServerEnv`]'s seams and read back
+/// exactly what it wrote to its banner stream.
+#[cfg(test)]
+mod connect_banner_token_tests {
+    use super::{
+        demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
+        ServerIo, SessionRegistry, Theme, TokenDisclosure, PRINT_TOKEN_FLAG, USAGE,
+    };
+    use crate::endpoint::test_support::Scratch;
+    use crate::endpoint::{is_complete_descriptor, json_field};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// A banner sink the test can read back.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("capture").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Capture {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().expect("capture")).into_owned()
+        }
+    }
+
+    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !cond() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out after 60s waiting for {what}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Start the real host against a private endpoint file and return what it wrote to its
+    /// banner, plus the REAL token read back from the endpoint file the host itself published.
+    fn run_host(
+        scratch_name: &str,
+        token_disclosure: TokenDisclosure,
+    ) -> (String, String, std::path::PathBuf) {
+        let scratch = Scratch::new(scratch_name);
+        let endpoint = scratch.0.join("endpoint.json");
+        let capture = Capture::default();
+        let env = ServerEnv {
+            warm: Box::new(|| {}),
+            io: ServerIo {
+                bind: Box::new(|| -> BindFuture { Box::pin(TcpListener::bind("127.0.0.1:0")) }),
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.clone()),
+                banner: Box::new(capture.clone()),
+                token_disclosure,
+            },
+        };
+        let remote = Arc::new(RemoteShared {
+            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
+            lan: OnceLock::new(),
+            active_code: Mutex::new(None),
+        });
+        let controller = Arc::new(Mutex::new(LiveController::new(
+            demo_plan(),
+            320,
+            180,
+            Theme::dark(),
+        )));
+        start_remote_control_in(controller, remote, env);
+
+        // The banner is the last thing written before the server starts accepting, and it is
+        // flushed as a whole; its final line is the "Quit:" hint.
+        wait_for("the connect banner to be written", || {
+            capture.text().contains("Quit:")
+        });
+        wait_for("the endpoint descriptor", || endpoint.exists());
+        let descriptor = std::fs::read_to_string(&endpoint).expect("read descriptor");
+        assert!(is_complete_descriptor(&descriptor), "{descriptor:?}");
+        let token = json_field(&descriptor, "token")
+            .expect("descriptor carries the token")
+            .to_string();
+        (capture.text(), token, Path::new(&endpoint).to_path_buf())
+    }
+
+    /// The headline: a NORMAL run never writes the live token to the banner stream.
+    #[test]
+    fn a_normal_run_never_prints_the_live_operator_token() {
+        let (banner, token, endpoint) = run_host("banner-no-token", TokenDisclosure::Redacted);
+
+        // Positive controls: the token is real and the banner is the real banner, so a
+        // "does not contain" below cannot pass because either side was empty.
+        assert!(
+            token.len() >= 32,
+            "the operator token should be long random material, got {token:?}"
+        );
+        assert!(
+            banner.contains("remote control ready") && banner.contains("pin     :"),
+            "the banner was not captured: {banner:?}"
+        );
+        assert!(
+            banner.contains(&endpoint.display().to_string()),
+            "the banner should point at the endpoint file instead of the token: {banner:?}"
+        );
+
+        assert!(
+            !banner.contains(&token),
+            "the live Operator bearer token was written to the host's output; stdout can be a \
+             terminal, a journal or a log file (17tnw2b9aga). Banner:\n{banner}"
+        );
+    }
+
+    /// The positive control for the test above, and the developer path itself: with the explicit
+    /// disclosure the very same host does print the token, in the paste-ready `remote` command.
+    /// Without this, "the token is absent" could be a banner that never carried it at all.
+    #[test]
+    fn the_developer_flag_prints_the_live_token_in_the_remote_command() {
+        let (banner, token, _) = run_host("banner-print-token", TokenDisclosure::Print);
+        assert!(
+            banner.contains(&format!("operator-shell {token} next")),
+            "{PRINT_TOKEN_FLAG} should put the real token in the paste-ready remote command: \
+             {banner}"
+        );
+    }
+
+    /// The flag is a developer convenience and must be OFF unless asked for, and ignored by a
+    /// release build (the packaged operator never passes it, but a release build refuses it
+    /// anyway). The decision is one function so both profiles can be driven from one build.
+    #[test]
+    fn the_token_is_disclosed_only_when_asked_for_in_a_debug_build() {
+        assert_eq!(
+            TokenDisclosure::resolve(false, true),
+            TokenDisclosure::Redacted
+        );
+        assert_eq!(
+            TokenDisclosure::resolve(false, false),
+            TokenDisclosure::Redacted
+        );
+        assert_eq!(TokenDisclosure::resolve(true, true), TokenDisclosure::Print);
+        assert_eq!(
+            TokenDisclosure::resolve(true, false),
+            TokenDisclosure::Redacted,
+            "a release build must ignore the developer flag"
+        );
+    }
+
+    /// The real command-line reader: an ordinary launch (what the packaged operator does, no
+    /// arguments) is redacted; the flag is only honoured in the debug profile this runs under.
+    #[test]
+    fn an_ordinary_launch_is_redacted_and_only_the_flag_asks_for_the_token() {
+        let launch = |extra: &[&str]| {
+            TokenDisclosure::from_command_line(
+                std::iter::once("selahcue-output".to_string())
+                    .chain(extra.iter().map(|a| a.to_string())),
+            )
+        };
+        assert_eq!(launch(&[]), TokenDisclosure::Redacted);
+        assert_eq!(launch(&["--smoke"]), TokenDisclosure::Redacted);
+        // Flag spellings that are not the flag.
+        assert_eq!(launch(&["--print-tokens"]), TokenDisclosure::Redacted);
+        assert_eq!(launch(&["print-token"]), TokenDisclosure::Redacted);
+        let expected = if cfg!(debug_assertions) {
+            TokenDisclosure::Print
+        } else {
+            TokenDisclosure::Redacted
+        };
+        assert_eq!(launch(&[PRINT_TOKEN_FLAG]), expected);
+    }
+
+    /// The ticket asks that the flag's help says why it exists and why it is off by default.
+    #[test]
+    fn the_help_text_explains_the_developer_flag() {
+        assert!(USAGE.contains(PRINT_TOKEN_FLAG), "{USAGE}");
+        assert!(USAGE.contains("DEVELOPER ONLY"), "{USAGE}");
+        assert!(USAGE.contains("Operator"), "{USAGE}");
+        assert!(USAGE.contains("release builds"), "{USAGE}");
+        assert!(USAGE.contains("endpoint file"), "{USAGE}");
+    }
+}
+
 /// The well-known endpoint descriptor path the operator shell auto-discovers. Shared by every
 /// SelahCue host on this machine, so only [`ServerEnv::production`] and the clean-exit cleanup
 /// ever name it — nothing a test drives may.
@@ -4684,59 +4966,104 @@ fn endpoint_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
-fn print_connect_banner(
+fn write_connect_banner(
+    out: &mut dyn std::io::Write,
     addr: SocketAddr,
     pin_hex: &str,
     device: &str,
-    token: &str,
+    token: Option<&SessionToken>,
     endpoint: Option<&std::path::Path>,
-) {
-    println!();
-    println!("  SelahCue — remote control ready");
-    println!("  ------------------------------------------------------------");
-    println!("  The output window is driven by the LAN control server.");
-    println!("  address : {addr}");
-    println!("  pin     : {pin_hex}");
-    println!(
+) -> std::io::Result<()> {
+    writeln!(out)?;
+    writeln!(out, "  SelahCue — remote control ready")?;
+    writeln!(
+        out,
+        "  ------------------------------------------------------------"
+    )?;
+    writeln!(
+        out,
+        "  The output window is driven by the LAN control server."
+    )?;
+    writeln!(out, "  address : {addr}")?;
+    writeln!(out, "  pin     : {pin_hex}")?;
+    writeln!(
+        out,
         "  device  : {device}   role : Operator (host shell); token: in the endpoint file (0600)"
-    );
+    )?;
     if let Some(path) = endpoint {
-        println!(
+        writeln!(
+            out,
             "  endpoint: {}  (the operator shell auto-discovers this)",
             path.display()
-        );
+        )?;
     }
-    println!();
-    println!("  Drive the window with the operator shell (auto-connects on this machine):");
-    println!("    cargo run   # from crates/selahcue-operator");
-    println!("  or from another terminal with the remote CLI:");
-    println!("    cargo run -p selahcue-lan --example remote --features server -- \\");
-    println!("      {addr} {pin_hex} {device} {token} next");
-    println!(
+    writeln!(out)?;
+    writeln!(
+        out,
+        "  Drive the window with the operator shell (auto-connects on this machine):"
+    )?;
+    writeln!(out, "    cargo run   # from crates/selahcue-operator")?;
+    writeln!(out, "  or from another terminal with the remote CLI:")?;
+    match token {
+        Some(token) => {
+            // `--print-token`, debug builds only: the developer asked for the credential here.
+            writeln!(
+                out,
+                "    cargo run -p selahcue-lan --example remote --features server -- \\"
+            )?;
+            writeln!(
+                out,
+                "      {addr} {pin_hex} {device} {} next",
+                token.as_str()
+            )?;
+        }
+        None => {
+            writeln!(
+                out,
+                "    make remote CMD=next   # reads the token from the endpoint file"
+            )?;
+            writeln!(
+                out,
+                "    (the token is never printed here; see `selahcue-output --help`)"
+            )?;
+        }
+    }
+    writeln!(
+        out,
         "    (commands: next · previous · go-live · blackout-on · blackout-off · clear · state)"
-    );
-    println!();
-    println!("  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged");
-    println!("  Pairing:    P=show a QR invite (approve/deny devices from the operator console)");
+    )?;
+    writeln!(out)?;
+    writeln!(out, "  Local keys: Space/\u{2192}=next  \u{2190}=prev  Enter=Go Live  B=blackout  Esc Esc=clear all  Backspace=clear staged")?;
+    writeln!(
+        out,
+        "  Pairing:    P=show a QR invite (approve/deny devices from the operator console)"
+    )?;
     // Closing a window closes only THAT screen while another output window is still open,
     // so both ways out have to be stated explicitly — and the chord only works while an
     // output window has focus, which is exactly why the last close quits.
-    println!(
+    writeln!(
+        out,
         "  Windows:    while more than one output window is open, a window's close button \
          switches OFF that screen (toggle it back on from the operator's Screens page)"
-    );
-    println!(
+    )?;
+    writeln!(
+        out,
         "  Quit:       {} with an output window focused, or close the LAST open output window",
         if cfg!(target_os = "macos") {
             "Cmd-Q"
         } else {
             "Ctrl-Q"
         }
-    );
-    println!();
+    )?;
+    writeln!(out)?;
+    out.flush()
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return;
+    }
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::new();
