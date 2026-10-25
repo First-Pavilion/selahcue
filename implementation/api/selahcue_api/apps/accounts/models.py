@@ -22,7 +22,6 @@ class CustomerOrg(models.Model):
     timezone = models.CharField(max_length=64, default="UTC")
     plan = models.CharField(max_length=64, default="TRIAL")
     seat_limit = models.PositiveIntegerField(default=1)
-    device_limit = models.PositiveIntegerField(default=1)
     internal_notes = models.TextField(blank=True)
     created_by_actor_id = models.CharField(max_length=128)
     idempotency_key = models.CharField(max_length=128)

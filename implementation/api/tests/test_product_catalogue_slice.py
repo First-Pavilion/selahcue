@@ -95,7 +95,6 @@ def _org(tag):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=1,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"catalogue-org-{tag}",
     )

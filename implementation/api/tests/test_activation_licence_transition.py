@@ -26,6 +26,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from licensing_test_support import seat_plan_code
 from selahcue_api.apps.accounts.models import (
     CustomerOrg,
     CustomerRole,
@@ -78,7 +79,6 @@ def _seed_license_key(*, tag, device_limit=3):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=device_limit,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"customer-org-{tag}",
     )
@@ -95,12 +95,11 @@ def _seed_license_key(*, tag, device_limit=3):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope="CHURCH",
-            plan_code="PRO",
+            plan_code=seat_plan_code(device_limit),
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
             seat_limit=5,
-            device_limit=device_limit,
             territory="NG",
             reason="Seed licence for the activation-transition tests.",
         ),

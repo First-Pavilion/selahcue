@@ -602,6 +602,48 @@ The native `/v1` routes (`POST /v1/sessions`, `POST /v1/activations:with-session
 
 ---
 
+## 6d. Database migrations — deploy order (Platform API)
+
+**Nothing in this repository runs `migrate` for you.** The API image ends in `manage.py
+runserver`, the compose file does the same, and no workflow, Makefile target or script applies
+migrations to a deployed database. **How your deploys sequence `migrate` is not known to the
+engineering team; confirm it before the first release that contains a column drop.** (Owner
+question, ClickUp 86ak5mn0m.)
+
+Most migrations only add things and can run beside the running release. A **column drop cannot**.
+The first one is `selahcue_accounts` 0004, which removes `CustomerOrg.device_limit`
+(ClickUp 86ak5mn0m). Measured on Postgres 16.2 with 10,002 organisations and 32,000 keys:
+
+- The `ALTER` takes an `ACCESS EXCLUSIVE` lock for about 3 ms and rewrites nothing.
+- The **previous** release cannot run against the migrated schema: every organisation read
+  fails (`column selahcue_accounts_customerorg.device_limit does not exist`), including the join
+  device activation uses, and so does creating an organisation.
+- The **new** release cannot create an organisation against the old schema (the column is
+  `NOT NULL` with no database default), so the new code must not run before the migration.
+- The `ALTER` waits for any open transaction that touched the table, and while it waits every
+  ordinary query on that table queues behind it. An idle reader holding the table for 3 s held
+  up organisation traffic for 2.67 s.
+
+**Deploy a release that drops a column, in this order:**
+
+1. Stop the old instances.
+2. Migrate, with a short lock timeout so a long reader cannot queue all organisation traffic:
+   `PGOPTIONS='-c lock_timeout=5000' python manage.py migrate` (5 s; if it times out, nothing was
+   changed, so find the long reader and run it again).
+3. Start the new release.
+
+**Roll back** the same migration by migrating down **before** starting the old image:
+`PGOPTIONS='-c lock_timeout=5000' python manage.py migrate selahcue_accounts 0003`. This puts the
+column back (about 12 ms) with the value 1 for every organisation; the old release only displays
+it in the admin console, and activation never read it. Only then start the old image.
+
+**If the API ever runs more than one instance at once during a deploy** (a rolling or blue/green
+release), a column drop must be split into two releases: the first makes the column nullable (or
+gives it a database default) and stops reading it, the second drops it. Delaying the drop alone
+does not work, because of the `NOT NULL` point above.
+
+---
+
 ## 7. What must never be committed
 
 - The `.p12` certificate, its password, or any exported private key.

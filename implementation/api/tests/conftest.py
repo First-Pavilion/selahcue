@@ -4,6 +4,11 @@
 helpers rather than sharing them, and that convention stands — nothing here seeds anything.
 This file exists for one thing that module-local fixtures structurally cannot do.
 
+(One deliberate exception to the convention, and it is not a fixture here either:
+`licensing_test_support.py` holds the plan and licence seeding shared by the tests that need
+"a licence with N seats" since a licence's device limit began to come from its plan
+(86ak5mn0m). Its docstring says why; nothing else should join it without the same argument.)
+
 `selahcue_api.apps.catalogue.cache.GRANT_CACHE` is a PROCESS global. It is not part of the
 database, so `django_db`'s per-test rollback does not touch it, and its key (a plan primary
 key) is stable across rollbacks — so an entry written by one test can be served to the next

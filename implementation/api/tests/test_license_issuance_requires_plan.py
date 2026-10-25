@@ -23,8 +23,9 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from licensing_test_support import seat_plan
 from selahcue_api.apps.accounts.models import CustomerOrg
-from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
+from selahcue_api.apps.catalogue.models import GrantDimension, LicensePlanAssignment, Plan, PlanGrant
 from selahcue_api.apps.catalogue.services import resolve_entitlement, resolve_plan_for_license
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
 from selahcue_api.apps.license_keys.services import (
@@ -37,8 +38,15 @@ from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 pytestmark = pytest.mark.django_db
 
 # The plan the fallback points at, and a non-fallback plan to issue against.
+#
+# The named plan is created by this file (fixture below), with its own seat count and its own
+# capped screen outputs, rather than borrowed from the catalogue seed: issuing a licence takes
+# its device limit from the plan (86ak5mn0m), and a reseed of the catalogue (17tnw2az0gd) must
+# not be able to break a test that is about the fallback refusal. LEGACY, the fallback, IS the
+# migration seed's plan: that is the point of these tests.
 FALLBACK_PLAN_CODE = "LEGACY"
-NAMED_PLAN_CODE = "PRO"
+NAMED_PLAN_CODE = "TEST-NAMED-PLAN"
+NAMED_PLAN_SCREEN_OUTPUTS = 4
 
 assert FALLBACK_PLAN_CODE != NAMED_PLAN_CODE, (
     "the tests below distinguish 'resolved to the named plan' from 'fell through to the "
@@ -62,6 +70,15 @@ assert _PLAN_CODE_FIELD.default_factory is dataclasses.MISSING, (
 )
 
 
+@pytest.fixture(autouse=True)
+def _named_plan(db):
+    """The sellable plan the tests issue against: 3 seats and a CAPPED screen-output grant, so
+    "resolved to this plan" is distinguishable from "fell through to the unlimited fallback"."""
+    return seat_plan(
+        NAMED_PLAN_CODE, 3, other_grants={"screen_outputs": str(NAMED_PLAN_SCREEN_OUTPUTS)}
+    )
+
+
 def _actor():
     return ActorContext(
         kind=ActorKind.STAFF,
@@ -79,7 +96,6 @@ def _org(tag):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=9,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"issuance-org-{tag}",
     )
@@ -97,7 +113,6 @@ def _issue_data(customer, *, tag, plan_code, feature_scope="CHURCH"):
         expires_at=now + timedelta(days=30),
         timezone="Africa/Lagos",
         seat_limit=5,
-        device_limit=3,
         territory="NG",
         reason="Pilot for the issuance-requires-a-plan tests.",
     )
@@ -394,6 +409,18 @@ def test_the_refusal_follows_the_is_fallback_FLAG_not_the_plan_code():
     )
 
     # ...and the plan that used to be the fallback is now issuable.
+    #
+    # Issuing takes the key's device limit from the plan (86ak5mn0m), and the fallback plan
+    # declares no seat count of its own (it freezes what pre-catalogue licences had, which had
+    # none). So it needs one to be sold, exactly as any plan does; this test gives it one,
+    # because what it asserts is that the FALLBACK REFUSAL moved, not that LEGACY has seats.
+    PlanGrant.objects.create(
+        plan=old_fallback,
+        dimension=GrantDimension.objects.get(key="device_instances"),
+        raw_value="2",
+        changed_by_actor_id="staff_ops_1",
+        reason="Seat count so the former fallback can be sold in this test.",
+    )
     result = generate_license_key(
         _actor(),
         _issue_data(_org("moved-allowed"), tag="moved-allowed", plan_code=old_fallback.code),
@@ -423,10 +450,11 @@ def test_a_licence_issued_on_a_plan_resolves_to_that_plan_not_the_fallback():
     resolved = resolve_entitlement(result.license_key)
     assert resolved.plan is not None and resolved.plan.code == NAMED_PLAN_CODE
     assert resolved.plan.pk != fallback.pk
-    # The entity that matters commercially: PRO's capped grants, not the fallback's unlimited.
-    assert resolved.values["screen_outputs"] == 5, (
-        f"expected PRO's capped screen outputs, got {resolved.values.get('screen_outputs')!r} — "
-        "an unlimited value here means the fallback was inherited after all"
+    # The entity that matters commercially: the named plan's capped grants, not the fallback's unlimited.
+    assert resolved.values["screen_outputs"] == NAMED_PLAN_SCREEN_OUTPUTS, (
+        f"expected the named plan's capped screen outputs, got "
+        f"{resolved.values.get('screen_outputs')!r} — an unlimited value here means the "
+        "fallback was inherited after all"
     )
 
 
