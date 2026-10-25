@@ -51,8 +51,9 @@
 //!   in one test binary.
 //! - [`resolution_from_env`] is the only place that passes the real profile
 //!   ([`BuildProfile::of_this_build`]) and the real environment.
-//! - [`announce`] writes the notice at most once; [`source_and_announce`] joins the two, and
-//!   [`model_source_from_env`] passes it the process-wide flag and stderr.
+//! - [`announce`] writes the notice at most once; [`source_and_announce`] joins the two;
+//!   [`model_source_with`] feeds it the real environment; and [`model_source_from_env`] passes
+//!   that the process-wide flag and stderr.
 //!
 //! That is the same shape as the repo's other development-only reads: `dev_env::
 //! should_load_env_file`, `selahcue_cloud::openai::direct_key_permitted` and
@@ -248,12 +249,18 @@ static NOTICE_PRINTED: AtomicBool = AtomicBool::new(false);
 
 /// The model source the worker and the readiness check use: the only way into this module from
 /// outside it. Writes the release notice to stderr the first time it applies in this process.
+///
+/// Its one job is to hand the process-wide [`NOTICE_PRINTED`] flag and the real stderr to
+/// [`model_source_with`]; `this_build_writes_the_notice_once_per_process_iff_release` checks
+/// the flag it passes is the real one. Nothing checks the writer is the real stderr (see the
+/// PR's known gaps).
 pub(crate) fn model_source_from_env() -> ModelSource {
-    source_and_announce(
-        resolution_from_env(),
-        &NOTICE_PRINTED,
-        &mut std::io::stderr(),
-    )
+    model_source_with(&NOTICE_PRINTED, &mut std::io::stderr())
+}
+
+/// The real environment and profile, announced through `printed` and `out`.
+fn model_source_with(printed: &AtomicBool, out: &mut impl Write) -> ModelSource {
+    source_and_announce(resolution_from_env(), printed, out)
 }
 
 /// Test-only access to the two variables, for tests elsewhere in the crate that must set or clear
@@ -638,6 +645,70 @@ mod tests {
         );
     }
 
+    /// The inner entry point, with a test-owned flag and writer: the real environment and profile
+    /// reach the write. Asserts whichever arm this binary was compiled for (debug in every operator
+    /// test line, release in the `--features dev-keys,openai-notes --release` line).
+    #[test]
+    fn the_inner_entry_point_writes_the_notice_once_iff_this_is_a_release_build() {
+        let _env_guard = crate::env_locked();
+        let _vars = OverrideVars::set(PATH, SHA);
+        let printed = AtomicBool::new(false);
+        let mut out = Vec::new();
+        let first = model_source_with(&printed, &mut out);
+        let second = model_source_with(&printed, &mut out);
+        assert_eq!(
+            first, second,
+            "the same environment must give the same answer"
+        );
+        let text = String::from_utf8(out).expect("utf-8");
+        if cfg!(debug_assertions) {
+            assert!(matches!(first, ModelSource::DeveloperOverride { .. }));
+            assert!(text.is_empty(), "a debug build wrote: {text}");
+            assert!(!printed.load(Ordering::Relaxed));
+        } else {
+            assert_eq!(first, ModelSource::Pinned);
+            assert_eq!(
+                text,
+                format!("{RELEASE_IGNORES_OVERRIDE_NOTICE}\n"),
+                "two calls in a release build must write exactly one notice line"
+            );
+            assert!(printed.load(Ordering::Relaxed));
+        }
+    }
+
+    /// The outer entry point, the one the worker and `stt_ready` call, must use the PROCESS-WIDE
+    /// flag, or a polled `stt_ready` would print the notice on every poll. Only a release build
+    /// ever sets that flag (a debug build has no notice), so: in release it is set after a call
+    /// with a variable present; in debug it stays clear. A fresh `AtomicBool` per call, or a
+    /// `model_source_from_env` that skips `source_and_announce`, leaves it clear and fails the
+    /// release run. Other tests may already have set it, which is why this asserts "set after",
+    /// not "clear before".
+    #[test]
+    fn this_build_writes_the_notice_once_per_process_iff_release() {
+        let _env_guard = crate::env_locked();
+        let _vars = OverrideVars::set(PATH, SHA);
+        let first = model_source_from_env();
+        let flag_after_first = NOTICE_PRINTED.load(Ordering::Relaxed);
+        let second = model_source_from_env();
+        if cfg!(debug_assertions) {
+            assert!(matches!(first, ModelSource::DeveloperOverride { .. }));
+            assert_eq!(first, second);
+            assert!(
+                !NOTICE_PRINTED.load(Ordering::Relaxed),
+                "a debug build set the release-notice flag"
+            );
+        } else {
+            assert_eq!(first, ModelSource::Pinned);
+            assert_eq!(second, ModelSource::Pinned);
+            assert!(
+                flag_after_first,
+                "model_source_from_env did not set the process-wide NOTICE_PRINTED flag: it is \
+                 not passing the real flag through source_and_announce, so a polled stt_ready \
+                 would print the notice every time"
+            );
+        }
+    }
+
     /// Whether `line` would let a file outside this module read the variables: it spells either
     /// name as the start of a string literal, or names this module's private constants as whole
     /// identifiers (the way a read through a widened constant would look).
@@ -686,7 +757,8 @@ mod tests {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut offenders = Vec::new();
         let mut scanned: Vec<String> = Vec::new();
-        let mut dirs = vec![src];
+        let mut scanned_in_a_subdirectory = 0usize;
+        let mut dirs = vec![src.clone()];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(&dir).expect("read src/") {
                 let path = entry.expect("read a src/ entry").path();
@@ -708,6 +780,9 @@ mod tests {
                         offenders.push(format!("{}:{}", path.display(), n + 1));
                     }
                 }
+                if path.parent() != Some(src.as_path()) {
+                    scanned_in_a_subdirectory += 1;
+                }
                 scanned.push(name);
             }
         }
@@ -723,6 +798,13 @@ mod tests {
             scanned.len() >= 10,
             "premise: the scan read the crate's sources ({} files)",
             scanned.len()
+        );
+        // And it went below `src/` (today `src/deck_library/` holds module files), so a new
+        // reader in a subdirectory module would be seen too.
+        assert!(
+            scanned_in_a_subdirectory > 0,
+            "premise: the scan read no file below src/; its directory recursion is broken. It \
+             read {scanned:?}"
         );
         assert!(
             offenders.is_empty(),
