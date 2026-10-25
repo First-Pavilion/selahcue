@@ -114,14 +114,17 @@ def _mask(full_key: str) -> tuple[str, str, str]:
     return prefix, suffix, f"{prefix}...{suffix}"
 
 
-# Statuses whose key can still be used, or can still come back into use, so its dates keep
-# the org's single seat on the calendar. REVOKED, ARCHIVED and CONVERTED are over and do not
-# block. A status added to `LicenseKeyStatus` later is in NEITHER set until someone decides,
-# and `tests/test_one_valid_key_per_org.py` fails on that, so the choice cannot be skipped.
+# Statuses whose key can still be used, or can still come back into use, so a second key for
+# the same org may not overlap its dates. REVOKED, ARCHIVED and CONVERTED are over and do not
+# block. A status added to `LicenseKeyStatus` later is in NEITHER list in the test until
+# someone decides, and `tests/test_one_valid_key_per_org.py` fails on that, so the choice
+# cannot be skipped. The same file derives, from `LEGAL_TRANSITIONS`, every status a key can
+# be revived from and fails if one is missing here, so this set cannot drift from the state
+# machine either.
 #
 # EXPIRED blocks because the state machine still allows EXPIRED -> ACTIVATED (a late
 # renewal), so an expired key is not yet a dead one. SUSPENDED is a reversible hold.
-KEY_STATUSES_THAT_HOLD_THE_ORGS_SEAT = frozenset(
+KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY = frozenset(
     {
         LicenseKeyStatus.ISSUED,
         LicenseKeyStatus.ACTIVATED,
@@ -151,12 +154,20 @@ def lock_customer_for_key_changes(customer_id) -> CustomerOrg:
     sees the first one's key. The lock is on the ORG, not the key, because the thing being
     protected is a property of the org: the new key does not exist yet to be locked.
 
-    Must be called inside `transaction.atomic()`; outside one Django raises rather than
-    silently taking no lock. This is the only place the org lock is taken, so removing it turns
-    the Postgres test red (SQLite ignores `select_for_update`, which is why that test exists).
+    It is `FOR NO KEY UPDATE`, not `FOR UPDATE`. Two holders of either still exclude each
+    other, which is all the race needs, but `FOR UPDATE` would also block every INSERT of a
+    row that references the org (a device, a user, a session, a key) for as long as the lock
+    is held, because those inserts take `FOR KEY SHARE` on the org row. We change no key
+    column of the org, so the weaker lock is the right one.
+
+    Must be called inside `transaction.atomic()`. On a backend with row locks (Postgres) Django
+    raises `TransactionManagementError` if it is not; on SQLite `select_for_update` is a
+    silent no-op whether or not a transaction is open, so nothing there will tell you the lock
+    is missing. This is the only place the org lock is taken, so removing it turns the
+    Postgres test red (which is why that test exists and why it cannot run on SQLite).
     """
     try:
-        return CustomerOrg.objects.select_for_update().get(id=customer_id)
+        return CustomerOrg.objects.select_for_update(no_key=True).get(id=customer_id)
     except (CustomerOrg.DoesNotExist, ValueError) as error:
         raise SafeAPIError(ErrorCode.NOT_FOUND) from error
 
@@ -170,31 +181,39 @@ def require_no_overlapping_license_key(
     requested_by: str = "",
 ) -> None:
     """Refuse with POLICY_DENIED if `customer` holds another key whose dates overlap
-    `[starts_at, expires_at)` and whose status still holds the org's seat. Writes nothing.
+    `[starts_at, expires_at)` and whose status can still be in use. Writes nothing.
 
     THE ONE RULE, in one place. Issuance calls it; a future extend or renew writer must call it
     too, passing `exclude_key_id` for the key being moved (a key always overlaps itself).
     `customer` must be the row returned by `lock_customer_for_key_changes` in the same
     transaction, or the check is only as good as a read.
 
+    `starts_at` and `expires_at` must be timezone-AWARE: the comparison is between instants,
+    and a naive value is read in the server's current time zone (with a warning). Issuance
+    coerces to UTC before calling; a new caller has to do the same.
+
     The window is half-open: a key that starts at the instant another expires does NOT overlap
     it (renewal today is issuing a new key that starts when the old one ends), and one second
     earlier does. Keys the org already holds that overlap each other are left as they are
-    (grandfathered); only new issuance is refused.
+    (grandfathered); only new dates are refused.
+
+    The hint in the message names the LATEST expiry among the keys in the way, because that is
+    the date from which the org is free of all of them. For a grandfathered org holding two
+    overlapping keys the earliest expiry would still be refused by the other key.
     """
     blocking = AppLicenseKey.objects.filter(
         customer=customer,
-        status__in=KEY_STATUSES_THAT_HOLD_THE_ORGS_SEAT,
+        status__in=KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY,
         starts_at__lt=expires_at,
         expires_at__gt=starts_at,
     )
     if exclude_key_id is not None:
         blocking = blocking.exclude(pk=exclude_key_id)
-    held = blocking.order_by("expires_at", "pk").first()
+    held = blocking.order_by("-expires_at", "pk").first()
     if held is None:
         return
     logger.warning(
-        "refused to issue a licence for customer %s from %s to %s: it overlaps licence %s "
+        "refused licence dates for customer %s, %s to %s: they overlap licence %s "
         "(status %s, %s to %s), and an organisation may hold at most one valid licence at a "
         "time. Requested by actor %s.",
         customer.pk,
@@ -210,8 +229,8 @@ def require_no_overlapping_license_key(
         ErrorCode.POLICY_DENIED,
         f"This organisation already holds licence {held.pk} ({held.status}) that runs from "
         f"{held.starts_at.isoformat()} to {held.expires_at.isoformat()}, and an organisation "
-        "may hold at most one valid licence at a time. To renew, issue the new licence so it "
-        f"starts at or after {held.expires_at.isoformat()}.",
+        "may hold at most one valid licence at a time. Dates that do not overlap it begin at "
+        f"or after {held.expires_at.isoformat()}.",
     )
 
 
@@ -275,6 +294,18 @@ def generate_license_key(
         existing = _issued_by(staff.actor_id, idempotency_key)
         if existing is not None:
             return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
+
+        # The secret is generated and HASHED before the org lock is taken, not after. The hash
+        # (PBKDF2) costs ~250 ms of CPU, and held under the lock it made every other write for
+        # the org wait that long behind each issuance, measured at p50 366 ms of lock hold
+        # against ~5 ms without it. The price is that a request that turns out to be a replay of
+        # a racing original, or is refused by a check below, has spent one hash for nothing;
+        # that is a rare staff action and a cheaper trade than holding the lock. A plain replay
+        # (the look above) returns before any of this runs.
+        full_key = _generate_full_key(key_type)
+        prefix, suffix, masked_key = _mask(full_key)
+        secret_hash = make_password(full_key)
+        secret_fingerprint = _fingerprint(full_key)
 
         # Locks the org row for the rest of this transaction (one key per org, below). The
         # idempotent replay above deliberately runs BEFORE the overlap check: a retry of an
@@ -395,8 +426,6 @@ def generate_license_key(
             customer, starts_at=starts_at, expires_at=expires_at, requested_by=staff.actor_id
         )
 
-        full_key = _generate_full_key(key_type)
-        prefix, suffix, masked_key = _mask(full_key)
         license_key = AppLicenseKey(
             customer=customer,
             key_type=key_type,
@@ -404,8 +433,8 @@ def generate_license_key(
             key_prefix=prefix,
             key_suffix=suffix,
             masked_key=masked_key,
-            secret_hash=make_password(full_key),
-            secret_fingerprint=_fingerprint(full_key),
+            secret_hash=secret_hash,
+            secret_fingerprint=secret_fingerprint,
             starts_at=starts_at,
             expires_at=expires_at,
             timezone=data.timezone.strip() or "UTC",

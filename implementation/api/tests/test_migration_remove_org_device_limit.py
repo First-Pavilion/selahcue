@@ -84,6 +84,14 @@ def _environment(settings):
     cache.clear()
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
     settings.SELAHCUE_THROTTLE_ACTIVATION = (1000, 60)
+    # A FAST PASSWORD HASHER FOR THIS FILE ONLY. Seeding hashes every enrollment key and every
+    # activation (seed or probe) verifies one, and PBKDF2 at ~250 ms apiece made these four
+    # tests about 80% of the time the 86ak5mn0m change added to the suite. The hasher is not
+    # what is under test: it only has to be a hasher that `make_password` and `check_password`
+    # agree on, and the equivalence assertions below are unchanged. Django clears its hasher
+    # cache when this setting changes, and `check_password` identifies a stored hash by its
+    # prefix, so a key hashed here verifies here.
+    settings.PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 
 
 @pytest.fixture
@@ -259,6 +267,14 @@ def _probe(full_key, tag):
             ).created
         )
         transaction.set_rollback(True)
+    # A probe whose own request is malformed answers VALIDATION_FAILED both before and after the
+    # migration, so the equality it feeds would compare two identical errors and prove nothing.
+    # That is exactly what happened when the grandfathered probes' idempotency keys were one
+    # character short of the minimum (`validate_idempotency_key`). Refuse it here, once, for
+    # every probe in this file.
+    assert outcome != ("err", "VALIDATION_FAILED"), (
+        f"the probe for {tag!r} was rejected as malformed, so it observes nothing about the key"
+    )
     return outcome
 
 
@@ -307,7 +323,7 @@ def _snapshot_key(pk, full_key, token, tag):
 def _snapshot(seeded):
     snapshot = {name: _snapshot_key(pk, fk, tok, name) for name, (pk, fk, tok) in seeded.keys.items()}
     for label, (pk, fk, tok) in seeded.grandfathered.items():
-        snapshot[f"grandfathered-{label}"] = _snapshot_key(pk, fk, tok, f"gf-{label}")
+        snapshot[f"grandfathered-{label}"] = _snapshot_key(pk, fk, tok, f"gf-{label}-probe")
     return snapshot
 
 
@@ -354,6 +370,11 @@ def test_every_key_grants_exactly_what_it_did_before(restore_schema):
     before_snapshot = _snapshot(seeded)
     before_keys = _key_table()
     assert len(before_keys) == len(SCENARIOS) + 2, "premise: every seeded key is in the table"
+    # NON-VACUITY, spelled out for the pair that was once vacuous: the grandfathered org's two
+    # keys give DIFFERENT, real answers (a is full, b has room), so equal snapshots across the
+    # migration mean something.
+    assert before_snapshot["grandfathered-a"]["admits_one_more"] == ("err", "POLICY_DENIED")
+    assert before_snapshot["grandfathered-b"]["admits_one_more"] == ("ok", True)
 
     _migrate(_targets_with(AFTER))
     assert "device_limit" not in _org_table_columns(), "the column was not dropped"
@@ -416,5 +437,5 @@ def test_the_grandfathered_org_keeps_both_keys_each_with_its_own_limit(restore_s
     assert (key_a.device_limit, key_b.device_limit) == (2, 3)
     assert (key_a.status, key_b.status) == (LicenseKeyStatus.ACTIVATED,) * 2
     # a is full (2 of 2): refused. b has room (1 of 3): admitted. Each enforces its OWN limit.
-    assert _probe(full_a, "post-a") == ("err", "POLICY_DENIED")
-    assert _probe(full_b, "post-b") == ("ok", True)
+    assert _probe(full_a, "post-a-probe") == ("err", "POLICY_DENIED")
+    assert _probe(full_b, "post-b-probe") == ("ok", True)

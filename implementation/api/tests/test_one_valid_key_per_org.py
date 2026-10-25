@@ -24,7 +24,7 @@ CONVERTED keys do not block.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 
 import pytest
 from django.utils import timezone
@@ -32,11 +32,15 @@ from django.utils import timezone
 from licensing_test_support import issue_key, seat_plan_code, seed_org, staff_actor
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment
+from selahcue_api.apps.devices.services import ACTIVATABLE_KEY_STATUSES
+from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
 from selahcue_api.apps.license_keys.services import (
+    KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY,
     lock_customer_for_key_changes,
     require_no_overlapping_license_key,
 )
+from selahcue_api.apps.license_keys.state_machine import LEGAL_TRANSITIONS, PRIOR_STATUS
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = pytest.mark.django_db
@@ -262,8 +266,9 @@ def test_grandfathered_orgs_keep_both_keys_and_only_new_issuance_is_refused():
     first = _existing_key(
         org, tag="gf-1", status=LicenseKeyStatus.ACTIVATED, starts_at=t0, expires_at=t0 + 30 * DAY
     )
+    # The second key outlives the first, so the two disagree about when the org is next free.
     second = _existing_key(
-        org, tag="gf-2", status=LicenseKeyStatus.ACTIVATED, starts_at=t0, expires_at=t0 + 30 * DAY
+        org, tag="gf-2", status=LicenseKeyStatus.ACTIVATED, starts_at=t0, expires_at=t0 + 45 * DAY
     )
 
     with pytest.raises(SafeAPIError) as caught:
@@ -276,6 +281,21 @@ def test_grandfathered_orgs_keep_both_keys_and_only_new_issuance_is_refused():
         key.refresh_from_db()
         assert key.status == LicenseKeyStatus.ACTIVATED
         assert key.device_limit == 3
+
+    # The refusal's hint names the date the org is actually free from: the LATEST expiry among
+    # the keys in the way. The earliest one (day 30) would send staff to a start that the other
+    # key still refuses, and the hint would be wrong exactly for the grandfathered orgs.
+    message = str(caught.value)
+    assert (t0 + 45 * DAY).isoformat() in message, message
+    # ...and following the hint works: a key starting at that date is issued.
+    followed = issue_key(
+        org,
+        tag="gf-4",
+        plan_code=seat_plan_code(3),
+        starts_at=t0 + 45 * DAY,
+        expires_at=t0 + 75 * DAY,
+    )
+    assert followed.created is True
 
 
 # --- The guard is ONE function a future extend / renew writer must call ----------------------
@@ -333,3 +353,175 @@ def test_issuance_by_a_different_actor_is_still_guarded():
             expires_at=t0 + 30 * DAY, actor=staff_actor("staff_ops_2"),
         )
     assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value
+
+
+def test_the_boundary_holds_when_the_new_start_is_written_with_a_utc_offset():
+    """The same instant, spelled `+01:00`. The service converts to UTC before comparing, so
+    "starts when the old key expires" is allowed however the caller wrote the time and "one
+    second before" is refused however the caller wrote it. The guard itself needs AWARE
+    datetimes (it compares instants), which is why issuance coerces first."""
+    plus_one = dt_timezone(timedelta(hours=1))
+    org = seed_org("offset-boundary")
+    t0 = _t0()
+    _existing_key(
+        org, tag="off-1", status=LicenseKeyStatus.ACTIVATED, starts_at=t0, expires_at=t0 + 30 * DAY
+    )
+    boundary = (t0 + 30 * DAY).astimezone(plus_one)
+    assert boundary.utcoffset() == timedelta(hours=1), "premise: the value really carries +01:00"
+
+    with pytest.raises(SafeAPIError) as caught:
+        issue_key(
+            org,
+            tag="off-early",
+            plan_code=seat_plan_code(3),
+            starts_at=boundary - SECOND,
+            expires_at=boundary + 30 * DAY,
+        )
+    assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value
+
+    allowed = issue_key(
+        org,
+        tag="off-exact",
+        plan_code=seat_plan_code(3),
+        starts_at=boundary,
+        expires_at=boundary + 30 * DAY,
+    )
+    assert allowed.created is True
+
+
+# --- The org lock is held for as short a time as the rule allows -------------------------------
+
+
+def _record_hash_and_lock_order(monkeypatch):
+    """Wrap `make_password` and the org lock so a test can see which happened first."""
+    events = []
+    real_hash = license_services.make_password
+    real_lock = license_services.lock_customer_for_key_changes
+
+    def hashed(*args, **kwargs):
+        events.append("hash")
+        return real_hash(*args, **kwargs)
+
+    def locked(*args, **kwargs):
+        events.append("lock")
+        return real_lock(*args, **kwargs)
+
+    monkeypatch.setattr(license_services, "make_password", hashed)
+    monkeypatch.setattr(license_services, "lock_customer_for_key_changes", locked)
+    return events
+
+
+def test_the_secret_is_hashed_before_the_org_lock_is_taken(monkeypatch):
+    """`make_password` takes ~250 ms. Done after the lock, every other write for the org waits
+    that long behind each issuance, so the hash comes first. The Postgres suite measures the
+    lock from a second connection; this pins the ORDER on any backend."""
+    events = _record_hash_and_lock_order(monkeypatch)
+    org = seed_org("hash-before-lock")
+    t0 = _t0()
+
+    issue_key(
+        org, tag="hash-before-lock", plan_code=seat_plan_code(3), starts_at=t0,
+        expires_at=t0 + 30 * DAY,
+    )
+
+    assert events == ["hash", "lock"], events
+
+
+def test_a_replay_hashes_nothing_and_takes_no_lock(monkeypatch):
+    """The first replay look is the fast path: a retry of an issuance that succeeded returns
+    before any secret is generated or any lock is taken. POSITIVE CONTROL: the first, real
+    issuance does both, so an empty event list means the replay skipped them."""
+    events = _record_hash_and_lock_order(monkeypatch)
+    org = seed_org("replay-fast-path")
+    t0 = _t0()
+    issue_key(
+        org, tag="replay-fast-path", plan_code=seat_plan_code(3), starts_at=t0,
+        expires_at=t0 + 30 * DAY,
+    )
+    assert events == ["hash", "lock"], "premise: a real issuance hashes and locks"
+    events.clear()
+
+    again = issue_key(
+        org, tag="replay-fast-path", plan_code=seat_plan_code(3), starts_at=t0,
+        expires_at=t0 + 30 * DAY,
+    )
+
+    assert again.created is False
+    assert events == [], events
+
+
+# --- The blocking set is tied to the state machine, not to a hand-written list -----------------
+#
+# `KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY` says which statuses can still come back into use.
+# That is a fact about the TRANSITION TABLE, so it is checked against the table: if a writer
+# is ever allowed to move a key from some status back to an activatable one (CONVERTED ->
+# ACTIVATED, say), that status must start blocking, and this test is what notices.
+
+
+def _statuses_that_can_become_activatable(table):
+    """Every status a key can be in from which an activatable status is reachable, computed from
+    a transition `table` shaped like `LEGAL_TRANSITIONS`.
+
+    Walks (status, recorded-prior) pairs rather than bare statuses, because a SUSPENDED key
+    only returns to the status it was suspended FROM (`PRIOR_STATUS`). Treating "SUSPENDED can
+    go back to anything suspendable" as a bare edge would make CONVERTED look revivable merely
+    because a converted key can be suspended, which it cannot be revived from."""
+    suspendable = {s for s, targets in table.items() if LicenseKeyStatus.SUSPENDED in targets}
+    nodes = [(s, None) for s in table if s != LicenseKeyStatus.SUSPENDED]
+    nodes += [(LicenseKeyStatus.SUSPENDED, prior) for prior in suspendable]
+
+    def successors(node):
+        status, prior = node
+        found = set()
+        for target in table[status]:
+            if target is PRIOR_STATUS:
+                if prior is not None:
+                    found.add((prior, None))
+            elif target == LicenseKeyStatus.SUSPENDED:
+                found.add((LicenseKeyStatus.SUSPENDED, status))
+            else:
+                found.add((target, None))
+        return found
+
+    reaching = {node for node in nodes if node[0] in ACTIVATABLE_KEY_STATUSES}
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            if node not in reaching and successors(node) & reaching:
+                reaching.add(node)
+                changed = True
+    return {status for status, _prior in reaching}
+
+
+def test_the_blocking_statuses_cover_every_status_the_state_machine_can_revive():
+    reachable = _statuses_that_can_become_activatable(LEGAL_TRANSITIONS)
+
+    missing = reachable - set(KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY)
+    assert not missing, (
+        f"the state machine lets a key in {sorted(s.value for s in missing)} become usable "
+        "again, but those statuses do not block an overlapping key"
+    )
+    assert set(ACTIVATABLE_KEY_STATUSES) <= set(KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY)
+    # POSITIVE CONTROL: the walk finds the two non-obvious members (a late renewal, and a
+    # suspension that returns to an activatable status) and does NOT find CONVERTED, so the
+    # subset check above is not passing on an empty set.
+    assert {LicenseKeyStatus.EXPIRED, LicenseKeyStatus.SUSPENDED} <= reachable
+    assert LicenseKeyStatus.CONVERTED not in reachable
+    assert LicenseKeyStatus.REVOKED not in reachable
+
+
+def test_the_walk_notices_a_new_edge_back_into_use():
+    """The mutation record for the test above, kept as a test: add a fake CONVERTED -> ACTIVATED
+    edge to a COPY of the table and the walk must report CONVERTED as revivable, which the
+    production set does not cover, so the test above would go red."""
+    fake = {
+        **LEGAL_TRANSITIONS,
+        LicenseKeyStatus.CONVERTED: LEGAL_TRANSITIONS[LicenseKeyStatus.CONVERTED]
+        | {LicenseKeyStatus.ACTIVATED},
+    }
+
+    reachable = _statuses_that_can_become_activatable(fake)
+
+    assert LicenseKeyStatus.CONVERTED in reachable
+    assert reachable - set(KEY_STATUSES_THAT_BLOCK_AN_OVERLAPPING_KEY) == {LicenseKeyStatus.CONVERTED}

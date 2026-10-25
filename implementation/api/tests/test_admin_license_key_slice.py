@@ -4,6 +4,7 @@ from datetime import timedelta
 import pytest
 from django.test import override_settings
 from django.utils import timezone
+
 from licensing_test_support import seat_plan_code
 
 

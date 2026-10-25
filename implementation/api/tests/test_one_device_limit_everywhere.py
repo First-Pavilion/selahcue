@@ -94,15 +94,21 @@ def test_one_org_reports_the_same_limit_on_every_surface(client):
     # Admin console.
     admin_limit = _admin_reported_limit(client, org.id)
 
-    # Fill the key to its limit; the device after the last one is the refusal point.
-    first = _activate(client, full_key, "fp-0")
-    assert first.status_code == 200, first.content
-    token = first.json()["activation_token"]
-    for index in range(1, SEATS):
-        assert _activate(client, full_key, f"fp-{index}").status_code == 200
-    refused = _activate(client, full_key, "fp-over")
-    assert refused.status_code == 403
-    admitted_before_refusal = SEATS  # the loop above admitted exactly this many
+    # Try MORE devices than the plan has seats and count how many are let in: the refusal point
+    # is observed (the first 403), not assumed, so the equality below compares the enforced
+    # number with the three reported ones and not a constant with itself.
+    token = None
+    admitted_before_refusal = 0
+    for index in range(SEATS + 2):
+        attempt = _activate(client, full_key, f"fp-{index}")
+        if attempt.status_code != 200:
+            assert attempt.status_code == 403, attempt.content
+            break
+        admitted_before_refusal += 1
+        token = token or attempt.json()["activation_token"]
+    assert token is not None, "no device was admitted at all"
+    # Every attempt after the refusal point is refused as well: the ceiling holds.
+    assert _activate(client, full_key, "fp-after-the-ceiling").status_code == 403
 
     # Signed manifest.
     manifest = client.get("/v1/entitlements/manifest", HTTP_AUTHORIZATION=f"Bearer {token}")

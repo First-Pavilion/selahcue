@@ -1170,12 +1170,21 @@ def _error_code(response):
     return body["errors"][0]["extensions"]["code"]
 
 
+def _asking_for_the_device_limit(query):
+    """`query` with `deviceLimit` added to its `licenseKey { ... }` selection. Done by edit so the
+    shared constants (other tests rewrite their exact text) stay as they are."""
+    widened = re.sub(r"licenseKey \{ ([^}]*) \}", r"licenseKey { \1 deviceLimit }", query, count=1)
+    assert widened != query, "positive control: the selection really was widened"
+    return widened
+
+
 def test_graphql_suspend_then_reinstate_happy_path(client):
-    key, full_key = _seed_key("gql-happy")
+    # Not the default of 3, so a payload that echoed the wrong number would show.
+    key, full_key = _seed_key("gql-happy", device_limit=5)
     _drive_to(key, S.EXPIRING)
 
     suspended = _gql(
-        client, SUSPEND_MUTATION, _input(key, "gql-suspend-0001"),
+        client, _asking_for_the_device_limit(SUSPEND_MUTATION), _input(key, "gql-suspend-0001"),
         permissions="suspend_license_key",
     )
     assert suspended.status_code == 200
@@ -1188,9 +1197,12 @@ def test_graphql_suspend_then_reinstate_happy_path(client):
     assert payload["licenseKey"]["id"] == str(key.pk)
     assert payload["replayed"] is False
     assert full_key not in json.dumps(body)
+    # The summary shape the lifecycle mutations return carries the key's device limit, the one
+    # number the licence admits (86ak5mn0m).
+    assert payload["licenseKey"]["deviceLimit"] == key.device_limit == 5
 
     reinstated = _gql(
-        client, REINSTATE_MUTATION, _input(key, "gql-reinstate-001"),
+        client, _asking_for_the_device_limit(REINSTATE_MUTATION), _input(key, "gql-reinstate-001"),
         permissions="reinstate_license_key",
     )
     body = reinstated.json()
@@ -1199,6 +1211,7 @@ def test_graphql_suspend_then_reinstate_happy_path(client):
     assert payload["changed"] is True
     assert payload["licenseKey"]["status"] == "EXPIRING", "back to the prior status, not ACTIVATED"
     assert payload["licenseKey"]["priorStatus"] == ""
+    assert payload["licenseKey"]["deviceLimit"] == 5
 
 
 def test_graphql_retry_reports_changed_false(client):

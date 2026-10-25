@@ -11,7 +11,7 @@ from datetime import timedelta
 
 import pytest
 from django.core.cache import cache
-from django.db import connection, connections, transaction
+from django.db import OperationalError, connection, connections, transaction
 from django.utils import timezone
 
 from licensing_test_support import issue_key, seat_plan_code, seed_org
@@ -34,10 +34,12 @@ from selahcue_api.apps.devices.services import (
     activate_device,
     activate_device_with_session,
 )
+from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
     ReinstateLicenseKeyData,
     SuspendLicenseKeyData,
+    lock_customer_for_key_changes,
     reinstate_license_key,
     suspend_license_key,
 )
@@ -1069,6 +1071,124 @@ def test_a_retry_racing_the_original_issuance_is_a_replay_not_a_refusal():
     assert created == [False, True], f"expected one creation and one replay, got {created}"
     replay = next(result for _, result in results if not result.created)
     assert replay.full_key is None, "a replay must never re-show the secret"
+
+
+def test_holding_the_org_lock_does_not_block_a_row_that_references_the_org():
+    """The org lock is `FOR NO KEY UPDATE`. A plain `FOR UPDATE` on the org row blocks every INSERT
+    of a row that references it (a user, a device, a session, a key), because each takes
+    `FOR KEY SHARE` on the parent; that would stall sign-ups and activations of the same org for
+    as long as an issuance holds the lock. The race itself only needs two issuers to exclude
+    each other, which the tests above still prove.
+
+    Measured by inserting a user for the org from a second connection while the lock is held,
+    with a 3 s `lock_timeout` so a blocked insert fails instead of hanging the test.
+    """
+    org = seed_org("lock-strength")
+    holding = threading.Event()
+    release = threading.Event()
+    outcome = {}
+
+    def hold():
+        try:
+            with transaction.atomic():
+                lock_customer_for_key_changes(org.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
+            connections.close_all()
+
+    def insert_child():
+        started = time.monotonic()
+        try:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '3s'")
+                CustomerUser.objects.create(
+                    customer=org,
+                    email="child@lock-strength.example",
+                    email_fingerprint="f" * 64,
+                    password_hash="x",
+                    status=CustomerUserStatus.INVITED,
+                    role=CustomerRole.ADMIN,
+                    created_by_actor_id="test",
+                    idempotency_key="lock-strength-child-0001",
+                )
+            outcome["error"] = None
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            outcome["seconds"] = time.monotonic() - started
+            connections.close_all()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert holding.wait(30), "the holder never took the org lock"
+        child = threading.Thread(target=insert_child)
+        child.start()
+        child.join(timeout=30)
+        assert not child.is_alive(), "the child insert is still blocked behind the org lock"
+    finally:
+        release.set()
+        holder.join(timeout=60)
+
+    assert outcome["error"] is None, f"inserting a row for the org was blocked: {outcome['error']!r}"
+    assert outcome["seconds"] < 2.0, f"the insert waited {outcome['seconds']:.2f}s behind the lock"
+    assert CustomerUser.objects.filter(customer=org).count() == 1
+
+
+def test_the_org_lock_is_not_held_while_the_secret_is_hashed(monkeypatch):
+    """`make_password` costs ~250 ms. Held under the org lock, every other write for the org
+    (including a device activation, which locks the org row through its join) waits that long
+    behind each issuance. The secret is therefore generated and hashed BEFORE the lock is
+    taken, and this checks it from outside: while the hash is running, a second connection can
+    take the org row `NOWAIT`.
+
+    Fails if the hashing moves back inside the lock (`FOR UPDATE NOWAIT` then raises).
+    """
+    org = seed_org("hash-outside-lock")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    hashing = threading.Event()
+    observed = threading.Event()
+    result = {}
+    real_hash = license_services.make_password
+
+    def slow_hash(*args, **kwargs):
+        hashing.set()
+        observed.wait(timeout=30)
+        return real_hash(*args, **kwargs)
+
+    def observe():
+        try:
+            assert hashing.wait(30), "issuance never reached the hash"
+            try:
+                with transaction.atomic():
+                    CustomerOrg.objects.select_for_update(nowait=True).get(pk=org.pk)
+                result["observer"] = "lock was free"
+            except OperationalError as exc:
+                result["observer"] = f"lock was held: {exc}"
+        finally:
+            observed.set()
+            connections.close_all()
+
+    monkeypatch.setattr(license_services, "make_password", slow_hash)
+    observer = threading.Thread(target=observe)
+    observer.start()
+    try:
+        issued = issue_key(
+            org,
+            tag="hash-outside-lock",
+            plan_code=plan_code,
+            starts_at=t0,
+            expires_at=t0 + timedelta(days=30),
+        )
+    finally:
+        observed.set()
+        observer.join(timeout=60)
+
+    assert issued.created is True
+    assert result["observer"] == "lock was free", result
 
 
 def test_two_simultaneous_issuances_to_two_orgs_both_succeed():

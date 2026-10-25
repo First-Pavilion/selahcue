@@ -28,8 +28,9 @@ The catalogue's own seat number is **not published at all** — its dimension ca
 `publish_in_manifest=False`. It is where a key's `device_limit` is COPIED FROM at issuance
 (86ak5mn0m), but a plan changed afterwards does not move a key that already exists (FR-516's
 write-back is not built), so the two can still differ for an issued licence; it stays
-unpublished until something reconciles them. There is no fourth grant state meaning "advisory, do not enforce", and a
-client cannot invent one, so silence is the only honest encoding.
+unpublished until something reconciles them. There is no fourth grant state meaning
+"advisory, do not enforce", and a client cannot invent one, so silence is the only honest
+encoding.
 
 A dimension key absent from `grants` means the catalogue expresses nothing about it — the
 client applies its own default; `null` means granted without a ceiling. Those are three

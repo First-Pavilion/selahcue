@@ -44,11 +44,13 @@ def staff_actor(actor_id: str = "staff_ops_1") -> ActorContext:
     )
 
 
-def seat_plan(code: str, device_instances) -> Plan:
+def seat_plan(code: str, device_instances, *, other_grants: dict[str, str] | None = None) -> Plan:
     """A non-fallback plan whose `device_instances` grant is exactly `device_instances`.
 
     `None` creates the plan with NO grant for the dimension at all, which resolves to the
-    dimension's own default (empty in the seed, so the value is absent).
+    dimension's own default (empty in the seed, so the value is absent). `other_grants` adds
+    grants on other dimensions (`{"screen_outputs": "4"}`), for tests that need the plan to
+    differ from the permissive defaults without borrowing a seeded tier's numbers.
     """
     plan = Plan.objects.create(
         code=code,
@@ -63,6 +65,14 @@ def seat_plan(code: str, device_instances) -> Plan:
             plan=plan,
             dimension=GrantDimension.objects.get(key=SEAT_DIMENSION_KEY),
             raw_value=str(device_instances),
+            changed_by_actor_id=FIXTURE_ACTOR,
+            reason=FIXTURE_REASON,
+        )
+    for key, raw_value in (other_grants or {}).items():
+        PlanGrant.objects.create(
+            plan=plan,
+            dimension=GrantDimension.objects.get(key=key),
+            raw_value=raw_value,
             changed_by_actor_id=FIXTURE_ACTOR,
             reason=FIXTURE_REASON,
         )

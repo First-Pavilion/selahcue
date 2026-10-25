@@ -144,6 +144,11 @@ def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
             customer_id=str(customer.id),
             key_type="TRIAL",
             feature_scope=feature_scope,
+            # The seeded PRO plan ON PURPOSE. This file asserts PRO's real grants (screen
+            # outputs, NDI, STT, watermark), so it cannot use a plan of its own, and issuing on
+            # it needs PRO to carry a `device_instances` value (86ak5mn0m). If the catalogue
+            # reseed (17tnw2az0gd) ever removes PRO's seat count, issuance here is refused by
+            # design and this seeder has to move with the reseed.
             plan_code="PRO",
             starts_at=now,
             expires_at=now + timedelta(days=30),

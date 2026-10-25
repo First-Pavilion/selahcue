@@ -14,6 +14,34 @@ key's, an org with no keys, an org holding two overlapping keys, every licence s
 Recovery, if the previous release must run against this database again: the reverse operation
 adds the column back with its Python default of 1. Nothing in the previous release's
 enforcement path reads it, so the value does not matter to what a licence grants.
+
+DEPLOY ORDER MATTERS, because this is a DROP COLUMN. Measured on Postgres 16.2 with 10,002 orgs
+and 32,000 keys: the ALTER takes ACCESS EXCLUSIVE on `selahcue_accounts_customerorg` for about
+3 ms and rewrites nothing, but
+
+  * the release BEFORE this one cannot run against the migrated schema. Every org read fails
+    with `column selahcue_accounts_customerorg.device_limit does not exist`, including the
+    `AppLicenseKey.objects.select_related("customer")` join that device activation uses, and
+    so does creating an org.
+  * the release AFTER this one cannot create an org against the OLD schema: the column is
+    NOT NULL with no database default (Django applies its default in Python), so the new code's
+    INSERT, which omits it, fails with a not-null violation. Observed on Postgres.
+  * the ALTER waits for every transaction that has touched the table, and while it waits every
+    ordinary query on the table queues behind it (an idle reader holding the table for 3 s
+    held up org traffic for 2.67 s).
+
+So: DEPLOY = stop the old instances, THEN `migrate`, THEN start the new release. ROLL BACK =
+`manage.py migrate selahcue_accounts 0003` BEFORE starting the old image (about 12 ms; every org
+gets `device_limit` 1). Run `migrate` with a short lock timeout so a long reader cannot queue all
+org traffic: `PGOPTIONS='-c lock_timeout=5000' python manage.py migrate` (verified: libpq passes
+it to the Django connection). If the API ever runs more than one instance during a deploy, this
+cannot be a single step: ship a first release that makes the column nullable (or gives it a
+database default) and stops reading it, and drop it in a second. Splitting by merely delaying
+this migration is NOT enough, for the second reason above.
+
+How a deploy sequences `migrate` today is UNKNOWN to the engineering team (the API image still
+ends in `runserver`, and nothing in the repository runs `migrate` for you); it is an owner
+question. Runbook: docs/ops/DEPLOYMENT.md, "6d. Database migrations".
 """
 
 from django.db import migrations

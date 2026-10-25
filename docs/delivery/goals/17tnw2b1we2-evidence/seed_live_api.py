@@ -124,7 +124,7 @@ from django.contrib.auth.hashers import make_password  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from selahcue_api.apps.accounts import services  # noqa: E402
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerRole, CustomerUser, CustomerUserStatus  # noqa: E402
-from selahcue_api.apps.catalogue.models import Plan  # noqa: E402
+from selahcue_api.apps.catalogue.models import Plan, PlanGrant  # noqa: E402
 from selahcue_api.apps.license_keys.services import GenerateLicenseKeyData, generate_license_key  # noqa: E402
 from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission  # noqa: E402
 
@@ -153,7 +153,14 @@ empty = org("empty")
 user(empty, "admin@empty.example")   # a verified admin whose org has NO licence key
 
 actor = ActorContext(kind=ActorKind.STAFF, actor_id="staff_seed", staff_permissions=frozenset({StaffPermission.GENERATE_LICENSE_KEY}))
-plan = Plan.objects.exclude(is_fallback=True).order_by("id").first() or Plan.objects.first()
+# This run used to seed a licence with 3 devices. A licence now takes its device limit from its plan
+# (86ak5mn0m), so pick a sellable plan whose `device_instances` is 3 instead of "the first one by id"
+# (which is a 1-seat plan in the seeded catalogue); fall back to the old choice if none has 3.
+three_seat = (
+    PlanGrant.objects.filter(dimension__key="device_instances", raw_value="3", plan__is_fallback=False)
+    .select_related("plan").order_by("plan_id").first()
+)
+plan = (three_seat.plan if three_seat else None) or Plan.objects.exclude(is_fallback=True).order_by("id").first() or Plan.objects.first()
 now = timezone.now().replace(microsecond=0)
 # 86ak5mn0m: the licence's device limit is copied from this plan's `device_instances` (no
 # longer typed here), and the org has no device limit of its own.
