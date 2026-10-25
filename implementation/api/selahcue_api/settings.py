@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -45,7 +46,10 @@ def _database_config() -> dict:
     }
 
 
-# dev | staging | prod. Gates debug tooling, mail backend and Sentry, as in yharah-logistics.
+# dev | staging | prod. Anything but exactly `dev` counts as deployed: it switches on the SECRET_KEY
+# requirement below, the real-SMTP mail defaults, the TLS-proxy warning (selahcue_accounts.W002) and
+# the refusal of eager Celery in prod. It does not touch DEBUG, and it gates no error monitoring:
+# nothing in this repo consumes SENTRY_DSN (see the end of this file).
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 
 # `DEBUG=1` / `DEBUG=0`, the house convention. env_bool also accepts true/yes/on.
@@ -54,13 +58,62 @@ DEBUG = env_bool("DEBUG", False)
 # Required outside dev. yharah raises unconditionally, but SelahCue's tests run bare (no
 # container env), so the hard requirement is scoped to non-dev — still stricter than the
 # previous silent insecure default, which would have shipped to production unnoticed.
+#
+# Two public values must never be a deployed key (17tnw2b9ab0). The dev key is in this repository,
+# and it is the signing key and the HMAC pepper for licence-key, device-token and account-session
+# fingerprints. The placeholder is the example value implementation/api/.env.sample used to carry;
+# `make up` copies that file to `.env` and its own header says to copy it, so copies of the old one
+# are out there. So outside `dev` the key must be neither missing nor one of those, whether it got
+# there by being unset or by being set to one, and however the value was spelled: in matching
+# quotes, re-cased, or carrying a byte-order mark, a zero-width character or stray whitespace from
+# a copy-paste (`_normalised_secret`). "Outside dev" means ENVIRONMENT is anything but exactly
+# `dev`, so a typo or a different spelling ('Dev', 'production') fails closed instead of quietly
+# running as dev.
+#
+# Deliberately NOT here: a minimum length or an entropy test. Several suites boot prod with a
+# one-character key on purpose, and a length rule is not what this guards (a short key is weak, a
+# PUBLIC key is forgeable by anyone who has read the repository). Django's own `check --deploy`
+# warns about a weak key (security.W009), but nothing in this repo, in CI or in the Dockerfile runs
+# `check --deploy`, so a weak key is not caught automatically anywhere today. Adopting that check
+# or its thresholds is a possible follow-up.
+#
+# What this does NOT cover: an environment that never sets ENVIRONMENT IS `dev`, so it starts
+# without complaint, on the dev key. That is why docs/ops/DEPLOYMENT.md and deployments.md list
+# ENVIRONMENT first in "Prod must-set" and say so.
+_DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
+_PUBLIC_SECRET_KEYS = frozenset({_DEV_SECRET_KEY, "replace-me-with-a-fresh-key"})
+
+
+def _normalised_secret(value: str) -> str:
+    """`value` as a comparison would see it through the noise a pasted key picks up: invisible
+    format characters removed (a byte-order mark, zero-width spaces and joiners, soft hyphens:
+    Unicode category Cf), whitespace stripped, matched ASCII quotes (' or ") stripped from the
+    ends, case folded. Nothing else is normalised: other punctuation, other kinds of invisible
+    character and look-alike letters are not. Only ever used to COMPARE; the key Django uses is
+    the configured value, untouched."""
+    value = "".join(char for char in value if unicodedata.category(char) != "Cf").strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value.casefold()
+
+
 SECRET_KEY = os.getenv("SECRET_KEY", "")
-if not SECRET_KEY:
-    if ENVIRONMENT != "dev":
+if ENVIRONMENT != "dev":
+    _normalised_secret_key = _normalised_secret(SECRET_KEY)
+    if not _normalised_secret_key:
         raise ImproperlyConfigured(
             f"SECRET_KEY must be set when ENVIRONMENT={ENVIRONMENT!r}."
         )
-    SECRET_KEY = "selahcue-dev-only-insecure-key"
+    if _normalised_secret_key in _PUBLIC_SECRET_KEYS:
+        raise ImproperlyConfigured(
+            "SECRET_KEY must not be a public example value (the development key, or the "
+            f"old placeholder from .env.sample) when ENVIRONMENT={ENVIRONMENT!r}: those are in the "
+            "repository, so anyone can forge what they sign. Set SECRET_KEY to a fresh random value."
+        )
+    # A lower-cased copy of the live key must not stay behind as a module global.
+    del _normalised_secret_key
+elif not SECRET_KEY:
+    SECRET_KEY = _DEV_SECRET_KEY
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 
@@ -578,7 +631,8 @@ MAILERS = {
 }
 
 # --- Error monitoring ----------------------------------------------------------------------
-# Wired only when a DSN is present AND we are not in dev, so local runs never emit events.
+# Read and kept here, but NOT consumed: no Sentry SDK is installed or initialised anywhere in this
+# repo, so setting SENTRY_DSN changes nothing today (docs/ops/DEPLOYMENT.md section 6b says the same).
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 # Ed25519 seed (32 bytes, standard base64) signing offline entitlement manifests (DEC-004).
