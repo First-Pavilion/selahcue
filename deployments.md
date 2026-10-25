@@ -36,7 +36,7 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
-> `settings.py` reads the discrete `SQL_*` variables (the First Pavilion house convention), **not** a `DATABASE_URL` DSN. With `SQL_ENGINE` unset it falls back to the bundled SQLite for dev/test. In production `SQL_ENGINE` must be Postgres: the DEC-004 device instance-limit guard uses `select_for_update`, which SQLite silently no-ops, so the limit is only enforced on a row-locking backend.
+> The API does **not** read a `DATABASE_URL` DSN. `settings.py` reads the discrete `SQL_*` variables (the First Pavilion house convention). With `SQL_ENGINE` unset it falls back to the bundled SQLite for dev/test. In production `SQL_ENGINE` must be Postgres: the DEC-004 device instance-limit guard uses `select_for_update`, which SQLite silently no-ops, so the limit is only enforced on a row-locking backend.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|

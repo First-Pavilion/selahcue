@@ -67,6 +67,14 @@ NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 # neither required in the docs nor expected there.
 ENTRY_POINT_PLUMBING = {"DJANGO_SETTINGS_MODULE"}
 
+# Names the docs used to tell operators to set. The API reads none of them. They may be mentioned,
+# but ONLY in a sentence that says the API does not read them (the warning at the top of
+# deployments.md section 1a): a retired name anywhere else, a default column or a "Prod
+# must-set" line included, is the original bug. Each needs to be mentioned at least once, so the
+# warning cannot be deleted without this list (and its reason) being revisited.
+RETIRED_NAMES = {"DJANGO_SECRET_KEY", "DJANGO_DEBUG", "DATABASE_URL"}
+RETIRED_WARNING = re.compile(r"does \*{0,2}not\*{0,2} read", re.IGNORECASE)
+
 # Backticked ALL-CAPS tokens that appear in the API sections of the docs and are NOT environment
 # variables the API reads. Each needs a reason; the test refuses an entry that is not actually
 # used, so this list cannot grow stale on its own.
@@ -81,10 +89,6 @@ NOT_ENV_VARIABLES = {
     "SELAHCUE_THROTTLE_SESSION_LOGIN": "fixed budget in settings.py, not an environment variable",
     "SELAHCUE_RESEND_DEGRADED_SEND_CEILING": "fixed ceiling in settings.py, not an environment variable",
     "SELAHCUE_RESET_SEND_DEGRADED_CEILING": "fixed ceiling in settings.py, not an environment variable",
-    # Real names the docs mention only to say that nothing reads them.
-    "DJANGO_SECRET_KEY": "retired name, quoted only to warn that the API does not read it",
-    "DJANGO_DEBUG": "retired name, quoted only to warn that the API does not read it",
-    "DATABASE_URL": "retired name, quoted only to warn that the API does not read it",
     # Protocol terms, wire values and commands that happen to be upper case.
     "REMOTE_ADDR": "WSGI request key the rate limiter reads, not an environment variable",
     "UNAUTHENTICATED": "GraphQL error code",
@@ -111,31 +115,108 @@ class Read:
     where: str
 
 
-def _is_environ(node: ast.AST) -> bool:
-    """`os.environ` or a bare `environ` (from os import environ)."""
+@dataclass(frozen=True)
+class Aliases:
+    """Names that stand for `os.environ` / `os.getenv` after `from os import environ as e`."""
+
+    environ: frozenset = frozenset({"environ"})
+    getenv: frozenset = frozenset({"getenv"})
+
+
+def _aliases(trees) -> Aliases:
+    environ, getenv = {"environ"}, {"getenv"}
+    for tree in trees:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "os":
+                for alias in node.names:
+                    if alias.name == "environ":
+                        environ.add(alias.asname or alias.name)
+                    if alias.name == "getenv":
+                        getenv.add(alias.asname or alias.name)
+    return Aliases(frozenset(environ), frozenset(getenv))
+
+
+def _is_environ(node: ast.AST, aliases: Aliases) -> bool:
+    """`<anything>.environ` or a bare name bound to os.environ. The receiver is deliberately not
+    checked: `import os as _os` or `import os as operating_system` must not hide a read, and
+    over-detecting costs a doc row, where under-detecting costs the whole check."""
     if isinstance(node, ast.Attribute):
-        return node.attr == "environ" and isinstance(node.value, ast.Name) and node.value.id == "os"
-    return isinstance(node, ast.Name) and node.id == "environ"
+        return node.attr == "environ"
+    return isinstance(node, ast.Name) and node.id in aliases.environ
 
 
-def _read_name_arg(node: ast.AST) -> ast.AST | None:
+def _is_getenv(node: ast.AST, aliases: Aliases) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr == "getenv"
+    return isinstance(node, ast.Name) and node.id in aliases.getenv
+
+
+def _read_name_arg(node: ast.AST, aliases: Aliases) -> ast.AST | None:
     """The expression holding the variable name if `node` reads the environment, else None.
 
     `os.environ.setdefault` is a write-if-absent, not a read of operator configuration, so it is
-    deliberately not matched. `os.environ.pop` is treated as a read: it consumes the value.
+    deliberately not matched. `os.environ.pop` is treated as a read: it consumes the value. A
+    subscript that assigns or deletes (`os.environ["X"] = ...`) is a write, not a read.
     """
     if isinstance(node, ast.Call) and node.args:
         func = node.func
-        if isinstance(func, ast.Attribute):
-            if func.attr == "getenv" and isinstance(func.value, ast.Name) and func.value.id == "os":
-                return node.args[0]
-            if func.attr in {"get", "pop"} and _is_environ(func.value):
-                return node.args[0]
-        if isinstance(func, ast.Name) and func.id == "getenv":
+        if _is_getenv(func, aliases):
             return node.args[0]
-    if isinstance(node, ast.Subscript) and _is_environ(node.value):
+        if isinstance(func, ast.Attribute) and func.attr in {"get", "pop"} and _is_environ(func.value, aliases):
+            return node.args[0]
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.ctx, ast.Load)
+        and _is_environ(node.value, aliases)
+    ):
         return node.slice
     return None
+
+
+def _refuse_indirect_access(trees, parents: dict[int, ast.AST], aliases: Aliases) -> None:
+    """Fail on any use of the environment that this module cannot see into: `dict(os.environ)`,
+    `**os.environ`, iterating it, `f = os.getenv; f("X")`, `getattr(os, "getenv")`. Each could
+    read a variable the docs never hear about, so each is a failure, not a skip."""
+    for label, tree in trees.items():
+        for node in ast.walk(tree):
+            where = f"{label}:{getattr(node, 'lineno', '?')}"
+            if _is_environ(node, aliases) and not isinstance(node, ast.Name) or (
+                isinstance(node, ast.Name) and node.id in aliases.environ and isinstance(node.ctx, ast.Load)
+            ):
+                parent = parents.get(id(node))
+                grandparent = parents.get(id(parent)) if parent is not None else None
+                via_method = (
+                    isinstance(parent, ast.Attribute)
+                    and parent.value is node
+                    and parent.attr in {"get", "pop", "setdefault"}
+                    and isinstance(grandparent, ast.Call)
+                    and grandparent.func is parent
+                )
+                via_subscript = isinstance(parent, ast.Subscript) and parent.value is node
+                if not (via_method or via_subscript):
+                    raise UnresolvableRead(
+                        f"{where}: the environment is used as a whole or indirectly "
+                        f"({ast.unparse(parent) if parent is not None else 'os.environ'!r}); "
+                        "read each variable by a literal name so the deployment docs can be checked"
+                    )
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in {"environ", "getenv"}
+            ):
+                raise UnresolvableRead(f"{where}: the environment is reached through getattr")
+            if _is_getenv(node, aliases) and (
+                isinstance(node, ast.Attribute) or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
+            ):
+                parent = parents.get(id(node))
+                if not (isinstance(parent, ast.Call) and parent.func is node):
+                    raise UnresolvableRead(
+                        f"{where}: getenv is referenced without being called directly "
+                        f"({ast.unparse(parent) if parent is not None else 'getenv'!r})"
+                    )
 
 
 def _parameters(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
@@ -174,6 +255,8 @@ def env_reads(sources: dict[str, str]) -> set[Read]:
         for parent in ast.walk(tree):
             for child in ast.iter_child_nodes(parent):
                 parents[id(child)] = parent
+    aliases = _aliases(trees.values())
+    _refuse_indirect_access(trees, parents, aliases)
 
     # helper name -> (index, parameter) of the parameter that ends up as an environment name.
     helpers: dict[str, tuple[int, str]] = {}
@@ -190,7 +273,7 @@ def env_reads(sources: dict[str, str]) -> set[Read]:
         changed = False
         for tree in trees.values():
             for node in ast.walk(tree):
-                name_arg = _read_name_arg(node)
+                name_arg = _read_name_arg(node, aliases)
                 callee_helper = None
                 if name_arg is None and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                     callee_helper = helpers.get(node.func.id)
@@ -210,7 +293,7 @@ def env_reads(sources: dict[str, str]) -> set[Read]:
     reads: set[Read] = set()
     for label, tree in trees.items():
         for node in ast.walk(tree):
-            name_arg = _read_name_arg(node)
+            name_arg = _read_name_arg(node, aliases)
             if name_arg is None and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 helper = helpers.get(node.func.id)
                 if helper is not None:
@@ -250,6 +333,7 @@ class Mention:
     section: str
     is_row: bool  # first cell of a table row, i.e. a documented variable
     line: int
+    text: str = ""  # the whole line it was found on
 
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
@@ -299,7 +383,7 @@ def doc_mentions(text: str, in_scope) -> list[Mention]:
         for span in BACKTICKED.finditer(line):
             is_row = first_cell_end is not None and span.start() < first_cell_end
             for name in _token_names(span.group(1)):
-                mentions.append(Mention(name, section, is_row, number))
+                mentions.append(Mention(name, section, is_row, number, line))
     return mentions
 
 
@@ -422,12 +506,24 @@ def test_no_stale_or_unknown_variable_name_appears_in_the_api_sections():
     unknown = []
     for label, mentions in (("deployments.md", deployments_mentions()), ("DEPLOYMENT.md", ops_mentions())):
         for m in mentions:
-            if m.name not in read and m.name not in NOT_ENV_VARIABLES:
-                unknown.append(f"{label}:{m.line} `{m.name}` ({m.section})")
+            if m.name in read or m.name in NOT_ENV_VARIABLES:
+                continue
+            if m.name in RETIRED_NAMES and RETIRED_WARNING.search(m.text):
+                continue  # the one place a retired name may appear: saying it is not read
+            unknown.append(f"{label}:{m.line} `{m.name}` ({m.section})")
     assert not unknown, (
         "names in the API sections of the deployment docs that the API does not read and that are "
-        "not on the NOT_ENV_VARIABLES list: " + "; ".join(unknown)
+        "not on the NOT_ENV_VARIABLES list (a retired name is allowed only in a sentence saying "
+        "the API does not read it): " + "; ".join(unknown)
     )
+
+
+def test_the_retired_names_are_still_warned_about():
+    mentioned = {m.name for m in deployments_mentions() if RETIRED_WARNING.search(m.text)}
+    assert RETIRED_NAMES <= mentioned, (
+        f"deployments.md no longer warns that the API does not read {sorted(RETIRED_NAMES - mentioned)}"
+    )
+    assert not (RETIRED_NAMES & api_env_names()), "the API reads a name on RETIRED_NAMES now: update the docs"
 
 
 def test_the_not_env_variables_list_has_no_dead_entries():
@@ -457,9 +553,9 @@ def test_prod_must_set_names_environment_and_what_dev_means():
     text = _read(DEPLOYMENTS_MD)
     line = next((l for l in text.splitlines() if "Prod must-set" in l), None)
     assert line is not None, "deployments.md lost its 'Prod must-set' line"
-    names = {n for span in BACKTICKED.findall(line) for n in _token_names(span)}
-    assert {"ENVIRONMENT", "SECRET_KEY", "DEBUG", "DJANGO_ALLOWED_HOSTS"} <= names, line
-    assert "SQL_ENGINE" in names, line
+    ordered = [n for span in BACKTICKED.findall(line) for n in _token_names(span)]
+    assert ordered[:1] == ["ENVIRONMENT"], f"ENVIRONMENT must be the first name on the line: {line}"
+    assert {"ENVIRONMENT", "SECRET_KEY", "DEBUG", "DJANGO_ALLOWED_HOSTS", "SQL_ENGINE"} <= set(ordered), line
     assert "dev" in line and "refuse" in line.lower(), (
         "the Prod must-set line must say what happens when ENVIRONMENT is left at `dev`"
     )
@@ -506,14 +602,49 @@ d = env_bool(name="HELPER_FOUR", default=True)
     assert _names(source) == {"HELPER_ONE", "HELPER_TWO", "HELPER_THREE", "HELPER_FOUR"}
 
 
-def test_extractor_ignores_setdefault_and_unrelated_calls():
+def test_extractor_ignores_writes_and_unrelated_calls():
     source = """
 import os
 os.environ.setdefault("NOT_A_READ", "x")
-settings.get("ALSO_NOT")
-other.getenv("NOR_THIS")
+os.environ["ALSO_NOT"] = "y"
+del os.environ["NOR_THIS"]
+settings.get("NOR_THAT")
+cache.pop("OR_THIS")
 """
     assert _names(source) == set()
+
+
+def test_extractor_sees_through_import_aliases():
+    """`import os as _os` and `from os import environ as e` must not hide a read: this is the gap
+    the mutation run found in the first version of this module."""
+    source = """
+import os as _os
+import os as operating_system
+from os import environ as e, getenv as g
+a = _os.getenv("ALIAS_ONE")
+b = operating_system.environ.get("ALIAS_TWO")
+c = e["ALIAS_THREE"]
+d = g("ALIAS_FOUR")
+f = e.get("ALIAS_FIVE")
+"""
+    assert _names(source) == {"ALIAS_ONE", "ALIAS_TWO", "ALIAS_THREE", "ALIAS_FOUR", "ALIAS_FIVE"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nx = dict(os.environ)\n",
+        "import os\nx = {**os.environ}\n",
+        "import os\nfor k in os.environ:\n    pass\n",
+        "import os\nx = os.environ.copy()\n",
+        "import os\nfrom os import environ\nx = list(environ.items())\n",
+        "import os\nf = os.getenv\nx = f('A')\n",
+        "import os\nx = getattr(os, 'getenv')('A')\n",
+    ],
+)
+def test_extractor_refuses_whole_or_indirect_use_of_the_environment(source):
+    with pytest.raises(UnresolvableRead):
+        _names(source)
 
 
 def test_extractor_refuses_a_read_it_cannot_name():
