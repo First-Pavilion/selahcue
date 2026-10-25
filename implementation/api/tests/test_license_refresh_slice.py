@@ -3,6 +3,7 @@ from datetime import timedelta
 
 import pytest
 from django.utils import timezone
+from licensing_test_support import seat_plan_code
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +32,6 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=device_limit,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"customer-org-{tag}",
     )
@@ -51,12 +51,11 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
             # DEC-014 refuses issuance onto the catalogue's designated fallback, so this
             # seeder names a sellable plan. The lifecycle/transport behaviour these tests
             # assert does not depend on which plan it is.
-            plan_code="PRO",
+            plan_code=seat_plan_code(device_limit),
             starts_at=starts_at or now,
             expires_at=expires_at or (now + timedelta(days=30)),
             timezone="Africa/Lagos",
             seat_limit=5,
-            device_limit=device_limit,
             territory="NG",
             reason="Pilot for license-refresh tests.",
         ),

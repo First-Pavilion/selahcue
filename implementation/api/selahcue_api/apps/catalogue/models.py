@@ -29,8 +29,10 @@ in the same sense a JSON field name is; a plan code is not, and must never be br
 **The catalogue does not publish seat caps to the manifest at all.**
 `AppLicenseKey.device_limit` is the number activation enforces and the only seat number the
 manifest reports (`instances_limit`). A plan's `device_instances` grant is the catalogue's
-view of what a tier *should* allow — a number nothing reconciles with `device_limit` today,
-because FR-516's write-back **is not built**: `device_limit` is written only at issuance.
+view of what a tier *should* allow. Licence issuance COPIES it onto the new key's
+`device_limit` (86ak5mn0m), but nothing re-copies it afterwards, because FR-516's write-back
+**is not built**: `device_limit` is written only at issuance, so a plan changed later does not
+move a key that already exists.
 Publishing both would put two disagreeing numbers for one quantity inside a signed artefact
 cached offline for the licence's lifetime, and nothing in the payload distinguishes an
 advisory value from an enforceable one — there is no fourth grant state meaning "do not

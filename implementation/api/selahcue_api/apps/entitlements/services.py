@@ -24,9 +24,11 @@ unmodified client already honours.
 else, because that is the number `activate_device` enforces. Two fields in one signed,
 offline-cached artefact disagreeing about the same quantity is worse than either being
 wrong: the client cannot tell which to trust, and the artefact outlives the disagreement.
-So the catalogue's own seat number is **not published at all** — its dimension carries
-`publish_in_manifest=False` — and it stays that way until something reconciles it with
-`device_limit`. There is no fourth grant state meaning "advisory, do not enforce", and a
+The catalogue's own seat number is **not published at all** — its dimension carries
+`publish_in_manifest=False`. It is where a key's `device_limit` is COPIED FROM at issuance
+(86ak5mn0m), but a plan changed afterwards does not move a key that already exists (FR-516's
+write-back is not built), so the two can still differ for an issued licence; it stays
+unpublished until something reconciles them. There is no fourth grant state meaning "advisory, do not enforce", and a
 client cannot invent one, so silence is the only honest encoding.
 
 A dimension key absent from `grants` means the catalogue expresses nothing about it — the
@@ -144,11 +146,12 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "instances_used": instances_used,
         # ALWAYS `device_limit` — the number `activate_device` actually enforces, and the
         # ONLY seat number in this payload. The catalogue's `device_instances` grant is
-        # deliberately unpublished (`publish_in_manifest=False`) because nothing today
-        # reconciles it with this field: FR-516's write-back is specified but not built, so
-        # a licence on PLATINUM would otherwise carry "7 seats" beside an enforced 3 — one
-        # signed artefact promising seats the server refuses, for as long as it stays
-        # cached. Publish it only once a plan change actually moves `device_limit`.
+        # deliberately unpublished (`publish_in_manifest=False`). Issuance copies it onto the
+        # key, but a plan changed AFTER issuance does not move the key (FR-516's write-back is
+        # specified but not built), so a licence moved to PLATINUM would otherwise carry "7
+        # seats" beside an enforced 3 — one signed artefact promising seats the server
+        # refuses, for as long as it stays cached. Publish it only once a plan change
+        # actually moves `device_limit`.
         "instances_limit": license_key.device_limit,
         # The typed grant dimensions (FR-545). Keys come from catalogue rows, so a new
         # dimension appears here without a code change; a client reads the keys it knows

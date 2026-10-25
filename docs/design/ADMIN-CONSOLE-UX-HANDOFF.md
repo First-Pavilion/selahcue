@@ -89,7 +89,7 @@ Primary path:
 
 1. Staff chooses or creates a prospect/customer organisation.
 2. Staff selects key type: Demo, Trial, Pilot, Paid, Internal QA, or Custom.
-3. Staff chooses start time, duration, end date, timezone, plan/features, seats, device limit, territory, owner, and internal notes.
+3. Staff chooses start time, duration, end date, timezone, plan/features, seats, territory, owner, and internal notes. The device limit is not typed: it is read from the chosen plan (its `device_instances`) and shown read-only, and the key is refused if the plan has no seat count or the org already holds a valid key that overlaps the new dates (ClickUp 86ak5mn0m).
 4. UI validates finite duration for demo/trial/pilot keys and blocks invalid dates.
 5. Staff enters an audit reason.
 6. Confirmation summarizes customer, dates, features, seats/devices, territory, and expiry.

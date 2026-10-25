@@ -4,6 +4,7 @@ from datetime import timedelta
 import pytest
 from django.test import override_settings
 from django.utils import timezone
+from licensing_test_support import seat_plan_code
 
 
 def post_admin_graphql(client, query, variables=None, *, permissions=""):
@@ -30,7 +31,6 @@ CREATE_CUSTOMER_MUTATION = """
           timezone
           plan
           seatLimit
-          deviceLimit
         }
       }
     }
@@ -52,6 +52,7 @@ GENERATE_KEY_MUTATION = """
           featureScope
           startsAt
           expiresAt
+          deviceLimit
           customer {
             id
             name
@@ -72,7 +73,6 @@ def create_customer_input(idempotency_key="customer-create-0001", **overrides):
         "status": "PROSPECT",
         "plan": "TRIAL",
         "seatLimit": 5,
-        "deviceLimit": 3,
     }
     payload.update(overrides)
     return payload
@@ -87,13 +87,13 @@ def generate_key_input(customer_id, idempotency_key="license-generate-0001", **o
         "keyType": "TRIAL",
         "featureScope": "CHURCH",
         # DEC-014: issuance names a plan, and refuses the catalogue's designated fallback —
-        # so this names a sellable plan. Nothing this file asserts depends on which.
-        "planCode": "PRO",
+        # so this names a sellable plan. The key's device limit is copied from it (86ak5mn0m),
+        # so the plan is one this test creates with a known seat count, not a seeded tier.
+        "planCode": seat_plan_code(3),
         "startsAt": starts_at.isoformat().replace("+00:00", "Z"),
         "expiresAt": expires_at.isoformat().replace("+00:00", "Z"),
         "timezone": "Africa/Lagos",
         "seatLimit": 5,
-        "deviceLimit": 3,
         "territory": "NG",
         "reason": "Prospect requested a thirty day pilot.",
     }
@@ -149,6 +149,8 @@ def test_staff_can_create_customer_and_generate_show_once_license_key(client):
     assert license_key["keyPrefix"] == full_key[:12]
     assert license_key["keySuffix"] == full_key[-4:]
     assert license_key["customer"]["id"] == customer["id"]
+    # The licence reports the device limit it took from its plan (86ak5mn0m).
+    assert license_key["deviceLimit"] == 3
 
     search_customers = """
         query SearchCustomers($search: String!) {
@@ -341,7 +343,6 @@ def test_license_key_generation_rejects_unsafe_requests_without_committing(clien
                 customer["id"],
                 "license-generate-zero-limits",
                 seatLimit=0,
-                deviceLimit=0,
             )
         },
         permissions="generate_license_key",
@@ -432,7 +433,6 @@ def test_license_key_generation_rolls_back_when_audit_write_fails(monkeypatch):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=3,
         created_by_actor_id="staff_ops_1",
         idempotency_key="customer-rollback-0001",
     )
@@ -457,12 +457,11 @@ def test_license_key_generation_rolls_back_when_audit_write_fails(monkeypatch):
                 customer_id=str(customer.id),
                 key_type="TRIAL",
                 feature_scope="CHURCH",
-                plan_code="PRO",
+                plan_code=seat_plan_code(3),
                 starts_at=starts_at,
                 expires_at=starts_at + timedelta(days=30),
                 timezone="Africa/Lagos",
                 seat_limit=5,
-                device_limit=3,
                 territory="NG",
                 reason="Prospect requested a thirty day pilot.",
             ),

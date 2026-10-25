@@ -24,7 +24,7 @@ import pytest
 from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg
-from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
+from selahcue_api.apps.catalogue.models import GrantDimension, LicensePlanAssignment, Plan, PlanGrant
 from selahcue_api.apps.catalogue.services import resolve_entitlement, resolve_plan_for_license
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
 from selahcue_api.apps.license_keys.services import (
@@ -79,7 +79,6 @@ def _org(tag):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=9,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"issuance-org-{tag}",
     )
@@ -97,7 +96,6 @@ def _issue_data(customer, *, tag, plan_code, feature_scope="CHURCH"):
         expires_at=now + timedelta(days=30),
         timezone="Africa/Lagos",
         seat_limit=5,
-        device_limit=3,
         territory="NG",
         reason="Pilot for the issuance-requires-a-plan tests.",
     )
@@ -394,6 +392,18 @@ def test_the_refusal_follows_the_is_fallback_FLAG_not_the_plan_code():
     )
 
     # ...and the plan that used to be the fallback is now issuable.
+    #
+    # Issuing takes the key's device limit from the plan (86ak5mn0m), and the fallback plan
+    # declares no seat count of its own (it freezes what pre-catalogue licences had, which had
+    # none). So it needs one to be sold, exactly as any plan does; this test gives it one,
+    # because what it asserts is that the FALLBACK REFUSAL moved, not that LEGACY has seats.
+    PlanGrant.objects.create(
+        plan=old_fallback,
+        dimension=GrantDimension.objects.get(key="device_instances"),
+        raw_value="2",
+        changed_by_actor_id="staff_ops_1",
+        reason="Seat count so the former fallback can be sold in this test.",
+    )
     result = generate_license_key(
         _actor(),
         _issue_data(_org("moved-allowed"), tag="moved-allowed", plan_code=old_fallback.code),

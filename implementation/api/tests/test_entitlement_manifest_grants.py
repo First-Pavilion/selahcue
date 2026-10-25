@@ -38,6 +38,7 @@ from selahcue_api.apps.catalogue.models import (
 from selahcue_api.apps.devices.models import Device
 from selahcue_api.apps.entitlements.services import build_entitlement_manifest
 from selahcue_api.apps.entitlements.signing import load_signing_key, verify_envelope
+from selahcue_api.apps.license_keys.models import AppLicenseKey
 
 TEST_SEED_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
@@ -100,10 +101,17 @@ def signing_key(settings):
 def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
     """Returns (AppLicenseKey, full_key). Mirrors tests/test_entitlement_manifest_slice.py.
 
-    The ORG's `device_limit` is deliberately set to a DIFFERENT number from the licence's.
-    Both columns are called `device_limit`, and when a test seeds them to the same value any
-    assertion about seats passes whichever one the code reads — so a change to which column
-    activation enforces becomes invisible. Keeping them apart is what lets that show up.
+    The licence is issued on the seeded PRO plan because this file asserts PRO's real grants.
+    Issuance copies the key's `device_limit` from that plan, and these tests need specific
+    limits, so the limit is then set on the key directly. That is faithful to what the file
+    tests: from issuance on, the KEY's field is the one number the manifest publishes and
+    activation enforces, whatever the plan row says.
+
+    There used to be a second `device_limit` on the ORG, deliberately set to a different
+    number so a read of the wrong column would show. The org field was removed (86ak5mn0m),
+    so a read of it is now an AttributeError and the trick is unnecessary: the "published seat
+    number is the enforced one" test below still activates up to the number and checks the
+    next is refused.
     """
     from selahcue_api.apps.accounts.models import CustomerOrg
     from selahcue_api.apps.license_keys.services import (
@@ -120,8 +128,6 @@ def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        # Deliberately NOT `device_limit` — see the docstring.
-        device_limit=device_limit + 7,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"grants-org-{tag}",
     )
@@ -143,11 +149,12 @@ def _seed_license_key(*, tag, device_limit=3, feature_scope="CHURCH"):
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
             seat_limit=5,
-            device_limit=device_limit,
             territory="NG",
             reason="Pilot for entitlement-manifest grant tests.",
         ),
     )
+    AppLicenseKey.objects.filter(pk=result.license_key.pk).update(device_limit=device_limit)
+    result.license_key.refresh_from_db()
     return result.license_key, result.full_key
 
 
@@ -699,7 +706,7 @@ def test_the_published_seat_number_is_the_one_activation_actually_refuses_over(c
 
     `instances_limit == device_limit` compares the field to itself: it stays green even if
     activation starts enforcing a different number entirely (a peer switching the guard to
-    `license_key.customer.device_limit` would not disturb it). This activates devices up to
+    a constant, or to the plan's seat count, would not disturb it). This activates devices up to
     the number the manifest publishes and asserts the very next one is refused — so the
     published number and the enforced number are demonstrably the same number.
     """

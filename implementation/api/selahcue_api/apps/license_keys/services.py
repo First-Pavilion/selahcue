@@ -15,6 +15,8 @@ from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
 from selahcue_api.apps.audit.services import record_audit_event
+from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
+from selahcue_api.apps.catalogue.services import plan_device_instances_for_issuance
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
 from selahcue_api.apps.license_keys.state_machine import (
     PRIOR_STATUS,
@@ -56,7 +58,12 @@ class GenerateLicenseKeyData:
     expires_at: datetime
     timezone: str
     seat_limit: int
-    device_limit: int
+    # No `device_limit` here, on purpose (86ak5mn0m). The number of device instances a licence
+    # admits is the PLAN's `device_instances`, copied onto the key at issuance; a staff-typed
+    # value beside it is how a licence came to be displayed as one thing and enforced as
+    # another. Whether one licence should ever get a count different from its plan is an open
+    # owner question, and if it is ever yes it belongs in the catalogue as a plan row, not
+    # here as a number typed per issuance.
     territory: str
     reason: str
 
@@ -107,6 +114,107 @@ def _mask(full_key: str) -> tuple[str, str, str]:
     return prefix, suffix, f"{prefix}...{suffix}"
 
 
+# Statuses whose key can still be used, or can still come back into use, so its dates keep
+# the org's single seat on the calendar. REVOKED, ARCHIVED and CONVERTED are over and do not
+# block. A status added to `LicenseKeyStatus` later is in NEITHER set until someone decides,
+# and `tests/test_one_valid_key_per_org.py` fails on that, so the choice cannot be skipped.
+#
+# EXPIRED blocks because the state machine still allows EXPIRED -> ACTIVATED (a late
+# renewal), so an expired key is not yet a dead one. SUSPENDED is a reversible hold.
+KEY_STATUSES_THAT_HOLD_THE_ORGS_SEAT = frozenset(
+    {
+        LicenseKeyStatus.ISSUED,
+        LicenseKeyStatus.ACTIVATED,
+        LicenseKeyStatus.EXPIRING,
+        LicenseKeyStatus.EXPIRED,
+        LicenseKeyStatus.SUSPENDED,
+    }
+)
+
+
+def _issued_by(actor_id: str, idempotency_key: str) -> AppLicenseKey | None:
+    """The key this actor already issued under this idempotency key, if any."""
+    return (
+        AppLicenseKey.objects.select_related("customer")
+        .filter(generated_by_actor_id=actor_id, idempotency_key=idempotency_key)
+        .first()
+    )
+
+
+def lock_customer_for_key_changes(customer_id) -> CustomerOrg:
+    """Take the org's row lock and return the org. STEP ONE for any writer that adds a key to
+    an org or moves a key's dates, followed by `require_no_overlapping_license_key`.
+
+    The lock is what makes "at most one valid key per org" hold under concurrency: without it
+    two simultaneous issuances both read "no overlapping key", both pass, and both insert. It
+    is held to the end of the caller's transaction, so the second issuance waits here and then
+    sees the first one's key. The lock is on the ORG, not the key, because the thing being
+    protected is a property of the org: the new key does not exist yet to be locked.
+
+    Must be called inside `transaction.atomic()`; outside one Django raises rather than
+    silently taking no lock. This is the only place the org lock is taken, so removing it turns
+    the Postgres test red (SQLite ignores `select_for_update`, which is why that test exists).
+    """
+    try:
+        return CustomerOrg.objects.select_for_update().get(id=customer_id)
+    except (CustomerOrg.DoesNotExist, ValueError) as error:
+        raise SafeAPIError(ErrorCode.NOT_FOUND) from error
+
+
+def require_no_overlapping_license_key(
+    customer: CustomerOrg,
+    *,
+    starts_at: datetime,
+    expires_at: datetime,
+    exclude_key_id: int | None = None,
+    requested_by: str = "",
+) -> None:
+    """Refuse with POLICY_DENIED if `customer` holds another key whose dates overlap
+    `[starts_at, expires_at)` and whose status still holds the org's seat. Writes nothing.
+
+    THE ONE RULE, in one place. Issuance calls it; a future extend or renew writer must call it
+    too, passing `exclude_key_id` for the key being moved (a key always overlaps itself).
+    `customer` must be the row returned by `lock_customer_for_key_changes` in the same
+    transaction, or the check is only as good as a read.
+
+    The window is half-open: a key that starts at the instant another expires does NOT overlap
+    it (renewal today is issuing a new key that starts when the old one ends), and one second
+    earlier does. Keys the org already holds that overlap each other are left as they are
+    (grandfathered); only new issuance is refused.
+    """
+    blocking = AppLicenseKey.objects.filter(
+        customer=customer,
+        status__in=KEY_STATUSES_THAT_HOLD_THE_ORGS_SEAT,
+        starts_at__lt=expires_at,
+        expires_at__gt=starts_at,
+    )
+    if exclude_key_id is not None:
+        blocking = blocking.exclude(pk=exclude_key_id)
+    held = blocking.order_by("expires_at", "pk").first()
+    if held is None:
+        return
+    logger.warning(
+        "refused to issue a licence for customer %s from %s to %s: it overlaps licence %s "
+        "(status %s, %s to %s), and an organisation may hold at most one valid licence at a "
+        "time. Requested by actor %s.",
+        customer.pk,
+        starts_at.isoformat(),
+        expires_at.isoformat(),
+        held.pk,
+        held.status,
+        held.starts_at.isoformat(),
+        held.expires_at.isoformat(),
+        requested_by or "<unknown>",
+    )
+    raise SafeAPIError(
+        ErrorCode.POLICY_DENIED,
+        f"This organisation already holds licence {held.pk} ({held.status}) that runs from "
+        f"{held.starts_at.isoformat()} to {held.expires_at.isoformat()}, and an organisation "
+        "may hold at most one valid licence at a time. To renew, issue the new licence so it "
+        f"starts at or after {held.expires_at.isoformat()}.",
+    )
+
+
 def generate_license_key(
     actor: ActorContext | None,
     data: GenerateLicenseKeyData,
@@ -124,7 +232,7 @@ def generate_license_key(
     expires_at = _coerce_datetime(data.expires_at)
     if expires_at <= starts_at:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
-    if data.seat_limit < 1 or data.device_limit < 1:
+    if data.seat_limit < 1:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
     # These three are stored verbatim on the licence, and `feature_scope` travels on into the
@@ -164,25 +272,28 @@ def generate_license_key(
         )
 
     with transaction.atomic():
-        existing = (
-            AppLicenseKey.objects.select_related("customer")
-            .filter(generated_by_actor_id=staff.actor_id, idempotency_key=idempotency_key)
-            .first()
-        )
+        existing = _issued_by(staff.actor_id, idempotency_key)
         if existing is not None:
             return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
 
-        try:
-            customer = CustomerOrg.objects.get(id=data.customer_id)
-        except (CustomerOrg.DoesNotExist, ValueError) as error:
-            raise SafeAPIError(ErrorCode.NOT_FOUND) from error
+        # Locks the org row for the rest of this transaction (one key per org, below). The
+        # idempotent replay above deliberately runs BEFORE the overlap check: a retry of an
+        # issuance that already succeeded must still return its key, and it would otherwise be
+        # refused by the very overlap the first attempt created.
+        customer = lock_customer_for_key_changes(data.customer_id)
+
+        # ...and again, now that the lock is held. A retry that raced the original request got
+        # past the first look (the original had not committed yet), then queued on the lock
+        # behind it. The original's key is committed and visible by the time the lock is ours,
+        # so this returns it as the replay it is; without this look the overlap check below
+        # would refuse the retry with POLICY_DENIED, a regression of the concurrency-safe
+        # idempotency this function had before the org lock existed.
+        existing = _issued_by(staff.actor_id, idempotency_key)
+        if existing is not None:
+            return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
+
         if customer.status == CustomerStatus.ARCHIVED:
             raise SafeAPIError(ErrorCode.POLICY_DENIED)
-
-        # Imported here, not at module scope: `catalogue` already reaches back into this app
-        # (`catalogue.services._license_key_model`), and a module-level import in this
-        # direction would close that loop.
-        from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 
         # A control character cannot name a plan, so this takes the SAME refusal an ordinary
         # unknown code takes rather than inventing a third outcome. Skipping the query is the
@@ -254,6 +365,36 @@ def generate_license_key(
                 "customer is actually buying.",
             )
 
+        # 86ak5mn0m: the key's device limit is the PLAN's seat count, copied here once and from
+        # then on the key's own field (the number activation enforces, the manifest publishes
+        # and the refresh endpoint reports). A plan that cannot express "this many seats" is
+        # refused rather than defaulted: a made-up number is a limit nobody chose.
+        device_limit = plan_device_instances_for_issuance(plan)
+        if device_limit is None:
+            logger.warning(
+                "refused to issue a licence for customer %s on plan %r (%s): the plan has no "
+                "usable `device_instances` value (absent, unlimited, below 1, or the dimension "
+                "is switched off), so the licence would have no seat limit. Set the plan's "
+                "seat count in the catalogue first. Requested by actor %s.",
+                data.customer_id,
+                plan.code,
+                plan.display_name,
+                staff.actor_id,
+            )
+            raise SafeAPIError(
+                ErrorCode.POLICY_DENIED,
+                f"Plan {plan.code!r} ({plan.display_name}) has no usable device-instance "
+                "count: its `device_instances` grant is missing, unlimited or below 1. A "
+                "licence takes its device limit from its plan, so set a seat count on the "
+                "plan in the catalogue and issue again.",
+            )
+
+        # At most one valid key per org (86ak5mn0m). The org row is locked above, so two
+        # simultaneous issuances to one org queue here and the second sees the first's key.
+        require_no_overlapping_license_key(
+            customer, starts_at=starts_at, expires_at=expires_at, requested_by=staff.actor_id
+        )
+
         full_key = _generate_full_key(key_type)
         prefix, suffix, masked_key = _mask(full_key)
         license_key = AppLicenseKey(
@@ -270,7 +411,7 @@ def generate_license_key(
             timezone=data.timezone.strip() or "UTC",
             feature_scope=data.feature_scope.strip().upper(),
             seat_limit=data.seat_limit,
-            device_limit=data.device_limit,
+            device_limit=device_limit,
             territory=data.territory.strip().upper(),
             generated_by_actor_id=staff.actor_id,
             generated_reason=reason,
@@ -285,11 +426,7 @@ def generate_license_key(
             with transaction.atomic():
                 license_key.save()
         except IntegrityError:
-            existing = (
-                AppLicenseKey.objects.select_related("customer")
-                .filter(generated_by_actor_id=staff.actor_id, idempotency_key=idempotency_key)
-                .first()
-            )
+            existing = _issued_by(staff.actor_id, idempotency_key)
             if existing is not None:
                 return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
             raise _validation_error()

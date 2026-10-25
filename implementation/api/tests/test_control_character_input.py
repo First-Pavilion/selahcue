@@ -114,7 +114,6 @@ def _org(tag):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=9,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"control-org-{tag}",
     )
@@ -132,7 +131,6 @@ def _issue_data(customer, *, tag, **overrides):
         expires_at=now + timedelta(days=30),
         timezone="Africa/Lagos",
         seat_limit=5,
-        device_limit=3,
         territory="NG",
         reason="Pilot for the control-character tests.",
     )
