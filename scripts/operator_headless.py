@@ -1916,7 +1916,11 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # presentation number) used to do nothing visible in the plan-link dialog. +3 checks that the dialog shows
 # the host's reason (role=alert), links nothing and re-enables the card, and that a retry clears the error;
 # +1 that the Presentations library's New dialog shows the host's reason. Measured by a clean run.
-EXPECTED_MIN_CHECKS = 2294  # measured: 2294 checks, 0 FAIL
+#
+# 2294 -> 2295 (17tnw2b9arx round 3): +1 check that deleting the last presentation, when the host could not
+# number a blank replacement, tells the operator the editor holds an unsaved copy. The retry check was made
+# non-vacuous (same count). Measured by a clean run.
+EXPECTED_MIN_CHECKS = 2295  # measured: 2295 checks, 0 FAIL
 
 
 def find_chrome():
@@ -3111,6 +3115,9 @@ STUB = r"""
       var v = libView(); v.new_id = nid; return Promise.resolve(v);
     }
     if (cmd === "deck_delete") {
+      // 17tnw2b9arx: the host deleted the deck but could not record a number for the blank replacement
+      // (library empty), so it answers working_copy_unsaved. The stub leaves the fixture library alone.
+      if (window.__deckDeleteUnsaved) { var lvUnsaved = libView(); lvUnsaved.working_copy_unsaved = true; return Promise.resolve(lvUnsaved); }
       var wasOpen=(LIB.open===args.id);
       var doomed=LIB.decks.filter(function(x){return x.id===args.id;})[0];
       // The host retains the deck in a bounded trash — EXCEPT when it is too large to keep, which
@@ -7238,6 +7245,20 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){ return c.cmd === "deck_delete" && c.args.id === wantDelId; }), "PM/Lib: confirming delete drives deck_delete(that card's id)");
       await waitFor(function(){ return el("pm-plan-name").textContent !== nameBeforeDelete; });
       ok(el("pm-plan-name").textContent !== nameBeforeDelete, "PM/Lib: deleting the OPEN deck switches the editor to a surviving deck");
+      // 17tnw2b9arx: when the host answers working_copy_unsaved the console says the editor still shows an
+      // unsaved copy of the deleted presentation.
+      window.__deckDeleteUnsaved = true;
+      var delCardU = el("pm-lib-grid").querySelector(".pm-lib-card");
+      delCardU.querySelector(".pm-lib-dots").click();
+      await waitFor(function(){ return !!el("pm-lib-menu"); });
+      Array.from(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /Delete/.test(b.textContent); })[0].click();
+      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      document.querySelector(".pm-confirm .pm-btn-danger").click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      window.__deckDeleteUnsaved = false;
+      ok(/unsaved copy/.test(el("pm-error-msg").textContent),
+         "17tnw2b9arx: deleting the last presentation when no blank one could be numbered tells the operator the editor holds an unsaved copy");
+      el("pm-error-dismiss").click();
       // 17tnw2b9arx: a REFUSED create (the host's database will not record the new number) shows the
       // host's reason in the error banner and creates nothing.
       window.__deckNewRefused = true;
@@ -9968,10 +9989,11 @@ DRIVER = r"""
          "17tnw2b9arx: a refused New presentation shows the host's reason in the link dialog (role=alert)");
       ok(window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length === scBeforeR && !lmR.querySelector(".pm-deck-new").disabled,
          "17tnw2b9arx: a refused New presentation links nothing and re-enables the card (retry possible)");
-      lmR.querySelector(".pm-deck-new").click(); // retry succeeds → the error clears and the deck is linked
+      var errRBefore = lmR.querySelector(".pm-link-new-error");
+      lmR.querySelector(".pm-deck-new").click(); // retry: the error is cleared the moment the click starts it
+      var clearedAtOnce = errRBefore.hidden; // read synchronously: after the retry succeeds the modal closes
       await sleep(60);
-      ok(!lmR.isConnected || lmR.querySelector(".pm-link-new-error").hidden,
-         "17tnw2b9arx: a retry that works clears the error");
+      ok(clearedAtOnce, "17tnw2b9arx: starting a retry clears the previous error at once");
       // F12b Change… on an item whose linked deck was DELETED: preselect nothing so "Link to item"
       // stays disabled (no phantom-id re-commit), not enabled with nothing visibly selected.
       openLinkModal({ id: 20, kind: "slide_group", title: "Ghost Deck", link: { kind: "deck", id: 999999 } });

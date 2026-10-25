@@ -6816,6 +6816,16 @@
       }
       .pm-confirm-title { margin: 0 0 8px; font-size: 16px; font-weight: 700; color: var(--sc-text); }
       .pm-confirm-body { margin: 0; font-size: 13px; color: var(--sc-text-secondary); line-height: 1.5; }
+      /* A refused "New presentation" inside the plan-link dialog (17tnw2b9arx): the same tokens as the
+         Presentations error banner (.pm-error), so it reads as an error, not as secondary text. */
+      .pm-link-new-error {
+        margin-top: 8px;
+        padding: 8px 10px;
+        border: 1px solid var(--sc-live-border);
+        border-radius: 8px;
+        background: var(--sc-live-soft);
+        color: var(--sc-text);
+      }
       .pm-confirm-warn {
         margin: 10px 0 0;
         padding: 8px 10px;

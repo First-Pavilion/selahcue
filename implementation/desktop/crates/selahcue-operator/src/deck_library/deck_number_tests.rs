@@ -3,9 +3,13 @@
 //! The defect needs a RESTART: the undo trash is memory-only and the counter was recomputed at load
 //! as "highest surviving number + 1", so a number retired by a delete came back for the next deck and
 //! a plan link that still held it silently showed that other deck. Every test here therefore uses a
-//! real database FILE and drops and reloads the library between steps. Every test fails when the
-//! high-water mark is removed, except the in-memory control and the in-session adopt-versus-undo-trash
-//! test, which the in-memory counter alone satisfies (mutation-checked; see the PR).
+//! real database FILE and drops and reloads the library between steps. Measured (27 of the 29 tests
+//! that existed before the console tests were added): with the high-water mark removed every test failed
+//! except the in-memory control and the in-session adopt-versus-undo-trash test, which the in-memory
+//! counter alone satisfies. Tests added later do not all depend on the mark: the healthy-path console
+//! tests (`deck_new_creates_and_opens...`, `deck_duplicate_returns_the_copys_number...`,
+//! `deck_duplicate_of_an_unknown_deck...`, `deleting_the_last_deck_with_a_healthy_database...`) and
+//! `a_healthy_load_leaves_no_deck_out` are controls for the refusal tests beside them.
 
 #![allow(clippy::unwrap_used)]
 
@@ -647,6 +651,23 @@ fn when_the_numbers_run_out_creating_a_deck_is_refused_without_a_panic_or_a_wrap
     assert_eq!(memory.try_create("Past it").unwrap_err(), NumberNotRecorded);
 }
 
+/// A healthy load leaves nothing out, so it logs nothing about left-out decks.
+#[test]
+fn a_healthy_load_leaves_no_deck_out() {
+    let m = Machine::new("left-out-none");
+    {
+        let mut lib = m.launch();
+        lib.create("A");
+        lib.create("B");
+    }
+    assert_eq!(m.launch().left_out, 0);
+    assert_eq!(
+        DeckLibrary::load(None).left_out,
+        0,
+        "nor does the in-memory fallback"
+    );
+}
+
 // --- load-time write discipline (review round 1) -------------------------------------------------
 
 #[test]
@@ -1008,6 +1029,10 @@ fn a_deck_that_needs_a_number_when_none_can_be_issued_is_left_out_not_minted_pas
 
     let mut lib = m.launch();
 
+    assert_eq!(
+        lib.left_out, 3,
+        "the load counts the decks it left out (and logs the count only)"
+    );
     let listed: Vec<(String, u64)> = lib.list().into_iter().map(|d| (d.name, d.id.0)).collect();
     assert_eq!(
         listed,
@@ -1049,6 +1074,10 @@ fn with_an_unreadable_mark_a_deck_that_needs_a_number_is_left_out_rather_than_gi
 
     let lib = m.launch();
 
+    assert_eq!(
+        lib.left_out, 1,
+        "one deck could not be numbered and was left out"
+    );
     let ids: Vec<u64> = lib.list().iter().map(|d| d.id.0).collect();
     assert!(
         !ids.contains(&3),
@@ -1084,6 +1113,10 @@ fn when_the_database_refuses_repaired_numbers_are_distinct_session_only_and_unre
 
     let lib = m.launch();
 
+    assert_eq!(
+        lib.left_out, 0,
+        "session-only numbers keep every deck in the library"
+    );
     let mut ids: Vec<u64> = lib.list().iter().map(|d| d.id.0).collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3]);

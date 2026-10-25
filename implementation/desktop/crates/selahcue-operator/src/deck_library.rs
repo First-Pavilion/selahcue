@@ -252,6 +252,9 @@ pub struct DeckLibrary {
     /// `heal`). Their rows stay on disk untouched; the names stay reserved here so a new deck can
     /// never take one and upsert over the row. Bounded by the number of rows in the database.
     held_back: Vec<String>,
+    /// How many decks `heal` left out of the library at load. Only the COUNT is kept and logged (never
+    /// a name: no user content in logs); the console is not told (ADR-0031 limit 4).
+    left_out: usize,
 }
 
 impl DeckLibrary {
@@ -314,8 +317,19 @@ impl DeckLibrary {
             trash: DeckTrash::new(),
             entropy,
             held_back: Vec::new(),
+            left_out: 0,
         };
         let stats = lib.heal(&mut row_keys, issued);
+        if lib.left_out > 0 {
+            // The COUNT only: no names, no user content in a log. The console is not told (ADR-0031
+            // limit 4), so this line is the only signal that presentations are missing from the list.
+            eprintln!(
+                "SelahCue: {} presentation(s) were left out of the library because no number could \
+                 be issued for them (the database would not record one, or the numbers are used \
+                 up); their rows are untouched and they return once that is repaired.",
+                lib.left_out
+            );
+        }
         lib.record_high_water(stats.failed > 0);
         (lib, stats)
     }
@@ -392,6 +406,7 @@ impl DeckLibrary {
                 None => left_out.push(i),
             }
         }
+        self.left_out = left_out.len();
         // Highest index first, so earlier indices stay valid while the vectors shrink.
         for &i in left_out.iter().rev() {
             let deck = self.decks.remove(i);
