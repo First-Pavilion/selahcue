@@ -40,8 +40,10 @@
 #   * Like CI, only vulnerabilities fail a root. Unmaintained, unsound and yanked crates are
 #     printed as warnings and `cargo audit` exits 0 for them.
 #   * cargo-audit fetches the RustSec advisory database on EVERY run (this script never passes
-#     --no-fetch), so it needs the network each time; offline, every root FAILs. That is why it is
-#     NOT a step of `make ci` (see the comment on the `audit` target in the Makefile).
+#     --no-fetch), so it needs the network each time; offline, every root FAILs. `make ci` runs it
+#     as its last gate, so `make ci` needs the network too; `AUDIT=skip make ci` is the loud,
+#     documented opt-out (see the comments on the `audit` target and the end of the `ci` recipe in
+#     the Makefile). This script has no opt-out of its own.
 #
 # Usage:
 #   sh scripts/cargo_audit_all.sh            # audit this checkout

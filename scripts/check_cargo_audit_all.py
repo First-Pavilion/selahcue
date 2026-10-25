@@ -24,7 +24,13 @@ script's alias check has something real to look at. It takes its instructions fr
 the directory it is run in: `FAIL` makes `audit` exit non-zero, `ALIAS` makes `audit --version`
 print a plain `cargo` version (what an `[alias]` to `version` would do).
 
-Standard library only; needs `git` and a POSIX `sh`, so it is skipped on Windows (as CI does).
+It also holds the Makefile half of the same promise, with `make -n ci` (a dry run: no network, no
+builds): the audit is the LAST gate of `make ci`, so it can never hide an earlier gate (make stops at
+the first failing line); `AUDIT=skip` is the one documented offline opt-out and is LOUD (a message on
+stderr, repeated in the closing banner) and never silent; an unrecognised `AUDIT` value is never
+treated as a skip; and `make audit` itself ignores the opt-out.
+
+Standard library only; needs `git`, `make` and a POSIX `sh`, so it is skipped on Windows (as CI does).
 """
 
 import os
@@ -36,6 +42,7 @@ import tempfile
 import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
 SCRIPT = os.path.join(HERE, "cargo_audit_all.sh")
 # The shell the script runs under. CI's Linux runner has dash as sh; set CARGO_AUDIT_ALL_SHELL=dash
 # (or bash) to try the same cases under another shell.
@@ -376,6 +383,133 @@ def runs_from_the_script_default_when_given_no_argument(fx):
     expect(p.returncode == 1, "no argument: expected exit 1 from the vulnerable root, got %d" % p.returncode, p.stdout)
 
 
+# --- Makefile half: `make -n ci` / `make -n audit` / `make help` -------------------------------------
+
+AUDIT_CALL_SUFFIX = "--no-print-directory audit"
+
+
+def make_dry_run(*args, audit_env=None):
+    """`make -n <args>` in the repository root; returns (exit code, recipe lines, raw output).
+
+    Recipe lines are the non-blank, non-comment lines make prints. The environment is scrubbed of
+    everything that could carry an AUDIT setting in from the caller (an AUDIT variable, and the
+    MAKEFLAGS that `make ci AUDIT=skip` hands to its children) so each case controls AUDIT itself.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("AUDIT", "MAKEFLAGS", "MFLAGS", "MAKELEVEL")}
+    if audit_env is not None:
+        env["AUDIT"] = audit_env
+    p = subprocess.run(
+        ["make", "-n"] + list(args),
+        cwd=REPO,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        universal_newlines=True,
+    )
+    lines = [l.strip() for l in p.stdout.splitlines() if l.strip() and not l.strip().startswith("#")]
+    # Only the tail goes into a failure message: the whole dry run is 200 lines of unrelated gates.
+    return p.returncode, lines, "...\n" + "\n".join(lines[-12:])
+
+
+def audit_calls(lines):
+    return [i for i, l in enumerate(lines) if l.endswith(AUDIT_CALL_SUFFIX)]
+
+
+def only_banner_echoes_follow(lines, index):
+    """After the audit step, nothing but the closing `echo` lines may remain."""
+    return all(l.startswith("echo") for l in lines[index + 1 :])
+
+
+def expect_audit_is_the_last_gate(lines, out, label):
+    calls = audit_calls(lines)
+    expect(len(calls) == 1, "%s: the audit must be invoked exactly once by `make ci`, found %d" % (label, len(calls)), out)
+    if len(calls) != 1:
+        return
+    i = calls[0]
+    expect(only_banner_echoes_follow(lines, i), "%s: only the closing banner echoes may follow the audit, got %r" % (label, lines[i + 1 :]), out)
+    # Guard against the step being "last" only because the gates before it were deleted.
+    before = " ".join(lines[:i])
+    expect("flutter" in before and "cargo clippy" in before and "cargo test" in before, "%s: the audit must come AFTER the Flutter, clippy and test gates" % label, out)
+
+
+def make_ci_runs_the_audit_as_its_last_gate(fx):
+    rc, lines, out = make_dry_run("ci")
+    expect(rc == 0, "make -n ci: expected exit 0, got %d" % rc, out)
+    expect_audit_is_the_last_gate(lines, out, "AUDIT unset")
+    expect(not any("SKIPPED" in l for l in lines), "AUDIT unset: nothing may mention a skip", out)
+    expect("ALL GREEN" in lines[-1], "AUDIT unset: the closing banner must still say ALL GREEN", out)
+
+
+def make_ci_empty_audit_value_runs_the_audit(fx):
+    rc, lines, out = make_dry_run("ci", "AUDIT=")
+    expect(rc == 0, "AUDIT= : expected exit 0, got %d" % rc, out)
+    expect_audit_is_the_last_gate(lines, out, "AUDIT empty")
+    expect(not any("SKIPPED" in l for l in lines), "AUDIT empty: nothing may mention a skip", out)
+
+
+def make_ci_audit_skip_is_loud_and_skips_only_the_audit(fx):
+    for how, args, audit_env in (("command line", ("ci", "AUDIT=skip"), None), ("environment", ("ci",), "skip")):
+        label = "AUDIT=skip (%s)" % how
+        rc, lines, out = make_dry_run(*args, audit_env=audit_env)
+        expect(rc == 0, "%s: expected exit 0, got %d" % (label, rc), out)
+        expect(audit_calls(lines) == [], "%s: the audit must NOT be invoked" % label, out)
+        notices = [i for i, l in enumerate(lines) if "RustSec audit SKIPPED (AUDIT=skip)" in l]
+        expect(len(notices) == 1, "%s: expected exactly one skip notice, found %d" % (label, len(notices)), out)
+        if len(notices) == 1:
+            expect(">&2" in lines[notices[0]], "%s: the notice must go to stderr" % label, out)
+            expect("NOT checked" in lines[notices[0]], "%s: the notice must say vulnerabilities were not checked" % label, out)
+            expect(only_banner_echoes_follow(lines, notices[0]), "%s: the notice must be the last gate, got %r" % (label, lines[notices[0] + 1 :]), out)
+        expect("SKIPPED" in lines[-1] and "ALL GREEN" in lines[-1], "%s: the closing banner must repeat that the audit was skipped, got %r" % (label, lines[-1]), out)
+        expect(any("cargo clippy" in l for l in lines) and "flutter" in " ".join(lines), "%s: every other gate must still be listed" % label, out)
+
+
+def make_ci_unknown_audit_value_never_skips(fx):
+    for value in ("0", "no", "skipp", "SKIP", "false"):
+        label = "AUDIT=%s" % value
+        rc, lines, out = make_dry_run("ci", "AUDIT=" + value)
+        expect(rc == 0, "%s: expected exit 0 from the dry run, got %d" % (label, rc), out)
+        expect_audit_is_the_last_gate(lines, out, label)
+        expect(not any("SKIPPED" in l for l in lines), "%s: an unrecognised value must never be treated as a skip" % label, out)
+        warned = [l for l in lines if "not understood" in l and ">&2" in l]
+        expect(len(warned) == 1, "%s: expected one stderr warning that the value is not understood, found %d" % (label, len(warned)), out)
+
+
+def make_ci_skip_and_warning_lines_really_run_and_never_fail(fx):
+    # A dry run proves which branch is chosen, not that the printed shell line is valid. Run the
+    # two notice lines the way make would, with sh, and check what they actually print and return.
+    _, lines, out = make_dry_run("ci", "AUDIT=skip")
+    skip = [l for l in lines if "RustSec audit SKIPPED (AUDIT=skip)" in l]
+    _, lines2, out2 = make_dry_run("ci", "AUDIT=bogus")
+    warn = [l for l in lines2 if "not understood" in l]
+    expect(len(skip) == 1 and len(warn) == 1, "need exactly one skip line and one warning line to run", out + out2)
+    for name, line, needle in (("skip notice", skip, "NOT checked"), ("unknown-value warning", warn, "not understood")):
+        if len(line) != 1:
+            continue
+        p = subprocess.run(["sh", "-c", line[0]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        expect(p.returncode == 0, "%s: must exit 0 (the opt-out must not fail the run), got %d" % (name, p.returncode), p.stderr)
+        expect(p.stdout == "", "%s: must print nothing on stdout, got %r" % (name, p.stdout))
+        expect(needle in p.stderr, "%s: must print %r on stderr, got %r" % (name, needle, p.stderr))
+    if len(skip) == 1:
+        p = subprocess.run(["sh", "-c", skip[0]], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+        expect("make audit" in p.stderr, "skip notice: must tell the developer to run `make audit`, got %r" % p.stderr)
+
+
+def make_audit_target_ignores_the_opt_out(fx):
+    rc, lines, out = make_dry_run("audit", "AUDIT=skip")
+    expect(rc == 0, "make -n audit AUDIT=skip: expected exit 0, got %d" % rc, out)
+    expect(any("cargo_audit_all.sh" in l for l in lines), "make audit must still run the script when AUDIT=skip is given", out)
+    expect(not any("SKIPPED" in l for l in lines), "make audit must not carry an opt-out", out)
+
+
+def make_help_lists_audit_and_the_opt_out(fx):
+    p = subprocess.run(["make", "help"], cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    audit = [l for l in p.stdout.splitlines() if l.split()[:1] == ["audit"] or "[36maudit" in l]
+    ci = [l for l in p.stdout.splitlines() if "[36mci " in l]
+    expect(len(audit) == 1, "make help: expected one `audit` line, found %d" % len(audit), p.stdout)
+    expect(len(ci) == 1 and "AUDIT=skip" in ci[0], "make help: the `ci` line must mention the AUDIT=skip opt-out", p.stdout)
+    expect(len(audit) == 1 and "last step of `make ci`" in audit[0], "make help: the `audit` line must say it is the last step of `make ci`", p.stdout)
+
+
 CASES = [
     all_roots_clean_exit_0,
     one_vulnerable_root_fails_but_every_root_runs,
@@ -397,6 +531,13 @@ CASES = [
     gitmodules_is_exit_2,
     newline_in_a_lock_path_is_exit_2,
     runs_from_the_script_default_when_given_no_argument,
+    make_ci_runs_the_audit_as_its_last_gate,
+    make_ci_empty_audit_value_runs_the_audit,
+    make_ci_audit_skip_is_loud_and_skips_only_the_audit,
+    make_ci_unknown_audit_value_never_skips,
+    make_ci_skip_and_warning_lines_really_run_and_never_fail,
+    make_audit_target_ignores_the_opt_out,
+    make_help_lists_audit_and_the_opt_out,
 ]
 
 
