@@ -75,7 +75,6 @@ def _seed_pre_catalogue_estate():
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=30,
-        device_limit=1,
         created_by_actor_id="staff_ops_1",
         idempotency_key="mapping-org",
     )

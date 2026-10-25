@@ -124,7 +124,7 @@ from django.contrib.auth.hashers import make_password  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from selahcue_api.apps.accounts import services  # noqa: E402
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerRole, CustomerUser, CustomerUserStatus  # noqa: E402
-from selahcue_api.apps.catalogue.models import Plan  # noqa: E402
+from selahcue_api.apps.catalogue.models import Plan, PlanGrant  # noqa: E402
 from selahcue_api.apps.license_keys.services import GenerateLicenseKeyData, generate_license_key  # noqa: E402
 from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission  # noqa: E402
 
@@ -138,7 +138,7 @@ PASSWORD = secrets.token_urlsafe(18)  # random per run; written only to the 0600
 
 def org(tag):
     return CustomerOrg.objects.create(name=f"Live {tag}", slug=f"live-{tag}", primary_contact_email=f"office@{tag}.example",
-        country="NG", timezone="Africa/Lagos", plan="TRIAL", seat_limit=5, device_limit=9,
+        country="NG", timezone="Africa/Lagos", plan="TRIAL", seat_limit=5,
         created_by_actor_id="seed", idempotency_key=f"live-org-{tag}")
 def user(o, email, role=CustomerRole.ADMIN, verified=True):
     return CustomerUser.objects.create(customer=o, email=email, email_fingerprint=services._fingerprint(email),
@@ -153,12 +153,21 @@ empty = org("empty")
 user(empty, "admin@empty.example")   # a verified admin whose org has NO licence key
 
 actor = ActorContext(kind=ActorKind.STAFF, actor_id="staff_seed", staff_permissions=frozenset({StaffPermission.GENERATE_LICENSE_KEY}))
-plan = Plan.objects.exclude(is_fallback=True).order_by("id").first() or Plan.objects.first()
+# This run used to seed a licence with 3 devices. A licence now takes its device limit from its plan
+# (86ak5mn0m), so pick a sellable plan whose `device_instances` is 3 instead of "the first one by id"
+# (which is a 1-seat plan in the seeded catalogue); fall back to the old choice if none has 3.
+three_seat = (
+    PlanGrant.objects.filter(dimension__key="device_instances", raw_value="3", plan__is_fallback=False)
+    .select_related("plan").order_by("plan_id").first()
+)
+plan = (three_seat.plan if three_seat else None) or Plan.objects.exclude(is_fallback=True).order_by("id").first() or Plan.objects.first()
 now = timezone.now().replace(microsecond=0)
+# 86ak5mn0m: the licence's device limit is copied from this plan's `device_instances` (no
+# longer typed here), and the org has no device limit of its own.
 result = generate_license_key(actor, GenerateLicenseKeyData(
     idempotency_key="live-license-0001", customer_id=str(main.id), key_type="TRIAL", feature_scope="CHURCH",
     plan_code=plan.code, starts_at=now - timedelta(days=1), expires_at=now + timedelta(days=30),
-    timezone="Africa/Lagos", seat_limit=5, device_limit=3, territory="NG", reason="Live run for 17tnw2b1we2."))
+    timezone="Africa/Lagos", seat_limit=5, territory="NG", reason="Live run for 17tnw2b1we2."))
 out = os.environ["SEED_OUT"]
 # Created 0600 from the start (no window where it is world-readable), replacing any earlier run.
 if os.path.lexists(out):

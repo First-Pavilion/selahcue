@@ -25,6 +25,7 @@ import pytest
 from django.db import models
 from django.utils import timezone
 
+from licensing_test_support import seat_plan_code
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.license_keys import state_machine
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
@@ -92,7 +93,6 @@ def _seed_license_key(*, tag: str) -> AppLicenseKey:
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=3,
         created_by_actor_id="staff_lifecycle_1",
         idempotency_key=f"customer-org-{tag}",
     )
@@ -108,12 +108,11 @@ def _seed_license_key(*, tag: str) -> AppLicenseKey:
             # designated fallback outright — so this names a sellable plan rather than the
             # pre-catalogue one. The lifecycle is what these tests exercise, and the plan
             # changes nothing any of them assert.
-            plan_code="PRO",
+            plan_code=seat_plan_code(3),
             starts_at=now,
             expires_at=now + timedelta(days=30),
             timezone="Africa/Lagos",
             seat_limit=5,
-            device_limit=3,
             territory="NG",
             reason="Seed licence for the lifecycle state-machine battery.",
         ),
