@@ -54,13 +54,31 @@ DEBUG = env_bool("DEBUG", False)
 # Required outside dev. yharah raises unconditionally, but SelahCue's tests run bare (no
 # container env), so the hard requirement is scoped to non-dev — still stricter than the
 # previous silent insecure default, which would have shipped to production unnoticed.
+#
+# The dev key is PUBLIC (it is in this repository) and it is the signing key and the HMAC pepper
+# for licence-key, device-token and account-session fingerprints. So outside `dev` the key must
+# be neither missing nor that key, whether it got there by being unset or by being set to it
+# (17tnw2b9ab0). "Outside dev" means ENVIRONMENT is anything but exactly `dev`, so a typo or a
+# different spelling ('Dev', 'production') fails closed instead of quietly running as dev.
+#
+# What this does NOT cover: an environment that never sets ENVIRONMENT IS `dev`, so it starts
+# without complaint, on the dev key. That is why docs/ops/DEPLOYMENT.md and deployments.md list
+# ENVIRONMENT first in "Prod must-set" and say so.
+_DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
 SECRET_KEY = os.getenv("SECRET_KEY", "")
-if not SECRET_KEY:
-    if ENVIRONMENT != "dev":
+if ENVIRONMENT != "dev":
+    if not SECRET_KEY.strip():
         raise ImproperlyConfigured(
             f"SECRET_KEY must be set when ENVIRONMENT={ENVIRONMENT!r}."
         )
-    SECRET_KEY = "selahcue-dev-only-insecure-key"
+    if SECRET_KEY.strip() == _DEV_SECRET_KEY:
+        raise ImproperlyConfigured(
+            f"SECRET_KEY must not be the public development key when ENVIRONMENT={ENVIRONMENT!r}: "
+            "that key is in the repository, so anyone can forge what it signs. "
+            "Set SECRET_KEY to a fresh random value."
+        )
+elif not SECRET_KEY:
+    SECRET_KEY = _DEV_SECRET_KEY
 
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 

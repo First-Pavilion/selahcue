@@ -12,12 +12,15 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 
 ### 1a. Core (WIRED — read in `selahcue_api/settings.py`)
 
+> **The names below are exactly what the API reads, and `implementation/api/tests/test_deployment_env_docs.py` fails the build if this table and `settings.py` disagree** (a documented name nothing reads, a variable the API reads that has no row here, or a stale name in any default column or sentence of §1a–1c). The API does **not** read `DJANGO_SECRET_KEY`, `DJANGO_DEBUG` or `DATABASE_URL`; setting them does nothing. Of the Django-prefixed names only `DJANGO_ALLOWED_HOSTS` and `DJANGO_CSRF_TRUSTED_ORIGINS` are real.
+
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
-| `DJANGO_SECRET_KEY` | **prod: yes** | **SECRET** | `selahcue-dev-only-insecure-key` | Django secret key. **Also the HMAC pepper** for license-key + device-token fingerprints (`apps/*/services.py::_fingerprint`) — rotating it invalidates existing key/token fingerprints, so treat as long-lived + backed up. The dev default is insecure; a real value is mandatory in prod. |
-| `DJANGO_DEBUG` | no | no | `false` | Debug mode. Must be `false`/unset in prod (also gates GraphQL IDE/introspection). |
-| `DJANGO_ALLOWED_HOSTS` | **prod: yes** | no | `localhost,127.0.0.1,testserver` | Comma-separated allowed Host headers. |
-| `SELAHCUE_CORS_ALLOWED_ORIGINS` | as needed | no | `` (empty) | Comma-separated CORS origins (e.g. the account web surface). |
+| `ENVIRONMENT` | **prod: yes** | no | `dev` | `dev`, `staging` or `prod`. **Leaving it unset leaves it at `dev`, and `dev` is the only mode in which the API will start on the public dev signing key.** Any other value makes the API refuse to start when `SECRET_KEY` is empty or is the dev key. It also selects the mail defaults (`dev` points at mailhog, anything else expects real SMTP) and is the switch for the TLS-proxy warning (`selahcue_accounts.W002`) and the eager-Celery refusal. |
+| `SECRET_KEY` | **prod: yes** | **SECRET** | empty ⇒ `selahcue-dev-only-insecure-key` in `dev` only | Django secret key. **Also the HMAC pepper** for license-key + device-token + account-session fingerprints (`apps/*/services.py::_fingerprint`) — rotating it invalidates existing key/token fingerprints, so treat as long-lived + backed up. The dev key is public (it is in this repository). When `ENVIRONMENT` is not `dev` the API **refuses to start**, with an error naming `SECRET_KEY`, if it is empty or equals the dev key. |
+| `DEBUG` | no | no | `false` | Debug mode (`1`/`true`/`yes`/`on` are true; anything else, including unset, is false). Must be `false`/unset in prod: it also gates the GraphQL IDE/introspection, zeroes HSTS and turns `SELAHCUE_TRUST_ACTOR_HEADERS` on. |
+| `DJANGO_ALLOWED_HOSTS` | **prod: yes** | no | `localhost 127.0.0.1 testserver` | Allowed Host headers, **space**-separated (commas are tolerated). |
+| `SELAHCUE_CORS_ALLOWED_ORIGINS` | as needed | no | `` (empty) | Comma-separated CORS origins. **Read but not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set. |
 | `SESSION_COOKIE_SECURE` | no | no | `true` when not DEBUG | Force secure session cookie. |
 | `CSRF_COOKIE_SECURE` | no | no | `true` when not DEBUG | Force secure CSRF cookie. |
 | `SECURE_HSTS_SECONDS` | no | no | `31536000` (prod) / `0` (debug) | HSTS max-age. |
@@ -25,20 +28,29 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `SECURE_HSTS_PRELOAD` | no | no | `true` when not DEBUG | HSTS preload. |
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | **prod behind a TLS proxy: yes** | no | `false` | Trust `X-Forwarded-Proto: https` (sets Django `SECURE_PROXY_SSL_HEADER`); on = `1`/`true`/`yes`/`on`, anything else off. Without it a browser `Origin: https://...` is refused by CSRF and HSTS is never sent. **Opt-in**: only where every route to Django goes through a proxy that overwrites the header, else a client can forge `https`. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | only if `Origin` differs from the forwarded `Host` | no | `` (empty) | Space- or comma-separated exact `https://host[:port]` origins (no `*`, no path); a bad entry refuses to boot. See `docs/ops/DEPLOYMENT.md` §6c. |
-| `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DJANGO_DEBUG` | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity. **MUST be `false`/unset in prod.** DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
+| `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DEBUG` | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity. **MUST be `false`/unset in prod.** DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
+| `SELAHCUE_TRUSTED_PROXY_COUNT` | no | no | `0` | Number of **your own** proxies in front of Django, for the rate limiter's client-IP lookup (`X-Forwarded-For`). Too high is a limiter bypass, too low shares one bucket. See `docs/ops/DEPLOYMENT.md` §6b. |
+| `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **prod: yes** | **SECRET** | — (none, on purpose) | Ed25519 seed (32 bytes, base64) signing offline entitlement manifests (DEC-004). No default and no dev fallback: unset, `GET /v1/entitlements/manifest` fails rather than serving an unsigned manifest. See `docs/ops/DEPLOYMENT.md` §6a. |
+| `SENTRY_DSN` | no | **SECRET** | `` (empty) | Read into settings; nothing consumes it yet. Set in staging/prod only. |
+| `FRONTEND_BASE_URL` | prod: yes | no | `http://localhost:2000` | Base URL of the web surface that hosts `/verify` and `/reset`; the transactional emails link to it. |
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
-> `settings.py` now reads `DATABASE_URL`: when set it configures Postgres (so row-locking / `select_for_update` — the DEC-004 device instance-limit guard — actually holds); when unset it falls back to the bundled SQLite for dev/test.
+> `settings.py` reads the discrete `SQL_*` variables (the First Pavilion house convention), **not** a `DATABASE_URL` DSN. With `SQL_ENGINE` unset it falls back to the bundled SQLite for dev/test. In production `SQL_ENGINE` must be Postgres: the DEC-004 device instance-limit guard uses `select_for_update`, which SQLite silently no-ops, so the limit is only enforced on a row-locking backend.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
-| `DATABASE_URL` | **prod: yes** | **SECRET** (contains DB password) | — (sqlite fallback) | Postgres DSN (`postgres://user:pass@host:port/name`) for the Platform API in prod. Unset ⇒ bundled SQLite. |
-| `DB_CONN_MAX_AGE` | no | no | `60` | Persistent-connection lifetime (seconds) when `DATABASE_URL` is set. |
+| `SQL_ENGINE` | **prod: yes** | no | `django.db.backends.sqlite3` | Django database backend. `django.db.backends.postgresql` in any real deployment. |
+| `SQL_DATABASE` | **prod: yes** | no | SQLite file path / `selahcue` (Postgres) | Database name (the file path for SQLite). |
+| `SQL_USER` | **prod: yes** | no | `postgres` | Postgres user. |
+| `SQL_PASSWORD` | **prod: yes** | **SECRET** | `postgres` | Postgres password. The default is a placeholder, not a safe value: always set it. |
+| `SQL_HOST` | **prod: yes** | no | `localhost` | Postgres host. |
+| `SQL_PORT` | no | no | `5432` | Postgres port. |
+| `DB_CONN_MAX_AGE` | no | no | `60` | Persistent-connection lifetime (seconds) for non-SQLite engines. |
 
 ### 1c. Customer account auth (WIRED — DEC-007 / ADR-0023, `apps/accounts/services.py` + `settings.py`)
 
-Traditional email/password auth. All keys are optional (the code falls back to the documented defaults via `getattr`); set them per environment to tune. The **HMAC pepper for session/credential-token fingerprints is `DJANGO_SECRET_KEY`** (§1a) — rotating it invalidates all live account sessions + email-verify/reset tokens (users re-login / re-request), so treat as long-lived.
+Traditional email/password auth. All keys are optional (the code falls back to the documented defaults via `getattr`); set them per environment to tune. The **HMAC pepper for session/credential-token fingerprints is `SECRET_KEY`** (§1a) — rotating it invalidates all live account sessions + email-verify/reset tokens (users re-login / re-request), so treat as long-lived.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
@@ -48,16 +60,37 @@ Traditional email/password auth. All keys are optional (the code falls back to t
 | `ACCOUNT_LOGIN_LOCKOUT_THRESHOLD` | no | no | `5` | Failed logins before a per-user soft lockout. A locked account is refused with the **same `UNAUTHENTICATED`** as any failed login (never a distinct code — that would be an account-existence oracle). Durable (DB-backed on `CustomerUser`), bounded by user count — no in-memory growth. |
 | `ACCOUNT_LOGIN_LOCKOUT_SECONDS` | no | no | `900` (15 min) | Lockout duration once the threshold trips. |
 | `ACCOUNT_MIN_PASSWORD_LENGTH` | no | no | `10` | Minimum password length at signup / reset. |
+| `ACCOUNT_RESEND_MIN_SECONDS` | no | no | `0.4` | Constant-time floor for the resend-verification mutation; keep it above the slowest branch. `0` disables padding and is for tests only. |
 
 > **Native-client sign-in has its own app-level per-IP budget** (86ak5t1gw, ADR-0029): `POST /v1/sessions` is limited by `SELAHCUE_THROTTLE_SESSION_LOGIN` and `POST /v1/activations:with-session` by `SELAHCUE_THROTTLE_ACTIVATION` (its own bucket, same budget as the enrollment-key route). Both budgets are `(10, 60)` = 10 requests per minute per client IP. **They are fixed values in `selahcue_api/settings.py`, like every other `SELAHCUE_THROTTLE_*` budget, not environment variables** — change them by editing that file; do not look for an env key. Like every `/v1` limiter they **fail open** if the limiter store is unreachable, which leaves only the per-account lockout (above) as the brake on password guessing. Both depend on `SELAHCUE_TRUSTED_PROXY_COUNT` being set to the real proxy depth behind a reverse proxy, otherwise every caller shares the proxy's address. **An edge rule keyed on `/graphql/account` does not cover these paths — extend any such rule to `/v1/sessions` and `/v1/activations:with-session`.**
 
 > **Per-IP / distributed throttling** on the browser surface is an **edge/proxy responsibility** (reverse proxy or WAF rate-limit on `/graphql/account`) — the app enforces the durable per-user lockout above; a shared-store (Redis/DB) per-IP throttle is a tracked hardening follow-up, deliberately not an in-process cache (would not hold across worker processes and would add an unbounded structure).
 
-> **Email delivery** ships as an injectable no-op seam (`EmailSender`) — no SMTP creds today. The concrete provider + its `EMAIL_*` keys are added **in the change that wires them** (DEC-007 defers the provider choice).
+> **Email delivery** goes out over SMTP using the `MAIL_*` and `DEFAULT_*` keys in §1e (mailhog in `dev`). The provider choice (DEC-007) is still open; whichever it is, it is configured through those keys.
 
 ### 1d. Customer identity via OIDC/Logto (DROPPED — superseded by DEC-007)
 
 The `SELAHCUE_OIDC_*` and `LOGTO_MGMT_*` relying-party keys (Logto-issued access-token validation, JWKS/introspection, M2M management) are **abandoned** per DEC-007 — never wired. Retained here only so old deploy configs referencing them are understood as no-ops. See §1c for the replacement.
+
+### 1e. Background work, cache and mail (WIRED — `settings.py`)
+
+Redis db **1** is the cache/throttle store and db **2** is the Celery broker; keep them separate. Operational detail: `docs/ops/DEPLOYMENT.md` §6b.
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `CELERY_BROKER_URL` | **prod: yes** | **SECRET** (may carry a password) | `redis://redis:6379/2` | Celery broker (Redis db 2). |
+| `CELERY_RESULT_BACKEND` | **prod: yes** | **SECRET** (may carry a password) | `redis://redis:6379/2` | Celery result backend. |
+| `CELERY_TASK_ALWAYS_EAGER` | no | no | `false` | Run tasks inline in the web process. Test/debug lever: **the API refuses to start with it on when `ENVIRONMENT` is `prod`.** |
+| `CELERY_TASK_EAGER_PROPAGATES` | no | no | = `CELERY_TASK_ALWAYS_EAGER` | Re-raise task exceptions in the caller while eager. |
+| `CACHE_URL` | **prod: yes** | **SECRET** (may carry a password) | `` (empty ⇒ per-process LocMemCache) | Redis cache for the throttle counters, db **1** (never the broker's db 2). Unset is unusable across web workers. |
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | no | no | `0.5` (seconds) | How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. |
+| `CACHE_SOCKET_TIMEOUT` | no | no | `0.5` (seconds) | How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. |
+| `MAIL_HOST` | **prod: yes** | no | `selahcue_mailhog` in `dev`, empty otherwise | SMTP host. |
+| `MAIL_PORT` | no | no | `1025` in `dev`, `587` otherwise | SMTP port (TLS is on outside `dev`). |
+| `MAIL_USERNAME` | prod: yes | no | `` (empty) | SMTP username. |
+| `MAIL_PASSWORD` | prod: yes | **SECRET** | `` (empty) | SMTP password. |
+| `DEFAULT_FROM_EMAIL` | prod: yes | no | `noreply@selahcue.com` | Sender address; use your verified sending domain. |
+| `DEFAULT_EMAIL` | no | no | `info@firstpavitech.com` | Default contact address. |
 
 ---
 
@@ -125,7 +158,7 @@ The desktop is a **PUBLIC OIDC client** → Authorization Code + **PKCE**, **no 
 ## Handling rules
 
 - **Never commit secrets.** Keep real values in a git-ignored `.env` (or the host/orchestrator secret store). This file lists keys only.
-- **Rotate with care:** `DJANGO_SECRET_KEY` doubles as the fingerprint HMAC pepper — rotating it invalidates issued license-key/device-token fingerprints (plan a migration if ever rotated).
-- **Prod must-set:** `DJANGO_SECRET_KEY`, `DJANGO_DEBUG=false`, `DJANGO_ALLOWED_HOSTS`, `DATABASE_URL`, and `SELAHCUE_TRUST_ACTOR_HEADERS` unset/false.
+- **Rotate with care:** `SECRET_KEY` doubles as the fingerprint HMAC pepper — rotating it invalidates issued license-key/device-token fingerprints (plan a migration if ever rotated).
+- **Prod must-set:** `ENVIRONMENT` (`staging` or `prod`; **left unset it is `dev`, and in `dev` the API starts on the public dev signing key without any error, whatever else you set** — the boot check below only runs when `ENVIRONMENT` is not `dev`), `SECRET_KEY` (a fresh random value: when `ENVIRONMENT` is not `dev` the API refuses to start if it is empty or is the dev key), `DEBUG` unset or `0`, `DJANGO_ALLOWED_HOSTS`, `SQL_ENGINE=django.db.backends.postgresql` with `SQL_DATABASE`, `SQL_USER`, `SQL_PASSWORD` and `SQL_HOST`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, and `SELAHCUE_TRUST_ACTOR_HEADERS` unset/false.
 - **Desktop is a public OIDC client** — it holds no client secret; PKCE + redirect validation carry the security (see the ADR-0022 security review, task 86ajy7aqw).
-- Add new keys here in the same turn you add the `os.getenv`/`env::var` read, so this stays the single source of truth.
+- Add new keys here in the same turn you add the `os.getenv`/`env::var` read, so this stays the single source of truth. For the API this is enforced: `implementation/api/tests/test_deployment_env_docs.py` fails when a documented name is not read, when the API reads a name with no row here, and when a name in §1a–1e or `docs/ops/DEPLOYMENT.md` §6 is stale.

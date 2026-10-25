@@ -4,12 +4,14 @@ Both guards here exist because the failure they prevent is invisible at runtime:
 starts, serves traffic, and behaves incorrectly for everyone.
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from django.core.exceptions import ImproperlyConfigured
 
 from selahcue_api.apps.accounts.checks import (
     INERT_CORS_WARNING,
@@ -75,10 +77,22 @@ def test_shared_bucket_warning_is_silent_without_a_shared_cache(settings):
 API_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _run_check(**env_overrides):
-    env = {**os.environ, **env_overrides}
+def _environment(env_overrides):
+    """The child process environment: ours, with each override applied and each override whose
+    value is None REMOVED (an unset variable, which is not the same as an empty one)."""
+    env = {**os.environ}
+    for name, value in env_overrides.items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     # The suite itself may run under an eager/settings env; start from a clean slate.
     env.pop("DJANGO_SETTINGS_MODULE", None)
+    return env
+
+
+def _run_check(**env_overrides):
+    env = _environment(env_overrides)
     return subprocess.run(
         [sys.executable, "manage.py", "check"],
         cwd=API_ROOT,
@@ -199,3 +213,101 @@ def test_untrusted_proxy_proto_warning_is_silent_in_dev_and_under_debug(settings
     settings.DEBUG = True
     settings.ENVIRONMENT = "prod"
     assert forwarded_proto_is_trusted_behind_a_tls_proxy(None) == []
+
+
+# --- SECRET_KEY: the public dev key must never sign anything outside `dev` (17tnw2b9ab0) -----------
+# The dev key is in this repository, and it is the HMAC pepper for licence-key, device-token and
+# account-session fingerprints. The refusal is an import-time check in settings.py, so the matrix
+# below executes a FRESH copy of that file under a controlled environment (fast, and it never
+# touches the `django.conf.settings` the rest of the suite is using), and a few cases go through
+# `manage.py check` in a child process to prove the real entry point refuses too. Every case sets
+# ENVIRONMENT and SECRET_KEY explicitly, so a value inherited from the machine running the suite
+# cannot change the outcome.
+DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
+SETTINGS_FILE = API_ROOT / "selahcue_api" / "settings.py"
+
+
+def _fresh_settings(monkeypatch, **env):
+    """Execute a new copy of settings.py with exactly `env` for the variables it names (None
+    unsets one) and return it as a module. Raises whatever settings.py raises."""
+    for name, value in env.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    spec = importlib.util.spec_from_file_location("_settings_under_test", SETTINGS_FILE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+REFUSED_KEYS = [
+    pytest.param(None, id="unset"),
+    pytest.param("", id="empty"),
+    pytest.param("   ", id="blank"),
+    pytest.param(DEV_SECRET_KEY, id="the-dev-key"),
+    pytest.param(f"  {DEV_SECRET_KEY}\n", id="the-dev-key-with-whitespace"),
+]
+
+
+@pytest.mark.parametrize("environment", ["staging", "prod", "production", "Dev", ""])
+@pytest.mark.parametrize("secret_key", REFUSED_KEYS)
+def test_settings_refuse_outside_dev_without_a_real_secret_key(monkeypatch, environment, secret_key):
+    """Any ENVIRONMENT other than exactly `dev` is treated as deployed (so a typo or a different
+    spelling fails closed), and there the key must be neither missing nor the public one. The
+    message has to name SECRET_KEY, because the operator reading it needs the variable to fix."""
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
+    assert "SECRET_KEY" in str(refusal.value)
+    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+
+
+@pytest.mark.parametrize("environment", ["staging", "prod", "production", "Dev", ""])
+def test_settings_accept_a_real_secret_key_outside_dev(monkeypatch, environment):
+    """The positive control for the matrix above: it stops the dangerous keys, not deployment.
+    Without this, a guard that refused everything outside dev would pass every case there."""
+    real = "a-real-key-" + "x" * 40
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=real)
+    assert module.SECRET_KEY == real
+
+
+@pytest.mark.parametrize("secret_key", [None, "", DEV_SECRET_KEY], ids=["unset", "empty", "dev-key"])
+def test_settings_allow_the_dev_key_inside_dev(monkeypatch, secret_key):
+    """`dev` is where the dev key is meant to work: a bare `pytest` and the compose stack."""
+    module = _fresh_settings(monkeypatch, ENVIRONMENT="dev", SECRET_KEY=secret_key)
+    assert module.SECRET_KEY == DEV_SECRET_KEY
+
+
+def test_an_unset_environment_is_dev_and_runs_on_the_public_dev_key(monkeypatch):
+    """THE HAZARD the deployment docs now warn about, pinned as fact. If an operator sets only
+    the names the old docs listed (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DATABASE_URL`), none of
+    which is read, ENVIRONMENT stays `dev` and nothing refuses to start. When this stops being
+    true (for example a deployed-host check is added) update the docs, not just this test."""
+    module = _fresh_settings(
+        monkeypatch,
+        ENVIRONMENT=None,
+        SECRET_KEY=None,
+        DJANGO_SECRET_KEY="a-key-the-old-docs-told-you-to-set",
+        DJANGO_DEBUG="false",
+        DATABASE_URL="postgres://user:pass@db/selahcue",
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == DEV_SECRET_KEY
+    assert module.DEBUG is False
+    assert module.DATABASES["default"]["ENGINE"].endswith("sqlite3")
+
+
+@pytest.mark.parametrize(
+    "secret_key", [pytest.param(None, id="unset"), pytest.param(DEV_SECRET_KEY, id="the-dev-key")]
+)
+def test_manage_py_refuses_to_start_outside_dev_without_a_real_secret_key(secret_key):
+    """End to end through the real entry point, for the two cases that matter most."""
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secret_key)
+    assert result.returncode != 0, f"started on SECRET_KEY={secret_key!r}: {result.stdout}"
+    assert "ImproperlyConfigured" in result.stderr
+    assert "SECRET_KEY" in result.stderr
+
+
+def test_manage_py_still_starts_in_prod_with_a_real_secret_key():
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="a-real-key-" + "x" * 40)
+    assert result.returncode == 0, result.stderr
