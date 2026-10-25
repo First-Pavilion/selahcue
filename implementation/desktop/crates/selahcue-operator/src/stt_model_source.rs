@@ -17,7 +17,8 @@
 //! which model bytes are loaded" true: `SELAHCUE_STT_CACHE` (and `HOME`, `LOCALAPPDATA`,
 //! `XDG_CACHE_HOME`, which place the default cache) move the cache directory, and the loader
 //! hashes the cached file on one open and hands whisper.cpp the path for a second open. That
-//! pre-dates this module and is tracked separately.
+//! pre-dates this module and is tracked in ClickUp 17tnw2b9dby
+//! (https://app.clickup.com/t/17tnw2b9dby).
 //!
 //! # What a release build does when either variable is present
 //!
@@ -29,10 +30,12 @@
 //! a username, and the hash is the caller's input. (Other, older `SelahCue STT:` lines in
 //! `listening.rs` do print the model and cache paths; that is unchanged.)
 //!
-//! Where that line can be seen: a terminal that runs the binary directly
-//! (`target/release/selahcue-operator`). `make launch` on macOS starts the `.app` through `open`
-//! without a stderr redirect (`scripts/run_operator_macapp.sh`), and the Windows installer's build
-//! is a GUI-subsystem process, so in those the line goes nowhere a user would look.
+//! Where that line can be seen: for certain, in a terminal that runs the binary directly
+//! (`target/release/selahcue-operator`). `make launch` on macOS goes through
+//! `scripts/run_operator_macapp.sh`, which starts the `.app` with `open -n -W` and no stderr
+//! redirect; that script's own comments say the app's stderr then goes to the macOS unified log,
+//! not a terminal, and it prints a `log stream` command to watch it. The Windows installer's build
+//! is a GUI-subsystem process with no console, so a user of the shipped app does not see the line.
 //!
 //! In a debug build the same presence rule applies: an empty `SELAHCUE_STT_MODEL` is an override
 //! to the empty path (the loader then fails to find it), and a hash that is not valid UTF-8 is
@@ -89,7 +92,8 @@
 //!
 //! `scripts/import_guards.sh` refuses some spellings of the manifest and config routes and says of
 //! itself "THIS IS NOT THE GATE": it matches text and cannot see the environment. Nothing in this
-//! repo checks the shipped binary for this today; an effect-level check is a separate follow-up.
+//! repo checks the shipped binary for this today; an effect-level check is tracked in ClickUp
+//! 17tnw2b9dbz (https://app.clickup.com/t/17tnw2b9dbz).
 //!
 //! # Why not a Cargo feature
 //!
