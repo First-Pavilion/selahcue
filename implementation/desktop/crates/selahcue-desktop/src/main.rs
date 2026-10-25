@@ -4983,6 +4983,10 @@ mod connect_banner_token_tests {
         let ok = banner(None, Some(written));
         assert!(ok.contains("token: in the endpoint file (0600)"), "{ok}");
         assert!(ok.contains("make remote CMD=next"), "{ok}");
+        assert!(
+            ok.contains("auto-connects on this machine"),
+            "the operator shell finds this window through the endpoint file: {ok}"
+        );
 
         let none_written = banner(None, None);
         assert!(
@@ -4998,6 +5002,11 @@ mod connect_banner_token_tests {
             !none_written.contains("make remote"),
             "`make remote` reads the endpoint file, which does not exist: {none_written}"
         );
+        assert!(
+            !none_written.contains("auto-connects"),
+            "the operator shell auto-discovers the window through the endpoint file, which does \
+             not exist: {none_written}"
+        );
 
         let secret = SessionToken::new("0123456789abcdef0123456789abcdef-test-token");
         let printed = banner(Some(&secret), None);
@@ -5006,6 +5015,7 @@ mod connect_banner_token_tests {
             "{printed}"
         );
         assert!(!printed.contains("in the endpoint file"), "{printed}");
+        assert!(!printed.contains("auto-connects"), "{printed}");
     }
 
     /// The production wiring, which every other test here bypasses by building a `ServerEnv` by
@@ -5117,12 +5127,21 @@ fn write_connect_banner(
         )?;
     }
     writeln!(out)?;
-    writeln!(
-        out,
-        "  Drive the window with the operator shell (auto-connects on this machine):"
-    )?;
-    writeln!(out, "    cargo run   # from crates/selahcue-operator")?;
-    writeln!(out, "  or from another terminal with the remote CLI:")?;
+    // The operator shell finds this window through the endpoint file, so only offer it when one
+    // was written.
+    if endpoint.is_some() {
+        writeln!(
+            out,
+            "  Drive the window with the operator shell (auto-connects on this machine):"
+        )?;
+        writeln!(out, "    cargo run   # from crates/selahcue-operator")?;
+        writeln!(out, "  or from another terminal with the remote CLI:")?;
+    } else {
+        writeln!(
+            out,
+            "  Drive the window from another terminal with the remote CLI:"
+        )?;
+    }
     match token {
         Some(token) => {
             // `--print-token`, debug builds only: the developer asked for the credential here.

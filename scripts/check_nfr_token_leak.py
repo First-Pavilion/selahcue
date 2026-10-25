@@ -26,6 +26,8 @@ where. (Printing it would put the credential into the very CI log this check exi
 Needs only the Python standard library, no cargo and no display, so the self-test runs anywhere.
 """
 
+import contextlib
+import io
 import json
 import os
 import secrets
@@ -143,6 +145,40 @@ def _self_test():
         expect("d5. missing endpoint file", check(os.path.join(tmp, "nope.json"), clean), False, "endpoint")
         expect("d6. endpoint file that is not JSON", check(write("junk.json", "{not json"), clean), False)
         expect("d7. missing log file", check(endpoint, os.path.join(tmp, "nope.log")), False, "host log")
+
+        # main() is what `measure_nfr.sh` actually runs, and its exit status is the only thing the
+        # shell sees: a main() that returned 0 whatever check() said would leave every case above
+        # green while `make nfr` could never fail. Drive it end to end, both streams captured.
+        def run_main(argv):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(argv)
+            return rc, out.getvalue(), err.getvalue()
+
+        def expect_main(name, argv, want_rc):
+            rc, out, err = run_main(argv)
+            if rc != want_rc:
+                failures.append("%s: main() returned %r, expected %r" % (name, rc, want_rc))
+            if token in out or token in err:
+                failures.append("%s: main() printed the token itself" % name)
+            return out, err
+
+        _, err = expect_main("m1. main() on a leaking log", ["x", endpoint, leak_in_command], 1)
+        if "LEAK" not in err:
+            failures.append("m1. main() should report the leak on stderr, got %r" % err)
+        out, _ = expect_main("m2. main() on a clean log", ["x", endpoint, clean], 0)
+        if "OK" not in out:
+            failures.append("m2. main() should report OK on stdout, got %r" % out)
+        expect_main("m3. main() on a log without the banner", ["x", endpoint, write("nb2.log", "x\n")], 1)
+        for n, argv in (
+            ("m4. no arguments", ["x"]),
+            ("m5. one argument", ["x", endpoint]),
+            ("m6. too many arguments", ["x", endpoint, clean, clean]),
+        ):
+            _, err = expect_main(n, argv, 2)
+            if "usage" not in err:
+                failures.append("%s: main() should print the usage on stderr, got %r" % (n, err))
+
         # A non-UTF-8 byte in the log must not crash the check (the host's output is not guaranteed UTF-8).
         raw = os.path.join(tmp, "binary.log")
         with open(raw, "wb") as f:
