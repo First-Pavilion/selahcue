@@ -508,6 +508,40 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE media_asset ADD COLUMN name TEXT;
     "#,
+    // v24 -> v25: the DECK-NUMBER HIGH-WATER MARK (17tnw2b9arx; ADR-0031 "Known limits"). The
+    // library hands out deck numbers from a counter, and a plan item links a deck BY that number.
+    // Before this table the counter was recomputed at every load as "highest surviving number + 1",
+    // so a number retired by a delete (the undo trash is memory-only) was handed to a different deck
+    // after a restart, and the plan link that still held it silently showed that other deck.
+    // This is one row holding the highest number ever ISSUED for a deck on this database. A number is
+    // recorded here BEFORE it is handed out (`deck_repo::issue_number`, one atomic statement), so a
+    // number whose deck row then fails to write is still never reissued; every deck row is also written
+    // in the same transaction as a raise of the mark to at least its own number
+    // (`deck_repo::save_one_numbered`). It is only ever raised by SQL `MAX`, and the trigger refuses an
+    // UPDATE that would lower it (it does not stop INSERT OR REPLACE, REPLACE INTO or DELETE of the
+    // row; no production code issues those). Deleting a deck never touches it. A fresh table with no
+    // row: an older database opens unchanged, and the library reads "no row" as 0 and raises the mark
+    // to its highest surviving number on the first load.
+    //
+    // The column accepts only an INTEGER between 0 and 2^53 - 1: SQLite would otherwise store the text
+    // 'abc' or the real 1e30 here, which the library cannot read back as a number (an unreadable mark
+    // must refuse a new number, never count as 0), and 2^53 - 1 is the largest integer a JSON number
+    // (the webview) holds exactly. NOTE: this v25 definition was edited in place after its first
+    // commit, which is safe only because v25 had not been released: no database outside scratch
+    // copies has opened with the first definition.
+    r#"
+    CREATE TABLE deck_id_counter (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        high_water INTEGER NOT NULL
+            CHECK (typeof(high_water) = 'integer' AND high_water BETWEEN 0 AND 9007199254740991)
+    );
+    CREATE TRIGGER deck_id_counter_never_lowers
+    BEFORE UPDATE OF high_water ON deck_id_counter
+    WHEN NEW.high_water < OLD.high_water
+    BEGIN
+        SELECT RAISE(ABORT, 'the deck number high-water mark can only be raised');
+    END;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

@@ -505,7 +505,10 @@ fn the_worked_example_refuses_to_carry_a_media_number_across() {
 #[test]
 fn very_large_deck_numbers_bind_by_identity_like_any_other() {
     let (ta, tb) = (TempDb::new("big-a"), TempDb::new("big-b"));
-    let big = u64::MAX;
+    // The largest number a deck may have: 2^53 - 1, what a JSON number holds exactly. (Above it a
+    // stored number is renumbered at load, 17tnw2b9arx, so `u64::MAX` is no longer a valid deck
+    // number to collide at; `deck_number_tests` covers the renumbering.)
+    let big = selahcue_data::deck_repo::MAX_DECK_NUMBER;
     deck_repo::save_one(&ta.open(), "Giant", &legacy_row(big, "Giant", 2)).unwrap();
     deck_repo::save_one(
         &tb.open(),

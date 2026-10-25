@@ -7370,6 +7370,21 @@
         banner.hidden = false;
         msg.textContent = message || "That didn’t work.";
       }
+      // The host refuses to create a presentation (or a copy) when its database will not record the new
+      // presentation's number: nothing was created, and a bare "please retry" would not say why or when
+      // retrying is pointless (17tnw2b9arx). The host's refusal text names it; anything else keeps the
+      // generic message.
+      function pmIsNumberRefusal(e) {
+        return String((e && e.message) || e || "").indexOf("did not accept a new presentation number") >= 0;
+      }
+      function pmNumberRefusalText(opName) {
+        return "Couldn’t " + opName + " — the presentation database did not accept it, so nothing was created. " +
+          "Please retry; if it keeps failing, the database may be full, locked or damaged.";
+      }
+      function pmShowActionError(opName, e) {
+        if (pmIsNumberRefusal(e)) pmShowErrorRaw(pmNumberRefusalText(opName));
+        else pmShowError(opName);
+      }
       function pmClearError() {
         const banner = pmEl("pm-error");
         if (banner) banner.hidden = true;
@@ -8811,11 +8826,19 @@
         nlabel.textContent = "New presentation";
         newCard.appendChild(plus);
         newCard.appendChild(nlabel);
+        // A refused create (the host's database would not record the new number) shows HERE, inside the
+        // dialog: the Presentations surface's own error banner is not on screen while a plan item is
+        // being linked, so without this the click would just do nothing (17tnw2b9arx).
+        const newErr = document.createElement("p");
+        newErr.className = "pm-confirm-body pm-link-new-error";
+        newErr.setAttribute("role", "alert");
+        newErr.hidden = true;
         let newBusy = false;
         newCard.onclick = async () => {
           if (newBusy) return; // guard double-activation → no duplicate decks
           newBusy = true;
           newCard.disabled = true;
+          newErr.hidden = true;
           try {
             const before = (planDecks || []).map((d) => d.id);
             await invoke("deck_new", { name: "Untitled presentation" });
@@ -8834,11 +8857,16 @@
             }
           } catch (e) {
             console.error(e);
+            newErr.textContent = pmIsNumberRefusal(e)
+              ? pmNumberRefusalText("create the presentation")
+              : "Couldn’t create the presentation — please retry.";
+            newErr.hidden = false;
             newCard.disabled = false;
             newBusy = false;
           }
         };
         wrap.appendChild(newCard);
+        wrap.appendChild(newErr);
 
         linkBtn.onclick = () => {
           if (selId != null) {
@@ -10731,7 +10759,7 @@
                 const dv = await invoke("deck_new", { name: name });
                 pmDv = dv; renderPresentation(dv); pmHideLibrary(); pmToast("Presentation created");
               }
-            } catch (e) { console.error(e); pmShowError("create the presentation"); }
+            } catch (e) { console.error(e); pmShowActionError("create the presentation", e); }
           },
         });
       }
@@ -11030,7 +11058,7 @@
       }
       async function pmLibDuplicate(id) {
         try { pmApplyLibrary(await invoke("deck_duplicate", { id: id })); pmLibFocusDeck(id); }
-        catch (e) { console.error(e); pmShowError("duplicate the presentation"); }
+        catch (e) { console.error(e); pmShowActionError("duplicate the presentation", e); }
       }
       // A bounded wait for a promise that might never settle. `view()` can be a genuine TLS
       // round-trip on Backend::Remote, and ControlClient::command (selahcue-lan/src/client.rs)
@@ -11126,12 +11154,19 @@
           confirmLabel: "Delete",
           onConfirm: async () => {
             try {
-              pmApplyLibrary(await invoke("deck_delete", { id: id }));
+              const lv = await invoke("deck_delete", { id: id });
+              pmApplyLibrary(lv);
               if (inUse) { const dv = await invoke("deck_view"); pmDv = dv; renderPresentation(dv); } // editor switched by the host
               // Offer Undo only where it will actually work.
               if ((pmLibRestorable || []).indexOf(id) >= 0) pmToast("Presentation deleted", "Undo", () => pmLibRestore(id));
               else pmToast("Presentation deleted");
               pmLibFocusDeck(null); // the deleted card is gone → focus the first remaining card / search
+              // The library is now empty and the host could not record a number for the blank replacement,
+              // so the editor still shows the deleted presentation as an UNSAVED copy (17tnw2b9arx). Say so:
+              // otherwise edits there go nowhere with no hint.
+              if (lv && lv.working_copy_unsaved) {
+                pmShowErrorRaw("The presentation was deleted, but a new blank one could not be created, so the editor still shows the deleted presentation as an unsaved copy. Changes made there will not be saved.");
+              }
             } catch (e) { console.error(e); pmShowError("delete the presentation"); }
           },
         });
