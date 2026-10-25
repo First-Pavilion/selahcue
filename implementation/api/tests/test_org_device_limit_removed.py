@@ -26,6 +26,12 @@ from selahcue_api.apps.accounts.services import CreateCustomerData
 from selahcue_api.apps.license_keys.models import AppLicenseKey
 from selahcue_api.apps.license_keys.services import GenerateLicenseKeyData
 
+# These tests read no rows. The mark is for the suite's autouse session fixtures
+# (`conftest._catalogue_reference_snapshot` reads the catalogue tables), which need a built
+# test database even when no test in the run touches one; without it this file errors on its
+# own with "no such table" and only passes when another file happens to have built the DB.
+pytestmark = pytest.mark.django_db
+
 
 def test_the_org_model_has_no_device_limit_field():
     with pytest.raises(FieldDoesNotExist):
