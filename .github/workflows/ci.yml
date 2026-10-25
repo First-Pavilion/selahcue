@@ -561,6 +561,13 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: ${{ github.workspace }}
         run: python3 scripts/publish_translations.py --self-test
+      # 17tnw2b9aga: the logic of the check `make nfr` (below, under xvfb) runs on the real release host's
+      # stdout/stderr log: the live Operator token must not be in it. Offline and display-free; same
+      # setup-zone placement and `if:` as the steps above, for the same ordinal-rule reason.
+      - name: NFR token-leak check self-test
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/check_nfr_token_leak.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop

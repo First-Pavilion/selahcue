@@ -567,8 +567,13 @@ launch-release: run-release ## Alias for `run-release` (optimized output window 
 output-release: ## Run only the output window as an optimized release build
 	@$(MAKE) --no-print-directory output RELEASE=1
 
-output: ## Run only the output window (native audience output + LAN control server; NDI auto)
-	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG)
+# Extra arguments for the output window, e.g. `make output OUTPUT_ARGS=--print-token` (debug builds
+# only: prints the live Operator token in the startup banner, off by default because stdout can be a
+# log file; 17tnw2b9aga). `make remote` reads the token from the endpoint file and needs no flag.
+OUTPUT_ARGS ?=
+
+output: ## Run only the output window (native audience output + LAN control server; NDI auto; OUTPUT_ARGS=... passes flags, see `selahcue-output --help`)
+	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) $(if $(OUTPUT_ARGS),-- $(OUTPUT_ARGS))
 
 ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for this OS
 	@test -f "$(NDI_DIR)/include/Processing.NDI.Lib.h" || { \
@@ -578,8 +583,8 @@ ndi-preflight: ## (internal) verify the repo-vendored NDI SDK is populated for t
 	  echo "  Details: implementation/desktop/vendor/ndi/README.md"; \
 	  exit 1; }
 
-output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically)
-	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG)
+output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK isn't vendored; `make run` enables NDI automatically; takes OUTPUT_ARGS like `output`)
+	NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER) $(CARGO) run $(WS) -p selahcue-desktop --features ndi $(PROFILE_FLAG) $(if $(OUTPUT_ARGS),-- $(OUTPUT_ARGS))
 
 operator: stt-preflight release-ai-guard stage-operator-binaries ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	@echo ">> live transcript (STT): $(STT_STATUS)"
@@ -814,6 +819,12 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	# needs no network, no `aws` and no credentials: a fake `aws` and a fake network stand in, and it proves a published
 	# key is never overwritten, a catalogue never names a missing file, and a read-back must match byte for byte.
 	python3 scripts/publish_translations.py --self-test
+	# 17tnw2b9aga: the process-level half of "the live Operator token never reaches the output window's
+	# stdout". `make nfr` runs the real release host with its stdout in a log file; measure_nfr.sh feeds
+	# that log and the host's endpoint file to this check. Only its LOGIC is tested here (offline, no
+	# cargo, no display): a leaking log fails, a clean one passes, a log without the banner or a
+	# short/missing token fails rather than passing vacuously.
+	python3 scripts/check_nfr_token_leak.py --self-test
 	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
 	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
