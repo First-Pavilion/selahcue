@@ -6,12 +6,14 @@ starts, serves traffic, and behaves incorrectly for everyone.
 
 import importlib.util
 import os
+import secrets
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
+from envscan import settings_env_names
 
 from selahcue_api.apps.accounts.checks import (
     INERT_CORS_WARNING,
@@ -23,6 +25,12 @@ from selahcue_api.apps.throttling.checks import (
     SHARED_BUCKET_WARNING,
     trusted_proxy_count_is_set_behind_a_proxy,
 )
+
+# tests/conftest.py snapshots the migration-installed catalogue in a session fixture that needs the
+# test database, and pytest-django only builds it when a selected test is marked. Without this the
+# file errors in setup when run on its own (`pytest tests/test_deployment_guards.py`). Same
+# arrangement as tests/test_nginx_forwarded_proto.py.
+pytestmark = pytest.mark.django_db
 
 REDIS_CACHE = {
     "default": {
@@ -78,9 +86,16 @@ API_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _environment(env_overrides):
-    """The child process environment: ours, with each override applied and each override whose
-    value is None REMOVED (an unset variable, which is not the same as an empty one)."""
-    env = {**os.environ}
+    """The child process environment: ours MINUS every variable settings.py reads, then each
+    override applied (None leaves it unset, which is not the same as empty).
+
+    Clearing them all is what makes a case mean what it says. CI's api job exports SQL_ENGINE,
+    CACHE_URL and CELERY_BROKER_URL, a developer's shell may export DEBUG=1 or
+    CELERY_TASK_ALWAYS_EAGER=1, and any of them would otherwise leak into a case that never
+    mentioned it. The list is derived from settings.py by the same extractor the docs drift test
+    uses, so it cannot go stale when a variable is added."""
+    cleared = settings_env_names()
+    env = {name: value for name, value in os.environ.items() if name not in cleared}
     for name, value in env_overrides.items():
         if value is None:
             env.pop(name, None)
@@ -215,21 +230,36 @@ def test_untrusted_proxy_proto_warning_is_silent_in_dev_and_under_debug(settings
     assert forwarded_proto_is_trusted_behind_a_tls_proxy(None) == []
 
 
-# --- SECRET_KEY: the public dev key must never sign anything outside `dev` (17tnw2b9ab0) -----------
+# --- SECRET_KEY: a public value must never sign anything outside `dev` (17tnw2b9ab0) -------------
 # The dev key is in this repository, and it is the HMAC pepper for licence-key, device-token and
-# account-session fingerprints. The refusal is an import-time check in settings.py, so the matrix
-# below executes a FRESH copy of that file under a controlled environment (fast, and it never
-# touches the `django.conf.settings` the rest of the suite is using), and a few cases go through
-# `manage.py check` in a child process to prove the real entry point refuses too. Every case sets
-# ENVIRONMENT and SECRET_KEY explicitly, so a value inherited from the machine running the suite
-# cannot change the outcome.
+# account-session fingerprints. The `replace-me-with-a-fresh-key` placeholder is in
+# implementation/api/.env.sample, which docs/ops/DEPLOYMENT.md tells operators to copy. Both are
+# public, so neither may be a deployed key, however it is spelled: quoted, re-cased, or carrying a
+# byte-order mark or a zero-width character from a copy-paste. The refusal is an import-time check
+# in settings.py, so the matrix below executes a FRESH copy of that file under a controlled
+# environment (fast, and it never touches the `django.conf.settings` the rest of the suite is
+# using), and a few cases go through `manage.py check` in a child process to prove the real entry
+# point refuses too.
+#
+# HERMETIC. `_fresh_settings` clears every variable settings.py reads before it applies a case, so
+# a value the machine running the suite exports (CI exports SQL_ENGINE, a developer may export
+# DEBUG=1) cannot change an outcome. Run the file with those exported to see it.
 DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
+SAMPLE_PLACEHOLDER = "replace-me-with-a-fresh-key"
 SETTINGS_FILE = API_ROOT / "selahcue_api" / "settings.py"
+# Built with chr() rather than typed: an invisible character in a source file is exactly what
+# this test is about, and it must not depend on how an editor or a tool treats the file.
+BOM = chr(0xFEFF)
+ZERO_WIDTH_SPACE = chr(0x200B)
+ZERO_WIDTH_JOINER = chr(0x200D)
+NO_BREAK_SPACE = chr(0xA0)
 
 
 def _fresh_settings(monkeypatch, **env):
     """Execute a new copy of settings.py with exactly `env` for the variables it names (None
-    unsets one) and return it as a module. Raises whatever settings.py raises."""
+    unsets one) and every other variable it reads cleared. Raises whatever settings.py raises."""
+    for name in settings_env_names():
+        monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         if value is None:
             monkeypatch.delenv(name, raising=False)
@@ -245,44 +275,100 @@ REFUSED_KEYS = [
     pytest.param(None, id="unset"),
     pytest.param("", id="empty"),
     pytest.param("   ", id="blank"),
+    pytest.param(BOM + ZERO_WIDTH_SPACE, id="only-invisible-characters"),
+    pytest.param('""', id="only-quotes"),
     pytest.param(DEV_SECRET_KEY, id="the-dev-key"),
     pytest.param(f"  {DEV_SECRET_KEY}\n", id="the-dev-key-with-whitespace"),
+    pytest.param(f'"{DEV_SECRET_KEY}"', id="the-dev-key-in-double-quotes"),
+    pytest.param(f"'{DEV_SECRET_KEY}'", id="the-dev-key-in-single-quotes"),
+    pytest.param(f' "{DEV_SECRET_KEY}" ', id="the-dev-key-in-quotes-with-whitespace"),
+    pytest.param(DEV_SECRET_KEY.upper(), id="the-dev-key-upper-case"),
+    pytest.param(DEV_SECRET_KEY.title(), id="the-dev-key-title-case"),
+    pytest.param(BOM + DEV_SECRET_KEY, id="the-dev-key-after-a-bom"),
+    pytest.param(DEV_SECRET_KEY + ZERO_WIDTH_SPACE, id="the-dev-key-before-a-zero-width-space"),
+    pytest.param(
+        DEV_SECRET_KEY[:10] + ZERO_WIDTH_JOINER + DEV_SECRET_KEY[10:], id="the-dev-key-split-by-a-zero-width-joiner"
+    ),
+    pytest.param(NO_BREAK_SPACE + DEV_SECRET_KEY, id="the-dev-key-after-a-no-break-space"),
+    pytest.param(SAMPLE_PLACEHOLDER, id="the-env-sample-placeholder"),
+    pytest.param(f'"{SAMPLE_PLACEHOLDER}"', id="the-placeholder-in-quotes"),
+    pytest.param(SAMPLE_PLACEHOLDER.upper(), id="the-placeholder-upper-case"),
+    pytest.param(BOM + SAMPLE_PLACEHOLDER, id="the-placeholder-after-a-bom"),
 ]
 
+# One environment spelling that is deployed, one that is a near-miss of `dev`, and the empty string:
+# anything but exactly `dev` is treated as deployed.
+DEPLOYED_ENVIRONMENTS = ["prod", "staging", "Dev", ""]
 
-@pytest.mark.parametrize("environment", ["staging", "prod", "production", "Dev", ""])
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
 @pytest.mark.parametrize("secret_key", REFUSED_KEYS)
 def test_settings_refuse_outside_dev_without_a_real_secret_key(monkeypatch, environment, secret_key):
     """Any ENVIRONMENT other than exactly `dev` is treated as deployed (so a typo or a different
-    spelling fails closed), and there the key must be neither missing nor the public one. The
-    message has to name SECRET_KEY, because the operator reading it needs the variable to fix."""
+    spelling fails closed), and there the key must be neither missing nor a public value. The
+    message has to name SECRET_KEY and ENVIRONMENT, because the operator reading it needs the
+    variables to fix, and it must never contain what was configured."""
     with pytest.raises(ImproperlyConfigured) as refusal:
         _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
-    assert "SECRET_KEY" in str(refusal.value)
-    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+    message = str(refusal.value)
+    assert "SECRET_KEY" in message
+    assert f"ENVIRONMENT={environment!r}" in message
+    if secret_key and secret_key.strip():
+        # The message is built from fixed text; echoing the configured value would put a key in
+        # logs. (The public values are public, but the rule is the same for every value.)
+        assert secret_key not in message
+        assert secret_key.upper() not in message and secret_key.lower() not in message
 
 
-@pytest.mark.parametrize("environment", ["staging", "prod", "production", "Dev", ""])
-def test_settings_accept_a_real_secret_key_outside_dev(monkeypatch, environment):
-    """The positive control for the matrix above: it stops the dangerous keys, not deployment.
-    Without this, a guard that refused everything outside dev would pass every case there."""
-    real = "a-real-key-" + "x" * 40
-    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=real)
-    assert module.SECRET_KEY == real
+REAL_KEYS = [
+    pytest.param("x", id="a-one-character-key"),
+    pytest.param("a-real-key-" + "x" * 40, id="a-long-plain-key"),
+    pytest.param(
+        "k7Qp-3vN_wZ9uXb2Lh0sTgYc4mRjE8aFdIoK5nVyP1qWzUt6BxCeHrJlMiA2SfDgO3kNvLbQ7pXwZ9uTy4mRj-E8a_Fd",
+        id="a-64-byte-urlsafe-key",
+    ),
+    pytest.param(DEV_SECRET_KEY + "-but-longer", id="the-dev-key-with-a-suffix"),
+    pytest.param("not-" + SAMPLE_PLACEHOLDER, id="the-placeholder-with-a-prefix"),
+]
 
 
-@pytest.mark.parametrize("secret_key", [None, "", DEV_SECRET_KEY], ids=["unset", "empty", "dev-key"])
-def test_settings_allow_the_dev_key_inside_dev(monkeypatch, secret_key):
-    """`dev` is where the dev key is meant to work: a bare `pytest` and the compose stack."""
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("secret_key", REAL_KEYS)
+def test_settings_accept_a_real_secret_key_outside_dev(monkeypatch, environment, secret_key):
+    """The positive control for the matrix above: it stops the public values, not deployment, and
+    not short keys (other suites deliberately boot prod with SECRET_KEY='x'). Without this, a
+    guard that refused everything outside dev would pass every case there."""
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
+    assert module.SECRET_KEY == secret_key
+
+
+def test_a_generated_key_boots_outside_dev(monkeypatch):
+    """The key the docs tell operators to generate (`secrets.token_urlsafe(64)`)."""
+    key = secrets.token_urlsafe(64)
+    assert len(key) >= 80
+    assert _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=key).SECRET_KEY == key
+
+
+@pytest.mark.parametrize(
+    "secret_key",
+    [None, "", DEV_SECRET_KEY, SAMPLE_PLACEHOLDER],
+    ids=["unset", "empty", "dev-key", "placeholder"],
+)
+def test_settings_allow_public_keys_inside_dev(monkeypatch, secret_key):
+    """`dev` is where the public values are meant to work: a bare `pytest`, the compose stack, and
+    a developer who copied .env.sample. Unset and empty fall back to the dev key."""
     module = _fresh_settings(monkeypatch, ENVIRONMENT="dev", SECRET_KEY=secret_key)
-    assert module.SECRET_KEY == DEV_SECRET_KEY
+    assert module.SECRET_KEY == (secret_key or DEV_SECRET_KEY)
 
 
 def test_an_unset_environment_is_dev_and_runs_on_the_public_dev_key(monkeypatch):
     """THE HAZARD the deployment docs now warn about, pinned as fact. If an operator sets only
     the names the old docs listed (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DATABASE_URL`), none of
     which is read, ENVIRONMENT stays `dev` and nothing refuses to start. When this stops being
-    true (for example a deployed-host check is added) update the docs, not just this test."""
+    true (for example a deployed-host check is added) update the docs, not just this test.
+
+    Hermetic on purpose: it asserts DEBUG is off and the engine is SQLite, which are only true
+    because `_fresh_settings` cleared whatever the machine running the suite exports."""
     module = _fresh_settings(
         monkeypatch,
         ENVIRONMENT=None,
@@ -297,11 +383,33 @@ def test_an_unset_environment_is_dev_and_runs_on_the_public_dev_key(monkeypatch)
     assert module.DATABASES["default"]["ENGINE"].endswith("sqlite3")
 
 
+def test_the_inherited_environment_cannot_change_a_case(monkeypatch):
+    """The hermeticity itself: with variables a CI runner or a developer shell would export set
+    in THIS process, a case still resolves from its own inputs only."""
+    monkeypatch.setenv("SQL_ENGINE", "django.db.backends.postgresql")
+    monkeypatch.setenv("DEBUG", "1")
+    monkeypatch.setenv("CELERY_TASK_ALWAYS_EAGER", "1")
+    monkeypatch.setenv("SECRET_KEY", "an-inherited-key")
+    monkeypatch.setenv("ENVIRONMENT", "prod")
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=None, SECRET_KEY=None)
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == DEV_SECRET_KEY
+    assert module.DEBUG is False
+    assert module.CELERY_TASK_ALWAYS_EAGER is False
+    assert module.DATABASES["default"]["ENGINE"].endswith("sqlite3")
+
+
 @pytest.mark.parametrize(
-    "secret_key", [pytest.param(None, id="unset"), pytest.param(DEV_SECRET_KEY, id="the-dev-key")]
+    "secret_key",
+    [
+        pytest.param(None, id="unset"),
+        pytest.param(DEV_SECRET_KEY, id="the-dev-key"),
+        pytest.param(SAMPLE_PLACEHOLDER, id="the-env-sample-placeholder"),
+        pytest.param(f'"{DEV_SECRET_KEY.upper()}"', id="a-quoted-upper-case-dev-key"),
+    ],
 )
 def test_manage_py_refuses_to_start_outside_dev_without_a_real_secret_key(secret_key):
-    """End to end through the real entry point, for the two cases that matter most."""
+    """End to end through the real entry point, for the cases that matter most."""
     result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secret_key)
     assert result.returncode != 0, f"started on SECRET_KEY={secret_key!r}: {result.stdout}"
     assert "ImproperlyConfigured" in result.stderr
@@ -309,5 +417,5 @@ def test_manage_py_refuses_to_start_outside_dev_without_a_real_secret_key(secret
 
 
 def test_manage_py_still_starts_in_prod_with_a_real_secret_key():
-    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="a-real-key-" + "x" * 40)
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secrets.token_urlsafe(64))
     assert result.returncode == 0, result.stderr

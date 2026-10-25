@@ -9,8 +9,8 @@ every licence-key and device-token fingerprint. Rotating it afterwards invalidat
 
 WHAT IS CHECKED, and in which direction:
 
-1. Every variable named in a table row of the API sections of `deployments.md` (1a to 1c) and of
-   `docs/ops/DEPLOYMENT.md` (section 6 to 6c) is read by the API. A documented name nothing
+1. Every variable named in a table row of the API sections of `deployments.md` (1a to 1c, 1e) and
+   of `docs/ops/DEPLOYMENT.md` (section 6 to 6c) is read by the API. A documented name nothing
    reads is the original bug.
 2. Every variable the API reads has a row in `deployments.md`, which is the key registry and says
    so ("single source of truth"). A knob that exists but is not written down is how an operator
@@ -20,32 +20,43 @@ WHAT IS CHECKED, and in which direction:
    stale name in a default column or in a "Prod must-set" sentence, which a first-column check
    cannot.
 4. Every variable in the desktop table (`deployments.md` section 3a) is read by the Rust code.
-5. The "Prod must-set" line names `ENVIRONMENT` and what happens when it is left at `dev`.
+5. The "Prod must-set" line leads with `ENVIRONMENT` and says, in that clause, what happens when
+   it is left unset; and every row marked `prod: yes` is named in the "Handling rules" section.
+6. In those sections every table is one block with its header. A blank line inside a table makes
+   the rows below it render as a paragraph of pipes, and the row-based checks above cannot see
+   that (they treat any line starting with `|` as a row).
 
-HOW THE READS ARE FOUND. By parsing the Python source with `ast`, not by grepping. Every
-`os.getenv`, `os.environ.get` and `os.environ[...]` call is found, and so is any helper that
-forwards its own parameter into one (`env_bool`, `env_list`, `_socket_timeout_seconds`,
-`_csrf_trusted_origins` today). Helpers are DISCOVERED, not listed, so a new helper cannot hide a
-read from this test. A read whose name is not a literal string that cannot be traced to a helper
-parameter FAILS the test, instead of being skipped: skipping is how a check goes quietly vacuous.
+HOW THE READS ARE FOUND. By parsing the Python source with `ast`, not by grepping (see
+`tests/envscan.py`, which also says what is scanned: `manage.py` and `selahcue_api/**/*.py` only).
+Helpers that forward their own parameter into an environment read are DISCOVERED, not listed, so a
+new helper cannot hide a read. A read whose name cannot be determined FAILS the test instead of
+being skipped: skipping is how a check goes quietly vacuous.
 
-WHY THE TEST CANNOT PASS FOR THE WRONG REASON. Section "the extractor itself" feeds it small
-programs with known answers (including the cases above), and the real-file tests assert canaries
-(variables that are known to be read and documented), so an extractor or a parser that returns
-nothing fails loudly rather than agreeing with an empty doc. The mutation evidence (rename a doc
-row, rename a settings read, and watch the matching test go red while its siblings stay green) is
-recorded in the PR description for 17tnw2b9ab0.
+WHY THE TEST CANNOT PASS FOR THE WRONG REASON. The "extractor itself" and "doc parser itself"
+sections feed small programs and documents with known answers, and the real-file tests assert
+canaries (variables known to be read and documented) and cross-check the extractor against a
+naive text search, so an extractor or a parser that returns nothing fails loudly rather than
+agreeing with an empty doc. The checks were mutation-verified when written: renaming one doc row,
+one settings read, one row in the ops doc, or one desktop row each turned the matching test red
+while the unrelated ones stayed green.
 
-The `api` CI filter includes both docs, so a docs-only edit re-runs this test.
+WHEN THIS RUNS. It reads files above `implementation/api` (the two docs and the desktop Rust
+sources). Where those are absent, for example in the API Docker image, the real-file tests SKIP
+with a loud reason, unless the `CI` environment variable is set, in which case they FAIL. CI
+re-runs this only when a commit changes the docs together with a file the workflow does not
+ignore: both workflow triggers carry `paths-ignore` for `docs/**` and `**.md`, so a docs-only
+edit does not start CI. That edit is covered by `make api-check` and by the weekly scheduled run.
 """
 
-import ast
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+
+from envscan import ENTRY_POINT_PLUMBING, UnresolvableRead, api_env_names, api_source_files, env_reads
 
 # tests/conftest.py snapshots the migration-installed catalogue in a session fixture that needs the
 # test database; pytest-django only builds it when a selected test is marked. Without this the
@@ -61,11 +72,6 @@ DESKTOP_ROOT = REPO_ROOT / "implementation" / "desktop"
 
 # A variable name as these docs write it: upper-case letters, digits and underscores.
 NAME = re.compile(r"[A-Z][A-Z0-9_]*")
-
-# Set by the entry points themselves (`os.environ.setdefault(...)` in manage.py, wsgi.py,
-# asgi.py and celery.py). It is Django plumbing, not something an operator configures, so it is
-# neither required in the docs nor expected there.
-ENTRY_POINT_PLUMBING = {"DJANGO_SETTINGS_MODULE"}
 
 # Names the docs used to tell operators to set. The API reads none of them. They may be mentioned,
 # but ONLY in a sentence that says the API does not read them (the warning at the top of
@@ -100,228 +106,6 @@ NOT_ENV_VARIABLES = {
     "EXPIRE": "Redis command",
     "SELECT": "Redis command",
 }
-
-
-# =============================== reading env reads out of Python ===============================
-
-
-class UnresolvableRead(Exception):
-    """An environment read whose variable name cannot be determined from the source."""
-
-
-@dataclass(frozen=True)
-class Read:
-    name: str
-    where: str
-
-
-@dataclass(frozen=True)
-class Aliases:
-    """Names that stand for `os.environ` / `os.getenv` after `from os import environ as e`."""
-
-    environ: frozenset = frozenset({"environ"})
-    getenv: frozenset = frozenset({"getenv"})
-
-
-def _aliases(trees) -> Aliases:
-    environ, getenv = {"environ"}, {"getenv"}
-    for tree in trees:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "os":
-                for alias in node.names:
-                    if alias.name == "environ":
-                        environ.add(alias.asname or alias.name)
-                    if alias.name == "getenv":
-                        getenv.add(alias.asname or alias.name)
-    return Aliases(frozenset(environ), frozenset(getenv))
-
-
-def _is_environ(node: ast.AST, aliases: Aliases) -> bool:
-    """`<anything>.environ` or a bare name bound to os.environ. The receiver is deliberately not
-    checked: `import os as _os` or `import os as operating_system` must not hide a read, and
-    over-detecting costs a doc row, where under-detecting costs the whole check."""
-    if isinstance(node, ast.Attribute):
-        return node.attr == "environ"
-    return isinstance(node, ast.Name) and node.id in aliases.environ
-
-
-def _is_getenv(node: ast.AST, aliases: Aliases) -> bool:
-    if isinstance(node, ast.Attribute):
-        return node.attr == "getenv"
-    return isinstance(node, ast.Name) and node.id in aliases.getenv
-
-
-def _read_name_arg(node: ast.AST, aliases: Aliases) -> ast.AST | None:
-    """The expression holding the variable name if `node` reads the environment, else None.
-
-    `os.environ.setdefault` is a write-if-absent, not a read of operator configuration, so it is
-    deliberately not matched. `os.environ.pop` is treated as a read: it consumes the value. A
-    subscript that assigns or deletes (`os.environ["X"] = ...`) is a write, not a read.
-    """
-    if isinstance(node, ast.Call) and node.args:
-        func = node.func
-        if _is_getenv(func, aliases):
-            return node.args[0]
-        if isinstance(func, ast.Attribute) and func.attr in {"get", "pop"} and _is_environ(func.value, aliases):
-            return node.args[0]
-    if (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.ctx, ast.Load)
-        and _is_environ(node.value, aliases)
-    ):
-        return node.slice
-    return None
-
-
-def _refuse_indirect_access(trees, parents: dict[int, ast.AST], aliases: Aliases) -> None:
-    """Fail on any use of the environment that this module cannot see into: `dict(os.environ)`,
-    `**os.environ`, iterating it, `f = os.getenv; f("X")`, `getattr(os, "getenv")`. Each could
-    read a variable the docs never hear about, so each is a failure, not a skip."""
-    for label, tree in trees.items():
-        for node in ast.walk(tree):
-            where = f"{label}:{getattr(node, 'lineno', '?')}"
-            if _is_environ(node, aliases) and not isinstance(node, ast.Name) or (
-                isinstance(node, ast.Name) and node.id in aliases.environ and isinstance(node.ctx, ast.Load)
-            ):
-                parent = parents.get(id(node))
-                grandparent = parents.get(id(parent)) if parent is not None else None
-                via_method = (
-                    isinstance(parent, ast.Attribute)
-                    and parent.value is node
-                    and parent.attr in {"get", "pop", "setdefault"}
-                    and isinstance(grandparent, ast.Call)
-                    and grandparent.func is parent
-                )
-                via_subscript = isinstance(parent, ast.Subscript) and parent.value is node
-                if not (via_method or via_subscript):
-                    raise UnresolvableRead(
-                        f"{where}: the environment is used as a whole or indirectly "
-                        f"({ast.unparse(parent) if parent is not None else 'os.environ'!r}); "
-                        "read each variable by a literal name so the deployment docs can be checked"
-                    )
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "getattr"
-                and len(node.args) >= 2
-                and isinstance(node.args[1], ast.Constant)
-                and node.args[1].value in {"environ", "getenv"}
-            ):
-                raise UnresolvableRead(f"{where}: the environment is reached through getattr")
-            if _is_getenv(node, aliases) and (
-                isinstance(node, ast.Attribute) or (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load))
-            ):
-                parent = parents.get(id(node))
-                if not (isinstance(parent, ast.Call) and parent.func is node):
-                    raise UnresolvableRead(
-                        f"{where}: getenv is referenced without being called directly "
-                        f"({ast.unparse(parent) if parent is not None else 'getenv'!r})"
-                    )
-
-
-def _parameters(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    args = func.args
-    return [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
-
-
-def _enclosing_function(parents: dict[int, ast.AST], node: ast.AST):
-    current = parents.get(id(node))
-    while current is not None:
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return current
-        current = parents.get(id(current))
-    return None
-
-
-def _call_argument(call: ast.Call, index: int, parameter: str) -> ast.AST | None:
-    """The expression passed for a helper's name parameter, positionally or by keyword."""
-    if index < len(call.args):
-        return call.args[index]
-    for keyword in call.keywords:
-        if keyword.arg == parameter:
-            return keyword.value
-    return None
-
-
-def env_reads(sources: dict[str, str]) -> set[Read]:
-    """Every environment variable read by `sources` ({label: python source}), helpers included.
-
-    Raises `UnresolvableRead` for a read whose name is not a literal string and cannot be traced
-    to a helper's parameter, so a dynamically named read can never be silently missed.
-    """
-    trees = {label: ast.parse(text, filename=label) for label, text in sources.items()}
-    parents: dict[int, ast.AST] = {}
-    for tree in trees.values():
-        for parent in ast.walk(tree):
-            for child in ast.iter_child_nodes(parent):
-                parents[id(child)] = parent
-    aliases = _aliases(trees.values())
-    _refuse_indirect_access(trees, parents, aliases)
-
-    # helper name -> (index, parameter) of the parameter that ends up as an environment name.
-    helpers: dict[str, tuple[int, str]] = {}
-
-    def forwarded_parameter(name_arg: ast.AST, node: ast.AST):
-        """(function, parameter) if `name_arg` is just a parameter of the function around it."""
-        func = _enclosing_function(parents, node)
-        if func is not None and isinstance(name_arg, ast.Name) and name_arg.id in _parameters(func):
-            return func, name_arg.id
-        return None
-
-    changed = True
-    while changed:  # fixpoint: a helper that calls a helper is a helper too
-        changed = False
-        for tree in trees.values():
-            for node in ast.walk(tree):
-                name_arg = _read_name_arg(node, aliases)
-                callee_helper = None
-                if name_arg is None and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                    callee_helper = helpers.get(node.func.id)
-                    if callee_helper is not None:
-                        name_arg = _call_argument(node, *callee_helper)
-                if name_arg is None:
-                    continue
-                found = forwarded_parameter(name_arg, node)
-                if found is None:
-                    continue
-                func, parameter = found
-                entry = (_parameters(func).index(parameter), parameter)
-                if helpers.get(func.name) != entry:
-                    helpers[func.name] = entry
-                    changed = True
-
-    reads: set[Read] = set()
-    for label, tree in trees.items():
-        for node in ast.walk(tree):
-            name_arg = _read_name_arg(node, aliases)
-            if name_arg is None and isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                helper = helpers.get(node.func.id)
-                if helper is not None:
-                    name_arg = _call_argument(node, *helper)
-            if name_arg is None:
-                continue
-            where = f"{label}:{node.lineno}"
-            if isinstance(name_arg, ast.Constant) and isinstance(name_arg.value, str):
-                reads.add(Read(name_arg.value, where))
-            elif forwarded_parameter(name_arg, node) is None:
-                raise UnresolvableRead(
-                    f"{where}: environment variable name is not a string literal "
-                    f"({ast.unparse(name_arg)!r}); read it with a literal name, or from a helper "
-                    "whose parameter is the name, so the deployment docs can be checked against it"
-                )
-    return reads
-
-
-def api_source_files() -> dict[str, str]:
-    """The API's own Python outside tests: the package and manage.py."""
-    files = {}
-    for path in [API_ROOT / "manage.py", *sorted((API_ROOT / "selahcue_api").rglob("*.py"))]:
-        files[str(path.relative_to(API_ROOT))] = path.read_text(encoding="utf-8")
-    return files
-
-
-def api_env_names() -> set[str]:
-    return {read.name for read in env_reads(api_source_files())} - ENTRY_POINT_PLUMBING
 
 
 # ================================= reading variable names out of docs =================================
@@ -415,6 +199,89 @@ def ops_mentions() -> list[Mention]:
     return doc_mentions(_read(DEPLOYMENT_OPS_MD), OPS_API_SCOPE)
 
 
+SEPARATOR_ROW = re.compile(r"\|?[\s:|\-]*-{3}[\s:|\-]*\|?")
+
+
+def table_problems(text: str, in_scope) -> list[str]:
+    """Tables in the scoped sections that would not render as tables.
+
+    A table is a block of consecutive lines starting with `|`, and Markdown renders it only when
+    its SECOND line is the `---` separator. A blank line or a quoted paragraph in the middle of
+    one ends the table; the rows after it become a block with no header, which renders as a
+    paragraph of pipes. That is what happened to the six ACCOUNT_* rows in
+    docs/ops/DEPLOYMENT.md, and the row-based checks cannot see it.
+    """
+    problems: list[str] = []
+    stack: list[tuple[int, str]] = []
+    in_fence = False
+    block: list[tuple[int, str]] = []
+
+    def close(block):
+        if block and not (len(block) >= 2 and SEPARATOR_ROW.fullmatch(block[1][1].strip())):
+            first = block[0][0]
+            problems.append(
+                f"line {first}: `{block[0][1].strip()[:60]}` starts a block of table rows with no "
+                "header and separator above it (a blank line or quoted text inside the table?)"
+            )
+
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            close(block)
+            block = []
+            continue
+        if in_fence:
+            continue
+        heading = HEADING.match(line)
+        if heading:
+            close(block)
+            block = []
+            level = len(heading.group(1))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, heading.group(2)))
+            continue
+        if line.strip().startswith("|") and in_scope([title for _, title in stack]):
+            block.append((number, line))
+        else:
+            close(block)
+            block = []
+    close(block)
+    return problems
+
+
+@pytest.fixture
+def repo_docs():
+    """The real-file tests read the two docs and the desktop sources, which sit above
+    implementation/api. Where they are absent (the API Docker image mounts only that directory)
+    skip loudly, but never in CI: there, absent files mean the checkout is wrong, and a skip
+    would read as a pass."""
+    missing = [str(path) for path in (DEPLOYMENTS_MD, DEPLOYMENT_OPS_MD, DESKTOP_ROOT) if not path.exists()]
+    if not missing:
+        return
+    reason = (
+        "the deployment-docs drift check CANNOT RUN here, so nothing is being checked: missing "
+        + ", ".join(missing)
+        + " (only implementation/api is present?)"
+    )
+    if os.environ.get("CI"):
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+def prod_required_names(mentions: list[Mention]) -> set[str]:
+    """Rows whose Required cell says they are needed in production ("prod: yes", "prod behind a
+    TLS proxy: yes"). The Required cell is the second one in the row."""
+    names = set()
+    for m in mentions:
+        if not m.is_row:
+            continue
+        cells = m.text.strip().strip("|").split("|")
+        if len(cells) > 1 and re.search(r"prod\b[^|]*:\s*yes", cells[1], re.IGNORECASE):
+            names.add(m.name)
+    return names
+
+
 # ===================================== reading env reads out of Rust =====================================
 
 RUST_ENV_READ = re.compile(r"""(?:env::var(?:_os)?|option_env!)\(\s*"([A-Z][A-Z0-9_]*)"\s*\)""")
@@ -452,16 +319,32 @@ def _describe(mentions: list[Mention], names) -> str:
     return "; ".join(f"{name} at {where[name]}" for name in sorted(where))
 
 
+# A deliberately naive second opinion on what the API reads: a text search for the common shapes
+# with a literal name. The AST extractor must find at least everything this finds; if it does not,
+# the extractor has gone blind to something, which a hard-coded "at least N reads" would not notice
+# until N happened to be crossed.
+NAIVE_READ = re.compile(
+    r"""(?:\b(?:getenv|env_bool|env_list|_socket_timeout_seconds|_csrf_trusted_origins)\(|environ\.get\(|environ\[)"""
+    r"""\s*["']([A-Z][A-Z0-9_]*)["']"""
+)
+
+
 def test_the_extractor_sees_the_real_settings_file():
     """Canaries: the variables below are read by settings.py today. If this fails the extractor
     is broken (or one of them was renamed, in which case update the docs and this list)."""
     names = api_env_names()
     missing = API_CANARIES - names
     assert not missing, f"the extractor did not find {sorted(missing)} in the API source"
-    assert len(names) >= 40, f"suspiciously few environment reads found: {len(names)}"
+    naive = {
+        name
+        for source in api_source_files().values()
+        for name in NAIVE_READ.findall(source)
+    } - ENTRY_POINT_PLUMBING
+    assert naive >= API_CANARIES, "the naive search is blind too: this check no longer checks anything"
+    assert naive <= names, f"the extractor missed variables a plain text search finds: {sorted(naive - names)}"
 
 
-def test_the_doc_parsers_see_the_real_docs():
+def test_the_doc_parsers_see_the_real_docs(repo_docs):
     assert API_CANARIES <= _rows(deployments_mentions()), "deployments.md sections 1a-1c and 1e lost a canary row"
     assert {"SECRET_KEY", "ENVIRONMENT", "SQL_ENGINE"} <= _rows(ops_mentions()), (
         "docs/ops/DEPLOYMENT.md section 6 lost a canary row"
@@ -475,7 +358,7 @@ def test_the_doc_parsers_see_the_real_docs():
     "label, mentions",
     [("deployments.md", deployments_mentions), ("docs/ops/DEPLOYMENT.md", ops_mentions)],
 )
-def test_every_documented_api_variable_is_read_by_the_api(label, mentions):
+def test_every_documented_api_variable_is_read_by_the_api(repo_docs, label, mentions):
     """The original bug: a documented name that nothing reads."""
     read = api_env_names()
     documented = mentions()
@@ -487,7 +370,7 @@ def test_every_documented_api_variable_is_read_by_the_api(label, mentions):
     )
 
 
-def test_every_variable_the_api_reads_has_a_row_in_deployments_md():
+def test_every_variable_the_api_reads_has_a_row_in_deployments_md(repo_docs):
     """deployments.md is the key registry, so a knob that exists but has no row is a gap."""
     rows = _rows(deployments_mentions())
     undocumented = sorted(api_env_names() - rows)
@@ -499,7 +382,7 @@ def test_every_variable_the_api_reads_has_a_row_in_deployments_md():
     )
 
 
-def test_no_stale_or_unknown_variable_name_appears_in_the_api_sections():
+def test_no_stale_or_unknown_variable_name_appears_in_the_api_sections(repo_docs):
     """Catches a stale name in prose or in a default column, which a first-column check misses
     (the `= DJANGO_DEBUG` default and the "Prod must-set" sentence were exactly that)."""
     read = api_env_names()
@@ -518,7 +401,7 @@ def test_no_stale_or_unknown_variable_name_appears_in_the_api_sections():
     )
 
 
-def test_the_retired_names_are_still_warned_about():
+def test_the_retired_names_are_still_warned_about(repo_docs):
     mentioned = {m.name for m in deployments_mentions() if RETIRED_WARNING.search(m.text)}
     assert RETIRED_NAMES <= mentioned, (
         f"deployments.md no longer warns that the API does not read {sorted(RETIRED_NAMES - mentioned)}"
@@ -526,7 +409,7 @@ def test_the_retired_names_are_still_warned_about():
     assert not (RETIRED_NAMES & api_env_names()), "the API reads a name on RETIRED_NAMES now: update the docs"
 
 
-def test_the_not_env_variables_list_has_no_dead_entries():
+def test_the_not_env_variables_list_has_no_dead_entries(repo_docs):
     mentioned = {m.name for m in (*deployments_mentions(), *ops_mentions())}
     dead = sorted(set(NOT_ENV_VARIABLES) - mentioned)
     assert not dead, f"NOT_ENV_VARIABLES lists names no doc mentions any more: {dead}"
@@ -534,7 +417,7 @@ def test_the_not_env_variables_list_has_no_dead_entries():
     assert not now_read, f"NOT_ENV_VARIABLES lists names the API now reads: {now_read}"
 
 
-def test_every_documented_desktop_variable_is_read_by_the_desktop_code():
+def test_every_documented_desktop_variable_is_read_by_the_desktop_code(repo_docs):
     documented = doc_mentions(_read(DEPLOYMENTS_MD), DEPLOYMENTS_DESKTOP_SCOPE)
     rows = _rows(documented)
     assert rows, "no desktop rows found in deployments.md section 3a"
@@ -547,18 +430,52 @@ def test_every_documented_desktop_variable_is_read_by_the_desktop_code():
     )
 
 
-def test_prod_must_set_names_environment_and_what_dev_means():
-    """The ticket's second criterion: an operator who stops at the line must learn that leaving
-    ENVIRONMENT at `dev` is what keeps the public dev key in use."""
-    text = _read(DEPLOYMENTS_MD)
-    line = next((l for l in text.splitlines() if "Prod must-set" in l), None)
+def _prod_must_set_line() -> str:
+    line = next((l for l in _read(DEPLOYMENTS_MD).splitlines() if "Prod must-set" in l), None)
     assert line is not None, "deployments.md lost its 'Prod must-set' line"
+    return line
+
+
+def test_prod_must_set_leads_with_environment_and_says_what_unset_means(repo_docs):
+    """The ticket's second criterion. An operator who stops after the first clause must learn
+    that leaving ENVIRONMENT unset is what keeps the public dev key in use, without any error.
+    The ENVIRONMENT clause is checked on its own, up to where SECRET_KEY is named: the SECRET_KEY
+    clause also says 'dev' and 'refuses', so a looser check passes with the ENVIRONMENT
+    explanation deleted."""
+    line = _prod_must_set_line()
+    assert line.startswith("- **Prod must-set:** `ENVIRONMENT`"), f"ENVIRONMENT must come first: {line}"
+    clause = line[: line.index("`SECRET_KEY`")]
+    assert "left unset it is `dev`" in clause, f"the ENVIRONMENT clause lost its explanation: {clause}"
+    assert "public dev signing key" in clause and "without any error" in clause, clause
     ordered = [n for span in BACKTICKED.findall(line) for n in _token_names(span)]
-    assert ordered[:1] == ["ENVIRONMENT"], f"ENVIRONMENT must be the first name on the line: {line}"
-    assert {"ENVIRONMENT", "SECRET_KEY", "DEBUG", "DJANGO_ALLOWED_HOSTS", "SQL_ENGINE"} <= set(ordered), line
-    assert "dev" in line and "refuse" in line.lower(), (
-        "the Prod must-set line must say what happens when ENVIRONMENT is left at `dev`"
+    assert {"SECRET_KEY", "DEBUG", "DJANGO_ALLOWED_HOSTS", "SQL_ENGINE"} <= set(ordered), line
+
+
+def test_every_prod_required_row_is_named_in_the_handling_rules(repo_docs):
+    """The Prod must-set list is what an operator copies from, so it cannot lag the tables: any
+    row whose Required cell says `prod: yes` has to be named in the Handling rules section."""
+    mentions = deployments_mentions()
+    required = prod_required_names(mentions)
+    assert {"ENVIRONMENT", "SECRET_KEY", "CACHE_URL", "SQL_PASSWORD"} <= required, (
+        f"the Required-cell parser found too little: {sorted(required)}"
     )
+    named = {m.name for m in mentions if m.section == "Handling rules"}
+    missing = sorted(required - named)
+    assert not missing, (
+        f"rows marked prod: yes that the Handling rules (Prod must-set) never name: {missing}"
+    )
+
+
+@pytest.mark.parametrize(
+    "label, text_of, scope",
+    [
+        ("deployments.md", lambda: _read(DEPLOYMENTS_MD), DEPLOYMENTS_API_SCOPE),
+        ("docs/ops/DEPLOYMENT.md", lambda: _read(DEPLOYMENT_OPS_MD), OPS_API_SCOPE),
+    ],
+)
+def test_every_table_in_the_api_sections_renders_as_one_table(repo_docs, label, text_of, scope):
+    problems = table_problems(text_of(), scope)
+    assert not problems, f"{label}: " + "; ".join(problems)
 
 
 # ======================================= the extractor itself, on known programs =======================================
@@ -667,6 +584,67 @@ CSRF = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
     assert _names(source) == {"DJANGO_CSRF_TRUSTED_ORIGINS"}
 
 
+def _run_with_deadline(function, seconds=5.0):
+    """Run `function` in a daemon thread and fail, rather than hang the suite, if it does not
+    finish: CI's api job has a 15 minute timeout and a non-terminating extractor would burn all of
+    it. (pytest-timeout is not a dependency of this project.)"""
+    outcome = {}
+
+    def target():
+        try:
+            outcome["value"] = function()
+        except BaseException as error:  # re-raised below, in the test's own thread
+            outcome["error"] = error
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    assert not thread.is_alive(), f"did not finish within {seconds}s: a fixpoint that does not terminate?"
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
+
+def test_extractor_terminates_and_reads_both_names_of_a_helper_that_forwards_two_parameters():
+    """A helper that forwards TWO of its own parameters used to flip its single stored entry
+    between them forever. Each read must be found, and it must finish."""
+    source = """
+import os
+def both(first, second):
+    return os.getenv(first), os.getenv(second)
+def chained(a, b):
+    return both(b, a)
+x = both("TWO_ONE", "TWO_TWO")
+y = chained("TWO_THREE", "TWO_FOUR")
+"""
+    assert _run_with_deadline(lambda: _names(source)) == {"TWO_ONE", "TWO_TWO", "TWO_THREE", "TWO_FOUR"}
+
+
+def test_extractor_reads_keyword_name_arguments():
+    source = """
+import os
+a = os.getenv(key="KW_ONE")
+b = os.environ.get(key="KW_TWO", default="x")
+c = os.environ.pop(key="KW_THREE")
+"""
+    assert _names(source) == {"KW_ONE", "KW_TWO", "KW_THREE"}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\nx = os.getenv()\n",
+        "import os\nx = os.getenv(**options)\n",
+        "import os\nx = os.environ.get(default='x')\n",
+        "import os\nx = os.getenv(*names)\n",
+        "import os\nx = os.getenv(key=name_from_elsewhere)\n",
+    ],
+)
+def test_extractor_refuses_a_read_with_no_findable_name(source):
+    with pytest.raises(UnresolvableRead):
+        _names(source)
+
+
 # =================================== the doc parser itself, on known documents ===================================
 
 
@@ -701,3 +679,21 @@ def test_doc_parser_scopes_by_enclosing_heading_not_only_the_nearest_one():
     text = "## 6. Runtime\n\n### Subsection\n\n| `NESTED_ROW` | x |\n\n## 7. Next\n\n| `AFTER_ROW` | x |\n"
     found = doc_mentions(text, _scope_matching(r"6\. "))
     assert {m.name for m in found} == {"NESTED_ROW"}
+
+
+def test_table_check_accepts_a_proper_table_and_flags_a_split_one():
+    good = "## S\n\n| A | B |\n|---|---|\n| `ONE` | x |\n| `TWO` | y |\n"
+    assert table_problems(good, _scope_matching(r"S")) == []
+
+    split = "## S\n\n| A | B |\n|---|---|\n| `ONE` | x |\n\n| `TWO` | y |\n| `THREE` | z |\n"
+    problems = table_problems(split, _scope_matching(r"S"))
+    assert len(problems) == 1 and "line 7" in problems[0], problems
+
+    interrupted = "## S\n\n| A | B |\n|---|---|\n| `ONE` | x |\n> a quoted note\n| `TWO` | y |\n"
+    assert len(table_problems(interrupted, _scope_matching(r"S"))) == 1
+
+    headerless = "## S\n\n| `ONE` | x |\n| `TWO` | y |\n"
+    assert len(table_problems(headerless, _scope_matching(r"S"))) == 1
+
+    out_of_scope = "## Other\n\n| `ONE` | x |\n"
+    assert table_problems(out_of_scope, _scope_matching(r"S")) == []

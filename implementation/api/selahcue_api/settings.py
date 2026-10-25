@@ -1,4 +1,5 @@
 import os
+import unicodedata
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -55,27 +56,51 @@ DEBUG = env_bool("DEBUG", False)
 # container env), so the hard requirement is scoped to non-dev — still stricter than the
 # previous silent insecure default, which would have shipped to production unnoticed.
 #
-# The dev key is PUBLIC (it is in this repository) and it is the signing key and the HMAC pepper
-# for licence-key, device-token and account-session fingerprints. So outside `dev` the key must
-# be neither missing nor that key, whether it got there by being unset or by being set to it
-# (17tnw2b9ab0). "Outside dev" means ENVIRONMENT is anything but exactly `dev`, so a typo or a
-# different spelling ('Dev', 'production') fails closed instead of quietly running as dev.
+# Two public values must never be a deployed key (17tnw2b9ab0). The dev key is in this repository,
+# and it is the signing key and the HMAC pepper for licence-key, device-token and account-session
+# fingerprints. The placeholder is the example value implementation/api/.env.sample used to carry, and
+# docs/ops/DEPLOYMENT.md tells operators to copy that file, so copies of the old one are out there. So outside `dev` the key must be neither missing
+# nor one of those, whether it got there by being unset or by being set to one, and however the
+# value was spelled: quoted, re-cased, or carrying a byte-order mark, a zero-width character or
+# stray whitespace from a copy-paste (`_normalised_secret`). "Outside dev" means ENVIRONMENT is
+# anything but exactly `dev`, so a typo or a different spelling ('Dev', 'production') fails
+# closed instead of quietly running as dev.
+#
+# Deliberately NOT here: a minimum length or an entropy test. Several suites boot prod with a
+# one-character key on purpose, and a length rule is not what this guards (a short key is weak, a
+# PUBLIC key is forgeable by anyone who has read the repository). Django's own `check --deploy`
+# warning (security.W009) covers weak keys.
 #
 # What this does NOT cover: an environment that never sets ENVIRONMENT IS `dev`, so it starts
 # without complaint, on the dev key. That is why docs/ops/DEPLOYMENT.md and deployments.md list
 # ENVIRONMENT first in "Prod must-set" and say so.
 _DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
+_PUBLIC_SECRET_KEYS = frozenset({_DEV_SECRET_KEY, "replace-me-with-a-fresh-key"})
+
+
+def _normalised_secret(value: str) -> str:
+    """`value` as a comparison would see it through the noise a pasted key picks up: invisible
+    format characters removed (a byte-order mark, zero-width spaces and joiners, soft hyphens:
+    Unicode category Cf), whitespace and matching quotes stripped, case folded. Only ever used to
+    COMPARE; the key Django uses is the configured value, untouched."""
+    value = "".join(char for char in value if unicodedata.category(char) != "Cf").strip()
+    while len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value.casefold()
+
+
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 if ENVIRONMENT != "dev":
-    if not SECRET_KEY.strip():
+    _normalised_secret_key = _normalised_secret(SECRET_KEY)
+    if not _normalised_secret_key:
         raise ImproperlyConfigured(
             f"SECRET_KEY must be set when ENVIRONMENT={ENVIRONMENT!r}."
         )
-    if SECRET_KEY.strip() == _DEV_SECRET_KEY:
+    if _normalised_secret_key in _PUBLIC_SECRET_KEYS:
         raise ImproperlyConfigured(
-            f"SECRET_KEY must not be the public development key when ENVIRONMENT={ENVIRONMENT!r}: "
-            "that key is in the repository, so anyone can forge what it signs. "
-            "Set SECRET_KEY to a fresh random value."
+            "SECRET_KEY must not be a public example value (the development key, or the "
+            f"old placeholder from .env.sample) when ENVIRONMENT={ENVIRONMENT!r}: those are in the "
+            "repository, so anyone can forge what they sign. Set SECRET_KEY to a fresh random value."
         )
 elif not SECRET_KEY:
     SECRET_KEY = _DEV_SECRET_KEY

@@ -245,12 +245,15 @@ jobs:
               # the Django TLS-proxy chain (17tnw2b1wtr), so a change must re-run the api job.
               - 'implementation/marketing/nginx.conf'
               # tests/test_deployment_env_docs.py (17tnw2b9ab0) checks these two docs against the
-              # variables settings.py reads. Without these lines a docs-only edit that put a wrong
-              # name back (the original bug) would not re-run the api job, so the drift test would
-              # never see it. Its desktop half (deployments.md section 3a against the Rust env
-              # reads) is deliberately NOT triggered by Rust changes: that would run the Postgres
-              # and Redis api job on every desktop commit. A desktop-side rename is caught by the
-              # next api job run instead.
+              # variables settings.py reads. These lines make the api job run when these docs
+              # change TOGETHER WITH a file the triggers do not ignore. They do NOT make a
+              # docs-only edit run CI: both triggers above carry `paths-ignore` for `docs/**` and
+              # `**.md`, so a docs-only commit never starts this workflow (changing that costs
+              # runner minutes and is the owner's call). A docs-only edit is covered by
+              # `make api-check` and by the weekly scheduled run, which runs every area. The
+              # test's desktop half (deployments.md section 3a against the Rust env reads) is
+              # deliberately not triggered by Rust changes either: that would run the Postgres and
+              # Redis api job on every desktop commit.
               - 'deployments.md'
               - 'docs/ops/DEPLOYMENT.md'
               - '.github/workflows/ci.yml'
