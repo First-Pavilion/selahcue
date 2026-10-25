@@ -154,7 +154,11 @@ echo ">> launching selahcue-output (release)…"
 T0=$(python3 -c "import time;print(time.time())")
 "$BIN" >"$APP_LOG" 2>&1 &
 PID=$!
-trap 'kill "$PID" 2>/dev/null || true' EXIT INT TERM
+# The log is removed on EVERY way out (17tnw2b9aga): it is the host's real stdout/stderr, so if a
+# regression ever puts the live Operator token there, a leftover file in $TMPDIR is a credential
+# at rest. INT/TERM exit so the EXIT trap (kill the host, delete the log) always runs.
+trap 'kill "$PID" 2>/dev/null || true; rm -f "$APP_LOG"' EXIT
+trap 'exit 1' INT TERM
 
 # Cold-start proxy: wait for the endpoint file (tight poll).
 COLD=""
@@ -189,8 +193,20 @@ while [ "$j" -lt 10 ]; do
   j=$((j+1))
   sleep 0.5
 done
+# 17tnw2b9aga: the process-level half of "the live Operator token never reaches the host's stdout":
+# this is the REAL release host with stdout+stderr in $APP_LOG while the endpoint file holds the live
+# token, so read the token while the host is still alive and require it to be absent from the log.
+# Fail closed: scripts/check_nfr_token_leak.py also requires a usable token and the startup banner in
+# the log (so a reworded banner or a dead host cannot pass vacuously), and never prints the token.
+# Its logic is covered offline by `python3 scripts/check_nfr_token_leak.py --self-test` (in `make ci`).
+if ! python3 "$ROOT/scripts/check_nfr_token_leak.py" "$ENDPOINT" "$APP_LOG"; then
+  rm -f "$ENDPOINT"
+  exit 1
+fi
 kill "$PID" 2>/dev/null || true
-trap - EXIT INT TERM
+# Keep deleting the log on the way out (a failure below must not leave it behind), but stop signalling
+# the host: it has just been killed and its pid may be reused.
+trap 'rm -f "$APP_LOG"' EXIT
 # The SIGTERM bypasses the app's own clean-exit endpoint removal — clean up here so
 # a later operator shell never auto-connects to this dead measurement instance.
 rm -f "$ENDPOINT"

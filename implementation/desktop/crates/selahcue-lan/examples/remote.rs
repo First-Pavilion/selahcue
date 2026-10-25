@@ -2,7 +2,14 @@
 //!
 //! Connects to a running SelahCue output window over the pinned-TLS control link and
 //! sends **one** command, so you can watch a remote command drive the on-screen output.
-//! The window prints the exact address / pin / device / token to use on startup.
+//! The window's startup banner shows the address, pin and device. It does NOT show the token
+//! (17tnw2b9aga): that is a live Operator credential, and the host's stdout can be a log file.
+//! Read the `token` field of the owner-only endpoint file instead, or run `make remote CMD=...`,
+//! which does that for you. (A debug build of the window started with `--print-token` prints
+//! it.)
+//!
+//! This is a developer tool and is never packaged: no installer or release workflow builds
+//! examples. It prints credentials by design, in `pair` mode, to the person who just ran it.
 //!
 //! ```text
 //! cargo run -p selahcue-lan --example remote --features server -- \
@@ -43,6 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::consts::OS,
         )
         .await?;
+        // By design (17tnw2b9aga): the credentials just issued to THIS CLI, shown to the developer
+        // who ran it so they can reconnect. This is not the host's token and not a shipped path.
         println!("paired! role {:?}", client.role());
         println!("device : {}", creds.device_id);
         println!("token  : {}", creds.token);
