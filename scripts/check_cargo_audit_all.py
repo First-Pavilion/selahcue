@@ -80,6 +80,15 @@ if [ -e FAIL ]; then exit "${FAKE_RC:-1}"; fi
 exit 0
 """
 
+# A cargo that records that it was run at all (then behaves like a passing cargo-audit). Proves a bad
+# CARGO_HOME / HOME is refused BEFORE cargo is invoked: with a relative HOME a rustup-managed cargo
+# starts installing a toolchain into the current directory.
+TRIPWIRE_STUB = """#!/bin/sh
+echo "cargo was run: $*" >> "$FAKE_TRIPWIRE"
+if [ "$1" = "audit" ] && [ "${2:-}" = "--version" ]; then echo "cargo-audit-audit 0.0.0-fake"; exit 0; fi
+exit 0
+"""
+
 # A cargo whose `audit` always fails, but which identifies itself as cargo-audit, so the script gets
 # as far as running it. Used to prove a failing audit is not swallowed on the way out through make.
 FAILING_STUB = """#!/bin/sh
@@ -105,9 +114,11 @@ class Fixture:
         self.log = os.path.join(self.base, "audited.log")
         self.stub = os.path.join(self.base, "fakecargo.sh")
         self.failing_stub = os.path.join(self.base, "failingcargo.sh")
+        self.tripwire_stub = os.path.join(self.base, "tripwirecargo.sh")
+        self.tripwire = os.path.join(self.base, "tripwire.log")
         os.makedirs(self.repo)
         os.makedirs(self.cargo_home)
-        for path, text in ((self.stub, STUB), (self.failing_stub, FAILING_STUB)):
+        for path, text in ((self.stub, STUB), (self.failing_stub, FAILING_STUB), (self.tripwire_stub, TRIPWIRE_STUB)):
             with open(path, "w") as f:
                 f.write(text)
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
@@ -664,6 +675,24 @@ def unset_or_relative_home_without_cargo_home_is_exit_2(fx):
         expect("HOME" in out, "%s: the message must name HOME" % label, out)
 
 
+def bad_environment_is_refused_before_cargo_runs(fx):
+    fx.lock("a")
+    cases = (
+        ("relative CARGO_HOME", dict(CARGO_HOME="relative")),
+        ("relative HOME", dict(HOME="rel/home", unset=("CARGO_HOME",))),
+        ("unset HOME", dict(unset=("HOME", "CARGO_HOME"))),
+    )
+    for label, kwargs in cases:
+        rc, out, _ = fx.run(cargo=fx.tripwire_stub, FAKE_TRIPWIRE=fx.tripwire, **kwargs)
+        expect(rc == 2, "%s: expected exit 2, got %d" % (label, rc), out)
+        expect(not os.path.exists(fx.tripwire), "%s: cargo must not be run at all before the environment is validated" % label, out)
+        if os.path.exists(fx.tripwire):
+            os.remove(fx.tripwire)
+    # Positive control: with a good environment the very same stub IS run (so the tripwire can fire).
+    rc, out, _ = fx.run(cargo=fx.tripwire_stub, FAKE_TRIPWIRE=fx.tripwire)
+    expect(os.path.exists(fx.tripwire), "positive control: the tripwire stub must have been run with a good environment", out)
+
+
 def absolute_or_empty_cargo_home_is_accepted(fx):
     fx.lock("a")
     rc, out, _ = fx.run(unset=("HOME",))  # CARGO_HOME (absolute) alone is enough
@@ -741,6 +770,7 @@ CASES = [
     make_audit_fails_when_cargo_audit_fails,
     relative_cargo_home_is_exit_2,
     unset_or_relative_home_without_cargo_home_is_exit_2,
+    bad_environment_is_refused_before_cargo_runs,
     absolute_or_empty_cargo_home_is_accepted,
     alias_warning_on_stderr_is_exit_2,
     alias_that_breaks_the_global_check_is_named_as_an_alias,

@@ -82,6 +82,33 @@ die() {
   exit 2
 }
 
+# Where cargo-audit will look for audit.toml, and a refusal to run cargo at all when that cannot be
+# known. This comes BEFORE the first cargo call on purpose: with a relative HOME a rustup-managed cargo
+# starts installing the pinned toolchain into the current directory (observed: 259 MB under ./relative),
+# which is not something a "refusing to audit" error should cost anyone.
+env_bad=0
+cargo_home=""
+case ${CARGO_HOME:-} in
+  "")
+    case ${HOME:-} in
+      /*) cargo_home="$HOME/.cargo" ;;
+      *)
+        printf '%s\n' "ERROR: CARGO_HOME is not set and HOME is '${HOME:-unset}', not an absolute path, so this script cannot tell where cargo-audit will look for audit.toml (it would use the password-database home, not HOME). Set CARGO_HOME or HOME to an absolute path." >&2
+        env_bad=1
+        ;;
+    esac
+    ;;
+  /*) cargo_home=$CARGO_HOME ;;
+  *)
+    printf '%s\n' "ERROR: CARGO_HOME='$CARGO_HOME' is not an absolute path. cargo-audit resolves a relative CARGO_HOME against each lock directory, so an audit.toml there would be obeyed and this script would not see it. Set CARGO_HOME to an absolute path or unset it." >&2
+    env_bad=1
+    ;;
+esac
+if [ "$env_bad" -ne 0 ]; then
+  echo "Refusing to run: fix the environment above first (exit 2 means 'could not check', never 'clean')." >&2
+  exit 2
+fi
+
 version_out=$(cd "$ROOT" && "$CARGO" audit --version 2>&1 </dev/null)
 version_status=$?
 if [ "$version_status" -ne 0 ]; then
@@ -151,23 +178,6 @@ root_dir() {
 # --- precondition pass: nothing is audited until every root can be audited honestly ------------
 
 bad=0
-cargo_home=""
-case ${CARGO_HOME:-} in
-  "")
-    case ${HOME:-} in
-      /*) cargo_home="$HOME/.cargo" ;;
-      *)
-        printf '%s\n' "ERROR: CARGO_HOME is not set and HOME is '${HOME:-unset}', not an absolute path, so this script cannot tell where cargo-audit will look for audit.toml (it would use the password-database home, not HOME). Set CARGO_HOME or HOME to an absolute path." >&2
-        bad=1
-        ;;
-    esac
-    ;;
-  /*) cargo_home=$CARGO_HOME ;;
-  *)
-    printf '%s\n' "ERROR: CARGO_HOME='$CARGO_HOME' is not an absolute path. cargo-audit resolves a relative CARGO_HOME against each lock directory, so an audit.toml there would be obeyed and this script would not see it. Set CARGO_HOME to an absolute path or unset it." >&2
-    bad=1
-    ;;
-esac
 if [ -n "$cargo_home" ] && [ -e "$cargo_home/audit.toml" ]; then
   printf '%s\n' "ERROR: $cargo_home/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI. Move it aside, or run cargo audit by hand." >&2
   bad=1
