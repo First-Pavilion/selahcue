@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: An organisation's device limit is one number, the one on its licence key, copied from the plan at issuance; the dead org-level field is gone and a second valid key per org is refused
 - Role: backend-engineer
-- Status: DRAFT
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak5mn0m
 - Created: 2026-10-25
@@ -99,8 +99,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-012 | yes | Django checks and migrations are clean | `python manage.py check`; `python manage.py makemigrations --check --noinput` | both exit 0 | manage.py check exit 0; makemigrations --check --noinput exit 0; makemigrations --check --dry-run --noinput exit 0 | PASS |
 | C-013 | yes | No lint or format tool is configured for the API, so none is run; no new function-local import; the changed Python compiles | `python -m compileall` and a grep of the diff for indented imports | exit 0; no new local imports | no lint or format tool is configured for the API (pyproject.toml, CI api job); ruff F-rules on changed files report only 4 findings that exist on origin/main; compileall exit 0; no new indented import in the diff | PASS |
 | C-014 | yes | Docs record the owner's decision: PRD section 12, FR-515, OQ-P1; ADR-0022; ADMIN-CONSOLE-UX-HANDOFF | review of the diff | the three docs state the approved design, no other PRD text changed | PRD section 12 row, FR-515, OQ-P1; ADR-0022 lines 22 and 78; ADMIN-CONSOLE-UX-HANDOFF line 92; validate_prd.py PASS | PASS |
-| C-015 | yes | Branch is up to date with origin/main, pushed with no upstream on main, and a Draft PR exists against main | `git rev-list --count origin/main..HEAD`, `git merge-base --is-ancestor origin/main HEAD`, `gh pr view` | ancestor true; PR is Draft against main | command output | PENDING |
-| C-016 | yes | The goal contract validates, structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | validator output | PENDING |
+| C-015 | yes | Branch is up to date with origin/main, pushed with no upstream on main, and a Draft PR exists against main | `git rev-list --count origin/main..HEAD`, `git merge-base --is-ancestor origin/main HEAD`, `gh pr view` | ancestor true; PR is Draft against main | origin/main d9aed4cb is an ancestor of the branch head (main moved by 4 desktop-only commits during the work, merged in, no API or docs file touched); branch tracks origin/fix/86ak5mn0m-remove-org-device-limit; Draft PR https://github.com/First-Pavilion/selahcue/pull/227 against main | PASS |
+| C-016 | yes | The goal contract validates, structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | validator output: structural OK before work and after; --completion OK before this claim | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -158,8 +158,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5mn0m-remove-org-device-limit.md --completion`
-- Validator result: PENDING
-- Independent verification result: PENDING (reviewers dispatched by the orchestrator)
-- Terminal state: PENDING
-- Remaining failed or blocked criteria: PENDING
-- ClickUp final evidence comment: PENDING
+- Validator result: OK (structural) and OK (--completion) on the final head
+- Independent verification result: NOT YET RUN. Code, security, QA and performance reviews are dispatched by the orchestrator after this hand-off; the PR stays Draft until they clear
+- Terminal state: GATE_REVIEW (all mandatory criteria PASS; not VERIFIED_COMPLETE because the independent reviews have not run)
+- Remaining failed or blocked criteria: none. Not run locally: hosted CI (not a gate for this run), the Windows and macOS matrix, the marketing and desktop jobs (untouched)
+- ClickUp final evidence comment: posted on 86ak5mn0m at hand-off
