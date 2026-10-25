@@ -278,7 +278,7 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy audit fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -752,13 +752,17 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # a fresh worktree runs `make api-install` once first (network, Python 3.14), and
 # `make ci` stops at `api-check` with that instruction until it has.
 #
-# Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
+# Not covered here (CI-only): cargo deny (licenses/sources/bans), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
 # compile-check, `selahcue-stt` (excluded from the workspace; no gate lints or tests
 # it, 17tnw2b9aaw), the `api (django)` tests that need Postgres/Redis, and the part of
 # the `marketing (vue spa)` job that needs extra runtimes (client/server mirrors need
 # a pinned Django; the headless auth-page states need Chrome). Run the uncovered
 # areas' own tooling before pushing changes to them.
+#
+# Also not here, by design: the RustSec advisory check. It has its own target, `make audit`
+# (cargo audit in all three Cargo roots), because it reads a live advisory database and so cannot
+# give the same answer twice -- see the comment on `audit`. Run it before pushing a lockfile change.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
@@ -769,7 +773,7 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # marketing or API gate below stops the run before any cargo gate. Nor is the target
 # path-aware: it runs every area every time. Both -- run every gate, collect, exit
 # non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
-ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `make api-install` once). NOT covered: audit/deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
+ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `make api-install` once). NOT covered: deny (audit has its own `make audit`), WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
@@ -998,6 +1002,25 @@ check: stage-operator-binaries ## Type-check the workspace + the operator shell
 clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
+
+# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). It runs the same plain `cargo audit`
+# that the `dependency audit (RustSec)` job in .github/workflows/ci.yml runs in each root, so the
+# check no longer lives only in a CI job that goes dark when CI is billing-blocked -- that is how
+# 12, 12 and 6 compiled-in vulnerabilities sat on `main` unseen. The roots are derived from the
+# tracked Cargo.lock files (scripts/cargo_audit_all.sh), not listed here, so a fourth root is covered
+# with no edit. Every root runs even if an earlier one fails; any vulnerability, a missing
+# cargo-audit, or a failed advisory fetch exits non-zero (it fails closed). Warnings (unmaintained,
+# unsound, yanked) are printed but do not fail it, exactly as in CI.
+#
+# It is deliberately NOT a step of `make ci`. `ci` is a deterministic gate: the same tree gives the
+# same answer, which is what the pinned toolchain exists to guarantee. This check reads a live
+# advisory database over the network, so a tree that was green yesterday can be red today with no
+# change, and an offline machine cannot run it at all. Folding it into `ci` would make `make ci`
+# fail for reasons unrelated to the diff (the same flaw as the floating toolchain that
+# rust-canary.yml watches for). Run it before every push that touches a Cargo.lock or Cargo.toml,
+# and on a schedule while CI is unavailable. `cargo deny` (licenses/sources/bans) stays CI-only.
+audit: ## RustSec gate: `cargo audit` in every Cargo root, fails on any vulnerability (needs cargo-audit + network; not in `make ci`)
+	CARGO="$(CARGO)" sh scripts/cargo_audit_all.sh
 
 fmt: ## Format all code
 	cd $(DESKTOP) && $(CARGO) fmt
