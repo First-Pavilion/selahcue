@@ -568,6 +568,15 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: ${{ github.workspace }}
         run: python3 scripts/check_nfr_token_leak.py --self-test
+      # 17tnw2b9ax3: the logic of `make audit` (scripts/cargo_audit_all.sh), run against a stub `cargo` in
+      # throwaway git repos: offline, no cargo-audit, no advisory database. It proves the local audit cannot
+      # print PASS for a root it did not check. (The audit itself needs the network and is not run here: the
+      # `audit` job below is its hosted counterpart.) The script is POSIX sh, hence the same non-Windows
+      # `if:`; same setup-zone placement as the steps above, for the same ordinal-rule reason.
+      - name: Audit script (make audit) self-test
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/check_cargo_audit_all.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop

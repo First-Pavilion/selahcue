@@ -1,38 +1,60 @@
 #!/bin/sh
 # Run `cargo audit` (RustSec) against EVERY Cargo root in this repository and fail if any of them
 # carries a vulnerability. This is the local twin of the `dependency audit (RustSec)` job in
-# .github/workflows/ci.yml, which runs plain `cargo audit` in each of the three roots.
+# .github/workflows/ci.yml, which runs plain `cargo audit` in each root.
 #
 # Why it exists (17tnw2b9ax3): hosted CI was billing-blocked, so that job never ran, and `main`
-# sat with 12, 12 and 6 compiled-in RustSec vulnerabilities in the three roots until a dependency
-# review happened to run `cargo audit` by hand. A check that only exists in a CI job is invisible
-# whenever CI is down. `make audit` puts the same check one command away on any developer machine.
+# sat with 12, 12 and 6 RustSec vulnerabilities in the three roots until a dependency review
+# happened to run `cargo audit` by hand. A check that only exists in a CI job is invisible whenever
+# CI is down. `make audit` puts the same check one command away on any developer machine.
 #
-# The set of roots is DERIVED, not listed: every `Cargo.lock` that git tracks (plus untracked,
-# not-ignored ones, so a lockfile that has not been committed yet still counts). This is the same
-# source of truth `scripts/check_dependency_audit_coverage.py` uses for CI, for the same reason:
-# a hand-maintained list of crate roots is the bug class that hid selahcue-stt (86akmdkdn). A
-# fourth root added later is audited here with no edit to this file.
+# WHICH ROOTS. Every file named exactly `Cargo.lock` that git lists (tracked, plus untracked but
+# not ignored, so a lockfile that has not been committed yet still counts), at any depth. The list
+# is derived, not written down, so a further root is audited with no edit to this file. What this
+# shares with scripts/check_dependency_audit_coverage.py is the way of listing files (`git ls-files
+# --cached --others --exclude-standard`) and the refusal to run when `.gitmodules` exists; that
+# script's extra [workspace]-table scan is not repeated here. The two answer different questions:
+# that script checks that CI's hand-written audit steps cover every lock, this one audits every lock
+# git knows about whether or not CI has a step for it.
 #
-# Behaviour, deliberately:
+# IT MUST NOT SAY "PASS" WHEN IT HAS NOT CHECKED. Each of these exits 2 ("cannot run") before any
+# root is audited, never 0:
+#   * `cargo audit` is not available, or CARGO is not a single executable path;
+#   * `cargo audit --version`, run in a root, does not identify itself as cargo-audit. A
+#     `[alias] audit = "version"` in any .cargo/config.toml makes `cargo audit` run something else
+#     entirely and exit 0, which would print PASS for an unchecked root;
+#   * an `audit.toml` exists in ${CARGO_HOME:-$HOME/.cargo} or in <root>/.cargo, because it can
+#     silently ignore advisories, so a local PASS could disagree with CI;
+#   * no Cargo.lock is found, `.gitmodules` exists (git cannot list a submodule's files), a lock's
+#     path contains a newline, or a lock git lists is missing from the working tree (cargo-audit
+#     would generate a fresh lock there and audit that instead).
+#
+# Behaviour once it is running:
 #   * It runs EVERY root even after one fails, then reports all of them. Stopping at the first
 #     failure would hide the other roots' state, which is what the "first failing line" masking
 #     note on `make ci` warns about.
-#   * It exits non-zero if any root fails, if cargo-audit is not installed, if no root is found,
-#     or if cargo-audit itself errors (for example the advisory database cannot be fetched). It
-#     fails CLOSED: "could not check" is never reported as "clean".
-#   * Like CI, only vulnerabilities fail it. `cargo audit` prints unmaintained, unsound and yanked
-#     crates as warnings and exits 0 for them; they stay visible in the output.
-#   * It needs the network the first time and whenever the advisory database is stale, because
-#     cargo-audit fetches the RustSec advisory-db. That is why it is NOT a step of `make ci`
-#     (see the comment on the `audit` target in the Makefile).
+#   * It exits 1 if any root did not pass. `cargo audit` exits non-zero both for a found
+#     vulnerability and for an error such as an advisory-database fetch failure; this script does
+#     not tell them apart, so FAIL means "vulnerable, or could not be checked": read the output
+#     above the summary.
+#   * Like CI, only vulnerabilities fail a root. Unmaintained, unsound and yanked crates are
+#     printed as warnings and `cargo audit` exits 0 for them.
+#   * cargo-audit fetches the RustSec advisory database on EVERY run (this script never passes
+#     --no-fetch), so it needs the network each time; offline, every root FAILs. That is why it is
+#     NOT a step of `make ci` (see the comment on the `audit` target in the Makefile).
 #
 # Usage:
 #   sh scripts/cargo_audit_all.sh            # audit this checkout
-#   sh scripts/cargo_audit_all.sh <repo>     # audit another git checkout (used by the negative control)
+#   sh scripts/cargo_audit_all.sh <repo>     # audit another git checkout (used by the self-test)
 #   CARGO=/path/to/cargo sh scripts/cargo_audit_all.sh
 #
-# Exit codes: 0 every root clean, 1 at least one root failed, 2 cannot run (tool missing, no roots).
+# CARGO must be ONE executable path (a binary or a wrapper script), not a command line:
+# `CARGO="cargo +1.98.0"` does not work because the value is run as a single word. Put a wrapper
+# script on the path for a toolchain override.
+#
+# Tested offline by scripts/check_cargo_audit_all.py --self-test (wired into `make ci` and CI).
+#
+# Exit codes: 0 every root passed, 1 at least one root did not pass, 2 cannot run (see above).
 
 set -u
 
@@ -43,29 +65,113 @@ else
   ROOT=$(cd "$(dirname "$0")/.." && pwd) || exit 2
 fi
 
-if ! "$CARGO" audit --version >/dev/null 2>&1; then
-  echo "ERROR: 'cargo audit' is not available (CARGO=$CARGO)." >&2
-  echo "  Install it once with:  cargo install cargo-audit --locked" >&2
-  echo "  CI installs the same tool with taiki-e/install-action (tool: cargo-audit)." >&2
+die() {
+  printf '%s\n' "ERROR: $*" >&2
+  exit 2
+}
+
+if ! "$CARGO" audit --version >/dev/null 2>&1 </dev/null; then
+  {
+    echo "ERROR: 'cargo audit' is not available (CARGO=$CARGO)."
+    echo "  Install it once with:  cargo install cargo-audit --locked"
+    echo "  CI installs the same tool with taiki-e/install-action (tool: cargo-audit)."
+    echo "  CARGO must be a single executable path; arguments such as '+toolchain' are not accepted."
+    echo "  Put a wrapper script on the path to choose a toolchain."
+  } >&2
   exit 2
 fi
 
-locks=$(git -C "$ROOT" ls-files --cached --others --exclude-standard -- '*Cargo.lock') || {
-  echo "ERROR: could not list Cargo.lock files with git in $ROOT" >&2
-  exit 2
+if [ -e "$ROOT/.gitmodules" ]; then
+  die "$ROOT/.gitmodules exists, and git cannot list the files inside a submodule, so a submodule's Cargo.lock would go unaudited without a word. Refusing to report a result."
+fi
+
+listing=$(mktemp "${TMPDIR:-/tmp}/cargo-audit-all.XXXXXX") || die "cannot create a temporary file"
+trap 'rm -f "$listing"' EXIT HUP INT TERM
+
+# NUL-separated, so git quotes and splits nothing. The pathspec only narrows what git has to list;
+# the exact-basename filter below is what decides what is a root.
+git -C "$ROOT" ls-files -z --cached --others --exclude-standard -- '*Cargo.lock' >"$listing" || die "could not list Cargo.lock files with git in $ROOT"
+
+if [ "$(tr -cd '\n' <"$listing" | wc -c | tr -d ' ')" != "0" ]; then
+  die "a Cargo.lock path under $ROOT contains a newline; refusing to guess which directories to audit."
+fi
+
+roots=""
+while IFS= read -r lock; do
+  case $lock in
+    Cargo.lock | */Cargo.lock) ;;
+    *) continue ;; # NotCargo.lock, untracked.Cargo.lock, ...: matched by the pathspec, not a root
+  esac
+  roots="$roots$lock
+"
+done <<EOF
+$(tr '\0' '\n' <"$listing")
+EOF
+
+if [ -z "$roots" ]; then
+  die "no Cargo.lock found under $ROOT -- refusing to report 'clean' for zero roots."
+fi
+
+# A lock's directory relative to ROOT. Parameter expansion, not dirname: `dirname -- x` is needed
+# for a top-level directory whose name starts with '-', and avoiding the process avoids the question.
+root_dir() {
+  case $1 in
+    */*) printf '%s\n' "${1%/*}" ;;
+    *) printf '%s\n' "." ;;
+  esac
 }
-if [ -z "$locks" ]; then
-  echo "ERROR: no Cargo.lock found under $ROOT -- refusing to report 'clean' for zero roots." >&2
+
+# --- precondition pass: nothing is audited until every root can be audited honestly ------------
+
+cargo_home="${CARGO_HOME:-${HOME:-}/.cargo}"
+bad=0
+if [ -e "$cargo_home/audit.toml" ]; then
+  printf '%s\n' "ERROR: $cargo_home/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI. Move it aside, or run cargo audit by hand." >&2
+  bad=1
+fi
+if [ -e "$ROOT/.cargo/audit.toml" ]; then
+  printf '%s\n' "ERROR: $ROOT/.cargo/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI." >&2
+  bad=1
+fi
+
+while IFS= read -r lock; do
+  [ -n "$lock" ] || continue
+  dir=$(root_dir "$lock")
+  if [ ! -f "$ROOT/$lock" ]; then
+    printf '%s\n' "ERROR: $lock is listed by git but missing from the working tree; cargo audit would generate a fresh lockfile in $dir and audit that instead." >&2
+    bad=1
+    continue
+  fi
+  if [ "$dir" != "." ] && [ -e "$ROOT/$dir/.cargo/audit.toml" ]; then
+    printf '%s\n' "ERROR: $dir/.cargo/audit.toml exists. cargo-audit reads it and it can silently ignore advisories, so a PASS here could disagree with CI." >&2
+    bad=1
+  fi
+  first=$( (cd "$ROOT/$dir" && "$CARGO" audit --version 2>/dev/null </dev/null) | head -n 1)
+  case $first in
+    *cargo-audit*) ;;
+    *)
+      printf '%s\n' "ERROR: in $dir, 'cargo audit --version' printed '${first:-nothing}', not a cargo-audit version. Something shadows the subcommand, most likely an [alias] audit = ... in a .cargo/config.toml, and cargo audit would run that instead and could exit 0 without auditing anything." >&2
+      bad=1
+      ;;
+  esac
+done <<EOF
+$roots
+EOF
+
+if [ "$bad" -ne 0 ]; then
+  echo "Refusing to audit: fix the errors above first (exit 2 means 'could not check', never 'clean')." >&2
   exit 2
 fi
+
+# --- audit pass ---------------------------------------------------------------------------------
 
 failed=0
 summary=""
 while IFS= read -r lock; do
   [ -n "$lock" ] || continue
-  dir=$(dirname "$lock")
-  echo ">> cargo audit in $dir"
-  if (cd "$ROOT/$dir" && "$CARGO" audit); then
+  dir=$(root_dir "$lock")
+  printf '%s\n' ">> cargo audit in $dir"
+  if (cd "$ROOT/$dir" && "$CARGO" audit </dev/null); then
     summary="$summary
   PASS  $dir"
   else
@@ -75,13 +181,13 @@ while IFS= read -r lock; do
     failed=$((failed + 1))
   fi
 done <<EOF
-$locks
+$roots
 EOF
 
 echo
-echo "cargo audit summary:$summary"
+printf '%s\n' "cargo audit summary:$summary"
 if [ "$failed" -ne 0 ]; then
-  echo "FAILED: $failed Cargo root(s) did not pass cargo audit." >&2
+  printf '%s\n' "FAILED: $failed Cargo root(s) did not pass (vulnerable, or could not be checked; see above)." >&2
   exit 1
 fi
 echo "OK: every Cargo root passed cargo audit (warnings, if any, are printed above and do not fail)."

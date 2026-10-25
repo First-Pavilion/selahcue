@@ -766,8 +766,9 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # areas' own tooling before pushing changes to them.
 #
 # Also not here, by design: the RustSec advisory check. It has its own target, `make audit`
-# (cargo audit in all three Cargo roots), because it reads a live advisory database and so cannot
-# give the same answer twice -- see the comment on `audit`. Run it before pushing a lockfile change.
+# (cargo audit in every Cargo.lock root git lists), because it reads a live advisory database and so
+# cannot give the same answer twice -- see the comment on `audit`. Run it before pushing a lockfile
+# change. The script's offline self-test, check_cargo_audit_all.py, is a line of this target.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
@@ -825,6 +826,12 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	# cargo, no display): a leaking log fails, a clean one passes, a log without the banner or a
 	# short/missing token fails rather than passing vacuously.
 	python3 scripts/check_nfr_token_leak.py --self-test
+	# 17tnw2b9ax3: the logic of `make audit` (scripts/cargo_audit_all.sh), tested offline against a stub
+	# `cargo` in throwaway git repos: a vulnerable root fails but every root still runs, and each way
+	# the audit could be silently skipped or shadowed (no cargo-audit, an [alias], an audit.toml, a
+	# missing/odd-named lock, a `-dir`) exits 2 or 1, never 0. Needs only git and a POSIX sh; the real
+	# audit (network, advisory DB) is `make audit`, which is deliberately not a line of this target.
+	python3 scripts/check_cargo_audit_all.py --self-test
 	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
 	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
@@ -1017,19 +1024,26 @@ clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 # RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). It runs the same plain `cargo audit`
 # that the `dependency audit (RustSec)` job in .github/workflows/ci.yml runs in each root, so the
 # check no longer lives only in a CI job that goes dark when CI is billing-blocked -- that is how
-# 12, 12 and 6 compiled-in vulnerabilities sat on `main` unseen. The roots are derived from the
-# tracked Cargo.lock files (scripts/cargo_audit_all.sh), not listed here, so a fourth root is covered
-# with no edit. Every root runs even if an earlier one fails; any vulnerability, a missing
-# cargo-audit, or a failed advisory fetch exits non-zero (it fails closed). Warnings (unmaintained,
-# unsound, yanked) are printed but do not fail it, exactly as in CI.
+# 12, 12 and 6 RustSec vulnerabilities sat on `main` unseen. The roots are derived from the
+# Cargo.lock files git lists (scripts/cargo_audit_all.sh), not listed here, so a further root is
+# covered with no edit. Every root runs even if an earlier one fails. It exits non-zero for a
+# vulnerability, a failed advisory fetch, and every case where it could not check honestly (no
+# cargo-audit, an `[alias] audit` shadowing the subcommand, an audit.toml that can hide advisories,
+# a lock git lists that is missing, no lock at all): it never prints PASS for a root it did not
+# check. Warnings (unmaintained, unsound, yanked) are printed but do not fail it, exactly as in CI.
+# CARGO must be one executable path, not a command line (`make audit CARGO="cargo +1.98.0"` fails).
+# The script's own logic is tested offline by `scripts/check_cargo_audit_all.py --self-test`, which
+# IS a step of `make ci` and of CI.
 #
-# It is deliberately NOT a step of `make ci`. `ci` is a deterministic gate: the same tree gives the
-# same answer, which is what the pinned toolchain exists to guarantee. This check reads a live
-# advisory database over the network, so a tree that was green yesterday can be red today with no
-# change, and an offline machine cannot run it at all. Folding it into `ci` would make `make ci`
+# The audit itself is, for now, deliberately NOT a step of `make ci` (whether it should join is an
+# open owner decision, 17tnw2b9ax3). `ci` is a deterministic gate: the same tree gives the same
+# answer, which is what the pinned toolchain exists to guarantee. The audit reads a live advisory
+# database over the network on every run, so a tree that was green yesterday can be red today with
+# no change, and an offline machine cannot run it at all. Folding it into `ci` would make `make ci`
 # fail for reasons unrelated to the diff (the same flaw as the floating toolchain that
-# rust-canary.yml watches for). Run it before every push that touches a Cargo.lock or Cargo.toml,
-# and on a schedule while CI is unavailable. `cargo deny` (licenses/sources/bans) stays CI-only.
+# rust-canary.yml watches for). Until then, run it before every push that touches a Cargo.lock or
+# Cargo.toml, and regularly while CI is unavailable. `cargo deny` (licenses/sources/bans) stays
+# CI-only.
 audit: ## RustSec gate: `cargo audit` in every Cargo root, fails on any vulnerability (needs cargo-audit + network; not in `make ci`)
 	CARGO="$(CARGO)" sh scripts/cargo_audit_all.sh
 
