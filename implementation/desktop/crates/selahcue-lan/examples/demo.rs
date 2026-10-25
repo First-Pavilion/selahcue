@@ -5,6 +5,11 @@
 //! Exercises the whole headless engine live: scripture parsing, the service-plan
 //! model, the monotonic timer, persistence (save + reload + integrity), and a real
 //! certificate-pinned TLS control session with device auth + RBAC enforcement.
+//!
+//! A developer demo: it prints by design and is never shipped (no installer or release workflow
+//! builds examples). It serves loopback only, for the length of the run, with hard-coded throwaway
+//! tokens (`tok-prod`, `tok-asst`) that it never prints; the only secret-adjacent value it prints
+//! is the certificate pin, which is public (it is in every pairing QR). Checked for 17tnw2b9aga.
 
 #![allow(clippy::unwrap_used)]
 
