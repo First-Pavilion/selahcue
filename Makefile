@@ -278,7 +278,18 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+
+# Appended to `make ci`'s closing banner when AUDIT=skip, so the last line a developer reads cannot say
+# "ALL GREEN" without saying what was not checked. A variable (not inline text) because the text has
+# a comma, which would split the arguments of the $(if ...) that uses it.
+AUDIT_SKIPPED_NOTE = except the RustSec audit, which was SKIPPED (AUDIT=skip)
+
+# Non-empty when make was started with -i / --ignore-errors (alone or combined, e.g. -ik). Under -i a
+# failing gate, the audit included, does not stop the run, so the closing banner must not say ALL GREEN.
+# The short flags are the FIRST word of MAKEFLAGS (no leading dash); a first word that starts with a
+# dash is a long option such as --no-print-directory, whose letters (print, directory) must not match.
+CI_ERRORS_IGNORED := $(findstring i,$(filter-out -%,$(firstword $(MAKEFLAGS))))
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy audit fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -757,13 +768,25 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # a fresh worktree runs `make api-install` once first (network, Python 3.14), and
 # `make ci` stops at `api-check` with that instruction until it has.
 #
-# Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
+# Not covered here (CI-only): cargo deny (licenses/sources/bans), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
 # compile-check, `selahcue-stt` (excluded from the workspace; no gate lints or tests
 # it, 17tnw2b9aaw), the `api (django)` tests that need Postgres/Redis, and the part of
 # the `marketing (vue spa)` job that needs extra runtimes (client/server mirrors need
 # a pinned Django; the headless auth-page states need Chrome). Run the uncovered
 # areas' own tooling before pushing changes to them.
+#
+# The RustSec advisory check IS covered, as the LAST gate: `make audit` (cargo audit in every
+# Cargo.lock root git lists), after Flutter and before the closing banner. Two consequences, both
+# intended. It needs the network on every run (cargo-audit fetches the advisory database each time),
+# and `make ci` can turn red on the day a new advisory lands even though the diff did not cause it:
+# that is the signal to refresh the locks, not a flaky test. `AUDIT=skip make ci` is the documented
+# offline opt-out; it prints a loud notice on stderr and repeats it in the closing banner, and it
+# only ever skips the audit (an unrecognised AUDIT value warns and runs the audit anyway). `make
+# audit` itself has no opt-out. Under `make -i ci` (errors ignored, which is how a whole log gets read)
+# a failing audit does not stop the run, like any other gate; the closing banner then says errors were
+# ignored instead of ALL GREEN. The script's offline self-test, check_cargo_audit_all.py, is an
+# earlier line of this target and also covers this wiring with `make -n ci`.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
@@ -774,7 +797,7 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # marketing or API gate below stops the run before any cargo gate. Nor is the target
 # path-aware: it runs every area every time. Both -- run every gate, collect, exit
 # non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
-ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `make api-install` once). NOT covered: audit/deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
+ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the RustSec audit (needs `make api-install` once, and the network for the audit; AUDIT=skip skips it offline, loudly). NOT covered: deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
@@ -821,6 +844,12 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	# cargo, no display): a leaking log fails, a clean one passes, a log without the banner or a
 	# short/missing token fails rather than passing vacuously.
 	python3 scripts/check_nfr_token_leak.py --self-test
+	# 17tnw2b9ax3: the logic of `make audit` (scripts/cargo_audit_all.sh), tested offline against a stub
+	# `cargo` in throwaway git repos: a vulnerable root fails but every root still runs, and each way
+	# the audit could be silently skipped or shadowed (no cargo-audit, an [alias], an audit.toml, a
+	# missing/odd-named lock, a `-dir`) exits 2 or 1, never 0. Needs only git and a POSIX sh; the real
+	# audit (network, advisory DB) is `make audit`, which is deliberately not a line of this target.
+	python3 scripts/check_cargo_audit_all.py --self-test
 	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
 	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
@@ -967,8 +996,30 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	$(CARGO) test $(OP) --release --features stt -- --ignored a_real_cold_start_backlog_no_longer_trips_the_notice
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
+	# 17tnw2b9ax3: the RustSec advisory audit (cargo audit in every Cargo.lock root), deliberately the
+	# LAST gate: make stops at the first failing line, so a new advisory can never hide an earlier
+	# gate's result, and a developer who only wants the audit's answer can run `make audit`. It
+	# fetches the advisory database on every run, hence the opt-out for offline machines:
+	# `AUDIT=skip make ci` prints the notice below (stderr, plus the closing banner) and does NOT fail.
+	# Only the exact value `skip` skips; any other non-empty value is warned about and the audit RUNS,
+	# because a typo must never turn into a silent skip (the closing banner applies the SAME whole-string
+	# test, so `AUDIT="skip x"` is warned about and does not claim a skip). The branch is chosen by make itself, not by a
+	# shell `case`, so `make -n ci` shows exactly what a run would do (check_cargo_audit_all.py
+	# --self-test asserts it for each AUDIT value). `make audit` ignores AUDIT.
+ifeq ($(strip $(AUDIT)),skip)
+	@printf '%s\n' '' '!!!! RustSec audit SKIPPED (AUDIT=skip): dependency vulnerabilities were NOT checked on this run.' '!!!! Run `make audit` before you push a lockfile change.' '' >&2
+else
+ifneq ($(strip $(AUDIT)),)
+	@printf '%s\n' 'WARNING: the AUDIT value is not understood (only AUDIT=skip skips the audit); running the audit.' >&2
+endif
+	$(MAKE_RECURSE) --no-print-directory audit
+endif
 	@echo ""
-	@echo "== local Rust/Flutter/marketing/API gate: ALL GREEN (see the ci: header for CI-only gates) =="
+ifneq ($(CI_ERRORS_IGNORED),)
+	@echo "== local Rust/Flutter/marketing/API gate: NOT A PASS, errors ignored (-i): a failing gate above did not stop this run, read the log above =="
+else
+	@echo "== local Rust/Flutter/marketing/API gate: ALL GREEN$(if $(subst xskip,,x$(strip $(AUDIT))),, $(AUDIT_SKIPPED_NOTE)) (see the ci: header for CI-only gates) =="
+endif
 
 nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
 	sh scripts/measure_nfr.sh
@@ -1009,6 +1060,31 @@ check: stage-operator-binaries ## Type-check the workspace + the operator shell
 clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
+
+# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). It runs the same plain `cargo audit`
+# that the `dependency audit (RustSec)` job in .github/workflows/ci.yml runs in each root, so the
+# check no longer lives only in a CI job that goes dark when CI is billing-blocked -- that is how
+# 12, 12 and 6 RustSec vulnerabilities sat on `main` unseen. The roots are derived from the
+# Cargo.lock files git lists (scripts/cargo_audit_all.sh), not listed here, so a further root is
+# covered with no edit. Every root runs even if an earlier one fails. It exits non-zero for a
+# vulnerability, a failed advisory fetch, and every case where it could not check honestly (no
+# cargo-audit, an `[alias] audit` shadowing the subcommand, an audit.toml that can hide advisories,
+# a lock git lists that is missing, no lock at all): it never prints PASS for a root it did not
+# check. Warnings (unmaintained, unsound, yanked) are printed but do not fail it, exactly as in CI.
+# CARGO must be one executable path, not a command line (`make audit CARGO="cargo +1.98.0"` fails).
+# The script's own logic is tested offline by `scripts/check_cargo_audit_all.py --self-test`, which
+# IS a step of `make ci` and of CI.
+#
+# It is also the LAST gate of `make ci` (owner decision, 2026-10-25, on 17tnw2b9ax3), so a billing-
+# blocked or forgotten CI cannot hide a vulnerability from anyone who runs the local gate. The price
+# is stated rather than hidden: it reads a live advisory database over the network on every run, so
+# `make ci` needs the network, and a tree that was green yesterday can be red today with no change
+# (a new advisory landed; refresh the locks). `AUDIT=skip make ci` is the documented offline opt-out
+# and is loud; see the comment on the audit line at the end of the `ci` recipe. This target itself
+# is unconditional: `make audit AUDIT=skip` still audits. `cargo deny` (licenses/sources/bans) stays
+# CI-only.
+audit: ## RustSec gate: `cargo audit` in every Cargo root, fails on any vulnerability (needs cargo-audit + network; also the last step of `make ci`)
+	CARGO="$(CARGO)" sh scripts/cargo_audit_all.sh
 
 fmt: ## Format all code
 	cd $(DESKTOP) && $(CARGO) fmt
