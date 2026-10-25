@@ -441,10 +441,6 @@ fn an_unreadable_mark_refuses_a_new_number_instead_of_counting_as_zero() {
             deck_repo::issue_number(&db, 1).is_err(),
             "{literal}: no number may be issued against a mark that cannot be read"
         );
-        assert!(
-            !deck_repo::claim_number(&db, 5).unwrap(),
-            "{literal}: nor may a number be claimed"
-        );
         // ...and the damaged value is left for someone to look at, not silently overwritten.
         let still_wrong: String = db
             .conn()
@@ -507,15 +503,114 @@ fn numbers_run_out_at_the_ceiling_with_a_refusal_not_a_wrap() {
     );
 }
 
+// --- review round 2 (17tnw2b9arx) ----------------------------------------------------------------
+
+/// The first v25 definition (before the CHECK on the column's type and range was added in review).
+/// It was never released, but a scratch copy that ran the earlier head still has it, and the table is
+/// never rebuilt: the ceiling must therefore hold in the CODE, not only in the table.
+fn use_the_first_v25_definition(db: &Database, mark: &str) {
+    db.conn()
+        .execute_batch(&format!(
+            "DROP TABLE deck_id_counter;
+             CREATE TABLE deck_id_counter (
+                 id         INTEGER PRIMARY KEY CHECK (id = 1),
+                 high_water INTEGER NOT NULL CHECK (high_water >= 0)
+             );
+             CREATE TRIGGER deck_id_counter_never_lowers
+             BEFORE UPDATE OF high_water ON deck_id_counter
+             WHEN NEW.high_water < OLD.high_water
+             BEGIN
+                 SELECT RAISE(ABORT, 'the deck number high-water mark can only be raised');
+             END;
+             INSERT INTO deck_id_counter (id, high_water) VALUES (1, {mark});"
+        ))
+        .unwrap();
+}
+
 #[test]
-fn claim_number_succeeds_only_for_a_number_never_issued() {
+fn issue_number_refuses_a_number_past_the_ceiling_whatever_definition_the_table_has() {
     let db = db();
-    assert!(deck_repo::claim_number(&db, 40).unwrap());
-    assert_eq!(deck_repo::high_water(&db).unwrap(), 40);
-    assert!(!deck_repo::claim_number(&db, 40).unwrap(), "already issued");
-    assert!(!deck_repo::claim_number(&db, 7).unwrap(), "below the mark");
-    assert!(!deck_repo::claim_number(&db, 0).unwrap());
-    assert!(!deck_repo::claim_number(&db, MAX_DECK_NUMBER + 1).unwrap());
-    assert_eq!(deck_repo::high_water(&db).unwrap(), 40);
-    assert!(deck_repo::claim_number(&db, 41).unwrap());
+    use_the_first_v25_definition(&db, "9007199254740991");
+    // On this definition nothing in the table stops 2^53 - 1 + 1 = 2^53, which a JSON number cannot
+    // hold exactly (it equals 2^53 + 1 in the webview). The code must refuse it, and the refusal must
+    // not leave the mark advanced.
+    assert!(deck_repo::issue_number(&db, 1).is_err());
+    assert_eq!(
+        deck_repo::high_water(&db).unwrap(),
+        MAX_DECK_NUMBER,
+        "rolled back"
+    );
+    // Right up to the ceiling is fine.
+    let db = self::db();
+    use_the_first_v25_definition(&db, "9007199254740989");
+    assert_eq!(
+        deck_repo::issue_number(&db, 1).unwrap(),
+        MAX_DECK_NUMBER - 1
+    );
+    assert_eq!(deck_repo::issue_number(&db, 1).unwrap(), MAX_DECK_NUMBER);
+    assert!(deck_repo::issue_number(&db, 1).is_err());
+    assert_eq!(deck_repo::high_water(&db).unwrap(), MAX_DECK_NUMBER);
+}
+
+#[test]
+fn a_damaged_mark_does_not_stop_a_deck_row_from_being_saved_or_renamed() {
+    // An unreadable mark must refuse NEW numbers (issue_number, tested above) but it must not turn
+    // every edit to an existing deck into a silently lost write: the numbered writers only touch the
+    // mark when it is an integer that is behind.
+    for literal in ["'abc'", "12.5", "x'00'"] {
+        let db = db();
+        corrupt_the_mark(&db, literal);
+        deck_repo::save_one_numbered(&db, "Edited", ROW, 3)
+            .unwrap_or_else(|e| panic!("{literal}: the row write was refused: {e}"));
+        deck_repo::rename_one_numbered(&db, "Edited", "Renamed", ROW, 3)
+            .unwrap_or_else(|e| panic!("{literal}: the rename was refused: {e}"));
+        let names: Vec<String> = deck_repo::load_all(&db)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        assert_eq!(names, ["Renamed"], "{literal}");
+        let kind: String = db
+            .conn()
+            .query_row("SELECT typeof(high_water) FROM deck_id_counter", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_ne!(
+            kind, "integer",
+            "{literal}: the damaged value is left for someone to look at"
+        );
+    }
+}
+
+#[test]
+fn delete_one_numbered_removes_the_row_and_records_the_retirement_together() {
+    let db = db();
+    deck_repo::save_one(&db, "Legacy", ROW).unwrap(); // a row from before the mark: nothing recorded
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 0);
+    deck_repo::delete_one_numbered(&db, "Legacy", 7).unwrap();
+    assert!(deck_repo::load_all(&db).unwrap().is_empty());
+    assert_eq!(
+        deck_repo::high_water(&db).unwrap(),
+        7,
+        "the deleted deck's number is retired"
+    );
+    // A lower number never lowers it, and an absent name is still fine (idempotent delete).
+    deck_repo::delete_one_numbered(&db, "Nobody", 2).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 7);
+}
+
+#[test]
+fn a_failed_delete_leaves_the_mark_where_it_was() {
+    let db = db();
+    deck_repo::save_one_numbered(&db, "Keeper", ROW, 1).unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER refuse_deck_deletes BEFORE DELETE ON deck
+             BEGIN SELECT RAISE(ABORT, 'disk says no'); END;",
+        )
+        .unwrap();
+    assert!(deck_repo::delete_one_numbered(&db, "Keeper", 50).is_err());
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 1);
+    assert_eq!(deck_repo::load_all(&db).unwrap().len(), 1);
 }

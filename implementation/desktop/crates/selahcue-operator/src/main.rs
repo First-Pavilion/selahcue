@@ -3404,14 +3404,23 @@ async fn deck_search(
 
 /// Create a new blank presentation (unique id + name) and OPEN it in the editor → returns the
 /// `DeckView` so the surface switches to the new deck.
+///
+/// Refused (`Err`, nothing created, the editor untouched) if the deck database will not record the new
+/// number ([`NumberNotRecorded`]).
 #[tauri::command]
 async fn deck_new(name: String, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    try_with_deck_and_library(&state, |ws, lib| {
-        // Refused (nothing created) if the deck database will not record the new number.
-        let deck = lib.try_create(&name).map_err(|e| e.to_string())?;
-        ws.load_deck(deck);
-        Ok(ws.view(lib))
-    })
+    try_with_deck_and_library(&state, |ws, lib| deck_new_in(ws, lib, &name))
+}
+
+/// The body of [`deck_new`], on plain `(workspace, library)` so a test can drive it without a window.
+fn deck_new_in(
+    ws: &mut DeckWorkspace,
+    lib: &mut DeckLibrary,
+    name: &str,
+) -> Result<serde_json::Value, String> {
+    let deck = lib.try_create(name).map_err(|e| e.to_string())?;
+    ws.load_deck(deck);
+    Ok(ws.view(lib))
 }
 
 /// Open an existing presentation by id → saves the outgoing deck, loads the target, returns the
@@ -3459,40 +3468,60 @@ async fn deck_rename(
 /// it from this response.
 #[tauri::command]
 async fn deck_duplicate(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    try_with_deck_and_library(&state, |ws, lib| {
-        let new_id = lib.duplicate(DeckId(id)).map(|d| d.id().0);
-        // `None` for a deck that exists means the database would not record the copy's number:
-        // refuse, rather than answer as if the source had vanished.
-        if new_id.is_none() && lib.get(DeckId(id)).is_some() {
-            return Err(NumberNotRecorded.to_string());
-        }
-        let mut view = library_view(lib, ws.open_deck().id());
-        if let (Some(new_id), Some(obj)) = (new_id, view.as_object_mut()) {
-            obj.insert("new_id".into(), serde_json::Value::from(new_id));
-        }
-        Ok(view)
-    })
+    try_with_deck_and_library(&state, |ws, lib| deck_duplicate_in(ws, lib, id))
+}
+
+/// The body of [`deck_duplicate`], on plain `(workspace, library)` so a test can drive it.
+fn deck_duplicate_in(
+    ws: &mut DeckWorkspace,
+    lib: &mut DeckLibrary,
+    id: u64,
+) -> Result<serde_json::Value, String> {
+    let new_id = lib.duplicate(DeckId(id)).map(|d| d.id().0);
+    // `None` for a deck that exists means the database would not record the copy's number:
+    // refuse, rather than answer as if the source had vanished.
+    if new_id.is_none() && lib.get(DeckId(id)).is_some() {
+        return Err(NumberNotRecorded.to_string());
+    }
+    let mut view = library_view(lib, ws.open_deck().id());
+    if let (Some(new_id), Some(obj)) = (new_id, view.as_object_mut()) {
+        obj.insert("new_id".into(), serde_json::Value::from(new_id));
+    }
+    Ok(view)
 }
 
 /// Delete a presentation → returns the `LibraryView`. If the deleted deck was open, the editor
 /// switches to another deck (or a fresh blank one if the library is now empty — never left with no
 /// open deck).
+///
+/// If the library is now empty and the deck database will not record a number for the replacement
+/// blank deck, there is no replacement: the editor keeps showing the deleted deck's content as an
+/// unsaved working copy, and the response carries `"working_copy_unsaved": true` so the console can say so.
 #[tauri::command]
 async fn deck_delete(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    with_deck_and_library(&state, |ws, lib| {
-        let was_open = ws.open_deck().id() == DeckId(id);
-        lib.delete(DeckId(id));
-        if was_open {
-            let next = lib.list().first().and_then(|m| lib.get(m.id));
-            // An empty library gets a fresh blank deck so the editor is never left with none. If the
-            // database will not record its number there is no new deck: the editor keeps the
-            // deleted deck's content as an unsaved working copy rather than inventing a number.
-            if let Some(deck) = next.or_else(|| lib.try_create("Untitled presentation").ok()) {
-                ws.load_deck(deck);
-            }
+    with_deck_and_library(&state, |ws, lib| deck_delete_in(ws, lib, id))
+}
+
+/// The body of [`deck_delete`], on plain `(workspace, library)` so a test can drive it.
+fn deck_delete_in(ws: &mut DeckWorkspace, lib: &mut DeckLibrary, id: u64) -> serde_json::Value {
+    let was_open = ws.open_deck().id() == DeckId(id);
+    lib.delete(DeckId(id));
+    let mut working_copy_unsaved = false;
+    if was_open {
+        let next = lib.list().first().and_then(|m| lib.get(m.id));
+        // An empty library gets a fresh blank deck so the editor is never left with none. If the
+        // database will not record its number there is no new deck: the editor keeps the deleted
+        // deck's content as an unsaved working copy rather than inventing a number.
+        match next.or_else(|| lib.try_create("Untitled presentation").ok()) {
+            Some(deck) => ws.load_deck(deck),
+            None => working_copy_unsaved = true,
         }
-        library_view(lib, ws.open_deck().id())
-    })
+    }
+    let mut view = library_view(lib, ws.open_deck().id());
+    if let (true, Some(obj)) = (working_copy_unsaved, view.as_object_mut()) {
+        obj.insert("working_copy_unsaved".into(), serde_json::Value::Bool(true));
+    }
+    view
 }
 
 /// Undo a presentation delete → returns the `LibraryView`.

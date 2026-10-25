@@ -1911,7 +1911,12 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # 2289 -> 2290 (86akmfn54 round 1 review, Cody 6): the Scripture references label was reported by
 # the same line as Summary but no check covered it (removing it from transcripts.js left the gate
 # green). +1 check that the save reports it; measured by a clean run.
-EXPECTED_MIN_CHECKS = 2290  # measured: 2290 checks, 0 FAIL
+#
+# 2290 -> 2294 (17tnw2b9arx round 2): a refused create (the host's database would not record the new
+# presentation number) used to do nothing visible in the plan-link dialog. +3 checks that the dialog shows
+# the host's reason (role=alert), links nothing and re-enables the card, and that a retry clears the error;
+# +1 that the Presentations library's New dialog shows the host's reason. Measured by a clean run.
+EXPECTED_MIN_CHECKS = 2294  # measured: 2294 checks, 0 FAIL
 
 
 def find_chrome():
@@ -3066,6 +3071,8 @@ STUB = r"""
       return Promise.resolve({hits: ghits});
     }
     if (cmd === "deck_new") {
+      // 17tnw2b9arx: the host refuses (rejects) when its database will not record the new number.
+      if (window.__deckNewRefused) return Promise.reject("the presentation database did not accept a new presentation number, so nothing was created");
       var nid=LIB.nextId++; var nm=libUnique((args.name&&args.name.trim())||"Untitled presentation");
       LIB.decks.push({id:nid, name:nm, slides:1}); LIB.open=nid;
       D.name=nm; D.count=1; return Promise.resolve(dClone()); // DeckView (opens the editor)
@@ -7231,6 +7238,18 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){ return c.cmd === "deck_delete" && c.args.id === wantDelId; }), "PM/Lib: confirming delete drives deck_delete(that card's id)");
       await waitFor(function(){ return el("pm-plan-name").textContent !== nameBeforeDelete; });
       ok(el("pm-plan-name").textContent !== nameBeforeDelete, "PM/Lib: deleting the OPEN deck switches the editor to a surviving deck");
+      // 17tnw2b9arx: a REFUSED create (the host's database will not record the new number) shows the
+      // host's reason in the error banner and creates nothing.
+      window.__deckNewRefused = true;
+      el("pm-lib-new").click();
+      await waitFor(function(){ return !!el("pm-prompt-input"); });
+      el("pm-prompt-input").value = "Refused Deck";
+      Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      window.__deckNewRefused = false;
+      ok(/did not accept it, so nothing was created/.test(el("pm-error-msg").textContent),
+         "17tnw2b9arx: a refused New Presentation shows the host's reason, not a bare 'please retry'");
+      el("pm-error-dismiss").click();
       // ＋ New Presentation → dialog → deck_new → opens the editor.
       el("pm-lib-new").click();
       await waitFor(function(){ return !!el("pm-prompt-input"); });
@@ -9934,6 +9953,25 @@ DRIVER = r"""
       await sleep(50);
       ok(window.__calls.filter(function(c){return c.cmd==="deck_new";}).length === dnBefore + 1,
          "SP2 C-004: the New card guards double-activation (exactly one deck_new)");
+      // 17tnw2b9arx: a refused create (the host's database will not record the new number) must be
+      // SHOWN in the dialog, not swallowed: the click used to do nothing at all.
+      openLinkModal({ id: 12, kind: "slide_group", title: "Sermon Deck" });
+      await sleep(40);
+      var lmR = document.querySelector(".pm-confirm.pm-link");
+      var scBeforeR = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
+      window.__deckNewRefused = true;
+      lmR.querySelector(".pm-deck-new").click();
+      await sleep(60);
+      window.__deckNewRefused = false;
+      var errR = lmR.querySelector(".pm-link-new-error");
+      ok(!!errR && !errR.hidden && errR.getAttribute("role") === "alert" && /did not accept it, so nothing was created/.test(errR.textContent),
+         "17tnw2b9arx: a refused New presentation shows the host's reason in the link dialog (role=alert)");
+      ok(window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length === scBeforeR && !lmR.querySelector(".pm-deck-new").disabled,
+         "17tnw2b9arx: a refused New presentation links nothing and re-enables the card (retry possible)");
+      lmR.querySelector(".pm-deck-new").click(); // retry succeeds → the error clears and the deck is linked
+      await sleep(60);
+      ok(!lmR.isConnected || lmR.querySelector(".pm-link-new-error").hidden,
+         "17tnw2b9arx: a retry that works clears the error");
       // F12b Change… on an item whose linked deck was DELETED: preselect nothing so "Link to item"
       // stays disabled (no phantom-id re-commit), not enabled with nothing visibly selected.
       openLinkModal({ id: 20, kind: "slide_group", title: "Ghost Deck", link: { kind: "deck", id: 999999 } });

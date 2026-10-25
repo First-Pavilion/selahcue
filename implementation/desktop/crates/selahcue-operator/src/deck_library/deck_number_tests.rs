@@ -690,6 +690,406 @@ fn a_load_whose_identity_backfill_gave_up_does_not_attempt_a_second_write() {
     assert_eq!(m.mark(), 3, "the next launch records it");
 }
 
+// --- review round 2 ------------------------------------------------------------------------------
+
+/// Shadow N3 / Quinn R2-1: a damaged mark must refuse NEW numbers, but it must not make edits and
+/// renames to EXISTING decks vanish. The numbered writers used to keep the damaged value, trip the
+/// column's CHECK and roll the whole deck write back, while `is_persistent()` still said true.
+#[test]
+fn a_damaged_mark_does_not_lose_edits_or_renames_to_existing_decks() {
+    for literal in ["'abc'", "12.5", "x'00'"] {
+        let m = Machine::new(&format!("damaged-edits-{}", literal.len()));
+        {
+            let mut lib = m.launch();
+            lib.create("Alpha");
+            lib.create("Beta");
+        }
+        corrupt_the_mark(&m, literal);
+
+        let mut lib = m.launch();
+        let mut alpha = lib.get(id_of(&lib, "Alpha")).unwrap();
+        alpha.add_slide();
+        lib.store(&alpha);
+        lib.rename(id_of(&lib, "Beta"), "Beta renamed").unwrap();
+        assert_eq!(
+            lib.try_create("Gamma").unwrap_err(),
+            NumberNotRecorded,
+            "{literal}"
+        );
+        drop(lib);
+
+        let lib = m.launch();
+        let names: Vec<String> = lib.list().into_iter().map(|d| d.name).collect();
+        assert_eq!(
+            names,
+            ["Alpha", "Beta renamed"],
+            "{literal}: the rename was lost"
+        );
+        assert_eq!(
+            lib.get(id_of(&lib, "Alpha")).unwrap().len(),
+            2,
+            "{literal}: the edit to Alpha was lost"
+        );
+    }
+}
+
+/// The documented recovery for a damaged mark (ADR-0031): close the operator, `DELETE FROM
+/// deck_id_counter`, relaunch. The load raises the mark again from the surviving decks.
+#[test]
+fn deleting_a_damaged_mark_row_and_relaunching_recovers() {
+    let m = Machine::new("recover-damaged");
+    {
+        let mut lib = m.launch();
+        lib.create("A");
+        lib.create("B");
+    }
+    corrupt_the_mark(&m, "'abc'");
+    assert_eq!(m.launch().try_create("C").unwrap_err(), NumberNotRecorded);
+
+    m.db()
+        .conn()
+        .execute("DELETE FROM deck_id_counter", [])
+        .unwrap();
+    let mut lib = m.launch();
+
+    assert_eq!(m.mark(), 2, "re-raised from the surviving decks");
+    assert_eq!(lib.try_create("C").unwrap().id(), DeckId(3));
+}
+
+/// ...and for "the numbers are used up" (a deck holding 2^53 - 1): remove or renumber that deck and
+/// clear the mark; the load re-raises it from what is left.
+#[test]
+fn removing_the_deck_at_the_ceiling_and_the_mark_row_lets_creation_resume() {
+    let m = Machine::new("recover-exhausted");
+    {
+        let db = m.db();
+        deck_repo::save_one(&db, "Small", &legacy_row(1, "Small")).unwrap();
+        deck_repo::save_one(&db, "Last", &legacy_row(MAX_DECK_NUMBER, "Last")).unwrap();
+    }
+    assert_eq!(
+        m.launch().try_create("Blocked").unwrap_err(),
+        NumberNotRecorded
+    );
+
+    {
+        let db = m.db();
+        db.conn()
+            .execute("DELETE FROM deck WHERE name = 'Last'", [])
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM deck_id_counter", [])
+            .unwrap();
+    }
+    let mut lib = m.launch();
+
+    assert_eq!(lib.try_create("Free").unwrap().id(), DeckId(2));
+}
+
+/// Shadow N5 / Cody R2-4: a delete must record that the number is retired. On a legacy library whose
+/// first launch hit a failed write the load skipped the mark (nothing else had recorded it), so deleting
+/// the highest deck with no create afterwards used to hand its number to the next deck after a restart.
+#[test]
+fn deleting_the_highest_deck_retires_its_number_even_if_the_load_could_not_record_the_mark() {
+    let m = Machine::new("delete-retires");
+    {
+        let db = m.db();
+        for (id, name) in [(1, "A"), (2, "B"), (3, "C")] {
+            deck_repo::save_one(&db, name, &legacy_row(id, name)).unwrap();
+        }
+        // The identity backfill rewrites each legacy row; refuse that so the load gives up and skips
+        // the mark. Deleting a row is still allowed.
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER refuse_deck_updates BEFORE UPDATE ON deck
+                 BEGIN SELECT RAISE(ABORT, 'locked'); END;",
+            )
+            .unwrap();
+    }
+    {
+        let (mut lib, stats) = DeckLibrary::load_reporting(Some(m.db()), os_entropy);
+        assert_eq!(stats.failed, 1, "premise: the backfill gave up");
+        assert_eq!(m.mark(), 0, "premise: nothing recorded the mark");
+        assert!(lib.delete(DeckId(3)));
+    }
+    m.db()
+        .conn()
+        .execute_batch("DROP TRIGGER refuse_deck_updates;")
+        .unwrap();
+
+    let mut lib = m.launch();
+
+    assert!(lib.get(DeckId(3)).is_none());
+    assert_eq!(
+        lib.create("D").id(),
+        DeckId(4),
+        "3 was deleted, so 3 is retired"
+    );
+}
+
+/// Shadow N4 / Cody R2-6: a database that ran the first v25 definition (no type/range CHECK on the
+/// mark) is never rebuilt, so the ceiling has to hold in the code. The mark reaches the ceiling AFTER
+/// this library loaded (another process raised it), so the library's own counter is still low and only
+/// the database's answer can refuse.
+#[test]
+fn the_ceiling_holds_on_a_database_with_the_first_v25_definition() {
+    let m = Machine::new("old-definition");
+    let mut lib = m.launch();
+    lib.create("A");
+    m.db()
+        .conn()
+        .execute_batch(&format!(
+            "DROP TABLE deck_id_counter;
+             CREATE TABLE deck_id_counter (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 high_water INTEGER NOT NULL CHECK (high_water >= 0)
+             );
+             INSERT INTO deck_id_counter VALUES (1, {MAX_DECK_NUMBER});"
+        ))
+        .unwrap();
+
+    assert_eq!(lib.try_create("Past it").unwrap_err(), NumberNotRecorded);
+
+    assert_eq!(lib.list().len(), 1);
+    assert_eq!(
+        m.mark(),
+        MAX_DECK_NUMBER,
+        "the refused issue did not advance the mark"
+    );
+}
+
+// --- the console commands (review round 2) --------------------------------------------------------
+
+/// A library on a real database file with the decks `names`, the workspace open on the first of them,
+/// and the database then made to refuse every new number (Quinn R2-2: the glue between the library and
+/// the console was untested, and three mutants of it passed the whole suite).
+fn console_with_a_database_that_refuses(
+    tag: &str,
+    names: &[&str],
+) -> (Machine, crate::deck_workspace::DeckWorkspace, DeckLibrary) {
+    let m = Machine::new(tag);
+    let mut lib = m.launch();
+    let mut ws = crate::deck_workspace::DeckWorkspace::demo();
+    for (i, n) in names.iter().enumerate() {
+        let d = lib.create(n);
+        if i == 0 {
+            ws.load_deck(d);
+        }
+    }
+    refuse_mark_writes(&m);
+    (m, ws, lib)
+}
+
+#[test]
+fn deck_new_is_refused_with_an_error_and_changes_nothing_when_no_number_can_be_recorded() {
+    let (_m, mut ws, mut lib) = console_with_a_database_that_refuses("cmd-new", &["Welcome"]);
+    let open_before = ws.open_deck().id();
+
+    let err = crate::deck_new_in(&mut ws, &mut lib, "Communion").unwrap_err();
+
+    assert!(
+        err.contains("did not accept a new presentation number"),
+        "{err}"
+    );
+    assert_eq!(lib.list().len(), 1, "nothing was created");
+    assert_eq!(
+        ws.open_deck().id(),
+        open_before,
+        "and the editor stayed where it was"
+    );
+}
+
+#[test]
+fn deck_new_creates_and_opens_the_deck_when_the_database_is_healthy() {
+    let m = Machine::new("cmd-new-ok");
+    let mut lib = m.launch();
+    let mut ws = crate::deck_workspace::DeckWorkspace::demo();
+    let view = crate::deck_new_in(&mut ws, &mut lib, "Communion").unwrap();
+    assert_eq!(lib.list().len(), 1);
+    assert_eq!(ws.open_deck().name, "Communion");
+    assert!(view.is_object());
+}
+
+#[test]
+fn deck_duplicate_is_refused_with_an_error_when_no_number_can_be_recorded() {
+    let (_m, mut ws, mut lib) = console_with_a_database_that_refuses("cmd-dup", &["Welcome"]);
+    let id = lib.list()[0].id.0;
+
+    let err = crate::deck_duplicate_in(&mut ws, &mut lib, id).unwrap_err();
+
+    assert!(
+        err.contains("did not accept a new presentation number"),
+        "{err}"
+    );
+    assert_eq!(lib.list().len(), 1, "no copy was made");
+}
+
+#[test]
+fn deck_duplicate_of_an_unknown_deck_is_still_a_quiet_no_op_not_a_refusal() {
+    // The console treats "the source vanished" as nothing to do (no new_id); only an EXISTING deck
+    // whose copy could not be numbered is an error.
+    let (_m, mut ws, mut lib) =
+        console_with_a_database_that_refuses("cmd-dup-unknown", &["Welcome"]);
+    let view = crate::deck_duplicate_in(&mut ws, &mut lib, 9999).unwrap();
+    assert!(view.get("new_id").is_none());
+}
+
+#[test]
+fn deck_duplicate_returns_the_copys_number_when_the_database_is_healthy() {
+    let m = Machine::new("cmd-dup-ok");
+    let mut lib = m.launch();
+    let mut ws = crate::deck_workspace::DeckWorkspace::demo();
+    lib.create("Welcome");
+    let view = crate::deck_duplicate_in(&mut ws, &mut lib, 1).unwrap();
+    assert_eq!(view["new_id"], 2);
+}
+
+#[test]
+fn deleting_the_last_deck_when_no_number_can_be_recorded_keeps_an_unsaved_copy_and_says_so() {
+    let (_m, mut ws, mut lib) = console_with_a_database_that_refuses("cmd-del", &["Only"]);
+    let only = ws.open_deck().id();
+
+    // (A panic here would mean the fallback used the test-only `create` instead of `try_create`.)
+    let view = crate::deck_delete_in(&mut ws, &mut lib, only.0);
+
+    assert!(lib.is_empty());
+    assert_eq!(
+        ws.open_deck().id(),
+        only,
+        "the editor keeps the deleted deck's content as a working copy"
+    );
+    assert_eq!(
+        view["working_copy_unsaved"], true,
+        "and the console is told: {view}"
+    );
+}
+
+#[test]
+fn deleting_the_last_deck_with_a_healthy_database_opens_a_fresh_blank_deck() {
+    let m = Machine::new("cmd-del-ok");
+    let mut lib = m.launch();
+    let mut ws = crate::deck_workspace::DeckWorkspace::demo();
+    let only = lib.create("Only");
+    ws.load_deck(only.clone());
+
+    let view = crate::deck_delete_in(&mut ws, &mut lib, only.id().0);
+
+    assert_eq!(lib.list().len(), 1);
+    assert_eq!(ws.open_deck().name, "Untitled presentation");
+    assert_ne!(ws.open_deck().id(), only.id());
+    assert!(view.get("working_copy_unsaved").is_none());
+}
+
+// --- numbers repaired at load (review round 2) --------------------------------------------------
+
+/// Shadow N2 / Cody R2-5 / Quinn R2-5: a deck that needs a number at load and cannot be given a
+/// RECORDED one gets, at most, a session-only number inside the ceiling. When even that is impossible
+/// (the ceiling is used up, or the mark could not be read so a retired number might be handed out) the
+/// deck is left out of the library: its row stays on disk untouched and its name stays reserved so a
+/// new deck cannot overwrite it.
+#[test]
+fn a_deck_that_needs_a_number_when_none_can_be_issued_is_left_out_not_minted_past_the_ceiling() {
+    let m = Machine::new("repair-ceiling");
+    {
+        let db = m.db();
+        deck_repo::save_one(&db, "Last", &legacy_row(MAX_DECK_NUMBER, "Last")).unwrap();
+        deck_repo::save_one(&db, "Over", &legacy_row(MAX_DECK_NUMBER + 1, "Over")).unwrap();
+        deck_repo::save_one(&db, "Huge", &legacy_row(1 << 63, "Huge")).unwrap();
+        deck_repo::save_one(&db, "Max", &legacy_row(u64::MAX, "Max")).unwrap();
+    }
+    // "Last" is a loaded deck and gets its identity written back; the other three are left out.
+    let left_out = |m: &Machine| -> Vec<(String, String)> {
+        deck_repo::load_all(&m.db())
+            .unwrap()
+            .into_iter()
+            .filter(|(name, _)| name != "Last")
+            .collect()
+    };
+    let rows_before = left_out(&m);
+
+    let mut lib = m.launch();
+
+    let listed: Vec<(String, u64)> = lib.list().into_iter().map(|d| (d.name, d.id.0)).collect();
+    assert_eq!(
+        listed,
+        [("Last".to_string(), MAX_DECK_NUMBER)],
+        "the three others are left out"
+    );
+    assert!(lib.list().iter().all(|d| d.id.0 <= MAX_DECK_NUMBER));
+    assert_eq!(m.mark(), MAX_DECK_NUMBER);
+    assert_eq!(
+        left_out(&m),
+        rows_before,
+        "their rows are untouched on disk"
+    );
+    // Their names stay reserved: a new deck cannot take "Over" and upsert over its row.
+    assert_eq!(
+        lib.rename(id_of(&lib, "Last"), "Over").unwrap(),
+        "Over (2)",
+        "a left-out deck's name is still taken"
+    );
+}
+
+#[test]
+fn with_an_unreadable_mark_a_deck_that_needs_a_number_is_left_out_rather_than_given_a_retired_one()
+{
+    let m = Machine::new("repair-unreadable");
+    {
+        let mut lib = m.launch();
+        lib.create("One");
+        lib.create("Two");
+        lib.create("Three");
+        lib.delete(DeckId(3)); // 3 is retired; only the mark remembers
+    }
+    {
+        let db = m.db();
+        // Two decks claiming number 1: one of them needs a new number.
+        deck_repo::save_one(&db, "Clone", &legacy_row(1, "Clone")).unwrap();
+    }
+    corrupt_the_mark(&m, "'abc'");
+
+    let lib = m.launch();
+
+    let ids: Vec<u64> = lib.list().iter().map(|d| d.id.0).collect();
+    assert!(
+        !ids.contains(&3),
+        "the retired number 3 was handed out: {ids:?}"
+    );
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        ids.len(),
+        "no two decks share a number: {ids:?}"
+    );
+    assert_eq!(
+        lib.list().len(),
+        2,
+        "the deck that could not be numbered is left out"
+    );
+}
+
+/// When the database refuses to record, a repaired deck still gets a distinct session-only number
+/// inside the ceiling (the load does not stop working) and nothing is written.
+#[test]
+fn when_the_database_refuses_repaired_numbers_are_distinct_session_only_and_unrecorded() {
+    let m = Machine::new("repair-refused");
+    {
+        let db = m.db();
+        for name in ["R1", "R2", "R3"] {
+            deck_repo::save_one(&db, name, &legacy_row(1, name)).unwrap();
+        }
+    }
+    refuse_mark_writes(&m);
+
+    let lib = m.launch();
+
+    let mut ids: Vec<u64> = lib.list().iter().map(|d| d.id.0).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2, 3]);
+    assert_eq!(m.mark(), 0, "nothing was recorded");
+}
+
 /// Every path that writes a deck row must raise the mark with it. Each is started from "no mark
 /// recorded" so that a path that forgot would leave the mark behind the number it just wrote.
 mod every_writer_raises_the_mark {
@@ -720,21 +1120,53 @@ mod every_writer_raises_the_mark {
         assert_eq!(m.mark(), copy.id().0);
     }
 
-    /// `adopt` keeps an incoming number only from BEYOND every number issued here (>= the counter,
-    /// which is already past the mark, every live deck and the undo trash). A number below that was
-    /// issued before -- possibly to a deck that was deleted and is still linked from a plan -- so
-    /// handing it back would reopen the very hole this ticket closes. (Before this rule adopt kept
-    /// any number no LIVE deck held, which could return a retired one; Shadow F1, Cody M3.)
+    /// `adopt` ALWAYS issues a fresh number and ignores the one the deck arrives with. A deck number is
+    /// this library's own handle: it never crosses a machine (ADR-0031 decision 3), so a foreign number
+    /// has no value to keep, and keeping one is a hazard -- it could be a number issued here before and
+    /// retired (the hole this ticket closes), or a huge one that would move the mark to the ceiling and
+    /// refuse every later create for good (Shadow N1). Before round 2 adopt kept a number from beyond
+    /// everything issued here; that rule is gone, and this test pins its replacement.
     #[test]
-    fn adopt_keeps_a_number_from_beyond_everything_issued_and_retires_it() {
-        let (m, mut lib) = fresh_with("adopt_keeps_beyond", &["A"]);
+    fn adopt_always_issues_a_fresh_number_and_ignores_the_one_it_arrives_with() {
+        let (m, mut lib) = fresh_with("adopt_fresh", &["A"]);
         let mut incoming = SlideDeck::new("Imported".to_string());
-        incoming.set_id(DeckId(40)); // well beyond the counter (2): nothing was ever issued as 40
+        incoming.set_id(DeckId(40)); // beyond everything issued: still not kept
         let adopted = lib.adopt(incoming);
-        assert_eq!(adopted.id(), DeckId(40));
-        assert_eq!(m.mark(), 40);
+        assert_eq!(
+            adopted.id(),
+            DeckId(2),
+            "the next number, not the incoming 40"
+        );
+        assert_eq!(m.mark(), 2);
         drop(lib);
-        assert_eq!(m.launch().create("After").id(), DeckId(41));
+        assert_eq!(m.launch().create("After").id(), DeckId(3));
+    }
+
+    /// One adopted deck carrying the largest legal number must not move the mark to the ceiling: that
+    /// would refuse every later create, and nothing but hand-edited SQL could undo it.
+    #[test]
+    fn adopting_a_deck_carrying_the_ceiling_number_leaves_the_mark_alone() {
+        for carried in [MAX_DECK_NUMBER, MAX_DECK_NUMBER - 1, u64::MAX] {
+            let (m, mut lib) =
+                fresh_with(&format!("adopt_ceiling_{}", carried % 1000), &["A", "B"]);
+            let mut incoming = SlideDeck::new("Imported".to_string());
+            incoming.set_id(DeckId(carried));
+            let adopted = lib.adopt(incoming);
+            assert_eq!(adopted.id(), DeckId(3), "{carried}: a fresh small number");
+            assert_eq!(
+                m.mark(),
+                3,
+                "{carried}: the mark did not move to the carried number"
+            );
+            assert_eq!(
+                lib.create("After").id(),
+                DeckId(4),
+                "{carried}: creating still works"
+            );
+            lib.delete(adopted.id());
+            drop(lib);
+            assert_eq!(m.launch().create("Later").id(), DeckId(5), "{carried}");
+        }
     }
 
     #[test]

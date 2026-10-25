@@ -115,19 +115,24 @@ fn mark_param(deck_id: u64) -> Result<i64> {
     i64::try_from(deck_id).map_err(|_| crate::DataError::Refused("deck number does not fit".into()))
 }
 
-/// Raise the mark to at least `deck_id` on `conn` (a connection or an open transaction). SQL `MAX`
-/// makes this a no-op for a lower number, so the mark can never go down through here.
+/// Raise the mark to at least `deck_id` on `conn` (a connection or an open transaction). It touches the
+/// row ONLY when the stored mark is an integer that is behind: a lower number is a no-op, so the mark
+/// can never go down through here, and a damaged (non-integer) mark is left exactly as it is instead of
+/// being compared, kept, and then rejected by the column's CHECK, which would roll back the deck write
+/// it rides on and silently lose an edit to an existing deck. Refusing NEW numbers while the mark is
+/// damaged is [`issue_number`]'s job.
 fn raise_on(conn: &rusqlite::Connection, deck_id: u64) -> Result<()> {
     let mark = mark_param(deck_id)?;
     conn.execute(
         "INSERT INTO deck_id_counter (id, high_water) VALUES (1, ?1)
-         ON CONFLICT(id) DO UPDATE SET high_water = MAX(high_water, excluded.high_water)",
+         ON CONFLICT(id) DO UPDATE SET high_water = excluded.high_water
+         WHERE typeof(high_water) = 'integer' AND high_water < excluded.high_water",
         params![mark],
     )?;
     Ok(())
 }
 
-/// The highest deck number ever written for a deck in this database, or `0` when nothing has been
+/// The highest deck number ever issued for a deck in this database, or `0` when nothing has been
 /// recorded (a fresh database, or one written by a build from before the mark existed).
 pub fn high_water(db: &Database) -> Result<u64> {
     let mark: Option<i64> = db
@@ -151,8 +156,11 @@ pub fn high_water(db: &Database) -> Result<u64> {
 /// never count as 0), when `at_least` is above [`MAX_DECK_NUMBER`], or when the next number would be.
 pub fn issue_number(db: &Database, at_least: u64) -> Result<u64> {
     let want = mark_param(at_least.max(1))?;
-    let issued: Option<i64> = db
-        .conn()
+    // One statement inside a transaction so the ceiling can be checked AFTER the number is picked and
+    // refused without leaving the mark advanced: a table created by the first (unreleased) v25
+    // definition has no CHECK on the range, and the code must not depend on which definition a file has.
+    let tx = db.conn().unchecked_transaction()?;
+    let issued: Option<i64> = tx
         .query_row(
             "INSERT INTO deck_id_counter (id, high_water) VALUES (1, ?1)
              ON CONFLICT(id) DO UPDATE SET high_water = MAX(high_water + 1, excluded.high_water)
@@ -162,32 +170,22 @@ pub fn issue_number(db: &Database, at_least: u64) -> Result<u64> {
             |r| r.get(0),
         )
         .optional()?;
-    match issued {
+    let number = match issued {
         Some(n) => u64::try_from(n).map_err(|_| {
             crate::DataError::Corrupt("deck number high-water mark is negative".into())
-        }),
-        None => Err(crate::DataError::Corrupt(
-            "deck number high-water mark is not an integer".into(),
-        )),
+        })?,
+        None => {
+            return Err(crate::DataError::Corrupt(
+                "deck number high-water mark is not an integer".into(),
+            ))
+        }
+    };
+    if number > MAX_DECK_NUMBER {
+        // Dropping `tx` rolls the advance back.
+        return Err(crate::DataError::Refused("deck numbers are used up".into()));
     }
-}
-
-/// Claim one SPECIFIC number: record `deck_id` as the mark if it is above the current mark and report
-/// `true`; report `false` (changing nothing) if that number has already been issued (`deck_id` at or
-/// below the mark), is zero, is above [`MAX_DECK_NUMBER`], or the stored mark is unreadable. For a
-/// deck that arrives carrying its own number (an adopted deck): it may keep it only if nothing here
-/// ever issued it.
-pub fn claim_number(db: &Database, deck_id: u64) -> Result<bool> {
-    if deck_id == 0 || deck_id > MAX_DECK_NUMBER {
-        return Ok(false);
-    }
-    let changed = db.conn().execute(
-        "INSERT INTO deck_id_counter (id, high_water) VALUES (1, ?1)
-         ON CONFLICT(id) DO UPDATE SET high_water = excluded.high_water
-         WHERE typeof(high_water) = 'integer' AND high_water < excluded.high_water",
-        params![mark_param(deck_id)?],
-    )?;
-    Ok(changed > 0)
+    tx.commit()?;
+    Ok(number)
 }
 
 /// Raise the mark to at least `deck_id` without writing a deck: what a library does on load, so a
@@ -230,6 +228,18 @@ pub fn rename_one_numbered(
          ON CONFLICT(name) DO UPDATE SET deck_json = excluded.deck_json",
         params![new_name, deck_json],
     )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// [`delete_one`], and raise the high-water mark to at least `deck_id` (the deleted deck's number) in
+/// the same transaction, so a deleted deck's number is retired even when nothing else would have
+/// recorded it: a library whose load could not write the mark (the identity backfill gave up) would
+/// otherwise reissue the number of the highest deck deleted before any new deck was created.
+pub fn delete_one_numbered(db: &Database, name: &str, deck_id: u64) -> Result<()> {
+    let tx = db.conn().unchecked_transaction()?;
+    raise_on(&tx, deck_id)?;
+    tx.execute("DELETE FROM deck WHERE name = ?1", params![name])?;
     tx.commit()?;
     Ok(())
 }
