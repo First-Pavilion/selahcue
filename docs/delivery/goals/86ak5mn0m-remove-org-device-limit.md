@@ -90,12 +90,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-003 | yes | Mutating the enforced read at `devices/services.py` :480 and :354 to a constant or a `customer.` attribute turns the tests red | mutation script run, each mutant fails then reverts | every mutant RED, revert GREEN | mutation harness: A1-A4 (:480 constant, customer.device_limit, customer.seat_limit, plan number) RED on both routes; R1-R3 (:354 constant, customer attr, customer.seat_limit) RED; every revert GREEN | PASS |
 | C-004 | yes | Issuing a key whose dates overlap another blocking key of the same org is refused with POLICY_DENIED and nothing is written; non-blocking statuses and the date edges behave as decided | `pytest tests/test_one_valid_key_per_org.py -q` | parametrised matrix passes incl. start==expiry allowed and one second earlier refused; no key, assignment or audit row on refusal | tests/test_one_valid_key_per_org.py: 5 blocking statuses x 10 windows + 3 finished statuses x 7 overlapping windows passed; mutants G1-G7 RED | PASS |
 | C-005 | yes | A retry of a successful issuance is still an idempotent replay, and another org's key never blocks | same file | passes | same file: replay, corrected-retry, other-org, grandfathered and guard-exclude tests passed; mutants G8 (guard before replay) and G9 (exclude ignored) RED | PASS |
-| C-006 | yes | Two simultaneous issuances to one org produce exactly one key (Postgres), and removing the org lock turns that test red | `pytest tests/test_concurrency_postgres.py -q` on Postgres, with mutation | exactly one success; mutant RED | local Postgres 16.2 (pgserver, no Docker): test_concurrency_postgres.py 21 passed incl. 3 new race tests; mutants L1 (org lock removed) and L2 (no replay look under lock) RED | PASS |
+| C-006 | yes | Two simultaneous issuances to one org produce exactly one key (Postgres), and removing the org lock turns that test red | `pytest tests/test_concurrency_postgres.py -q` on Postgres, with mutation | exactly one success; mutant RED | local Postgres 16.2 (pgserver, no Docker): test_concurrency_postgres.py 23 passed incl. 5 new tests (two-issuer race, retry-races-original, different orgs, lock strength, hash outside the lock); mutants L1 (org lock removed), L2 (no replay look under lock), L3 (FOR UPDATE instead of FOR NO KEY UPDATE), H1b (hash inside the lock) RED | PASS |
 | C-007 | yes | The key's `device_limit` is read from the plan's `device_instances` at issuance; changing the plan value changes the next key only; a plan with an absent, unlimited or sub-1 value is refused | `pytest tests/test_key_seats_from_plan.py -q` | passes with tests' own plans and `set_plan_grant` | tests/test_key_seats_from_plan.py 14 passed (own plans, set_plan_grant, absent/unlimited/0/overflow/boolean/switched-off refused); mutants S1-S6 RED | PASS |
 | C-008 | yes | One org reports the same number in the admin console, the manifest, the refresh response and at the activation refusal point; `AdminCustomer.deviceLimit` and the generate-key `deviceLimit` input are gone from the schema | `pytest tests/test_one_device_limit_everywhere.py -q` | all four equal; introspection lacks both | tests/test_one_device_limit_everywhere.py 2 passed (admin = manifest = refresh = refusal point = plan seats; schema introspection); mutants E1-E3 RED | PASS |
-| C-009 | yes | Migrating forward preserves what every existing key grants, across org value equal, higher and lower than the key's, an org with no keys, an org with two overlapping keys, every status including SUSPENDED and ACTIVATED past expiry, keys at and below their limit | `pytest tests/test_migration_remove_org_device_limit.py -q` | before and after snapshots identical through the real services | tests/test_migration_remove_org_device_limit.py 5 passed on SQLite and on Postgres (13 scenarios, an org with no keys, 2 grandfathered keys; key table identical before and after); mutants M1, M2 RED | PASS |
-| C-010 | yes | No reader or writer of `CustomerOrg.device_limit` remains in code, tests or the evidence seed, and no client reads it; the scan has a positive control | scan script run on the tree and on a copy with a known site re-added | zero sites on the tree; the planted site is found | scratchpad w1-86ak5mn0m-impl-scan.log: 0 org sites in selahcue_api and tests (one intentional historical-model write in the migration test); planted control found; no client reads the field | PASS |
-| C-011 | yes | The full API suite shows no regression against the origin/main baseline | `python -m pytest tests -q` | same pass set as baseline plus new tests; any failure that exists on baseline is named | SQLite: 1238 passed, 22 skipped, 1 xfailed, exit 0 (baseline on origin/main 4e744ac3: 1127 passed, 19 skipped, 1 xfailed). Postgres 16.2: 1259 passed, 1 skipped, 1 xfailed, exit 0 | PASS |
+| C-009 | yes | Migrating forward preserves what every existing key grants, across org value equal, higher and lower than the key's, an org with no keys, an org with two overlapping keys, every status including SUSPENDED and ACTIVATED past expiry, keys at and below their limit | `pytest tests/test_migration_remove_org_device_limit.py -q` | before and after snapshots identical through the real services | tests/test_migration_remove_org_device_limit.py 5 passed on SQLite and on Postgres (13 scenarios, an org with no keys, 2 grandfathered keys; key table identical before and after); mutants M1, M2, M3 RED; runtime of the file went from 46.7 s (loaded machine) and 27.9 s (quieter, run back to back with the change) to 0.9 s and 1.6 s with a fast password hasher for this file only and the assertions unchanged; the grandfathered probes are now proven real (a refused, b admitted) instead of two identical VALIDATION_FAILED answers | PASS |
+| C-010 | yes | No reader or writer of `CustomerOrg.device_limit` remains in code, tests or the evidence seed, and no client reads it; the scan has a positive control | scan script run on the tree and on a copy with a known site re-added | zero sites on the tree; the planted site is found | scan run during the work (the scanner and its logs are working files outside the repository, summarised here): 0 org sites in selahcue_api and tests (one intentional historical-model write in the migration test); planted control found; no client reads the field | PASS |
+| C-011 | yes | The full API suite shows no regression against the origin/main baseline | `python -m pytest tests -q` | same pass set as baseline plus new tests; any failure that exists on baseline is named | Final head after merging origin/main 87786835 (PR #225), SQLite under env -i with SQL_DATABASE=:memory: as in make api-check: 1345 passed, 24 skipped, 1 xfailed, exit 0. Postgres 16.2: 1368 passed, 1 skipped, 1 xfailed, exit 0. Baseline on origin/main 4e744ac3 before this work: 1127 passed, 19 skipped, 1 xfailed | PASS |
 | C-012 | yes | Django checks and migrations are clean | `python manage.py check`; `python manage.py makemigrations --check --noinput` | both exit 0 | manage.py check exit 0; makemigrations --check --noinput exit 0; makemigrations --check --dry-run --noinput exit 0 | PASS |
 | C-013 | yes | No lint or format tool is configured for the API, so none is run; no new function-local import; the changed Python compiles | `python -m compileall` and a grep of the diff for indented imports | exit 0; no new local imports | no lint or format tool is configured for the API (pyproject.toml, CI api job); ruff F-rules on changed files report only 4 findings that exist on origin/main; compileall exit 0; no new indented import in the diff | PASS |
 | C-014 | yes | Docs record the owner's decision: PRD section 12, FR-515, OQ-P1; ADR-0022; ADMIN-CONSOLE-UX-HANDOFF | review of the diff | the three docs state the approved design, no other PRD text changed | PRD section 12 row, FR-515, OQ-P1; ADR-0022 lines 22 and 78; ADMIN-CONSOLE-UX-HANDOFF line 92; validate_prd.py PASS | PASS |
@@ -109,7 +109,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Focused verification: each new test file above, run by name without `--exact`; mutation scripts for the activation reads, the overlap guard, the org lock and the plan derivation.
 - Broader regression verification: the full API suite, `manage.py check`, `makemigrations --check --noinput`, mirroring the `api (django)` CI job as far as a local SQLite run (and a local Postgres if one can be provisioned) allows.
 - Independent verifier: the orchestrator dispatches the reviewers (Cody, Shadow, Quinn, Vera); this run does not.
-- Required environment: Python 3.14 virtualenv in the scratchpad; SQLite; Postgres only if it can be provisioned without Docker.
+- Required environment: a Python 3.14 virtualenv outside the repository; SQLite; a local Postgres 16.2 from the `pgserver` pip package (no Docker), stopped and deleted afterwards.
 
 ## Iteration ledger
 
@@ -120,7 +120,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Change or investigation: ran the full API suite on the untouched worktree
 - Verifier executed: `python -m pytest tests -q -p no:cacheprovider`
 - Result: 1127 passed, 19 skipped, 1 xfailed, exit 0 (7 min 3 s) on origin/main 4e744ac3
-- New evidence: scratchpad log w1-86ak5mn0m-impl-baseline.log
+- New evidence: console output of that run (working logs are kept outside the repository; every result is summarised in this contract, the PR description and the ClickUp comments)
 - Decision: iterate
 
 ### Iteration 1
@@ -138,21 +138,45 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: C-003, C-006 and every guard (mutation verification)
 - Hypothesis: each guard turns at least one test RED when removed
 - Change or investigation: mutation harness over 31 single-line mutants (activation reads, re-mint read, overlap window and status set, org lock, replay order, plan accessor bounds, surfaces, tripwire, migration)
-- Verifier executed: scratchpad w1-86ak5mn0m-impl-mutate.py (logs w1-86ak5mn0m-impl-mutation*.log)
+- Verifier executed: a mutation harness kept outside the repository (it applies one textual change to one production file, runs the named tests with siblings, requires RED, restores the file byte for byte); the mutants and their killers are listed under "Mutation record" below
 - Result: all mutants RED; two migration mutants first died of a setup error and not of an assertion, so they were rewritten with a proper dependency and re-run; the tripwire file also errored when run alone, fixed by marking it django_db
 - New evidence: the final full suites on the final head are green on SQLite and Postgres 16.2
 - Decision: gate-review
 
+### Iteration 3 (round-1 review follow-up)
+
+- Target criterion: findings of the four round-1 reviews (no blockers)
+- Hypothesis: each finding is closed by a test that fails first or by a mutant it kills
+- Change or investigation: merged origin/main 87786835; deploy order written down in the migration docstring and docs/ops/DEPLOYMENT.md 6d; lock changed to FOR NO KEY UPDATE; the secret hashed before the org lock; `deviceLimit` asserted on the suspend/reinstate payloads; the grandfathered probe keys fixed and proven real; the blocking set tied to LEGAL_TRANSITIONS; the remaining tests moved off seeded seat counts; the migration tests sped up; the blocking set renamed, neutral guard wording, latest-expiry hint; docs hygiene
+- Verifier executed: the new and changed tests, 10 new mutants and a re-run of the 3 migration mutants, then both full suites
+- Result: all new tests GREEN, all 10 new mutants and the 3 re-run migration mutants RED; full suites green on SQLite and Postgres (counts in C-011)
+- New evidence: new code against the old schema fails to create an org (NOT NULL), which is why the split-release advice says to make the column nullable first
+- Decision: gate-review
+
+## Mutation record
+
+Each line is one textual change to one production file, run against the named tests, expected RED, file restored afterwards. All were RED.
+
+- Activation read (devices/services.py, new activation): constant 99; `customer.device_limit`; `customer.seat_limit`; the plan's number 5. Killer: test_key_device_limit_is_the_only_limit.py, both routes.
+- Re-mint read (devices/services.py): constant 99; `customer.device_limit`; `customer.seat_limit`. Killer: test_remint_allowance_follows_the_key_limit.
+- Overlap guard (license_keys/services.py): guard not called; window start inclusive; window end inclusive; SUSPENDED removed; EXPIRED removed; REVOKED added; other-org filter dropped; guard placed before the replay; `exclude_key_id` ignored; hint uses the earliest expiry; offset ignored when coercing. Killers: test_one_valid_key_per_org.py.
+- Blocking set against the state machine: a fake CONVERTED -> ACTIVATED edge in LEGAL_TRANSITIONS; EXPIRED or SUSPENDED removed from the set, with only the state-machine test selected. Killer: test_the_blocking_statuses_cover_every_status_the_state_machine_can_revive.
+- Concurrency (Postgres): org lock removed; second replay look removed; lock back to FOR UPDATE; hashing back inside the lock (also killed on SQLite by the ordering test). Killers: test_concurrency_postgres.py.
+- Plan accessor: constant seats; 0 allowed; overflow allowed; boolean allowed; unlimited read as 1; refusal removed. Killers: test_key_seats_from_plan.py.
+- Surfaces: manifest, refresh, admin key type and the lifecycle summary each off by one. Killers: test_one_device_limit_everywhere.py and the suspend/reinstate GraphQL test.
+- Tripwire: the org field re-added. Killer: test_org_device_limit_removed.py.
+- Migration: one that rewrites every key limit to 1; one that aligns each key to its org's value; one that does more than drop the column. Killers: test_migration_remove_org_device_limit.py.
+
 ## Risks and rollback
 
-- Risks: the migration drops a column, so a rollback to the previous release needs the column back; it holds no data the platform reads, but a re-added column would carry its default of 1. Two simultaneous issuance requests rely on a row lock that SQLite does not provide, so the race guard is only observable on Postgres. A key's limit is copied at issuance, so moving a licence to another plan afterwards does not move its limit (unchanged from today; FR-516 is not built). Rebase conflicts with `chore/strip-dead-seat-limit` in the same service and test files.
-- Rollback or recovery: revert the merge commit; a reverse migration is not provided (forward-only by decision). To restore the old column on a deployed database, add it back as a PositiveIntegerField default 1; no behaviour depended on it.
+- Risks: the migration drops a column, so the previous release cannot run against the migrated schema and the new release cannot create an org against the old one; deploy order is therefore part of the change (see Rollback). The column holds no data the platform reads, and a re-added column carries its default of 1. Two simultaneous issuance requests rely on a row lock that SQLite does not provide, so the race guard is only observable on Postgres. A key's limit is copied at issuance, so moving a licence to another plan afterwards does not move its limit (unchanged from today; FR-516 is not built). Rebase conflicts with `chore/strip-dead-seat-limit` in the same service and test files.
+- Rollback or recovery: Django reverses this RemoveField (it re-adds the column as NOT NULL with the Python default 1, about 12 ms on Postgres), and the migration test migrates backwards through it. Roll back with `manage.py migrate selahcue_accounts 0003` BEFORE starting the previous image. Deploy order is stop old instances, migrate (with `PGOPTIONS='-c lock_timeout=5000'`), start the new release; see the migration docstring and docs/ops/DEPLOYMENT.md section 6d. How deploys sequence `migrate` is unknown to the engineering team and is an owner question.
 
 ## Pause and escalation conditions
 
 - A conflict with `chore/strip-dead-seat-limit` that needs a judgement call: stop and ask the orchestrator.
 - Disk free below 15 GiB: stop.
-- Any need to change `settings.py`, `deployments.md` or `docs/ops/DEPLOYMENT.md`: stop, it belongs to another agent.
+- Any need to change `settings.py` or `deployments.md`: stop, they belong to another agent. (`docs/ops/DEPLOYMENT.md` gained section 6d in the round-1 follow-up, after that agent's PR #225 merged, at the coordinator's instruction.)
 - Any request to change the approved design: escalate to the orchestrator and the owner.
 
 ## Final evaluation
