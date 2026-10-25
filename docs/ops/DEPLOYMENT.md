@@ -208,12 +208,12 @@ Not GitHub secrets — environment variables on whatever host runs `implementati
 development-safe, which means **an unset production variable is usually the insecure choice**.
 
 Key names follow the **First Pavilion house convention** — the same ones yharah-logistics uses
-(`api/.env.sample` there). A full sample lives at `implementation/api/.env.sample`.
+(`api/.env.sample` there). A full sample lives at `implementation/api/.env.sample`; its `SECRET_KEY` is blank on purpose, so a copy of it boots only in `dev` (where blank means the dev key) and is refused everywhere else until you set a real one.
 
 | Variable | Default | Production |
 |----------|---------|-----------|
-| `ENVIRONMENT` | `dev` | `staging` / `prod`. Gates the mail backend, Sentry, and the `SECRET_KEY` requirement |
-| `SECRET_KEY` | dev-only fallback | **Required — the app refuses to boot when `ENVIRONMENT != dev`** |
+| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Unset means `dev`, and `dev` is the only mode in which the API starts on the public dev signing key (`selahcue-dev-only-insecure-key`, which is in this repository), with no error and whatever else you set. It also gates the mail backend and the `SECRET_KEY` check below |
+| `SECRET_KEY` | dev-only fallback | **Required, and not a public value. The app refuses to boot when `ENVIRONMENT != dev` and this is empty, equals the dev key, or equals the `replace-me-with-a-fresh-key` placeholder that earlier copies of `.env.sample` carried (letter case, whitespace, matched ASCII quotes and invisible format characters such as a BOM, zero-width space or joiner, or soft hyphen are ignored when comparing).** It is also the HMAC pepper for licence-key, device-token and account-session fingerprints: rotating it invalidates them all |
 | `DEBUG` | `0` | Leave `0` — see the warning below |
 | `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated) |
 | `SQL_ENGINE` | `…backends.sqlite3` | `django.db.backends.postgresql` — row-locking is required, see below |
@@ -229,23 +229,23 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Exact `https://host[:port]` origins (no `*`, no path), only if the browser `Origin` differs from the forwarded `Host`. A bad entry refuses to boot. See §6c |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` / `MAIL_PASSWORD` | mailhog on `:1025` in dev | **Required** to send email |
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
-| `SENTRY_DSN` | empty | Set in staging/prod only; never locally |
-| `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Comma-separated origins for the web client |
+| `SENTRY_DSN` | empty | Read into settings, but nothing consumes it yet (no Sentry SDK is wired), so setting it changes nothing today. Intended for staging/prod only, never locally |
+| `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Leave empty. It is read but **not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` | **Must be false.** See below |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
-
-> **`SQL_ENGINE` must be Postgres in production, not merely preferred.** The DEC-004 device
-> instance limit is enforced with `select_for_update`, which SQLite silently no-ops
-> (`has_select_for_update = False`). On SQLite two concurrent activations can both observe
-> `active_devices = 0` and exceed `device_limit`. The guard is not wrong — it simply has no
-> effect without a row-locking backend.
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
 | `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS` | 24 hours | Policy choice |
 | `ACCOUNT_PASSWORD_RESET_TTL_SECONDS` | 1 hour | Policy choice |
 | `ACCOUNT_LOGIN_LOCKOUT_THRESHOLD` | `5` | Policy choice |
 | `ACCOUNT_LOGIN_LOCKOUT_SECONDS` | `900` | Policy choice |
 | `ACCOUNT_MIN_PASSWORD_LENGTH` | `10` | Policy choice |
+
+> **`SQL_ENGINE` must be Postgres in production, not merely preferred.** The DEC-004 device
+> instance limit is enforced with `select_for_update`, which SQLite silently no-ops
+> (`has_select_for_update = False`). On SQLite two concurrent activations can both observe
+> `active_devices = 0` and exceed `device_limit`. The guard is not wrong — it simply has no
+> effect without a row-locking backend.
 
 Generate a secret key:
 
