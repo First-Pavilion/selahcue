@@ -4043,7 +4043,8 @@ OPTIONS:
                     never-expiring Operator credential for the LAN control server, and
                     stdout can be a terminal, a journal or a log file. Normally read it
                     from the owner-only endpoint file (`make remote` does).
-    --smoke         Launch, present one frame, then exit (used by CI).
+    --smoke         Launch, present one frame, then exit (used by CI). The SELAHCUE_SMOKE
+                    environment variable does the same.
     -h, --help      Print this help and exit.
 ";
 
@@ -4088,8 +4089,9 @@ impl TokenDisclosure {
 }
 
 /// Everything `run_server` does that reaches OUTSIDE this process — the LAN socket, the mDNS
-/// multicast, the outbound-interface probe behind the pairing QR, and the endpoint descriptor
-/// (a bearer token) in the shared OS temp dir. Production wires the real thing
+/// multicast, the outbound-interface probe behind the pairing QR, the endpoint descriptor
+/// (a bearer token) in the shared OS temp dir, and the startup banner on stdout (which can be a
+/// terminal, a journal or a log file). Production wires the real thing
 /// ([`ServerEnv::production`]); the startup-order test swaps each one for a hermetic stand-in so
 /// that `cargo test` can never bind the LAN, advertise on a real network, or overwrite the
 /// endpoint file of a live `make launch` host sitting in the same temp dir (PR #145 review).
@@ -4108,8 +4110,10 @@ struct ServerIo {
     endpoint_file: Option<std::path::PathBuf>,
     /// Where the "remote control ready" banner is written. Production: stdout.
     banner: Box<dyn std::io::Write + Send>,
-    /// Whether that banner may carry the live Operator token. Production: redacted unless a
-    /// debug build was started with [`PRINT_TOKEN_FLAG`].
+    /// Whether that banner may carry the live Operator token: [`TokenDisclosure::Redacted`]
+    /// (the default; the banner is never handed the token) or [`TokenDisclosure::Print`]
+    /// (a developer asked for it). Production derives it from the command line in
+    /// [`ServerEnv::production`]; a test sets it directly.
     token_disclosure: TokenDisclosure,
 }
 
@@ -4122,7 +4126,17 @@ struct ServerEnv {
 }
 
 impl ServerEnv {
-    fn production(token_disclosure: TokenDisclosure) -> Self {
+    /// The real thing, configured from this process's own command line. There is deliberately no
+    /// disclosure parameter: the decision is made here, from the arguments and the build profile,
+    /// so a caller cannot get it wrong (17tnw2b9aga).
+    fn production() -> Self {
+        Self::production_from(std::env::args())
+    }
+
+    /// [`ServerEnv::production`] against an explicit argument list, so a test can drive the
+    /// production wiring with any command line.
+    fn production_from(args: impl Iterator<Item = String>) -> Self {
+        let token_disclosure = TokenDisclosure::from_command_line(args);
         ServerEnv {
             warm: Box::new(selahcue_scripture::warm),
             io: ServerIo {
@@ -4141,8 +4155,7 @@ impl ServerEnv {
 /// runtime, driving the shared `controller`. If it can't start, the window still runs
 /// under local keyboard control.
 fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<RemoteShared>) {
-    let disclosure = TokenDisclosure::from_command_line(std::env::args());
-    start_remote_control_in(controller, remote, ServerEnv::production(disclosure));
+    start_remote_control_in(controller, remote, ServerEnv::production());
 }
 
 /// [`start_remote_control`] against an explicit [`ServerEnv`] — the body, split out so the
@@ -4261,6 +4274,9 @@ async fn run_server(
         TokenDisclosure::Print => Some(&token),
         TokenDisclosure::Redacted => None,
     };
+    // A banner that cannot be written (stdout closed or a broken pipe, e.g. the parent went away
+    // or the log is full) must not stop the control server from starting: the banner is only a
+    // convenience for whoever is watching, the endpoint file above is what clients use.
     let _ = write_connect_banner(
         &mut io.banner,
         local,
@@ -4276,31 +4292,17 @@ async fn run_server(
     Ok(())
 }
 
-/// Regression coverage for 17tnw2b1258: the scripture quote-match index must be warm BEFORE the
-/// LAN listener is bound, i.e. before the server can ever accept a remote connection.
-///
-/// Hermetic by construction (PR #145 review): the first cut called the real
-/// `start_remote_control`, which binds `0.0.0.0`, advertises mDNS on the real LAN and writes the
-/// shared `$TMPDIR/selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
-/// beside a live `make launch` host overwrote that host's endpoint with a dead port and token.
-/// These tests drive [`start_remote_control_in`] (the real thread, the real Tokio runtime and the
-/// real `run_server`) through [`ServerEnv`]'s seams: loopback bind, no mDNS, no LAN-IP probe, and
-/// an endpoint file in a private scratch directory that is removed afterwards.
+/// Helpers shared by the test modules that start the real host thread
+/// ([`remote_control_warmup_tests`], [`connect_banner_token_tests`]). A pure move out of the
+/// first of them (17tnw2b9aga): two copies of a 60-second poll loop would drift.
 #[cfg(test)]
-mod remote_control_warmup_tests {
-    use super::{
-        demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
-        ServerIo, SessionRegistry, Theme, TokenDisclosure,
-    };
-    use crate::endpoint::test_support::Scratch;
-    use crate::endpoint::{is_complete_descriptor, json_field};
-    use std::path::Path;
+mod host_test_support {
+    use super::{demo_plan, LiveController, RemoteShared, SessionRegistry, Theme};
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
-    use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
 
-    fn fresh_remote() -> Arc<RemoteShared> {
+    pub(super) fn fresh_remote() -> Arc<RemoteShared> {
         Arc::new(RemoteShared {
             registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
             lan: OnceLock::new(),
@@ -4308,7 +4310,7 @@ mod remote_control_warmup_tests {
         })
     }
 
-    fn fresh_controller() -> Arc<Mutex<LiveController>> {
+    pub(super) fn fresh_controller() -> Arc<Mutex<LiveController>> {
         Arc::new(Mutex::new(LiveController::new(
             demo_plan(),
             320,
@@ -4322,7 +4324,7 @@ mod remote_control_warmup_tests {
     /// sessions in one checkout (CLAUDE.md), so CPU contention is routine. Nothing below asserts
     /// on how LONG startup took — only on what order things happened in — so a long bound costs
     /// nothing when everything is healthy.
-    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+    pub(super) fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(60);
         while !cond() {
             assert!(
@@ -4332,6 +4334,30 @@ mod remote_control_warmup_tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+/// Regression coverage for 17tnw2b1258: the scripture quote-match index must be warm BEFORE the
+/// LAN listener is bound, i.e. before the server can ever accept a remote connection.
+///
+/// Hermetic by construction (PR #145 review): the first cut called the real
+/// `start_remote_control`, which binds `0.0.0.0`, advertises mDNS on the real LAN and writes the
+/// shared `$TMPDIR/selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
+/// beside a live `make launch` host overwrote that host's endpoint with a dead port and token.
+/// These tests drive [`start_remote_control_in`] (the real thread, the real Tokio runtime and the
+/// real `run_server`) through [`ServerEnv`]'s seams: loopback bind, no mDNS, no LAN-IP probe, and
+/// an endpoint file in a private scratch directory that is removed afterwards.
+#[cfg(test)]
+mod remote_control_warmup_tests {
+    use super::host_test_support::{fresh_controller, fresh_remote, wait_for};
+    use super::{
+        start_remote_control_in, BindFuture, RemoteShared, ServerEnv, ServerIo, TokenDisclosure,
+    };
+    use crate::endpoint::test_support::Scratch;
+    use crate::endpoint::{is_complete_descriptor, json_field};
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
 
     /// THE ordering contract, observed rather than inferred: the warm-up hook and the bind
     /// each log themselves, so the exact sequence is asserted. Independent of the process-global
@@ -4387,7 +4413,7 @@ mod remote_control_warmup_tests {
     /// `ingest_transcript`); the ordering test above is deliberately free of that dependency.
     #[test]
     fn the_production_warm_hook_builds_the_scripture_quote_index() {
-        (ServerEnv::production(TokenDisclosure::Redacted).warm)();
+        (ServerEnv::production().warm)();
 
         let started = Instant::now();
         selahcue_scripture::warm();
@@ -4774,46 +4800,45 @@ fn print_pairing_block(uri: &str, code: &str) {
 /// exactly what it wrote to its banner stream.
 #[cfg(test)]
 mod connect_banner_token_tests {
+    use super::host_test_support::{fresh_controller, fresh_remote, wait_for};
     use super::{
-        demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
-        ServerIo, SessionRegistry, Theme, TokenDisclosure, PRINT_TOKEN_FLAG, USAGE,
+        help_requested, start_remote_control_in, write_connect_banner, BindFuture, ServerEnv,
+        ServerIo, SessionToken, TokenDisclosure, PRINT_TOKEN_FLAG, USAGE,
     };
     use crate::endpoint::test_support::Scratch;
     use crate::endpoint::{is_complete_descriptor, json_field};
     use std::path::Path;
-    use std::sync::{Arc, Mutex, OnceLock};
-    use std::time::{Duration, Instant};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
-    use tokio::sync::Mutex as AsyncMutex;
 
-    /// A banner sink the test can read back.
+    /// A banner sink the test can read back. `flush()` marks the banner complete:
+    /// `write_connect_banner` flushes exactly once, as its last act, so waiting on that is a wait
+    /// for the WHOLE banner. (Waiting for a sentinel line instead raced with anything written after
+    /// it, and timed out after 60 s with no explanation if the banner was ever reworded.)
     #[derive(Clone, Default)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
+    struct Capture {
+        bytes: Arc<Mutex<Vec<u8>>>,
+        complete: Arc<AtomicBool>,
+    }
 
     impl std::io::Write for Capture {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().expect("capture").extend_from_slice(buf);
+            self.bytes.lock().expect("capture").extend_from_slice(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
+            self.complete.store(true, Ordering::SeqCst);
             Ok(())
         }
     }
 
     impl Capture {
         fn text(&self) -> String {
-            String::from_utf8_lossy(&self.0.lock().expect("capture")).into_owned()
+            String::from_utf8_lossy(&self.bytes.lock().expect("capture")).into_owned()
         }
-    }
-
-    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while !cond() {
-            assert!(
-                Instant::now() < deadline,
-                "timed out after 60s waiting for {what}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
+        fn is_complete(&self) -> bool {
+            self.complete.load(Ordering::SeqCst)
         }
     }
 
@@ -4837,31 +4862,18 @@ mod connect_banner_token_tests {
                 token_disclosure,
             },
         };
-        let remote = Arc::new(RemoteShared {
-            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
-            lan: OnceLock::new(),
-            active_code: Mutex::new(None),
-        });
-        let controller = Arc::new(Mutex::new(LiveController::new(
-            demo_plan(),
-            320,
-            180,
-            Theme::dark(),
-        )));
-        start_remote_control_in(controller, remote, env);
+        start_remote_control_in(fresh_controller(), fresh_remote(), env);
 
-        // The banner is the last thing written before the server starts accepting, and it is
-        // flushed as a whole; its final line is the "Quit:" hint.
-        wait_for("the connect banner to be written", || {
-            capture.text().contains("Quit:")
-        });
+        // The banner is the last thing written before the server starts accepting, and its last
+        // act is the flush that marks the capture complete.
+        wait_for("the connect banner to be flushed", || capture.is_complete());
         wait_for("the endpoint descriptor", || endpoint.exists());
         let descriptor = std::fs::read_to_string(&endpoint).expect("read descriptor");
         assert!(is_complete_descriptor(&descriptor), "{descriptor:?}");
         let token = json_field(&descriptor, "token")
             .expect("descriptor carries the token")
             .to_string();
-        (capture.text(), token, Path::new(&endpoint).to_path_buf())
+        (capture.text(), token, endpoint)
     }
 
     /// The headline: a NORMAL run never writes the live token to the banner stream.
@@ -4948,6 +4960,102 @@ mod connect_banner_token_tests {
         assert_eq!(launch(&[PRINT_TOKEN_FLAG]), expected);
     }
 
+    /// The banner must not CLAIM the token is in the endpoint file when no endpoint file was
+    /// written (the write failed): the operator and `make remote` would then find nothing, and the
+    /// banner would be pointing a developer at a file that does not exist.
+    #[test]
+    fn the_banner_only_points_at_the_endpoint_file_when_one_was_written() {
+        let banner = |token: Option<&SessionToken>, endpoint: Option<&Path>| {
+            let mut out = Vec::new();
+            write_connect_banner(
+                &mut out,
+                ([127, 0, 0, 1], 4242).into(),
+                "ab12",
+                "operator-shell",
+                token,
+                endpoint,
+            )
+            .expect("write to a Vec");
+            String::from_utf8(out).expect("utf-8 banner")
+        };
+        let written = Path::new("/scratch/selahcue-operator-endpoint.json");
+
+        let ok = banner(None, Some(written));
+        assert!(ok.contains("token: in the endpoint file (0600)"), "{ok}");
+        assert!(ok.contains("make remote CMD=next"), "{ok}");
+
+        let none_written = banner(None, None);
+        assert!(
+            !none_written.contains("in the endpoint file"),
+            "no endpoint file was written, so the banner must not point at one: {none_written}"
+        );
+        assert!(
+            none_written.contains("no endpoint file was written"),
+            "{none_written}"
+        );
+        assert!(none_written.contains(PRINT_TOKEN_FLAG), "{none_written}");
+        assert!(
+            !none_written.contains("make remote"),
+            "`make remote` reads the endpoint file, which does not exist: {none_written}"
+        );
+
+        let secret = SessionToken::new("0123456789abcdef0123456789abcdef-test-token");
+        let printed = banner(Some(&secret), None);
+        assert!(
+            printed.contains("operator-shell 0123456789abcdef"),
+            "{printed}"
+        );
+        assert!(!printed.contains("in the endpoint file"), "{printed}");
+    }
+
+    /// The production wiring, which every other test here bypasses by building a `ServerEnv` by
+    /// hand: hard-coding `Print` anywhere on the production path used to leave every test green
+    /// (Quinn, round 1). `production()` has no disclosure parameter, so it is derived from the
+    /// process's own arguments and the build profile; `production_from` is the same code with a
+    /// chosen command line.
+    #[test]
+    fn the_production_environment_is_redacted_unless_the_flag_is_given_to_a_debug_build() {
+        let from = |extra: &[&str]| {
+            ServerEnv::production_from(
+                std::iter::once("selahcue-output".to_string())
+                    .chain(extra.iter().map(|a| a.to_string())),
+            )
+            .io
+            .token_disclosure
+        };
+        assert_eq!(from(&[]), TokenDisclosure::Redacted);
+        assert_eq!(from(&["--smoke"]), TokenDisclosure::Redacted);
+        let expected = if cfg!(debug_assertions) {
+            TokenDisclosure::Print
+        } else {
+            TokenDisclosure::Redacted
+        };
+        assert_eq!(from(&[PRINT_TOKEN_FLAG]), expected);
+        // The no-argument entry point the host really calls: this test binary's own command line
+        // (cargo test options, never the flag) must come out redacted.
+        assert_eq!(
+            ServerEnv::production().io.token_disclosure,
+            TokenDisclosure::Redacted
+        );
+    }
+
+    #[test]
+    fn help_is_asked_for_by_either_spelling_and_by_nothing_else() {
+        let asked = |extra: &[&str]| {
+            help_requested(
+                std::iter::once("selahcue-output".to_string())
+                    .chain(extra.iter().map(|a| a.to_string())),
+            )
+        };
+        assert!(asked(&["--help"]));
+        assert!(asked(&["-h"]));
+        assert!(asked(&["--smoke", "--help"]));
+        assert!(!asked(&[]));
+        assert!(!asked(&["--smoke"]));
+        assert!(!asked(&[PRINT_TOKEN_FLAG]));
+        assert!(!asked(&["--helpful"]));
+    }
+
     /// The ticket asks that the flag's help says why it exists and why it is off by default.
     #[test]
     fn the_help_text_explains_the_developer_flag() {
@@ -4956,6 +5064,7 @@ mod connect_banner_token_tests {
         assert!(USAGE.contains("Operator"), "{USAGE}");
         assert!(USAGE.contains("release builds"), "{USAGE}");
         assert!(USAGE.contains("endpoint file"), "{USAGE}");
+        assert!(USAGE.contains("SELAHCUE_SMOKE"), "{USAGE}");
     }
 }
 
@@ -4986,9 +5095,19 @@ fn write_connect_banner(
     )?;
     writeln!(out, "  address : {addr}")?;
     writeln!(out, "  pin     : {pin_hex}")?;
+    // Say where the token is ONLY if that is true: a banner that points a developer at an endpoint
+    // file which was never written (the write failed) sends them hunting for nothing.
+    let token_note = match (token.is_some(), endpoint.is_some()) {
+        (false, true) => "token: in the endpoint file (0600)",
+        (true, true) => "token: in the endpoint file (0600), and printed below (--print-token)",
+        (true, false) => "token: printed below (--print-token); no endpoint file was written",
+        (false, false) => {
+            "token: not printed, and no endpoint file was written (debug builds: --print-token)"
+        }
+    };
     writeln!(
         out,
-        "  device  : {device}   role : Operator (host shell); token: in the endpoint file (0600)"
+        "  device  : {device}   role : Operator (host shell); {token_note}"
     )?;
     if let Some(path) = endpoint {
         writeln!(
@@ -5017,7 +5136,7 @@ fn write_connect_banner(
                 token.as_str()
             )?;
         }
-        None => {
+        None if endpoint.is_some() => {
             writeln!(
                 out,
                 "    make remote CMD=next   # reads the token from the endpoint file"
@@ -5025,6 +5144,17 @@ fn write_connect_banner(
             writeln!(
                 out,
                 "    (the token is never printed here; see `selahcue-output --help`)"
+            )?;
+        }
+        None => {
+            // No endpoint file, so `make remote` has nothing to read.
+            writeln!(
+                out,
+                "    (not available: no endpoint file was written, and the token is never printed"
+            )?;
+            writeln!(
+                out,
+                "     here; in a debug build, restart with --print-token. See `selahcue-output --help`)"
             )?;
         }
     }
@@ -5059,8 +5189,13 @@ fn write_connect_banner(
     out.flush()
 }
 
+/// Whether the command line asks for [`USAGE`].
+fn help_requested(mut args: impl Iterator<Item = String>) -> bool {
+    args.any(|a| a == "--help" || a == "-h")
+}
+
 fn main() {
-    if std::env::args().any(|a| a == "--help" || a == "-h") {
+    if help_requested(std::env::args()) {
         print!("{USAGE}");
         return;
     }
