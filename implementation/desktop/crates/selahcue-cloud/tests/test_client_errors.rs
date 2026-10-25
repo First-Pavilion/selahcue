@@ -382,8 +382,11 @@ fn error_request_id_is_never_read_whatever_its_shape() {
         assert!(body.contains(value), "premise: the value is in the body");
         for (who, err) in both_errors(401, &body) {
             let text = rendered(&err);
+            // Assert on strings that cannot collide with a closed-list reason: the value
+            // itself, the key prefix, and the `req_` prefix of a handle-shaped id. (The word
+            // "request" would collide with the `invalid_request_error` reason this body carries.)
             assert!(
-                !text.contains(value) && !text.contains("sk-proj-") && !text.contains("request"),
+                !text.contains(value) && !text.contains("sk-proj-") && !text.contains("req_"),
                 "{who}: error.request_id was read into the error: {text}"
             );
             // Positive control: the reason code beside it IS kept, so "absent" is not
@@ -822,17 +825,25 @@ fn terminal_body_nested(depth: usize) -> String {
 fn hostile_shapes_read_as_transient_and_a_malformed_terminal_body_is_not_terminal() {
     // Each of these is a 429 whose body a naive reader might take for terminal. None is: the
     // client reads `error.code` / `error.type` as exact, case-sensitive JSON strings in a
-    // well-formed object, and nothing else. (Each is also fed through the leak assertions.)
+    // well-formed object, and nothing else. The loop below asserts only "degraded" and
+    // "Transport" for each; the leak assertions for hostile bodies live in the sweep test above.
+    //
+    // Rows marked PANIC GUARD ONLY ("numeric code", "null code and type", "top-level null")
+    // contain no exhaustion string at all, so no mutation of the terminal decision reddens
+    // them: they only prove that an unexpected JSON type does not panic the reader. Do not
+    // read them as mutation-sensitive.
     let bom = char::from_u32(0xFEFF).unwrap();
     let bodies: Vec<(&str, String)> = vec![
         (
             "error is a string",
             r#"{"error":"insufficient_quota"}"#.to_string(),
         ),
+        // PANIC GUARD ONLY (no exhaustion string in it).
         (
             "numeric code",
             r#"{"error":{"code":402,"type":"requests"}}"#.to_string(),
         ),
+        // PANIC GUARD ONLY (no exhaustion string in it).
         (
             "null code and type",
             r#"{"error":{"code":null,"type":null}}"#.to_string(),
@@ -841,6 +852,9 @@ fn hostile_shapes_read_as_transient_and_a_malformed_terminal_body_is_not_termina
             "array-valued code",
             r#"{"error":{"code":["insufficient_quota"]}}"#.to_string(),
         ),
+        // KNOWN LIMITATION: this pins today's behaviour, not an ideal. Tolerating a leading BOM
+        // would be an improvement; revisit if the transport ever strips one. (Mutant N8, which
+        // strips it, turns this row red, so the row is mutation-sensitive in that direction.)
         (
             "BOM-prefixed terminal body (serde_json refuses a BOM)",
             format!("{bom}{}", fixtures::ERR_429_NO_CREDITS),
@@ -853,6 +867,10 @@ fn hostile_shapes_read_as_transient_and_a_malformed_terminal_body_is_not_termina
             "upper-case code",
             envelope("m", "x", "INSUFFICIENT_QUOTA", None, None),
         ),
+        // KNOWN LIMITATION: pins the vocabulary gap documented in `contract.rs` and on ticket
+        // 86akby3xu (the platform API speaks UPPER_SNAKE, this client's closed list is lower
+        // case). A `QUOTA_EXHAUSTED` on a 429 reads as transient today; revisit when the hosted
+        // envelope lands.
         (
             "platform-API style code (UPPER_SNAKE vocabulary)",
             envelope("m", "x", "QUOTA_EXHAUSTED", None, None),
@@ -874,6 +892,7 @@ fn hostile_shapes_read_as_transient_and_a_malformed_terminal_body_is_not_termina
             format!("[{}]", fixtures::ERR_429_NO_CREDITS),
         ),
         ("top-level string", r#""insufficient_quota""#.to_string()),
+        // PANIC GUARD ONLY (no exhaustion string in it).
         ("top-level null", "null".to_string()),
         (
             "the code only at the top level, not under error",

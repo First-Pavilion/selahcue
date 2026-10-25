@@ -22,7 +22,7 @@
 //! This is deliberately an **allowlist of fields and values**, not a redaction pass over text:
 //! a regex over arbitrary text can only remove the secrets someone thought to describe.
 //!
-//! **The parse is bounded.** A body longer than [`MAX_ERROR_BODY_PARSE_BYTES`] is not parsed
+//! **The parse is bounded.** A body longer than `MAX_ERROR_BODY_PARSE_BYTES` is not parsed
 //! at all (the empty view is returned), so a hostile or buggy peer cannot make an error path
 //! build a tree proportional to the transport's 4 MiB response cap. Real error envelopes are
 //! under 1 KiB. serde_json's own recursion limit (128 levels) applies to what is parsed: a body
@@ -33,7 +33,8 @@
 //! account is out of money (terminal, the operator must be told), a plain rate limit is a blip
 //! (retryable, the local draft should be served). `openai::map_error_status` (behind the
 //! `openai` feature) and [`crate::client::SelahCueCloudClient`] both call
-//! [`ErrorFields::is_terminal_exhaustion`]; neither keeps a copy of the codes.
+//! `ErrorFields::is_terminal_exhaustion` (crate-private, so not linked); neither keeps a copy
+//! of the codes.
 
 /// The largest error body that is parsed at all, in bytes. Real envelopes are well under 1 KiB;
 /// this mirrors `openai::MAX_PARSED_RESPONSE_BYTES` in spirit (refuse before building a tree)

@@ -904,6 +904,14 @@ fn extract_output_text(root: &serde_json::Value) -> Result<String, NoteError> {
 /// the degraded local draft instead of a dead end. Mapping both to `QuotaExceeded` — as
 /// a bare `402 | 429` match would — turns a two-second throttle into "your monthly quota
 /// is exhausted".
+///
+/// **The terminal decision is shared and bounded** (86akbzxjg). It is made by
+/// `provider_error::ErrorFields`, which the hosted client also uses, and that parse is capped at
+/// `provider_error::MAX_ERROR_BODY_PARSE_BYTES` (32 KiB). One consequence for this function: an
+/// OpenAI 429 body over that size that carries a terminal code now maps to
+/// [`NoteError::Transport`]; before 86akbzxjg the private parse here accepted bodies up to the
+/// transport's 4 MiB cap and would have returned [`NoteError::QuotaExceeded`]. Real OpenAI error
+/// bodies are under 1 KiB, so there is no practical impact. Behaviour is otherwise unchanged.
 pub fn map_error_status(status: u16, body: &str) -> NoteError {
     match status {
         401 | 403 => NoteError::NotConfigured,
