@@ -232,8 +232,9 @@ def test_untrusted_proxy_proto_warning_is_silent_in_dev_and_under_debug(settings
 
 # --- SECRET_KEY: a public value must never sign anything outside `dev` (17tnw2b9ab0) -------------
 # The dev key is in this repository, and it is the HMAC pepper for licence-key, device-token and
-# account-session fingerprints. The `replace-me-with-a-fresh-key` placeholder is in
-# implementation/api/.env.sample, which docs/ops/DEPLOYMENT.md tells operators to copy. Both are
+# account-session fingerprints. The `replace-me-with-a-fresh-key` placeholder is what
+# implementation/api/.env.sample used to carry, and that file is what `make up` copies to `.env`
+# (and what its own header tells people to copy), so copies of the old one are out there. Both are
 # public, so neither may be a deployed key, however it is spelled: quoted, re-cased, or carrying a
 # byte-order mark or a zero-width character from a copy-paste. The refusal is an import-time check
 # in settings.py, so the matrix below executes a FRESH copy of that file under a controlled
@@ -296,18 +297,22 @@ REFUSED_KEYS = [
     pytest.param(BOM + SAMPLE_PLACEHOLDER, id="the-placeholder-after-a-bom"),
 ]
 
-# One environment spelling that is deployed, one that is a near-miss of `dev`, and the empty string:
-# anything but exactly `dev` is treated as deployed.
-DEPLOYED_ENVIRONMENTS = ["prod", "staging", "Dev", ""]
+# The key matrix runs under `prod` only. Inside the `!= "dev"` branch of settings.py the environment
+# value feeds nothing but the message, so repeating all twenty keys per spelling would multiply the
+# cases (each one executes settings.py afresh) without being able to catch anything new. What the
+# environment CAN change is whether the branch is entered at all, so each spelling below gets the
+# two cases that exercise both refusals (no key, and a public key).
+DEPLOYED_ENVIRONMENTS = [
+    pytest.param("prod", id="prod"),
+    pytest.param("staging", id="staging"),
+    pytest.param("production", id="an-unlisted-spelling"),
+    pytest.param("Dev", id="a-near-miss-of-dev"),
+    pytest.param("", id="empty"),
+]
+OTHER_THAN_PROD = DEPLOYED_ENVIRONMENTS[1:]
 
 
-@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
-@pytest.mark.parametrize("secret_key", REFUSED_KEYS)
-def test_settings_refuse_outside_dev_without_a_real_secret_key(monkeypatch, environment, secret_key):
-    """Any ENVIRONMENT other than exactly `dev` is treated as deployed (so a typo or a different
-    spelling fails closed), and there the key must be neither missing nor a public value. The
-    message has to name SECRET_KEY and ENVIRONMENT, because the operator reading it needs the
-    variables to fix, and it must never contain what was configured."""
+def _assert_refused(monkeypatch, environment, secret_key):
     with pytest.raises(ImproperlyConfigured) as refusal:
         _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
     message = str(refusal.value)
@@ -320,26 +325,52 @@ def test_settings_refuse_outside_dev_without_a_real_secret_key(monkeypatch, envi
         assert secret_key.upper() not in message and secret_key.lower() not in message
 
 
+@pytest.mark.parametrize("secret_key", REFUSED_KEYS)
+def test_settings_refuse_in_prod_without_a_real_secret_key(monkeypatch, secret_key):
+    """In a deployed environment the key must be neither missing nor a public value, however the
+    value is spelled. The message has to name SECRET_KEY and ENVIRONMENT, because the operator
+    reading it needs the variables to fix, and it must never contain what was configured."""
+    _assert_refused(monkeypatch, "prod", secret_key)
+
+
+@pytest.mark.parametrize("environment", OTHER_THAN_PROD)
+@pytest.mark.parametrize(
+    "secret_key", [pytest.param(None, id="no-key"), pytest.param(DEV_SECRET_KEY, id="the-dev-key")]
+)
+def test_settings_treat_every_environment_but_exactly_dev_as_deployed(monkeypatch, environment, secret_key):
+    """Any ENVIRONMENT other than exactly `dev` is deployed, so a typo or a different spelling
+    fails closed instead of quietly running as dev. A guard written as `ENVIRONMENT == "prod"`
+    passes the `prod` cases above and fails these."""
+    _assert_refused(monkeypatch, environment, secret_key)
+
+
+# Obviously fake, on purpose: a realistic-looking random key in a source file is what a secret
+# scanner flags. The runtime-generated case is `test_a_generated_key_boots_outside_dev` below.
 REAL_KEYS = [
     pytest.param("x", id="a-one-character-key"),
     pytest.param("a-real-key-" + "x" * 40, id="a-long-plain-key"),
-    pytest.param(
-        "k7Qp-3vN_wZ9uXb2Lh0sTgYc4mRjE8aFdIoK5nVyP1qWzUt6BxCeHrJlMiA2SfDgO3kNvLbQ7pXwZ9uTy4mRj-E8a_Fd",
-        id="a-64-byte-urlsafe-key",
-    ),
+    pytest.param("fake-test-key-" + "0123456789abcdef" * 4, id="a-64-character-fake-key"),
     pytest.param(DEV_SECRET_KEY + "-but-longer", id="the-dev-key-with-a-suffix"),
     pytest.param("not-" + SAMPLE_PLACEHOLDER, id="the-placeholder-with-a-prefix"),
 ]
 
 
-@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
 @pytest.mark.parametrize("secret_key", REAL_KEYS)
-def test_settings_accept_a_real_secret_key_outside_dev(monkeypatch, environment, secret_key):
+def test_settings_accept_a_real_secret_key_in_prod(monkeypatch, secret_key):
     """The positive control for the matrix above: it stops the public values, not deployment, and
     not short keys (other suites deliberately boot prod with SECRET_KEY='x'). Without this, a
     guard that refused everything outside dev would pass every case there."""
-    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
+    module = _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=secret_key)
     assert module.SECRET_KEY == secret_key
+    # The comparison copy of the key (lower-cased) must not outlive the check as a module global.
+    assert not [name for name in vars(module) if "normalised" in name and name != "_normalised_secret"]
+    assert not [value for name, value in vars(module).items() if value == secret_key.casefold() and name != "SECRET_KEY"]
+
+
+@pytest.mark.parametrize("environment", OTHER_THAN_PROD)
+def test_settings_accept_a_real_secret_key_in_every_deployed_spelling(monkeypatch, environment):
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-real-key-" + "x" * 40)
+    assert module.SECRET_KEY == "a-real-key-" + "x" * 40
 
 
 def test_a_generated_key_boots_outside_dev(monkeypatch):

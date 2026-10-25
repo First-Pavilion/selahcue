@@ -12,7 +12,10 @@ Not a test module (no `test_` prefix, nothing collected). pytest puts this direc
 WHAT IT FINDS. Every `os.getenv`, `os.environ.get`, `os.environ.pop` and `os.environ[...]` read
 with a literal name, plus any helper that forwards its own parameter(s) into one (`env_bool`,
 `env_list`, `_socket_timeout_seconds`, `_csrf_trusted_origins` today). Helpers are DISCOVERED, not
-listed, so a new helper cannot hide a read. A read whose name cannot be determined (a computed
+listed, so a new helper cannot hide a read: its calls are read whether written `helper("X")`,
+`module.helper("X")` or `self.helper("X")`, and a helper's name used any other way (assigned to
+another name, passed to `map`, stored in a dict) is a failure, because the calls through that
+other name cannot be followed. A read whose name cannot be determined (a computed
 name, `dict(os.environ)`, `getattr(os, "getenv")`, `os.getenv(*args)`, a call with no name at all)
 RAISES `UnresolvableRead`: skipping it would let a variable hide, and a check that skips what it
 cannot read is vacuous.
@@ -23,6 +26,7 @@ if one ever reads the environment.
 """
 
 import ast
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -191,6 +195,48 @@ def _call_argument(call: ast.Call, index: int, parameter: str) -> ast.AST | None
     return None
 
 
+def _is_method(func, parents: dict[int, ast.AST]) -> bool:
+    """A function defined directly in a class body and not a staticmethod: its first parameter is
+    the receiver, which a call written `obj.method(...)` does not pass."""
+    if not isinstance(parents.get(id(func)), ast.ClassDef) or not _parameters(func):
+        return False
+    return not any(isinstance(d, ast.Name) and d.id == "staticmethod" for d in func.decorator_list)
+
+
+def _callee_name(call: ast.Call) -> tuple[str | None, bool]:
+    """(name, via_attribute) of what a call invokes: `f(...)` is ("f", False), `x.f(...)` is
+    ("f", True), anything else (a call of a call, a subscript) is (None, False)."""
+    if isinstance(call.func, ast.Name):
+        return call.func.id, False
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr, True
+    return None, False
+
+
+def _refuse_indirect_helper_use(trees, parents: dict[int, ast.AST], helper_names) -> None:
+    """A discovered helper's name may appear only as the callee of a call (or in its own `def`).
+    Assigned to another name, passed to `map`, or stored in a dict, it can reach the environment
+    through a name this module cannot follow, so it is a failure, like `f = os.getenv`."""
+    for label, tree in trees.items():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                name = node.id
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                name = node.attr
+            else:
+                continue
+            if name not in helper_names:
+                continue
+            parent = parents.get(id(node))
+            if isinstance(parent, ast.Call) and parent.func is node:
+                continue
+            raise UnresolvableRead(
+                f"{label}:{node.lineno}: `{name}` forwards a parameter to an environment read, but it "
+                f"is used other than as a direct call ({ast.unparse(parent) if parent is not None else name!r}); "
+                "call it directly with a literal name so the deployment docs can be checked"
+            )
+
+
 def env_reads(sources: dict[str, str]) -> set[Read]:
     """Every environment variable read by `sources` ({label: python source}), helpers included.
 
@@ -206,20 +252,27 @@ def env_reads(sources: dict[str, str]) -> set[Read]:
     aliases = _aliases(trees.values())
     _refuse_indirect_access(trees, parents, aliases)
 
-    # helper function name -> the set of (index, parameter) that end up as environment names. A SET,
-    # because one helper can forward more than one parameter (`def both(a, b)`); it only ever
-    # grows, so the fixpoint below terminates (a single stored entry that two reads kept
+    # helper function name -> the set of (index, parameter, is_method) that end up as environment
+    # names. A SET, because one helper can forward more than one parameter (`def both(a, b)`); it
+    # only ever grows, so the fixpoint below terminates (a single stored entry that two reads kept
     # overwriting made it loop forever).
-    helpers: dict[str, set[tuple[int, str]]] = {}
+    helpers: dict[str, set[tuple[int, str, bool]]] = {}
 
     def name_args_at(node: ast.AST) -> list:
         """Every expression at `node` that is used as an environment variable name."""
         direct = _read_name_arg(node, aliases)
         if direct is not None:
             return [direct]
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            entries = helpers.get(node.func.id, ())
-            return [arg for entry in sorted(entries) if (arg := _call_argument(node, *entry)) is not None]
+        if isinstance(node, ast.Call):
+            callee, via_attribute = _callee_name(node)
+            found = []
+            for index, parameter, is_method in sorted(helpers.get(callee, ())):
+                # `obj.method("X")` does not pass `self`, so the parameter is one place earlier.
+                shift = 1 if (is_method and via_attribute) else 0
+                arg = _call_argument(node, index - shift, parameter)
+                if arg is not None:
+                    found.append(arg)
+            return found
         return []
 
     def forwarded_parameter(name_arg, node: ast.AST):
@@ -239,11 +292,13 @@ def env_reads(sources: dict[str, str]) -> set[Read]:
                     if found is None:
                         continue
                     func, parameter = found
-                    entry = (_parameters(func).index(parameter), parameter)
+                    entry = (_parameters(func).index(parameter), parameter, _is_method(func, parents))
                     entries = helpers.setdefault(func.name, set())
                     if entry not in entries:
                         entries.add(entry)
                         changed = True
+
+    _refuse_indirect_helper_use(trees, parents, set(helpers))
 
     reads: set[Read] = set()
     for label, tree in trees.items():
@@ -279,7 +334,11 @@ def api_env_names() -> set[str]:
     return {read.name for read in env_reads(api_source_files())} - ENTRY_POINT_PLUMBING
 
 
-def settings_env_names() -> set[str]:
-    """Every variable `selahcue_api/settings.py` reads: what a test of settings.py must not inherit."""
-    sources = {SETTINGS_LABEL: api_source_files()[SETTINGS_LABEL]}
-    return {read.name for read in env_reads(sources)} - ENTRY_POINT_PLUMBING
+@functools.cache
+def settings_env_names() -> frozenset[str]:
+    """Every variable `selahcue_api/settings.py` reads: what a test of settings.py must not inherit.
+
+    Cached, and reads only settings.py: the guard tests call this once per case, and parsing every
+    API file each time was most of what each case cost."""
+    text = (API_ROOT / SETTINGS_LABEL).read_text(encoding="utf-8")
+    return frozenset({read.name for read in env_reads({SETTINGS_LABEL: text})} - ENTRY_POINT_PLUMBING)

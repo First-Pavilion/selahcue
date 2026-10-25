@@ -199,7 +199,25 @@ def ops_mentions() -> list[Mention]:
     return doc_mentions(_read(DEPLOYMENT_OPS_MD), OPS_API_SCOPE)
 
 
-SEPARATOR_ROW = re.compile(r"\|?[\s:|\-]*-{3}[\s:|\-]*\|?")
+DELIMITER_CELL = re.compile(r"\s*:?-+:?\s*")
+UNESCAPED_PIPE = re.compile(r"(?<!\\)\|")
+
+
+def _table_cells(line: str) -> list[str]:
+    """The cells of one table row: leading and trailing pipe dropped, split on unescaped pipes."""
+    row = line.strip()
+    row = row[1:] if row.startswith("|") else row
+    row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+    return UNESCAPED_PIPE.split(row)
+
+
+def _is_delimiter_row(line: str, header: str) -> bool:
+    """GitHub renders a table only when the second line is a delimiter row (every cell `-`s with
+    optional `:` alignment, ONE hyphen or more) with as many cells as the header."""
+    cells = _table_cells(line)
+    return len(cells) == len(_table_cells(header)) and all(DELIMITER_CELL.fullmatch(c) for c in cells)
+
+
 
 
 def table_problems(text: str, in_scope) -> list[str]:
@@ -217,11 +235,11 @@ def table_problems(text: str, in_scope) -> list[str]:
     block: list[tuple[int, str]] = []
 
     def close(block):
-        if block and not (len(block) >= 2 and SEPARATOR_ROW.fullmatch(block[1][1].strip())):
+        if block and not (len(block) >= 2 and _is_delimiter_row(block[1][1], block[0][1])):
             first = block[0][0]
             problems.append(
                 f"line {first}: `{block[0][1].strip()[:60]}` starts a block of table rows with no "
-                "header and separator above it (a blank line or quoted text inside the table?)"
+                "header and matching delimiter row above it (a blank line or quoted text inside the table, or a header and delimiter of different widths?)"
             )
 
     for number, line in enumerate(text.splitlines(), start=1):
@@ -329,6 +347,14 @@ NAIVE_READ = re.compile(
 )
 
 
+def naive_read_names(source: str) -> set[str]:
+    """Names the naive search finds in `source`, ignoring whole-line comments: a comment that
+    mentions `os.getenv("OLD")` is not a read, and counting it would fail this check with a
+    message about the extractor when the extractor is right."""
+    code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+    return set(NAIVE_READ.findall(code))
+
+
 def test_the_extractor_sees_the_real_settings_file():
     """Canaries: the variables below are read by settings.py today. If this fails the extractor
     is broken (or one of them was renamed, in which case update the docs and this list)."""
@@ -336,9 +362,7 @@ def test_the_extractor_sees_the_real_settings_file():
     missing = API_CANARIES - names
     assert not missing, f"the extractor did not find {sorted(missing)} in the API source"
     naive = {
-        name
-        for source in api_source_files().values()
-        for name in NAIVE_READ.findall(source)
+        name for source in api_source_files().values() for name in naive_read_names(source)
     } - ENTRY_POINT_PLUMBING
     assert naive >= API_CANARIES, "the naive search is blind too: this check no longer checks anything"
     assert naive <= names, f"the extractor missed variables a plain text search finds: {sorted(naive - names)}"
@@ -645,6 +669,64 @@ def test_extractor_refuses_a_read_with_no_findable_name(source):
         _names(source)
 
 
+HELPER_PRELUDE = """
+import os
+import util
+def env_bool(name, default):
+    return os.getenv(name) is not None
+class Config:
+    def rd(self, name):
+        return os.getenv(name)
+    @staticmethod
+    def sd(name):
+        return os.getenv(name)
+"""
+
+
+def test_extractor_finds_helper_calls_that_are_not_plain_names():
+    """A helper is discovered by its definition, so every way of CALLING it has to be read too:
+    `util.env_bool("X")`, `self.rd("X")` (the call omits `self`), `Config.sd("X")`. A call site
+    that returned no name and no error would let a variable hide behind a helper."""
+    source = HELPER_PRELUDE + """
+class Loader:
+    def load(self, config):
+        return config.rd("METHOD_CALLED"), Config.sd("STATIC_CALLED")
+x = util.env_bool("ATTR_CALLED", False)
+y = util.env_bool(name="ATTR_KEYWORD", default=True)
+"""
+    assert _names(source) == {"METHOD_CALLED", "STATIC_CALLED", "ATTR_CALLED", "ATTR_KEYWORD"}
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        pytest.param("flag = env_bool\nflag('ALIASED_HELPER', False)\n", id="aliased-by-assignment"),
+        pytest.param("values = list(map(env_bool, ['A_ONE', 'B_TWO']))\n", id="passed-as-a-callback"),
+        pytest.param("table = {'flag': env_bool}\n", id="stored-in-a-dict"),
+        pytest.param("flag = util.env_bool\nflag('ALIASED_ATTRIBUTE', False)\n", id="attribute-aliased"),
+        pytest.param("reader = Config().rd\nreader('BOUND_METHOD')\n", id="bound-method-aliased"),
+        pytest.param("values = list(map(Config.sd, ['A_ONE']))\n", id="static-method-as-callback"),
+    ],
+)
+def test_extractor_refuses_a_helper_used_other_than_as_a_direct_call(use):
+    """The same rule as for `getenv`: a discovered helper that appears anywhere other than as the
+    callee of a call could be reaching the environment through a name this module cannot follow,
+    so it is a failure, not a skip."""
+    with pytest.raises(UnresolvableRead):
+        _names(HELPER_PRELUDE + use)
+
+
+def test_extractor_accepts_a_helper_that_is_only_defined_and_called_directly():
+    """The negative control for the refusal above: definitions, direct calls and recursion are not
+    'other uses'."""
+    source = HELPER_PRELUDE + """
+def retry(name, tries):
+    return retry(name, tries - 1) if tries else env_bool(name, False)
+z = retry("RECURSIVE_ONE", 3)
+"""
+    assert _names(source) == {"RECURSIVE_ONE"}
+
+
 # =================================== the doc parser itself, on known documents ===================================
 
 
@@ -697,3 +779,29 @@ def test_table_check_accepts_a_proper_table_and_flags_a_split_one():
 
     out_of_scope = "## Other\n\n| `ONE` | x |\n"
     assert table_problems(out_of_scope, _scope_matching(r"S")) == []
+
+
+@pytest.mark.parametrize(
+    "separator", ["|---|---|", "|--|--|", "|-|-|", "|:--|--:|", "| :-: | --- |", "|:-|-:|"]
+)
+def test_table_check_accepts_every_separator_row_github_renders(separator):
+    text = f"## S\n\n| A | B |\n{separator}\n| `ONE` | x |\n"
+    assert table_problems(text, _scope_matching(r"S")) == []
+
+
+def test_table_check_flags_a_header_and_separator_with_different_widths():
+    """GitHub does not render a table whose header and delimiter rows differ in cell count."""
+    wider = "## S\n\n| A | B | C |\n|---|---|\n| `ONE` | x |\n"
+    assert len(table_problems(wider, _scope_matching(r"S"))) == 1
+    narrower = "## S\n\n| A | B |\n|---|---|---|\n| `ONE` | x |\n"
+    assert len(table_problems(narrower, _scope_matching(r"S"))) == 1
+
+
+def test_table_check_flags_a_second_row_that_is_not_a_separator():
+    text = "## S\n\n| A | B |\n| `ONE` | x |\n| `TWO` | y |\n"
+    assert len(table_problems(text, _scope_matching(r"S"))) == 1
+
+
+def test_the_naive_search_ignores_comment_lines():
+    source = '# was os.getenv("OLD_NAME")\n    # env_bool("ALSO_OLD", False)\nx = os.getenv("NEW_NAME")\n'
+    assert naive_read_names(source) == {"NEW_NAME"}
