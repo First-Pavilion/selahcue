@@ -24,6 +24,7 @@ use selahcue_core::deck_ref::{
     export_deck_link, import_deck_link, DeckLinkMatch, DeckUid, LocalDeck, PortableDeckLink,
 };
 use selahcue_core::plan::ItemContent;
+use selahcue_data::deck_repo::MAX_DECK_NUMBER;
 use selahcue_data::{deck_repo, Database};
 use selahcue_present::{
     render_authored_slide, DeckId, DeckTrash, FrameBuffer, SlideDeck, SlideId, Theme,
@@ -124,6 +125,9 @@ pub enum AdoptError {
     /// was offered and the moment it was committed. Refused rather than silently adopted as a new
     /// deck, because "replace *that* one" and "add a new one" are different user intents.
     UnknownTarget,
+    /// The deck would have needed a new number and the database would not record one
+    /// ([`NumberNotRecorded`]); nothing was added.
+    NumberNotRecorded,
 }
 
 impl std::fmt::Display for AdoptError {
@@ -134,6 +138,9 @@ impl std::fmt::Display for AdoptError {
                 "that presentation is on the audience output — it can't be replaced right now"
             }
             AdoptError::UnknownTarget => "that presentation is no longer in the library",
+            AdoptError::NumberNotRecorded => {
+                "the presentation database did not accept a new presentation number"
+            }
         };
         f.write_str(s)
     }
@@ -157,6 +164,29 @@ impl MediaKeepers {
         self.saved > 0 || self.trashed > 0
     }
 }
+
+/// A new deck number could not be recorded durably, so none was issued and nothing was created.
+///
+/// A number is written to the deck database BEFORE it is handed out (17tnw2b9arx): plans are stored
+/// by the host in a different file, so a deck that exists only in memory (its row failed to write)
+/// can still be linked from a plan that does save, and a number issued without a durable record
+/// would be handed to a different deck after the next restart. When the database will not take the
+/// record (disk full, locked past the busy timeout, a damaged mark, or the numbers are used up) the
+/// honest answer is "no new presentation", not a number that may later point at the wrong one.
+/// Only a library WITH a database can refuse: the in-memory fallback has nothing to record to and
+/// already reports `is_persistent() == false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NumberNotRecorded;
+
+impl std::fmt::Display for NumberNotRecorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "the presentation database did not accept a new presentation number, so nothing was created",
+        )
+    }
+}
+
+impl std::error::Error for NumberNotRecorded {}
 
 /// A source of 128 random bits for a new deck identity, or `None` if the platform has none to give.
 ///
@@ -194,12 +224,14 @@ pub struct DeckLibrary {
     db: Option<Database>,
     /// The saved decks — each with a unique, non-zero [`DeckId`] and a unique `name`.
     decks: Vec<SlideDeck>,
-    /// Monotonic library-level deck-id counter: the next number to issue. Never reused, across
-    /// restarts too (17tnw2b9arx): it is seeded at load from the larger of the highest surviving
-    /// deck and the PERSISTED high-water mark (`deck_repo::high_water`), and every deck write
-    /// raises that mark in the same transaction, so a number whose deck was deleted (and whose
-    /// undo-trash entry died with the process) is still never handed out again. Self-heals past
-    /// loaded ids.
+    /// Monotonic library-level deck-id counter: a LOWER BOUND for the next number to issue. Never
+    /// reused, across restarts too (17tnw2b9arx): it is seeded at load from the larger of the
+    /// highest surviving deck and the PERSISTED high-water mark (`deck_repo::high_water`), but it is
+    /// only a hint. The authority is the database: every number is issued by
+    /// `deck_repo::issue_number`, which records it durably BEFORE it is handed out, so a number whose
+    /// deck was deleted (and whose undo-trash entry died with the process), or whose deck row failed
+    /// to write, is still never handed out again, even if this counter is behind or the mark could
+    /// not be read at load. Self-heals past loaded ids.
     next_id: u64,
     /// Recently deleted decks, retained so a delete can be undone with its REAL content.
     ///
@@ -250,11 +282,25 @@ impl DeckLibrary {
             }
         }
         // The highest deck number ever recorded as issued on this database (17tnw2b9arx). A store
-        // from a build that predates the mark has none: it reads as 0 and is raised below.
-        let issued = db
-            .as_ref()
-            .and_then(|db| deck_repo::high_water(db).ok())
-            .unwrap_or(0);
+        // from a build that predates the mark has no row: that reads as 0 and is raised below. A
+        // mark that cannot be READ is retried once; if it still cannot, this load must not pretend it
+        // is 0 and say nothing. It is harmless to the numbering (the counter is only a lower bound;
+        // `deck_repo::issue_number` checks the stored value on every new number and REFUSES while it
+        // is unreadable) but the operator-facing consequence, "new presentations are refused", is
+        // logged here so it can be traced.
+        let issued = match &db {
+            Some(db) => match read_mark(db) {
+                Some(mark) => mark,
+                None => {
+                    eprintln!(
+                        "SelahCue: the presentation number record could not be read; creating \
+                         new presentations will be refused until it can be."
+                    );
+                    0
+                }
+            },
+            None => 0,
+        };
         let mut lib = DeckLibrary {
             db,
             decks,
@@ -263,7 +309,7 @@ impl DeckLibrary {
             entropy,
         };
         let stats = lib.heal(&row_keys, issued);
-        lib.record_high_water();
+        lib.record_high_water(stats.failed > 0);
         (lib, stats)
     }
 
@@ -285,11 +331,7 @@ impl DeckLibrary {
         use std::collections::HashSet;
         let mut stats = BackfillStats::default();
         self.next_id = self
-            .decks
-            .iter()
-            .map(|d| d.id().0)
-            .max()
-            .unwrap_or(0)
+            .highest_deck_number()
             .max(issued)
             .saturating_add(1)
             .max(1);
@@ -299,12 +341,21 @@ impl DeckLibrary {
         let mut need_id: Vec<usize> = Vec::new();
         for (i, d) in self.decks.iter().enumerate() {
             let id = d.id().0;
-            if id == 0 || !seen_ids.insert(id) {
+            // A number above the ceiling is not trusted (the webview's JSON numbers would alias it
+            // with its neighbours): it is renumbered like a zero or duplicate one, and never raises
+            // the mark.
+            if id == 0 || id > MAX_DECK_NUMBER || !seen_ids.insert(id) {
                 need_id.push(i);
             }
         }
         for i in need_id {
-            let id = self.mint_id();
+            // Recorded durably when the database takes it; if it will not, the deck still gets a
+            // number for this session (a repaired id is not written back until the deck is next
+            // saved, and the next load repairs it again).
+            let id = match self.issue_id() {
+                Ok(id) => id,
+                Err(NumberNotRecorded) => self.mint_id(),
+            };
             self.decks[i].set_id(id);
         }
         // Pass 2 — names: reserve every distinct non-empty name in order; anything empty or duplicate
@@ -368,23 +419,42 @@ impl DeckLibrary {
         stats
     }
 
+    /// The highest deck number any saved deck holds that is a valid number (non-zero, within
+    /// [`MAX_DECK_NUMBER`]); `0` when there is none.
+    fn highest_deck_number(&self) -> u64 {
+        self.decks
+            .iter()
+            .map(|d| d.id().0)
+            .filter(|id| *id <= MAX_DECK_NUMBER)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Make the persisted high-water mark cover the highest number a deck here holds: what lets a
     /// store written before the mark existed start recording from its first load, and what covers
     /// ids the self-heal above just minted. Only ever RAISES it (`deck_repo` takes `MAX` and the
     /// table refuses a lowering UPDATE), so a mark that is ahead of every surviving deck -- the
     /// whole point of it -- is left exactly as it is. Best-effort like every write here: on a
-    /// failure the in-memory counter still holds for this session and the next load retries.
-    fn record_high_water(&self) {
+    /// failure the next load retries (new numbers do not depend on it: `issue_number` reconciles).
+    ///
+    /// Skipped when the identity backfill gave up on a failed write (`backfill_failed`): the database
+    /// is locked or read-only, and a second write would wait out the busy timeout again. Also skipped
+    /// when the mark cannot be read -- a write to a mark that cannot be read is a guess.
+    fn record_high_water(&self, backfill_failed: bool) {
         let Some(db) = &self.db else {
             return;
         };
-        let highest = self.decks.iter().map(|d| d.id().0).max().unwrap_or(0);
-        let behind = match deck_repo::high_water(db) {
-            Ok(mark) => mark < highest,
-            Err(_) => true,
-        };
-        if highest > 0 && behind {
-            let _ = deck_repo::raise_high_water(db, highest);
+        if backfill_failed {
+            return;
+        }
+        let highest = self.highest_deck_number();
+        if highest == 0 {
+            return;
+        }
+        if let Some(mark) = read_mark(db) {
+            if mark < highest {
+                let _ = deck_repo::raise_high_water(db, highest);
+            }
         }
     }
 
@@ -462,20 +532,43 @@ impl DeckLibrary {
         import_deck_link(link, |uid| self.find_by_uid(uid))
     }
 
-    /// Mint a fresh library deck id (monotonic, never reused -- across restarts too, because
-    /// `next_id` starts past the persisted high-water mark, 17tnw2b9arx). **Self-healing** (mirrors
-    /// `SlideDeck::mint_id`): it advances `next_id` past every existing deck id before minting, so a
-    /// deck adopted with a non-zero id, or a stale `next_id`, can never make a mint return a live id
-    /// (which would make `get`/`delete`/`store` target the wrong deck). Saturating — never panics
-    /// (an overflow at `u64::MAX` is unreachable under memory bounds; a crafted `u64::MAX` blob is
-    /// the one boundary where two ids could tie, harmless to persistence which is name-keyed).
-    fn mint_id(&mut self) -> DeckId {
-        if let Some(highest) = self.decks.iter().map(|d| d.id().0).max() {
-            self.next_id = self.next_id.max(highest.saturating_add(1));
+    /// The lowest number the counter may hand out next: past `next_id` AND past every valid number
+    /// a deck here holds (so a deck adopted with a non-zero number, or a stale `next_id`, can never
+    /// make an issue return a live number, which would make `get`/`delete`/`store` target the wrong
+    /// deck). Saturating, never panics.
+    fn candidate_id(&self) -> u64 {
+        self.next_id
+            .max(self.highest_deck_number().saturating_add(1))
+            .max(1)
+    }
+
+    /// Issue a fresh library deck number (monotonic, never reused -- across restarts too, and even
+    /// when the deck that gets it fails to write: 17tnw2b9arx). The number is recorded in the deck
+    /// database BEFORE it is returned (`deck_repo::issue_number`: one atomic statement that also keeps
+    /// two processes on one file from being issued the same number). If the database will not record
+    /// it (or the numbers are used up) no number is issued, `next_id` does not move and the caller
+    /// must not create anything. A library with no database (the in-memory fallback) has nothing to
+    /// record to and issues from the counter alone, bounded by [`MAX_DECK_NUMBER`].
+    fn issue_id(&mut self) -> Result<DeckId, NumberNotRecorded> {
+        let at_least = self.candidate_id();
+        if at_least > MAX_DECK_NUMBER {
+            return Err(NumberNotRecorded);
         }
-        let id = DeckId(self.next_id);
-        self.next_id = self.next_id.saturating_add(1);
-        id
+        let issued = match &self.db {
+            Some(db) => deck_repo::issue_number(db, at_least).map_err(|_| NumberNotRecorded)?,
+            None => at_least,
+        };
+        self.next_id = issued.saturating_add(1);
+        Ok(DeckId(issued))
+    }
+
+    /// The counter's next number WITHOUT recording it anywhere: for the load-time repair of a deck
+    /// whose number was zero, duplicated or out of range, when the database would not record one (see
+    /// [`issue_id`](Self::issue_id)). Self-healing like it, saturating, never panics.
+    fn mint_id(&mut self) -> DeckId {
+        let id = self.candidate_id();
+        self.next_id = id.saturating_add(1);
+        DeckId(id)
     }
 
     /// The Library list — decks ordered by name (matches `deck_repo::load_all`'s deterministic order
@@ -518,7 +611,11 @@ impl DeckLibrary {
 
     /// Create a new **blank** deck (one empty slide, per the design's "Blank deck") with a unique id
     /// and a unique name, persist it, and return it (the caller opens it in the editor).
-    pub fn create(&mut self, name: &str) -> SlideDeck {
+    ///
+    /// `Err(NumberNotRecorded)` when the database would not record the deck's number: nothing was
+    /// created (see [`NumberNotRecorded`]). Production callers use this; [`create`](Self::create) is
+    /// the same call for tests that have a healthy database and want a deck back.
+    pub fn try_create(&mut self, name: &str) -> Result<SlideDeck, NumberNotRecorded> {
         let base = if name.trim().is_empty() {
             "Untitled presentation"
         } else {
@@ -526,13 +623,21 @@ impl DeckLibrary {
         };
         let unique = uniquify(base, &self.name_set());
         let mut deck = SlideDeck::new(unique);
-        let id = self.mint_id();
+        let id = self.issue_id()?;
         deck.set_id(id);
         deck.set_uid(self.mint_uid());
         deck.add_slide(); // "One empty slide, ready to edit"
         self.persist_one(&deck);
         self.decks.push(deck.clone());
-        deck
+        Ok(deck)
+    }
+
+    /// [`try_create`](Self::try_create) for tests, where the database is healthy: panics on a refusal.
+    /// Compiled in tests only, so a production caller must handle the refusal.
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub fn create(&mut self, name: &str) -> SlideDeck {
+        self.try_create(name).unwrap()
     }
 
     /// Adopt an EXISTING deck (e.g. the startup demo deck) into the library: give it a fresh id if
@@ -550,8 +655,18 @@ impl DeckLibrary {
     /// belongs to a presentation at another church, and honouring it would let that deck answer
     /// the plan links meant for the real one. `adopt_trusted_identity` (compiled in tests only,
     /// until an ingress records its trust decision) is the one path that keeps it.
-    pub fn adopt(&mut self, deck: SlideDeck) -> SlideDeck {
+    ///
+    /// `Err(NumberNotRecorded)` when the deck needed a new number and the database would not record
+    /// one: nothing was added.
+    pub fn try_adopt(&mut self, deck: SlideDeck) -> Result<SlideDeck, NumberNotRecorded> {
         self.adopt_keep_both(deck, false)
+    }
+
+    /// [`try_adopt`](Self::try_adopt) for tests with a healthy database; compiled in tests only.
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    pub fn adopt(&mut self, deck: SlideDeck) -> SlideDeck {
+        self.try_adopt(deck).unwrap()
     }
 
     /// [`adopt`](Self::adopt), but a valid incoming uid that no deck here holds is KEPT, so the
@@ -568,17 +683,39 @@ impl DeckLibrary {
     /// fails to compile, so adding one forces the decision through review; lift the gate in the
     /// change that records it.
     #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
     pub fn adopt_trusted_identity(&mut self, deck: SlideDeck) -> SlideDeck {
-        self.adopt_keep_both(deck, true)
+        self.adopt_keep_both(deck, true).unwrap()
     }
 
     /// The one implementation of "add this deck beside whatever is already here": a fresh id if the
     /// deck's own is unassigned or already taken, a `(n)`-suffixed name if its own is taken, persist,
     /// return. Shared verbatim by [`adopt`](Self::adopt), its trusted twin and the `KeepBoth` arm of
     /// [`adopt_with_policy`](Self::adopt_with_policy) (which never trusts: `keep_free_uid` false).
-    fn adopt_keep_both(&mut self, mut deck: SlideDeck, keep_free_uid: bool) -> SlideDeck {
-        if deck.id().0 == 0 || self.index_of(deck.id()).is_some() {
-            let id = self.mint_id();
+    ///
+    /// **The deck keeps its own number only from BEYOND every number ever issued here** (at or past the
+    /// counter, which is already past the mark, every saved deck and the undo trash) and only if the
+    /// database records the claim; any lower number was issued before, possibly to a deck that was
+    /// deleted and is still linked from a plan, and handing it back would reopen the hole the high-water
+    /// mark closes (17tnw2b9arx). Such a deck gets a fresh number instead. `Err` (nothing added) when a
+    /// fresh number is needed and the database will not record one.
+    fn adopt_keep_both(
+        &mut self,
+        mut deck: SlideDeck,
+        keep_free_uid: bool,
+    ) -> Result<SlideDeck, NumberNotRecorded> {
+        let own = deck.id().0;
+        let keep_own = own != 0
+            && own <= MAX_DECK_NUMBER
+            && own >= self.candidate_id()
+            && match &self.db {
+                Some(db) => deck_repo::claim_number(db, own).unwrap_or(false),
+                None => true,
+            };
+        if keep_own {
+            self.next_id = own.saturating_add(1);
+        } else {
+            let id = self.issue_id()?;
             deck.set_id(id);
         }
         if keep_free_uid {
@@ -591,7 +728,7 @@ impl DeckLibrary {
         deck.name = unique;
         self.persist_one(&deck);
         self.decks.push(deck.clone());
-        deck
+        Ok(deck)
     }
 
     /// Adopt `deck`, stating explicitly what to do if its name is already taken (ADR-0024 decision 5).
@@ -626,10 +763,14 @@ impl DeckLibrary {
         let Some(i) = self.index_of_name(&base) else {
             // No collision: policy-independent by construction — `uniquify` returns `base` verbatim
             // when it is free, so this is the same adopt for all three.
-            return Ok(self.adopt_keep_both(deck, false));
+            return self
+                .adopt_keep_both(deck, false)
+                .map_err(|NumberNotRecorded| AdoptError::NumberNotRecorded);
         };
         match policy {
-            NameCollisionPolicy::KeepBoth => Ok(self.adopt_keep_both(deck, false)),
+            NameCollisionPolicy::KeepBoth => self
+                .adopt_keep_both(deck, false)
+                .map_err(|NumberNotRecorded| AdoptError::NumberNotRecorded),
             NameCollisionPolicy::Fail => Err(AdoptError::NameTaken),
             // Resolve the collision to the id the NAME holder actually has, then replace by id. The
             // name is how the collision was found; the id is what the replacement is keyed on.
@@ -761,11 +902,13 @@ impl DeckLibrary {
     }
 
     /// Duplicate the deck with `id` into an independent copy ("<name> copy", unique) with a fresh id;
-    /// persist. Returns the new deck (not opened), or `None` if `id` is unknown.
+    /// persist. Returns the new deck (not opened), or `None` if `id` is unknown OR the database would
+    /// not record a number for the copy (see [`NumberNotRecorded`]; a caller that must tell the two
+    /// apart asks [`get`](Self::get) first).
     pub fn duplicate(&mut self, id: DeckId) -> Option<SlideDeck> {
         let src = self.decks.iter().find(|d| d.id() == id)?.clone();
         let mut copy = src.clone();
-        let new_id = self.mint_id();
+        let new_id = self.issue_id().ok()?;
         copy.set_id(new_id);
         copy.set_uid(self.mint_uid()); // a copy is a different presentation, not the same one twice
         let copy_name = uniquify(&format!("{} copy", src.name), &self.name_set());
@@ -1010,6 +1153,12 @@ fn adopt_base_name(deck: &SlideDeck) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// The deck-number high-water mark, retried once: `None` only if it cannot be read twice running (a
+/// damaged value or a database that is not answering). An absent row is `Some(0)`, not `None`.
+fn read_mark(db: &Database) -> Option<u64> {
+    (0..2).find_map(|_| deck_repo::high_water(db).ok())
 }
 
 /// A deck's serialized size — the same representation [`DeckLibrary::persist_one`] writes, so the
