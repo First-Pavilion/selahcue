@@ -146,6 +146,9 @@ class Fixture:
         return sorted(os.path.relpath(a, root) for a in audited)
 
 
+# "cafe" with an e-acute, built from a code point so this source file stays pure ASCII.
+ACCENTED_DIR = "caf" + chr(0xE9)
+
 FAILURES = []
 
 
@@ -309,12 +312,12 @@ def lock_at_the_repo_root_is_audited_as_the_repo_root(fx):
 
 
 def non_ascii_directory_is_audited_normally(fx):
-    fx.lock(u"café/crate", fail=True)
+    fx.lock(ACCENTED_DIR + "/crate", fail=True)
     fx.lock("plain")
     rc, out, audited = fx.run()
     expect(rc == 1, "non-ASCII dir: a vulnerable lock must exit 1, got %d" % rc, out)
     names = [unicodedata.normalize("NFC", n) for n in fx.audited_rel(audited)]
-    expect(names == [u"café/crate", "plain"], "non-ASCII dir: both roots must be audited, got %r" % names, out)
+    expect(names == [ACCENTED_DIR + "/crate", "plain"], "non-ASCII dir: both roots must be audited, got %r" % names, out)
 
 
 def directory_with_spaces_is_audited_normally(fx):
