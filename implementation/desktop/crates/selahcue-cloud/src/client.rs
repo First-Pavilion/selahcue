@@ -4,14 +4,16 @@
 //! Configuration is a base URL + an account/session [`Token`]. Missing either →
 //! [`NoteError::NotConfigured`] (the honest state while the live service does not
 //! exist), and **no** request is issued. HTTP error statuses map to stable
-//! [`NoteError`]s (402/429 → quota; 5xx/other → malformed/transport); a transport
-//! failure maps to [`NoteError::Transport`], which the orchestrator turns into the
-//! local fallback (FR-135). The bearer token is attached only to the request and is
-//! never logged.
+//! [`NoteError`]s (402 and a terminal-exhaustion 429 are quota; any other 429 and 5xx are
+//! transport; the rest are malformed), and **no part of a response body is ever put in an
+//! error** (86akbzxjg). A transport failure maps to [`NoteError::Transport`], which the
+//! orchestrator turns into the local fallback (FR-135). The bearer token is attached only to
+//! the request and is never logged.
 
 use crate::contract::{
     GenerateNotesRequest, GenerateNotesResponse, QuotaDto, NOTES_GENERATE_PATH, QUOTA_PATH,
 };
+use crate::provider_error::ErrorFields;
 use crate::secret::Token;
 use crate::transport::HttpTransport;
 use crate::CloudNoteProvider;
@@ -69,18 +71,69 @@ impl<T: HttpTransport> SelahCueCloudClient<T> {
         format!("{}{}", base.trim_end_matches('/'), path)
     }
 
-    /// Map an HTTP status to the terminal [`NoteError`]s the UI must distinguish.
+    /// Map a non-2xx HTTP status (and the allowlisted fields of its body) to a [`NoteError`].
+    ///
+    /// **No part of `body` is ever copied into the result.** A provider's error body is
+    /// untrusted free text that has been observed to carry a clear-text fragment of the API
+    /// key, and a hosted proxy that forwards an upstream body would forward it too. Only
+    /// [`ErrorFields`] is read: a reason code from a closed list (an allowlist, so what is
+    /// repeated is the list's own string). Everything else in the message is this function's
+    /// own wording.
+    ///
+    /// **429 is overloaded and is decided on the payload, not the status.** A terminal
+    /// exhaustion code means the account is out of credit: [`NoteError::QuotaExceeded`], which
+    /// [`crate::generate_sermon_notes`] propagates. Any other 429 is a rate-limit blip:
+    /// [`NoteError::Transport`], so the operator still gets the degraded local draft. 402 is
+    /// always terminal. The discrimination itself lives in [`ErrorFields`], shared with the
+    /// OpenAI mapper.
     fn status_error(status: u16, body: &str) -> NoteError {
-        match status {
-            402 | 429 => NoteError::QuotaExceeded,
-            // 5xx is a server-side blip → treat as transport so the orchestrator falls
-            // back locally rather than surfacing a dead end.
-            500..=599 => NoteError::Transport(format!("server status {status}")),
-            other => NoteError::Malformed(format!(
-                "unexpected status {other}: {}",
-                truncate(body, 200)
-            )),
+        if status == 402 {
+            return NoteError::QuotaExceeded;
         }
+        let fields = ErrorFields::parse(body);
+        match status {
+            429 if fields.is_terminal_exhaustion() => NoteError::QuotaExceeded,
+            429 => NoteError::Transport(format!(
+                "the service is rate limiting requests (status 429), try again shortly{}",
+                fields.describe()
+            )),
+            // 5xx is a server-side blip → treat as transport so the orchestrator falls
+            // back locally rather than surfacing a dead end. This holds whatever code the
+            // body carries: an exhaustion code on a 5xx is NOT read as quota (a service that
+            // translates an upstream provider's exhaustion into a 5xx wants the local draft).
+            500..=599 => {
+                NoteError::Transport(format!("server status {status}{}", fields.describe()))
+            }
+            401 | 403 => NoteError::Malformed(format!(
+                "the service rejected the account credentials (status {status}), \
+                 reconnect the SelahCue account{}",
+                fields.describe()
+            )),
+            other => {
+                NoteError::Malformed(format!("unexpected status {other}{}", fields.describe()))
+            }
+        }
+    }
+
+    /// A body that arrived with a success status but does not fit the contract.
+    ///
+    /// serde_json's text for a type mismatch quotes the offending value
+    /// (`invalid type: string "sk-...", expected u32`), so `e.to_string()` here would copy
+    /// response text into the error exactly as the non-2xx path used to. Only the category and
+    /// position, which are numbers and a fixed word, are kept.
+    fn malformed_response(e: &serde_json::Error) -> NoteError {
+        use serde_json::error::Category;
+        let kind = match e.classify() {
+            Category::Io => "read",
+            Category::Syntax => "syntax",
+            Category::Data => "type or shape",
+            Category::Eof => "truncated",
+        };
+        NoteError::Malformed(format!(
+            "the response did not match the SelahCue cloud contract ({kind} problem at line {} column {})",
+            e.line(),
+            e.column()
+        ))
     }
 
     /// Fetch the current quota (standalone probe, e.g. to render the meter on load).
@@ -105,21 +158,9 @@ impl<T: HttpTransport> SelahCueCloudClient<T> {
             return Err(Self::status_error(resp.status, &resp.body));
         }
         let dto: QuotaDto =
-            serde_json::from_str(&resp.body).map_err(|e| NoteError::Malformed(e.to_string()))?;
+            serde_json::from_str(&resp.body).map_err(|e| Self::malformed_response(&e))?;
         Ok(dto.to_core())
     }
-}
-
-/// Truncate a body for an error message (never include a full/huge server response).
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 impl<T: HttpTransport> NoteProvider for SelahCueCloudClient<T> {
@@ -152,7 +193,7 @@ impl<T: HttpTransport> CloudNoteProvider for SelahCueCloudClient<T> {
         }
 
         let parsed: GenerateNotesResponse =
-            serde_json::from_str(&resp.body).map_err(|e| NoteError::Malformed(e.to_string()))?;
+            serde_json::from_str(&resp.body).map_err(|e| Self::malformed_response(&e))?;
         Ok((parsed.draft.to_core(), Some(parsed.quota.to_core())))
     }
 }
