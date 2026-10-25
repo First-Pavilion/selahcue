@@ -3,8 +3,9 @@
 //! The defect needs a RESTART: the undo trash is memory-only and the counter was recomputed at load
 //! as "highest surviving number + 1", so a number retired by a delete came back for the next deck and
 //! a plan link that still held it silently showed that other deck. Every test here therefore uses a
-//! real database FILE and drops and reloads the library between steps. Every test except the
-//! in-memory control fails when the high-water mark is removed (mutation-checked; see the PR).
+//! real database FILE and drops and reloads the library between steps. Every test fails when the
+//! high-water mark is removed, except the in-memory control and the in-session adopt-versus-undo-trash
+//! test, which the in-memory counter alone satisfies (mutation-checked; see the PR).
 
 #![allow(clippy::unwrap_used)]
 
