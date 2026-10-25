@@ -43,7 +43,6 @@ class AdminCreateCustomerInput:
     status: str = "PROSPECT"
     plan: str = "TRIAL"
     seat_limit: int = 1
-    device_limit: int = 1
     billing_contact_email: str = ""
     internal_notes: str = ""
 
@@ -63,7 +62,6 @@ class AdminGenerateLicenseKeyInput:
     expires_at: datetime
     timezone: str
     seat_limit: int
-    device_limit: int
     territory: str
     reason: str
 
@@ -111,6 +109,11 @@ class AdminLicenseKeySummary:
     feature_scope: str
     starts_at: str
     expires_at: str
+    # How many device instances this licence admits: the ONE device limit. Activation enforces
+    # it, the signed manifest publishes it as `instances_limit` and the refresh endpoint reports
+    # it as `instances.limit`. It is copied from the plan at issuance (86ak5mn0m); the org has no
+    # limit of its own, so this is the only number the console can show for "how many devices".
+    device_limit: int
 
 
 @strawberry.type
@@ -138,7 +141,6 @@ class AdminCustomer:
     timezone: str
     plan: str
     seat_limit: int
-    device_limit: int
 
     @strawberry.field
     def license_keys(self, info: strawberry.Info) -> AdminLicenseKeyConnection:
@@ -199,7 +201,6 @@ def customer_to_type(customer: CustomerOrg) -> AdminCustomer:
         timezone=customer.timezone,
         plan=customer.plan,
         seat_limit=customer.seat_limit,
-        device_limit=customer.device_limit,
         _model=customer,
     )
 
@@ -216,6 +217,7 @@ def license_key_to_summary(license_key: AppLicenseKey) -> AdminLicenseKeySummary
         feature_scope=license_key.feature_scope,
         starts_at=license_key.starts_at.isoformat(),
         expires_at=license_key.expires_at.isoformat(),
+        device_limit=license_key.device_limit,
     )
 
 
@@ -231,6 +233,7 @@ def license_key_to_type(license_key: AppLicenseKey) -> AdminLicenseKey:
         feature_scope=license_key.feature_scope,
         starts_at=license_key.starts_at.isoformat(),
         expires_at=license_key.expires_at.isoformat(),
+        device_limit=license_key.device_limit,
         _model=license_key,
     )
 
@@ -285,7 +288,6 @@ class AdminMutation:
                 status=input.status,
                 plan=input.plan,
                 seat_limit=input.seat_limit,
-                device_limit=input.device_limit,
                 internal_notes=input.internal_notes,
             ),
         )
@@ -312,7 +314,6 @@ class AdminMutation:
                 expires_at=input.expires_at,
                 timezone=input.timezone,
                 seat_limit=input.seat_limit,
-                device_limit=input.device_limit,
                 territory=input.territory,
                 reason=input.reason,
             ),

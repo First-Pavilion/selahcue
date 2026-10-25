@@ -98,7 +98,9 @@ class ResolvedEntitlement:
     Deliberately carries no seat-limit accessor. `AppLicenseKey.device_limit` is the number
     activation enforces and the only one the manifest publishes as `instances_limit`; a
     second, catalogue-derived seat number reachable from here is how the two came to
-    disagree inside one signed artefact.
+    disagree inside one signed artefact. The ONE place the catalogue's seat count is read is
+    `plan_device_instances_for_issuance`, below, which licence issuance calls once to COPY the
+    number onto the key; it is not a field of this result and never reaches the manifest.
     """
 
     plan: Plan | None
@@ -248,6 +250,46 @@ def resolve_plan_for_license(license_key) -> Plan | None:
             return alias.plan
 
     return Plan.objects.filter(is_fallback=True).first()
+
+
+# The dimension a plan's seat count lives in. A dimension KEY is a wire contract and a stable
+# identifier (see the module docstring in `models`), not a tier name: nothing here branches on
+# a plan code, and the number itself is whatever the plan's row says.
+DEVICE_INSTANCES_DIMENSION = "device_instances"
+
+# `AppLicenseKey.device_limit` is a PositiveIntegerField, which holds 2**31 - 1 on Postgres.
+# A plan value above it would reach the INSERT and fail there as an unmapped database error
+# instead of a refusal, so the accessor refuses it first. No real seat count is near it.
+MAX_DEVICE_INSTANCES = 2_147_483_647
+
+
+def plan_device_instances_for_issuance(plan: Plan) -> int | None:
+    """How many device instances a licence issued on `plan` admits, or None if it has none to give.
+
+    ISSUANCE-ONLY. `generate_license_key` calls this once and copies the number onto the new
+    key's `device_limit`; from then on the KEY's field is the one number activation enforces,
+    the manifest publishes (`instances_limit`) and the refresh endpoint reports. This is not a
+    second seat number to read from anywhere else, and it deliberately lives beside, not on,
+    `ResolvedEntitlement`, so nothing that builds a manifest can reach it by accident.
+
+    Returns a whole number of at least 1, or None. None covers every case the catalogue cannot
+    express as "this many seats": the plan declares nothing and the dimension has no default
+    (ABSENT), the plan says `unlimited` (no ceiling), the value is below 1, or the dimension is
+    switched off. The caller REFUSES issuance on None. It must not invent a number instead:
+    that is how a key ends up with a limit nobody chose.
+
+    Reads the PLAN's value only (grant, else the dimension's default), through the same cached
+    map the manifest uses. Per-licence overrides do not apply, because the licence being issued
+    does not exist yet.
+    """
+    value = _plan_grant_map(plan, current_revision()).values.get(DEVICE_INSTANCES_DIMENSION)
+    # `bool` is an `int` in Python, so True would read as one seat. A BOOLEAN-typed dimension
+    # under this key is a catalogue mistake, and it is refused like any other unusable value.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 1 or value > MAX_DEVICE_INSTANCES:
+        return None
+    return value
 
 
 def resolve_entitlement(license_key) -> ResolvedEntitlement:

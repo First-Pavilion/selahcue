@@ -39,6 +39,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
+from licensing_test_support import seat_plan_code
 from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, PlanGrant
 from selahcue_api.apps.catalogue.services import (
@@ -114,7 +115,6 @@ def _org(tag):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=9,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"control-org-{tag}",
     )
@@ -127,12 +127,13 @@ def _issue_data(customer, *, tag, **overrides):
         customer_id=str(customer.id),
         key_type="TRIAL",
         feature_scope="CHURCH",
-        plan_code="PRO",
+        # A plan this test creates, so the licence takes its device limit from a row the test
+        # owns (86ak5mn0m) and not from whatever the catalogue seed holds for a tier.
+        plan_code=seat_plan_code(3),
         starts_at=now,
         expires_at=now + timedelta(days=30),
         timezone="Africa/Lagos",
         seat_limit=5,
-        device_limit=3,
         territory="NG",
         reason="Pilot for the control-character tests.",
     )

@@ -11,10 +11,16 @@ from datetime import timedelta
 
 import pytest
 from django.core.cache import cache
-from django.db import connection, connections, transaction
+from django.db import OperationalError, connection, connections, transaction
 from django.utils import timezone
 
-from selahcue_api.apps.accounts.models import CustomerRole, CustomerUser, CustomerUserStatus
+from licensing_test_support import issue_key, seat_plan_code, seed_org
+from selahcue_api.apps.accounts.models import (
+    CustomerOrg,
+    CustomerRole,
+    CustomerUser,
+    CustomerUserStatus,
+)
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import (
     Device,
@@ -28,10 +34,12 @@ from selahcue_api.apps.devices.services import (
     activate_device,
     activate_device_with_session,
 )
+from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
     ReinstateLicenseKeyData,
     SuspendLicenseKeyData,
+    lock_customer_for_key_changes,
     reinstate_license_key,
     suspend_license_key,
 )
@@ -81,7 +89,6 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
         timezone="Africa/Lagos",
         plan="TRIAL",
         seat_limit=5,
-        device_limit=device_limit,
         created_by_actor_id="staff_ops_1",
         idempotency_key=f"customer-org-{tag}",
     )
@@ -101,12 +108,11 @@ def _seed_license_key(*, tag, device_limit=3, starts_at=None, expires_at=None):
             # DEC-014 refuses issuance onto the catalogue's designated fallback, so this
             # seeder names a sellable plan. The lifecycle/transport behaviour these tests
             # assert does not depend on which plan it is.
-            plan_code="PRO",
+            plan_code=seat_plan_code(device_limit),
             starts_at=starts_at or now,
             expires_at=expires_at or (now + timedelta(days=30)),
             timezone="Africa/Lagos",
             seat_limit=5,
-            device_limit=device_limit,
             territory="NG",
             reason="Pilot for entitlement-manifest tests.",
         ),
@@ -910,3 +916,313 @@ def test_a_suspend_and_a_reinstate_racing_each_other_end_in_a_state_the_trail_ex
         assert key.prior_status == last_lifecycle.after["prior_status"], order
         expected_final = "SUSPENDED" if order == "reinstate-first" else "ISSUED"
         assert key.status == expected_final, order
+
+
+# --- One valid key per org, under real concurrency (86ak5mn0m) ---------------------------------
+#
+# `generate_license_key` refuses a key whose dates overlap another key of the same org, and the
+# check is a read followed by an insert, so two simultaneous issuances can BOTH read "no
+# overlapping key" unless something serialises them. That something is the row lock on the
+# CustomerOrg (`lock_customer_for_key_changes`). SQLite ignores `select_for_update`, so this can
+# only be shown on Postgres.
+
+
+def _org_row_waiters():
+    """How many backends are parked on a lock inside an org-row query (see
+    `_licence_row_waiters` for why this matches on the start of the text and the table)."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT count(*) FROM pg_stat_activity
+               WHERE datname = current_database() AND pid <> pg_backend_pid()
+                 AND wait_event_type = 'Lock' AND query ILIKE %s""",
+            [f"SELECT%{CustomerOrg._meta.db_table}%"],
+        )
+        return cursor.fetchone()[0]
+
+
+def _race_behind_org_lock(org, targets):
+    """Run `targets` concurrently with the overlap at the ORG-row lock guaranteed, the same
+    way `_race_behind_row_lock` does for the licence row: a third connection holds
+    `FOR UPDATE` on the org, every target is started, and the row is released only once all of
+    them are provably parked on a lock. Returns (results, errors, waiting)."""
+    holding = threading.Event()
+    release = threading.Event()
+    results = []
+    errors = []
+
+    def hold():
+        try:
+            with transaction.atomic():
+                CustomerOrg.objects.select_for_update().get(pk=org.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
+            connections.close_all()
+
+    def run(index, target):
+        try:
+            results.append((index, target()))
+        except Exception as exc:
+            errors.append((index, exc))
+        finally:
+            connections.close_all()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    threads = []
+    waiting = 0
+    try:
+        assert holding.wait(30), "the holder never took the org-row lock"
+        for index, target in enumerate(targets):
+            thread = threading.Thread(target=run, args=(index, target))
+            threads.append(thread)
+            thread.start()
+        deadline = time.monotonic() + 15
+        while _org_row_waiters() < len(targets) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        waiting = _org_row_waiters()
+    finally:
+        release.set()
+        holder.join(timeout=60)
+        for thread in threads:
+            thread.join(timeout=60)
+    assert not holder.is_alive() and not any(t.is_alive() for t in threads), (
+        "a caller did not complete once the org row was released"
+    )
+    return sorted(results, key=lambda r: r[0]), sorted(errors, key=lambda e: e[0]), waiting
+
+
+def test_two_simultaneous_issuances_to_one_org_produce_exactly_one_key():
+    """Two staff members issue overlapping keys to the same org at the same instant, both
+    parked on the org-row lock before either is let through.
+
+    Removing the org lock (`select_for_update` in `lock_customer_for_key_changes`) fails this:
+    nothing then queues the two, both read "no overlapping key", and the org ends with two keys
+    and so with the SUM of two limits, which is the defect this ticket exists to close.
+    """
+    org = seed_org("issuance-race")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    targets = [
+        (
+            lambda n=n: issue_key(
+                org,
+                tag=f"issuance-race-{n}",
+                plan_code=plan_code,
+                starts_at=t0,
+                expires_at=t0 + timedelta(days=30),
+            )
+        )
+        for n in range(2)
+    ]
+
+    results, errors, waiting = _race_behind_org_lock(org, targets)
+
+    assert waiting == 2, f"both issuances should be parked on the org-row lock: {waiting}"
+    keys = AppLicenseKey.objects.filter(customer=org)
+    assert keys.count() == 1, (
+        f"the org holds {keys.count()} overlapping keys; results={results}, errors={errors}"
+    )
+    assert len(results) == 1 and results[0][1].created is True
+    assert len(errors) == 1
+    assert isinstance(errors[0][1], SafeAPIError)
+    assert errors[0][1].code == ErrorCode.POLICY_DENIED
+    # The loser left nothing behind: one key, one plan assignment, one issuance audit row.
+    assert (
+        AuditEvent.objects.filter(
+            action="license_key.generated", target_id=str(keys.get().pk)
+        ).count()
+        == 1
+    )
+    assert AuditEvent.objects.filter(action="license_key.generated").count() == 1
+
+
+def test_a_retry_racing_the_original_issuance_is_a_replay_not_a_refusal():
+    """The same staff member sends the same request twice at once (a client retry that overlaps
+    the original). Both are parked on the org-row lock; the first creates the key, and the
+    second must come back as the idempotent REPLAY of it, not as POLICY_DENIED from the overlap
+    the first one created.
+
+    Removing the second replay look (the one made after the org lock is taken) fails this: the
+    retry then sails past the guard's view of the world and is refused as an overlap.
+    """
+    org = seed_org("retry-race")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    targets = [
+        (
+            lambda: issue_key(
+                org,
+                tag="retry-race",  # the SAME idempotency key for both
+                plan_code=plan_code,
+                starts_at=t0,
+                expires_at=t0 + timedelta(days=30),
+            )
+        )
+        for _ in range(2)
+    ]
+
+    results, errors, waiting = _race_behind_org_lock(org, targets)
+
+    assert waiting == 2, f"both requests should be parked on the org-row lock: {waiting}"
+    assert errors == [], f"the retry was refused instead of replayed: {errors}"
+    assert AppLicenseKey.objects.filter(customer=org).count() == 1
+    created = sorted(result.created for _, result in results)
+    assert created == [False, True], f"expected one creation and one replay, got {created}"
+    replay = next(result for _, result in results if not result.created)
+    assert replay.full_key is None, "a replay must never re-show the secret"
+
+
+def test_holding_the_org_lock_does_not_block_a_row_that_references_the_org():
+    """The org lock is `FOR NO KEY UPDATE`. A plain `FOR UPDATE` on the org row blocks every INSERT
+    of a row that references it (a user, a device, a session, a key), because each takes
+    `FOR KEY SHARE` on the parent; that would stall sign-ups and activations of the same org for
+    as long as an issuance holds the lock. The race itself only needs two issuers to exclude
+    each other, which the tests above still prove.
+
+    Measured by inserting a user for the org from a second connection while the lock is held,
+    with a 3 s `lock_timeout` so a blocked insert fails instead of hanging the test.
+    """
+    org = seed_org("lock-strength")
+    holding = threading.Event()
+    release = threading.Event()
+    outcome = {}
+
+    def hold():
+        try:
+            with transaction.atomic():
+                lock_customer_for_key_changes(org.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
+            connections.close_all()
+
+    def insert_child():
+        started = time.monotonic()
+        try:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SET LOCAL lock_timeout = '3s'")
+                CustomerUser.objects.create(
+                    customer=org,
+                    email="child@lock-strength.example",
+                    email_fingerprint="f" * 64,
+                    password_hash="x",
+                    status=CustomerUserStatus.INVITED,
+                    role=CustomerRole.ADMIN,
+                    created_by_actor_id="test",
+                    idempotency_key="lock-strength-child-0001",
+                )
+            outcome["error"] = None
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            outcome["seconds"] = time.monotonic() - started
+            connections.close_all()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    try:
+        assert holding.wait(30), "the holder never took the org lock"
+        child = threading.Thread(target=insert_child)
+        child.start()
+        child.join(timeout=30)
+        assert not child.is_alive(), "the child insert is still blocked behind the org lock"
+    finally:
+        release.set()
+        holder.join(timeout=60)
+
+    assert outcome["error"] is None, f"inserting a row for the org was blocked: {outcome['error']!r}"
+    assert outcome["seconds"] < 2.0, f"the insert waited {outcome['seconds']:.2f}s behind the lock"
+    assert CustomerUser.objects.filter(customer=org).count() == 1
+
+
+def test_the_org_lock_is_not_held_while_the_secret_is_hashed(monkeypatch):
+    """`make_password` costs ~250 ms. Held under the org lock, every other write for the org
+    (including a device activation, which locks the org row through its join) waits that long
+    behind each issuance. The secret is therefore generated and hashed BEFORE the lock is
+    taken, and this checks it from outside: while the hash is running, a second connection can
+    take the org row `NOWAIT`.
+
+    Fails if the hashing moves back inside the lock (`FOR UPDATE NOWAIT` then raises).
+    """
+    org = seed_org("hash-outside-lock")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    hashing = threading.Event()
+    observed = threading.Event()
+    result = {}
+    real_hash = license_services.make_password
+
+    def slow_hash(*args, **kwargs):
+        hashing.set()
+        observed.wait(timeout=30)
+        return real_hash(*args, **kwargs)
+
+    def observe():
+        try:
+            assert hashing.wait(30), "issuance never reached the hash"
+            try:
+                with transaction.atomic():
+                    CustomerOrg.objects.select_for_update(nowait=True).get(pk=org.pk)
+                result["observer"] = "lock was free"
+            except OperationalError as exc:
+                result["observer"] = f"lock was held: {exc}"
+        finally:
+            observed.set()
+            connections.close_all()
+
+    monkeypatch.setattr(license_services, "make_password", slow_hash)
+    observer = threading.Thread(target=observe)
+    observer.start()
+    try:
+        issued = issue_key(
+            org,
+            tag="hash-outside-lock",
+            plan_code=plan_code,
+            starts_at=t0,
+            expires_at=t0 + timedelta(days=30),
+        )
+    finally:
+        observed.set()
+        observer.join(timeout=60)
+
+    assert issued.created is True
+    assert result["observer"] == "lock was free", result
+
+
+def test_two_simultaneous_issuances_to_two_orgs_both_succeed():
+    """POSITIVE CONTROL for the test above. The lock is per org, so it must not serialise
+    unrelated orgs into refusing each other: if it did, the test above would pass for the wrong
+    reason (a global refusal) and this one would show it."""
+    orgs = [seed_org(f"issuance-two-orgs-{n}") for n in range(2)]
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    results = []
+    errors = []
+
+    def issue(index):
+        try:
+            results.append(
+                issue_key(
+                    orgs[index],
+                    tag=f"issuance-two-orgs-{index}",
+                    plan_code=plan_code,
+                    starts_at=t0,
+                    expires_at=t0 + timedelta(days=30),
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            connections.close_all()
+
+    threads = [threading.Thread(target=issue, args=(n,)) for n in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert errors == []
+    assert len(results) == 2 and all(r.created for r in results)
+    assert {k.customer_id for k in AppLicenseKey.objects.all()} == {o.pk for o in orgs}
