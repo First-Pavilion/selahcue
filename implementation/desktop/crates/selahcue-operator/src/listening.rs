@@ -581,13 +581,7 @@ fn load_recognizer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<WhisperRecog
     // applies is decided ONLY by `stt_model_source` (a release build always gets `Pinned`).
     let (model_path, env_sha) = match stt_model_source::model_source_from_env() {
         ModelSource::DeveloperOverride { path, sha256 } => {
-            let sha = sha256.ok_or_else(|| {
-                format!(
-                    "{} is set; also set {} (integrity gate, FR-156)",
-                    stt_model_source::MODEL_VAR,
-                    stt_model_source::MODEL_SHA_VAR
-                )
-            })?;
+            let sha = sha256.ok_or_else(|| stt_model_source::MISSING_HASH_MESSAGE.to_string())?;
             (path, Some(sha))
         }
         ModelSource::Pinned => {
@@ -2486,7 +2480,7 @@ mod tests {
     #[cfg(all(feature = "cloud-stt", unix))]
     mod run_cloud_composition {
         use super::super::*;
-        use crate::stt_model_source::{BuildProfile, MODEL_SHA_VAR, MODEL_VAR};
+        use crate::stt_model_source::{test_support, BuildProfile};
         use selahcue_core::providers::{ProvidersConfig, TranscriptionMode};
         use selahcue_stt::audio::{AudioChunk, AudioSource, FakeAudioSource};
         use std::time::Instant;
@@ -2621,8 +2615,7 @@ mod tests {
 
         impl TestEnvVars {
             fn set(model_path: &Path, cloud_endpoint: &str) -> Self {
-                std::env::set_var(MODEL_VAR, model_path);
-                std::env::set_var(MODEL_SHA_VAR, "0".repeat(64));
+                test_support::set_override(model_path, &"0".repeat(64));
                 std::env::set_var("DEEPGRAM_API_KEY", "test-fixture-credential-000000");
                 std::env::set_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT", cloud_endpoint);
                 TestEnvVars
@@ -2631,8 +2624,7 @@ mod tests {
 
         impl Drop for TestEnvVars {
             fn drop(&mut self) {
-                std::env::remove_var(MODEL_VAR);
-                std::env::remove_var(MODEL_SHA_VAR);
+                test_support::clear_override();
                 std::env::remove_var("DEEPGRAM_API_KEY");
                 std::env::remove_var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT");
             }
@@ -2653,12 +2645,8 @@ mod tests {
         fn test_env_vars_are_removed_on_drop_even_after_a_panic() {
             let _env_guard = crate::env_locked();
             // Baseline: none of these leak in from an unrelated test that ran earlier.
-            for name in [
-                MODEL_VAR,
-                MODEL_SHA_VAR,
-                "DEEPGRAM_API_KEY",
-                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
-            ] {
+            test_support::clear_override();
+            for name in ["DEEPGRAM_API_KEY", "SELAHCUE_STT_CLOUD_TEST_ENDPOINT"] {
                 std::env::remove_var(name);
             }
 
@@ -2668,8 +2656,8 @@ mod tests {
                     "ws://example.invalid/v1/listen",
                 );
                 assert_eq!(
-                    std::env::var(MODEL_VAR).as_deref(),
-                    Ok("/does-not-need-to-exist"),
+                    test_support::override_vars().0.as_deref(),
+                    Some(std::ffi::OsStr::new("/does-not-need-to-exist")),
                     "premise: the guard actually set the variable"
                 );
                 panic!(
@@ -2683,12 +2671,12 @@ mod tests {
             );
 
             assert!(
-                std::env::var(MODEL_VAR).is_err(),
+                test_support::override_vars().0.is_none(),
                 "REMOVING TestEnvVars's Drop impl (reverting to explicit remove_var calls only \
                  at the end of the happy path) must fail this test: a panic partway through must \
                  not leave SELAHCUE_STT_MODEL set for the next test to acquire ENV_LOCK"
             );
-            assert!(std::env::var(MODEL_SHA_VAR).is_err());
+            assert!(test_support::override_vars().1.is_none());
             assert!(std::env::var("DEEPGRAM_API_KEY").is_err());
             assert!(std::env::var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT").is_err());
         }
@@ -2956,14 +2944,15 @@ mod tests {
         let _state_guard = state_locked();
         use std::time::Instant;
 
-        use crate::stt_model_source::{BuildProfile, MODEL_SHA_VAR, MODEL_VAR};
+        use crate::stt_model_source::{test_support, BuildProfile};
 
         // 17tnw2b0prh: this test runs in release (`make test-stt-real-model`), and a release
         // build ignores the `SELAHCUE_STT_MODEL` override it used to set. So it loads the model
         // the way an installed app does: the model this machine selects, from the model cache,
-        // verified by `fetch_model_phased` against the hash compiled into the app (FR-156). It
-        // skips rather than download ~1.6 GB unless that file is already cached at its pinned
-        // size (a size mismatch would make the loader re-download it).
+        // verified by `fetch_model_phased` against the hash compiled into the app (FR-156).
+        // `select_model()` picks large-v3-turbo only when a GPU backend is compiled in (Metal on
+        // macOS); a CPU-only build (Linux, the Windows installer) picks Small, so on those this
+        // loads a different file than the old test did.
         let selection = HardwareProbe::detect().select_model();
         let asset = selection.model.asset();
         let model_path = selahcue_stt::default_cache_dir().join(asset.file_name);
@@ -2978,10 +2967,21 @@ mod tests {
             );
             return;
         }
+        // Size is not enough: on a hash mismatch `fetch_model_phased` treats the file as missing
+        // and re-downloads the whole file (~1.6 GB for large-v3-turbo) inside the test. Check
+        // the pinned hash first (about 3 s in release) and skip on a mismatch instead.
+        if let Err(e) = selahcue_stt::verify_model(&model_path, asset.sha256) {
+            eprintln!(
+                "skipping a_real_cold_start_backlog_no_longer_trips_the_notice: the cached {} \
+                 does not match its pinned SHA-256 ({e:?}); not downloading a replacement in a \
+                 test",
+                asset.file_name
+            );
+            return;
+        }
 
         // A variable exported in the developer's shell must not change what a debug run loads.
-        std::env::remove_var(MODEL_VAR);
-        std::env::remove_var(MODEL_SHA_VAR);
+        test_support::clear_override();
         // In release, point the override at a file that does not exist. A release build must
         // ignore it and still load the pinned model above; if the release gate broke, the load
         // would try this decoy and the readiness assertion below would fail. A debug build
@@ -2990,15 +2990,13 @@ mod tests {
         impl DecoyOverride {
             fn set() -> Self {
                 let decoy = std::env::temp_dir().join("selahcue-17tnw2b0prh-decoy-model.bin");
-                std::env::set_var(MODEL_VAR, decoy);
-                std::env::set_var(MODEL_SHA_VAR, "0".repeat(64));
+                test_support::set_override(decoy, &"0".repeat(64));
                 DecoyOverride
             }
         }
         impl Drop for DecoyOverride {
             fn drop(&mut self) {
-                std::env::remove_var(MODEL_VAR);
-                std::env::remove_var(MODEL_SHA_VAR);
+                test_support::clear_override();
             }
         }
         let _decoy =
