@@ -31,7 +31,39 @@ fn schema_version_is_pinned() {
     // v22 = sermon_note.pending_* regeneration-retention columns (86akgqdx8; FR-129).
     // v23 = autosave_slot table (FR-005 "last-3" bounded autosave-slot history; 86ajy0hxg).
     // v24 = media_asset.name (the operator's own file name for a copy-on-import asset).
-    assert_eq!(migrations::target_version(), 24);
+    // v25 = deck_id_counter (the deck-number high-water mark; 17tnw2b9arx).
+    assert_eq!(migrations::target_version(), 25);
+}
+
+#[test]
+fn a_v24_database_gains_the_deck_number_mark_and_keeps_its_decks() {
+    // A library written before the high-water mark existed: decks, no deck_id_counter table. Opening
+    // it must add the (empty) table and lose nothing; "no row" reads as 0, and it is the library's
+    // load that raises the mark to the highest number the decks already hold.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let _ = Database::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO deck (name, deck_json) VALUES ('Kept', '{\"id\":7}');
+             DROP TABLE deck_id_counter;
+             PRAGMA user_version = 24;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), migrations::target_version());
+    assert_eq!(
+        selahcue_data::deck_repo::load_all(&db).unwrap().len(),
+        1,
+        "the existing deck survives the upgrade"
+    );
+    assert_eq!(
+        selahcue_data::deck_repo::high_water(&db).unwrap(),
+        0,
+        "no mark recorded yet"
+    );
 }
 
 #[test]
@@ -47,6 +79,7 @@ fn a_v23_database_upgrades_media_asset_with_a_name_column_and_keeps_its_rows() {
             "INSERT INTO media_asset (id, path, kind, size_bytes, imported_at) \
                  VALUES (1, 'kept.jpg', 'image', 5, 0);
              ALTER TABLE media_asset DROP COLUMN name;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 23;",
         )
         .unwrap();
@@ -92,6 +125,7 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
              DROP TABLE sermon_note;
              DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 10;",
         )
         .unwrap();
@@ -139,6 +173,7 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
              DROP TABLE sermon_note;
              DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 11;",
         )
         .unwrap();
@@ -186,6 +221,7 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
              DROP TABLE sermon_note;
              DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 12;",
         )
         .unwrap();
@@ -239,6 +275,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE sermon_note;
              DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 9;",
         )
         .unwrap();
@@ -289,6 +326,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE sermon_note;
              DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 7;",
         )
         .unwrap();
@@ -348,6 +386,7 @@ fn a_pre_pending_regeneration_database_upgrades_and_gains_the_pending_columns() 
              ALTER TABLE sermon_note DROP COLUMN pending_generated_at;
              DROP TABLE autosave_slot;
              ALTER TABLE media_asset DROP COLUMN name;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 21;",
         )
         .unwrap();
@@ -412,6 +451,7 @@ fn a_pre_autosave_slot_database_upgrades_and_gains_the_autosave_slot_table() {
         conn.execute_batch(
             "DROP TABLE autosave_slot;
              ALTER TABLE media_asset DROP COLUMN name;
+             DROP TABLE deck_id_counter;
              PRAGMA user_version = 22;",
         )
         .unwrap();

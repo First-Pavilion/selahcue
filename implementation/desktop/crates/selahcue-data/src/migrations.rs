@@ -508,6 +508,29 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE media_asset ADD COLUMN name TEXT;
     "#,
+    // v24 -> v25: the DECK-NUMBER HIGH-WATER MARK (17tnw2b9arx; ADR-0031 "Known limits"). The
+    // library hands out deck numbers from a counter, and a plan item links a deck BY that number.
+    // Before this table the counter was recomputed at every load as "highest surviving number + 1",
+    // so a number retired by a delete (the undo trash is memory-only) was handed to a different deck
+    // after a restart, and the plan link that still held it silently showed that other deck.
+    // This is one row holding the highest number ever written for a deck on this database. It is
+    // raised in the SAME transaction as the deck row it belongs to (`deck_repo::save_one_numbered`),
+    // only ever by SQL `MAX`, and the trigger refuses an UPDATE that would lower it, so "never lowers"
+    // does not rest on every caller remembering. Deleting a deck never touches it. A fresh table
+    // with no row: an older database opens unchanged, and the library reads "no row" as 0 and
+    // raises the mark to its highest surviving number on the first load.
+    r#"
+    CREATE TABLE deck_id_counter (
+        id         INTEGER PRIMARY KEY CHECK (id = 1),
+        high_water INTEGER NOT NULL CHECK (high_water >= 0)
+    );
+    CREATE TRIGGER deck_id_counter_never_lowers
+    BEFORE UPDATE OF high_water ON deck_id_counter
+    WHEN NEW.high_water < OLD.high_water
+    BEGIN
+        SELECT RAISE(ABORT, 'the deck number high-water mark can only be raised');
+    END;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

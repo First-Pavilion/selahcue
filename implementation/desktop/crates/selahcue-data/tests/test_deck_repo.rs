@@ -178,3 +178,128 @@ fn rename_one_moves_the_row_atomically() {
         "same-name rename is an upsert"
     );
 }
+
+// --- the deck-number high-water mark (schema v25; 17tnw2b9arx) ----------------------------------
+
+const ROW: &str = r#"{"name":"x","slides":[],"next_id":1}"#;
+
+fn mark_rows(db: &Database) -> i64 {
+    db.conn()
+        .query_row("SELECT COUNT(*) FROM deck_id_counter", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn a_database_that_never_recorded_a_number_reads_as_zero() {
+    let db = db();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 0);
+    assert_eq!(
+        mark_rows(&db),
+        0,
+        "reading the mark must not create the row"
+    );
+}
+
+#[test]
+fn save_one_numbered_writes_the_row_and_raises_the_mark_together() {
+    let db = db();
+    deck_repo::save_one_numbered(&db, "Welcome", ROW, 1).unwrap();
+    deck_repo::save_one_numbered(&db, "Communion", ROW, 3).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 3);
+    assert_eq!(deck_repo::load_all(&db).unwrap().len(), 2);
+}
+
+#[test]
+fn the_mark_only_ever_goes_up_and_deleting_a_deck_leaves_it_alone() {
+    let db = db();
+    deck_repo::save_one_numbered(&db, "Communion", ROW, 3).unwrap();
+    // A lower number (an older deck re-saved) cannot pull it down...
+    deck_repo::save_one_numbered(&db, "Welcome", ROW, 1).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 3);
+    deck_repo::raise_high_water(&db, 2).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 3);
+    // ...and removing the deck that holds the highest number does not either.
+    deck_repo::delete_one(&db, "Communion").unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 3);
+    deck_repo::raise_high_water(&db, 9).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 9);
+}
+
+#[test]
+fn the_database_itself_refuses_to_lower_the_mark() {
+    let db = db();
+    deck_repo::raise_high_water(&db, 5).unwrap();
+    let err = db
+        .conn()
+        .execute("UPDATE deck_id_counter SET high_water = 2", [])
+        .expect_err("a direct UPDATE that lowers the mark must be refused");
+    assert!(err.to_string().contains("can only be raised"), "{err}");
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 5);
+    // The table holds one row, however the mark is raised.
+    deck_repo::raise_high_water(&db, 6).unwrap();
+    assert_eq!(mark_rows(&db), 1);
+    assert!(
+        db.conn()
+            .execute(
+                "INSERT INTO deck_id_counter (id, high_water) VALUES (2, 1)",
+                []
+            )
+            .is_err(),
+        "only row id 1 may exist"
+    );
+}
+
+#[test]
+fn rename_one_numbered_moves_the_row_and_raises_the_mark_together() {
+    let db = db();
+    deck_repo::save_one_numbered(&db, "Old", ROW, 1).unwrap();
+    deck_repo::rename_one_numbered(&db, "Old", "New", ROW, 4).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 4);
+    let rows = deck_repo::load_all(&db).unwrap();
+    assert_eq!(rows.len(), 1, "the old row was dropped");
+    assert_eq!(rows[0].0, "New");
+}
+
+#[test]
+fn a_failed_deck_write_leaves_the_mark_where_it_was() {
+    // The mark and the row are one transaction: if the row cannot be written the mark must not move,
+    // or a number would be retired for a deck that never existed (harmless) -- and, the case that
+    // matters, the two could disagree the other way if the order were ever reversed.
+    let db = db();
+    deck_repo::raise_high_water(&db, 2).unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER refuse_deck_writes BEFORE INSERT ON deck
+             BEGIN SELECT RAISE(ABORT, 'disk says no'); END;",
+        )
+        .unwrap();
+    assert!(deck_repo::save_one_numbered(&db, "Doomed", ROW, 50).is_err());
+    assert_eq!(
+        deck_repo::high_water(&db).unwrap(),
+        2,
+        "rolled back with the row"
+    );
+    assert!(deck_repo::rename_one_numbered(&db, "A", "B", ROW, 60).is_err());
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 2);
+}
+
+#[test]
+fn a_number_beyond_what_sqlite_can_hold_is_clamped_not_a_panic() {
+    let db = db();
+    deck_repo::save_one_numbered(&db, "Crafted", ROW, u64::MAX).unwrap();
+    assert_eq!(deck_repo::high_water(&db).unwrap(), i64::MAX as u64);
+}
+
+#[test]
+fn many_write_and_delete_cycles_keep_the_mark_to_one_row() {
+    // Bounded growth: the mark is one integer however many decks come and go.
+    let db = db();
+    for n in 1..=300u64 {
+        let name = format!("Deck {n}");
+        deck_repo::save_one_numbered(&db, &name, ROW, n).unwrap();
+        deck_repo::delete_one(&db, &name).unwrap();
+    }
+    assert_eq!(deck_repo::high_water(&db).unwrap(), 300);
+    assert_eq!(mark_rows(&db), 1);
+    assert!(deck_repo::load_all(&db).unwrap().is_empty());
+}

@@ -194,14 +194,22 @@ pub struct DeckLibrary {
     db: Option<Database>,
     /// The saved decks — each with a unique, non-zero [`DeckId`] and a unique `name`.
     decks: Vec<SlideDeck>,
-    /// Monotonic library-level deck-id counter (never reused; self-heals past loaded ids).
+    /// Monotonic library-level deck-id counter: the next number to issue. Never reused, across
+    /// restarts too (17tnw2b9arx): it is seeded at load from the larger of the highest surviving
+    /// deck and the PERSISTED high-water mark (`deck_repo::high_water`), and every deck write
+    /// raises that mark in the same transaction, so a number whose deck was deleted (and whose
+    /// undo-trash entry died with the process) is still never handed out again. Self-heals past
+    /// loaded ids.
     next_id: u64,
     /// Recently deleted decks, retained so a delete can be undone with its REAL content.
     ///
     /// In-memory and bounded — this is an undo affordance for an accidental delete during a
     /// service, not an archive, and it deliberately does not survive a restart: retaining
     /// deleted decks on disk would quietly resurrect data an operator believed they had
-    /// removed. The bounded container itself lives in `selahcue-present`
+    /// removed. (What DOES survive a restart is the deleted deck's NUMBER: the persisted
+    /// high-water mark keeps it from ever being issued again, so a plan link that still holds it
+    /// shows "Presentation missing" rather than some other deck; 17tnw2b9arx.)
+    /// The bounded container itself lives in `selahcue-present`
     /// ([`DeckTrash`]) because this crate is excluded from the workspace and nothing here
     /// gets real tests.
     trash: DeckTrash,
@@ -241,6 +249,12 @@ impl DeckLibrary {
                 }
             }
         }
+        // The highest deck number ever recorded as issued on this database (17tnw2b9arx). A store
+        // from a build that predates the mark has none: it reads as 0 and is raised below.
+        let issued = db
+            .as_ref()
+            .and_then(|db| deck_repo::high_water(db).ok())
+            .unwrap_or(0);
         let mut lib = DeckLibrary {
             db,
             decks,
@@ -248,7 +262,8 @@ impl DeckLibrary {
             trash: DeckTrash::new(),
             entropy,
         };
-        let stats = lib.heal(&row_keys);
+        let stats = lib.heal(&row_keys, issued);
+        lib.record_high_water();
         (lib, stats)
     }
 
@@ -263,8 +278,10 @@ impl DeckLibrary {
     /// one) or a name (which would make a `save_one` upsert clobber a sibling).
     ///
     /// `row_keys[i]` is the key of the row `decks[i]` was read from (see
-    /// [`load_reporting`](Self::load_reporting)). Returns what the identity backfill wrote.
-    fn heal(&mut self, row_keys: &[String]) -> BackfillStats {
+    /// [`load_reporting`](Self::load_reporting)). `issued` is the persisted high-water mark: the
+    /// counter starts past it as well as past every surviving deck, so a number whose deck was
+    /// deleted is never issued again. Returns what the identity backfill wrote.
+    fn heal(&mut self, row_keys: &[String], issued: u64) -> BackfillStats {
         use std::collections::HashSet;
         let mut stats = BackfillStats::default();
         self.next_id = self
@@ -273,6 +290,7 @@ impl DeckLibrary {
             .map(|d| d.id().0)
             .max()
             .unwrap_or(0)
+            .max(issued)
             .saturating_add(1)
             .max(1);
         // Pass 1 — ids: reserve every distinct non-zero id in order; anything zero or duplicate gets
@@ -350,6 +368,26 @@ impl DeckLibrary {
         stats
     }
 
+    /// Make the persisted high-water mark cover the highest number a deck here holds: what lets a
+    /// store written before the mark existed start recording from its first load, and what covers
+    /// ids the self-heal above just minted. Only ever RAISES it (`deck_repo` takes `MAX` and the
+    /// table refuses a lowering UPDATE), so a mark that is ahead of every surviving deck -- the
+    /// whole point of it -- is left exactly as it is. Best-effort like every write here: on a
+    /// failure the in-memory counter still holds for this session and the next load retries.
+    fn record_high_water(&self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let highest = self.decks.iter().map(|d| d.id().0).max().unwrap_or(0);
+        let behind = match deck_repo::high_water(db) {
+            Ok(mark) => mark < highest,
+            Err(_) => true,
+        };
+        if highest > 0 && behind {
+            let _ = deck_repo::raise_high_water(db, highest);
+        }
+    }
+
     /// Whether `uid` already identifies a deck here -- saved, or sitting in the undo-delete trash,
     /// because restoring that deck would otherwise put two decks under one identity.
     fn uid_held(&self, uid: &DeckUid) -> bool {
@@ -424,7 +462,8 @@ impl DeckLibrary {
         import_deck_link(link, |uid| self.find_by_uid(uid))
     }
 
-    /// Mint a fresh library deck id (monotonic, never reused). **Self-healing** (mirrors
+    /// Mint a fresh library deck id (monotonic, never reused -- across restarts too, because
+    /// `next_id` starts past the persisted high-water mark, 17tnw2b9arx). **Self-healing** (mirrors
     /// `SlideDeck::mint_id`): it advances `next_id` past every existing deck id before minting, so a
     /// deck adopted with a non-zero id, or a stale `next_id`, can never make a mint return a live id
     /// (which would make `get`/`delete`/`store` target the wrong deck). Saturating — never panics
@@ -782,8 +821,9 @@ impl DeckLibrary {
     /// silently overwrite its persisted row, so the rename is reported rather than hidden — the
     /// caller should tell the operator what the deck is now called.
     ///
-    /// The deck keeps its original id: `next_id` is monotonic and never reused, so the id cannot
-    /// have been handed to anything else in the meantime.
+    /// The deck keeps its original id: `next_id` is monotonic and never reused (within a session
+    /// by the counter, across restarts by the persisted high-water mark), so the id cannot have
+    /// been handed to anything else in the meantime.
     pub fn restore(&mut self, id: DeckId) -> Option<String> {
         let mut deck = self.trash.take(id)?;
         deck.name = uniquify(&deck.name, &self.name_set());
@@ -928,7 +968,8 @@ impl DeckLibrary {
             return true;
         };
         match serde_json::to_string(deck) {
-            Ok(json) => deck_repo::save_one(db, &deck.name, &json).is_ok(),
+            // Numbered: the row and the high-water mark (>= this deck's number) commit together.
+            Ok(json) => deck_repo::save_one_numbered(db, &deck.name, &json, deck.id().0).is_ok(),
             Err(_) => false,
         }
     }
@@ -944,7 +985,8 @@ impl DeckLibrary {
     fn persist_rename(&self, old_name: &str, deck: &SlideDeck) {
         if let Some(db) = &self.db {
             if let Ok(json) = serde_json::to_string(deck) {
-                let _ = deck_repo::rename_one(db, old_name, &deck.name, &json);
+                let _ =
+                    deck_repo::rename_one_numbered(db, old_name, &deck.name, &json, deck.id().0);
             }
         }
     }
@@ -1014,6 +1056,11 @@ fn uniquify_excluding(base: &str, taken: &std::collections::HashSet<String>, kee
 // file, because they are about the boundary between two libraries rather than about one.
 #[cfg(test)]
 mod identity_tests;
+
+// Deck-number reuse across restarts (17tnw2b9arx): its own file for the same reason, and because
+// every test in it needs a real database file and a simulated restart.
+#[cfg(test)]
+mod deck_number_tests;
 
 #[cfg(test)]
 mod tests {
