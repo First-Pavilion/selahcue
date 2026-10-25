@@ -4,12 +4,11 @@
 //! Configuration is a base URL + an account/session [`Token`]. Missing either →
 //! [`NoteError::NotConfigured`] (the honest state while the live service does not
 //! exist), and **no** request is issued. HTTP error statuses map to stable
-//! [`NoteError`]s (402 and a terminal-exhaustion 429 -> quota; any other 429 and 5xx ->
-//! transport; the rest -> malformed), and **no part of a response body is ever put in an
-//! error** (86akbzxjg); a transport
-//! failure maps to [`NoteError::Transport`], which the orchestrator turns into the
-//! local fallback (FR-135). The bearer token is attached only to the request and is
-//! never logged.
+//! [`NoteError`]s (402 and a terminal-exhaustion 429 are quota; any other 429 and 5xx are
+//! transport; the rest are malformed), and **no part of a response body is ever put in an
+//! error** (86akbzxjg). A transport failure maps to [`NoteError::Transport`], which the
+//! orchestrator turns into the local fallback (FR-135). The bearer token is attached only to
+//! the request and is never logged.
 
 use crate::contract::{
     GenerateNotesRequest, GenerateNotesResponse, QuotaDto, NOTES_GENERATE_PATH, QUOTA_PATH,
@@ -77,8 +76,9 @@ impl<T: HttpTransport> SelahCueCloudClient<T> {
     /// **No part of `body` is ever copied into the result.** A provider's error body is
     /// untrusted free text that has been observed to carry a clear-text fragment of the API
     /// key, and a hosted proxy that forwards an upstream body would forward it too. Only
-    /// [`ErrorFields`] is read: a reason code from a closed list and a correlation handle of a
-    /// fixed shape. Everything else in the message is this function's own wording.
+    /// [`ErrorFields`] is read: a reason code from a closed list (an allowlist, so what is
+    /// repeated is the list's own string). Everything else in the message is this function's
+    /// own wording.
     ///
     /// **429 is overloaded and is decided on the payload, not the status.** A terminal
     /// exhaustion code means the account is out of credit: [`NoteError::QuotaExceeded`], which
@@ -97,8 +97,10 @@ impl<T: HttpTransport> SelahCueCloudClient<T> {
                 "the service is rate limiting requests (status 429), try again shortly{}",
                 fields.describe()
             )),
-            // 5xx is a server-side blip -> treat as transport so the orchestrator falls
-            // back locally rather than surfacing a dead end.
+            // 5xx is a server-side blip → treat as transport so the orchestrator falls
+            // back locally rather than surfacing a dead end. This holds whatever code the
+            // body carries: an exhaustion code on a 5xx is NOT read as quota (a service that
+            // translates an upstream provider's exhaustion into a 5xx wants the local draft).
             500..=599 => {
                 NoteError::Transport(format!("server status {status}{}", fields.describe()))
             }

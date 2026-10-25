@@ -13,6 +13,26 @@
 //!
 //! Auth is `Authorization: Bearer <account/session token>` (never a user-pasted
 //! third-party key — the hosted model, FR-134).
+//!
+//! ## Error responses (what the client reads; not yet a defined envelope) -- 86akbzxjg
+//! The client never shows any part of a non-2xx body (a provider's 401 carries a clear-text
+//! fragment of the key). It reads only `error.type` and `error.code`, exactly and
+//! case-sensitively, against a closed list (see [`crate::provider_error`]), and the parse is
+//! bounded.
+//! - **Terminal exhaustion** (the "quota used up" state that stops the local fallback) must be
+//!   HTTP **402**, or a 429 whose `error.code` or `error.type` is `insufficient_quota` or
+//!   `credit_balance_exhausted`. Any other 429 is a transient rate limit, and a 5xx is a server
+//!   blip; both serve the degraded local draft.
+//! - **Upstream provider exhaustion must be translated, never forwarded.** A thin proxy that
+//!   forwards a provider's exhaustion would report the provider's empty balance as the
+//!   operator's own quota and deny them the local draft, and its body would be untrusted text.
+//!   Translate it (for example to a 5xx) and answer 402 only for the account's own quota.
+//! - The platform API's /v1 envelope (`implementation/api/selahcue_api/platform/responses.py`)
+//!   uses UPPER_SNAKE codes such as `RATE_LIMITED`, and ADR-0028 records a coded refusal
+//!   `QUOTA_EXHAUSTED`. None of those match the closed list, so under this client a 429
+//!   `RATE_LIMITED` reads as transient (correct) but an exhaustion signalled only by an
+//!   UPPER_SNAKE code on a 429 would read as transient too. 86akby3xu defines the hosted
+//!   envelope and must reconcile the two vocabularies.
 
 use selahcue_core::providers::{
     IncludeInNotes, NoteDraft, NoteOptions, NoteRequest, NoteSection, NotesTemplate, Quota,

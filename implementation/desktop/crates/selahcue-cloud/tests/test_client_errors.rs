@@ -11,13 +11,16 @@
 //! constructed shape, built to differ from the captured out-of-credit 429 in exactly the field the
 //! mapping reads). The 401 matters most: it carries a masked but partly clear copy of the key.
 //!
-//! The crate emits no log lines of its own (it has no logging dependency and no print macro), so
+//! The crate has no logging macros or print macros of its own (checked by grep over `src/`), so
 //! the surfaces a log line could carry are the error's `Display` and its derived `Debug`; both are
-//! asserted on everywhere below.
+//! asserted on everywhere below. With the `http` feature the `rustls` dependency carries its own
+//! TLS-internal logging, which never sees an HTTP body. No log output is captured by these tests.
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_cloud::contract::QuotaDto;
+use selahcue_cloud::contract::{GenerateNotesResponse, QuotaDto};
+use selahcue_cloud::provider_error::MAX_ERROR_BODY_PARSE_BYTES;
+use selahcue_cloud::transport::MAX_TRANSPORT_RESPONSE_BYTES;
 use selahcue_cloud::{
     generate_sermon_notes, CloudNoteProvider, GenerationOutcome, LocalNoteProvider, MockTransport,
     SelahCueCloudClient, Token,
@@ -256,7 +259,7 @@ fn hostile_cases() -> Vec<Case> {
             markers: vec![KEY_AS_TYPE, "sk-proj-"],
         },
         Case {
-            label: "key placed in the correlation-handle field (shape check must refuse it)",
+            label: "key placed in error.request_id (a field the client never reads)",
             body: envelope(
                 "bad",
                 "invalid_request_error",
@@ -360,37 +363,33 @@ fn the_captured_401_is_reported_in_our_own_words_and_says_what_failed() {
 }
 
 #[test]
-fn an_allowlisted_correlation_handle_is_kept_and_a_credential_shaped_one_is_not() {
-    // Positive control for the handle: a well-shaped id survives, so "dropped" below is
-    // distinguishable from "the mechanism never worked".
-    let good = envelope(
-        "bad",
-        "invalid_request_error",
-        "invalid_api_key",
-        Some("req_0123456789abcdef0123456789abcdef"),
-        None,
-    );
-    for (who, err) in both_errors(401, &good) {
-        let text = err.to_string();
-        assert!(
-            text.contains("req_0123456789abcdef0123456789abcdef"),
-            "{who}: a well-formed correlation handle should be kept for diagnosis: {text}"
+fn error_request_id_is_never_read_whatever_its_shape() {
+    // There is deliberately no correlation-handle channel: nothing produces one today, and a
+    // check on the SHAPE of a value cannot tell an identifier from an alphanumeric secret. So
+    // `error.request_id` must not reach the error whether it looks like a handle or like a key.
+    for value in [
+        "req_0123456789abcdef0123456789abcdef",
+        KEY_AS_REQUEST_ID,
+        "0123456789abcdef0123456789abcdef",
+    ] {
+        let body = envelope(
+            "bad",
+            "invalid_request_error",
+            "invalid_api_key",
+            Some(value),
+            None,
         );
-    }
-
-    let bad = envelope(
-        "bad",
-        "invalid_request_error",
-        "invalid_api_key",
-        Some(KEY_AS_REQUEST_ID),
-        None,
-    );
-    for (who, err) in both_errors(401, &bad) {
-        let text = rendered(&err);
-        assert!(
-            !text.contains(KEY_AS_REQUEST_ID) && !text.contains("sk-proj-"),
-            "{who}: a credential-shaped handle must be refused: {text}"
-        );
+        assert!(body.contains(value), "premise: the value is in the body");
+        for (who, err) in both_errors(401, &body) {
+            let text = rendered(&err);
+            assert!(
+                !text.contains(value) && !text.contains("sk-proj-") && !text.contains("request"),
+                "{who}: error.request_id was read into the error: {text}"
+            );
+            // Positive control: the reason code beside it IS kept, so "absent" is not
+            // "the error says nothing".
+            assert!(text.contains("invalid_api_key"), "{who}: {text}");
+        }
     }
 }
 
@@ -440,6 +439,16 @@ fn a_success_status_with_a_mistyped_field_does_not_echo_the_value() {
     assert!(
         raw.contains(KEY_IN_MIDDLE),
         "premise: serde_json no longer quotes the offending value ({raw}); this test is vacuous"
+    );
+
+    // The same control for the generate body, so the `generate_with_quota` site is not vacuous.
+    let raw_generate = serde_json::from_str::<GenerateNotesResponse>(&generate_body)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        raw_generate.contains(KEY_IN_MIDDLE),
+        "premise: serde_json no longer quotes the offending value in the generate body \
+         ({raw_generate}); the generate_with_quota half of this test is vacuous"
     );
 
     let from_quota = client(200, &quota_body)
@@ -512,6 +521,16 @@ fn transient_bodies() -> Vec<(&'static str, String)> {
             "rate limit whose message carries a credential",
             envelope(
                 &format!("Rate limit reached for {KEY_IN_MIDDLE}"),
+                "requests",
+                "rate_limit_exceeded",
+                None,
+                None,
+            ),
+        ),
+        (
+            "a rate limit whose FREE-TEXT message names both exhaustion codes (message is never read)",
+            envelope(
+                "Slow down. This is not insufficient_quota and not credit_balance_exhausted.",
                 "requests",
                 "rate_limit_exceeded",
                 None,
@@ -658,10 +677,13 @@ fn a_5xx_still_falls_back_locally_and_other_statuses_are_not_quota() {
 }
 
 #[test]
-fn the_contract_error_codes_the_frontend_switches_on_are_all_still_reachable() {
-    // The four FE-BE codes (consent_required, not_configured, quota_exceeded, transport) come from
-    // these four `NoteError` variants; this change adds none and removes none. Pin that each is
-    // still produced by the path that always produced it.
+fn each_note_error_variant_the_client_returns_is_still_produced_by_its_original_path() {
+    // The operator's `note_error_code` (selahcue-operator/src/main.rs) maps FIVE variants to the
+    // codes the frontend switches on: consent_required, not_configured, quota_exceeded,
+    // transport and malformed. This crate cannot see that function, and this test does not claim
+    // to: it pins that no variant was added or removed and that the paths which produced the
+    // first four still produce them. The fifth (Malformed) is pinned by the 401 and
+    // 2xx-mistyped tests above.
     let cfg = ProvidersConfig::default(); // consent OFF
     let c = client(200, "{}");
     assert_eq!(
@@ -684,4 +706,272 @@ fn the_contract_error_codes_the_frontend_switches_on_are_all_still_reachable() {
             .unwrap_err(),
         NoteError::Transport(_)
     ));
+}
+
+// ---------------------------------------------------------------------------
+// 4 - The parse is bounded, and what is (and is not) read
+// ---------------------------------------------------------------------------
+
+// PREMISE, pinned at compile time so changing a bound cannot silently turn the tests below
+// vacuous: the cap sits well under the transport's own response cap (else it bounds nothing) and
+// well over any real envelope (else it would blind the client to a real one).
+const _: () = assert!(MAX_ERROR_BODY_PARSE_BYTES < MAX_TRANSPORT_RESPONSE_BYTES);
+const _: () = assert!(MAX_ERROR_BODY_PARSE_BYTES >= 8 * 1024);
+const _: () = assert!(MAX_ERROR_BODY_PARSE_BYTES <= 64 * 1024);
+
+/// A terminal-exhaustion 429 body padded to exactly `total` bytes with an inert string field.
+fn terminal_body_of_len(total: usize) -> String {
+    let head = r#"{"error":{"code":"insufficient_quota"},"pad":""#;
+    let tail = r#""}"#;
+    assert!(
+        total >= head.len() + tail.len(),
+        "premise: room for the envelope"
+    );
+    let body = format!(
+        "{head}{}{tail}",
+        "x".repeat(total - head.len() - tail.len())
+    );
+    assert_eq!(
+        body.len(),
+        total,
+        "premise: the body is exactly the size asked for"
+    );
+    body
+}
+
+#[test]
+fn a_terminal_429_exactly_at_the_parse_cap_still_parses_and_one_byte_over_reads_as_transient() {
+    // The boundary, both sides. At the cap the body is parsed and the code is seen (positive
+    // control: the mechanism is live, so "transient" below is the cap, not a dead parser).
+    let at_cap = terminal_body_of_len(MAX_ERROR_BODY_PARSE_BYTES);
+    assert_eq!(
+        run_generation(429, &at_cap),
+        Err(NoteError::QuotaExceeded),
+        "a body exactly at the cap must still be parsed"
+    );
+
+    // One byte over: never parsed, so the terminal code is not seen and the 429 reads as
+    // transient. Nothing from the body reaches the error.
+    let over = terminal_body_of_len(MAX_ERROR_BODY_PARSE_BYTES + 1);
+    let outcome = run_generation(429, &over)
+        .expect("an over-cap 429 must be treated as transient and serve the local draft");
+    assert!(outcome.degraded);
+    for (who, err) in both_errors(429, &over) {
+        assert!(matches!(err, NoteError::Transport(_)), "{who}: {err:?}");
+        assert_no_body_text(who, "over-cap 429", &over, &err, ALLOWED_REASONS);
+    }
+}
+
+#[test]
+fn a_transport_cap_sized_body_is_refused_before_it_is_parsed() {
+    // The bound the cap exists for: a hostile peer can send up to the transport's 4 MiB. The
+    // literal size (not the constant) is used here so that RAISING the cap above it, or removing
+    // it, makes the terminal code visible and fails this test. The body is a huge array, the
+    // shape that makes a parsed tree proportional to the body.
+    let size = 4 * 1024 * 1024;
+    assert_eq!(
+        size, MAX_TRANSPORT_RESPONSE_BYTES,
+        "premise: this IS the transport cap"
+    );
+    let head = r#"{"error":{"code":"insufficient_quota"},"pad":["#;
+    let tail = "0]}";
+    let filler = "0,".repeat((size - head.len() - tail.len()) / 2);
+    let body = format!("{head}{filler}{tail}");
+    assert!(
+        body.len() > size - 4 && body.len() <= size,
+        "premise: the body is at the transport cap, got {}",
+        body.len()
+    );
+
+    let outcome = run_generation(429, &body)
+        .expect("a cap-sized 429 body must read as transient, not be parsed");
+    assert!(outcome.degraded);
+    // 402 is decided before any parse, so it is unaffected by the size.
+    assert_eq!(run_generation(402, &body), Err(NoteError::QuotaExceeded));
+}
+
+#[test]
+fn the_free_text_message_is_never_read_for_the_terminal_decision() {
+    // A message that merely MENTIONS an exhaustion code (a rate-limit saying "this is not
+    // insufficient_quota") must not read as terminal. Any `contains` over the raw body would.
+    let body = envelope(
+        "Slow down: this is not insufficient_quota and not credit_balance_exhausted",
+        "requests",
+        "rate_limit_exceeded",
+        None,
+        None,
+    );
+    let outcome = run_generation(429, &body).expect("a rate limit serves the local draft");
+    assert!(outcome.degraded);
+    // And the converse: a terminal CODE with a message that says nothing of it IS terminal.
+    let body = envelope("Slow down", "x", "insufficient_quota", None, None);
+    assert_eq!(run_generation(429, &body), Err(NoteError::QuotaExceeded));
+}
+
+/// A deeply nested body: `{"error":{"code":"insufficient_quota"},"pad":[[[...]]]}` with `depth`
+/// levels of array nesting.
+fn terminal_body_nested(depth: usize) -> String {
+    format!(
+        r#"{{"error":{{"code":"insufficient_quota"}},"pad":{}0{}}}"#,
+        "[".repeat(depth),
+        "]".repeat(depth)
+    )
+}
+
+#[test]
+fn hostile_shapes_read_as_transient_and_a_malformed_terminal_body_is_not_terminal() {
+    // Each of these is a 429 whose body a naive reader might take for terminal. None is: the
+    // client reads `error.code` / `error.type` as exact, case-sensitive JSON strings in a
+    // well-formed object, and nothing else. (Each is also fed through the leak assertions.)
+    let bom = char::from_u32(0xFEFF).unwrap();
+    let bodies: Vec<(&str, String)> = vec![
+        (
+            "error is a string",
+            r#"{"error":"insufficient_quota"}"#.to_string(),
+        ),
+        (
+            "numeric code",
+            r#"{"error":{"code":402,"type":"requests"}}"#.to_string(),
+        ),
+        (
+            "null code and type",
+            r#"{"error":{"code":null,"type":null}}"#.to_string(),
+        ),
+        (
+            "array-valued code",
+            r#"{"error":{"code":["insufficient_quota"]}}"#.to_string(),
+        ),
+        (
+            "BOM-prefixed terminal body (serde_json refuses a BOM)",
+            format!("{bom}{}", fixtures::ERR_429_NO_CREDITS),
+        ),
+        (
+            "capitalised code",
+            envelope("m", "x", "Insufficient_Quota", None, None),
+        ),
+        (
+            "upper-case code",
+            envelope("m", "x", "INSUFFICIENT_QUOTA", None, None),
+        ),
+        (
+            "platform-API style code (UPPER_SNAKE vocabulary)",
+            envelope("m", "x", "QUOTA_EXHAUSTED", None, None),
+        ),
+        (
+            "leading whitespace in the code",
+            envelope("m", "x", " insufficient_quota", None, None),
+        ),
+        (
+            "trailing whitespace in the code",
+            envelope("m", "x", "insufficient_quota ", None, None),
+        ),
+        (
+            "trailing newline in the code",
+            envelope("m", "x", "insufficient_quota\n", None, None),
+        ),
+        (
+            "top-level array",
+            format!("[{}]", fixtures::ERR_429_NO_CREDITS),
+        ),
+        ("top-level string", r#""insufficient_quota""#.to_string()),
+        ("top-level null", "null".to_string()),
+        (
+            "the code only at the top level, not under error",
+            r#"{"code":"insufficient_quota","type":"insufficient_quota"}"#.to_string(),
+        ),
+        (
+            "terminal body nested past serde_json's 128-level recursion limit",
+            terminal_body_nested(200),
+        ),
+    ];
+    for (label, body) in &bodies {
+        let outcome = run_generation(429, body)
+            .unwrap_or_else(|e| panic!("{label}: must read as transient, got error {e:?}"));
+        assert!(outcome.degraded, "{label}");
+        for (who, err) in both_errors(429, body) {
+            assert!(
+                matches!(err, NoteError::Transport(_)),
+                "{label} / {who}: {err:?}"
+            );
+        }
+    }
+
+    // POSITIVE CONTROL for the nesting case: well inside the limit the SAME body is terminal, so
+    // the 200-level case above is the recursion limit and not a dead parser. serde_json allows
+    // 128 levels; this documents that a terminal 429 nested past it reads as transient.
+    assert_eq!(
+        run_generation(429, &terminal_body_nested(100)),
+        Err(NoteError::QuotaExceeded),
+        "a terminal body nested 100 levels deep still parses"
+    );
+    // And the plain well-formed terminal body is terminal (the baseline for every case above).
+    assert_eq!(
+        run_generation(429, fixtures::ERR_429_NO_CREDITS),
+        Err(NoteError::QuotaExceeded)
+    );
+}
+
+#[test]
+fn exhaustion_in_either_field_wins_whatever_the_other_field_says() {
+    // The rule in `ErrorFields::parse`: "exhaustion in EITHER field wins". A body whose `code`
+    // is a known non-terminal reason and whose `type` is terminal (or the reverse) is terminal.
+    // A reader that takes the FIRST known reason by field order reads one of these as transient.
+    let cases = [
+        (
+            "code=rate_limit_exceeded, type=insufficient_quota",
+            "rate_limit_exceeded",
+            "insufficient_quota",
+        ),
+        (
+            "type=rate_limit_exceeded, code=insufficient_quota",
+            "insufficient_quota",
+            "rate_limit_exceeded",
+        ),
+        (
+            "code=server_error, type=credit_balance_exhausted",
+            "server_error",
+            "credit_balance_exhausted",
+        ),
+        (
+            "type=requests, code=credit_balance_exhausted",
+            "credit_balance_exhausted",
+            "requests",
+        ),
+    ];
+    for (label, code, kind) in cases {
+        let body = envelope("m", kind, code, None, None);
+        assert_eq!(
+            run_generation(429, &body),
+            Err(NoteError::QuotaExceeded),
+            "{label}: exhaustion in either field must win"
+        );
+    }
+    // CONTROL: with neither field terminal, two known reasons are just transient.
+    let body = envelope("m", "requests", "rate_limit_exceeded", None, None);
+    assert!(run_generation(429, &body).unwrap().degraded);
+}
+
+#[test]
+fn a_5xx_carrying_an_exhaustion_code_is_transport_by_design() {
+    // INTENDED. A 5xx is the server's own failure and serves the local draft whatever its body
+    // says. A service that wants an upstream provider's exhaustion to reach the operator as
+    // quota must answer 402 (or a 429 with a code); a service that translates upstream
+    // exhaustion into a 5xx gets the local fallback, which is what it should want. See the
+    // "Error responses" note in `contract.rs`.
+    for status in [500u16, 502, 503, 599] {
+        for body in [
+            fixtures::ERR_429_NO_CREDITS.to_string(),
+            envelope("m", "x", "insufficient_quota", None, None),
+        ] {
+            let outcome = run_generation(status, &body)
+                .unwrap_or_else(|e| panic!("status {status}: expected the local draft, got {e:?}"));
+            assert!(outcome.degraded, "status {status}");
+            for (who, err) in both_errors(status, &body) {
+                assert!(
+                    matches!(err, NoteError::Transport(_)),
+                    "status {status} / {who}: {err:?}"
+                );
+            }
+        }
+    }
 }

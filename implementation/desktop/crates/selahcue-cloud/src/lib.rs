@@ -29,7 +29,10 @@ pub mod mock;
 /// platform API. See the module docs.
 #[cfg(feature = "openai")]
 pub mod openai;
-pub(crate) mod provider_error;
+/// What a provider error body is allowed to contribute to an error (86akbzxjg): an allowlist of
+/// fields, a bounded parse, and the one terminal-versus-transient decision. Only the parse
+/// bound is public, so a test can pin it.
+pub mod provider_error;
 pub mod secret;
 /// The note-generation transcript-length clamp — always compiled (86akcffy0). See the module
 /// docs for why this had to move out from behind the `openai` feature.
@@ -94,9 +97,11 @@ fn disclosure_for(ai_generated: bool) -> Option<&'static str> {
 ///    Enforcing it at this single, provider-agnostic choke point means every current and
 ///    future `C: CloudNoteProvider` receives an already-bounded request by construction.
 /// 3. The `cloud` provider is tried first.
-/// 4. On a **transport** failure only (network loss/unreachable), the `local` provider
-///    serves a degraded draft (FR-135). `NotConfigured` and `QuotaExceeded` propagate
-///    (they are honest states the UI must show, not network blips to paper over).
+/// 4. On a **transport-class** failure only, the `local` provider serves a degraded draft
+///    (FR-135). That is `NoteError::Transport`: network loss/unreachable, a 5xx, and a 429
+///    that is a plain rate limit (86akbzxjg). `NotConfigured` and `QuotaExceeded` propagate
+///    (they are honest states the UI must show, not network blips to paper over); a 402, and
+///    a 429 carrying a terminal exhaustion code, are `QuotaExceeded`.
 pub fn generate_sermon_notes<C, L>(
     config: &ProvidersConfig,
     transcript: &str,
