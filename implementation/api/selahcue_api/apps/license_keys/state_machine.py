@@ -60,12 +60,13 @@ wrapping a transition at all.
 
 The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
 autocommit and gets the durable case for free. Admin mutations should assert
-`not connection.in_atomic_block` at their boundary rather than assume it; suspend, reinstate,
+`not in_open_transaction()` at their boundary rather than assume it; suspend, reinstate,
 revoke and extend all do, before any query runs (`license_keys.services._require_autocommit`,
 86ak5mn0c; revoke shares `_lifecycle_mutation` with the other two, extend calls it directly).
 
 **The writer enforces this itself** (86ak1090r, AC 8). Called inside an open transaction
-(`connection.in_atomic_block`) without `allow_wrapping_transaction=True`, it raises
+(`in_open_transaction()`: an `atomic()` block, or autocommit switched off by hand) without
+`allow_wrapping_transaction=True`, it raises
 `WrappedTransitionRefused` (INTERNAL) before reading or writing anything. A docstring was the
 only mitigation, with 17 `atomic()` sites in production; the loss now announces itself instead
 of being found in an audit. The opt-in is keyword-only and off by default. There are two
@@ -386,6 +387,19 @@ class LicenseTransitionResult:
     audit_event: AuditEvent | None
 
 
+def in_open_transaction() -> bool:
+    """Whether the default connection is inside a transaction of any kind.
+
+    `in_atomic_block` alone is not enough: `transaction.set_autocommit(False)` opens a
+    transaction without `atomic()`, so the block flag stays False while the connection is no
+    longer in autocommit, and a refusal's DENIED row written there is lost with the caller's
+    rollback exactly as inside `atomic()`. Both the writer's tripwire and the staff mutations'
+    autocommit guard ask this one question, so they cannot disagree about what counts.
+    """
+    connection = transaction.get_connection()
+    return connection.in_atomic_block or not connection.get_autocommit()
+
+
 def legal_targets(from_status: LicenseKeyStatus) -> frozenset[TransitionTarget]:
     """The legal targets out of `from_status`, straight from the table."""
     return LEGAL_TRANSITIONS[LicenseKeyStatus(from_status)]
@@ -558,7 +572,8 @@ def apply_license_status_transition(
     recognised on retry.
 
     `allow_wrapping_transaction=True` (keyword-only, off by default) is the named opt-in for a
-    caller that is ALREADY inside a transaction (`connection.in_atomic_block`). Without it the
+    caller that is ALREADY inside a transaction (`in_open_transaction()`: an `atomic()` block, or
+    a connection taken out of autocommit by hand). Without it the
     call is refused with `WrappedTransitionRefused` before anything is read or written: a
     refusal's DENIED row is written after this function's own `atomic()` unwinds, so inside a
     caller's transaction a propagating `IllegalLicenseTransition` rolls that row back with the
@@ -597,7 +612,7 @@ def apply_license_status_transition(
     # docstring was the only mitigation, with 17 `atomic()` sites in production; this makes the
     # loss announce itself instead of being discovered in an audit. Fails closed and runs first:
     # it is about the CALLER, not the arguments, and nothing has been touched yet.
-    if transaction.get_connection().in_atomic_block and not allow_wrapping_transaction:
+    if in_open_transaction() and not allow_wrapping_transaction:
         logger.error(
             "apply_license_status_transition was called inside an open transaction without "
             "allow_wrapping_transaction=True; refused, because a DENIED audit row written in "

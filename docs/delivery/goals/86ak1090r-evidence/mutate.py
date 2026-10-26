@@ -10,7 +10,12 @@ byte (filecmp, the equivalent of `cmp`).
 
 It never touches the working tree: it copies `implementation/api` (without the venv) to a
 sandbox directory and mutates the copy, so it can run while you keep working, and two copies can
-run side by side (give each its own --sandbox).
+run side by side (give each its own --sandbox). Run it in your own worktree. The sandbox must be
+OUTSIDE the repository and either new, empty, or created by this harness: anything else is
+refused (`--self-check` demonstrates the refusals), because the copy step deletes `<sandbox>/api`.
+The default sandbox is a temp directory and is removed when the run ends. Before any mutant it runs
+every test file it needs UNMUTATED once; a red baseline aborts (or is subtracted with
+--allow-red-baseline), so KILLED always means "green, then red".
 
 Usage, from anywhere inside the repository:
 
@@ -25,6 +30,7 @@ Usage, from anywhere inside the repository:
 
     --only A1,T2   run just those ids (prefix match, e.g. --only A runs every A mutant)
     --list         print the ids and what each one changes
+    --self-check   check that unsafe --sandbox values are refused, then exit
 
 Exit status is 0 only when every selected mutant was KILLED by one of its intended tests.
 """
@@ -78,7 +84,7 @@ def mutant(file, old, new, tests, kill=(), postgres=False, note=""):
 MUTANTS = {
     # --- AC 8: the wrapped-transaction tripwire --------------------------------------------
     "T1-tripwire-removed": mutant(
-        SM, "if transaction.get_connection().in_atomic_block and not allow_wrapping_transaction:", "if False:",
+        SM, "if in_open_transaction() and not allow_wrapping_transaction:", "if False:",
         [MAIN, ACT], ["tripwire", "wrapped"], note="remove the in_atomic_block check from the writer"),
     "T2-activation-optin-removed": mutant(
         DV, "                allow_wrapping_transaction=True,\n            )", "            )",
@@ -88,7 +94,7 @@ MUTANTS = {
         "                )\n            except IllegalLicenseTransition", [MAIN], ["extend", "writer"],
         note="extend stops passing the opt-in"),
     "T4-tripwire-inverted": mutant(
-        SM, "in_atomic_block and not allow_wrapping_transaction:", "in_atomic_block and allow_wrapping_transaction:",
+        SM, "if in_open_transaction() and not allow_wrapping_transaction:", "if in_open_transaction() and allow_wrapping_transaction:",
         [MAIN, ACT], ["tripwire", "wrapped", "activation"], note="the check fires only when the caller DID opt in"),
     "T5-tripwire-default-on": mutant(
         SM, "    allow_wrapping_transaction: bool = False,\n) -> LicenseTransitionResult:",
@@ -125,8 +131,8 @@ MUTANTS = {
         SV, "        if denied_action is not None and actor is not None and error.code is ErrorCode.PERMISSION_DENIED:",
         "        if False:", [MAIN], ["denied_audit_row", "graphql_refuses"], note="a refused caller leaves no audit row"),
     "A8-global-cap-shared-by-every-kind": mutant(
-        SV, "        actor.kind.value,\n        REFUSAL_AUDIT_GLOBAL_SETTING,", "        \"all\",\n        REFUSAL_AUDIT_GLOBAL_SETTING,",
-        [MAIN], ["crowd_staff_out"], note="one global refusal-audit cap shared by every kind of actor"),
+        SV, "        f\"{REFUSAL_AUDIT_SCOPE}_{actor.kind.value}\",\n        \"all\",", "        f\"{REFUSAL_AUDIT_SCOPE}_global\",\n        \"all\",",
+        [MAIN], ["crowd_staff_out", "names_the_kind"], note="one global refusal-audit cap shared by every kind of actor"),
     "A9-refused-reason-stored": mutant(
         SV, "            reason=\"\",\n            result=AuditResult.DENIED,\n            after={\n                \"required_permission\"",
         "            reason=\"text from a refused caller\",\n            result=AuditResult.DENIED,\n            after={\n                \"required_permission\"",
@@ -168,7 +174,7 @@ MUTANTS = {
         ["action_names_are_a_contract", "revoke"], note="the audit action string for a revoke changes"),
     # --- credential guard (reason and retry key) -------------------------------------------
     "C1-credential-check-removed": mutant(
-        SV, "    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):", "    if False:",
+        SV, "    if _key_shaped(scanned, _GROUPED_KEY_RE) or _key_shaped(scanned, _RUN_TOGETHER_KEY_RE):", "    if False:",
         [MAIN], ["full_licence_key_is_refused"], note="a reason containing a full key is accepted and stored"),
     "C2-nfkc-removed": mutant(
         SV, "    folded = unicodedata.normalize(\"NFKC\", text)", "    folded = text", [MAIN], ["fullwidth"],
@@ -177,13 +183,13 @@ MUTANTS = {
         SV, "if unicodedata.category(ch) != \"Cf\"", "if True", [MAIN], ["inside-a-group", "inside-every-group", "inside-a-run-together"],
         note="zero-width and soft-hyphen characters hide a key"),
     "C4-run-together-not-checked": mutant(
-        SV, "    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):",
-        "    if _GROUPED_KEY_RE.search(scanned):", [MAIN], ["run-together"], note="a key pasted as 32 characters is accepted"),
+        SV, "    if _key_shaped(scanned, _GROUPED_KEY_RE) or _key_shaped(scanned, _RUN_TOGETHER_KEY_RE):",
+        "    if _key_shaped(scanned, _GROUPED_KEY_RE):", [MAIN], ["run-together"], note="a key pasted as 32 characters is accepted"),
     "C5-separators-narrowed": mutant(
         SV, "[\\W_]{{1,3}}", "[\\W_]{{1,1}}", [MAIN], ["dots-and-spaces", "prefix-with-spaces"],
         note="only single-character separators are recognised"),
     "C6-retry-key-check-removed": mutant(
-        SV, "    if _GROUPED_KEY_RE.search(_for_credential_scan(key)):", "    if False:", [MAIN],
+        SV, "    if _key_shaped(_for_credential_scan(key), _GROUPED_KEY_RE):", "    if False:", [MAIN],
         ["used_as_the_retry_key", "pasted_key_is_not_stored"], note="a licence key is accepted as a retry key"),
     "C7-lifecycle-uses-plain-reason": mutant(
         SV, "    idempotency_key = _require_retry_key(raw_idempotency_key)\n    reason = _require_reason_without_a_credential(raw_reason)",
@@ -260,14 +266,23 @@ MUTANTS = {
         SV, "        if new_expires_at <= old_expires_at:", "        if False:", [MAIN], ["bad_date", "second_extension"],
         note="extend accepts a date that is not later than the current one"),
     "E3-ceiling-removed": mutant(
-        SV, "        if new_expires_at > max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW:", "        if False:",
+        SV, "        if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:", "        if False:",
         [MAIN], ["ceiling", "9999"], note="extend has no five-year ceiling"),
     "E3b-ceiling-from-now": mutant(
-        SV, "max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW", "timezone.now() + MAX_EXTENSION_FROM_NOW",
+        SV, "new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW", "new_expires_at - timezone.now() > MAX_EXTENSION_FROM_NOW",
         [MAIN], ["already_past_the_ceiling", "five_years_beyond"], note="the ceiling is measured from now alone"),
     "E3c-ceiling-from-old-expiry": mutant(
-        SV, "max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW", "old_expires_at + MAX_EXTENSION_FROM_NOW",
+        SV, "new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW", "new_expires_at - old_expires_at > MAX_EXTENSION_FROM_NOW",
         [MAIN], ["lapsed_long_ago"], note="the ceiling is measured from the old expiry alone"),
+    "E3d-ceiling-by-addition-overflows": mutant(
+        SV, "if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:", "if new_expires_at > max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW:",
+        [MAIN], ["year_9999_is_extended_cleanly"], note="the ceiling is computed by addition and overflows near year 9999"),
+    "E3e-ceiling-boundary-exclusive": mutant(
+        SV, "if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:", "if new_expires_at - max(timezone.now(), old_expires_at) >= MAX_EXTENSION_FROM_NOW:",
+        [MAIN], ["exact_five_year_boundary"], note="the exact five-year boundary is refused"),
+    "E3f-ceiling-a-day-wider": mutant(
+        SV, "if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:", "if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW + timedelta(days=1):",
+        [MAIN], ["exact_five_year_boundary"], note="the ceiling is five years and a day"),
     "E4-naive-accepted": mutant(
         SV, "    if not isinstance(value, datetime) or timezone.is_naive(value):", "    if not isinstance(value, datetime):",
         [MAIN], ["naive"], note="extend accepts a datetime with no UTC offset"),
@@ -290,6 +305,49 @@ MUTANTS = {
         SV, "            except IllegalLicenseTransition as refusal:\n                writer_refusal = refusal",
         "            except IllegalLicenseTransition as refusal:\n                raise", [MAIN], ["still_durable"],
         note="the writer's refusal propagates out of extend's transaction (the DENIED row is lost)"),
+    "R5-key-group-alphabet-widened": mutant(
+        SV, '_KEY_GROUP = rf"[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}"', '_KEY_GROUP = rf"[A-Z0-9]{{{KEY_GROUP_SIZE}}}"',
+        [MAIN], ["outside_the_key_alphabet"], note="groups containing I, O, 0 or 1 are treated as key groups"),
+    "R6-retry-key-checks-the-run-together-form": mutant(
+        SV, "    if _key_shaped(_for_credential_scan(key), _GROUPED_KEY_RE):",
+        "    if _key_shaped(_for_credential_scan(key), _GROUPED_KEY_RE) or _key_shaped(_for_credential_scan(key), _RUN_TOGETHER_KEY_RE):",
+        [MAIN], ["bare_32_character"], note="a bare 32-character token is refused as a retry key"),
+    "R7-refusal-identity-without-the-kind": mutant(
+        SV, 'hashlib.sha256(f"{actor.kind.value}:{actor_id}".encode("utf-8"))', 'hashlib.sha256(f"{actor_id}".encode("utf-8"))',
+        [MAIN], ["do_not_share_a_refusal_budget"], note="a customer and a staff member with the same id share a refusal budget"),
+    "R8a-damaged-record-not-a-string-is-a-replay": mutant(
+        SV, "    if not isinstance(recorded, str):\n        return False", "    if not isinstance(recorded, str):\n        return True",
+        [MAIN], ["unreadable_earlier_record"], note="a record without a string expiry counts as a replay"),
+    "R8b-damaged-record-unparseable-is-a-replay": mutant(
+        SV, "    except ValueError:\n        return False\n\n\ndef _move_expiry", "    except ValueError:\n        return True\n\n\ndef _move_expiry",
+        [MAIN], ["unreadable_earlier_record"], note="a record whose expiry cannot be parsed counts as a replay"),
+    "H1-hex-exemption-removed": mutant(
+        SV, "        if outside_hex >= (1 if len(groups) == 1 else 2):", "        if True:", [MAIN],
+        ["not_mistaken_for_a_key"], note="all-hex tokens and hex dumps are refused as keys"),
+    "H2-grouped-threshold-one": mutant(
+        SV, "        if outside_hex >= (1 if len(groups) == 1 else 2):", "        if outside_hex >= 1:", [MAIN],
+        ["hex-dump-line", "needs_two_groups"], note="one group outside hex is enough to call a run a key"),
+    "H3-grouped-threshold-three": mutant(
+        SV, "        if outside_hex >= (1 if len(groups) == 1 else 2):", "        if outside_hex >= (1 if len(groups) == 1 else 3):", [MAIN],
+        ["needs_two_groups"], note="three groups outside hex are needed"),
+    "H4-run-together-threshold-two": mutant(
+        SV, "        if outside_hex >= (1 if len(groups) == 1 else 2):", "        if outside_hex >= 2:", [MAIN],
+        ["run-together", "outside_hex_is_still_refused"], note="a run-together token needs two groups outside hex (it has one)"),
+    "X1-hand-opened-transaction-not-detected": mutant(
+        SM, "    return connection.in_atomic_block or not connection.get_autocommit()", "    return connection.in_atomic_block",
+        [MAIN], ["opened_by_hand"], note="autocommit switched off by hand is not a transaction"),
+    "X2-services-guard-ignores-a-hand-opened-transaction": mutant(
+        SV, "    if in_open_transaction():\n        logger.error(", "    if transaction.get_connection().in_atomic_block:\n        logger.error(",
+        [MAIN], ["opened_by_hand"], note="the staff mutations' autocommit guard only looks at atomic()"),
+    "S1-optin-through-a-star-dict": mutant(
+        SV, "def revoke_license_key(", "def _dead_star_dict(key, staff):\n    return apply_license_status_transition(key, **{\"allow_wrapping_transaction\": True})\n\n\ndef revoke_license_key(",
+        [MAIN], ["only_device_activation_and_extend"], note="a third caller opts in through a ** dict literal"),
+    "S2-star-args-to-the-writer": mutant(
+        SV, "def revoke_license_key(", "def _dead_star_args(key, **kw):\n    return apply_license_status_transition(key, **kw)\n\n\ndef revoke_license_key(",
+        [MAIN], ["only_device_activation_and_extend", "status_the_record_calls_unwritten"], note="the writer is called with ** arguments that could carry anything"),
+    "S3-unwritten-status-through-a-call": mutant(
+        SV, "def revoke_license_key(", "def _dead_status_call(key, staff):\n    return apply_license_status_transition(key, to_status=LicenseKeyStatus(\"EXPIRED\"), actor=staff, reason=\"x\", request_id=\"y\")\n\n\ndef revoke_license_key(",
+        [MAIN], ["status_the_record_calls_unwritten"], note="EXPIRED is written through LicenseKeyStatus(\"EXPIRED\")"),
     "E10-status-not-restored": mutant(
         SV, "_EXTENDS_TO_ACTIVATED = frozenset({LicenseKeyStatus.EXPIRING, LicenseKeyStatus.EXPIRED})",
         "_EXTENDS_TO_ACTIVATED = frozenset()", [MAIN], ["returns_a_lapsed_licence"], note="EXPIRING and EXPIRED are not returned to ACTIVATED"),
@@ -322,13 +380,63 @@ MUTANTS = {
 }
 
 
+SANDBOX_MARKER = ".mutate-86ak1090r-sandbox"
+
+
+class UnsafeSandbox(Exception):
+    """The requested sandbox could destroy something that is not the harness's own."""
+
+
+def check_sandbox_holder(holder: pathlib.Path) -> pathlib.Path:
+    """Refuse a sandbox directory that is, contains or sits inside the repository, or that is a
+    non-empty directory the harness did not create.
+
+    `sandbox_copy` deletes `<holder>/api` before copying, so a holder of `implementation/` (or `.`
+    from inside it) would delete the real API tree and everything untracked in it, the venv
+    included. Only three holders are accepted: one that does not exist yet, an EMPTY directory, and
+    a directory carrying the marker file this harness writes. Returns the resolved holder.
+    """
+    resolved = holder.resolve()
+    repo, api = REPO.resolve(), API.resolve()
+    if resolved == repo or repo in resolved.parents or resolved in repo.parents:
+        raise UnsafeSandbox(
+            f"refusing --sandbox {holder}: it is, contains or lies inside the repository ({repo}). "
+            "Give a directory OUTSIDE the repository; run this in your own worktree."
+        )
+    if (resolved / "api").resolve() == api:
+        raise UnsafeSandbox(f"refusing --sandbox {holder}: <sandbox>/api would be the real API tree {api}")
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise UnsafeSandbox(f"refusing --sandbox {holder}: it is not a directory")
+        if any(resolved.iterdir()) and not (resolved / SANDBOX_MARKER).exists():
+            raise UnsafeSandbox(
+                f"refusing --sandbox {holder}: it is not empty and was not created by this harness "
+                f"(no {SANDBOX_MARKER} marker). Use a new or empty directory."
+            )
+    return resolved
+
+
 def sandbox_copy(destination: pathlib.Path) -> pathlib.Path:
+    holder = check_sandbox_holder(destination)
+    holder.mkdir(parents=True, exist_ok=True)
+    (holder / SANDBOX_MARKER).write_text("created by mutate.py; safe to delete\n")
     ignore = shutil.ignore_patterns(".venv-api-check", "__pycache__", "*.egg-info", "db.sqlite3", ".pytest_cache")
-    target = destination / "api"
+    target = holder / "api"
     if target.exists():
         shutil.rmtree(target)
     shutil.copytree(API, target, ignore=ignore)
     return target
+
+
+def node_name(nodeid: str) -> str:
+    """The test's own name with its parameters, without the file path: `path::name[param]` gives
+    `name[param]`. Intended-test fragments are matched here, so a fragment such as "tripwire" or
+    "tests" cannot match because of the directory or file the test lives in."""
+    return nodeid.split("::", 1)[1] if "::" in nodeid else nodeid
+
+
+def killed_by_an_intended_test(failed: list[str], fragments: list[str]) -> bool:
+    return any(any(fragment in node_name(name) for fragment in fragments) for name in failed)
 
 
 def run_tests(sandbox_api: pathlib.Path, python: str, tests: list[str], postgres: bool) -> tuple[int, str]:
@@ -344,31 +452,122 @@ def run_tests(sandbox_api: pathlib.Path, python: str, tests: list[str], postgres
     return proc.returncode, proc.stdout + proc.stderr
 
 
+def failed_nodes(output: str) -> list[str]:
+    return sorted(set(re.findall(r"^FAILED (\S+)", output, re.M)))
+
+
+def self_check() -> int:
+    """The refusals above, exercised against this checkout. Exit 0 only if every one holds."""
+    with tempfile.TemporaryDirectory(prefix="mutate-selfcheck-") as scratch:
+        scratch_path = pathlib.Path(scratch)
+        foreign = scratch_path / "foreign"
+        foreign.mkdir()
+        (foreign / "precious.txt").write_text("not the harness's\n")
+        refused = {
+            "the API tree itself": API,
+            "its parent (implementation/)": API.parent,
+            "the repository root": REPO,
+            "a directory inside the repository": REPO / "docs",
+            "a non-empty directory the harness did not create": foreign,
+        }
+        empty = scratch_path / "empty"
+        empty.mkdir()
+        marked = scratch_path / "marked"
+        marked.mkdir()
+        (marked / SANDBOX_MARKER).write_text("created by mutate.py\n")
+        (marked / "left-over").write_text("from an earlier run\n")
+        accepted = {
+            "a new directory": scratch_path / "fresh",
+            "an empty directory": empty,
+            "a non-empty directory this harness created (marker present)": marked,
+        }
+        failures = []
+        for label, path in refused.items():
+            try:
+                check_sandbox_holder(path)
+                failures.append(f"NOT refused: {label}")
+            except UnsafeSandbox:
+                pass
+        for label, path in accepted.items():
+            try:
+                check_sandbox_holder(path)
+            except UnsafeSandbox as error:
+                failures.append(f"wrongly refused: {label}: {error}")
+        if not (foreign / "precious.txt").exists():
+            failures.append("a refused directory was touched")
+    for line in failures:
+        print(line)
+    print("self-check:", "FAILED" if failures else "ok")
+    return 1 if failures else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", default=str(API / ".venv-api-check" / "bin" / "python"))
     parser.add_argument("--postgres", action="store_true", help="run the Postgres-only mutants (P*) and no others")
     parser.add_argument("--only", default="", help="comma-separated id prefixes")
-    parser.add_argument("--sandbox", default="", help="directory for the working copy (default: a temp dir)")
+    parser.add_argument("--sandbox", default="", help="directory OUTSIDE the repository for the working copy (default: a temp dir, removed at the end)")
     parser.add_argument("--out", default="", help="write the result lines (with failing test names) here")
+    parser.add_argument("--allow-red-baseline", action="store_true", help="continue when an unmutated test file is red, ignoring its failing tests")
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--self-check", action="store_true", help="check the sandbox refusals and exit")
     args = parser.parse_args()
 
     if args.list:
         for mid, spec in MUTANTS.items():
             print(f"{mid:46s} {'PG ' if spec['postgres'] else '   '}{spec['note']}")
         return 0
+    if args.self_check:
+        return self_check()
+
+    # The harness chdirs into the sandbox, so a relative interpreter path would stop resolving.
+    # abspath, not resolve: a venv's python is a symlink and resolving it would drop the venv.
+    python = os.path.abspath(os.path.expanduser(args.python))
+    if not os.access(python, os.X_OK):
+        print(f"python interpreter not found or not executable: {python}")
+        return 2
 
     prefixes = [p.strip() for p in args.only.split(",") if p.strip()]
     chosen = [
         mid for mid, spec in MUTANTS.items()
         if spec["postgres"] == args.postgres and (not prefixes or any(mid.startswith(p) for p in prefixes))
     ]
-    holder = pathlib.Path(args.sandbox) if args.sandbox else pathlib.Path(tempfile.mkdtemp(prefix="mutate-86ak1090r-"))
-    holder.mkdir(parents=True, exist_ok=True)
-    sandbox_api = sandbox_copy(holder)
+    created_here = not args.sandbox
+    holder = pathlib.Path(tempfile.mkdtemp(prefix="mutate-86ak1090r-")) if created_here else pathlib.Path(args.sandbox)
+    try:
+        sandbox_api = sandbox_copy(holder)
+        return run(chosen, sandbox_api, python, args)
+    except UnsafeSandbox as error:
+        print(error)
+        return 2
+    finally:
+        if created_here:
+            shutil.rmtree(holder, ignore_errors=True)
 
+
+def run(chosen, sandbox_api: pathlib.Path, python: str, args) -> int:
     lines, failures = [], 0
+
+    # Baseline: every test file the chosen mutants run, UNMUTATED, once. A mutant is only KILLED
+    # against a green baseline; a red one aborts, or with --allow-red-baseline its failures are
+    # ignored in every mutant's result.
+    baseline_red: set[str] = set()
+    files = sorted({f for mid in chosen for f in MUTANTS[mid]["tests"]})
+    for test_file in files:
+        started = time.monotonic()
+        code, output = run_tests(sandbox_api, python, [test_file], args.postgres)
+        summary = (output.strip().splitlines() or [""])[-1]
+        red = failed_nodes(output) if code != 0 else []
+        lines.append(f"baseline {test_file}  {'GREEN' if code == 0 else 'RED'}  [{summary[:70]}]")
+        print(lines[-1], f"({time.monotonic() - started:.0f}s)", flush=True)
+        if code != 0:
+            if not args.allow_red_baseline:
+                print(f"the unmutated baseline is red in {test_file}; fix it or pass --allow-red-baseline")
+                if args.out:
+                    pathlib.Path(args.out).write_text("\n".join(lines) + "\n")
+                return 2
+            baseline_red.update(red)
+
     for mid in chosen:
         spec = MUTANTS[mid]
         path = sandbox_api / spec["file"]
@@ -382,15 +581,15 @@ def main() -> int:
         started = time.monotonic()
         try:
             path.write_bytes(text.replace(spec["old"], spec["new"], 1).encode("utf-8"))
-            code, output = run_tests(sandbox_api, args.python, spec["tests"], args.postgres)
+            code, output = run_tests(sandbox_api, python, spec["tests"], args.postgres)
         finally:
             path.write_bytes(original)
         restored = filecmp.cmp(path, API / spec["file"], shallow=False)
-        failed = sorted(set(re.findall(r"^FAILED (\S+)", output, re.M)))
+        failed = [name for name in failed_nodes(output) if name not in baseline_red]
         summary = (output.strip().splitlines() or [""])[-1]
-        if code == 0:
+        if code == 0 or not failed:
             verdict = "SURVIVED"
-        elif spec["kill"] and not any(any(frag in name for frag in spec["kill"]) for name in failed):
+        elif spec["kill"] and not killed_by_an_intended_test(failed, spec["kill"]):
             verdict = "KILLED-ELSEWHERE"
         else:
             verdict = "KILLED"

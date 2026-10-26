@@ -14,7 +14,8 @@ class ErrorCode(str, Enum):
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
     # The submitted password does not meet the password policy — and NOTHING ELSE about the
     # request was wrong. Deliberately distinct from VALIDATION_FAILED, and the ONLY sanctioned
-    # split of it (FR-551, DEC-012).
+    # split of it on the ACCOUNT surface (FR-551, DEC-012, DEC-017); CREDENTIAL_IN_INPUT below is
+    # the one on the staff admin surface (DEC-020).
     #
     # This is not a hole in the anti-enumeration posture (CON-P6 / FR-529), because of WHERE it
     # is raised: `confirm_password_reset` returns it only AFTER the reset token has been looked
@@ -33,7 +34,8 @@ class ErrorCode(str, Enum):
     # validation failure reaches the wire as the generic "The request is invalid.", which would
     # leave the person who just pasted a key with nothing to act on. The code and its fixed
     # message say only that the input contains a licence key; they carry none of it and nothing
-    # about which key (86ak1090r).
+    # about which key (86ak1090r, DEC-020). Raised only on the staff admin surface, where there is
+    # no enumeration collapse to protect.
     CREDENTIAL_IN_INPUT = "CREDENTIAL_IN_INPUT"
     # Server-side misconfiguration or failure. Distinct from NOT_IMPLEMENTED, which
     # says "by design"; INTERNAL says "this should work and does not".

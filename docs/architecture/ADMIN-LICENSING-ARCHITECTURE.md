@@ -360,6 +360,7 @@ Use stable machine codes with safe display messages:
 | `PROVIDER_UNAVAILABLE` | Upstream/provider unavailable |
 | `REPORTING_REQUIRED` | Reporting hook missing for a required provider |
 | `RATE_LIMITED` | Request over abuse or provider-safe limit |
+| `CREDENTIAL_IN_INPUT` | A licence key was found in text that is stored permanently (a lifecycle reason, or a retry key) on the staff admin surface; the fixed message names the problem and carries none of the key (86ak1090r, DEC-020) |
 
 ## 13. Event Contracts
 

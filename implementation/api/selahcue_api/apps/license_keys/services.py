@@ -31,6 +31,7 @@ from selahcue_api.apps.license_keys.state_machine import (
     PriorStatusTarget,
     apply_license_status_transition,
     earlier_success_event,
+    in_open_transaction,
 )
 from selahcue_api.apps.throttling.guards import enforce_budget, spend_budget
 from selahcue_api.apps.throttling.services import BudgetOutcome
@@ -122,24 +123,53 @@ def _generate_full_key(key_type: LicenseKeyType) -> str:
 # (full-width letters become ASCII) and stripped of format characters (zero-width space, soft
 # hyphen, word joiner), then upper-cased, so those spellings do not slip past.
 #
+# Hex is the one thing that matches the shape and is NOT a key, so it is let through. A token made
+# only of the hex digits 2-9 and A-F (an MD5 or SHA-128 digest, a compact UUID, a trace id, a hex
+# dump line, an expanded IPv6 address) is a string of key-alphabet characters too, and without 0 or
+# 1 about one random hex token in seventy would have been refused as a key. A real key body is
+# all-hex with probability (14/32) ** 32, about 1e-12, so a run-together candidate is a key only if
+# some character is outside the hex digits. For the grouped form, a hex run is often introduced by
+# a four-letter label ("DUMP", "HASH") that completes an eight-group window by itself, so a window
+# counts as a key only when TWO or more of its groups hold a non-hex character; a real key has
+# at most one all-hex group with probability about 1e-9 (each group is all-hex with
+# probability (14/32) ** 4, about 3.7%). Candidates are examined at EVERY start position (a
+# lookahead), so a hex window cannot hide a real key that overlaps it.
+#
 # What is NOT recognised, stated so nobody assumes otherwise: a key broken into groups of other
 # sizes or only partly grouped, homoglyphs from other scripts, and anything written as an image.
-# And the shape is a heuristic with one known false positive: eight four-letter words in a row
-# that avoid I, O, 0 and 1 look exactly like a spaced-out key.
+# And the shape is a heuristic with known false positives that remain: eight four-letter words in
+# a row that avoid I, O, 0 and 1 look exactly like a spaced-out key, and so does a hex run with two
+# or more four-letter words next to it.
 _KEY_GROUP = rf"[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}"
 _KEY_FLOOR = r"(?<![A-Z0-9])"
 _KEY_CEILING = r"(?![A-Z0-9])"
 _GROUPED_KEY_RE = re.compile(
-    rf"{_KEY_FLOOR}(?:{_KEY_GROUP}[\W_]{{1,3}}){{{KEY_BODY_GROUPS - 1}}}{_KEY_GROUP}{_KEY_CEILING}"
+    rf"{_KEY_FLOOR}(?=((?:{_KEY_GROUP}[\W_]{{1,3}}){{{KEY_BODY_GROUPS - 1}}}{_KEY_GROUP}){_KEY_CEILING})"
 )
 _RUN_TOGETHER_KEY_RE = re.compile(
-    rf"{_KEY_FLOOR}[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE * KEY_BODY_GROUPS}}}{_KEY_CEILING}"
+    rf"{_KEY_FLOOR}(?=([{KEY_ALPHABET}]{{{KEY_GROUP_SIZE * KEY_BODY_GROUPS}}}){_KEY_CEILING})"
 )
+_HEX_WITHOUT_0_OR_1 = frozenset("23456789ABCDEF")
 
 
 def _for_credential_scan(text: str) -> str:
     folded = unicodedata.normalize("NFKC", text)
     return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf").upper()
+
+
+def _key_shaped(scanned: str, pattern: "re.Pattern[str]") -> bool:
+    """Whether `scanned` holds a key-shaped candidate that is not hex (see above).
+
+    A run-together candidate is a key if any character is outside the hex digits; a grouped one if
+    at least two of its groups are.
+    """
+    for match in pattern.finditer(scanned):
+        body = match.group(1)
+        groups = [g for g in re.split(r"[^A-Z0-9]+", body) if g]
+        outside_hex = sum(1 for g in groups if any(ch not in _HEX_WITHOUT_0_OR_1 for ch in g))
+        if outside_hex >= (1 if len(groups) == 1 else 2):
+            return True
+    return False
 
 
 def _credential_error() -> SafeAPIError:
@@ -157,7 +187,7 @@ def _require_reason_without_a_credential(raw_reason: str) -> str:
     """
     reason = require_reason(raw_reason)
     scanned = _for_credential_scan(reason)
-    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):
+    if _key_shaped(scanned, _GROUPED_KEY_RE) or _key_shaped(scanned, _RUN_TOGETHER_KEY_RE):
         raise _credential_error()
     return reason
 
@@ -172,7 +202,7 @@ def _require_retry_key(raw_key: str) -> str:
     one in seventy random ones away. A key pasted as a bare run of 32 characters is not caught.
     """
     key = validate_idempotency_key(raw_key)
-    if _GROUPED_KEY_RE.search(_for_credential_scan(key)):
+    if _key_shaped(_for_credential_scan(key), _GROUPED_KEY_RE):
         raise _credential_error()
     return key
 
@@ -701,11 +731,14 @@ def _audit_permission_refusal(
         REFUSAL_AUDIT_SCOPE, identity, REFUSAL_AUDIT_SETTING, REFUSAL_AUDIT_BUDGET
     ) is BudgetOutcome.DENIED:
         return
-    # The global cap is kept PER KIND of actor (a handful of fixed values). One shared cap let
-    # about twenty customer identities hold it and blank the rows for a staff probe.
+    # The second cap is kept PER KIND of actor (four fixed values), as a scope of its own so the
+    # sustained-denial log line names the kind that tripped it. One cap shared by every kind let
+    # about twenty customer identities hold it and blank the rows for a staff probe. (The
+    # setting and constant keep the name GLOBAL: it is the cap across all identities of a kind,
+    # and renaming a setting would churn settings.py for no gain.)
     if spend_budget(
-        f"{REFUSAL_AUDIT_SCOPE}_global",
-        actor.kind.value,
+        f"{REFUSAL_AUDIT_SCOPE}_{actor.kind.value}",
+        "all",
         REFUSAL_AUDIT_GLOBAL_SETTING,
         REFUSAL_AUDIT_GLOBAL_BUDGET,
     ) is BudgetOutcome.DENIED:
@@ -766,7 +799,7 @@ def _require_autocommit() -> None:
     denial and a wider transaction needs the agreed `audit` database alias, not an exemption
     here.
     """
-    if transaction.get_connection().in_atomic_block:
+    if in_open_transaction():
         logger.error(
             "a licence lifecycle mutation (suspend, reinstate, revoke or extend) was attempted "
             "inside an open transaction; refused because a DENIED audit row written in this "
@@ -977,9 +1010,11 @@ _EXTENDS_TO_ACTIVATED = frozenset({LicenseKeyStatus.EXPIRING, LicenseKeyStatus.E
 
 # A technical sanity bound, NOT a product rule. Issuance has no ceiling and the PRD names no
 # maximum term, so this only has to stop an absurd date (year 9999, a typo of three extra digits)
-# from becoming a signed entitlement cached offline until it. Five years beyond the LATER of now
-# and the licence's current expiry: measured from now alone, a licence already issued for seven
-# years could not be extended even by a day. Flagged for the owner; changing it is one constant.
+# from becoming a signed entitlement cached offline until it. It is a limit on each STEP, not an
+# absolute cap: five years beyond the LATER of now and the licence's current expiry (so the name
+# says "from now" for the common case, but a licence already past that is measured from its own
+# expiry; measured from now alone, a licence issued for seven years could not be extended even by
+# a day). Four steps reach about 2058, each audited. Flagged for the owner; changing it is one constant.
 MAX_EXTENSION_FROM_NOW = timedelta(days=5 * 365)
 
 
@@ -1180,7 +1215,11 @@ def _extend_under_locks(
         # 3. Input that only the locked row can judge. Not audited: it is a bad request.
         if new_expires_at <= old_expires_at:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
-        if new_expires_at > max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW:
+        # A subtraction, never `base + MAX_EXTENSION_FROM_NOW`: a licence whose expiry is within
+        # five years of year 9999 would overflow the addition (OverflowError), and issuance
+        # accepts such licences. The step is measured from the later of now and the current
+        # expiry, so this is a limit on each extension, not an absolute cap.
+        if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
         try:

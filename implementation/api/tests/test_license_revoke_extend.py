@@ -495,6 +495,14 @@ ZERO_WIDTH_SPACE = chr(0x200B)
 SOFT_HYPHEN = chr(0x00AD)
 
 
+# Tokens made only of the hex digits 2-9 and A-F: every one of them is also a string of key
+# alphabet characters, so the key SHAPE alone would refuse them. They are hashes, trace ids and
+# hex dumps, not keys (a real key body is all-hex with probability about 1e-12).
+HEX_TOKEN_WITHOUT_0_OR_1 = "ABCDEF23456789ABCDEF23456789ABCD"
+HEX_GROUPS_WITHOUT_0_OR_1 = "ABCD EF23 4567 89AB CDEF 2345 6789 ABCD"
+KEY_ALPHABET_TOKEN = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
 def _fullwidth(text):
     return "".join(
         chr(ord(ch) + 0xFEE0) if ch.isascii() and ch.isalnum() else ch for ch in text
@@ -648,9 +656,18 @@ def test_a_masked_key_is_fine_in_a_reason_and_is_the_way_to_name_a_licence():
         "Opaque reference " + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" * 2 + " from the processor.",
         "Opaque reference A" + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" + " from the processor.",
         "Opaque reference " + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" + "Z from the processor.",
+        # All-hex tokens with no 0 or 1 pass the key shape (the hex digits 2-9 and A-F are all in
+        # the key alphabet) about one time in seventy, so the detector skips anything that is all
+        # hex: a real key body is all-hex with probability about 1e-12.
+        f"Trace id {HEX_TOKEN_WITHOUT_0_OR_1} from the load balancer log.",
+        f"Trace id {HEX_TOKEN_WITHOUT_0_OR_1.lower()} from the load balancer log.",
+        f"Hex dump: {HEX_GROUPS_WITHOUT_0_OR_1} (first 16 bytes).",
+        f"Expanded address {HEX_GROUPS_WITHOUT_0_OR_1.replace(' ', ':')} in the connection log.",
+        f"Dashed id {HEX_GROUPS_WITHOUT_0_OR_1.replace(' ', '-')} in the vendor ticket.",
     ],
     ids=["revoke-reason", "extend-reason", "prose", "uuid", "sha256-hex", "ids", "seven-short-words",
-         "token-of-64", "token-of-33-glued-in-front", "token-of-33-glued-behind"],
+         "token-of-64", "token-of-33-glued-in-front", "token-of-33-glued-behind",
+         "hex-token-no-0-1", "hex-token-lower-case", "hex-dump-line", "ipv6-shaped", "hex-groups-dashed"],
 )
 def test_ordinary_reasons_are_not_mistaken_for_a_key(reason):
     """The detector looks for the key's SHAPE (eight groups of four from the key alphabet), so
@@ -675,7 +692,15 @@ def test_eight_four_letter_words_in_a_row_are_a_known_false_positive():
 @pytest.mark.parametrize(
     "retry_key",
     [str(uuid.uuid4()), uuid.uuid4().hex, "console-2026-10-26T09:15:00Z-revoke", "a" * 128,
-     "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" * 2, "A" + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"],
+     "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" * 2, "A" + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
+     # A real key body is all-hex with probability about 1e-12, so a token that is all hex
+     # (and has no 0 or 1, which are not in the key alphabet) is a hash or an id, not a key.
+     HEX_TOKEN_WITHOUT_0_OR_1, HEX_GROUPS_WITHOUT_0_OR_1.replace(" ", "-"), HEX_GROUPS_WITHOUT_0_OR_1.replace(" ", ":"),
+     # Exactly 32 characters of the key alphabet: the docstring promises a retry key may be one.
+     KEY_ALPHABET_TOKEN],
+    ids=["uuid-with-dashes", "uuid-hex-random", "console-timestamped", "128-letters",
+         "token-of-64", "token-of-33", "hex-token-no-0-1", "hex-groups-dashed", "ipv6-shaped",
+         "bare-32-character-key-alphabet-token"],
 )
 def test_ordinary_retry_keys_are_not_mistaken_for_a_key(retry_key):
     key, _ = _seed_key(f"cred-rk-{uuid.uuid4().hex[:8]}")
@@ -2382,9 +2407,32 @@ def _production_calls(root=None):
             yield relative, function, call
 
 
+_WRITER_CALLEES = frozenset({"apply_license_status_transition", "_lifecycle_mutation"})
+
+
+def _callee_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ""
+
+
+def _star_arguments_reach_the_writer(call: ast.Call) -> bool:
+    """A `**mapping` argument on a call to the writer (or its forwarding helper) can carry
+    anything, `allow_wrapping_transaction` and `to_status` included, so every one is flagged."""
+    return _callee_name(call) in _WRITER_CALLEES and any(kw.arg is None for kw in call.keywords)
+
+
 def _opt_in_sites(root=None) -> set[tuple[str, str]]:
-    """Every (module, enclosing function) that passes `allow_wrapping_transaction` as anything
-    other than the literal False."""
+    """Every (module, enclosing function) that opens the writer inside a transaction: passes
+    `allow_wrapping_transaction` as anything other than the literal False, forwards a `**{...}`
+    literal that names it, or passes any `**` argument to the writer itself.
+
+    What this cannot see, stated so nobody assumes otherwise: the writer reached through an alias
+    (`w = apply_license_status_transition`), `functools.partial`, `getattr`, or a `**` mapping
+    built elsewhere and handed to some other function that forwards it. Review is the control
+    for those."""
     sites = set()
     for relative, function, call in _production_calls(root):
         for keyword in call.keywords:
@@ -2392,16 +2440,29 @@ def _opt_in_sites(root=None) -> set[tuple[str, str]]:
                 isinstance(keyword.value, ast.Constant) and keyword.value.value is False
             ):
                 sites.add((relative, function))
+            if keyword.arg is None and isinstance(keyword.value, ast.Dict) and any(
+                isinstance(key, ast.Constant) and key.value == "allow_wrapping_transaction"
+                for key in keyword.value.keys
+            ):
+                sites.add((relative, function))
+        if _star_arguments_reach_the_writer(call):
+            sites.add((relative, function))
     return sites
 
 
 def _unwritten_status_targets(root=None) -> set[tuple[str, str, str]]:
     """Every place outside the writer that passes a deliberately unwritten status as the
-    `to_status` of a call (the writer, or a helper like `_lifecycle_mutation` that forwards it)."""
+    `to_status` of a call (the writer, or a helper like `_lifecycle_mutation` that forwards it),
+    as an attribute (`LicenseKeyStatus.EXPIRED`), a string, or a call such as
+    `LicenseKeyStatus("EXPIRED")`; plus any `**` argument on a call to the writer, which could
+    carry a `to_status`. What remains invisible (a target held in a variable, an aliased writer)
+    is left to review."""
     names = {status.name for status in DELIBERATELY_UNWRITTEN_STATUSES}
     values = {status.value for status in DELIBERATELY_UNWRITTEN_STATUSES}
     found = set()
     for relative, function, call in _production_calls(root):
+        if _star_arguments_reach_the_writer(call):
+            found.add((relative, function, "**"))
         for keyword in call.keywords:
             if keyword.arg != "to_status":
                 continue
@@ -2410,6 +2471,10 @@ def _unwritten_status_targets(root=None) -> set[tuple[str, str, str]]:
                 found.add((relative, function, value.attr))
             elif isinstance(value, ast.Constant) and value.value in values:
                 found.add((relative, function, str(value.value)))
+            elif isinstance(value, ast.Call):
+                for argument in value.args:
+                    if isinstance(argument, ast.Constant) and argument.value in values:
+                        found.add((relative, function, f"call({argument.value})"))
     return found
 
 
@@ -2429,6 +2494,9 @@ def test_only_device_activation_and_extend_may_open_the_writer_inside_a_transact
         ("module-level", "writer(k, allow_wrapping_transaction=True)\n"),
         ("nested", "def outer():\n    def inner():\n        writer(k, allow_wrapping_transaction=True)\n"),
         ("method", "class C:\n    def m(self):\n        self.w(k, allow_wrapping_transaction=True)\n"),
+        ("star-dict-literal", "def f():\n    anything(k, **{'allow_wrapping_transaction': True})\n"),
+        ("star-args-to-the-writer", "def f(kw):\n    apply_license_status_transition(k, **kw)\n"),
+        ("star-args-to-the-helper", "def f(kw):\n    self._lifecycle_mutation(a, **kw)\n"),
     ],
 )
 def test_the_opt_in_scan_finds_every_spelling(tmp_path, shape, source):
@@ -2444,7 +2512,10 @@ def test_the_opt_in_scan_finds_every_spelling(tmp_path, shape, source):
 def test_the_opt_in_scan_ignores_an_explicit_false_and_the_writers_own_signature(tmp_path):
     package = tmp_path / "selahcue_api"
     package.mkdir()
-    (package / "fine.py").write_text("def f():\n    writer(k, allow_wrapping_transaction=False)\n")
+    (package / "fine.py").write_text(
+        "def f(kw):\n    writer(k, allow_wrapping_transaction=False)\n"
+        "    unrelated(k, **kw)\n    other(k, **{'something_else': 1})\n"
+    )
 
     assert _opt_in_sites(package) == set()
 
@@ -2469,6 +2540,9 @@ def test_no_production_module_writes_a_status_the_record_calls_unwritten():
         ("alias", "def f():\n    writer(k, to_status=S.ARCHIVED)\n"),
         ("string", "def f():\n    writer(k, to_status='EXPIRED')\n"),
         ("forwarding-helper", "def f():\n    _lifecycle_mutation(a, to_status=LicenseKeyStatus.CONVERTED)\n"),
+        ("call-expression", "def f():\n    writer(k, to_status=LicenseKeyStatus('EXPIRED'))\n"),
+        ("call-with-alias", "def f():\n    writer(k, to_status=S('ARCHIVED'))\n"),
+        ("star-args-to-the-writer", "def f(kw):\n    apply_license_status_transition(k, **kw)\n"),
     ],
 )
 def test_the_unwritten_status_scan_finds_every_spelling(tmp_path, shape, source):
@@ -2487,6 +2561,211 @@ def test_the_unwritten_status_scan_leaves_the_written_statuses_alone(tmp_path):
     (package / "fine.py").write_text(
         "def f():\n    writer(k, to_status=LicenseKeyStatus.REVOKED)\n"
         "    writer(k, to_status=LicenseKeyStatus.ACTIVATED)\n    writer(k, to_status=LicenseKeyStatus.SUSPENDED)\n"
+        "    writer(k, to_status=LicenseKeyStatus('REVOKED'))\n    unrelated(k, **{'to_status': 'EXPIRED'})\n"
     )
 
     assert _unwritten_status_targets(package) == set()
+
+
+# =============================================================================================
+# 10. Round 3: no overflow near year 9999, the ceiling is a per-step limit, hex tokens are not
+#     keys, the behaviours that had no test, and the guards for a transaction opened by hand
+# =============================================================================================
+# --- Extend: the ceiling cannot overflow, and its edges are exact -----------------------------
+def test_a_licence_near_year_9999_is_extended_cleanly_not_with_an_overflow():
+    """`max(now, expiry) + MAX_EXTENSION_FROM_NOW` raises OverflowError for a licence whose
+    expiry is within five years of year 9999, and issuance accepts such licences. Compared by
+    subtracting instead, it answers: June to July 9999 is a month, well inside the step limit."""
+    near_the_end = datetime(9999, 6, 1, tzinfo=dt_timezone.utc)
+    key, _ = _seed_key("ext-year-9999-ok", expires_at=near_the_end)
+    assert _fresh(key).expires_at == near_the_end
+
+    result = _extend(key, datetime(9999, 7, 1, tzinfo=dt_timezone.utc))
+
+    assert result.changed is True
+    assert _fresh(key).expires_at == datetime(9999, 7, 1, tzinfo=dt_timezone.utc)
+    last_day = datetime(9999, 12, 31, 23, 59, tzinfo=dt_timezone.utc)
+    assert _extend(key, last_day, "extend-year-9999-2").changed is True
+
+
+def test_the_year_9999_refusals_still_hold_for_a_licence_that_is_not_near_it():
+    key, _ = _seed_key("ext-year-9999-refused")
+    for index, far in enumerate(
+        (
+            datetime(9999, 12, 31, tzinfo=dt_timezone.utc),
+            datetime(9999, 12, 31, 23, 0, tzinfo=dt_timezone(timedelta(hours=-5))),
+        )
+    ):
+        assert _error(_extend, key, far, f"extend-year-9999-r{index}").code == ErrorCode.VALIDATION_FAILED
+
+
+def test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused():
+    """Measured from the licence's own expiry when that is the later one, so no clock is
+    involved: `old + 5 years` passes, `old + 5 years + 1 microsecond` does not."""
+    now = timezone.now().replace(microsecond=0)
+    far = now + timedelta(days=7 * 365)
+    on_the_line, _ = _seed_key("ext-edge-on", expires_at=far)
+    over_the_line, _ = _seed_key("ext-edge-over", expires_at=far)
+    old_on, old_over = _fresh(on_the_line).expires_at, _fresh(over_the_line).expires_at
+
+    assert _error(_extend, over_the_line, old_over + MAX_EXTENSION_FROM_NOW + timedelta(microseconds=1)).code == (
+        ErrorCode.VALIDATION_FAILED
+    )
+    assert _fresh(over_the_line).expires_at == old_over
+    assert _extend(on_the_line, old_on + MAX_EXTENSION_FROM_NOW).changed is True
+    assert _fresh(on_the_line).expires_at == old_on + MAX_EXTENSION_FROM_NOW
+
+
+def test_the_ceiling_is_a_per_step_limit_not_an_absolute_cap():
+    """Stated for the owner: each extension may reach five years beyond the later of now and the
+    licence's current expiry, so several steps go further, every one of them audited. Four steps
+    of just under five years reach about 2058."""
+    key, _ = _seed_key("ext-steps")
+    steps = []
+    for index in range(4):
+        base = max(timezone.now(), _fresh(key).expires_at)
+        target = base + MAX_EXTENSION_FROM_NOW - timedelta(days=1)
+        _extend(key, target, f"extend-step-{index:04d}-key")
+        steps.append(target)
+
+    assert _fresh(key).expires_at == steps[-1]
+    assert steps[-1] > timezone.now() + 3 * MAX_EXTENSION_FROM_NOW
+    assert _rows(key, action=EXTEND_ACTION).count() == 4, "every step is audited"
+
+
+# --- Extend: a replay whose earlier record cannot be read is a mismatch, not a replay ---------
+@pytest.mark.parametrize(
+    "damaged",
+    [{}, {"expires_at": "not a date"}, {"expires_at": 20261231}, {"expires_at": None}, {"expires_at": ""}],
+    ids=["field-missing", "not-a-date", "not-a-string", "null", "empty"],
+)
+def test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay(damaged):
+    key, _ = _seed_key("ext-replay-damaged")
+    target = _later(60)
+    first = _extend(key, target, "extend-damaged-key-1")
+    AuditEvent.objects.filter(pk=first.audit_event.pk).update(after=damaged)
+    rows_before = _rows(key).count()
+
+    error = _error(_extend, key, target, "extend-damaged-key-1")
+
+    assert error.code == ErrorCode.VALIDATION_FAILED
+    assert _rows(key).count() == rows_before
+    assert _fresh(key).expires_at == target
+
+
+# --- Credential detector: the edges the key shape is defined by -------------------------------
+@pytest.mark.parametrize("odd", ["I", "O", "0", "1"])
+def test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key(odd):
+    """The key alphabet leaves out I, O, 0 and 1 on purpose. Eight groups of four where one group
+    holds one of them cannot be a key, and the detector must not call it one."""
+    key, _ = _seed_key(f"cred-alpha-{ord(odd)}")
+    groups = ["ABCD", "EFGH", "JKLM", "NPQR", "STUV", "WXYZ", "2345", "678" + odd]
+    reason = "Reference " + " ".join(groups) + " from the processor."
+
+    _revoke(key, reason=reason)
+
+    assert _rows(key, action=REVOKE_ACTION).get().reason == reason
+
+
+def test_a_hex_token_with_one_character_outside_hex_is_still_refused():
+    """The exemption is for tokens that are ALL hex. A run-together token with one letter outside
+    A-F is back to being a key shape: a real key has such a letter with probability 1 - 1e-12."""
+    key, _ = _seed_key("cred-hex-one-off")
+    not_hex = HEX_TOKEN_WITHOUT_0_OR_1[:-1] + "G"
+
+    assert _error(_revoke, key, reason=f"Trace id {not_hex} from the log.").code == CREDENTIAL
+
+
+def test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key():
+    """Grouped form: a hex run introduced by a four-letter label ("DUMP") has ONE group outside
+    hex and is not a key; two such groups (a label and a stray word, or a real key) are. A real
+    key has at most one all-hex group with probability about 1e-9, so nothing real slips through."""
+    key, _ = _seed_key("cred-hex-two-groups")
+    one_group = HEX_GROUPS_WITHOUT_0_OR_1[:-1] + "G"  # last group ABCG
+    two_groups = "ABCG" + HEX_GROUPS_WITHOUT_0_OR_1[4:-4] + "ABCH"  # first and last group
+
+    _revoke(key, reason=f"Dump {one_group} line.")
+    assert _error(_revoke, key, "cred-hex-two-grp-2", reason=f"Dump {two_groups} line.").code == CREDENTIAL
+
+
+@pytest.mark.parametrize("which", ["revoke", "extend"])
+def test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused(which):
+    key, _ = _seed_key(f"cred-hex-rk-{which}")
+    grouped = "ABCD-EFGH-JKLM-NPQR-STUV-WXYZ-2345-6789"
+
+    assert _error(LIFECYCLE_CALLS[which], key, grouped, REASON).code == CREDENTIAL
+
+
+def test_a_bare_32_character_key_alphabet_token_is_accepted_as_a_retry_key():
+    """The docstring promises it: a retry key is client-chosen and a bare 32-character token is
+    ordinary, so only the GROUPED shape is refused there."""
+    key, _ = _seed_key("cred-rk-bare")
+    _revoke(key, KEY_ALPHABET_TOKEN)
+    assert _rows(key, action=REVOKE_ACTION).get().request_id == KEY_ALPHABET_TOKEN
+
+
+# --- Refusal audit: the budget identity includes the kind of actor ----------------------------
+@pytest.mark.parametrize("which", sorted(MUTATIONS))
+def test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget(which, settings):
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT = (1, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL = (100, 60)
+    call, permission, denied_action = MUTATIONS[which]
+    key, _ = _seed_key(f"authz-samekind-{which}")
+
+    _error(call, key, ActorContext(kind=ActorKind.CUSTOMER, actor_id="the-same-id-7"), "samekind-req-0001")
+    _error(call, key, ActorContext(kind=ActorKind.STAFF, actor_id="the-same-id-7"), "samekind-req-0002")
+    _error(call, key, ActorContext(kind=ActorKind.CUSTOMER, actor_id="the-same-id-7"), "samekind-req-0003")
+
+    rows = list(AuditEvent.objects.filter(action=denied_action).order_by("id"))
+    assert [(r.actor_kind, r.request_id) for r in rows] == [
+        ("customer", "samekind-req-0001"),
+        ("staff", "samekind-req-0002"),
+    ], "one row each: the staff member's budget is their own, the customer's second attempt is capped"
+
+
+def test_the_sustained_denial_log_line_names_the_kind_of_actor_that_tripped_the_cap(caplog, settings):
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT = (100, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL = (1, 60)
+    throttle_guards._reset_denial_log_suppression()
+    key, _ = _seed_key("authz-kindlog")
+
+    with caplog.at_level(logging.WARNING, logger=throttle_guards.logger.name):
+        for n in range(4):
+            _error(revoke_license_key, ActorContext(kind=ActorKind.CUSTOMER, actor_id=f"cust_{n}"),
+                   _revoke_data(key, f"kindlog-req-{n:04d}"))
+    throttle_guards._reset_denial_log_suppression()
+
+    lines = [r.getMessage() for r in caplog.records if "is refusing requests" in r.getMessage()]
+    assert len(lines) == 1 and "customer" in lines[0], lines
+
+
+# --- A transaction opened by hand is a transaction too ----------------------------------------
+@pytest.mark.parametrize("which", ["revoke", "extend", "suspend", "reinstate"])
+def test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand(which):
+    key, _ = _seed_key(f"manual-tx-{which}")
+    connection.set_autocommit(False)
+    try:
+        assert not connection.in_atomic_block, "the premise: this is the case in_atomic_block misses"
+        with CaptureQueriesContext(connection) as queries:
+            error = _error(LIFECYCLE_CALLS[which], key, FRESH_KEY, REASON)
+    finally:
+        connection.rollback()
+        connection.set_autocommit(True)
+
+    assert error.code == ErrorCode.INTERNAL
+    assert len(queries) == 0, [q["sql"][:70] for q in queries.captured_queries]
+    assert _fresh(key).status == S.ISSUED
+
+
+def test_the_writer_itself_refuses_a_transaction_opened_by_hand():
+    key, _ = _seed_key("manual-tx-writer")
+    connection.set_autocommit(False)
+    try:
+        assert not connection.in_atomic_block
+        with pytest.raises(WrappedTransitionRefused):
+            _writer_call(key)
+    finally:
+        connection.rollback()
+        connection.set_autocommit(True)
+    assert _fresh(key).status == S.ISSUED
+    assert _writer_call(key).changed is True, "positive control: back in autocommit it runs"

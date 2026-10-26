@@ -4,6 +4,28 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-020 - `CREDENTIAL_IN_INPUT`: a licence key typed into a lifecycle reason or retry key is refused with its own error code (PROPOSED)
+
+- **Date:** 2026-10-26
+- **Stage:** Platform licensing / staff lifecycle mutations - revoke and extend, ClickUp [86ak1090r](https://app.clickup.com/t/86ak1090r), PR #233
+- **Decided by:** Backend engineer (Kenji), as a proposal in PR #233. **Not yet accepted by the owner.**
+- **Type:** Security posture / error contract
+- **Status:** PROPOSED
+
+**Decision.** The staff lifecycle mutations (`adminRevokeLicenseKey`, `adminExtendLicenseKey`, `adminSuspendLicenseKey`, `adminReinstateLicenseKey`) refuse a `reason` that contains a full licence key, and an idempotency key shaped like one, with the new error code `CREDENTIAL_IN_INPUT` (HTTP 400 where an error is rendered as JSON) and a fixed message that names the problem and carries none of the key. It is a split of `VALIDATION_FAILED`, following `PASSWORD_INVALID` (DEC-017), and the only one on the staff admin surface.
+
+**Why.** FLOW-504 is a "leaked key kill": the person writing the reason has the key in front of them and pasting it is the natural slip. The audit trail is append-only and NFR-508 allows no plaintext licensing credential at rest, so a key that reaches it can never be taken back. Refusing is safe; redacting would falsify the record. Every other validation failure reaches the wire as the generic "The request is invalid." (`safe_graphql_error`), which would leave the person with nothing to act on, so the refusal needs a code of its own.
+
+**What it is not.** It is not an anti-enumeration exception: it is raised after the caller has been authorised as staff, so there is no collapse to protect (DEC-012 and DEC-017 concern unauthenticated or token-holding callers). It reveals only that the input matched the key shape.
+
+**Detector and limits.** The key's shape (eight groups of four characters from the key alphabet, one to three separators between groups, or the 32 characters run together; NFKC-normalised and stripped of format characters; the retry key is checked in the grouped form only). Hex tokens (hashes, trace ids, hex dumps) are not refused. Known false positive: eight four-letter words in a row that avoid I, O, 0 and 1, and a hex run with two or more four-letter words beside it. Not recognised: partly grouped keys, homoglyphs, images.
+
+**Affected items.** `selahcue_api/graphql/errors.py` (the code and its fixed message), `platform/responses.py` (the /v1 status map must stay total), `docs/architecture/ADMIN-LICENSING-ARCHITECTURE.md` (Error Taxonomy), the admin console (must render the message; no client handles the code yet).
+
+**Reversibility.** Reversible: map the code back to `VALIDATION_FAILED`. Doing so leaves the refusal in place and removes only the explanation.
+
+---
+
 ## DEC-019 - The cloud client trusts the operating-system certificate store; ring stays the only crypto provider (reqwest 0.13)
 
 - **Date:** 2026-10-24
