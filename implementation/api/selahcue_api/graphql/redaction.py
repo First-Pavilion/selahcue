@@ -35,7 +35,7 @@ RESTRICTED_PAYLOAD_FIELDS = frozenset(
         "new_password",
         "current_password",
         # Credential tokens (86ak5r2pt): the raw value and the at-rest hash. No existing writer
-        # puts any of these four names in an audit `after` or a /v1 payload. NOT in this set,
+        # puts any of these three names in an audit `after` or a /v1 payload. NOT in this set,
         # deliberately: `token_fingerprint`. `device.activated` and `device_token.reminted`
         # record the device token's fingerprint under that exact key so an operator can follow a
         # device across a renewal (new fingerprint, then the next row's superseded one); listing

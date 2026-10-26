@@ -1674,7 +1674,7 @@ def test_an_oversized_source_cannot_stop_the_record_being_written():
     with pytest.raises(SafeAPIError):
         services.confirm_password_reset("SC-PRS-whatever", GOOD_PASSWORD, client_ip="9" * 140)
     (row,) = failed_rows()
-    assert re.fullmatch(r"src:[0-9a-f]{32}", row.actor_id)
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", row.actor_id)
 
 
 @pytest.mark.django_db
@@ -1715,22 +1715,21 @@ def test_the_row_never_holds_the_address_it_was_caused_by(client, caplog):
 
     assert contains_any(failed_rows_as_text(), needles) == [], "an address reached the audit table"
     assert contains_any(caplog.text, needles) == [], "an address reached a log line"
-
-
 def test_the_pseudonym_is_pinned_keyed_rotating_and_per_source():
     """The construction is pinned by an INDEPENDENT recomputation, not by calling the function
-    under test: HMAC-SHA256 keyed by HMAC-SHA256(SECRET_KEY, "audit-source-v1") over
-    "<UTC date>|<bucket>", first 32 hex characters, prefixed "src:"."""
+    under test: key = SHA-256(key_salt + SECRET_KEY) (Django's salted_hmac), then HMAC-SHA-256 of
+    "<UTC date>|<bucket>" under it, first 32 hex characters, prefixed "src:v1:"."""
     import hashlib
     import hmac
 
     from django.conf import settings as django_settings
 
-    key = hmac.new(django_settings.SECRET_KEY.encode(), b"audit-source-v1", hashlib.sha256).digest()
-    expected = "src:" + hmac.new(key, b"2026-10-26|203.0.113.5", hashlib.sha256).hexdigest()[:32]
+    salt = b"selahcue_api.apps.accounts.audit_source.v1"
+    key = hashlib.sha256(salt + django_settings.SECRET_KEY.encode()).digest()
+    expected = "src:v1:" + hmac.new(key, b"2026-10-26|203.0.113.5", hashlib.sha256).hexdigest()[:32]
 
     assert services.audit_source_pseudonym("203.0.113.5", date(2026, 10, 26)) == expected
-    assert re.fullmatch(r"src:[0-9a-f]{32}", expected)
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", expected)
     # rotating: a new UTC day is a new pseudonym for the same source
     assert services.audit_source_pseudonym("203.0.113.5", date(2026, 10, 27)) != expected
     # per source: two sources never share one on the same day
@@ -1738,6 +1737,11 @@ def test_the_pseudonym_is_pinned_keyed_rotating_and_per_source():
     # keyed: it is not a bare hash of the address
     assert hashlib.sha256(b"203.0.113.5").hexdigest()[:32] not in expected
     assert hashlib.sha256(b"2026-10-26|203.0.113.5").hexdigest()[:32] not in expected
+    # structurally unlike a credential fingerprint: the derived key is NOT the one `_fingerprint`
+    # uses (HMAC keyed by SECRET_KEY itself), so no pseudonym can coincide with a fingerprint.
+    old_style_key = hmac.new(django_settings.SECRET_KEY.encode(), b"audit-source-v1", hashlib.sha256).digest()
+    assert key != old_style_key
+    assert services._fingerprint("2026-10-26|203.0.113.5") not in expected
 
 
 @pytest.mark.django_db
@@ -1888,6 +1892,9 @@ def test_many_sources_cannot_cause_more_trace_rows_than_the_cross_source_brake_a
 
     assert codes == ["VALIDATION_FAILED"] * 10, "the brake changed a response"
     assert len(failed_rows()) == 3
+    # Nothing was REFUSED, so the shared guard's "refusing requests (RATE_LIMITED)" warning would
+    # be false here; the brake reports its own skips (below) in its own words.
+    assert not [r for r in caplog.records if "is refusing requests" in r.getMessage()]
     skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
     assert len(skipped) == 1 and "skipped 1 audit row(s)" in skipped[0] and "cross-source" in skipped[0]
     clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
@@ -1939,30 +1946,51 @@ def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows
 
 
 @pytest.mark.django_db
-def test_the_trace_brakes_hold_bounded_state_however_many_sources_there_are(client, settings):
-    """Bounded memory, in a form that bites: 300 distinct sources, and the brake still occupies ONE
-    cache key (a per-source key would make it 300), while the report tallies hold only scalars and
-    a capped string (a per-source map or list would not)."""
+def test_the_trace_brakes_hold_bounded_state_however_many_sources_there_are(client, settings, monkeypatch):
+    """Bounded memory, in a form that bites: 300 distinct sources, and the shared brake still
+    touches ONE limiter key (a per-source key would make it 300), while the report tallies hold
+    only scalars, a capped string and a capped set of account ids (a per-source map or list would
+    not). Keys are recorded where the code spends a budget, not read off the cache: the cache
+    here is LocMemCache, whose `_cache` Redis has no equivalent of, and CI runs Redis."""
     settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (5, 3600)
+    touched = _record_limiter_keys(monkeypatch)
 
     _fail_from_many_sources(client, 250)
     v6_codes = [
-        confirm(client, "SC-PRS-flood-v6", GOOD_PASSWORD, REMOTE_ADDR=f"2001:db8:{n:x}::1") for n in range(50)
+        error_code(confirm(client, "SC-PRS-flood-v6", GOOD_PASSWORD, REMOTE_ADDR=f"2001:db8:{n:x}::1"))
+        for n in range(50)
     ]
 
+    assert v6_codes == ["VALIDATION_FAILED"] * 50
     assert len(failed_rows()) == 5
-    brake_keys = [key for key in cache._cache if services.RESET_CONFIRM_TRACE_SCOPE in key]
+    brake_keys = [key for key in touched if services.RESET_CONFIRM_TRACE_SCOPE in key]
     assert len(brake_keys) == 1, brake_keys
+    # CONTROL: the recorder saw the per-source keys too, i.e. it records what the code touches.
+    assert len([key for key in touched if "password_reset_confirm_ip" in key]) >= 250
     scalars = (int, float, str, type(threading.Lock()))
     for tally in (services._trace_lost_tally, services._trace_skipped_tally):
-        assert all(isinstance(value, scalars) for value in vars(tally).values()), vars(tally)
+        assert all(
+            isinstance(value, scalars) or (isinstance(value, set) and all(isinstance(i, int) for i in value))
+            for value in vars(tally).values()
+        ), vars(tally)
         assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
-    assert len(v6_codes) == 50
-
-
-def test_the_shipped_trace_brakes_are_pinned():
+        assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
+def test_the_shipped_trace_brakes_are_pinned(settings):
+    """The module defaults and the shipped settings agree, and the numbers are pinned: a brake
+    inflated to nothing passes every behavioural test, which tighten it to make it trip."""
     assert services.RESET_CONFIRM_TRACE_BUDGET == (1000, 3600)
     assert services.RESET_CONFIRM_TRACE_DEGRADED_CEILING == (200, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_BUDGET == (60, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING == (30, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX == 1024
+    assert settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE == services.RESET_CONFIRM_TRACE_BUDGET
+    assert settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING == services.RESET_CONFIRM_TRACE_DEGRADED_CEILING
+    assert settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT == services.RESET_CONFIRM_TRACE_ACCOUNT_BUDGET
+    assert (
+        settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING
+        == services.RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING
+    )
+    assert services._reset_confirm_trace_account_ceilings._max_entries == services.RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX
 
 
 # --- the write itself: a failed INSERT leaves nothing and poisons nothing ---------------------
@@ -2021,12 +2049,228 @@ def test_a_hostile_remote_addr_is_never_stored_raw(client):
     assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=hostile)) == "VALIDATION_FAILED"
 
     (row,) = failed_rows()
-    assert re.fullmatch(r"src:[0-9a-f]{32}", row.actor_id)
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", row.actor_id)
     assert row.after == {"outcome": OUTCOME.UNKNOWN_TOKEN.value}
     text = failed_rows_as_text()
     assert "evil" not in text and "DROP" not in text
     for column in (row.actor_id, row.request_id, row.target_type, row.target_id, row.source_surface, row.reason):
         assert column.isprintable(), repr(column)
+
+
+def _record_limiter_keys(monkeypatch):
+    """Record every limiter key the code touches. Recorded at `evaluate_budget`, the same way
+    tests/test_password_reset_throttle.py does, so an assertion means the same thing on
+    LocMemCache (local) and Redis (CI), where `cache._cache` does not exist."""
+    touched = {}
+    real_evaluate = guards.evaluate_budget
+
+    def recording(store, key, limit, window_seconds):
+        touched[key] = window_seconds
+        return real_evaluate(store, key, limit, window_seconds)
+
+    monkeypatch.setattr(guards, "evaluate_budget", recording)
+    return touched
+
+
+# --- the two allowances: noise cannot blind the trace to a probe of an account's link ----------
+def _fresh_account_with_a_live_link(client, sender, tag):
+    """A verified account with a live reset link; returns (user id, raw token)."""
+    email = f"{tag}@grace.example"
+    token = live_reset_token(client, sender, email=email)
+    return CustomerUser.objects.get(email=email).id, token
+
+
+def _rows_naming(user_id):
+    return [row for row in failed_rows() if (row.target_type, row.target_id) == ("customer_user", str(user_id))]
+
+
+@pytest.mark.django_db
+def test_a_flood_of_unauthenticated_noise_cannot_blind_the_trace_to_a_probe_of_an_account(
+    client, sender, settings
+):
+    """The shared brake is spent only by outcomes that NAME NO ACCOUNT. With it fully spent by 50
+    sources' unknown tokens, a rejected password behind account B's live link and a wrong-purpose
+    token of account C -- the shapes a probe of a skimmed link takes -- still leave their rows."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (3, 3600)
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    verify_c = live_verify_token(client, sender, idem="noise-purpose-0001", email="charlie@grace.example")
+    user_c = token_row(verify_c).customer_user_id
+
+    codes = _fail_from_many_sources(client, 50)
+    assert codes == ["VALIDATION_FAILED"] * 50
+    assert len(failed_rows()) == 3, "the shared brake did not stop at its limit"
+
+    assert error_code(confirm(client, token_b, SHORT_PASSWORD, REMOTE_ADDR="198.51.100.201")) == "PASSWORD_INVALID"
+    assert error_code(confirm(client, verify_c, GOOD_PASSWORD, REMOTE_ADDR="198.51.100.202")) == "VALIDATION_FAILED"
+
+    assert [row.after["outcome"] for row in _rows_naming(user_b)] == [OUTCOME.PASSWORD_REJECTED.value]
+    assert [row.after["outcome"] for row in _rows_naming(user_c)] == [OUTCOME.WRONG_PURPOSE.value]
+
+
+@pytest.mark.django_db
+def test_one_accounts_allowance_is_its_own_and_noise_cannot_spend_it(client, sender, settings):
+    """Account A is probed six times with an allowance of three: exactly three rows for A. A
+    stranger's unknown tokens first, and a flood against A, leave account B's row untouched,
+    and the stranger's noise did not spend A's allowance either."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (3, 3600)
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+
+    _fail_from_many_sources(client, 10)  # noise that names no account
+    for n in range(6):
+        confirm(client, token_a, SHORT_PASSWORD, REMOTE_ADDR=f"203.0.113.{n + 10}")
+    confirm(client, token_b, SHORT_PASSWORD, REMOTE_ADDR="203.0.113.99")
+
+    assert len(_rows_naming(user_a)) == 3, "the per-account allowance did not bound the rows"
+    assert len(_rows_naming(user_b)) == 1, "a flood against account A stopped a row for account B"
+    assert len(failed_rows()) == 10 + 3 + 1, "the stranger's noise spent someone's allowance"
+    assert token_row(token_a).consumed_at is None and token_row(token_b).consumed_at is None
+
+
+@pytest.mark.django_db
+def test_while_the_limiter_store_is_down_each_account_has_its_own_process_local_allowance(
+    client, sender, settings, monkeypatch
+):
+    """The same split in the outage ceiling: noise spends the shared per-worker ceiling, a named
+    outcome spends only its account's, and a second account is unaffected by the first."""
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (2, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (2, 3600)
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+
+    noise = _fail_from_many_sources(client, 6)
+    a_codes = [error_code(confirm(client, token_a, SHORT_PASSWORD)) for _ in range(5)]
+    b_codes = [error_code(confirm(client, token_b, SHORT_PASSWORD)) for _ in range(3)]
+
+    assert noise == ["VALIDATION_FAILED"] * 6 and a_codes == ["PASSWORD_INVALID"] * 5 and b_codes == ["PASSWORD_INVALID"] * 3
+    assert len(failed_rows()) - len(_rows_naming(user_a)) - len(_rows_naming(user_b)) == 2, "shared ceiling"
+    assert len(_rows_naming(user_a)) == 2, "account A's process-local allowance did not bound its rows"
+    assert len(_rows_naming(user_b)) == 2, "account B was held to account A's spent allowance"
+
+
+def test_the_per_account_outage_table_is_bounded_and_counts_each_account_separately(monkeypatch):
+    """Bounded memory, in a form that bites: 5000 distinct accounts through a table of 8 never hold
+    more than 8, the limit still applies per account, and a window that has lapsed starts over."""
+    clock = FakeClock(monkeypatch)
+    table = services._AccountCeilings(setting_name="W2_UNSET_SETTING", default=(2, 3600), max_entries=8)
+
+    for account in range(5000):
+        assert table.claim(account) is True
+    assert len(table._windows) <= 8
+
+    table.reset()
+    assert [table.claim(1), table.claim(1), table.claim(1), table.claim(2)] == [True, True, False, True]
+    clock.advance(3601)
+    assert table.claim(1) is True, "a lapsed window must start over"
+
+
+def test_the_skip_report_names_at_most_twenty_distinct_accounts():
+    tally = services._SuppressedTally()
+    assert tally.note("first", 7) is not None  # the first event is released immediately
+    for account in range(100):
+        tally.note("again", account)
+    assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
+    tally._last_report = float("-inf")
+    count, first, accounts = tally.note("last", 3)
+    assert len(accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX and accounts == sorted(accounts)
+    assert count == 101
+
+
+@pytest.mark.django_db
+def test_the_skip_report_lists_the_accounts_whose_rows_were_skipped(client, sender, settings, monkeypatch, caplog):
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (1, 3600)
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    clock = FakeClock(monkeypatch)
+    caplog.set_level(logging.WARNING)
+
+    for token in (token_a, token_a, token_b, token_b):
+        confirm(client, token, SHORT_PASSWORD)
+    clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
+    confirm(client, token_a, SHORT_PASSWORD)
+
+    skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
+    assert len(skipped) == 2 and "per-account" in skipped[0]
+    assert f"accounts [{min(user_a, user_b)}, {max(user_a, user_b)}]" in skipped[1], skipped[1]
+
+
+# --- the whole trace body is protected, not just the INSERT ------------------------------------
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("setting", "value", "outage", "named"),
+    [
+        ("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE", "garbage", False, False),
+        ("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT", "garbage", False, True),
+        ("SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING", 5, True, False),
+        ("SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING", 5, True, True),
+    ],
+)
+def test_a_malformed_trace_setting_never_changes_the_answer(
+    client, sender, settings, monkeypatch, caplog, setting, value, outage, named
+):
+    """`_trace_failed_confirm` runs while the original failure is being handled; anything it raises
+    would REPLACE that failure (the view then masks it, so a rejected password would be answered
+    as a dead token). A malformed setting here must cost a counted row, never the answer."""
+    reset_token = live_reset_token(client, sender)
+    token, password, code = (reset_token, SHORT_PASSWORD, "PASSWORD_INVALID") if named else ("SC-PRS-nope", GOOD_PASSWORD, "VALIDATION_FAILED")
+    healthy = confirm(client, token, password).content
+    rows_before = len(failed_rows())
+    if outage:
+        monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    setattr(settings, setting, value)
+    services._reset_trace_reporting()
+    caplog.clear()
+
+    resp = confirm(client, token, password)
+
+    assert error_code(resp) == code and resp.content == healthy, "a malformed trace setting changed the answer"
+    assert len(failed_rows()) == rows_before, "a row was written despite the malformed setting"
+    assert [r for r in caplog.records if r.name == services.__name__ and "could not write the audit row" in r.getMessage()]
+
+
+# --- the day seam's real body, which every other test replaces ---------------------------------
+_REAL_AUDIT_SOURCE_DAY = services._audit_source_day
+
+
+def test_the_real_audit_source_day_is_the_utc_date(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    before = datetime.now(timezone.utc).date()
+    got = _REAL_AUDIT_SOURCE_DAY()
+    assert got in {before, datetime.now(timezone.utc).date()}
+    # Not the local date, not today's date by another route: an aware time late on the 26th at
+    # UTC-5 is already the 27th in UTC.
+    monkeypatch.setattr(
+        services.djtz, "now", lambda: datetime(2026, 10, 26, 23, 30, tzinfo=timezone(timedelta(hours=-5)))
+    )
+    assert _REAL_AUDIT_SOURCE_DAY() == date(2026, 10, 27)
+
+
+@pytest.mark.django_db
+def test_the_operator_command_defaults_to_today(client, monkeypatch):
+    monkeypatch.setattr(services, "_audit_source_day", _REAL_AUDIT_SOURCE_DAY)
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+
+    out = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out)
+
+    assert "1 failed confirm(s)" in out.getvalue()
+
+
+@pytest.mark.django_db
+def test_an_unencodable_token_is_a_malformed_token_with_the_ordinary_answer(client):
+    """Lone surrogates in `token`: hashing would raise. Same collapsed answer, byte for byte, as
+    an unknown token, and traced as malformed, not as an internal error."""
+    dead = confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD).content
+
+    resp = confirm(client, "\ud800" * 20, GOOD_PASSWORD)
+
+    assert resp.content == dead
+    assert [row.after["outcome"] for row in failed_rows()] == [
+        OUTCOME.UNKNOWN_TOKEN.value,
+        OUTCOME.MALFORMED_TOKEN.value,
+    ]
 
 
 # --- AUTH-6: account-based device activation --------------------------------

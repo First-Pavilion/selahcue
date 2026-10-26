@@ -451,6 +451,33 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   (about 1.5 s at the defaults). Response time then shows whether an account exists. Tracked in
   17tnw2b2k4x.
 
+### The failed password-reset confirm trace (86ak5r2pt)
+
+Every `confirmPasswordReset` that fails past the per-IP budget writes one audit row
+(`customer_user.password_reset_confirm_failed`, result DENIED). It holds the outcome, a random
+attempt id, the account id when the token resolved, and the source as a keyed, daily-rotating
+pseudonym `src:v1:<32 hex>` (never the address). Four knobs bound how many rows are written; they
+skip the **row**, never the response, and ship in `settings.py`:
+
+- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE` (1000 an hour): outcomes that name no account (unknown or
+  malformed token), shared by everyone.
+- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT` (60 an hour): outcomes that name an account, **per
+  account**, so noise cannot hide a probe of one account's link.
+- `SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING` (200 an hour) and
+  `SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING` (30 an hour per account, at most 1024
+  accounts tracked): the same two, per worker, applying only while the rate-limit store is down.
+
+A skipped or unwritable row is counted and logged once a minute per worker (`skipped N audit
+row(s)` / `could not write the audit row`), with the first one's outcome and pseudonym and up to
+20 account ids. That line is the signal to look.
+
+To find the rows from a known address: `python manage.py failed_reset_confirms --ip <address>
+[--date YYYY-MM-DD]`. It prints account ids, so **do not run it in CI or put its output in a log
+that is kept**. A pseudonymised address is still personal data. Rotating `SECRET_KEY` makes older
+rows unfindable by address (the pseudonym is recomputed from the current key only;
+`SECRET_KEY_FALLBACKS` is not consulted); the rows stay until retention removes them
+(17tnw2b9dp1).
+
 ---
 
 ## 6c. Ops requirements — Django behind a TLS-terminating proxy

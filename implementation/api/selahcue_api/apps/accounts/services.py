@@ -8,6 +8,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from datetime import timezone as dt_timezone
@@ -20,6 +21,7 @@ from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone as djtz
+from django.utils.crypto import salted_hmac
 from django.utils.text import slugify
 
 from selahcue_api.apps.accounts.models import (
@@ -42,7 +44,7 @@ from selahcue_api.apps.throttling.guards import (
     enforce_budget_reporting_outage,
     spend_budget,
 )
-from selahcue_api.apps.throttling.services import BudgetOutcome, _bucket_for_throttling
+from selahcue_api.apps.throttling.services import BudgetOutcome, bucket_for_throttling
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -332,17 +334,31 @@ RESET_CONFIRM_IP_BUDGET = (20, 3600)
 # point, what it must never hold.
 RESET_CONFIRM_FAILED_ACTION = "customer_user.password_reset_confirm_failed"
 
-# A cross-source brake on how many of those rows are written per hour, and a process-local
-# ceiling that stands in for it (and for the per-source budget) while the limiter store is down.
-# Both skip the ROW and never the response. The per-source budget bounds one source; it does not
-# bound a flood from many sources (a trusted-proxy hop count set too high lets a caller pick its
-# own left-hand X-Forwarded-For entry per request, i.e. a fresh source per request) and it
-# bounds nothing at all while the store is down and every budget fails open. Sized generously:
-# a legitimate failed confirm must not lose its trace, so this is a flood brake and not a
-# budget. Overridable by the named settings; settings.py does not ship them.
+# Bounds on how many of those rows are written. The per-source budget bounds one source; it does
+# not bound a flood from many sources (a trusted-proxy hop count set too high lets a caller pick
+# its own left-hand X-Forwarded-For entry per request, i.e. a fresh source per request) and it
+# bounds nothing at all while the store is down and every budget fails open. All of these skip
+# the ROW and never the response, and all are sized generously: a legitimate failed confirm must
+# not lose its trace, so they are flood brakes and not budgets. Settings of the same names ship
+# in settings.py.
+#
+# TWO allowances, because one shared counter would let anyone blind the trace to the outcomes it
+# exists for (see `_trace_skip_reason`):
+#   - outcomes that name NO account (unknown or malformed token, an internal error before any
+#     account was identified) spend a SHARED budget per hour, and a per-worker ceiling in an
+#     outage;
+#   - outcomes that name an ACCOUNT (consumed, expired, wrong purpose, rejected password, an
+#     internal error after the token validated) spend only that account's own allowance, keyed by
+#     user id: 60 an hour (a person retrying a weak password needs a handful, and the per-source
+#     budget already caps one source at 20), and 30 an hour per worker in an outage, tracked in a
+#     table of at most RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX accounts.
 RESET_CONFIRM_TRACE_SCOPE = "password_reset_confirm_trace_global"
 RESET_CONFIRM_TRACE_BUDGET = (1000, 3600)
 RESET_CONFIRM_TRACE_DEGRADED_CEILING = (200, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_SCOPE = "password_reset_confirm_trace_account"
+RESET_CONFIRM_TRACE_ACCOUNT_BUDGET = (60, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (30, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX = 1024
 
 
 class ResetConfirmOutcome(str, Enum):
@@ -1443,23 +1459,33 @@ class _ResetConfirmTrace:
 # The row must let an operator ask "every failed confirm from this source" without the table
 # holding the address itself: the draft privacy policy promises that rate-limit counters expire
 # within an hour and that audit records name who acted by an internal identifier. So the actor id
-# is a KEYED, DAILY-ROTATING PSEUDONYM of the source bucket, `src:<32 hex>`:
+# is a KEYED, DAILY-ROTATING PSEUDONYM of the source bucket, `src:v1:<32 hex>`:
 #
-#   HMAC-SHA256(key = HMAC-SHA256(SECRET_KEY, "audit-source-v1"), msg = "<UTC date>|<bucket>")
+#   salted_hmac(key_salt = "...audit_source.v1", value = "<UTC date>|<bucket>", SHA-256)[:32]
+#
+# i.e. Django's own derivation, key = SHA-256(key_salt + SECRET_KEY), then HMAC-SHA-256 under that
+# key. It is structurally unlike `_fingerprint` (HMAC keyed by SECRET_KEY itself over the value),
+# so no pseudonym can ever coincide with a credential fingerprint, whatever string is hashed.
 #
 # - keyed, so a table dump alone does not reveal addresses and a rainbow table of IPv4 space is
 #   useless without SECRET_KEY;
 # - rotating, so the same address is a different pseudonym tomorrow and a source cannot be
 #   followed across days from the table alone;
+# - versioned (`v1`), so a future change of scheme is recognisable in the stored value;
 # - computed from the same /64-bucketed string `client_ip()` gives the budget, so the record and
 #   the budget agree about what "one source" is.
+#
+# ROTATING SECRET_KEY ORPHANS EVERY OLDER ROW: the pseudonym is recomputed from the CURRENT key
+# (`SECRET_KEY_FALLBACKS` is not consulted), so rows written before the rotation can no longer be
+# found from an address; they remain, unreadable as sources, until retention removes them.
 #
 # It is STILL PERSONAL DATA: whoever holds SECRET_KEY can test a candidate address against the
 # table, which is exactly what `manage.py failed_reset_confirms --ip` does. Pseudonymising is not
 # anonymising, and it is no substitute for a retention period for these rows, which is a
 # separate open ticket (17tnw2b9dp1). The two fixed labels below carry no address at all.
-_AUDIT_SOURCE_KEY_LABEL = b"audit-source-v1"
+_AUDIT_SOURCE_KEY_SALT = "selahcue_api.apps.accounts.audit_source.v1"
 AUDIT_SOURCE_PREFIX = "src:"
+AUDIT_SOURCE_VERSIONED_PREFIX = "src:v1:"
 # `client_ip()` returns "unknown" when REMOTE_ADDR is absent; this module substitutes
 # UNRESOLVED_CLIENT_IP when the resolver had no request at all. Neither is an address.
 _UNATTRIBUTED_SOURCES = frozenset({UNRESOLVED_CLIENT_IP, "unknown"})
@@ -1475,9 +1501,9 @@ def audit_source_pseudonym(source: str, day: date | None = None) -> str:
     `client_ip()` returns it) on `day` (UTC; default today)."""
     if source in _UNATTRIBUTED_SOURCES:
         return f"{AUDIT_SOURCE_PREFIX}{source}"
-    key = hmac.new(settings.SECRET_KEY.encode("utf-8"), _AUDIT_SOURCE_KEY_LABEL, hashlib.sha256).digest()
-    message = f"{(day or _audit_source_day()).isoformat()}|{source}".encode("utf-8")
-    return AUDIT_SOURCE_PREFIX + hmac.new(key, message, hashlib.sha256).hexdigest()[:32]
+    value = f"{(day or _audit_source_day()).isoformat()}|{source}"
+    digest = salted_hmac(_AUDIT_SOURCE_KEY_SALT, value, algorithm="sha256").hexdigest()
+    return AUDIT_SOURCE_VERSIONED_PREFIX + digest[:32]
 
 
 def audit_source_pseudonym_for_address(address: str, day: date | None = None) -> str:
@@ -1489,24 +1515,28 @@ def audit_source_pseudonym_for_address(address: str, day: date | None = None) ->
         audit_source_pseudonym_for_address("203.0.113.5")
         # then: AuditEvent.objects.filter(action=RESET_CONFIRM_FAILED_ACTION, actor_id=<that>)
     """
-    return audit_source_pseudonym(_bucket_for_throttling(ipaddress.ip_address(address.strip())), day)
+    return audit_source_pseudonym(bucket_for_throttling(ipaddress.ip_address(address.strip())), day)
 
 
 # --- bounded reporting for the trace itself ---------------------------------------------------
 _TRACE_REPORT_INTERVAL_SECONDS = 60.0
 _TRACE_REPORT_DETAIL_MAX = 96
+# How many distinct skipped account ids one report names. The set is capped, so the tally stays
+# bounded however many accounts are probed.
+_TRACE_REPORT_ACCOUNTS_MAX = 20
 
 
 class _SuppressedTally:
-    """Counts events and releases ONE report a minute: how many since the last report, and what
-    the first of them looked like.
+    """Counts events and releases ONE report a minute: how many since the last report, what the
+    first of them looked like, and up to `_TRACE_REPORT_ACCOUNTS_MAX` distinct account ids.
 
-    State is a lock, one int, one string capped at `_TRACE_REPORT_DETAIL_MAX` characters and one
-    float, whatever the event rate and however many distinct sources there are. A per-source map
-    would be keyed by attacker-chosen values on an unauthenticated endpoint -- the unbounded
-    growth the repo forbids -- and would grow fastest exactly during the flood this reports on.
-    The count of a burst is released with the NEXT report after it, so a burst followed by
-    silence is reported when the next event arrives, not before.
+    State is a lock, one int, one string capped at `_TRACE_REPORT_DETAIL_MAX` characters, one
+    float and a set of at most `_TRACE_REPORT_ACCOUNTS_MAX` ints, whatever the event rate and
+    however many distinct sources or accounts there are. A per-source map would be keyed by
+    attacker-chosen values on an unauthenticated endpoint -- the unbounded growth the repo
+    forbids -- and would grow fastest exactly during the flood this reports on. The count of a
+    burst is released with the NEXT report after it, so a burst followed by silence is reported
+    when the next event arrives, not before.
     """
 
     def __init__(self) -> None:
@@ -1518,87 +1548,205 @@ class _SuppressedTally:
         with self._lock:
             self._count = 0
             self._first = ""
+            self._accounts: set[int] = set()
             self._last_report = float("-inf")
 
-    def note(self, detail: str) -> tuple[int, str] | None:
-        """Record one event. Returns (count since the last report, first detail) when a report is
-        due, resetting the tally, else None."""
+    def note(self, detail: str, account_id: int | None = None) -> tuple[int, str, list[int]] | None:
+        """Record one event. Returns (count since the last report, first detail, the distinct
+        account ids seen, capped) when a report is due, resetting the tally, else None."""
         now = time.monotonic()
         with self._lock:
             if self._count == 0:
                 self._first = detail[:_TRACE_REPORT_DETAIL_MAX]
             self._count += 1
+            if account_id is not None and len(self._accounts) < _TRACE_REPORT_ACCOUNTS_MAX:
+                self._accounts.add(account_id)
             if now - self._last_report < _TRACE_REPORT_INTERVAL_SECONDS:
                 return None
-            released = (self._count, self._first)
+            released = (self._count, self._first, sorted(self._accounts))
             self._count = 0
             self._first = ""
+            self._accounts = set()
             self._last_report = now
             return released
 
 
+class _AccountCeilings:
+    """Per-worker, per-account fixed windows: the outage stand-in for the per-account allowance.
+
+    Process-local on purpose (the shared store is what is down), so with N workers the real
+    allowance is N times the limit. MEMORY IS BOUNDED BY CONSTRUCTION: at most `max_entries`
+    accounts are tracked, and starting a window for a new account first evicts the
+    least-recently-started one. An account keyed here is a real account (the id comes from a
+    token row that exists), never an attacker-chosen string. Eviction forgets an account's count,
+    so a caller who can name more than `max_entries` accounts in an hour gets a fresh window for
+    the ones evicted: a bounded loss of protection, chosen over unbounded growth.
+    """
+
+    def __init__(self, *, setting_name: str, default: tuple[int, int], max_entries: int):
+        self._setting_name = setting_name
+        self._default = default
+        self._max_entries = max_entries
+        self._lock = threading.Lock()
+        self._windows: OrderedDict[int, list[float]] = OrderedDict()
+
+    def reset(self) -> None:
+        """Test seam."""
+        with self._lock:
+            self._windows.clear()
+
+    def claim(self, account_id: int) -> bool:
+        """Claim one unit of `account_id`'s window. False means: skip the row."""
+        limit, window = getattr(settings, self._setting_name, self._default)
+        limit, window = int(limit), float(window)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._windows.get(account_id)
+            if entry is None or now - entry[0] >= window:
+                entry = [now, 0]
+                self._windows[account_id] = entry
+                self._windows.move_to_end(account_id)
+                while len(self._windows) > self._max_entries:
+                    self._windows.popitem(last=False)
+            if entry[1] >= limit:
+                return False
+            entry[1] += 1
+            return True
+
+
 _trace_lost_tally = _SuppressedTally()
 _trace_skipped_tally = _SuppressedTally()
-# The outage stand-in for the cross-source brake: process-local on purpose (the shared store is
-# what is down), so with N workers the real ceiling is N times this. Same mechanism as the send
-# ceilings above; only `claim()` is used, the reporting is the tally's.
+# The outage stand-ins, one per kind of outcome (see `_trace_skip_reason`). Same mechanism as the
+# send ceilings above; only `claim()` is used, the reporting is the tally's.
 _reset_confirm_trace_ceiling = _DegradedSendCeiling(
     label="password-reset-confirm-trace",
     setting_name="SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING",
     default=RESET_CONFIRM_TRACE_DEGRADED_CEILING,
 )
+_reset_confirm_trace_account_ceilings = _AccountCeilings(
+    setting_name="SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING",
+    default=RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING,
+    max_entries=RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX,
+)
 
 
 def _reset_trace_reporting() -> None:
-    """Test seam: forget the trace tallies and the outage ceiling's window."""
+    """Test seam: forget the trace tallies and the outage ceilings' windows."""
     _trace_lost_tally.reset()
     _trace_skipped_tally.reset()
     _reset_confirm_trace_ceiling.reset()
+    _reset_confirm_trace_account_ceilings.reset()
 
 
-def _trace_skip_reason(limiter_degraded: bool) -> str | None:
+def _trace_skip_reason(trace: _ResetConfirmTrace, limiter_degraded: bool) -> str | None:
     """Why this failure's ROW must not be written, or None to write it. Never affects the
     response.
 
-    Healthy store: a shared cross-source budget of rows per hour (one key, so one cache entry
-    however many sources there are). Store down -- either the per-source budget already failed
-    open, or this very call finds the store unavailable -- a process-local ceiling instead.
+    TWO allowances, because one shared counter lets a flood blind the trace to exactly the
+    outcomes it exists for. Unauthenticated noise (an unknown or malformed token, or an internal
+    error before any account was identified) costs nothing to produce and spends the SHARED
+    brake. An outcome that NAMES AN ACCOUNT (consumed, expired, wrong purpose, a rejected
+    password, or an internal error after the token validated) is what a probe of a skimmed token
+    looks like, so it spends only that account's own allowance, keyed by user id: a stranger
+    cannot fill another account's allowance (they would need that account's own token), and the
+    key space is bounded by real accounts. A SEPARATE shared bucket for named outcomes would not
+    do: anyone can mint wrong-purpose noise from tokens of accounts they own.
+
+    Healthy store: the budget lives in the shared store. Store down -- either the per-source
+    budget already failed open, or this very call finds the store unavailable -- a process-local
+    ceiling of the same shape stands in. Once the per-source budget has failed open the store is
+    not asked again (one round trip per request, so a stalled Redis costs one timeout, not two).
     """
-    if not limiter_degraded:
-        outcome = spend_budget(
+    account_id = trace.customer_user_id
+    if account_id is None:
+        budget = (
             RESET_CONFIRM_TRACE_SCOPE,
             "all",
             "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE",
             RESET_CONFIRM_TRACE_BUDGET,
         )
+
+        def claim_in_process() -> bool:
+            return _reset_confirm_trace_ceiling.claim()
+
+        spent = "cross-source trace budget spent"
+        spent_in_outage = "limiter down and the process-local ceiling is spent"
+    else:
+        budget = (
+            RESET_CONFIRM_TRACE_ACCOUNT_SCOPE,
+            str(account_id),
+            "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT",
+            RESET_CONFIRM_TRACE_ACCOUNT_BUDGET,
+        )
+
+        def claim_in_process() -> bool:
+            return _reset_confirm_trace_account_ceilings.claim(account_id)
+
+        spent = "per-account trace allowance spent"
+        spent_in_outage = "limiter down and the account's process-local allowance is spent"
+    if not limiter_degraded:
+        outcome = spend_budget(*budget, report_denial=False)
         if outcome is BudgetOutcome.DENIED:
-            return "cross-source trace budget spent"
+            return spent
         limiter_degraded = outcome is BudgetOutcome.STORE_UNAVAILABLE
-    if limiter_degraded and not _reset_confirm_trace_ceiling.claim():
-        return "limiter down and the process-local ceiling is spent"
+    if limiter_degraded and not claim_in_process():
+        return spent_in_outage
     return None
 
 
+def _note_lost_trace(error: Exception, outcome: ResetConfirmOutcome, source: str) -> None:
+    """Count a trace row that could not be written or decided, and report it at most once a
+    minute: the count, and the exception CLASS, outcome and pseudonym of the first. No traceback
+    (see `_record_failed_reset_confirm`). Never raises: if even this fails there is nothing left
+    to report with, and the response must not change."""
+    try:
+        try:
+            label = audit_source_pseudonym(source)
+        except Exception:  # noqa: BLE001 -- the pseudonym is what may have failed
+            label = "unlabelled"
+        released = _trace_lost_tally.note(f"{type(error).__name__} outcome={outcome.value} source={label}")
+        if released is not None:
+            count, first, _accounts = released
+            logger.warning(
+                "could not write the audit row for %d failed password-reset confirm(s) since the "
+                "last report (first: %s). The callers' responses were unchanged; those attempts "
+                "have no trace. Further reports suppressed for %.0fs.",
+                count,
+                first,
+                _TRACE_REPORT_INTERVAL_SECONDS,
+            )
+    except Exception:  # noqa: BLE001 -- see the docstring
+        pass
+
+
 def _trace_failed_confirm(trace: _ResetConfirmTrace, source: str, limiter_degraded: bool) -> None:
-    """Write the row for one failed confirm unless it is being skipped; never raises."""
+    """Write the row for one failed confirm unless it is being skipped. NEVER RAISES: the whole
+    body is protected, not just the INSERT -- a malformed setting, a failing ceiling or a failing
+    log call is counted as a lost row like a failing write, and the caller still gets the answer
+    they would have got without the trace."""
     outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED
-    reason = _trace_skip_reason(limiter_degraded)
-    if reason is None:
-        _record_failed_reset_confirm(trace, source)
-        return
-    released = _trace_skipped_tally.note(
-        f"outcome={outcome.value} source={audit_source_pseudonym(source)} reason={reason}"
-    )
-    if released is not None:
-        count, first = released
-        logger.warning(
-            "skipped %d audit row(s) for failed password-reset confirms since the last report "
-            "(first: %s). The callers' responses were unchanged; those attempts have no trace. "
-            "Further reports suppressed for %.0fs.",
-            count,
-            first,
-            _TRACE_REPORT_INTERVAL_SECONDS,
+    try:
+        reason = _trace_skip_reason(trace, limiter_degraded)
+        if reason is None:
+            _record_failed_reset_confirm(trace, source)
+            return
+        released = _trace_skipped_tally.note(
+            f"outcome={outcome.value} source={audit_source_pseudonym(source)} reason={reason}",
+            trace.customer_user_id,
         )
+        if released is not None:
+            count, first, accounts = released
+            logger.warning(
+                "skipped %d audit row(s) for failed password-reset confirms since the last report "
+                "(first: %s%s). The callers' responses were unchanged; those attempts have no "
+                "trace. Further reports suppressed for %.0fs.",
+                count,
+                first,
+                f"; accounts {accounts}" if accounts else "",
+                _TRACE_REPORT_INTERVAL_SECONDS,
+            )
+    except Exception as error:  # noqa: BLE001 -- see the docstring
+        _note_lost_trace(error, outcome, source)
 
 
 def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None:
@@ -1632,10 +1780,10 @@ def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None
 
     WHY IT SWALLOWS: the caller must get the answer they would have got without the trace. A 500
     in its place would turn an audit outage into a changed contract on a path whose whole job
-    is to say one thing. The loss is reported instead, once a minute with a count, and WITHOUT
-    the traceback: this runs while the original failure is being handled, so a chained traceback
-    would carry frames whose locals hold the raw token and the submitted password to any
-    log handler that captures locals.
+    is to say one thing. The loss is reported instead (`_note_lost_trace`), once a minute with a
+    count, and WITHOUT the traceback: this runs while the original failure is being handled, so
+    a chained traceback would carry frames whose locals hold the raw token and the submitted
+    password to any log handler that captures locals.
 
     WHAT IT DOES NOT COVER: a call refused by the budget never reaches this (the budget is spent
     before the token is read, and a row per refused request would turn the flood the budget stops
@@ -1643,8 +1791,8 @@ def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None
     """
     outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED
     user_id = trace.customer_user_id
-    actor_id = audit_source_pseudonym(source)
     try:
+        actor_id = audit_source_pseudonym(source)
         with transaction.atomic():
             record_audit_event(
                 ActorContext(kind=ActorKind.ANONYMOUS, actor_id=actor_id),
@@ -1657,19 +1805,7 @@ def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None
                 after={"outcome": outcome.value},
             )
     except Exception as error:  # noqa: BLE001 -- see "WHY IT SWALLOWS"
-        released = _trace_lost_tally.note(
-            f"{type(error).__name__} outcome={outcome.value} source={actor_id}"
-        )
-        if released is not None:
-            count, first = released
-            logger.warning(
-                "could not write the audit row for %d failed password-reset confirm(s) since the "
-                "last report (first: %s). The callers' responses were unchanged; those attempts "
-                "have no trace. Further reports suppressed for %.0fs.",
-                count,
-                first,
-                _TRACE_REPORT_INTERVAL_SECONDS,
-            )
+        _note_lost_trace(error, outcome, source)
 
 
 def _dead_token_outcome(token: CredentialToken, now) -> ResetConfirmOutcome:
@@ -1747,6 +1883,13 @@ def _consume_reset_token(
     if not token_value:
         trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
         raise _validation_error()
+    try:
+        token_value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Lone surrogates (JSON "\ud800" escapes): no token can look like that, and hashing it
+        # would raise. Same collapsed answer as any other malformed token.
+        trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
+        raise _validation_error() from None
     fingerprint = _fingerprint(token_value)
     now = djtz.now()
     with transaction.atomic():

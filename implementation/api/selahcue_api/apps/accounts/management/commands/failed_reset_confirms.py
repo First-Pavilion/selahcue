@@ -10,6 +10,11 @@ its /64 exactly as the throttle does, and prints the matching rows, oldest first
 list the addresses behind a row, and it needs the deployment's SECRET_KEY to give the right
 answer. A pseudonymised address is still personal data: use it for an incident, not for
 browsing.
+
+It prints account ids: do not run it in CI or keep its output in a log. Rotating SECRET_KEY
+ORPHANS every older row (the pseudonym is recomputed from the current key only;
+SECRET_KEY_FALLBACKS is not consulted), so rows written before a rotation cannot be found by
+address afterwards. See the runbook, docs/ops/DEPLOYMENT.md section 6b.
 """
 
 from __future__ import annotations

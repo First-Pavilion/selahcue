@@ -7,16 +7,30 @@ mutant whose pattern no longer matches exactly once is reported NOT APPLIED, nev
 
     python3 docs/delivery/goals/86ak5r2pt-evidence/mutate.py [--out results.txt] [--only L3,B2,T1]
 
-Needs `make api-install` once. Refuses to start unless the files it mutates are identical to
+Needs `make api-install` once (it uses the `.venv-api-check` that target builds) and whatever
+`python3` and `PATH` your shell has. Refuses to start unless the files it mutates are identical to
 HEAD, and exits non-zero if any mutant survives, fails to apply, or is not restored byte for byte.
-Takes ~1 minute per mutant (about 55 mutants). The checked-in results are in
-mutation-results.txt, produced by this script on the head that carries it.
+Takes about 1 to 1.5 minutes per mutant. The checked-in results are in mutation-results.txt,
+produced by this script on the head that carries it.
+
+WARNING: THIS EDITS PRODUCTION FILES IN PLACE. Run it only in your OWN worktree, never in a
+checkout another session is using, and do not run two copies at once. The file under mutation is
+restored from a copy in a `finally`, on normal exit, on an exception, and on SIGINT or SIGTERM
+(handlers below). SIGKILL, a power cut or a crashed terminal cannot be handled: if the run dies
+that way, the recovery is
+
+    git checkout -- implementation/api/selahcue_api
+
+(or `git diff` first to see what was left mutated). The script refuses to start while any file it
+mutates differs from HEAD, so a leftover mutation can never be mistaken for your own change.
 """
 
 import argparse
+import atexit
 import filecmp
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -96,12 +110,12 @@ MUTANTS = [
     ("L4 raw token put in after under an unlisted key", SVC, [
         ('                after={"outcome": outcome.value},', '                after={"outcome": outcome.value, "probe": getattr(trace, "fp", "")},'),
         (FP_LINE, FP_LINE.replace("    now =", "    trace.fp = token_value\n    now =", 1))]),
-    ("L5 the raw address is the actor id", SVC, [("    actor_id = audit_source_pseudonym(source)\n    try:", "    actor_id = source\n    try:")]),
+    ("L5 the raw address is the actor id", SVC, [("        actor_id = audit_source_pseudonym(source)\n", "        actor_id = source\n")]),
     ("L6 the address is also kept in after", SVC, [('                after={"outcome": outcome.value},', '                after={"outcome": outcome.value, "source": source},')]),
-    ("L7 pseudonym not keyed", SVC, [("    key = hmac.new(settings.SECRET_KEY.encode(\"utf-8\"), _AUDIT_SOURCE_KEY_LABEL, hashlib.sha256).digest()", "    key = b\"\"")]),
-    ("L8 pseudonym does not rotate", SVC, [('    message = f"{(day or _audit_source_day()).isoformat()}|{source}".encode("utf-8")', '    message = f"2000-01-01|{source}".encode("utf-8")')]),
-    ("L9 pseudonym truncated to 16", SVC, [("hashlib.sha256).hexdigest()[:32]", "hashlib.sha256).hexdigest()[:16]")]),
-    ("L10 operator helper does not bucket", SVC, [("    return audit_source_pseudonym(_bucket_for_throttling(ipaddress.ip_address(address.strip())), day)", "    return audit_source_pseudonym(address.strip(), day)")]),
+    ("L7 pseudonym is a bare hash, not keyed", SVC, [('    digest = salted_hmac(_AUDIT_SOURCE_KEY_SALT, value, algorithm="sha256").hexdigest()', "    digest = hashlib.sha256(value.encode(\"utf-8\")).hexdigest()")]),
+    ("L8 pseudonym does not rotate", SVC, [('    value = f"{(day or _audit_source_day()).isoformat()}|{source}"', '    value = f"2000-01-01|{source}"')]),
+    ("L9 pseudonym truncated to 16", SVC, [("    return AUDIT_SOURCE_VERSIONED_PREFIX + digest[:32]", "    return AUDIT_SOURCE_VERSIONED_PREFIX + digest[:16]")]),
+    ("L10 operator helper does not bucket", SVC, [("    return audit_source_pseudonym(bucket_for_throttling(ipaddress.ip_address(address.strip())), day)", "    return audit_source_pseudonym(address.strip(), day)")]),
     ("L1b a 20-character prefix of the fingerprint used as the attempt id", SVC, leak_fp("fingerprint[:20]")),
     ("L3b a 22-character slice of the raw token written to the log", SVC, [("    except SafeAPIError:\n        _trace_failed_confirm(trace, source, limiter_degraded)\n        raise", '    except SafeAPIError:\n        logger.warning("confirm failed for %s", raw_token[:22])\n        _trace_failed_confirm(trace, source, limiter_degraded)\n        raise')]),
     ("L3c a 20-character prefix of the fingerprint written to the log", SVC, [("    except SafeAPIError:\n        _trace_failed_confirm(trace, source, limiter_degraded)\n        raise", '    except SafeAPIError:\n        logger.warning("confirm failed for %s", _fingerprint((raw_token or "").strip())[:20])\n        _trace_failed_confirm(trace, source, limiter_degraded)\n        raise')]),
@@ -123,12 +137,27 @@ MUTANTS = [
     ("B11 the success audit row is renamed", SVC, [('            action="customer_user.password_reset_completed",', '            action="customer_user.password_reset_completed_X",')]),
     ("B12 INTERNAL_ERROR labelled unclassified", SVC, [("        self.outcome = ResetConfirmOutcome.INTERNAL_ERROR", "        self.outcome = ResetConfirmOutcome.UNCLASSIFIED")]),
     # ---- the second-round changes ----
+    # ---- round 2: the two allowances, the whole-body protection, the key derivation ----
+    ("Q1 named outcomes spend the shared brake again", SVC, [("    account_id = trace.customer_user_id\n    if account_id is None:\n        budget = (", "    account_id = trace.customer_user_id\n    if True:\n        budget = (")]),
+    ("Q2 the per-account allowance is not keyed by account", SVC, [("            str(account_id),\n            \"SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT\"", "            \"all\",\n            \"SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT\"")]),
+    ("Q3 the per-account allowance reads the wrong setting", SVC, [("            \"SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT\",\n            RESET_CONFIRM_TRACE_ACCOUNT_BUDGET,", "            \"W2_NOT_A_SETTING\",\n            RESET_CONFIRM_TRACE_ACCOUNT_BUDGET,")]),
+    ("Q4 the outage allowance for named outcomes is the shared one", SVC, [("            return _reset_confirm_trace_account_ceilings.claim(account_id)", "            return _reset_confirm_trace_ceiling.claim()")]),
+    ("Q5 the per-account outage table never evicts", SVC, [("                while len(self._windows) > self._max_entries:\n                    self._windows.popitem(last=False)\n", "                while False:\n                    self._windows.popitem(last=False)\n")]),
+    ("Q6 the skip report's account set is uncapped", SVC, [("            if account_id is not None and len(self._accounts) < _TRACE_REPORT_ACCOUNTS_MAX:", "            if account_id is not None:")]),
+    ("Q7 the skip report does not list accounts", SVC, [('                f"; accounts {accounts}" if accounts else "",', '                "",')]),
+    ("Q8 only the INSERT is protected, not the whole trace body", SVC, [("    except Exception as error:  # noqa: BLE001 -- see the docstring\n        _note_lost_trace(error, outcome, source)", "    except ZeroDivisionError as error:  # noqa: BLE001 -- see the docstring\n        _note_lost_trace(error, outcome, source)")]),
+    ("Q9 a brake's spent budget logs the shared guard's false RATE_LIMITED warning", SVC, [("        outcome = spend_budget(*budget, report_denial=False)", "        outcome = spend_budget(*budget)")]),
+    ("Q10 the audit day is the local date of the clock's own zone", SVC, [("    return djtz.now().astimezone(dt_timezone.utc).date()", "    return djtz.now().date()")]),
+    ("Q11 the audit day is the machine's today", SVC, [("    return djtz.now().astimezone(dt_timezone.utc).date()", "    return date.today()")]),
+    ("Q12 an unencodable token is no longer labelled malformed", SVC, [("    except UnicodeEncodeError:\n        # Lone surrogates", "    except ZeroDivisionError:\n        # Lone surrogates")]),
+    ("Q13 the pseudonym is a credential-style fingerprint", SVC, [('    digest = salted_hmac(_AUDIT_SOURCE_KEY_SALT, value, algorithm="sha256").hexdigest()', "    digest = _fingerprint(value)")]),
+    ("Q14 the pseudonym carries no scheme version", SVC, [('AUDIT_SOURCE_VERSIONED_PREFIX = "src:v1:"', 'AUDIT_SOURCE_VERSIONED_PREFIX = "src:"')]),
     ("N1 unencodable passwords accepted again", SVC, [('    try:\n        password.encode("utf-8")\n    except UnicodeEncodeError:\n        raise SafeAPIError(code) from None\n', "")]),
     ("N2 unexpected exceptions not recorded", SVC, [("    except Exception:\n        # Not a coded refusal", "    except ZeroDivisionError:\n        # Not a coded refusal")]),
     ("N3 outage not reported to the trace", SVC, [("    trace = _ResetConfirmTrace()\n    try:\n        return _consume_reset_token(raw_token, new_password, trace)", "    limiter_degraded = False\n    trace = _ResetConfirmTrace()\n    try:\n        return _consume_reset_token(raw_token, new_password, trace)")]),
-    ("N4 cross-source brake never refuses", SVC, [('        if outcome is BudgetOutcome.DENIED:\n            return "cross-source trace budget spent"', '        if outcome is BudgetOutcome.DENIED:\n            return None')]),
+    ("N4 no shared or per-account budget ever refuses a row", SVC, [("        if outcome is BudgetOutcome.DENIED:\n            return spent\n", "        if outcome is BudgetOutcome.DENIED:\n            return None\n")]),
     ("N5 brake keyed per call (unbounded keys)", SVC, [('            RESET_CONFIRM_TRACE_SCOPE,\n            "all",', '            RESET_CONFIRM_TRACE_SCOPE,\n            uuid.uuid4().hex,')]),
-    ("N6 outage ceiling never claimed", SVC, [("    if limiter_degraded and not _reset_confirm_trace_ceiling.claim():", "    if False and not _reset_confirm_trace_ceiling.claim():")]),
+    ("N6 no outage ceiling is ever claimed", SVC, [("    if limiter_degraded and not claim_in_process():", "    if False and not claim_in_process():")]),
     ("N7 tally keeps a per-event list", SVC, [("            if self._count == 0:\n                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n", "            if self._count == 0:\n                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n            self._seen = getattr(self, \"_seen\", []) + [detail]\n")]),
     ("N8 tally detail not capped", SVC, [("                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n", "                self._first = detail\n")]),
     ("N9 lost-trace report carries a traceback", SVC, [('            logger.warning(\n                "could not write the audit row for %d failed', '            logger.exception(\n                "could not write the audit row for %d failed')]),
@@ -141,7 +170,7 @@ MUTANTS = [
 def pytest_env():
     # The same scrubbed environment `make api-check` uses.
     return {
-        "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", ""),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
         "SQL_DATABASE": ":memory:",
@@ -164,7 +193,26 @@ def run_tests(log_path, tests):
     return proc.returncode, failed, summary
 
 
+# The file currently mutated and its original bytes, so that an exit or a signal can put it back.
+_ACTIVE = {"path": None, "original": None}
+
+
+def _restore_active():
+    if _ACTIVE["path"] is not None:
+        with open(_ACTIVE["path"], "wb") as handle:
+            handle.write(_ACTIVE["original"])
+        _ACTIVE["path"] = None
+
+
+def _on_signal(signum, _frame):
+    _restore_active()
+    sys.exit(128 + signum)
+
+
 def main():
+    atexit.register(_restore_active)
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, _on_signal)
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="")
     parser.add_argument("--only", default="", help="comma-separated mutant ids, e.g. L3,B2")
@@ -198,6 +246,7 @@ def main():
         original = open(path, "rb").read()
         text = original.decode("utf-8")
         verdict, failed, summary = "NOT APPLIED", [], ""
+        _ACTIVE["path"], _ACTIVE["original"] = path, original
         try:
             for old, new in edits:
                 if text.count(old) != 1:
@@ -209,7 +258,7 @@ def main():
         except RuntimeError as error:
             summary = str(error)
         finally:
-            open(path, "wb").write(original)
+            _restore_active()
         restored = filecmp.cmp(backup, path, shallow=False)
         if verdict != "RED" or not restored:
             survivors += 1
