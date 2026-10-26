@@ -95,6 +95,11 @@ NOT_ENV_VARIABLES = {
     "SELAHCUE_THROTTLE_SESSION_LOGIN": "fixed budget in settings.py, not an environment variable",
     "SELAHCUE_RESEND_DEGRADED_SEND_CEILING": "fixed ceiling in settings.py, not an environment variable",
     "SELAHCUE_RESET_SEND_DEGRADED_CEILING": "fixed ceiling in settings.py, not an environment variable",
+    "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE": "fixed brake in settings.py, not an environment variable",
+    "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT": "fixed allowance in settings.py, not an environment variable",
+    "SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING": "fixed ceiling in settings.py, not an environment variable",
+    "SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING": "fixed ceiling in settings.py, not an environment variable",
+    "SECRET_KEY_FALLBACKS": "Django setting; the runbook says the failed-confirm pseudonym does not consult it",
     # Protocol terms, wire values and commands that happen to be upper case.
     "REMOTE_ADDR": "WSGI request key the rate limiter reads, not an environment variable",
     "UNAUTHENTICATED": "GraphQL error code",
