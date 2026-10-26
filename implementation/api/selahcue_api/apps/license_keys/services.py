@@ -1064,7 +1064,12 @@ def _extend_under_locks(
     with transaction.atomic():
         customer = lock_customer_for_key_changes(license_key.customer_id)
         locked = AppLicenseKey.objects.select_for_update().get(pk=license_key.pk)
-        before_status = LicenseKeyStatus(locked.status)
+        try:
+            before_status = LicenseKeyStatus(locked.status)
+        except ValueError as error:
+            # A status the enum no longer declares is a data problem, not a caller problem (the
+            # writer answers it the same way).
+            raise SafeAPIError(ErrorCode.INTERNAL) from error
         old_expires_at = locked.expires_at
 
         # 1. A retry of a request that already took effect, decided before anything else.

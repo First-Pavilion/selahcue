@@ -119,16 +119,19 @@ def test_a_self_referential_payload_is_refused():
         assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__
 
 
-def test_a_wide_self_referential_payload_is_refused_promptly():
-    """Depth alone is not enough: a mapping with many references to itself has about
-    `width ** MAX_PAYLOAD_DEPTH` paths below the depth bound, so refusing it by depth alone
-    would take effectively forever. The container cap is what makes the refusal prompt."""
-    wide: dict = {}
-    for index in range(40):
-        wide[f"again{index}"] = wide
+def test_a_payload_that_fans_out_through_shared_substructure_is_refused_promptly():
+    """Depth alone is not enough. Each level below holds 40 references to the SAME next level,
+    so the structure costs a handful of objects in memory yet has `40 ** MAX_PAYLOAD_DEPTH`
+    paths through it, all within the depth bound. Walking them takes effectively forever; the
+    container cap is what makes the refusal prompt. (A plain cycle needs no cap: a depth-first
+    walk reaches the depth bound in a few steps, which is why this test is built from shared
+    substructure and not from a cycle.)"""
+    node: object = "leaf"
+    for _ in range(MAX_PAYLOAD_DEPTH):
+        node = {f"k{index}": node for index in range(40)}
     for function in (ensure_payload_depth, redact_public_payload, assert_no_restricted_payload_fields):
         with _must_finish_within(10), pytest.raises(SafeAPIError) as raised:
-            function(wide)
+            function(node)
         assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__
 
 

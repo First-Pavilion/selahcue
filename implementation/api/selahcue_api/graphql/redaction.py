@@ -58,8 +58,9 @@ def is_restricted_payload_field(key: object) -> bool:
 MAX_PAYLOAD_DEPTH = 8
 
 # A second, independent bound: how many containers one payload may hold. Depth alone does not
-# stop a SELF-REFERENTIAL structure with several references per level from taking
-# `width ** MAX_PAYLOAD_DEPTH` steps to refuse. Real payloads hold a handful of containers.
+# stop SHARED sub-structure (the same mapping referenced from many keys at every level, which
+# costs a few objects in memory) from taking `width ** MAX_PAYLOAD_DEPTH` steps to walk. Real
+# payloads hold a handful of containers.
 MAX_PAYLOAD_CONTAINERS = 2000
 
 
