@@ -12,3 +12,11 @@ audit rows written: 200
 process-local ceiling per worker: (200, 3600)
 WARNING selahcue_api.apps.throttling.services: rate-limit store unavailable (ConnectionError) for key=throttle:password_reset_confirm_ip:203.0.113.5; failing open. Further reports suppressed for 60s.
 WARNING selahcue_api.apps.accounts.services: skipped 1 audit row(s) for failed password-reset confirms since the last report (first: outcome=unknown_token source=src:f81174fc82e1abce482ca2c6810077b3 reason
+
+# round 2 (account split, v1 pseudonym), 300 failed confirms, same unreachable Redis
+failed confirms posted: 300
+response codes: {'VALIDATION_FAILED': 300}
+audit rows written: 200
+process-local ceiling per worker: (200, 3600)
+WARNING selahcue_api.apps.throttling.services: rate-limit store unavailable (ConnectionError) for key=throttle:password_reset_confirm_ip:203.0.113.5; failing open. Further reports suppressed for 60s.
+WARNING selahcue_api.apps.accounts.services: skipped 1 audit row(s) for failed password-reset confirms since the last report (first: outcome=unknown_token source=src:v1:daa16c426e8a3f2618b4ef1b596bf867 rea

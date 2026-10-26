@@ -6,17 +6,17 @@
 - Parent goal ID: NONE
 - Title: A failed `confirmPasswordReset` leaves a correlatable record that holds no token material and no client address, the per-IP budget in front of it is pinned, fails open and is mutation-verified, and the response is still indistinguishable across token failures
 - Role: backend-engineer
-- Status: GATE_REVIEW
+- Status: BLOCKED
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak5r2pt
 - Created: 2026-10-26
-- Updated: 2026-10-26
+- Updated: 2026-10-27
 - Maximum iterations: 6
 - Independent verification required: yes
 
 ## Objective
 
-Every `confirmPasswordReset` call that gets past the per-IP budget and then fails (malformed, unknown, wrong-purpose, consumed or expired token, a rejected password behind a live token, or an unexpected internal failure) writes one audit row carrying only the outcome class, a keyed daily-rotating pseudonym of the source, a random per-attempt id, a timestamp and, when the token row resolves, the owning user's id. No raw, fingerprinted, hashed or masked reset token, no fragment of one, and no client IP address appears in that row or in any log line. The response to the caller is unchanged: the five token-failure classes stay byte-identical (FR-529) and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged. The per-IP budget that already guards the mutation is pinned, shown to fail open, shown to honour `X-Forwarded-For` only behind `SELAHCUE_TRUSTED_PROXY_COUNT`, shown never to block a user who retries a weak password (per source), and mutation-verified. The number of trace rows is bounded by a cross-source brake and, while the limiter store is down, by a process-local ceiling; both skip the row and never the response.
+Every `confirmPasswordReset` call that gets past the per-IP budget and then fails (malformed, unknown, wrong-purpose, consumed or expired token, a rejected password behind a live token, or an unexpected internal failure) writes one audit row carrying only the outcome class, a keyed daily-rotating pseudonym of the source, a random per-attempt id, a timestamp and, when the token row resolves, the owning user's id. No raw, fingerprinted, hashed or masked reset token, no fragment of one, and no client IP address appears in that row or in any log line. The response to the caller is unchanged: the five token-failure classes stay byte-identical (FR-529) and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged. The per-IP budget that already guards the mutation is pinned, shown to fail open, shown to honour `X-Forwarded-For` only behind `SELAHCUE_TRUSTED_PROXY_COUNT`, shown never to block a user who retries a weak password (per source), and mutation-verified. The number of trace rows is bounded, and bounded so that noise cannot blind the trace to a probe of an account: outcomes that name no account spend a shared brake (and a per-worker ceiling while the limiter store is down), outcomes that name an account spend only that account's own allowance, keyed by user id (and a per-worker, per-account table capped in size while the store is down). All of these skip the row and never the response.
 
 ## Baseline
 
@@ -45,9 +45,11 @@ Verified on origin/main 93bf8063 (2026-10-26):
 
 - A failed-confirm audit row (action `customer_user.password_reset_confirm_failed`, result DENIED, actor kind ANONYMOUS), written after the transaction has rolled back, in its own `atomic()`, best effort: a failure to write is counted and reported once a minute (class name, outcome and pseudonym of the first, no traceback) and never changes the response.
 - A closed set of outcome classes, set by the service beside each raise, carried to the recorder in a side object and never on the exception. Any other exception inside the confirm is recorded as `internal_error` and re-raised; the owning user is recorded as soon as the token is validated.
-- The source is stored only as `src:<32 hex>`, HMAC-SHA256 under a key derived from SECRET_KEY with the label `audit-source-v1`, over the UTC date and the /64-bucketed address; the two address-less sources keep fixed labels (`src:unresolved-client-ip`, `src:unknown`). `after` holds only the outcome. `manage.py failed_reset_confirms --ip ... [--date ...]` computes the pseudonym for a known address and lists the rows.
+- The source is stored only as `src:v1:<32 hex>`: Django `salted_hmac` (SHA-256, its own key salt, so structurally unlike a credential fingerprint) over the UTC date and the /64-bucketed address; the two address-less sources keep fixed labels (`src:unresolved-client-ip`, `src:unknown`). `after` holds only the outcome. `manage.py failed_reset_confirms --ip ... [--date ...]` computes the pseudonym for a known address and lists the rows.
 - `_validate_password` refuses strings that cannot be UTF-8 encoded, with the code it already uses.
-- A cross-source trace-rows-per-hour brake (1000 per hour, one shared cache key) and, when the limiter store is down, a per-worker ceiling (200 per hour); the brake is not consulted a second time once the per-source budget has failed open. Skipped rows are counted and reported once a minute. All bounded state is scalars.
+- Two allowances (review round 2). Outcomes that name NO account (unknown or malformed token, an internal error before any account is identified) spend a shared brake: 1000 rows an hour, one shared cache key, and 200 an hour per worker while the limiter store is down. Outcomes that NAME an account (consumed, expired, wrong purpose, rejected password, an internal error after the token validated) spend only that account's allowance, keyed by user id: 60 an hour, and 30 an hour per worker while the store is down, in a table of at most 1024 accounts with eviction. A separate shared bucket for named outcomes was rejected: anyone can mint wrong-purpose noise from tokens of accounts they own. The store is not consulted a second time once the per-source budget has failed open. Skipped rows are counted and reported once a minute with up to 20 distinct account ids. All bounded state is scalars, a capped string and a capped set of ids.
+- The whole body of `_trace_failed_confirm` is protected (settings unpacking, ceilings, pseudonym, tally, logging), not only the INSERT; a malformed setting costs a counted row, never the answer. A lone-surrogate token is labelled `malformed_token`.
+- The four trace knobs ship in `settings.py`, are described in `docs/ops/DEPLOYMENT.md` section 6b (with the operator command and the SECRET_KEY-rotation caveat), and are allow-listed as non-environment names in `tests/test_deployment_env_docs.py`.
 - `ActorKind.ANONYMOUS` (one additive line in `graphql/context.py`); `reset_token`, `raw_token` and `token_hash` added to `RESTRICTED_PAYLOAD_FIELDS`. `token_fingerprint` is deliberately not added (two existing writers store it on purpose); tests pin the values those rows hold.
 - Tests, in `tests/test_customer_auth_slice.py` (plus two pin tests next to the device audit tests), and the committed mutation harness and results under `docs/delivery/goals/86ak5r2pt-evidence/`.
 
@@ -95,19 +97,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-005 | yes | A failure to record changes nothing the caller sees; the loss is counted and reported once a minute with the class, outcome and pseudonym of the first, no traceback and no token material | same file | same bytes with and without the fault; one report, then a second carrying the count | passed; mutants B2, N9, N10 RED | PASS |
 | C-006 | yes | A success still writes `customer_user.password_reset_completed` and no failure row | same file | one completed row, zero failed rows | passed; mutant B11 RED | PASS |
 | C-007 | yes | The budget refuses before the token is read; the refusal writes no row; the shipped 21st confirm from one source is refused | same file plus the sibling throttle file | RATE_LIMITED; token unspent; 20 rows | passed; mutants T1, T2, T8 RED | PASS |
-| C-008 | yes | The shipped confirm budget, the trace brake and the outage ceiling are pinned | same file | (20, 3600), (1000, 3600), (200, 3600) | passed; mutants T4, T9, T10 RED | PASS |
+| C-008 | yes | The shipped confirm budget, both trace allowances, both outage ceilings and the account table size are pinned, and agree with settings.py | same file | (20, 3600), (1000, 3600), (200, 3600), (60, 3600), (30, 3600), 1024 | passed; round-1 mutants T4, T9, T10 RED on 6186cf3d | PASS |
 | C-009 | yes | A user who retries a weak password behind a live token is never blocked under the shipped budget, from one source, and then resets successfully | same file | PASSWORD_INVALID ten times, then success | passed; mutant B3 RED | PASS |
 | C-010 | yes | With the limiter store down the mutation still reaches the service, completes a real reset, and still leaves a bounded trace | same file | no RATE_LIMITED; rows capped at the ceiling; one store round trip per request | passed; mutants T5, N3, N6 RED | PASS |
 | C-011 | yes | `X-Forwarded-For` is honoured only behind `SELAHCUE_TRUSTED_PROXY_COUNT`; behind it the budget and the record name the forwarded client, not the proxy | same file | separate budgets; actor ids equal the forwarded addresses' pseudonyms; ignored at count 0 | passed; mutants T3, T6, T7 RED | PASS |
 | C-012 | yes | A lone-surrogate password is a rejected password (PASSWORD_INVALID behind a live token, traced, link unspent; refused at signup); an unexpected failure inside the confirm leaves one `internal_error` row naming the user and answers like a dead token | same file | as stated | passed; mutants N1, N2, B5b RED | PASS |
 | C-013 | yes | No address is stored or logged; the pseudonym is pinned by an independent recomputation, keyed, rotating, per /64, with fixed labels for the two address-less sources; a hostile REMOTE_ADDR is never stored; the operator command finds the rows | same file | as stated | passed; mutants L5-L10, B7 RED | PASS |
-| C-014 | yes | The trace rows are bounded: a cross-source brake, a per-worker outage ceiling, one cache key however many sources, scalar-only tally state; skipped rows are counted and reported; a reset still completes while the brake is spent; against a genuinely unreachable Redis 300 failures write 200 rows | same file; `real_redis_outage.py` | as stated | passed; mutants N4-N8 RED; real-redis-outage.txt: 25 failures write 25 rows, 300 write 200, one fail-open warning and one skip report | PASS |
+| C-014 | yes | The trace rows are bounded: a shared brake, per-worker outage ceilings, one shared limiter key however many sources (recorded at `evaluate_budget`, so the test means the same on LocMemCache and Redis), bounded tally state; skipped rows are counted and reported; a reset still completes while the brake is spent; against a genuinely unreachable Redis 300 failures write 200 rows | same file; `real_redis_outage.py` | as stated | passed on LocMemCache and against a real Redis 7 container; round-1 mutants N4-N8 RED on 6186cf3d; real-redis-outage.txt (round 1): 25 failures write 25 rows, 300 write 200, one fail-open warning and one skip report | PASS |
 | C-015 | yes | A failed trace write leaves no half-written row and does not poison an enclosing transaction | same file (outer `atomic()`, real IntegrityError) | no row; follow-up query and next trace work | passed; mutant N11 RED | PASS |
-| C-016 | yes | The committed harness runs every mutant with siblings running in full and restores each file byte for byte | `python3 docs/delivery/goals/86ak5r2pt-evidence/mutate.py` | baseline 178 passed; every mutant RED; restored identical | mutation-results.txt: 53 mutants run, 0 not RED or not restored | PASS |
-| C-017 | yes | `make api-check` exits 0, including `manage.py check` and `makemigrations --check --noinput` | `make api-check` | exit 0 | make api-check exit 0 on the head merged with origin/main 840ec84e: manage.py check no issues, makemigrations --check no changes, pytest 1382 passed, 24 skipped (Postgres/Redis-only), 1 xfailed | PASS |
+| C-016 | yes | The committed harness runs every mutant with siblings running in full and restores each file byte for byte | `python3 docs/delivery/goals/86ak5r2pt-evidence/mutate.py` | every mutant RED; restored identical | mutation-results.txt is from round 1 (6186cf3d): 53 mutants, 0 not RED or not restored. NOT RE-RUN on this head: the round-2 changes (mutants Q1-Q14 and the patterns edited for the new code) have never been run, because free disk fell below the 12 GiB floor the orchestrator set. One command re-runs everything; see the PR | BLOCKED |
+| C-017 | yes | `make api-check` exits 0, including `manage.py check` and `makemigrations --check --noinput`; the full suite also passes against a real Redis | `make api-check`; the suite with `CACHE_URL` pointing at a Redis 7 container | exit 0 | make api-check exit 0 on the head merged with origin/main 3ab74050: manage.py check no issues, makemigrations --check no changes, pytest 1395 passed, 24 skipped, 1 xfailed. Full suite against a real redis:7-alpine container (CI's image): 1396 passed, 23 skipped, 1 xfailed, exit 0 | PASS |
 | C-018 | yes | No non-ASCII in added lines, no function-local import added, no migration | scan of the diff | clean | scans clean; `git diff origin/main --stat` lists no migration | PASS |
 | C-019 | yes | Branch is up to date with origin/main, pushed, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | recorded in the hand-off | PASS |
-| C-020 | yes | The goal contract validates structurally and with `--completion` | both validators | exit 0 | OK both | PASS |
+| C-020 | yes | The goal contract validates structurally and with `--completion` | both validators | exit 0 | structural OK from both validators; `--completion` fails while C-016 is BLOCKED, as it should | BLOCKED |
+| C-021 | yes | Noise cannot blind the trace to a probe of an account: with the shared brake fully spent, a rejected password and a wrong-purpose token of other accounts from other sources still leave rows; a flood against account A leaves account B's row; an account's allowance bounds its own rows and a stranger's noise does not spend it; the same split holds in the outage ceiling; the outage table is bounded and evicts | same file | as stated | tests passed; mutants Q1-Q5 written, NOT RUN | PASS |
+| C-022 | yes | A malformed trace setting (shared or per-account, budget or ceiling) never changes the answer or the response bytes; the loss is counted | same file | PASSWORD_INVALID / VALIDATION_FAILED bytes identical; one report | tests passed; mutant Q8 written, NOT RUN | PASS |
+| C-023 | yes | The audit-day seam's real body is the UTC date (tested with an aware time in another zone), the operator command defaults to today, a lone-surrogate token is `malformed_token`, the pseudonym is `src:v1:` + a salted-HMAC digest pinned by an independent recomputation | same file | as stated | tests passed; mutants Q10-Q14 written, NOT RUN | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -141,6 +146,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: none against the design
 - Decision: gate-review; reviews followed
 
+### Iteration 3 (review round 2: Cody, Shadow)
+
+- Target criterion: C-008, C-014, C-016, C-021 to C-023
+- Hypothesis: one shared counter lets a flood blind the trace to the outcomes it exists for; splitting by whether an outcome names an account, with a per-account allowance keyed by user id, closes that without an unbounded key space
+- Change or investigation: the split in the store-backed budget and in the outage ceiling (bounded table with eviction); whole-body protection of the trace; salted-HMAC key derivation with a version in the stored value; real-Redis-safe bounded-state test; real day seam test; malformed token label; settings, runbook, deployment-docs allow list; harness hardening (signal-safe restore, no hard-coded PATH); merged origin/main 3ab74050
+- Verifier executed: focused files on LocMemCache and against a real redis:7-alpine container; `make api-check`; the full suite against Redis
+- Result: green on both (see C-017). The mutation harness for the new code was NOT run: free disk was under the 12 GiB floor
+- New evidence: the deployment-docs test caught five names the runbook paragraph introduced; fixed by allow-listing them with reasons
+- Decision: blocked on the mutation re-run only
+
 ### Iteration 2 (review round 1: Cody, Shadow, Quinn)
 
 - Target criterion: C-003, C-005, C-010, C-012 to C-016
@@ -155,7 +170,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Risks:
   - The failure row turns an unauthenticated read path into a write path. Bounded per source by the per-IP budget, across sources by the 1000 per hour brake, and while the limiter store is down by a 200 per hour per worker ceiling. A mis-set `SELAHCUE_TRUSTED_PROXY_COUNT` lets a caller choose its own left-hand `X-Forwarded-For` entry and so a fresh per-source budget per request; the cross-source brake is what bounds that case. With N workers the outage ceiling is N times 200.
-  - The brake and the ceiling skip rows, so a flood can cost legitimate failures their trace; sized generously and counted, not silent.
+  - The shared brake skips only rows that name no account (a flood of unknown tokens), and an account's rows only ever compete with that account's own allowance (60 an hour). What remains: probing ONE account more than 60 times an hour leaves the later rows unwritten (counted, and the report names the account id), and a caller who owns many accounts can spend each one's allowance with its own tokens; the per-source budget (20 an hour) is the bound on how fast. In an outage the per-worker table holds 1024 accounts and evicts the oldest, which gives an evicted account a fresh window.
   - A pseudonymised source is still personal data and the audit table has no retention (17tnw2b9dp1).
   - Other audit rows still hold token-derived values and Strawberry logs tracebacks of masked resolver errors (17tnw2b9dp2).
   - Until `SELAHCUE_TRUSTED_PROXY_COUNT` is set in production (86ak10a13) every caller is one source: 20 per hour shared by everyone, and every row names the proxy.
@@ -174,8 +189,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5r2pt-reset-confirm-throttle-audit.md --completion`
-- Validator result: OK (structural) and OK (--completion) on the final head
+- Validator result: OK (structural). `--completion` fails because C-016 and C-020 are BLOCKED
 - Independent verification result: round 1 done (Cody, Shadow, Quinn: no blockers); round 2 on the new head not yet run. The PR stays Draft until the reviews clear
-- Terminal state: GATE_REVIEW (all mandatory criteria PASS; not VERIFIED_COMPLETE because the independent re-review has not run)
-- Remaining failed or blocked criteria: none. Not run locally: Postgres-only and Redis-only tests (beyond the unreachable-Redis script), hosted CI, the timing harness
+- Terminal state: BLOCKED (one thing: the mutation harness has not been re-run on the round-2 code; free disk was below the 12 GiB floor and fell further while I waited)
+- Remaining failed or blocked criteria: C-016 and, through it, C-020. Not run locally: Postgres, hosted CI, the timing harness
 - ClickUp final evidence comment: posted on 86ak5r2pt at hand-off
