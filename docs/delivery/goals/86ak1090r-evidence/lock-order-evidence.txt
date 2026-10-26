@@ -1,0 +1,19 @@
+# Lock-order evidence for 86ak1090r round 2 (Cody F1 / Shadow disputed it; settled by a real test).
+#
+# Run: tests/test_concurrency_postgres.py -k never_deadlock, on PostgreSQL 16.2 (pgserver), on the code of dca6eccf
+# plus the new tests only, i.e. activation still locking with select_for_update().select_related("customer") and no of=.
+# Result: 2 failed, 1 passed.
+#  - test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[activation-first]  FAILED: deadlock detected
+#  - test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[extension-first]   passed
+#  - test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent       FAILED on iteration 0 (the first): deadlock detected
+#
+# So Cody was right: with the activation lock unscoped, the two orders cross, and Postgres aborts one side.
+# After `of=("self",)` on the activation lock (devices/services.py): both orders pass, 50 of 50 clean iterations,
+# and the statement text test confirms the lock names only the licence table.
+#
+# Postgres' own account of the cycle, from the first run (process ids vary):
+#   deadlock detected
+#   DETAIL:  Process 11073 waits for ShareLock on transaction 825; blocked by process 11072.
+#   Process 11072 waits for ShareLock on transaction 824; blocked by process 11073.
+#   HINT:  See server log for query details.
+#   CONTEXT:  while locking tuple (0,1) in relation "selahcue_license_keys_applicensekey"

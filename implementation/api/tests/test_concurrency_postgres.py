@@ -5,6 +5,7 @@ silently no-ops (has_select_for_update = False). These tests therefore SKIP on S
 they would pass there for the wrong reason and hide the very races they exist to catch.
 """
 
+import random
 import threading
 import time
 from datetime import timedelta
@@ -12,6 +13,7 @@ from datetime import timedelta
 import pytest
 from django.core.cache import cache
 from django.db import OperationalError, connection, connections, transaction
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import issue_key, seat_plan_code, seed_org
@@ -1254,8 +1256,10 @@ def test_two_simultaneous_issuances_to_two_orgs_both_succeed():
 
 
 # --- 86ak1090r: staff extend / revoke under a real race -----------------------------------
-# Extend takes the ORG row lock and then the LICENCE row lock; revoke, suspend and activation
-# take only the licence lock, so there is no order in which two of them can wait on each other.
+# Extend takes the ORG row lock and then the LICENCE row lock. Revoke and suspend lock only the
+# licence row, and activation does too once its lock names `of=("self",)`; before that it also
+# locked the joined org row and deadlocked against extend (see the end of this file), so this was
+# argued and wrong rather than proven.
 # These tests park the callers on a held lock first (the same machinery as the suspend races
 # above) so that the overlap is guaranteed rather than left to scheduling.
 def _applied(results):
@@ -1425,3 +1429,115 @@ def test_an_extension_racing_an_issuance_never_leaves_two_overlapping_valid_keys
     keys = list(AppLicenseKey.objects.filter(customer=org).order_by("starts_at"))
     for left, right in zip(keys, keys[1:]):
         assert left.expires_at <= right.starts_at, "the org's keys overlap"
+
+
+# --- 86ak1090r round 2: extend against first activation on ONE licence ---------------------
+# Extend takes the org row lock and then the licence row lock. Activation locks the licence row
+# with `select_for_update().select_related("customer")`, and Django's documented behaviour is
+# that without `of=` the lock covers the rows pulled in by `select_related()` too: licence AND
+# org, in one statement. Locks are taken licence first, then org, so the two orders cross: extend
+# holds the org and waits for the licence while activation holds the licence and waits for the
+# org, and Postgres aborts one of them with "deadlock detected". The tests below pin the
+# interleaving that produces it, and a repeated unaligned race, so the claim in `extend_license_key`
+# that nothing takes the two locks in the opposite order is proven rather than argued.
+def _session_activation_call(key, admin, n):
+    return lambda: activate_device_with_session(
+        admin,
+        ActivateDeviceWithSessionData(
+            idempotency_key=f"ext-vs-act-{key.pk}-{n:04d}",
+            device_fingerprint=f"fp-ext-vs-act-{key.pk}-{n}",
+            platform="macos",
+        ),
+    )
+
+
+def _deadlocks(errors):
+    return [exc for exc in errors if isinstance(exc, OperationalError) and "deadlock" in str(exc).lower()]
+
+
+@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
+def test_an_extension_and_a_first_activation_on_one_licence_never_deadlock(activation_first):
+    """The activation joins the licence queue first (it is parked on the licence row before the
+    extension has even started), then the extension takes the org lock and parks on the licence
+    row behind it. Released, the activation is served the licence and wants the org, which the
+    extension holds, while the extension wants the licence: a cycle, unless the activation's
+    lock does not reach the org row. Both orders must complete, one device, one extension."""
+    key, _ = _seed_license_key(tag=f"ext-act-{int(activation_first)}")
+    admin = _session_admin(key, tag=f"ext-act-{int(activation_first)}")
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    activate = _session_activation_call(key, admin, 0)
+    extend = _extend_call(key, f"ext-act-{int(activation_first)}-0001", target)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [activate, extend] if activation_first else [extend, activate]
+    )
+
+    assert waiting == 2, f"both callers should be parked on the licence-row lock: {waiting}"
+    assert _deadlocks([exc for _, exc in errors]) == [], f"deadlock detected: {errors}"
+    assert errors == [], errors
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert key.expires_at == target
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    assert _licence_transitions(key) == 1
+
+
+def test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent():
+    """The same pair, started together behind a barrier with a few milliseconds of random
+    jitter, 50 times over fresh licences. Not deterministic (that is the test above); it is the
+    one that would catch a different interleaving, or a deadlock with some other lock."""
+    rng = random.Random(8675309)
+    now = timezone.now().replace(microsecond=0)
+    deadlocks = []
+    for n in range(50):
+        key, _ = _seed_license_key(tag=f"ext-act-rep-{n}")
+        admin = _session_admin(key, tag=f"ext-act-rep-{n}")
+        target = now + timedelta(days=90 + n)
+        activate = _session_activation_call(key, admin, n)
+        # A staff member of their own per iteration: 50 extensions by one actor would meet the
+        # lifecycle throttle (30 a minute), which is not what this test is about.
+        extend = _extend_call(key, f"ext-act-rep-{n:04d}-key", target, actor_id=f"staff_race_rep_{n}")
+        delay_a, delay_b = rng.uniform(0, 0.004), rng.uniform(0, 0.004)
+
+        def jittered(call, delay):
+            def run():
+                time.sleep(delay)
+                return call()
+            return run
+
+        errors, barrier_failures = _run_in_threads([jittered(activate, delay_a), jittered(extend, delay_b)])
+
+        assert barrier_failures == []
+        deadlocks.extend(_deadlocks(errors))
+        assert errors == [], f"iteration {n}: {errors}"
+        key.refresh_from_db()
+        assert key.status == LicenseKeyStatus.ACTIVATED, n
+        assert key.expires_at == target, n
+        assert Device.objects.filter(license_key=key).count() == 1, n
+    assert deadlocks == []
+
+
+def test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins():
+    """The statement text behind the deadlock above, pinned directly. `select_related("customer")`
+    makes the lock query a join; without `of=("self",)` Postgres is told `FOR UPDATE` on BOTH
+    tables. Cheap and deterministic, so it also guards the fix against someone re-ordering the
+    ORM call without re-running the 50-iteration race."""
+    key, _ = _seed_license_key(tag="act-lock-sql")
+    admin = _session_admin(key, tag="act-lock-sql")
+
+    with CaptureQueriesContext(connection) as queries:
+        _session_activation_call(key, admin, 0)()
+
+    org_table = CustomerOrg._meta.db_table
+    joined = [
+        q["sql"]
+        for q in queries.captured_queries
+        if "FOR UPDATE" in q["sql"]
+        and AppLicenseKey._meta.db_table in q["sql"]
+        and f'JOIN "{org_table}"' in q["sql"]
+    ]
+    assert joined, "activation no longer takes its licence lock on a join with the org (test is stale)"
+    for sql in joined:
+        assert f'FOR UPDATE OF "{AppLicenseKey._meta.db_table}"' in sql, sql
+        assert org_table not in sql.split("FOR UPDATE", 1)[1], sql

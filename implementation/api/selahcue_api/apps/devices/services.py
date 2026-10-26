@@ -432,8 +432,18 @@ def _activate_device_for_key(
         # stale count and exceed device_limit) and turns a same-request race into a clean idempotent
         # replay instead of an IntegrityError/500. Re-read + re-check status under the lock, since it
         # could have changed between resolve and lock.
+        #
+        # `of=("self",)` is load-bearing (86ak1090r). Without it Django's `select_for_update()`
+        # locks the rows `select_related()` pulls in as well, so this one statement took
+        # `FOR UPDATE` on the licence AND on the customer-org row. `extend_license_key` holds the
+        # org row (`FOR NO KEY UPDATE`, which `FOR UPDATE` conflicts with) and then waits for the
+        # licence, so an extension and a first activation of one licence could each hold the row
+        # the other wanted and Postgres aborted one with "deadlock detected". Measured before this
+        # change: the interleaving deadlocked on the first try, deterministically.
+        # `tests/test_concurrency_postgres.py` pins both the race and the statement text. The org
+        # is read here only for its fields; nothing below needs it locked.
         license_key = (
-            AppLicenseKey.objects.select_for_update()
+            AppLicenseKey.objects.select_for_update(of=("self",))
             .select_related("customer")
             .get(pk=license_key.pk)
         )

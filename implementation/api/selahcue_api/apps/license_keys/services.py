@@ -1000,8 +1000,15 @@ def extend_license_key(
     lock BEFORE anything else so it is never judged against the state the first call produced.
     A new key with the date already in effect is rejected (VALIDATION_FAILED), not applied twice.
 
-    Lock order is organisation then licence. Revoke, suspend and activation take only the
-    licence lock, so nothing takes them in the opposite order.
+    Lock order is organisation then licence (`FOR NO KEY UPDATE` on the org, `FOR UPDATE` on the
+    licence). The writer, and therefore revoke, suspend and reinstate, lock only the licence row.
+    Device activation locks only the licence row too, but only since it said so: its lock query
+    joins the org through `select_related`, and without `of=("self",)` Django also locks the
+    joined org row (`FOR UPDATE`, which conflicts with this function's `FOR NO KEY UPDATE`), so it
+    took the two locks in the opposite order and deadlocked against this function. Measured, then
+    fixed in `devices/services.py`; `tests/test_concurrency_postgres.py` pins both the race and
+    the statement text. Any other code that locks a licence row through a join must name `of=` for
+    the same reason.
     """
     staff = _authorise(
         actor,
