@@ -640,8 +640,14 @@ def test_a_masked_key_is_fine_in_a_reason_and_is_the_way_to_name_a_licence():
         "SHA-256 of the receipt: " + "a1b2c3d4" * 8 + " (as quoted in the dispute).",
         "Contact support@example.org, case number 2026-10-0042, ticket SEL-1234 and SEL-5678.",
         "Moved the church from the trial to the pilot: see THAT THEY HAVE SAME WERE EACH SUCH for context.",
+        # Tokens of the key's alphabet that are LONGER than a key: not a key. Without the
+        # boundary checks the first (or last) 32 characters of these would match.
+        "Opaque reference " + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" * 2 + " from the processor.",
+        "Opaque reference A" + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" + " from the processor.",
+        "Opaque reference " + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" + "Z from the processor.",
     ],
-    ids=["revoke-reason", "extend-reason", "prose", "uuid", "sha256-hex", "ids", "seven-short-words"],
+    ids=["revoke-reason", "extend-reason", "prose", "uuid", "sha256-hex", "ids", "seven-short-words",
+         "token-of-64", "token-of-33-glued-in-front", "token-of-33-glued-behind"],
 )
 def test_ordinary_reasons_are_not_mistaken_for_a_key(reason):
     """The detector looks for the key's SHAPE (eight groups of four from the key alphabet), so
@@ -663,7 +669,11 @@ def test_eight_four_letter_words_in_a_row_are_a_known_false_positive():
     _revoke(key, "cred-fp-known-retry", reason="Escalated after seven or eight words went wrong.")
 
 
-@pytest.mark.parametrize("retry_key", [str(uuid.uuid4()), uuid.uuid4().hex, "console-2026-10-26T09:15:00Z-revoke", "a" * 128])
+@pytest.mark.parametrize(
+    "retry_key",
+    [str(uuid.uuid4()), uuid.uuid4().hex, "console-2026-10-26T09:15:00Z-revoke", "a" * 128,
+     "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" * 2, "A" + "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"],
+)
 def test_ordinary_retry_keys_are_not_mistaken_for_a_key(retry_key):
     key, _ = _seed_key(f"cred-rk-{uuid.uuid4().hex[:8]}")
     _revoke(key, retry_key)
