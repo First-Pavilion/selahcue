@@ -8017,6 +8017,13 @@ struct PersistOutcome {
 /// The type has no `From<Result<..>>` that drops errors silently and no `Default`; the one
 /// conversion, [`ExistingDraft::from_load`], keeps the error as [`ExistingDraft::CheckFailed`],
 /// and [`persist_generated_draft`] matches on all three arms with no wildcard.
+///
+/// What that does and does not guarantee: a compile error follows only if a variant or an arm is
+/// added or removed. `Err(_) => Absent` inside `from_load`, or a call site that skips `from_load`
+/// altogether, still compiles. `Backend::load_sermon_note_draft` itself still returns
+/// `Result<Option<_>, String>`, so another caller can still write `.ok().flatten()` (the one
+/// remaining is `update_sermon_note_draft`'s caveat read). The tests in
+/// `regenerate_with_retention_tests` are the real guard.
 #[must_use]
 enum ExistingDraft {
     /// The host answered, and there is no accepted draft: saving cannot destroy anything.
@@ -9434,14 +9441,22 @@ mod regenerate_with_retention_tests {
     // 17tnw2b9af5: when the check for an existing draft FAILS, regenerating must save nothing,
     // stage nothing, tell the operator, and leave the accepted draft exactly as it was.
     //
-    // Mutation record for these tests lives in the PR description. The two that matter: put the
-    // old `.ok().flatten()` behaviour back in `ExistingDraft::from_load` (Err -> Absent) and
-    // every test below that makes a load fail goes RED, with its siblings running.
+    // Mutation record for these tests lives in the PR description. Put the old
+    // `.ok().flatten()` behaviour back at the call site and the tests that make a load fail
+    // against a real backend go RED, with their siblings running. The `from_load` unit test does
+    // NOT: a call site that skips `from_load` bypasses it, so the backend tests are the guard.
+    //
+    // FR-082 (no draft text, serde value or transcript text in any error, log or UI string) is
+    // held STRUCTURALLY, not by these tests: `ExistingDraft::CheckFailed` and
+    // `ExistingDraftCheckFailed` are unit types, so there is nowhere to keep error text, and the
+    // message the console gets is a constant. The tests below pin that constant; they do not
+    // prove the absence of leaks by planting a marker (a marker planted behind the host never
+    // reaches the operator, so asserting its absence would pass whatever the operator did).
     // ---------------------------------------------------------------------------------------
 
-    /// Planted in every error the misbehaving store or host returns. It stands in for draft
-    /// text, a serde value or transcript text (FR-082): it must never reach a reply.
-    const LOAD_ERROR_MARKER: &str = "SECRET-DRAFT-TEXT-9d1e";
+    /// The text a store that can no longer read its rows returns. It is realistic, not a marker:
+    /// nothing asserts on it.
+    const STORE_READ_ERROR: &str = "could not decode the stored row";
 
     /// What reached the store (or the host) underneath, and whether reads currently fail.
     #[derive(Default)]
@@ -9499,9 +9514,7 @@ mod regenerate_with_retention_tests {
             transcript_id: i64,
         ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
             if self.gate.loads_fail() {
-                return Err(format!(
-                    "{LOAD_ERROR_MARKER}: could not decode the stored row"
-                ));
+                return Err(STORE_READ_ERROR.to_string());
             }
             self.inner.load_draft(transcript_id)
         }
@@ -9572,11 +9585,13 @@ mod regenerate_with_retention_tests {
             .expect("the accepted draft exists")
     }
 
-    /// The whole property, against whatever backend `state` sits on: with reads failing, a
-    /// regenerate returns the failed-check error, neither a save nor a stage reaches the store,
-    /// and the edited accepted draft reads back identical once reads work again. Ends with a
-    /// positive control: the very same call then succeeds (it stages), so the refusal above came
-    /// from the failing read and from nothing else.
+    /// The whole property, against whatever backend `state` sits on. An accepted draft the
+    /// operator edited AND an earlier regeneration staged beside it are in place; with reads
+    /// failing, a regenerate returns the failed-check error, and once reads work again:
+    /// the accepted draft reads back identical, the EARLIER staged draft is still the pending
+    /// one (a fresh stage would have replaced it), and neither a save nor a stage reached the
+    /// store. Ends with a positive control: the very same call then succeeds (it stages), so the
+    /// refusal came from the failing read and from nothing else.
     async fn assert_a_failed_check_changes_nothing(
         state: &State<'_, AppState>,
         id: i64,
@@ -9584,8 +9599,17 @@ mod regenerate_with_retention_tests {
     ) {
         let accepted = seed_edited_accepted_draft(state, id).await;
         assert_eq!(accepted.title, "Edited by the operator", "premise");
+        // An earlier regeneration, staged and not yet confirmed. Staging again would overwrite
+        // it (one pending slot per transcript), which is what a "stage when unsure" fallback
+        // would do on a failed check.
+        let earlier =
+            persist_generated_draft(state, id, sample_draft("Earlier staged notes", true))
+                .await
+                .expect("staging the earlier regeneration succeeds");
+        assert!(earlier.pending_confirmation, "premise: it was staged");
         let (saves, stages) = (gate.saves(), gate.stages());
         assert!(saves >= 1, "premise: the seed save reached the store");
+        assert!(stages >= 1, "premise: the earlier stage reached the store");
 
         gate.fail_loads(true);
         let failed =
@@ -9594,12 +9618,6 @@ mod regenerate_with_retention_tests {
             matches!(failed, Err(ExistingDraftCheckFailed)),
             "a failed check must be reported as a failed check, not as 'no draft'"
         );
-        assert_eq!(
-            gate.saves(),
-            saves,
-            "nothing may be saved over a draft we could not see"
-        );
-        assert_eq!(gate.stages(), stages, "nothing may be staged either");
 
         gate.fail_loads(false);
         let after = state
@@ -9612,13 +9630,27 @@ mod regenerate_with_retention_tests {
             after, accepted,
             "the accepted draft is byte-for-byte unchanged"
         );
-        let slot = state
+        // Confirming promotes whatever is pending: it must still be the EARLIER staged draft.
+        // (Reading the slot through discard would prove nothing: discard clears it first.)
+        let promoted = state
             .backend
-            .discard_sermon_note_regeneration(id)
+            .confirm_sermon_note_regeneration(id)
             .await
-            .expect("discard against a real store succeeds")
+            .expect("confirm against a real store succeeds")
             .expect("slot");
-        assert!(slot.pending.is_none(), "no pending row was left behind");
+        assert_eq!(
+            promoted.current.as_ref().map(|v| v.title.as_str()),
+            Some("Earlier staged notes"),
+            "the pending draft staged before the failed check must survive it"
+        );
+        assert!(promoted.pending.is_none(), "confirm consumed the one slot");
+
+        assert_eq!(
+            gate.saves(),
+            saves,
+            "nothing may be saved over a draft we could not see"
+        );
+        assert_eq!(gate.stages(), stages, "nothing may be staged either");
 
         let staged = persist_generated_draft(state, id, sample_draft("Regenerated notes", true))
             .await
@@ -9638,8 +9670,9 @@ mod regenerate_with_retention_tests {
         assert_a_failed_check_changes_nothing(&state, id, &gate).await;
     }
 
-    /// What the operator console is told: `ok: false`, an existing (frozen) error code, a fixed
-    /// message, no draft, and none of the planted store text.
+    /// What the operator console is told: `ok: false`, an existing (frozen) error code, the exact
+    /// constant message, and no draft. That no error text can leak is structural (see the block
+    /// comment above), so this test pins the constant, not the absence of a marker.
     #[tokio::test]
     async fn a_failed_check_is_reported_as_not_saved_with_a_fixed_label_only_message() {
         let (app, id, gate) = flaky_state(true);
@@ -9687,10 +9720,6 @@ mod regenerate_with_retention_tests {
             reply["clamp"]["dropped_chars"], 100_000,
             "the clamp is still echoed"
         );
-        assert!(
-            !reply.to_string().contains(LOAD_ERROR_MARKER),
-            "FR-082: no store text in the reply"
-        );
 
         gate.fail_loads(false);
         let after = state
@@ -9705,21 +9734,28 @@ mod regenerate_with_retention_tests {
     /// The conversion that used to be `.ok().flatten()`: every class of load failure the ticket
     /// names (a reply of the wrong type, a refusal, a decoding error) plus a dead link maps to
     /// `CheckFailed`, never to `Absent`; the two real answers still map to themselves.
+    ///
+    /// The JSON-decoding class is covered HERE, at the `from_load` boundary, and not end to end:
+    /// `Backend::load_sermon_note_draft` turns every `TransportError` into a `String` through
+    /// one `.map_err(|e| e.to_string())`, so `from_load` sees the same type for every class, and
+    /// a scripted host cannot send a malformed frame through `ControlServer`.
     #[test]
     fn a_load_error_is_never_read_as_no_draft() {
         use selahcue_lan::TransportError;
         let json_error = serde_json::from_str::<selahcue_lan::protocol::ServerMessage>(
-            r#"{"event":"sermon_note_draft","transcript_id":"SECRET-DRAFT-TEXT-9d1e"}"#,
+            r#"{"event":"sermon_note_draft","transcript_id":"not-a-number"}"#,
         )
         .expect_err("a mistyped field does not decode");
         // The strings the backend hands over: `Backend::load_sermon_note_draft` stringifies the
-        // transport error.
+        // transport error. A refusal from a real host arrives as the same "expected X, got: Y"
+        // text a wrong-type reply does (`operator_reply::expect_sermon_note_draft`).
         let errors = [
             TransportError::Protocol("expected sermon_note_draft, got: error".to_string())
                 .to_string(),
+            TransportError::Protocol("expected sermon_note_draft, got: denied".to_string())
+                .to_string(),
             TransportError::Json(json_error).to_string(),
             TransportError::Closed.to_string(),
-            "denied".to_string(),
         ];
         for e in errors {
             assert!(
@@ -9836,7 +9872,7 @@ mod regenerate_with_retention_tests {
         type Load = fn() -> Reply;
         let wrong_type: Load = || {
             Reply::Message(Box::new(ServerMessage::Error {
-                message: LOAD_ERROR_MARKER.to_string(),
+                message: "an unrelated host error".to_string(),
             }))
         };
         let denied: Load = || Reply::Deny(DenyReason::BadRequest);

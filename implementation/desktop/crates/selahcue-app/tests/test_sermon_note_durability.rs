@@ -1001,12 +1001,11 @@ fn the_in_process_shell_tells_a_failed_load_from_no_draft() {
     let loaded = shell.load_sermon_note_draft(7).unwrap().unwrap();
     assert_eq!(loaded.title, sample_draft().title);
 
-    // A failed read: an error, and the error text names nothing from the store.
+    // A failed read: an error, not "no draft". The error is a constant (the host drops the
+    // store's text before the shell sees anything), so this pins the constant; it does not
+    // prove a leak is impossible, the structure does.
     store.fail_every_load(true);
     let failed = shell.load_sermon_note_draft(7);
     let err = failed.expect_err("a failed read must not look like 'no draft'");
-    assert!(
-        !err.contains("simulated") && !err.contains(&sample_draft().title),
-        "label-only error, got {err:?}"
-    );
+    assert_eq!(err, "the sermon-note draft could not be read");
 }
