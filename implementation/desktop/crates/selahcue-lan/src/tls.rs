@@ -68,7 +68,7 @@ impl From<serde_json::Error> for TransportError {
 }
 
 /// What a failed JSON decode (or encode) is allowed to tell a person or a log: a category in
-/// words of our own, and the line and column. **Never serde's message.**
+/// words of our own, and the line and column **when serde has them**. **Never serde's message.**
 ///
 /// serde quotes the offending VALUE in its message: `invalid type: string "SECRET sermon words",
 /// expected a sequence` for a wrongly-typed field, ``unknown variant `SECRET`, expected one of
@@ -83,6 +83,15 @@ impl From<serde_json::Error> for TransportError {
 /// `Debug` to leak and no `source()` to walk. It is the same approach as the cloud client's
 /// error mapping (`selahcue-cloud`, 86akbzxjg: category and position only), not a redaction pass
 /// over text: a filter can only remove what someone thought to describe.
+///
+/// **The position is not always there.** serde reports line 0 and column 0 when it has no
+/// position, which is the case for a data error inside an internally tagged enum (serde buffers
+/// the content before it knows the variant). Every wire message here (`ServerMessage`,
+/// `AuthResponse`, `PairResponse`, `Hello`, `Command`) is such an enum, so most shape errors have
+/// none. `Display` says `(no position)` for those rather than `at line 0 column 0`, as serde
+/// itself omits the suffix; the numbers stay readable through [`JsonFailure::line`] and
+/// [`JsonFailure::column`]. Where there is a position it says roughly how far into the frame the
+/// failure was, never what was there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JsonFailure {
     kind: JsonFailureKind,
@@ -91,7 +100,11 @@ pub struct JsonFailure {
 }
 
 /// What kind of JSON failure it was, as `serde_json` classifies it.
+///
+/// `#[non_exhaustive]`: a new category in a future serde_json must not break a caller that
+/// matches on this. Nothing in the workspace matches it exhaustively outside this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JsonFailureKind {
     /// The text is not valid JSON.
     Syntax,
@@ -100,7 +113,9 @@ pub enum JsonFailureKind {
     Data,
     /// The text ended before the value did.
     Eof,
-    /// Reading the text failed. Not produced by parsing a string; kept so the mapping is total.
+    /// Reading the text failed. **Unreachable from parsing a string** (`protocol::from_json` and
+    /// every frame the transport receives): `serde_json` produces it only when it reads a stream.
+    /// Kept so the mapping from `serde_json`'s categories is total.
     Io,
 }
 
@@ -110,12 +125,14 @@ impl JsonFailure {
         self.kind
     }
 
-    /// The 1-based line the failure was detected on (0 when serde has no position).
+    /// The 1-based line the failure was detected on (0 when serde has no position: see the type
+    /// documentation).
     pub fn line(&self) -> usize {
         self.line
     }
 
-    /// The 1-based column the failure was detected at (0 when serde has no position).
+    /// The 1-based column the failure was detected at (0 when serde has no position: see the type
+    /// documentation).
     pub fn column(&self) -> usize {
         self.column
     }
@@ -145,7 +162,12 @@ impl std::fmt::Display for JsonFailure {
             JsonFailureKind::Eof => "the message ended early",
             JsonFailureKind::Io => "the message could not be read",
         };
-        write!(f, "{what} at line {} column {}", self.line, self.column)
+        if self.line == 0 {
+            // serde has no position (see the type documentation); do not invent one.
+            write!(f, "{what} (no position)")
+        } else {
+            write!(f, "{what} at line {} column {}", self.line, self.column)
+        }
     }
 }
 

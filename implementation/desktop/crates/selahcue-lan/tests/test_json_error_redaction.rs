@@ -34,7 +34,8 @@ use selahcue_lan::protocol::{
 use selahcue_lan::server::{Handler, Reply};
 use selahcue_lan::session::SessionRegistry;
 use selahcue_lan::{
-    client_config, server_config, CertPin, ControlClient, ControlServer, SelfSigned, TransportError,
+    client_config, server_config, CertPin, ControlClient, ControlServer, JsonFailureKind,
+    SelfSigned, TransportError,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,6 +47,11 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// Recognisable, and long enough that no fixed-wording message can contain it by accident.
 const SECRET: &str = "SECRET-SERMON-WORDS-9f3a-do-not-log";
+
+/// For the cases where the planted value is a NUMBER: serde quotes integers and floats too, in
+/// backticks (``invalid value: integer `-4815162342`, expected u64``), so a number in the wrong
+/// field is a leak of the same kind.
+const NUMERIC_SECRET: &str = "4815162342";
 
 /// Everything a `TransportError` can show a person or a log, plus its `source()` chain.
 fn renderings(err: &TransportError) -> Vec<(&'static str, String)> {
@@ -63,31 +69,75 @@ fn renderings(err: &TransportError) -> Vec<(&'static str, String)> {
     out
 }
 
-fn assert_no_secret(what: &str, err: &TransportError) {
-    for (how, text) in renderings(err) {
+/// The planted value and the shorter distinctive fragments of it that must not appear either. A
+/// check for the whole value alone cannot see a leak of a PREFIX of the message (a mutant that
+/// appended the first 22 characters of serde's text leaked `SECRE` of an unknown-variant value and
+/// passed every whole-value assertion).
+fn forbidden_fragments(secret: &str) -> Vec<&str> {
+    let fragments: &[&str] = match secret {
+        SECRET => &["SECR", "SERMON", "9f3a"],
+        NUMERIC_SECRET => &["4815", "162342"],
+        _ => &[],
+    };
+    for fragment in fragments {
         assert!(
-            !text.contains(SECRET) && !text.contains("SECRET"),
-            "{what}: the {how} of the error quotes the frame: {text}"
+            secret.contains(fragment),
+            "`{fragment}` is not part of `{secret}`"
         );
+    }
+    let mut all = vec![secret];
+    all.extend_from_slice(fragments);
+    all
+}
+
+/// The first rendering of `err` that contains `secret` or a distinctive fragment of it, if any.
+fn find_leak(what: &str, err: &TransportError, secret: &str) -> Option<String> {
+    let forbidden = forbidden_fragments(secret);
+    renderings(err).into_iter().find_map(|(how, text)| {
+        forbidden
+            .iter()
+            .find(|piece| text.contains(**piece))
+            .map(|piece| {
+                format!("{what}: the {how} of the error quotes the frame (`{piece}`): {text}")
+            })
+    })
+}
+
+fn assert_no_secret(what: &str, err: &TransportError, secret: &str) {
+    if let Some(leak) = find_leak(what, err, secret) {
+        panic!("{leak}");
     }
 }
 
-/// The error still says what it is and where: a JSON failure at serde's own line and column.
-fn assert_names_a_json_failure_and_its_position(
-    what: &str,
-    err: &TransportError,
-    raw: &serde_json::Error,
-) {
+/// What is wrong, if anything, with the error's diagnostic value: it should still say it is a
+/// JSON failure, and say where when serde knows where.
+///
+/// serde reports line 0 and column 0 when it has no position, which is the case for a data error
+/// inside an internally tagged enum (serde buffers the content first): `ServerMessage`,
+/// `AuthResponse`, `PairResponse`, `Hello` and `Command` are all tagged, so most shape errors have
+/// none. Such an error must say so, not print `line 0 column 0` as if it were a place.
+fn diagnostic_problem(what: &str, err: &TransportError, raw: &serde_json::Error) -> Option<String> {
     let shown = err.to_string();
-    assert!(
-        shown.starts_with("json error: "),
-        "{what}: the error should still say it is a JSON failure: {shown}"
-    );
-    let position = format!("line {} column {}", raw.line(), raw.column());
-    assert!(
-        shown.contains(&position),
-        "{what}: the error should still say where (`{position}`): {shown}"
-    );
+    if !shown.starts_with("json error: ") {
+        return Some(format!(
+            "{what}: the error should still say it is a JSON failure: {shown}"
+        ));
+    }
+    if raw.line() == 0 {
+        if !shown.contains("(no position)") || shown.contains("line 0") {
+            return Some(format!(
+                "{what}: serde has no position, so the error should say `(no position)` and not a line 0: {shown}"
+            ));
+        }
+        return None;
+    }
+    let position = format!("at line {} column {}", raw.line(), raw.column());
+    if !shown.contains(&position) {
+        return Some(format!(
+            "{what}: the error should still say where (`{position}`): {shown}"
+        ));
+    }
+    None
 }
 
 /// One inbound frame shape with a planted secret in a field of the wrong type (or in a variant
@@ -95,6 +145,8 @@ fn assert_names_a_json_failure_and_its_position(
 struct Case {
     name: &'static str,
     frame: String,
+    /// The planted value that no rendering of the error may contain.
+    secret: &'static str,
     parse: fn(&str) -> Result<(), serde_json::Error>,
 }
 
@@ -111,6 +163,7 @@ fn cases() -> Vec<Case> {
             frame: format!(
                 r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":"{SECRET}"}}}}"#
             ),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
@@ -118,62 +171,104 @@ fn cases() -> Vec<Case> {
             frame: format!(
                 r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{{"id":1,"start_ms":"{SECRET}","end_ms":2,"text":"hello"}}]}}}}"#
             ),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
             name: "ServerMessage::State, live_item is a string",
             frame: format!(r#"{{"event":"state","live_item":"{SECRET}","blackout":false}}"#),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
             name: "ServerMessage::Ack, request_id is a string",
             frame: format!(r#"{{"event":"ack","request_id":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
             name: "ServerMessage::Denied, reason is an unknown variant",
             frame: format!(r#"{{"event":"denied","request_id":1,"reason":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
             name: "ServerMessage, the event tag is an unknown variant",
             frame: format!(r#"{{"event":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<ServerMessage>,
         },
         Case {
             name: "AuthResponse::Granted, role is an unknown variant",
             frame: format!(r#"{{"auth":"granted","role":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<AuthResponse>,
         },
         Case {
             name: "PairResponse::Granted, role is an unknown variant",
             frame: format!(r#"{{"pair":"granted","device_id":"d","token":"t","role":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<PairResponse>,
         },
         Case {
             name: "PairResponse::Rejected, reason is an unknown variant",
             frame: format!(r#"{{"pair":"rejected","reason":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<PairResponse>,
         },
         Case {
             name: "Hello::Auth, v is a string",
             frame: format!(r#"{{"hello":"auth","v":"{SECRET}","device_id":"d","token":"t"}}"#),
+            secret: SECRET,
             parse: parse_as::<Hello>,
         },
         Case {
             name: "Hello, the hello tag is an unknown variant",
             frame: format!(r#"{{"hello":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<Hello>,
         },
         Case {
             name: "Request, request_id is a string",
             frame: format!(r#"{{"v":2,"request_id":"{SECRET}","command":{{"cmd":"get_state"}}}}"#),
+            secret: SECRET,
             parse: parse_as::<Request>,
         },
         Case {
             name: "Command, the cmd tag is an unknown variant",
             frame: format!(r#"{{"cmd":"{SECRET}"}}"#),
+            secret: SECRET,
             parse: parse_as::<Command>,
+        },
+        // The pairing hello: the code is a credential too (single-use, but live until redeemed).
+        Case {
+            name: "Hello::Pair, v is a string",
+            frame: format!(
+                r#"{{"hello":"pair","v":"{SECRET}","code":"c","device_name":"p","platform":"a"}}"#
+            ),
+            secret: SECRET,
+            parse: parse_as::<Hello>,
+        },
+        Case {
+            name: "Hello::Pair, code is a number",
+            frame: format!(
+                r#"{{"hello":"pair","v":2,"code":{NUMERIC_SECRET},"device_name":"p","platform":"a"}}"#
+            ),
+            secret: NUMERIC_SECRET,
+            parse: parse_as::<Hello>,
+        },
+        // Numbers are quoted too, in backticks, in three different serde messages.
+        Case {
+            name: "ServerMessage::Ack, request_id is a negative integer",
+            frame: format!(r#"{{"event":"ack","request_id":-{NUMERIC_SECRET}}}"#),
+            secret: NUMERIC_SECRET,
+            parse: parse_as::<ServerMessage>,
+        },
+        Case {
+            name: "ServerMessage::Ack, request_id is a float",
+            frame: format!(r#"{{"event":"ack","request_id":{NUMERIC_SECRET}.5}}"#),
+            secret: NUMERIC_SECRET,
+            parse: parse_as::<ServerMessage>,
         },
     ]
 }
@@ -189,6 +284,8 @@ fn a_valid_frame_of_each_shape_still_parses_so_the_cases_are_malformed_only_wher
     )
     .unwrap();
     from_json::<Hello>(r#"{"hello":"auth","v":2,"device_id":"d","token":"t"}"#).unwrap();
+    from_json::<Hello>(r#"{"hello":"pair","v":2,"code":"c","device_name":"p","platform":"a"}"#)
+        .unwrap();
     from_json::<Request>(r#"{"v":2,"request_id":1,"command":{"cmd":"get_state"}}"#).unwrap();
     from_json::<ServerMessage>(
         r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{"id":1,"start_ms":0,"end_ms":2,"text":"hello"}]}}"#,
@@ -198,7 +295,12 @@ fn a_valid_frame_of_each_shape_still_parses_so_the_cases_are_malformed_only_wher
 
 #[test]
 fn a_mistyped_field_of_every_inbound_frame_shape_never_reaches_the_transport_error() {
-    for case in cases() {
+    // Every case is checked and every failure is reported together, so a regression shows which
+    // shapes it touches rather than only the first.
+    let mut failures = Vec::new();
+    let all = cases();
+    assert!(all.len() >= 17, "the table has shrunk: {} cases", all.len());
+    for case in all {
         let raw = (case.parse)(&case.frame)
             .expect_err(&format!("{}: the fixture should be malformed", case.name));
 
@@ -206,7 +308,7 @@ fn a_mistyped_field_of_every_inbound_frame_shape_never_reaches_the_transport_err
         // this frame the fixture is no longer exercising the leak and the checks below prove
         // nothing.
         assert!(
-            raw.to_string().contains(SECRET) && format!("{raw:?}").contains(SECRET),
+            raw.to_string().contains(case.secret) && format!("{raw:?}").contains(case.secret),
             "{}: premise broken, serde no longer quotes the value: {raw}",
             case.name
         );
@@ -214,43 +316,120 @@ fn a_mistyped_field_of_every_inbound_frame_shape_never_reaches_the_transport_err
         // This is exactly what `recv_json` does with the parse failure.
         let err = TransportError::from(raw);
         let raw_again = (case.parse)(&case.frame).unwrap_err();
-        assert_no_secret(case.name, &err);
-        assert_names_a_json_failure_and_its_position(case.name, &err, &raw_again);
+        failures.extend(find_leak(case.name, &err, case.secret));
+        failures.extend(diagnostic_problem(case.name, &err, &raw_again));
+    }
+    assert!(
+        failures.is_empty(),
+        "{} case(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// The `JsonFailure` inside the error the transport would return for `frame` parsed as `T`, and
+/// the text a person would read.
+fn failure_of<T: serde::de::DeserializeOwned>(frame: &str) -> (selahcue_lan::JsonFailure, String) {
+    let Err(raw) = from_json::<T>(frame) else {
+        panic!("`{frame}` should not parse");
+    };
+    let err = TransportError::from(raw);
+    let text = err.to_string();
+    match err {
+        TransportError::Json(f) => (f, text),
+        other => panic!("not a Json error: {other:?}"),
     }
 }
 
 #[test]
-fn a_syntax_failure_and_a_truncated_frame_keep_their_category_and_position() {
-    // Not every failure quotes a value; these must stay as useful as they were.
-    let cut = r#"{"event":"state","live_item":"#;
-    let raw = from_json::<ServerMessage>(cut).unwrap_err();
-    let (line, column) = (raw.line(), raw.column());
+fn each_category_keeps_its_kind_its_wording_and_a_position_where_serde_has_one() {
+    // The category is carried and stated, in words of our own. Asserted on the kind itself AND on
+    // the exact wording, so a swapped mapping and a single sentence for every kind both fail.
+
+    // A truncated frame: serde knows where.
+    let (f, text) = failure_of::<ServerMessage>(r#"{"event":"state","live_item":"#);
+    assert_eq!(f.kind(), JsonFailureKind::Eof);
+    assert!(text.contains("ended early"), "{text}");
+    assert!(f.line() >= 1 && f.column() >= 1, "{f:?}");
+    assert!(
+        text.contains(&format!("at line {} column {}", f.line(), f.column())),
+        "{text}"
+    );
+
+    // Not JSON at all: serde knows where.
+    let (f, text) = failure_of::<ServerMessage>(r#"{"event": state}"#);
+    assert_eq!(f.kind(), JsonFailureKind::Syntax);
+    assert!(text.contains("not valid JSON"), "{text}");
+    assert!(f.line() >= 1 && f.column() >= 1, "{f:?}");
+    assert!(
+        text.contains(&format!("at line {} column {}", f.line(), f.column())),
+        "{text}"
+    );
+
+    // A wrong shape in a plain struct: serde knows where.
+    let (f, text) =
+        failure_of::<Request>(r#"{"v":2,"request_id":"x","command":{"cmd":"get_state"}}"#);
+    assert_eq!(f.kind(), JsonFailureKind::Data);
+    assert!(text.contains("did not have the shape"), "{text}");
+    assert!(f.line() >= 1 && f.column() >= 1, "{f:?}");
+    assert!(
+        text.contains(&format!("at line {} column {}", f.line(), f.column())),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_shape_error_inside_a_tagged_enum_says_it_has_no_position_instead_of_line_0() {
+    // serde buffers the content of an internally tagged enum before it knows the variant, so a
+    // data error inside one carries no position (line 0, column 0). The ticket's own frame is
+    // such a case: an operator-state frame whose transcript is a string. 72% of the malformed
+    // frames QA mutated were of this kind, so printing `line 0 column 0` would send a reader
+    // looking for a place that does not exist.
+    let frame = format!(
+        r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":"{SECRET}"}}}}"#
+    );
+    let raw = from_json::<ServerMessage>(&frame).unwrap_err();
+    // PREMISE: serde really has no position here. If a serde upgrade starts reporting one, this
+    // test says so instead of passing on a case that no longer exercises the wording.
+    assert_eq!((raw.line(), raw.column()), (0, 0), "{raw}");
+
+    let (f, text) = failure_of::<ServerMessage>(&frame);
+    assert_eq!(f.kind(), JsonFailureKind::Data);
+    assert!(text.starts_with("json error: "), "{text}");
+    assert!(text.contains("did not have the shape"), "{text}");
+    assert!(text.contains("(no position)"), "{text}");
+    assert!(
+        !text.contains("line 0") && !text.contains("column 0"),
+        "{text}"
+    );
+    // The numbers stay in the type for anyone who wants them.
+    assert_eq!((f.line(), f.column()), (0, 0));
+}
+
+#[test]
+fn an_io_failure_is_its_own_kind_and_quotes_nothing_from_the_reader() {
+    // The `Io` category cannot come from parsing a string, but it can come from `serde_json`
+    // reading a stream, and the mapping is total, so it is exercised here with a reader whose
+    // error carries the secret. serde would print that error's text.
+    struct Failing;
+    impl std::io::Read for Failing {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(SECRET))
+        }
+    }
+    let raw = serde_json::from_reader::<_, ServerMessage>(Failing).unwrap_err();
+    assert!(
+        raw.is_io() && raw.to_string().contains(SECRET),
+        "premise: {raw}"
+    );
+
     let err = TransportError::from(raw);
-    let shown = err.to_string();
-    assert!(
-        shown.starts_with("json error: ")
-            && shown.contains(&format!("line {line} column {column}")),
-        "a truncated frame: {shown}"
-    );
-
-    let broken = r#"{"event": state}"#;
-    let raw = from_json::<ServerMessage>(broken).unwrap_err();
-    let (line, column) = (raw.line(), raw.column());
-    let shown = TransportError::from(raw).to_string();
-    assert!(
-        shown.contains(&format!("line {line} column {column}")),
-        "a syntax error: {shown}"
-    );
-
-    // The category is stated, in words of our own, and the two differ.
-    let truncated = TransportError::from(from_json::<ServerMessage>(cut).unwrap_err()).to_string();
-    let syntax = TransportError::from(from_json::<ServerMessage>(broken).unwrap_err()).to_string();
-    let data = TransportError::from(
-        from_json::<ServerMessage>(r#"{"event":"ack","request_id":"x"}"#).unwrap_err(),
-    )
-    .to_string();
-    assert_ne!(truncated, syntax);
-    assert_ne!(syntax, data);
+    assert_no_secret("an io failure", &err, SECRET);
+    let TransportError::Json(f) = &err else {
+        panic!("not a Json error: {err:?}");
+    };
+    assert_eq!(f.kind(), JsonFailureKind::Io);
+    assert!(err.to_string().contains("could not be read"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
@@ -291,62 +470,93 @@ async fn hostile_host(replies: Vec<String>) -> (SocketAddr, CertPin) {
     (addr, pin)
 }
 
-fn secret_in(frame: &str, err: &TransportError) {
-    // PREMISE of each end-to-end case: the frame the host sent really does carry the secret.
-    assert!(frame.contains(SECRET));
-    assert_no_secret("real transport", err);
+/// Build the hostile frame for a real-transport case, after checking its premise: parsed as the
+/// type the transport expects, it fails, and serde's own error quotes the secret in both
+/// renderings. Checked BEFORE the transport is involved, so a fixture that stopped being
+/// malformed fails here with the reason, not later as a confusing success.
+fn hostile_frame<T: serde::de::DeserializeOwned>(frame: String) -> String {
+    let Err(raw) = from_json::<T>(&frame) else {
+        panic!("the hostile frame should not parse");
+    };
+    assert!(
+        raw.to_string().contains(SECRET) && format!("{raw:?}").contains(SECRET),
+        "premise broken, serde no longer quotes the value: {raw}"
+    );
+    frame
+}
+
+/// A bound on every client call in these tests: `ControlClient::pair` alone is capped only by its
+/// 150 s pairing timeout, so a regression must fail quickly instead of hanging the suite.
+async fn within_ten_seconds<F: std::future::Future>(what: &str, future: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(10), future)
+        .await
+        .unwrap_or_else(|_| panic!("{what} did not return within 10 s"))
 }
 
 #[tokio::test]
 async fn a_hostile_auth_reply_does_not_reach_the_error_connect_returns() {
-    let frame = format!(r#"{{"auth":"granted","role":"{SECRET}"}}"#);
-    let (addr, pin) = hostile_host(vec![frame.clone()]).await;
+    let frame = hostile_frame::<AuthResponse>(format!(r#"{{"auth":"granted","role":"{SECRET}"}}"#));
+    let (addr, pin) = hostile_host(vec![frame]).await;
 
-    let err = match ControlClient::connect(addr, "localhost", pin, "dev", "tok").await {
+    let err = match within_ten_seconds(
+        "connect",
+        ControlClient::connect(addr, "localhost", pin, "dev", "tok"),
+    )
+    .await
+    {
         Err(e) => e,
         Ok(_) => panic!("a malformed auth reply must not authenticate"),
     };
 
-    secret_in(&frame, &err);
+    assert_no_secret("real transport", &err, SECRET);
     assert!(matches!(err, TransportError::Json(_)), "{err:?}");
     assert!(err.to_string().starts_with("json error: "), "{err}");
 }
 
 #[tokio::test]
 async fn a_hostile_pairing_reply_does_not_reach_the_error_pair_returns() {
-    let frame = format!(r#"{{"pair":"granted","device_id":"d","token":"t","role":"{SECRET}"}}"#);
-    let (addr, pin) = hostile_host(vec![frame.clone()]).await;
+    let frame = hostile_frame::<PairResponse>(format!(
+        r#"{{"pair":"granted","device_id":"d","token":"t","role":"{SECRET}"}}"#
+    ));
+    let (addr, pin) = hostile_host(vec![frame]).await;
 
-    let err = match ControlClient::pair(addr, "localhost", pin, "code", "phone", "android").await {
+    let err = match within_ten_seconds(
+        "pair",
+        ControlClient::pair(addr, "localhost", pin, "code", "phone", "android"),
+    )
+    .await
+    {
         Err(e) => e,
         Ok(_) => panic!("a malformed pairing reply must not pair"),
     };
 
-    secret_in(&frame, &err);
+    assert_no_secret("real transport", &err, SECRET);
     assert!(matches!(err, TransportError::Json(_)), "{err:?}");
 }
 
 #[tokio::test]
 async fn a_hostile_command_reply_does_not_reach_the_error_command_returns() {
     // The ticket's own scenario: an operator-state frame whose transcript is a string.
-    let frame = format!(
+    let frame = hostile_frame::<ServerMessage>(format!(
         r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":"{SECRET}"}}}}"#
-    );
+    ));
     let (addr, pin) = hostile_host(vec![
         r#"{"auth":"granted","role":"producer"}"#.to_string(),
-        frame.clone(),
+        frame,
     ])
     .await;
-    let mut client = ControlClient::connect(addr, "localhost", pin, "dev", "tok")
-        .await
-        .expect("a well-formed auth reply connects");
+    let mut client = within_ten_seconds(
+        "connect",
+        ControlClient::connect(addr, "localhost", pin, "dev", "tok"),
+    )
+    .await
+    .expect("a well-formed auth reply connects");
 
-    let err = client
-        .command(Command::GetOperatorState)
+    let err = within_ten_seconds("command", client.command(Command::GetOperatorState))
         .await
         .expect_err("a malformed state frame is an error");
 
-    secret_in(&frame, &err);
+    assert_no_secret("real transport", &err, SECRET);
     assert!(matches!(err, TransportError::Json(_)), "{err:?}");
     assert!(err.to_string().starts_with("json error: "), "{err}");
 }
@@ -377,7 +587,9 @@ async fn a_hostile_hello_does_not_reach_the_error_the_server_returns() {
         }
     });
 
-    let frame = format!(r#"{{"hello":"auth","v":"{SECRET}","device_id":"d","token":"t"}}"#);
+    let frame = hostile_frame::<Hello>(format!(
+        r#"{{"hello":"auth","v":"{SECRET}","device_id":"d","token":"t"}}"#
+    ));
     let tcp = TcpStream::connect(addr).await.unwrap();
     let connector = TlsConnector::from(Arc::new(client_config(pin).unwrap()));
     let dns = rustls::pki_types::ServerName::try_from("localhost".to_string()).unwrap();
@@ -385,7 +597,7 @@ async fn a_hostile_hello_does_not_reach_the_error_the_server_returns() {
     let (mut ws, _) = tokio_tungstenite::client_async("wss://localhost/", tls)
         .await
         .unwrap();
-    ws.send(Message::text(frame.clone())).await.unwrap();
+    ws.send(Message::text(frame)).await.unwrap();
 
     let err = tokio::time::timeout(Duration::from_secs(10), serving)
         .await
@@ -393,6 +605,6 @@ async fn a_hostile_hello_does_not_reach_the_error_the_server_returns() {
         .unwrap()
         .expect_err("a malformed hello is an error");
 
-    secret_in(&frame, &err);
+    assert_no_secret("real transport", &err, SECRET);
     assert!(matches!(err, TransportError::Json(_)), "{err:?}");
 }
