@@ -2212,6 +2212,16 @@ def test_the_per_account_outage_table_is_bounded_and_counts_each_account_separat
     assert table.claim(1) is True, "a lapsed window must start over"
 
 
+def test_the_tally_caps_the_detail_it_keeps():
+    """The real details are short, so only a direct test shows the cap: a first-event detail of a
+    megabyte is kept as at most `_TRACE_REPORT_DETAIL_MAX` characters."""
+    tally = services._SuppressedTally()
+    _count, first, _accounts = tally.note("x" * 1_000_000)
+    assert len(first) == services._TRACE_REPORT_DETAIL_MAX
+    tally.note("y" * 1_000_000)
+    assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
+
+
 def test_the_skip_report_names_at_most_twenty_distinct_accounts():
     tally = services._SuppressedTally()
     assert tally.note("first", 7) is not None  # the first event is released immediately

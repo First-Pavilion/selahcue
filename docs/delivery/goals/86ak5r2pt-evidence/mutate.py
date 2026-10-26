@@ -124,7 +124,11 @@ MUTANTS = [
     ("Q04 a consumed token is labelled before a wrong-purpose one", SVC, [("    if token.purpose != CredentialTokenPurpose.PASSWORD_RESET:\n        return ResetConfirmOutcome.WRONG_PURPOSE\n    if token.consumed_at is not None:\n        return ResetConfirmOutcome.CONSUMED\n", "    if token.consumed_at is not None:\n        return ResetConfirmOutcome.CONSUMED\n    if token.purpose != CredentialTokenPurpose.PASSWORD_RESET:\n        return ResetConfirmOutcome.WRONG_PURPOSE\n")]),
     # ---- the trace ----
     ("B1 nothing is recorded", SVC, [("    outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED\n    user_id = trace.customer_user_id\n", "    return\n    outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED\n    user_id = trace.customer_user_id\n")]),
-    ("B2 a failed write is no longer swallowed", SVC, [('    except Exception as error:  # noqa: BLE001 -- see "WHY IT SWALLOWS"', "    except ZeroDivisionError as error:")]),
+    # (Removing ONLY the recorder's swallow is an EQUIVALENT mutant since round 2: the whole trace
+    # body is protected one level up, which counts the same lost row. Hence both layers here.)
+    ("B2 a failed write is swallowed by neither the recorder nor the trace body", SVC, [
+        ('    except Exception as error:  # noqa: BLE001 -- see "WHY IT SWALLOWS"', "    except ZeroDivisionError as error:"),
+        ("    except Exception as error:  # noqa: BLE001 -- see the docstring\n        _note_lost_trace(error, outcome, source)", "    except ZeroDivisionError as error:\n        _note_lost_trace(error, outcome, source)")]),
     ("B3 row written inside the rolled-back transaction", SVC, [
         ("        self.outcome = outcome\n        if customer_user_id is not None:\n            self.customer_user_id = customer_user_id\n", "        self.outcome = outcome\n        if customer_user_id is not None:\n            self.customer_user_id = customer_user_id\n        _record_failed_reset_confirm(self, \"127.0.0.1\")\n"),
         ("    except SafeAPIError:\n        _trace_failed_confirm(trace, source, limiter_degraded)\n        raise", "    except SafeAPIError:\n        raise")]),
@@ -176,7 +180,7 @@ MUTANTS = [
     ("N7 tally keeps a per-event list", SVC, [("            if self._count == 0:\n                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n", "            if self._count == 0:\n                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n            self._seen = getattr(self, \"_seen\", []) + [detail]\n")]),
     ("N8 tally detail not capped", SVC, [("                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]\n", "                self._first = detail\n")]),
     ("N9 lost-trace report carries a traceback", SVC, [('            logger.warning(\n                "could not write the audit row for %d failed', '            logger.exception(\n                "could not write the audit row for %d failed')]),
-    ("N10 report count not carried", SVC, [("            released = (self._count, self._first)", "            released = (1, self._first)")]),
+    ("N10 report count not carried", SVC, [("            released = (self._count, self._first, sorted(self._accounts))", "            released = (1, self._first, sorted(self._accounts))")]),
     ("N11 recorder write not in its own atomic()", SVC, [("        with transaction.atomic():\n            record_audit_event(\n                ActorContext(kind=ActorKind.ANONYMOUS", "        with threading.Lock():\n            record_audit_event(\n                ActorContext(kind=ActorKind.ANONYMOUS")]),
 ]
 
