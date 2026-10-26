@@ -33,9 +33,14 @@ two-caller tests that CAN run only on Postgres live in `tests/test_concurrency_p
 
 from __future__ import annotations
 
+import ast
 import base64
+import inspect
 import json
 import logging
+import pathlib
+import re
+import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 import pytest
@@ -45,6 +50,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import seat_plan_code
+from selahcue_api.apps.throttling import guards as throttle_guards
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.devices.models import DeviceToken, DeviceTokenStatus
@@ -86,6 +92,8 @@ from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.redaction import MAX_PAYLOAD_DEPTH
 
 pytestmark = pytest.mark.django_db(transaction=True)
+
+CREDENTIAL = ErrorCode.CREDENTIAL_IN_INPUT
 
 TEST_SEED_B64 = base64.b64encode(bytes(range(32))).decode("ascii")
 
@@ -472,11 +480,48 @@ def test_revoke_normalises_the_reason_and_stores_it_bounded():
     assert _rows(key, action=REVOKE_ACTION).get().reason == "Fraud confirmed by the processor."
 
 
-# --- Reason text: a pasted licence key is refused, never stored ---------------------------
+# --- Reason text and retry key: a pasted licence key is refused, never stored --------------
 # FLOW-504 is "leaked key kill", so the person typing the reason has the leaked key in front of
 # them and pasting it is the natural slip. NFR-508 allows no plaintext licensing credential at
 # rest, and the audit trail is append-only, so a key stored there could never be removed.
-# Refused rather than redacted: silently rewriting the reason would falsify the record.
+# Refused rather than redacted: silently rewriting the reason would falsify the record. The
+# refusal carries its own error code (CREDENTIAL_IN_INPUT) because the generic safe message that
+# every other validation failure gets would leave the person with no idea what to change.
+#
+# The characters below are built with chr(), never typed: the Edit/Write tools can turn a typed
+# escape into a real invisible character in committed source.
+EN_DASH = chr(0x2013)
+ZERO_WIDTH_SPACE = chr(0x200B)
+SOFT_HYPHEN = chr(0x00AD)
+
+
+def _fullwidth(text):
+    return "".join(
+        chr(ord(ch) + 0xFEE0) if ch.isascii() and ch.isalnum() else ch for ch in text
+    )
+
+
+def _spellings(full_key):
+    """Ways of writing one licence key that a person (or a copy-paste through a chat tool) can
+    produce. `full_key` is SC-<TYPE>-<8 groups of 4 joined by dashes>."""
+    body = full_key.split("-", 2)[2]
+    squeezed = body.replace("-", "")
+    return {
+        "as-issued": full_key,
+        "lower-case": full_key.lower(),
+        "body-only": body,
+        "spaces": body.replace("-", " "),
+        "dots-and-spaces": body.replace("-", " . "),
+        "run-together": squeezed,
+        "en-dashes": body.replace("-", EN_DASH),
+        "zero-width-space-inside": body[:10] + ZERO_WIDTH_SPACE + body[10:],
+        "soft-hyphens-inside": body.replace("-", SOFT_HYPHEN + "-"),
+        "fullwidth-letters": _fullwidth(body),
+        "newlines": body.replace("-", "\n"),
+        "prefix-with-spaces": f"SC - {full_key.split('-')[1]} - " + body.replace("-", " - "),
+    }
+
+
 def _audit_dump():
     return json.dumps(
         [
@@ -487,27 +532,95 @@ def _audit_dump():
     )
 
 
-@pytest.mark.parametrize("spelling", ["as-issued", "lower-case", "mid-sentence"])
-@pytest.mark.parametrize("which", ["revoke", "extend"])
+def _suspend_via_service(key, idem="cred-suspend-0001", reason=REASON, actor=None):
+    return suspend_license_key(
+        actor or _staff({StaffPermission.SUSPEND_LICENSE_KEY}),
+        SuspendLicenseKeyData(idempotency_key=idem, license_key_id=str(key.pk), reason=reason),
+    )
+
+
+def _reinstate_via_service(key, idem="cred-reinstate-0001", reason=REASON, actor=None):
+    return reinstate_license_key(
+        actor or _staff({StaffPermission.REINSTATE_LICENSE_KEY}),
+        ReinstateLicenseKeyData(idempotency_key=idem, license_key_id=str(key.pk), reason=reason),
+    )
+
+
+# One entry per staff lifecycle mutation: how to call it with a given reason / idempotency key.
+LIFECYCLE_CALLS = {
+    "revoke": lambda key, idem, reason: _revoke(key, idem, reason=reason),
+    "extend": lambda key, idem, reason: _extend(key, _later(), idem, reason=reason),
+    "suspend": lambda key, idem, reason: _suspend_via_service(key, idem, reason),
+    "reinstate": lambda key, idem, reason: _reinstate_via_service(key, idem, reason),
+}
+FRESH_KEY = "cred-fresh-request-1"
+
+
+@pytest.mark.parametrize("which", sorted(LIFECYCLE_CALLS))
+@pytest.mark.parametrize("spelling", sorted(_spellings("SC-TRIAL-ABCD-EFGH-JKLM-NPQR-STUV-WXYZ-2345-6789")))
 def test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored(which, spelling):
-    key, full_key = _seed_key(f"reason-key-{which}-{spelling}"[:30])
-    pasted = {
-        "as-issued": full_key,
-        "lower-case": full_key.lower(),
-        "mid-sentence": f"Leaked on a forum ({full_key}) so we are killing it today.",
-    }[spelling]
-    reason = pasted if len(pasted) >= 8 else pasted + " padding"
+    key, full_key = _seed_key(f"cred-{which}-{spelling}"[:34])
+    pasted = _spellings(full_key)[spelling]
+    reason = f"Leaked on a public forum: {pasted} so it is being killed."
+    status_before = _fresh(key).status
     rows_before = AuditEvent.objects.count()
 
-    if which == "revoke":
-        error = _error(_revoke, key, reason=reason)
-    else:
-        error = _error(_extend, key, _later(), reason=reason)
+    error = _error(LIFECYCLE_CALLS[which], key, FRESH_KEY, reason)
 
-    assert error.code == ErrorCode.VALIDATION_FAILED
+    assert error.code == CREDENTIAL
     assert AuditEvent.objects.count() == rows_before
-    assert full_key not in _audit_dump() and full_key.lower() not in _audit_dump().lower()
-    assert _fresh(key).status == S.ISSUED
+    assert full_key not in _audit_dump()
+    assert full_key.split("-", 2)[2].replace("-", "") not in _audit_dump().replace("-", "").upper()
+    assert _fresh(key).status == status_before
+
+
+@pytest.mark.parametrize("which", sorted(LIFECYCLE_CALLS))
+def test_a_reason_that_is_only_the_key_is_refused_too(which):
+    key, full_key = _seed_key(f"cred-only-{which}")
+    assert _error(LIFECYCLE_CALLS[which], key, FRESH_KEY, full_key).code == CREDENTIAL
+
+
+@pytest.mark.parametrize("which", sorted(LIFECYCLE_CALLS))
+def test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored(which):
+    """A full key is 47 characters of letters and dashes, which passes the idempotency-key
+    pattern (12 to 128 of `A-Za-z0-9._:-`), and the retry key is stored verbatim as the audit
+    row's `request_id` on SUCCESS and DENIED rows alike."""
+    key, full_key = _seed_key(f"cred-retry-{which}")
+    rows_before = AuditEvent.objects.count()
+
+    for pasted in (full_key, full_key.lower()):
+        assert _error(LIFECYCLE_CALLS[which], key, pasted, REASON).code == CREDENTIAL
+
+    assert AuditEvent.objects.count() == rows_before
+    assert full_key not in _audit_dump()
+
+
+@pytest.mark.parametrize("which", ["revoke", "extend"])
+def test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row(which):
+    key, full_key = _seed_key(f"cred-unauth-{which}")
+    actor = ActorContext(kind=ActorKind.DEVICE, actor_id="dev_pasting")
+    if which == "revoke":
+        call = lambda: revoke_license_key(  # noqa: E731
+            actor, RevokeLicenseKeyData(idempotency_key=full_key, license_key_id=str(key.pk), reason=f"key is {full_key} ok")
+        )
+        denied_action = REVOKE_PERMISSION_DENIED_ACTION
+    else:
+        call = lambda: extend_license_key(  # noqa: E731
+            actor,
+            ExtendLicenseKeyData(
+                idempotency_key=full_key, license_key_id=str(key.pk), new_expires_at=_later(),
+                reason=f"key is {full_key} ok",
+            ),
+        )
+        denied_action = EXTEND_PERMISSION_DENIED_ACTION
+
+    with pytest.raises(SafeAPIError) as raised:
+        call()
+
+    assert raised.value.code == ErrorCode.PERMISSION_DENIED
+    row = AuditEvent.objects.get(action=denied_action)
+    assert row.reason == "" and row.request_id == "invalid-idempotency-key"
+    assert full_key not in _audit_dump()
 
 
 def test_a_masked_key_is_fine_in_a_reason_and_is_the_way_to_name_a_licence():
@@ -517,15 +630,44 @@ def test_a_masked_key_is_fine_in_a_reason_and_is_the_way_to_name_a_licence():
     assert full_key not in _audit_dump()
 
 
-def test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row():
-    key, full_key = _seed_key("reason-unauthorised")
-    actor = ActorContext(kind=ActorKind.DEVICE, actor_id="dev_pasting")
+@pytest.mark.parametrize(
+    "reason",
+    [
+        REASON,
+        EXTEND_REASON,
+        "The customer reports the booth laptop was stolen on Sunday after the evening service.",
+        "Chargeback reference 8F3A9C2E-61B4-4D7A-9E55-0C1D2E3F4A5B from the processor.",
+        "SHA-256 of the receipt: " + "a1b2c3d4" * 8 + " (as quoted in the dispute).",
+        "Contact support@example.org, case number 2026-10-0042, ticket SEL-1234 and SEL-5678.",
+        "Moved the church from the trial to the pilot: see THAT THEY HAVE SAME WERE EACH SUCH for context.",
+    ],
+    ids=["revoke-reason", "extend-reason", "prose", "uuid", "sha256-hex", "ids", "seven-short-words"],
+)
+def test_ordinary_reasons_are_not_mistaken_for_a_key(reason):
+    """The detector looks for the key's SHAPE (eight groups of four from the key alphabet), so
+    these must pass. The last one is seven four-letter words that avoid I, O, 0 and 1: one
+    short of a key."""
+    key, _ = _seed_key(f"cred-fp-{uuid.uuid4().hex[:8]}")
+    _revoke(key, reason=reason)
+    assert _rows(key, action=REVOKE_ACTION).get().reason.startswith(reason[:20])
 
-    error = _error(revoke_license_key, actor, _revoke_data(key, reason=f"key is {full_key} ok"))
 
-    assert error.code == ErrorCode.PERMISSION_DENIED
-    row = AuditEvent.objects.get(action=REVOKE_PERMISSION_DENIED_ACTION)
-    assert row.reason == "" and full_key not in _audit_dump()
+def test_eight_four_letter_words_in_a_row_are_a_known_false_positive():
+    """Stated, not hidden: a reason that is literally eight words of four letters from the key
+    alphabet, separated by single spaces, looks exactly like a spaced-out key and is refused.
+    The refusal names the cause, and rewording clears it."""
+    key, _ = _seed_key("cred-fp-known")
+    reason = "Escalated after THAT THEY HAVE SAME WERE EACH SUCH THEN went wrong."
+
+    assert _error(_revoke, key, reason=reason).code == CREDENTIAL
+    _revoke(key, "cred-fp-known-retry", reason="Escalated after seven or eight words went wrong.")
+
+
+@pytest.mark.parametrize("retry_key", [str(uuid.uuid4()), uuid.uuid4().hex, "console-2026-10-26T09:15:00Z-revoke", "a" * 128])
+def test_ordinary_retry_keys_are_not_mistaken_for_a_key(retry_key):
+    key, _ = _seed_key(f"cred-rk-{uuid.uuid4().hex[:8]}")
+    _revoke(key, retry_key)
+    assert _rows(key, action=REVOKE_ACTION).get().request_id == retry_key
 
 
 # --- Revoke: transaction guard, throttle, writer discipline -----------------------------
@@ -1099,7 +1241,7 @@ def _validation_cases():
         "naive-datetime": lambda key: (now + timedelta(days=90)).replace(tzinfo=None),
         "equal-to-current": lambda key: key.expires_at,
         "earlier-than-current": lambda key: key.expires_at - timedelta(days=1),
-        "beyond-the-ceiling": lambda key: now + MAX_EXTENSION_FROM_NOW + timedelta(days=2),
+        "beyond-the-ceiling": lambda key: max(now, key.expires_at) + MAX_EXTENSION_FROM_NOW + timedelta(days=2),
         "year-9999": lambda key: datetime(9999, 12, 31, tzinfo=dt_timezone.utc),
         "year-1": lambda key: datetime(1, 1, 2, tzinfo=dt_timezone.utc),
     }
@@ -1489,8 +1631,6 @@ def test_the_tripwire_has_positive_controls_so_it_is_the_only_thing_that_stopped
 
 
 def test_the_opt_in_is_keyword_only_and_off_by_default():
-    import inspect
-
     parameter = inspect.signature(apply_license_status_transition).parameters[
         "allow_wrapping_transaction"
     ]
@@ -1812,8 +1952,6 @@ def test_neither_payload_can_be_asked_for_customer_details(client, mutation, sha
     """The payload is the summary type, not `AdminLicenseKey`: that one's `customer` field has
     no permission check of its own, so returning it would hand a revoke-only or extend-only
     actor contact details they cannot otherwise query."""
-    import re
-
     key, _ = _seed_key(f"no-customer-{mutation}-{shape}"[:30])
     permission = f"{mutation}_license_key"
     audit_before = AuditEvent.objects.count()
@@ -1897,3 +2035,374 @@ def test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwri
         assert "86ak" in owner and len(owner) > 20, f"{status.value} needs its owning ticket named"
     # The table-level sweep is a separate, weaker claim and stays true.
     assert state_machine.statuses_without_writer() == frozenset()
+
+
+# =============================================================================================
+# 9. Round 2: replay compares the date, the ceiling follows the licence, the audit caps are per
+#    kind, the guards that had no test, and the scans that keep the records honest
+# =============================================================================================
+# --- Extend: a retry that asks for a DIFFERENT date is not a replay ---------------------------
+def test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing():
+    """The retry lookup matches actor, action, licence and request id. Without a comparison of
+    the date, re-sending a key with a new date reported `replayed=true` and silently dropped the
+    date the staff member had just asked for."""
+    key, _ = _seed_key("ext-replay-date")
+    first_target = _later(60)
+    first = _extend(key, first_target, "extend-same-key-0001")
+    rows_before = _rows(key).count()
+
+    error = _error(_extend, key, _later(120), "extend-same-key-0001")
+
+    assert error.code == ErrorCode.VALIDATION_FAILED
+    assert _fresh(key).expires_at == first_target, "the earlier extension stands, untouched"
+    assert _rows(key).count() == rows_before, "a refused retry writes nothing"
+    # ...and the genuine retry of the first request is still a replay.
+    replay = _extend(key, first_target, "extend-same-key-0001")
+    assert replay.changed is False and replay.audit_event.pk == first.audit_event.pk
+
+
+def test_the_same_instant_written_in_another_offset_is_still_a_replay():
+    key, _ = _seed_key("ext-replay-offset")
+    target = _later(60)
+    _extend(key, target, "extend-offset-key-01")
+    lagos = dt_timezone(timedelta(hours=1))
+
+    replay = _extend(key, target.astimezone(lagos), "extend-offset-key-01")
+
+    assert replay.changed is False
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+
+
+def test_a_different_date_on_a_retry_is_refused_over_graphql_too(client):
+    key, _ = _seed_key("gql-replay-date")
+    first = _gql(client, EXTEND_MUTATION, _extend_input(key, "gql-same-key-00001", _later(60)),
+                 permissions="extend_license_key")
+    second = _gql(client, EXTEND_MUTATION, _extend_input(key, "gql-same-key-00001", _later(120)),
+                  permissions="extend_license_key")
+
+    assert "errors" not in first.json()
+    assert _error_code(second) == "VALIDATION_FAILED"
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+
+
+# --- Extend: the ceiling follows the licence, not the clock -----------------------------------
+def test_a_licence_already_past_the_ceiling_can_still_be_extended_by_a_day():
+    """Measured from `now`, a licence issued for seven years could never be extended at all,
+    even by one day, and was told only that the request was invalid."""
+    now = timezone.now().replace(microsecond=0)
+    key, _ = _seed_key("ext-ceiling-long", expires_at=now + timedelta(days=7 * 365))
+    assert _fresh(key).expires_at > now + MAX_EXTENSION_FROM_NOW
+
+    result = _extend(key, key.expires_at + timedelta(days=1))
+
+    assert result.changed is True
+
+
+def test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry():
+    now = timezone.now().replace(microsecond=0)
+    key, _ = _seed_key("ext-ceiling-edge", expires_at=now + timedelta(days=7 * 365))
+    current = _fresh(key).expires_at
+    rows_before = AuditEvent.objects.count()
+
+    assert _error(_extend, key, current + MAX_EXTENSION_FROM_NOW + timedelta(days=2)).code == (
+        ErrorCode.VALIDATION_FAILED
+    )
+    assert AuditEvent.objects.count() == rows_before
+    assert _fresh(key).expires_at == current
+
+    inside = current + MAX_EXTENSION_FROM_NOW - timedelta(days=2)
+    assert _extend(key, inside, "extend-ceiling-edge2").changed is True
+    assert _fresh(key).expires_at == inside
+
+
+def test_a_licence_that_lapsed_long_ago_is_bounded_from_now_not_from_its_old_date():
+    now = timezone.now().replace(microsecond=0)
+    key, _ = _seed_key("ext-ceiling-lapsed", starts_at=now - timedelta(days=4000))
+    _drive_to(key, S.EXPIRED)
+    _lapse(key, days_ago=3000)
+
+    assert _error(_extend, key, now + MAX_EXTENSION_FROM_NOW + timedelta(days=2)).code == (
+        ErrorCode.VALIDATION_FAILED
+    )
+    assert _extend(key, now + MAX_EXTENSION_FROM_NOW - timedelta(days=2), "extend-lapsed-ok-001").changed
+
+
+def test_a_year_9999_typo_is_still_refused_whatever_the_licences_own_date():
+    now = timezone.now().replace(microsecond=0)
+    key, _ = _seed_key("ext-ceiling-9999", expires_at=now + timedelta(days=7 * 365))
+    far = datetime(9999, 12, 31, tzinfo=dt_timezone.utc)
+
+    assert _error(_extend, key, far).code == ErrorCode.VALIDATION_FAILED
+    # ...including from a UTC-minus zone, where converting to UTC would overflow the datetime.
+    west = datetime(9999, 12, 31, 23, 0, tzinfo=dt_timezone(timedelta(hours=-5)))
+    assert _error(_extend, key, west, "extend-9999-west-001").code == ErrorCode.VALIDATION_FAILED
+
+
+# --- Refusal audit: per-kind global cap, no reason stored -------------------------------------
+@pytest.mark.parametrize("which", sorted(MUTATIONS))
+def test_customers_cannot_crowd_staff_out_of_the_refusal_audit(which, settings):
+    """One global cap shared by every kind of actor let about twenty customer identities hold
+    it and blank the rows for a staff probe. The cap is per kind of actor now."""
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT = (100, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL = (4, 60)
+    call, permission, denied_action = MUTATIONS[which]
+    key, _ = _seed_key(f"authz-kind-{which}")
+
+    for n in range(12):
+        _error(call, key, ActorContext(kind=ActorKind.CUSTOMER, actor_id=f"cust_{n}"), f"kind-request-{n:04d}")
+    assert AuditEvent.objects.filter(action=denied_action, actor_kind="customer").count() == 4
+
+    _error(call, key, ActorContext(kind=ActorKind.STAFF, actor_id="staff_probe"), "kind-request-staff1")
+    _error(call, key, ActorContext(kind=ActorKind.DEVICE, actor_id="dev_probe"), "kind-request-device")
+    assert AuditEvent.objects.filter(action=denied_action, actor_kind="staff").count() == 1
+    assert AuditEvent.objects.filter(action=denied_action, actor_kind="device").count() == 1
+    assert AuditEvent.objects.filter(action=denied_action, actor_kind="customer").count() == 4
+
+
+@pytest.mark.parametrize("which", sorted(MUTATIONS))
+def test_a_refused_callers_reason_is_never_stored(which):
+    """The refusal row says who tried what against which licence, and that is all. A valid,
+    ordinary reason from a caller who was refused is still free text from someone not trusted."""
+    call, permission, denied_action = MUTATIONS[which]
+    key, _ = _seed_key(f"authz-noreason-{which}")
+    actor = ActorContext(kind=ActorKind.CUSTOMER, actor_id="cust_reasoning")
+    if which == "revoke":
+        function, data = revoke_license_key, _revoke_data(key, "noreason-req-0001")
+    else:
+        function, data = extend_license_key, _extend_data(key, _later(), "noreason-req-0001")
+
+    assert _error(function, actor, data).code == ErrorCode.PERMISSION_DENIED
+
+    assert AuditEvent.objects.get(action=denied_action).reason == ""
+
+
+def test_the_sustained_denial_log_line_names_its_scope_and_is_not_about_password_reset(caplog):
+    guards = throttle_guards
+    guards._reset_denial_log_suppression()
+    with caplog.at_level(logging.WARNING, logger=guards.logger.name):
+        for _ in range(5):
+            guards.spend_budget("admin_licence_refusal_audit", "customer", "NO_SUCH_SETTING", (1, 60))
+    message = [r.getMessage() for r in caplog.records if "is refusing requests" in r.getMessage()][0]
+
+    assert "admin_licence_refusal_audit" in message
+    assert "password" not in message.lower() and "DEC-013" not in message
+    guards._reset_denial_log_suppression()
+
+
+# --- Refusal audit: identities that cannot be written to the trail ----------------------------
+UNAUDITABLE_IDS = {
+    "200-characters": "c" * 200,
+    "129-characters": "c" * 129,
+    "contains-NUL": "cust" + chr(0) + "evil",
+    "contains-newline": "cust\nevil",
+    "empty": "",
+}
+
+
+@pytest.mark.parametrize("which", sorted(MUTATIONS))
+@pytest.mark.parametrize("kind", [ActorKind.CUSTOMER, ActorKind.DEVICE, ActorKind.SERVICE], ids=lambda k: k.value)
+@pytest.mark.parametrize("label", sorted(UNAUDITABLE_IDS))
+def test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row(which, kind, label):
+    """STAFF never reaches the guard with such an id (`require_staff_permission` answers
+    UNAUTHENTICATED first); the other kinds do, and the row could not be written for them:
+    Postgres refuses a NUL and an over-long value, SQLite would store both."""
+    call, permission, denied_action = MUTATIONS[which]
+    key, _ = _seed_key(f"authz-unaud-{which}-{kind.value}-{label}"[:40])
+    rows_before = AuditEvent.objects.count()
+
+    error = _error(call, key, ActorContext(kind=kind, actor_id=UNAUDITABLE_IDS[label]))
+
+    assert error.code == ErrorCode.PERMISSION_DENIED
+    assert AuditEvent.objects.count() == rows_before
+
+
+# --- The autocommit guard, shown to be the one that stopped the call --------------------------
+@pytest.mark.parametrize("which", ["revoke", "extend", "suspend", "reinstate"])
+def test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database(which):
+    """The writer's tripwire would also refuse these (INTERNAL), but only AFTER the licence had
+    been looked up and the budget spent. This pins the earlier guard: not one query runs."""
+    key, _ = _seed_key(f"autocommit-{which}")
+
+    with transaction.atomic():
+        with CaptureQueriesContext(connection) as queries:
+            error = _error(LIFECYCLE_CALLS[which], key, FRESH_KEY, REASON)
+
+    assert error.code == ErrorCode.INTERNAL
+    assert len(queries) == 0, [q["sql"][:70] for q in queries.captured_queries]
+
+
+# --- GraphQL: the credential refusal has its own code and carries nothing sensitive -----------
+def test_graphql_a_pasted_key_in_the_reason_gets_its_own_error_code_and_no_key_in_the_answer(client):
+    key, full_key = _seed_key("gql-credential")
+    pasted = _revoke_input(key, "gql-credential-req-1", reason=f"leaked key {full_key} posted online")
+
+    response = _gql(client, REVOKE_MUTATION, pasted, permissions="revoke_license_key")
+
+    assert _error_code(response) == "CREDENTIAL_IN_INPUT"
+    text = response.content.decode()
+    assert full_key not in text and full_key.lower() not in text
+    assert "licence key" in response.json()["errors"][0]["message"].lower()
+    assert _fresh(key).status == S.ISSUED
+    assert AuditEvent.objects.count() == AuditEvent.objects.filter(action="license_key.generated").count()
+
+
+def test_graphql_a_key_used_as_the_retry_key_gets_the_same_code(client):
+    key, full_key = _seed_key("gql-credential-retry")
+    response = _gql(client, EXTEND_MUTATION, _extend_input(key, full_key, _later()),
+                    permissions="extend_license_key")
+    assert _error_code(response) == "CREDENTIAL_IN_INPUT"
+    assert full_key not in response.content.decode()
+
+
+# --- The records that must not drift: the opt-in sites and the unwritten statuses -------------
+# Both are AST scans over the production tree, in the style of the writer-discipline scan in
+# test_license_state_machine.py, with positive controls that point the real function at a
+# fixture tree. A comment that says "this test fails until you update it" is only true if a test
+# is actually looking.
+_PRODUCTION_ROOT = pathlib.Path(__file__).resolve().parent.parent / "selahcue_api"
+_THE_WRITER = "selahcue_api/apps/license_keys/state_machine.py"
+
+EXPECTED_OPT_IN_SITES = {
+    ("selahcue_api/apps/devices/services.py", "_activate_device_for_key"),
+    ("selahcue_api/apps/license_keys/services.py", "_extend_under_locks"),
+}
+
+
+class _CallSites(ast.NodeVisitor):
+    def __init__(self):
+        self.functions: list[str] = []
+        self.calls: list[tuple[str, ast.Call]] = []
+
+    def _enter(self, node):
+        self.functions.append(node.name)
+        self.generic_visit(node)
+        self.functions.pop()
+
+    visit_FunctionDef = _enter
+    visit_AsyncFunctionDef = _enter
+
+    def visit_Call(self, node):
+        self.calls.append((self.functions[-1] if self.functions else "<module>", node))
+        self.generic_visit(node)
+
+
+def _production_calls(root=None):
+    root = root or _PRODUCTION_ROOT
+    for path in sorted(root.rglob("*.py")):
+        relative = str(path.relative_to(root.parent))
+        if relative == _THE_WRITER:
+            continue
+        visitor = _CallSites()
+        visitor.visit(ast.parse(path.read_text(), filename=str(path)))
+        for function, call in visitor.calls:
+            yield relative, function, call
+
+
+def _opt_in_sites(root=None) -> set[tuple[str, str]]:
+    """Every (module, enclosing function) that passes `allow_wrapping_transaction` as anything
+    other than the literal False."""
+    sites = set()
+    for relative, function, call in _production_calls(root):
+        for keyword in call.keywords:
+            if keyword.arg == "allow_wrapping_transaction" and not (
+                isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+            ):
+                sites.add((relative, function))
+    return sites
+
+
+def _unwritten_status_targets(root=None) -> set[tuple[str, str, str]]:
+    """Every place outside the writer that passes a deliberately unwritten status as the
+    `to_status` of a call (the writer, or a helper like `_lifecycle_mutation` that forwards it)."""
+    names = {status.name for status in DELIBERATELY_UNWRITTEN_STATUSES}
+    values = {status.value for status in DELIBERATELY_UNWRITTEN_STATUSES}
+    found = set()
+    for relative, function, call in _production_calls(root):
+        for keyword in call.keywords:
+            if keyword.arg != "to_status":
+                continue
+            value = keyword.value
+            if isinstance(value, ast.Attribute) and value.attr in names:
+                found.add((relative, function, value.attr))
+            elif isinstance(value, ast.Constant) and value.value in values:
+                found.add((relative, function, str(value.value)))
+    return found
+
+
+def test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction():
+    assert _opt_in_sites() == EXPECTED_OPT_IN_SITES, (
+        "a new caller passes allow_wrapping_transaction to the licence writer. That opt-in accepts "
+        "the loss of a DENIED audit row (state_machine module docstring), so each site is "
+        "reviewed by name: add it here only with the reason written next to the call."
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        ("direct", "def f():\n    writer(k, allow_wrapping_transaction=True)\n"),
+        ("variable", "def f(flag):\n    writer(k, allow_wrapping_transaction=flag)\n"),
+        ("module-level", "writer(k, allow_wrapping_transaction=True)\n"),
+        ("nested", "def outer():\n    def inner():\n        writer(k, allow_wrapping_transaction=True)\n"),
+        ("method", "class C:\n    def m(self):\n        self.w(k, allow_wrapping_transaction=True)\n"),
+    ],
+)
+def test_the_opt_in_scan_finds_every_spelling(tmp_path, shape, source):
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "offender.py").write_text(source)
+
+    found = _opt_in_sites(package)
+
+    assert found and all(site[0].endswith("offender.py") for site in found), (shape, found)
+
+
+def test_the_opt_in_scan_ignores_an_explicit_false_and_the_writers_own_signature(tmp_path):
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "fine.py").write_text("def f():\n    writer(k, allow_wrapping_transaction=False)\n")
+
+    assert _opt_in_sites(package) == set()
+
+
+def test_no_production_module_writes_a_status_the_record_calls_unwritten():
+    """The comment on `DELIBERATELY_UNWRITTEN_STATUSES` promises that landing the ticket that
+    writes one of these statuses fails a test until the entry moves. This is that test: a call
+    that targets EXPIRING, EXPIRED, CONVERTED or ARCHIVED outside the writer fails here, and the
+    way to fix it is to move the status from the mapping into the produced set in
+    `test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten`."""
+    assert _unwritten_status_targets() == set(), (
+        "a production module now passes a status listed in DELIBERATELY_UNWRITTEN_STATUSES as a "
+        "target: the ticket that writes it has landed, so move it out of that mapping and add its "
+        "entry point to the coverage test"
+    )
+
+
+@pytest.mark.parametrize(
+    ("shape", "source"),
+    [
+        ("attribute", "def f():\n    writer(k, to_status=LicenseKeyStatus.EXPIRING)\n"),
+        ("alias", "def f():\n    writer(k, to_status=S.ARCHIVED)\n"),
+        ("string", "def f():\n    writer(k, to_status='EXPIRED')\n"),
+        ("forwarding-helper", "def f():\n    _lifecycle_mutation(a, to_status=LicenseKeyStatus.CONVERTED)\n"),
+    ],
+)
+def test_the_unwritten_status_scan_finds_every_spelling(tmp_path, shape, source):
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "offender.py").write_text(source)
+
+    found = _unwritten_status_targets(package)
+
+    assert found and all(site[0].endswith("offender.py") for site in found), (shape, found)
+
+
+def test_the_unwritten_status_scan_leaves_the_written_statuses_alone(tmp_path):
+    package = tmp_path / "selahcue_api"
+    package.mkdir()
+    (package / "fine.py").write_text(
+        "def f():\n    writer(k, to_status=LicenseKeyStatus.REVOKED)\n"
+        "    writer(k, to_status=LicenseKeyStatus.ACTIVATED)\n    writer(k, to_status=LicenseKeyStatus.SUSPENDED)\n"
+    )
+
+    assert _unwritten_status_targets(package) == set()

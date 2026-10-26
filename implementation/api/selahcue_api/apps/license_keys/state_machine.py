@@ -61,7 +61,8 @@ wrapping a transition at all.
 The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
 autocommit and gets the durable case for free. Admin mutations should assert
 `not connection.in_atomic_block` at their boundary rather than assume it; suspend, reinstate,
-revoke and extend do (`license_keys.services._require_autocommit`, 86ak5mn0c).
+revoke and extend all do, before any query runs (`license_keys.services._require_autocommit`,
+86ak5mn0c; revoke shares `_lifecycle_mutation` with the other two, extend calls it directly).
 
 **The writer enforces this itself** (86ak1090r, AC 8). Called inside an open transaction
 (`connection.in_atomic_block`) without `allow_wrapping_transaction=True`, it raises
@@ -278,8 +279,10 @@ EXTEND_ACTION = "license_key.extended"
 # is the other half, about CALLERS: the statuses no production entry point writes today, each
 # with the ticket that will write it. They are deliberately unwritten, not forgotten, and
 # `tests/test_license_revoke_extend.py` drives every entry point that exists and requires the
-# produced set and this set to partition the enum. When one of these tickets lands, move its
-# status out of this mapping; that test fails until you do.
+# produced set and this set to partition the enum, and an AST scan there fails when any production
+# module outside this one passes one of these statuses as a `to_status` (a target held in a
+# variable is invisible to it, so review remains the control for that). When one of these tickets
+# lands, move its status out of this mapping; those tests fail until you do.
 #
 # Written by production entry points today: ISSUED (staff issuance), ACTIVATED (first device
 # activation; extend restores it), SUSPENDED (suspend), REVOKED (revoke).

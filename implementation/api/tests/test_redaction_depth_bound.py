@@ -166,3 +166,18 @@ def test_strings_and_bytes_are_leaves_not_containers():
     ensure_payload_depth({"s": "x" * 100_000, "b": b"y" * 100_000})
     redact_public_payload({"s": "x" * 100_000})
     assert_no_restricted_payload_fields({"s": "x" * 100_000})
+
+
+def test_the_container_cap_is_exactly_two_thousand():
+    """Pinned at the edge with the LITERAL number, not the constant: a test built from
+    `MAX_PAYLOAD_CONTAINERS` moves with it and would stay green when someone raises the cap ten
+    times, which makes the refusal of shared substructure ten times slower. One list holding `n`
+    dicts is `n + 1` containers: 2,000 pass, 2,001 are refused."""
+    at_the_cap = [{"k": index} for index in range(1999)]
+    one_over = [{"k": index} for index in range(2000)]
+
+    for function in (ensure_payload_depth, redact_public_payload, assert_no_restricted_payload_fields):
+        function(at_the_cap)
+        with pytest.raises(SafeAPIError) as raised:
+            function(one_over)
+        assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__

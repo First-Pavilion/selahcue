@@ -602,13 +602,15 @@ SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 # far below a script. Fails OPEN when the cache is down, like every budget in this file.
 SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (30, 60)
 
-# How many "you were refused" audit rows the revoke / extend permission gate may write
+# How fast the revoke / extend permission gate may write "you were refused" audit rows
 # (86ak1090r). A caller who is identified but not permitted gets PERMISSION_DENIED and an audit
-# row, so an investigator can see the attempt; without a cap that path would be a free way to
-# grow the audit table. Per identity, and one global cap across all identities, because actor
-# ids are free to vary on the dev header bridge. Past a cap the call is STILL refused; it just
-# stops writing rows. Fails open when the cache is down (the row is written: auditing is the
-# safe side to err on).
+# row, so an investigator can see the attempt. This RATE-LIMITS that path; it does not bound the
+# table. The first budget is per identity, the second per KIND of actor (staff, customer,
+# device, service), so a crowd of customer identities cannot use up the staff allowance. With
+# the numbers below that is at most 100 x 60 x 24 = 144,000 rows a day for each kind under
+# sustained attack, and the budget fails OPEN when the cache is down (the row is written:
+# auditing is the safe side to err on), so there is no cap at all during an outage. Past a cap
+# the call is STILL refused; it just stops writing rows.
 SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT = (5, 60)
 SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL = (100, 60)
 

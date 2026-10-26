@@ -5,6 +5,7 @@ import hmac
 import logging
 import re
 import secrets
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -108,34 +109,71 @@ def _generate_full_key(key_type: LicenseKeyType) -> str:
     return f"SC-{key_type.value}-{'-'.join(groups)}"
 
 
-# A full licence key as `_generate_full_key` writes it: `SC-<TYPE>-` then eight groups of four.
-# Built from the same constants so a change to the key shape moves this with it. Case-insensitive
-# because the person pasting it may have retyped it. It matches the canonical spelling only: a
-# key broken across lines or re-grouped by hand evades it, which is the honest limit of a check
-# that refuses on a pattern.
-_FULL_KEY_IN_TEXT_RE = re.compile(
-    rf"SC-[A-Z_]+(?:-[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}){{{KEY_BODY_GROUPS}}}", re.IGNORECASE
+# A licence key leaking into free text or into a stored identifier (86ak1090r). FLOW-504 is a
+# "leaked key kill", so the person writing the reason has the key in front of them and pasting it
+# is the natural slip, and the audit trail is append-only: NFR-508 allows no plaintext licensing
+# credential at rest, and one that lands there can never be taken back.
+#
+# What is recognised is the key's SHAPE, not a prefix. The `SC-<TYPE>-` part is optional, and
+# the body is eight groups of four characters from `KEY_ALPHABET` with anything from one to three
+# non-alphanumeric characters between groups (dashes of every kind, spaces, dots, newlines), or
+# the 32 characters run together as a token of their own. The text is first put through NFKC
+# (full-width letters become ASCII) and stripped of format characters (zero-width space, soft
+# hyphen, word joiner), then upper-cased, so those spellings do not slip past.
+#
+# What is NOT recognised, stated so nobody assumes otherwise: a key broken into groups of other
+# sizes or only partly grouped, homoglyphs from other scripts, and anything written as an image.
+# And the shape is a heuristic with one known false positive: eight four-letter words in a row
+# that avoid I, O, 0 and 1 look exactly like a spaced-out key.
+_KEY_GROUP = rf"[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}"
+_KEY_FLOOR = r"(?<![A-Z0-9])"
+_KEY_CEILING = r"(?![A-Z0-9])"
+_GROUPED_KEY_RE = re.compile(
+    rf"{_KEY_FLOOR}(?:{_KEY_GROUP}[\W_]{{1,3}}){{{KEY_BODY_GROUPS - 1}}}{_KEY_GROUP}{_KEY_CEILING}"
+)
+_RUN_TOGETHER_KEY_RE = re.compile(
+    rf"{_KEY_FLOOR}[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE * KEY_BODY_GROUPS}}}{_KEY_CEILING}"
 )
 
 
-def _require_reason_without_a_credential(raw_reason: str) -> str:
-    """`require_reason`, and refuse a reason that contains a full licence key.
+def _for_credential_scan(text: str) -> str:
+    folded = unicodedata.normalize("NFKC", text)
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf").upper()
 
-    FLOW-504 is "leaked key kill", so the person writing the reason has the leaked key in front
-    of them and pasting it is the natural slip. The audit trail is append-only and NFR-508
-    allows no plaintext licensing credential at rest, so a key that lands there can never be
-    taken back. Refused rather than redacted: quietly rewriting the reason would falsify the
-    record, and a refusal tells the person what to do instead (name the licence by its masked
-    key or its id).
+
+def _credential_error() -> SafeAPIError:
+    return SafeAPIError(ErrorCode.CREDENTIAL_IN_INPUT)
+
+
+def _require_reason_without_a_credential(raw_reason: str) -> str:
+    """`require_reason`, and refuse (CREDENTIAL_IN_INPUT) a reason that contains a full licence
+    key in any of the spellings above, grouped or run together.
+
+    Refused rather than redacted: quietly rewriting the reason would falsify the record. The
+    refusal has its own error code because every other validation failure is flattened to
+    "The request is invalid." on the wire, which would leave the person with no idea what to
+    change; the code and its fixed message carry nothing sensitive.
     """
     reason = require_reason(raw_reason)
-    if _FULL_KEY_IN_TEXT_RE.search(reason):
-        raise SafeAPIError(
-            ErrorCode.VALIDATION_FAILED,
-            "The reason contains a full licence key. Refer to the licence by its masked key or "
-            "its id instead; the audit trail keeps what is written here permanently.",
-        )
+    scanned = _for_credential_scan(reason)
+    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):
+        raise _credential_error()
     return reason
+
+
+def _require_retry_key(raw_key: str) -> str:
+    """`validate_idempotency_key`, and refuse a key shaped like a grouped licence key.
+
+    A full key is 47 characters of letters and dashes, which passes the retry-key pattern, and
+    the retry key is stored verbatim as the audit row's `request_id`. Only the GROUPED shape is
+    checked: a retry key is client-chosen and routinely a bare 32-character token (a UUID without
+    dashes), and refusing every such token that happens to avoid I, O, 0 and 1 would turn about
+    one in seventy random ones away. A key pasted as a bare run of 32 characters is not caught.
+    """
+    key = validate_idempotency_key(raw_key)
+    if _GROUPED_KEY_RE.search(_for_credential_scan(key)):
+        raise _credential_error()
+    return key
 
 
 def _fingerprint(full_key: str) -> str:
@@ -594,12 +632,14 @@ class ReinstateLicenseKeyData:
 # What is deliberately NOT audited: an unauthenticated caller, and an identity too long or
 # malformed to be written to the trail. There is no actor to attribute the row to.
 #
-# The refusal row is written for a caller we do not trust, so it is built defensively and
-# BOUNDED. Every free-text field it carries is validated or replaced, never stored as sent,
-# and two budgets cap how many rows the refusal path can produce: one per identity, one global
-# (actor ids are free to vary on the dev header bridge, so a per-identity cap alone is not a
-# bound). Past a budget the call is still refused; it just stops writing rows, and the shared
-# throttle layer reports the sustained denial in the log once a minute.
+# The refusal row is written for a caller we do not trust, so it is built defensively and the
+# path is RATE-LIMITED, not bounded: every free-text field it carries is validated or replaced
+# (no reason is stored at all), and two budgets cap how fast rows can be produced, one per
+# identity and one per KIND of actor. That is up to (cap x 60 x 24) rows a day per kind with the
+# shipped numbers, and no cap at all while the cache is down, because the budget fails open and
+# auditing is the safe side to err on. Past a cap the call is still refused; it just stops
+# writing rows, and the shared throttle layer reports the sustained denial in the log once a
+# minute, naming the scope.
 REVOKE_PERMISSION_DENIED_ACTION = "license_key.revoke_permission_denied"
 EXTEND_PERMISSION_DENIED_ACTION = "license_key.extend_permission_denied"
 EXTEND_REFUSED_ACTION = "license_key.extend_refused"
@@ -622,7 +662,6 @@ def _authorise(
     denied_action: str | None,
     raw_idempotency_key: str,
     raw_license_key_id: str,
-    raw_reason: str,
 ) -> ActorContext:
     """`require_staff_permission`, plus an audit row when an identified actor is refused.
 
@@ -639,7 +678,6 @@ def _authorise(
                 action=denied_action,
                 raw_idempotency_key=raw_idempotency_key,
                 raw_license_key_id=raw_license_key_id,
-                raw_reason=raw_reason,
             )
         raise
 
@@ -651,9 +689,8 @@ def _audit_permission_refusal(
     action: str,
     raw_idempotency_key: str,
     raw_license_key_id: str,
-    raw_reason: str,
 ) -> None:
-    """Best effort, bounded, and never able to change the answer the caller gets."""
+    """Best effort, rate-limited, and never able to change the answer the caller gets."""
     actor_id = actor.actor_id or ""
     if not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH or has_control_characters(actor_id):
         return  # cannot be written to the trail; the refusal itself is unaffected
@@ -663,25 +700,24 @@ def _audit_permission_refusal(
         REFUSAL_AUDIT_SCOPE, identity, REFUSAL_AUDIT_SETTING, REFUSAL_AUDIT_BUDGET
     ) is BudgetOutcome.DENIED:
         return
+    # The global cap is kept PER KIND of actor (a handful of fixed values). One shared cap let
+    # about twenty customer identities hold it and blank the rows for a staff probe.
     if spend_budget(
         f"{REFUSAL_AUDIT_SCOPE}_global",
-        "all",
+        actor.kind.value,
         REFUSAL_AUDIT_GLOBAL_SETTING,
         REFUSAL_AUDIT_GLOBAL_BUDGET,
     ) is BudgetOutcome.DENIED:
         return
 
     # No lookup: whether the licence exists must not change what an unauthorised caller sees,
-    # and a refused caller does not get to make the database work.
+    # and a refused caller does not get to make the database work. No reason either: free text
+    # from a caller who was just refused is not stored.
     target_id = _clean_license_key_id(raw_license_key_id) or _UNRESOLVED_TARGET
     try:
-        request_id = validate_idempotency_key(raw_idempotency_key)
+        request_id = _require_retry_key(raw_idempotency_key)
     except SafeAPIError:
         request_id = _INVALID_REQUEST_ID
-    try:
-        reason = _require_reason_without_a_credential(raw_reason)
-    except SafeAPIError:
-        reason = ""
 
     try:
         record_audit_event(
@@ -690,7 +726,7 @@ def _audit_permission_refusal(
             target_type=AUDIT_TARGET_TYPE,
             target_id=target_id,
             request_id=request_id,
-            reason=reason,
+            reason="",
             result=AuditResult.DENIED,
             after={
                 "required_permission": permission.value,
@@ -723,9 +759,10 @@ def _require_autocommit() -> None:
     """
     if transaction.get_connection().in_atomic_block:
         logger.error(
-            "a licence suspend/reinstate was attempted inside an open transaction; refused "
-            "because a DENIED audit row written in this state would be rolled back with the "
-            "caller's transaction (durability of refusals, state_machine docstring)."
+            "a licence lifecycle mutation (suspend, reinstate, revoke or extend) was attempted "
+            "inside an open transaction; refused because a DENIED audit row written in this "
+            "state would be rolled back with the caller's transaction (durability of refusals, "
+            "state_machine docstring)."
         )
         raise SafeAPIError(ErrorCode.INTERNAL)
 
@@ -796,11 +833,10 @@ def _lifecycle_mutation(
         denied_action=denied_action,
         raw_idempotency_key=raw_idempotency_key,
         raw_license_key_id=raw_license_key_id,
-        raw_reason=raw_reason,
     )
     _require_autocommit()
     _enforce_lifecycle_budget(staff)
-    idempotency_key = validate_idempotency_key(raw_idempotency_key)
+    idempotency_key = _require_retry_key(raw_idempotency_key)
     reason = _require_reason_without_a_credential(raw_reason)
     license_key = _get_license_key_or_not_found(raw_license_key_id)
 
@@ -925,9 +961,10 @@ EXTENDABLE_SOURCES = frozenset(
 _EXTENDS_TO_ACTIVATED = frozenset({LicenseKeyStatus.EXPIRING, LicenseKeyStatus.EXPIRED})
 
 # A technical sanity bound, NOT a product rule. Issuance has no ceiling and the PRD names no
-# maximum term, so this only has to stop an absurd date (year 9999, a typo of three extra
-# digits) from becoming a signed entitlement cached offline until it. Five years from NOW.
-# Flagged for the owner; changing it is one constant.
+# maximum term, so this only has to stop an absurd date (year 9999, a typo of three extra digits)
+# from becoming a signed entitlement cached offline until it. Five years beyond the LATER of now
+# and the licence's current expiry: measured from now alone, a licence already issued for seven
+# years could not be extended even by a day. Flagged for the owner; changing it is one constant.
 MAX_EXTENSION_FROM_NOW = timedelta(days=5 * 365)
 
 
@@ -958,10 +995,11 @@ class _ExtendRefused(Exception):
 def _require_new_expiry(value: datetime) -> datetime:
     """The requested expiry as an aware UTC instant, or VALIDATION_FAILED.
 
-    Naive values are REFUSED rather than coerced to UTC the way issuance does it: a licence
-    window moved by a mis-read zone is an hours-wrong entitlement, and the console can always
-    send an offset. In the future, because an activatable licence whose window is already over
-    activates nothing; at most `MAX_EXTENSION_FROM_NOW` ahead, because of the year-9999 typo.
+    Naive values are REFUSED rather than coerced to UTC the way issuance does it: a licence window
+    moved by a mis-read zone is an hours-wrong entitlement, and the console can always send an
+    offset. In the future, because an activatable licence whose window is already over activates
+    nothing. The ceiling is NOT checked here: it is measured from the licence's own current
+    expiry, which is only known under the lock (see `_extend_under_locks`).
     """
     if not isinstance(value, datetime) or timezone.is_naive(value):
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
@@ -970,9 +1008,20 @@ def _require_new_expiry(value: datetime) -> datetime:
     except (OverflowError, ValueError) as error:  # year 9999 with a negative offset, etc.
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED) from error
     now = timezone.now()
-    if instant <= now or instant > now + MAX_EXTENSION_FROM_NOW:
+    if instant <= now:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
     return instant
+
+
+def _same_instant(recorded: object, requested: datetime) -> bool:
+    """Whether the expiry recorded on an earlier audit row is the instant now requested (the same
+    moment written in another UTC offset still counts). An unreadable record never matches."""
+    if not isinstance(recorded, str):
+        return False
+    try:
+        return datetime.fromisoformat(recorded) == requested
+    except ValueError:
+        return False
 
 
 def _move_expiry(locked: AppLicenseKey, new_expires_at: datetime) -> None:
@@ -989,7 +1038,7 @@ def extend_license_key(
 
     Staff only, reason mandatory. See `EXTENDABLE_SOURCES` for what each status does. The new
     expiry must be timezone-aware, strictly later than the current one, in the future, and
-    within `MAX_EXTENSION_FROM_NOW`; it may not overlap another valid licence of the
+    within `MAX_EXTENSION_FROM_NOW` of the later of now and the current expiry; it may not overlap another valid licence of the
     organisation (the rule `require_no_overlapping_license_key` documents for exactly this
     caller); and an archived customer's licence is not extended.
 
@@ -998,7 +1047,8 @@ def extend_license_key(
     is per user intent. A retry of a request that took effect applies nothing and reports the
     licence's CURRENT state with `changed=False` and the original audit row, checked under the
     lock BEFORE anything else so it is never judged against the state the first call produced.
-    A new key with the date already in effect is rejected (VALIDATION_FAILED), not applied twice.
+    The same key with a DIFFERENT date is not a retry and is rejected (VALIDATION_FAILED); so is a
+    new key with the date already in effect: neither is applied twice or silently dropped.
 
     Lock order is organisation then licence (`FOR NO KEY UPDATE` on the org, `FOR UPDATE` on the
     licence). The writer, and therefore revoke, suspend and reinstate, lock only the licence row.
@@ -1016,11 +1066,10 @@ def extend_license_key(
         denied_action=EXTEND_PERMISSION_DENIED_ACTION,
         raw_idempotency_key=data.idempotency_key,
         raw_license_key_id=data.license_key_id,
-        raw_reason=data.reason,
     )
     _require_autocommit()
     _enforce_lifecycle_budget(staff)
-    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    idempotency_key = _require_retry_key(data.idempotency_key)
     reason = _require_reason_without_a_credential(data.reason)
     new_expires_at = _require_new_expiry(data.new_expires_at)
     license_key = _get_license_key_or_not_found(data.license_key_id)
@@ -1084,6 +1133,11 @@ def _extend_under_locks(
             staff, action=EXTEND_ACTION, license_key_id=locked.pk, request_id=idempotency_key
         )
         if earlier is not None:
+            # A retry repeats the request, and the request includes the date. The same key with a
+            # different date is not a retry of the request that took effect: answering it as one
+            # would report `replayed` and silently drop the date just asked for.
+            if not _same_instant(earlier.after.get("expires_at"), new_expires_at):
+                raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
             return LicenseTransitionResult(
                 license_key=locked,
                 from_status=before_status,
@@ -1110,6 +1164,8 @@ def _extend_under_locks(
 
         # 3. Input that only the locked row can judge. Not audited: it is a bad request.
         if new_expires_at <= old_expires_at:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        if new_expires_at > max(timezone.now(), old_expires_at) + MAX_EXTENSION_FROM_NOW:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
         try:

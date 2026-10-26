@@ -28,6 +28,13 @@ class ErrorCode(str, Enum):
     # It carries no policy detail (length, which rule failed): the client mirrors the rule
     # itself (`marketing/src/lib/auth/passwordPolicy.ts`) and renders its own copy.
     PASSWORD_INVALID = "PASSWORD_INVALID"
+    # A licence key was found in text that is stored permanently (a lifecycle reason, a retry
+    # key). Distinct from VALIDATION_FAILED for the same reason PASSWORD_INVALID is: every other
+    # validation failure reaches the wire as the generic "The request is invalid.", which would
+    # leave the person who just pasted a key with nothing to act on. The code and its fixed
+    # message say only that the input contains a licence key; they carry none of it and nothing
+    # about which key (86ak1090r).
+    CREDENTIAL_IN_INPUT = "CREDENTIAL_IN_INPUT"
     # Server-side misconfiguration or failure. Distinct from NOT_IMPLEMENTED, which
     # says "by design"; INTERNAL says "this should work and does not".
     INTERNAL = "INTERNAL"
@@ -42,6 +49,8 @@ SAFE_MESSAGES = {
     ErrorCode.POLICY_DENIED: "The current policy does not allow this action.",
     ErrorCode.RATE_LIMITED: "Too many requests.",
     ErrorCode.NOT_IMPLEMENTED: "This API contract exists, but the behaviour is not implemented in this slice.",
+    # Names the licence key as the problem without echoing any of it.
+    ErrorCode.CREDENTIAL_IN_INPUT: "The input contains a licence key. Refer to the licence by its masked key or its id instead.",
     # Names the password as the problem without restating the policy.
     ErrorCode.PASSWORD_INVALID: "The new password does not meet the password policy.",
     # Deliberately says nothing about what failed — a misconfiguration must not describe
