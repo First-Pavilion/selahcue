@@ -59,6 +59,7 @@ SV = f"{PKG}/apps/license_keys/services.py"
 DV = f"{PKG}/apps/devices/services.py"
 RD = f"{PKG}/graphql/redaction.py"
 TG = f"{PKG}/apps/throttling/guards.py"
+SG = f"{PKG}/graphql/admin_schema.py"
 
 MAIN = "tests/test_license_revoke_extend.py"
 DEPTH = "tests/test_redaction_depth_bound.py"
@@ -94,7 +95,7 @@ MUTANTS = {
         "    allow_wrapping_transaction: bool = True,\n) -> LicenseTransitionResult:",
         [MAIN, ACT], ["opt_in_is_keyword_only", "tripwire", "refuses_to_run"], note="the opt-in defaults to True"),
     "T6-extra-optin-site": mutant(
-        SV, "        recognise_retry=True,\n    )", "        recognise_retry=True,\n        allow_wrapping_transaction=True,\n    )",
+        SV, "        action=action,\n    )", "        action=action,\n        allow_wrapping_transaction=True,\n    )",
         [MAIN], ["only_device_activation_and_extend"],
         note="a third caller opts in (the scan that pins the opt-in sites must notice)"),
     # --- AC 11 / AC 2: authorisation and the refusal audit ---------------------------------
@@ -141,6 +142,30 @@ MUTANTS = {
         TG, "This may be sustained abuse \"\n        \"of this scope's budget;",
         "This may be a DEC-013 password reset attack \"\n        \"of this scope's budget;", [MAIN, THR],
         ["sustained_denial_log_line"], note="the sustained-denial log line talks about password reset again"),
+    "A13-refused-target-id-stored-as-sent": mutant(
+        SV, "    target_id = _clean_license_key_id(raw_license_key_id) or _UNRESOLVED_TARGET",
+        "    target_id = raw_license_key_id[:128]", [MAIN], ["licence_id_is_never_stored_as_sent"],
+        note="a refused caller's licence id (a full key, a NUL, a C1 control) is written to the trail as sent"),
+    # --- the GraphQL resolvers hand the submitted text through ------------------------------
+    "B1-extend-resolver-reason-hardcoded": mutant(
+        SG, "                new_expires_at=input.new_expires_at,\n                reason=input.reason,",
+        "                new_expires_at=input.new_expires_at,\n                reason=\"Reason supplied by the console\",",
+        [MAIN], ["graphql_extend"], note="adminExtendLicenseKey ignores the submitted reason"),
+    "B2-revoke-resolver-reason-hardcoded": mutant(
+        SG, "            RevokeLicenseKeyData(\n                idempotency_key=input.idempotency_key,\n                license_key_id=str(input.license_key_id),\n                reason=input.reason,",
+        "            RevokeLicenseKeyData(\n                idempotency_key=input.idempotency_key,\n                license_key_id=str(input.license_key_id),\n                reason=\"Reason supplied by the console\",",
+        [MAIN], ["graphql_revoke"], note="adminRevokeLicenseKey ignores the submitted reason"),
+    "B3-extend-resolver-retry-key-hardcoded": mutant(
+        SG, "            ExtendLicenseKeyData(\n                idempotency_key=input.idempotency_key,",
+        "            ExtendLicenseKeyData(\n                idempotency_key=\"fixed-key-from-the-resolver\",", [MAIN], ["graphql_extend"],
+        note="adminExtendLicenseKey ignores the submitted retry key"),
+    "B4-revoke-resolver-retry-key-hardcoded": mutant(
+        SG, "            RevokeLicenseKeyData(\n                idempotency_key=input.idempotency_key,",
+        "            RevokeLicenseKeyData(\n                idempotency_key=\"fixed-key-from-the-resolver\",", [MAIN], ["graphql_revoke"],
+        note="adminRevokeLicenseKey ignores the submitted retry key"),
+    "Q1-revoke-action-renamed": mutant(
+        SM, 'REVOKE_ACTION = "license_key.revoked"', 'REVOKE_ACTION = "license_key.revoke"', [MAIN, SUSP],
+        ["action_names_are_a_contract", "revoke"], note="the audit action string for a revoke changes"),
     # --- credential guard (reason and retry key) -------------------------------------------
     "C1-credential-check-removed": mutant(
         SV, "    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):", "    if False:",
@@ -149,7 +174,7 @@ MUTANTS = {
         SV, "    folded = unicodedata.normalize(\"NFKC\", text)", "    folded = text", [MAIN], ["fullwidth"],
         note="full-width letters slip past"),
     "C3-format-characters-kept": mutant(
-        SV, "if unicodedata.category(ch) != \"Cf\"", "if True", [MAIN], ["zero-width", "soft-hyphens"],
+        SV, "if unicodedata.category(ch) != \"Cf\"", "if True", [MAIN], ["inside-a-group", "inside-every-group", "inside-a-run-together"],
         note="zero-width and soft-hyphen characters hide a key"),
     "C4-run-together-not-checked": mutant(
         SV, "    if _GROUPED_KEY_RE.search(scanned) or _RUN_TOGETHER_KEY_RE.search(scanned):",
@@ -198,6 +223,10 @@ MUTANTS = {
     "D3-container-cap-removed": mutant(
         RD, "        if depth > MAX_PAYLOAD_DEPTH or seen > MAX_PAYLOAD_CONTAINERS:", "        if depth > MAX_PAYLOAD_DEPTH:",
         [DEPTH], ["shared_substructure"], note="the container cap removed (depth bound kept)"),
+    "D5-depth-bound-nine": mutant(
+        RD, "MAX_PAYLOAD_DEPTH = 8", "MAX_PAYLOAD_DEPTH = 9", [DEPTH], ["exactly_eight"], note="the depth bound is 9 instead of 8"),
+    "D6-depth-bound-seven": mutant(
+        RD, "MAX_PAYLOAD_DEPTH = 8", "MAX_PAYLOAD_DEPTH = 7", [DEPTH], ["exactly_eight"], note="the depth bound is 7 instead of 8"),
     "D4-container-cap-raised-tenfold": mutant(
         RD, "MAX_PAYLOAD_CONTAINERS = 2000", "MAX_PAYLOAD_CONTAINERS = 20000", [DEPTH], ["exactly_two_thousand"],
         note="the container cap is 20000 instead of 2000"),

@@ -181,3 +181,17 @@ def test_the_container_cap_is_exactly_two_thousand():
         with pytest.raises(SafeAPIError) as raised:
             function(one_over)
         assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__
+
+
+def test_the_depth_bound_is_exactly_eight():
+    """Pinned with the LITERAL number for the same reason as the container cap: every other test
+    here is built from `MAX_PAYLOAD_DEPTH`, so changing the constant moved them all with it and
+    nothing noticed. Eight nested mappings pass; nine are refused."""
+    eight = _nested_dict(8)
+    nine = _nested_dict(9)
+
+    for function in (ensure_payload_depth, redact_public_payload, assert_no_restricted_payload_fields):
+        function(eight)
+        with pytest.raises(SafeAPIError) as raised:
+            function(nine)
+        assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__

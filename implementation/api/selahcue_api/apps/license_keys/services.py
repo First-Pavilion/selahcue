@@ -25,6 +25,7 @@ from selahcue_api.apps.license_keys.state_machine import (
     AUDIT_TARGET_TYPE,
     EXTEND_ACTION,
     PRIOR_STATUS,
+    REVOKE_ACTION,
     IllegalLicenseTransition,
     LicenseTransitionResult,
     PriorStatusTarget,
@@ -753,6 +754,14 @@ def _require_autocommit() -> None:
     connection instead of trusting a docstring (see "durability of refusals" in
     `state_machine`). The project sets no `ATOMIC_REQUESTS`, so a top-level resolver passes.
 
+    Since 86ak1090r the WRITER refuses the same wrapped call (`WrappedTransitionRefused`, also
+    INTERNAL), so for revoke, suspend and reinstate this guard is defence in depth: delete it and
+    the answer is unchanged, the observable difference being that it runs before the licence is
+    looked up and before the lifecycle budget is spent (the zero-query autocommit-guard test in
+    `tests/test_license_revoke_extend.py` pins exactly that). Extend needs it in its
+    own right: it opens a transaction of its own around the writer, so the writer's check could
+    not tell a wrapped extend from its own.
+
     Fails closed BEFORE any change is made. A new caller that really needs both a durable
     denial and a wider transaction needs the agreed `audit` database alias, not an exemption
     here.
@@ -826,6 +835,7 @@ def _lifecycle_mutation(
     raw_license_key_id: str,
     raw_reason: str,
     denied_action: str | None = None,
+    action: str | None = None,
 ) -> LicenseTransitionResult:
     staff = _authorise(
         actor,
@@ -848,6 +858,10 @@ def _lifecycle_mutation(
         request_id=idempotency_key,
         # Retry recognition happens inside the writer, under the row lock (see its docstring).
         recognise_retry=True,
+        # None keeps the writer's own naming (suspend, reinstate); revoke names its action
+        # explicitly so the audit trail's action string is a contract, not a side effect of the
+        # enum member's spelling.
+        action=action,
     )
 
 
@@ -931,6 +945,7 @@ def revoke_license_key(
         raw_license_key_id=data.license_key_id,
         raw_reason=data.reason,
         denied_action=REVOKE_PERMISSION_DENIED_ACTION,
+        action=REVOKE_ACTION,
     )
 
 

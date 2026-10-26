@@ -514,8 +514,11 @@ def _spellings(full_key):
         "dots-and-spaces": body.replace("-", " . "),
         "run-together": squeezed,
         "en-dashes": body.replace("-", EN_DASH),
-        "zero-width-space-inside": body[:10] + ZERO_WIDTH_SPACE + body[10:],
-        "soft-hyphens-inside": body.replace("-", SOFT_HYPHEN + "-"),
+        "zero-width-space-between-groups": body[:10] + ZERO_WIDTH_SPACE + body[10:],
+        "zero-width-space-inside-a-group": body[:2] + ZERO_WIDTH_SPACE + body[2:],
+        "soft-hyphens-between-groups": body.replace("-", SOFT_HYPHEN + "-"),
+        "soft-hyphens-inside-every-group": "-".join(g[:2] + SOFT_HYPHEN + g[2:] for g in body.split("-")),
+        "zero-width-inside-a-run-together-key": squeezed[:7] + ZERO_WIDTH_SPACE + squeezed[7:],
         "fullwidth-letters": _fullwidth(body),
         "newlines": body.replace("-", "\n"),
         "prefix-with-spaces": f"SC - {full_key.split('-')[1]} - " + body.replace("-", " - "),
@@ -744,6 +747,7 @@ def test_revoke_and_extend_write_through_the_state_machine_not_a_direct_status_w
     assert calls[0]["actor"].actor_id == "staff_ops_7"
     assert calls[0]["request_id"] == "revoke-req-00001"
     assert calls[0]["recognise_retry"] is True
+    assert calls[0]["action"] == REVOKE_ACTION, "revoke names its audit action explicitly"
 
     calls.clear()
     with pytest.raises(RuntimeError, match="writer reached"):
@@ -1829,6 +1833,11 @@ def test_graphql_extend_happy_path(client):
     assert payload["licenseKey"]["deviceLimit"] == 5
     assert full_key not in json.dumps(body)
 
+    row = _rows(key, action=EXTEND_ACTION).get()
+    assert (row.actor_id, row.request_id, row.reason) == ("staff_ops_7", "gql-extend-0001", EXTEND_REASON), (
+        "the resolver must pass the submitted reason and retry key through to the audit row"
+    )
+
     again = _gql(
         client, EXTEND_MUTATION, _extend_input(key, "gql-extend-0001", target),
         permissions="extend_license_key",
@@ -1921,6 +1930,23 @@ def test_graphql_a_refused_revoke_and_a_refused_extend_leave_their_denied_rows(c
     denied = _rows(revoked, result=AuditResult.DENIED).get()
     assert denied.action == EXTEND_REFUSED_ACTION and denied.request_id == "gql-durable-req-2"
     assert "REVOKED" not in two.content.decode()
+
+
+def test_graphql_extend_of_a_never_activated_licence_records_the_submitted_text_too(client):
+    """The other branch of extend (no status change, so the audit row is written by the service
+    itself rather than by the writer) is reached through the same resolver."""
+    key, _ = _seed_key("gql-extend-issued")
+    typed = "Paid by bank transfer on the 24th; reference 0042 on the statement."
+
+    response = _gql(
+        client, EXTEND_MUTATION, _extend_input(key, "gql-extend-issued-1", _later(60), reason=typed),
+        permissions="extend_license_key",
+    )
+
+    assert "errors" not in response.json(), response.content
+    row = _rows(key, action=EXTEND_ACTION).get()
+    assert (row.reason, row.request_id, row.target_id) == (typed, "gql-extend-issued-1", str(key.pk))
+    assert row.before["status"] == row.after["status"] == "ISSUED"
 
 
 def test_graphql_extend_rejects_a_naive_datetime_and_an_old_one(client):
@@ -2224,6 +2250,54 @@ def test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row(
 
     assert error.code == ErrorCode.PERMISSION_DENIED
     assert AuditEvent.objects.count() == rows_before
+
+
+# --- Refusal audit: the licence id of a refused caller is never stored as sent ---------------
+HOSTILE_LICENCE_IDS = {
+    "full-licence-key": None,  # filled in per test from the seeded key
+    "130-characters": "x" * 130,
+    "130-digits": "1" * 130,
+    "c1-control": "12" + chr(0x85) + "34",
+    "nul": "12" + chr(0) + "34",
+    "newline": "12\n34",
+    "non-digits": "abc",
+    "negative": "-5",
+    "signed": "+5",
+    "arabic-indic-digits": chr(0x0661) * 3,
+    "fullwidth-digits": chr(0xFF11) * 3,
+    "empty": "",
+    "padded-digits": "  42  ",
+}
+
+
+@pytest.mark.parametrize("which", sorted(MUTATIONS))
+@pytest.mark.parametrize("label", sorted(HOSTILE_LICENCE_IDS))
+def test_a_refused_callers_licence_id_is_never_stored_as_sent(which, label):
+    """The refusal row records which licence a refused caller aimed at, and the id is theirs to
+    choose. Anything that is not a plain number is recorded as "unresolved": a full licence key
+    sent as the id would otherwise be written into the append-only trail, and so would 120
+    arbitrary characters, a C1 control or a NUL (which Postgres refuses to store at all)."""
+    key, full_key = _seed_key(f"hostile-id-{which}-{label}"[:34])
+    raw = full_key if label == "full-licence-key" else HOSTILE_LICENCE_IDS[label]
+    actor = ActorContext(kind=ActorKind.DEVICE, actor_id="dev_hostile_id")
+    denied_action = MUTATIONS[which][2]
+    if which == "revoke":
+        function = revoke_license_key
+        data = RevokeLicenseKeyData(idempotency_key="hostile-id-request-1", license_key_id=raw, reason=REASON)
+    else:
+        function = extend_license_key
+        data = ExtendLicenseKeyData(
+            idempotency_key="hostile-id-request-1", license_key_id=raw, new_expires_at=_later(), reason=REASON
+        )
+
+    assert _error(function, actor, data).code == ErrorCode.PERMISSION_DENIED
+
+    row = AuditEvent.objects.get(action=denied_action)
+    assert row.target_id == "unresolved" or (row.target_id.isascii() and row.target_id.isdigit()), row.target_id
+    if label == "padded-digits":
+        assert row.target_id == "42", "surrounding whitespace is dropped, a plain number is kept"
+    assert full_key not in _audit_dump()
+    assert _fresh(key).status == S.ISSUED
 
 
 # --- The autocommit guard, shown to be the one that stopped the call --------------------------
