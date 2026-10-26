@@ -15,8 +15,8 @@
 //! this explanation, when a proxy variable is set without that bypass, rather than failing with a
 //! connection error that points nowhere.
 //!
-//! Deliberately NOT asserted here: anything about redirects. The transport follows them today
-//! and that is tracked as ClickUp 17tnw2b9aaz; pinning it here would pin the wrong behaviour.
+//! Redirects are pinned elsewhere: the transport never follows one (ClickUp 17tnw2b9aaz), see
+//! `test_redirect_credentials.rs` and `test_redirect_limit.rs`.
 
 #![cfg(feature = "http")]
 #![allow(clippy::unwrap_used)]

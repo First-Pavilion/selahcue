@@ -109,6 +109,46 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// - **Certificates are checked, not skipped**: an unknown signer, a wrong name and an expired
 ///   certificate are each refused before a single request byte is written. Pinned in
 ///   `transport/tls_tests.rs`.
+///
+/// # Redirect posture (ClickUp 17tnw2b9aaz)
+///
+/// **Redirects are never followed.** A 3xx is returned to the caller as an ordinary
+/// [`HttpResponse`] carrying that status, and the `Location` it names is never requested.
+///
+/// *Why.* reqwest's default policy follows up to ten redirects, and on a 307 or 308 it replays the
+/// request BODY to the new location. It strips `Authorization` and cookies when the host, port or
+/// scheme changes, but never the body, and the body is where this app's credentials travel: the account
+/// password (`POST /v1/sessions`), the enrollment key (`POST /v1/activations`) and the sermon
+/// transcript (`POST /v1/notes:generate`). It also adds a `Referer` naming the URL it came from.
+/// Measured: a loopback server that answered a POST with a 307 to another port received the whole
+/// JSON body, and the replayed request carried the origin URL as its `Referer`.
+///
+/// *Why that is safe for every consumer.* Each consumer calls a URL built from a configured base
+/// and a fixed path, and the service answers there directly; none depends on a redirect. The
+/// consumers are the hosted SelahCue API (licensing sign-in and activation, notes, quota) and the
+/// direct OpenAI note provider (developer builds only). Cloud transcription (Deepgram) does not
+/// use this transport at all: `selahcue-stt-cloud` opens its own WebSocket and has no dependency
+/// on this crate. If a consumer ever needs a redirect, that is a decision for that consumer, made
+/// per call and reviewed as its own change, not a default to turn back on here.
+///
+/// *What the callers see.* A 3xx reaches each client as a non-2xx response and is classified like
+/// any other non-2xx response, in the client's own fixed wording, with nothing of the response
+/// quoted. `selahcue-licensing` parses a non-2xx body as the API's error envelope first (a coded
+/// envelope gives that code's failure) and otherwise reports `UnexpectedStatus(n)`; the hosted
+/// notes client reports `Malformed("unexpected status n")`, plus a reason code when the body
+/// carries one from its closed list; the OpenAI provider reports `Malformed("unexpected provider
+/// status n")`. [`HttpResponse`] carries no headers, so the `Location` (which can hold a token in
+/// its query) never leaves the transport. The redirect's own body is read under the same
+/// [`MAX_TRANSPORT_RESPONSE_BYTES`] cap as any other.
+///
+/// *One exception to "a 3xx arrives as a status".* A `Location` of 1 MiB or more, or one holding
+/// a control byte, makes hyper reject the response head, so the caller gets a [`TransportError`]
+/// ("message head is too large", "invalid HTTP header parsed") instead of the 3xx status (QA
+/// measured both). The target is still never contacted. For hosted notes a `TransportError` is
+/// the transport-class failure, so it takes the degrade-to-local-draft path rather than the
+/// visible `Malformed` error an ordinary 3xx gives.
+///
+/// Pinned by `tests/test_redirect_credentials.rs` and `tests/test_redirect_limit.rs`.
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
@@ -263,7 +303,11 @@ impl ReqwestTransport {
     ) -> reqwest::blocking::ClientBuilder {
         let mut builder = reqwest::blocking::Client::builder()
             .connect_timeout(connect_timeout)
-            .timeout(timeout);
+            .timeout(timeout)
+            // NEVER follow a redirect: see "Redirect posture" on the type. The default policy
+            // follows ten and replays a 307/308 request body, which is the credential, to
+            // whichever host the response names.
+            .redirect(reqwest::redirect::Policy::none());
         if !extra_roots.is_empty() {
             builder = builder.tls_certs_merge(extra_roots.iter().cloned());
         }
