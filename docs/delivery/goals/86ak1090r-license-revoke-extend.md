@@ -105,8 +105,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-015 | yes | Both mutations work end to end over the admin GraphQL schema and the HTTP view with a permitted and a refused actor, with error codes in the response | new file | as stated | GraphQL tests over /graphql/admin: revoke and extend happy paths, replay flags, missing and wrong permission, customer actor, unauthenticated, not found, refusals with DENIED rows, naive date, required fields, no customer data in the payload (6 shapes), throttle | PASS |
 | C-016 | yes | Mutation verification: removing the AC 8 tripwire, the AC 11 gate (each mutation), the refusal-audit budget, the depth bound and the writer call each turns named tests RED with siblings running; each file restored byte-identical | mutation script, `cmp` | every mutant RED, every restore identical | 34 mutants over the tripwire, the gate, the refusal-audit bounds, the depth bound, writer discipline, extend and revoke behaviour: all RED with siblings running (never --exact), every restore compared with cmp; harness and results in docs/delivery/goals/86ak1090r-evidence/ (mutate.py, mutation-results.txt) | PASS |
 | C-017 | yes | No regression: the full API suite and the Django gates | `make api-check` | exit 0, all tests green | make api-check exit 0 on 042de6a8: manage.py check, makemigrations --check, pytest 1494 passed, 31 skipped (30 Postgres-only plus the Redis one), 1 xfailed; baseline on 93bf8063 was 1345 passed, 24 skipped, 1 xfailed. Full suite on Postgres 16.2 at the same code: 1524 passed, 1 skipped (Redis), 1 xfailed, exit 0 | PASS |
-| C-018 | yes | Branch is up to date with origin/main, pushed to its own branch, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | PENDING until the push | PENDING |
-| C-019 | yes | The goal contract validates, structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | PENDING until the completion validation | PENDING |
+| C-018 | yes | Branch is up to date with origin/main, pushed to its own branch, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | origin/main 93bf8063 is an ancestor of the branch (git rev-list --count HEAD..origin/main is 0 after the final fetch); pushed to origin/feat/86ak1090r-license-revoke-extend; Draft PR https://github.com/First-Pavilion/selahcue/pull/233 against main, isDraft true | PASS |
+| C-019 | yes | The goal contract validates, structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | validate_goal_contract.py: structural OK before work and after; --completion OK before this claim | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -173,8 +173,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak1090r-license-revoke-extend.md --completion`
-- Validator result: PENDING
-- Independent verification result: NOT YET RUN
-- Terminal state: PENDING
-- Remaining failed or blocked criteria: PENDING
-- ClickUp final evidence comment: PENDING
+- Validator result: OK (structural) and OK (--completion) on the final head
+- Independent verification result: NOT YET RUN. Code, security, QA and performance reviews are dispatched by the orchestrator after this hand-off; the PR stays Draft until they clear
+- Terminal state: GATE_REVIEW (all mandatory criteria PASS; not VERIFIED_COMPLETE because the independent reviews have not run)
+- Remaining failed or blocked criteria: none. One acceptance criterion is met only in the table sense: AC 7's "at least 6 of 8 statuses have a writer" is 8 of 8 by the table-derived sweep and 4 of 8 by production entry point (C-014); the other four are documented as deliberately unwritten with their owning tickets. Not run: hosted CI, the Windows and macOS matrix, anything outside implementation/api
+- ClickUp final evidence comment: posted on 86ak1090r at hand-off
