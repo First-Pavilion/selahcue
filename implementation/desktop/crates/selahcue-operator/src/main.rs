@@ -9938,6 +9938,115 @@ mod regenerate_with_retention_tests {
         }
     }
 
+    /// The two transport failure classes a LAN link really produces and the scripted-host test
+    /// above cannot: a host too slow to answer the check, and a host that is gone.
+    ///
+    /// What these catch that `a_load_error_is_never_read_as_no_draft` cannot: that test is HANDED
+    /// the strings, so folding a class into `Ok(None)` inside `Backend::load_sermon_note_draft`
+    /// (the one `.map_err(|e| e.to_string())`) survives it. The timeout test dies if "command
+    /// timed out" is folded; the closed-link test dies if the "websocket error" class a vanished
+    /// host produces is folded.
+    ///
+    /// Two classes remain covered at the `from_load` boundary only. JSON decoding: a scripted
+    /// `ControlServer` host answers with whole `ServerMessage`s and cannot send a malformed frame.
+    /// The literal "connection closed" (`TransportError::Closed`) needs a clean WebSocket close
+    /// frame or end of stream; `ControlServer` ends a connection by dropping it, which the client
+    /// reports as a reset or as "peer closed connection without sending TLS close_notify", both
+    /// "websocket error".
+    ///
+    /// TIMEOUT: the client gives a command 2 s. The host sleeps 2.6 s on its own runtime before
+    /// answering the load with a clean "no draft", so an operator that read the timeout as an
+    /// answer would go on to save. The timeout also poisons the connection (the abandoned reply
+    /// could be misread as the next answer), so an immediate second regenerate must fail fast
+    /// too. Bounded: the sleeping closure returns by itself and `shutdown_background` drops the
+    /// runtime, so no thread stays parked past the sleep.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_load_that_times_out_is_a_failed_check_and_the_next_call_fails_fast() {
+        use selahcue_lan::protocol::{Command, ServerMessage};
+        use selahcue_lan::server::Reply;
+        use std::time::{Duration, Instant};
+
+        let gate = Arc::new(StoreGate::default());
+        let host_gate = gate.clone();
+        let (addr, pin, host) = spawn_host(Arc::new(move |_role, cmd| match cmd {
+            Command::LoadSermonNoteDraft { .. } => {
+                std::thread::sleep(Duration::from_millis(2_600));
+                Reply::Message(Box::new(ServerMessage::SermonNoteDraft {
+                    transcript_id: 1,
+                    draft: None,
+                }))
+            }
+            Command::SaveSermonNoteDraft { .. } => {
+                host_gate.count_save();
+                Reply::Ack
+            }
+            Command::StageSermonNoteRegeneration { .. } => {
+                host_gate.count_stage();
+                Reply::Ack
+            }
+            _ => Reply::Ack,
+        }));
+        let app = remote_app(addr, pin).await;
+        let state = app.state::<AppState>();
+
+        let started = Instant::now();
+        let first = persist_generated_draft(&state, 1, sample_draft("First click", true)).await;
+        let first_took = started.elapsed();
+        assert!(
+            matches!(first, Err(ExistingDraftCheckFailed)),
+            "a load that times out must be a failed check, not 'no draft'"
+        );
+        assert!(
+            first_took >= Duration::from_millis(1_900) && first_took < Duration::from_secs(6),
+            "premise: it was the 2 s command timeout that ended the call, took {first_took:?}"
+        );
+
+        let started = Instant::now();
+        let second = persist_generated_draft(&state, 1, sample_draft("Second click", true)).await;
+        assert!(
+            matches!(second, Err(ExistingDraftCheckFailed)),
+            "the poisoned connection must also be a failed check"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the second call must fail fast, took {:?}",
+            started.elapsed()
+        );
+
+        assert_eq!(gate.saves(), 0, "no save may reach the host");
+        assert_eq!(gate.stages(), 0, "no stage may reach the host");
+        host.shutdown_background();
+    }
+
+    /// CLOSED LINK: the host goes away after the operator connected. The next regenerate must be
+    /// a failed check with no save sent (and none could have arrived). The client reports this as
+    /// a "websocket error" (a reset), not as the literal "connection closed".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_load_over_a_closed_link_is_a_failed_check() {
+        use selahcue_lan::protocol::Command;
+        use selahcue_lan::server::Reply;
+
+        let gate = Arc::new(StoreGate::default());
+        let host_gate = gate.clone();
+        let (addr, pin, host) = spawn_host(Arc::new(move |_role, cmd| {
+            if matches!(cmd, Command::SaveSermonNoteDraft { .. }) {
+                host_gate.count_save();
+            }
+            Reply::Ack
+        }));
+        let app = remote_app(addr, pin).await;
+        let state = app.state::<AppState>();
+
+        host.shutdown_background();
+        let result =
+            persist_generated_draft(&state, 1, sample_draft("After the host left", true)).await;
+        assert!(
+            matches!(result, Err(ExistingDraftCheckFailed)),
+            "a load over a closed link must be a failed check, not 'no draft'"
+        );
+        assert_eq!(gate.saves(), 0, "no save may reach the host");
+    }
+
     /// End to end across both halves: a REAL host controller whose store cannot read, behind the
     /// real link, driven by the operator's real backend. The host must answer the failed read
     /// with a refusal (not "no draft"), and the operator must turn that into a failed check.
