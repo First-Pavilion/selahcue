@@ -46,18 +46,81 @@ def is_restricted_payload_field(key: object) -> bool:
     )
 
 
+# How deeply a payload may nest before it is refused. Audit and API payloads in this codebase
+# are flat or one object deep (a status, a date, an id, the device the licence was activated
+# by); a bound of 8 leaves generous room and is still nowhere near CPython's recursion limit.
+#
+# Why a bound at all (86ak1090r, AC 9): the two walkers below used to recurse without one, so
+# a deeply nested `extra_before` / `extra_after` raised `RecursionError` from inside the
+# licence state machine's row lock. On the success path that rolls back and is safe; on the
+# refusal path it destroys the DENIED audit row, the compliance record NFR-506 exists to
+# keep. Refusing at the boundary, with a coded error, happens before any lock is taken.
+MAX_PAYLOAD_DEPTH = 8
+
+# A second, independent bound: how many containers one payload may hold. Depth alone does not
+# stop a SELF-REFERENTIAL structure with several references per level from taking
+# `width ** MAX_PAYLOAD_DEPTH` steps to refuse. Real payloads hold a handful of containers.
+MAX_PAYLOAD_CONTAINERS = 2000
+
+
+def _is_container(value: Any) -> bool:
+    return isinstance(value, Mapping) or (
+        isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+    )
+
+
+def _too_deep() -> SafeAPIError:
+    return SafeAPIError(
+        ErrorCode.VALIDATION_FAILED,
+        f"Payload is nested more than {MAX_PAYLOAD_DEPTH} levels deep or holds more than "
+        f"{MAX_PAYLOAD_CONTAINERS} containers.",
+    )
+
+
+def ensure_payload_depth(value: Any) -> None:
+    """Refuse (VALIDATION_FAILED) a payload nested deeper than `MAX_PAYLOAD_DEPTH` or holding
+    more than `MAX_PAYLOAD_CONTAINERS` containers.
+
+    Iterative on purpose: the check that protects against deep recursion must not itself
+    recurse. Strings and bytes are leaves (a `str` is a `Sequence`, and walking one would
+    descend a character at a time). A cycle is refused by the same bound as any other
+    over-deep structure, because following it only ever increases the depth.
+    """
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    seen = 0
+    while stack:
+        current, depth = stack.pop()
+        if not _is_container(current):
+            continue
+        seen += 1
+        if depth > MAX_PAYLOAD_DEPTH or seen > MAX_PAYLOAD_CONTAINERS:
+            raise _too_deep()
+        children = current.values() if isinstance(current, Mapping) else current
+        stack.extend((child, depth + 1) for child in children if _is_container(child))
+
+
 def redact_public_payload(value: Any) -> Any:
+    ensure_payload_depth(value)
+    return _redact(value)
+
+
+def _redact(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            key: "[redacted]" if is_restricted_payload_field(key) else redact_public_payload(item)
+            key: "[redacted]" if is_restricted_payload_field(key) else _redact(item)
             for key, item in value.items()
         }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return [redact_public_payload(item) for item in value]
+        return [_redact(item) for item in value]
     return value
 
 
 def assert_no_restricted_payload_fields(value: Any) -> None:
+    ensure_payload_depth(value)
+    _assert_no_restricted(value)
+
+
+def _assert_no_restricted(value: Any) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
             if is_restricted_payload_field(key) and item != "[redacted]":
@@ -65,7 +128,7 @@ def assert_no_restricted_payload_fields(value: Any) -> None:
                     ErrorCode.VALIDATION_FAILED,
                     f"Restricted field '{key}' cannot be included in public API payloads.",
                 )
-            assert_no_restricted_payload_fields(item)
+            _assert_no_restricted(item)
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for item in value:
-            assert_no_restricted_payload_fields(item)
+            _assert_no_restricted(item)
