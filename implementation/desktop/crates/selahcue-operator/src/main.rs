@@ -5907,7 +5907,6 @@ mod endpoint_guard_tests {
         );
 
         let (p, rel) = (path.clone(), path.clone());
-        let started = std::time::Instant::now();
         let got = promptly(
             move || read_endpoint_at(&p).is_none(),
             move || {
@@ -5915,7 +5914,6 @@ mod endpoint_guard_tests {
             },
         );
         assert!(got, "a FIFO must not be accepted as a descriptor");
-        assert!(started.elapsed() < std::time::Duration::from_secs(2));
 
         // Control: the same call on a regular descriptor at the same path is accepted.
         std::fs::remove_file(&path).expect("remove fifo");
@@ -5976,18 +5974,51 @@ mod endpoint_guard_tests {
         );
     }
 
-    /// Host and operator must name ONE path. Both call the shared module; this pins the
-    /// operator's wrapper to it so a private copy of the expression cannot creep back.
+    /// Host and operator must name ONE path. Both call the shared module; this pins the operator's
+    /// wrapper to it, against the REAL process environment, so a private copy of the expression
+    /// cannot creep back. A test cannot change its own process's environment without racing its
+    /// siblings, so a CHILD process is started with `XDG_RUNTIME_DIR` pointing at a private scratch
+    /// directory and must find the operator reading from inside it. (Comparing the wrapper with
+    /// the function it calls, as an earlier version did, cannot fail on macOS, where `$TMPDIR` is
+    /// already private and every candidate resolves to the same place.)
+    #[cfg(unix)]
     #[test]
-    fn the_operator_names_the_shared_descriptor_path() {
-        assert_eq!(
-            endpoint_file_path(),
-            selahcue_lan::local_endpoint::descriptor_path()
+    fn the_operator_reads_the_descriptor_from_xdg_runtime_dir() {
+        let xdg = private_tempdir();
+        let exe = std::env::current_exe().expect("current exe");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--ignored",
+                "--exact",
+                "endpoint_guard_tests::child_reads_the_descriptor_from_xdg_runtime_dir",
+                "--test-threads=1",
+            ])
+            .env("XDG_RUNTIME_DIR", xdg.path())
+            .output()
+            .expect("spawn child");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed; 0 failed"),
+            "child did not run and pass:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
         );
-        assert_eq!(
-            endpoint_file_path().file_name().and_then(|n| n.to_str()),
-            Some(selahcue_lan::local_endpoint::DESCRIPTOR_FILE_NAME)
+    }
+
+    /// Child half of the test above (run by its parent only).
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child process of the XDG_RUNTIME_DIR test; run only by its parent"]
+    fn child_reads_the_descriptor_from_xdg_runtime_dir() {
+        let xdg = std::path::PathBuf::from(
+            std::env::var_os("XDG_RUNTIME_DIR").expect("run by its parent only"),
         );
+        let expected = xdg.join("selahcue-operator-endpoint.json");
+        assert_eq!(endpoint_file_path(), expected);
+
+        std::fs::write(&expected, VALID).expect("write descriptor");
+        std::fs::set_permissions(&expected, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let ep = read_endpoint().expect("read_endpoint must find the descriptor in XDG_RUNTIME_DIR");
+        assert_eq!(ep.addr, "127.0.0.1:1");
     }
 }
 

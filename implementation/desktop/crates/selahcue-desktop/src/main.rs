@@ -2461,6 +2461,10 @@ struct RemoteShared {
     /// The currently offered pairing code, so cancelling pairing can withdraw it
     /// from the registry (a cancelled code must actually die, not linger to TTL).
     active_code: Mutex<Option<String>>,
+    /// The endpoint descriptor THIS process published, once it has. The clean-exit cleanup removes
+    /// exactly this path (never a re-resolved one), so a host that published nothing removes
+    /// nothing and one host never deletes another's descriptor (17tnw2b9agb).
+    endpoint: OnceLock<std::path::PathBuf>,
 }
 
 struct App {
@@ -2961,6 +2965,7 @@ impl App {
             registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
             lan: OnceLock::new(),
             active_code: Mutex::new(None),
+            endpoint: OnceLock::new(),
         });
         start_remote_control(controller.clone(), remote.clone());
 
@@ -4277,6 +4282,9 @@ async fn run_server(
             token.as_str(),
         )
     });
+    if let Some(path) = &endpoint {
+        let _ = remote.endpoint.set(path.clone());
+    }
     // The banner is only HANDED the token when a developer asked for it; otherwise it has no
     // way to print it.
     let shown_token = match io.token_disclosure {
@@ -4316,6 +4324,7 @@ mod host_test_support {
             registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
             lan: OnceLock::new(),
             active_code: Mutex::new(None),
+            endpoint: OnceLock::new(),
         })
     }
 
@@ -4350,7 +4359,7 @@ mod host_test_support {
 ///
 /// Hermetic by construction (PR #145 review): the first cut called the real
 /// `start_remote_control`, which binds `0.0.0.0`, advertises mDNS on the real LAN and writes the
-/// shared `$TMPDIR/selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
+/// shared per-user `selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
 /// beside a live `make launch` host overwrote that host's endpoint with a dead port and token.
 /// These tests drive [`start_remote_control_in`] (the real thread, the real Tokio runtime and the
 /// real `run_server`) through [`ServerEnv`]'s seams: loopback bind, no mDNS, no LAN-IP probe, and
@@ -4400,7 +4409,7 @@ mod remote_control_warmup_tests {
         );
 
         // The endpoint descriptor (a bearer token) must have gone to the INJECTED path, not the
-        // shared `$TMPDIR/selahcue-operator-endpoint.json` a live host owns.
+        // shared per-user `selahcue-operator-endpoint.json` a live host owns.
         let (port, pin) = remote.lan.get().expect("published above").clone();
         let written = wait_for_descriptor(&endpoint);
         assert_eq!(
@@ -4420,9 +4429,78 @@ mod remote_control_warmup_tests {
             ServerEnv::production().io.endpoint_file,
             Some(crate::endpoint::EndpointFile::PerUser)
         ));
+    }
+
+    /// The production wiring, end to end, against the REAL process environment: the server
+    /// resolves the per-user directory with `DirEnv::current()`, records what it published, and
+    /// the clean-exit cleanup removes exactly that. A test cannot change its own process's
+    /// environment without racing its siblings, so the work is done by a child process started with
+    /// `XDG_RUNTIME_DIR` pointing at a private scratch directory (the in-process version of this
+    /// test compared a function with itself and could not fail on macOS).
+    #[cfg(unix)]
+    #[test]
+    fn the_host_publishes_into_xdg_runtime_dir_and_cleans_up_exactly_what_it_published() {
+        let xdg = Scratch::new("child-xdg");
+        crate::endpoint::test_support::run_child_test(
+            "remote_control_warmup_tests::child_publishes_and_cleans_up_in_xdg_runtime_dir",
+            "",
+            &[
+                ("ENDPOINT_TEST_XDG", xdg.0.as_os_str()),
+                ("XDG_RUNTIME_DIR", xdg.0.as_os_str()),
+            ],
+        );
+        assert!(
+            !xdg.descriptor().exists() && !xdg.0.join("selahcue-operator-endpoint.json").exists(),
+            "the child must have cleaned up after itself"
+        );
+    }
+
+    /// Child half of the test above (run by its parent only).
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child process of the XDG_RUNTIME_DIR test; run only by its parent"]
+    fn child_publishes_and_cleans_up_in_xdg_runtime_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let xdg = std::path::PathBuf::from(
+            std::env::var_os("ENDPOINT_TEST_XDG").expect("run by its parent only"),
+        );
+        // Premise: this process really sees the variable, and the directory is private.
         assert_eq!(
-            super::endpoint_path(),
-            selahcue_lan::local_endpoint::descriptor_path()
+            std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+            Some(xdg.as_os_str())
+        );
+        let expected = xdg.join("selahcue-operator-endpoint.json");
+
+        // A host that published nothing removes nothing: another host's descriptor, at the path a
+        // re-resolving cleanup would pick, survives.
+        std::fs::write(&expected, "another host's descriptor").expect("plant");
+        std::fs::set_permissions(&expected, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        super::remove_published_endpoint(&fresh_remote());
+        assert_eq!(
+            std::fs::read_to_string(&expected).expect("planted file"),
+            "another host's descriptor",
+            "cleanup must remove only what this process published"
+        );
+        std::fs::remove_file(&expected).expect("unplant");
+
+        // The real server, the production target.
+        let events: Events = Arc::default();
+        let remote = start_server_to(
+            crate::endpoint::EndpointFile::PerUser,
+            Box::new(|| {}),
+            loopback_bind(&events),
+        );
+        let json = wait_for_descriptor(&expected);
+        assert!(is_complete_descriptor(&json), "{json:?}");
+        wait_for("the server to record what it published", || {
+            remote.endpoint.get().is_some()
+        });
+        assert_eq!(remote.endpoint.get(), Some(&expected));
+
+        super::remove_published_endpoint(&remote);
+        assert!(
+            !expected.exists(),
+            "the clean exit must remove the descriptor this process published"
         );
     }
 
@@ -4479,13 +4557,27 @@ mod remote_control_warmup_tests {
         warm: Box<dyn FnOnce() + Send>,
         bind: Box<dyn FnOnce() -> BindFuture + Send>,
     ) -> Arc<RemoteShared> {
+        start_server_to(
+            crate::endpoint::EndpointFile::At(endpoint.to_path_buf()),
+            warm,
+            bind,
+        )
+    }
+
+    /// [`start_server`] with the publish target given as the server sees it (so a test can ask for
+    /// the production `PerUser` target).
+    fn start_server_to(
+        target: crate::endpoint::EndpointFile,
+        warm: Box<dyn FnOnce() + Send>,
+        bind: Box<dyn FnOnce() -> BindFuture + Send>,
+    ) -> Arc<RemoteShared> {
         let env = ServerEnv {
             warm,
             io: ServerIo {
                 bind,
                 lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
                 advertise_mdns: false,
-                endpoint_file: Some(crate::endpoint::EndpointFile::At(endpoint.to_path_buf())),
+                endpoint_file: Some(target),
                 banner: Box::new(std::io::sink()),
                 token_disclosure: TokenDisclosure::Redacted,
             },
@@ -5102,12 +5194,13 @@ mod connect_banner_token_tests {
     }
 }
 
-/// The well-known endpoint descriptor path the operator shell auto-discovers: inside the per-user
-/// private directory `selahcue_lan::local_endpoint` resolves, the same call the operator makes
-/// (17tnw2b9agb). Shared by every SelahCue host of this user, so only the clean-exit cleanup ever
-/// names it — nothing a test drives may.
-fn endpoint_path() -> std::path::PathBuf {
-    selahcue_lan::local_endpoint::descriptor_path()
+/// Clean-exit cleanup: remove the endpoint descriptor THIS process published, if it published one.
+/// Not a re-resolved well-known path: that would delete another host's descriptor when ours was
+/// never written, and would follow whatever now sits at the resolved directory (17tnw2b9agb).
+fn remove_published_endpoint(remote: &RemoteShared) {
+    if let Some(path) = remote.endpoint.get() {
+        endpoint::remove(path);
+    }
 }
 
 fn write_connect_banner(
@@ -5311,7 +5404,7 @@ fn main() {
     }
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
-    endpoint::remove(&endpoint_path());
+    remove_published_endpoint(&app.remote);
 }
 
 /// The window-lifecycle decision (the pure half of the toggle / close-button path).

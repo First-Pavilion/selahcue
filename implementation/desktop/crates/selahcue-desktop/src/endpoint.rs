@@ -133,9 +133,23 @@ fn write_endpoint_as(
 }
 
 /// Best-effort removal on a clean exit, so a later operator shell does not try to attach to a
-/// defunct window with a dead token and port.
+/// defunct window with a dead token and port. `path` is exactly what this process published (the
+/// server records it), never a re-resolved one, so one host never deletes another's descriptor. The
+/// directory is verified private to the current user first ([`local_endpoint::remove_descriptor`]):
+/// a symlink planted where the directory should be is refused, not followed to a file of someone
+/// else's choosing.
 pub(crate) fn remove(path: &Path) {
-    let _ = std::fs::remove_file(path);
+    remove_as(path, local_endpoint::current_uid());
+}
+
+/// [`remove`] as user `uid` (injected for the foreign-directory test).
+fn remove_as(path: &Path, uid: u32) {
+    if let Err(why) = local_endpoint::remove_descriptor(path, uid) {
+        eprintln!(
+            "SelahCue: left the operator endpoint file at {} alone ({why})",
+            path.display()
+        );
+    }
 }
 
 /// A fresh staging file name beside `path`: same directory (so the final rename never crosses a
@@ -392,6 +406,36 @@ pub(crate) mod test_support {
         }
     }
 
+    /// Run THIS test binary again as a child running only `full_test_name` (an `#[ignore]`d child
+    /// half, so it never runs, or counts as passed, on its own), with `env` added and optionally
+    /// under a shell prefix such as `umask 0277;`. For code that reads the real process
+    /// environment (`DirEnv::current()`): a test cannot change that without racing its siblings,
+    /// so a child with its own environment does. Fails unless the child really ran that one test
+    /// and it passed (`--exact` with a wrong name would "pass" with zero tests).
+    #[cfg(unix)]
+    pub(crate) fn run_child_test(
+        full_test_name: &str,
+        shell_prefix: &str,
+        env: &[(&str, &std::ffi::OsStr)],
+    ) {
+        let exe = std::env::current_exe().expect("current exe");
+        let script = format!(
+            "{shell_prefix} exec \"$0\" --ignored --exact {full_test_name} --test-threads=1"
+        );
+        let mut command = std::process::Command::new("sh");
+        command.arg("-c").arg(script).arg(exe);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let out = command.output().expect("spawn child");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed; 0 failed"),
+            "child {full_test_name} did not run and pass:\n{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
@@ -557,6 +601,54 @@ mod tests {
             0o600,
             "the descriptor carries a bearer token"
         );
+    }
+
+    /// Clean-exit cleanup must not follow a symlink planted where the directory should be: the
+    /// descriptor path is `LINK/endpoint.json`, `LINK` points at a directory holding a file of
+    /// that name that is NOT ours to delete (the stand-in for a victim's file). Refused, victim
+    /// intact; and the same call on a real private directory removes the descriptor (control).
+    #[cfg(unix)]
+    #[test]
+    fn clean_exit_removal_never_follows_a_symlinked_directory() {
+        let victim_dir = Scratch::new("remove-victim");
+        let victim = victim_dir.descriptor();
+        std::fs::write(&victim, "precious").expect("victim");
+        let holder = Scratch::new("remove-link");
+        let link = holder.0.join("dir-link");
+        std::os::unix::fs::symlink(&victim_dir.0, &link).expect("symlink");
+
+        remove(&link.join("endpoint.json"));
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("victim"),
+            "precious"
+        );
+
+        let real = Scratch::new("remove-real");
+        assert!(publish(&real.descriptor(), "tok").is_some());
+        remove(&real.descriptor());
+        assert!(
+            !real.descriptor().exists(),
+            "control: a private directory's descriptor goes"
+        );
+    }
+
+    /// The directory is judged for the current user: one owned by someone else is not touched.
+    #[cfg(unix)]
+    #[test]
+    fn clean_exit_removal_leaves_a_directory_owned_by_someone_else_alone() {
+        let scratch = Scratch::new("remove-foreign");
+        let path = scratch.descriptor();
+        assert!(publish(&path, "tok").is_some());
+        let me = owner_of(&scratch.0);
+
+        super::remove_as(&path, me.wrapping_add(1));
+        assert!(
+            path.exists(),
+            "a directory of another user must be left alone"
+        );
+
+        super::remove_as(&path, me);
+        assert!(!path.exists(), "control: its owner");
     }
 
     #[test]
@@ -1342,6 +1434,8 @@ mod tests {
     fn env_in(temp: &Path, xdg: Option<&Path>) -> selahcue_lan::local_endpoint::DirEnv {
         selahcue_lan::local_endpoint::DirEnv {
             xdg_runtime_dir: xdg.map(|p| p.as_os_str().to_owned()),
+            xdg_state_home: None,
+            home: None,
             temp_dir: temp.to_path_buf(),
             uid: owner_of(temp),
         }

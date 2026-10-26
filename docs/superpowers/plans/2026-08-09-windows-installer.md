@@ -1,5 +1,7 @@
 # Windows Installer (one-click, NDI + STT) Implementation Plan
 
+> Historical note (17tnw2b9agb): wherever this document says the endpoint descriptor lives at `temp_dir()/selahcue-operator-endpoint.json`, that is superseded. The location is now a per-user private directory chosen by `selahcue_lan::local_endpoint` (see `implementation/desktop/CLAUDE.md`). The rest of this document is unchanged.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Produce a single downloadable Windows NSIS installer that bundles the SelahCue operator console + native output window (with NDI broadcast and on-device STT), where launching the operator auto-starts and connects to the output window — built entirely by GitHub Actions so neither the owner nor end users install any toolchain.

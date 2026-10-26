@@ -14,10 +14,11 @@
 #![cfg(unix)]
 
 use selahcue_lan::local_endpoint::{
-    parse_staging_name, pid_is_alive, prepare_dir, read_descriptor_as, read_file_as, resolve_dir,
-    staging_file_name, sweep_stale_staging, sweep_stale_staging_with, verify_private_dir, DirEnv,
-    DirError, ReadError, DESCRIPTOR_FILE_NAME, MAX_SWEEP_ENTRIES, STAGING_PREFIX, STAGING_SUFFIX,
-    STALE_AFTER,
+    descriptor_path, judge_dir_kind, parse_staging_name, pid_is_alive, prepare_dir,
+    read_descriptor_as, read_file_as, remove_descriptor, resolve_dir, staging_file_name,
+    sweep_stale_staging, sweep_stale_staging_with, verify_private_dir, DirEnv, DirError, ReadError,
+    RemoveError, DESCRIPTOR_FILE_NAME, MAX_SWEEP_ENTRIES, REFUSE_SYMLINKED_DIRS, STAGING_PREFIX,
+    STAGING_SUFFIX, STALE_AFTER,
 };
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -58,6 +59,8 @@ fn mode_of(path: &Path) -> u32 {
 fn env(xdg: Option<&Path>, temp: &Path) -> DirEnv {
     DirEnv {
         xdg_runtime_dir: xdg.map(|p| p.as_os_str().to_owned()),
+        xdg_state_home: None,
+        home: None,
         temp_dir: temp.to_path_buf(),
         uid: my_uid(),
     }
@@ -399,14 +402,15 @@ fn a_fifo_at_the_path_is_refused_without_blocking() {
     assert_eq!(mode_of(&fifo), 0o600, "premise: right owner, right mode");
 
     let p = fifo.clone();
-    let (result, took) = promptly(
+    let (result, _took) = promptly(
         Duration::from_secs(5),
         move || read(&p),
         release_fifo(fifo.clone()),
     );
 
+    // No timing assertion on `took`: the 5 s watchdog above is the bound that fails a blocking
+    // reader, and a tight wall-clock limit would flake on a loaded machine.
     assert_eq!(result, Err(ReadError::NotRegularFile));
-    assert!(took < Duration::from_secs(2), "took {took:?}");
 
     // Control: the same call on a regular file at the same path succeeds.
     std::fs::remove_file(&fifo).expect("remove fifo");
@@ -493,7 +497,9 @@ fn a_descriptor_owned_by_another_user_is_refused() {
 
 #[test]
 fn any_mode_other_than_0600_is_refused() {
-    for mode in [0o644, 0o640, 0o660, 0o602, 0o604, 0o400, 0o700, 0o755] {
+    for mode in [
+        0o644, 0o640, 0o660, 0o602, 0o604, 0o400, 0o700, 0o755, 0o4600, 0o2600, 0o1600,
+    ] {
         let dir = private_dir();
         let path = descriptor_in(dir.path(), mode, BODY.as_bytes());
         assert_eq!(
@@ -734,7 +740,7 @@ fn a_symlink_at_a_staging_name_is_left_alone_and_never_followed() {
         "only the plain file"
     );
 
-    assert!(plain.parent().is_some() && !plain.exists(), "control");
+    assert!(!plain.exists(), "control: the plain file is swept");
     assert!(std::fs::symlink_metadata(&link)
         .expect("link")
         .file_type()
@@ -819,19 +825,735 @@ fn the_production_sweep_keeps_our_own_fresh_file_and_removes_a_dead_one() {
     assert!(!dead.exists());
 }
 
+// ---- the home step: a private `selahcue` directory under the user's state directory --------------
+
+fn home_env(home: &Path, temp: &Path) -> DirEnv {
+    DirEnv {
+        home: Some(home.as_os_str().to_owned()),
+        ..env(None, temp)
+    }
+}
+
+fn state_dir_of(home: &Path) -> PathBuf {
+    home.join(".local").join("state").join("selahcue")
+}
+
+fn mkdir_mode(path: &Path, mode: u32) {
+    std::fs::create_dir_all(path).expect("mkdir");
+    set_mode(path, mode);
+}
+
+#[test]
+fn the_home_state_directory_is_used_when_nothing_better_exists() {
+    let home = private_dir();
+    let temp = shared_dir();
+
+    assert_eq!(
+        resolve_dir(&home_env(home.path(), temp.path())),
+        state_dir_of(home.path())
+    );
+    assert_eq!(entries(home.path()), 0, "resolving creates nothing");
+    assert_eq!(entries(temp.path()), 0);
+}
+
+#[test]
+fn xdg_runtime_dir_and_a_private_temp_dir_both_beat_the_home_step() {
+    let home = private_dir();
+    let xdg = private_dir();
+    let shared = shared_dir();
+    let private_temp = private_dir();
+
+    let mut with_xdg = home_env(home.path(), shared.path());
+    with_xdg.xdg_runtime_dir = Some(xdg.path().as_os_str().to_owned());
+    assert_eq!(resolve_dir(&with_xdg), xdg.path());
+
+    assert_eq!(
+        resolve_dir(&home_env(home.path(), private_temp.path())),
+        private_temp.path()
+    );
+}
+
+#[test]
+fn preparing_creates_only_the_missing_components_0700_and_leaves_existing_ones_alone() {
+    let home = private_dir();
+    let temp = shared_dir();
+    let local = home.path().join(".local");
+    mkdir_mode(&local, 0o755);
+    std::fs::write(local.join("marker"), "x").expect("marker");
+
+    let first = prepare_dir(&home_env(home.path(), temp.path())).expect("create");
+
+    assert_eq!(first, state_dir_of(home.path()));
+    assert_eq!(mode_of(&first), 0o700);
+    assert_eq!(mode_of(first.parent().expect("state")), 0o700, "created");
+    assert_eq!(
+        mode_of(&local),
+        0o755,
+        "an existing component is never changed"
+    );
+    assert!(local.join("marker").exists());
+    assert_eq!(
+        entries(temp.path()),
+        0,
+        "nothing was made in the shared temp dir"
+    );
+
+    std::fs::write(first.join("keep"), "x").expect("file");
+    assert_eq!(
+        prepare_dir(&home_env(home.path(), temp.path())).expect("reuse"),
+        first
+    );
+    assert!(
+        first.join("keep").exists(),
+        "an existing directory is reused as is"
+    );
+}
+
+#[test]
+fn an_absolute_xdg_state_home_is_the_base_and_a_relative_or_empty_one_is_ignored() {
+    let home = private_dir();
+    let state = private_dir();
+    let temp = shared_dir();
+
+    let mut absolute = home_env(home.path(), temp.path());
+    absolute.xdg_state_home = Some(state.path().as_os_str().to_owned());
+    assert_eq!(resolve_dir(&absolute), state.path().join("selahcue"));
+    let created = prepare_dir(&absolute).expect("create");
+    assert_eq!(created, state.path().join("selahcue"));
+    assert_eq!(mode_of(&created), 0o700);
+    assert_eq!(entries(home.path()), 0, "HOME was not used");
+
+    // Relative: a relative spelling of a directory that WOULD be a fine base (premise asserted).
+    let relative = relative_to_cwd(state.path());
+    assert!(relative.is_relative());
+    let mut env_relative = home_env(home.path(), temp.path());
+    env_relative.xdg_state_home = Some(relative.into_os_string());
+    assert_eq!(resolve_dir(&env_relative), state_dir_of(home.path()));
+
+    let mut env_empty = home_env(home.path(), temp.path());
+    env_empty.xdg_state_home = Some(std::ffi::OsString::new());
+    assert_eq!(resolve_dir(&env_empty), state_dir_of(home.path()));
+}
+
+#[test]
+fn without_a_usable_home_the_shared_temp_last_resort_is_used() {
+    let temp = shared_dir();
+    let fallback = subdir_of(temp.path());
+    let home = private_dir();
+
+    for (label, value) in [
+        ("unset", None),
+        ("empty", Some(std::ffi::OsString::new())),
+        (
+            "relative",
+            Some(relative_to_cwd(home.path()).into_os_string()),
+        ),
+    ] {
+        let mut e = env(None, temp.path());
+        e.home = value;
+        assert_eq!(resolve_dir(&e), fallback, "HOME {label}");
+    }
+    assert_eq!(
+        resolve_dir(&home_env(home.path(), temp.path())),
+        state_dir_of(home.path()),
+        "control: a usable HOME"
+    );
+}
+
+#[test]
+fn a_parent_that_group_or_other_can_write_to_is_not_used() {
+    for mode in [0o775, 0o777, 0o757, 0o772, 0o722, 0o702] {
+        let temp = shared_dir();
+        let fallback = subdir_of(temp.path());
+
+        // The nearest existing ancestor is HOME itself (nothing created yet).
+        let home = private_dir();
+        set_mode(home.path(), mode);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            fallback,
+            "HOME mode {mode:o}"
+        );
+
+        // The parent of `selahcue` exists with that mode.
+        let home = private_dir();
+        let state = home.path().join(".local").join("state");
+        mkdir_mode(&state, mode);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            fallback,
+            "state directory mode {mode:o}"
+        );
+        // ... and so does an existing, otherwise perfect, `selahcue` below it.
+        mkdir_mode(&state.join("selahcue"), 0o700);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            fallback,
+            "existing selahcue under a parent of mode {mode:o}"
+        );
+    }
+    // Controls: a parent that is merely readable by others is fine.
+    for mode in [0o700, 0o755, 0o750] {
+        let temp = shared_dir();
+        let home = private_dir();
+        mkdir_mode(&home.path().join(".local").join("state"), mode);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            state_dir_of(home.path()),
+            "control: parent mode {mode:o}"
+        );
+    }
+}
+
+#[test]
+fn a_parent_owned_by_someone_else_is_not_used() {
+    let home = private_dir();
+    let temp = shared_dir();
+    let other = as_other_user(home_env(home.path(), temp.path()));
+    assert_eq!(
+        resolve_dir(&other),
+        subdir_of_for(temp.path(), other.uid),
+        "HOME belongs to another user (e.g. sudo kept HOME): skip the step"
+    );
+    assert_eq!(
+        resolve_dir(&home_env(home.path(), temp.path())),
+        state_dir_of(home.path()),
+        "control: the real owner"
+    );
+}
+
+#[test]
+fn a_symlinked_parent_or_ancestor_is_not_used() {
+    let temp = shared_dir();
+    let fallback = subdir_of(temp.path());
+
+    // `.local/state` is a symlink to a perfectly good directory of ours.
+    let home = private_dir();
+    let elsewhere = private_dir();
+    mkdir_mode(&home.path().join(".local"), 0o700);
+    std::os::unix::fs::symlink(elsewhere.path(), home.path().join(".local").join("state"))
+        .expect("symlink");
+    assert_eq!(resolve_dir(&home_env(home.path(), temp.path())), fallback);
+
+    // `.local` is the symlink and `state` is missing below it (the ancestor we would create under).
+    let home = private_dir();
+    std::os::unix::fs::symlink(elsewhere.path(), home.path().join(".local")).expect("symlink");
+    assert_eq!(resolve_dir(&home_env(home.path(), temp.path())), fallback);
+    assert_eq!(
+        entries(elsewhere.path()),
+        0,
+        "nothing created through the link"
+    );
+}
+
+#[test]
+fn an_existing_selahcue_that_is_not_a_private_directory_is_not_used() {
+    let temp = shared_dir();
+    let fallback = subdir_of(temp.path());
+    for mode in [0o755, 0o750, 0o705, 0o701] {
+        let home = private_dir();
+        let dir = state_dir_of(home.path());
+        mkdir_mode(&dir, mode);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            fallback,
+            "existing selahcue at mode {mode:o}"
+        );
+        set_mode(&dir, 0o700);
+        assert_eq!(
+            resolve_dir(&home_env(home.path(), temp.path())),
+            dir,
+            "mode {mode:o}: control, the same directory at 0700"
+        );
+    }
+
+    let home = private_dir();
+    let state = home.path().join(".local").join("state");
+    mkdir_mode(&state, 0o700);
+    let good = private_dir();
+    std::os::unix::fs::symlink(good.path(), state.join("selahcue")).expect("symlink");
+    assert_eq!(resolve_dir(&home_env(home.path(), temp.path())), fallback);
+
+    let home = private_dir();
+    mkdir_mode(&home.path().join(".local").join("state"), 0o700);
+    std::fs::write(state_dir_of(home.path()), "x").expect("file");
+    assert_eq!(resolve_dir(&home_env(home.path(), temp.path())), fallback);
+}
+
+#[test]
+fn a_state_base_under_a_plain_file_is_not_used() {
+    let temp = shared_dir();
+    let holder = private_dir();
+    let file = holder.path().join("a-file");
+    std::fs::write(&file, "x").expect("file");
+    let mut e = env(None, temp.path());
+    e.xdg_state_home = Some(file.join("below").into_os_string());
+    assert_eq!(resolve_dir(&e), subdir_of(temp.path()));
+}
+
+#[test]
+fn preparing_with_an_unusable_home_falls_back_and_touches_nothing_in_it() {
+    let temp = shared_dir();
+    let home = private_dir();
+    set_mode(home.path(), 0o777);
+
+    let got = prepare_dir(&home_env(home.path(), temp.path())).expect("last resort");
+
+    assert_eq!(got, subdir_of(temp.path()));
+    assert_eq!(
+        entries(home.path()),
+        0,
+        "an unusable HOME is not written to"
+    );
+}
+
+// ---- directories we create are exactly 0700, whatever the umask -----------------------------------
+
+/// Run THIS test binary again as a child running only `child_test` (an `#[ignore]`d half), under a
+/// shell prefix such as `umask 0277;` and with `env` added / `unset` removed. For code that reads
+/// the real process environment or the umask: neither can be changed in the shared test process
+/// without racing its siblings. Returns the child's stdout; fails unless the child really ran that
+/// one test and it passed.
+fn run_child(
+    child_test: &str,
+    shell_prefix: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+    unset: &[&str],
+) -> String {
+    let exe = std::env::current_exe().expect("current exe");
+    let script = format!(
+        "{shell_prefix} exec \"$0\" --ignored --exact {child_test} --test-threads=1 --nocapture"
+    );
+    let mut command = std::process::Command::new("sh");
+    command.arg("-c").arg(script).arg(exe);
+    for key in unset {
+        command.env_remove(key);
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let out = command.output().expect("spawn child");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success() && stdout.contains("1 passed; 0 failed"),
+        "child {child_test} did not run and pass:\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    stdout
+}
+
+fn path_var(name: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os(name).expect("run by its parent only"))
+}
+
+/// Child half: create directories under a hostile umask and report their modes by asserting them.
+#[test]
+#[ignore = "child process of the hostile-umask test; run only by its parent"]
+fn child_prepares_under_a_hostile_umask() {
+    let temp = path_var("CHILD_TEMP");
+    let home = path_var("CHILD_HOME");
+
+    // The shared-temp last resort.
+    let fallback = prepare_dir(&env(None, &temp)).expect("last resort");
+    assert_eq!(mode_of(&fallback), 0o700, "last-resort directory");
+
+    // The home step: every component we create.
+    let created = prepare_dir(&home_env(&home, &temp)).expect("home step");
+    assert_eq!(created, state_dir_of(&home));
+    for dir in [
+        home.join(".local"),
+        home.join(".local").join("state"),
+        created,
+    ] {
+        assert_eq!(mode_of(&dir), 0o700, "{}", dir.display());
+    }
+}
+
+#[test]
+fn directories_we_create_are_exactly_0700_even_under_a_hostile_umask() {
+    // `umask 0277` turns a `mkdir` mode of 0700 into 0400: a directory we then cannot use, for good.
+    let temp = shared_dir();
+    let home = private_dir();
+    run_child(
+        "child_prepares_under_a_hostile_umask",
+        "umask 0277;",
+        &[
+            ("CHILD_TEMP", temp.path().as_os_str()),
+            ("CHILD_HOME", home.path().as_os_str()),
+        ],
+        &[],
+    );
+    assert_eq!(mode_of(&subdir_of(temp.path())), 0o700);
+}
+
+// ---- DirEnv::current is the real environment ------------------------------------------------------
+
+/// Child half: `DirEnv::current()` must report what the (independently supplied) EXPECT_* variables
+/// say. A variable the parent did not set means "expect None".
+#[test]
+#[ignore = "child process of the DirEnv::current tests; run only by its parent"]
+fn child_checks_dir_env_current() {
+    let expected = |name: &str| std::env::var_os(name);
+    let current = DirEnv::current();
+    assert_eq!(current.xdg_runtime_dir, expected("EXPECT_XDG_RUNTIME"));
+    assert_eq!(current.xdg_state_home, expected("EXPECT_XDG_STATE"));
+    assert_eq!(current.home, expected("EXPECT_HOME"));
+    if let Some(temp) = expected("EXPECT_TEMP") {
+        assert_eq!(current.temp_dir, PathBuf::from(temp));
+    }
+    assert_eq!(
+        current.uid.to_string(),
+        std::env::var("EXPECT_UID").expect("run by its parent only")
+    );
+    if let Some(path) = expected("EXPECT_DESCRIPTOR") {
+        assert_eq!(descriptor_path(), PathBuf::from(path));
+    }
+}
+
+/// Child half: print what the real process environment resolves to (for the cross-check).
+#[test]
+#[ignore = "child process of the cross-check test; run only by its parent"]
+fn child_prints_the_descriptor_path() {
+    println!("DESCRIPTOR_PATH={}", descriptor_path().display());
+}
+
+#[test]
+fn dir_env_current_reads_the_real_environment() {
+    // The uid the kernel reports for something we just created, not the function under test.
+    let probe = private_dir();
+    let uid = std::fs::metadata(probe.path())
+        .expect("stat")
+        .uid()
+        .to_string();
+    let xdg = private_dir();
+    let state = private_dir();
+    let home = private_dir();
+    let shared = shared_dir();
+    let private_temp = private_dir();
+
+    // Everything set: each variable lands in its own field, and the private XDG dir wins.
+    let xdg_descriptor = xdg.path().join(DESCRIPTOR_FILE_NAME);
+    run_child(
+        "child_checks_dir_env_current",
+        "",
+        &[
+            ("XDG_RUNTIME_DIR", xdg.path().as_os_str()),
+            ("EXPECT_XDG_RUNTIME", xdg.path().as_os_str()),
+            ("XDG_STATE_HOME", state.path().as_os_str()),
+            ("EXPECT_XDG_STATE", state.path().as_os_str()),
+            ("HOME", home.path().as_os_str()),
+            ("EXPECT_HOME", home.path().as_os_str()),
+            ("TMPDIR", shared.path().as_os_str()),
+            ("EXPECT_TEMP", shared.path().as_os_str()),
+            ("EXPECT_UID", uid.as_ref()),
+            ("EXPECT_DESCRIPTOR", xdg_descriptor.as_os_str()),
+        ],
+        &[],
+    );
+
+    // A private TMPDIR is used as is; nothing else set.
+    let private_descriptor = private_temp.path().join(DESCRIPTOR_FILE_NAME);
+    run_child(
+        "child_checks_dir_env_current",
+        "",
+        &[
+            ("TMPDIR", private_temp.path().as_os_str()),
+            ("EXPECT_TEMP", private_temp.path().as_os_str()),
+            ("EXPECT_UID", uid.as_ref()),
+            ("EXPECT_DESCRIPTOR", private_descriptor.as_os_str()),
+        ],
+        &["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "HOME"],
+    );
+
+    // An EMPTY TMPDIR is /tmp, not the empty path (which would resolve against the cwd); with the
+    // other variables unset they must read as None.
+    run_child(
+        "child_checks_dir_env_current",
+        "",
+        &[
+            ("TMPDIR", std::ffi::OsStr::new("")),
+            ("EXPECT_TEMP", std::ffi::OsStr::new("/tmp")),
+            ("EXPECT_UID", uid.as_ref()),
+        ],
+        &["XDG_RUNTIME_DIR", "XDG_STATE_HOME", "HOME"],
+    );
+
+    // A shared TMPDIR with a usable HOME resolves to the home step, end to end.
+    let want = state_dir_of(home.path()).join(DESCRIPTOR_FILE_NAME);
+    run_child(
+        "child_checks_dir_env_current",
+        "",
+        &[
+            ("TMPDIR", shared.path().as_os_str()),
+            ("EXPECT_TEMP", shared.path().as_os_str()),
+            ("HOME", home.path().as_os_str()),
+            ("EXPECT_HOME", home.path().as_os_str()),
+            ("EXPECT_UID", uid.as_ref()),
+            ("EXPECT_DESCRIPTOR", want.as_os_str()),
+        ],
+        &["XDG_RUNTIME_DIR", "XDG_STATE_HOME"],
+    );
+}
+
+// ---- removing the descriptor ----------------------------------------------------------------------
+
+#[test]
+fn removing_the_descriptor_removes_it_and_tolerates_its_absence() {
+    let dir = private_dir();
+    let path = descriptor_in(dir.path(), 0o600, BODY.as_bytes());
+
+    assert_eq!(remove_descriptor(&path, my_uid()), Ok(true));
+    assert!(!path.exists());
+    assert_eq!(
+        remove_descriptor(&path, my_uid()),
+        Ok(false),
+        "already gone"
+    );
+    assert_eq!(
+        remove_descriptor(&dir.path().join("no-such-dir").join("x"), my_uid()),
+        Ok(false),
+        "no directory yet: nothing to remove"
+    );
+}
+
+#[test]
+fn removing_never_follows_a_symlinked_directory() {
+    let victim_dir = private_dir();
+    let victim = descriptor_in(victim_dir.path(), 0o600, b"precious");
+    let holder = private_dir();
+    let link = holder.path().join("dir-link");
+    std::os::unix::fs::symlink(victim_dir.path(), &link).expect("symlink");
+
+    assert_eq!(
+        remove_descriptor(&link.join(DESCRIPTOR_FILE_NAME), my_uid()),
+        Err(RemoveError::Dir(DirError::Symlink))
+    );
+    assert!(victim.exists(), "the file behind the link must survive");
+    // The trailing-slash spelling of the same link is refused too.
+    assert_eq!(
+        remove_descriptor(
+            &PathBuf::from(format!("{}/", link.display())).join(DESCRIPTOR_FILE_NAME),
+            my_uid()
+        ),
+        Err(RemoveError::Dir(DirError::Symlink))
+    );
+    assert!(victim.exists());
+
+    // Control: the same removal through the real directory works.
+    assert_eq!(remove_descriptor(&victim, my_uid()), Ok(true));
+}
+
+#[test]
+fn removing_from_a_directory_that_is_not_private_is_refused() {
+    let dir = private_dir();
+    let path = descriptor_in(dir.path(), 0o600, BODY.as_bytes());
+
+    set_mode(dir.path(), 0o755);
+    assert_eq!(
+        remove_descriptor(&path, my_uid()),
+        Err(RemoveError::Dir(DirError::TooOpen))
+    );
+    set_mode(dir.path(), 0o700);
+    assert_eq!(
+        remove_descriptor(&path, my_uid().wrapping_add(1)),
+        Err(RemoveError::Dir(DirError::WrongOwner))
+    );
+    assert!(path.exists(), "refused both times");
+    assert_eq!(remove_descriptor(&path, my_uid()), Ok(true), "control");
+}
+
+#[test]
+fn removing_does_not_follow_a_symlink_at_the_last_component() {
+    let dir = private_dir();
+    let victim = dir.path().join("victim.txt");
+    std::fs::write(&victim, "precious").expect("victim");
+    let link = dir.path().join(DESCRIPTOR_FILE_NAME);
+    std::os::unix::fs::symlink(&victim, &link).expect("symlink");
+
+    assert_eq!(remove_descriptor(&link, my_uid()), Ok(true));
+    assert!(
+        std::fs::symlink_metadata(&link).is_err(),
+        "the link itself is gone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&victim).expect("victim"),
+        "precious"
+    );
+}
+
+#[test]
+fn removing_something_that_cannot_be_unlinked_is_an_error() {
+    let dir = private_dir();
+    let at = dir.path().join(DESCRIPTOR_FILE_NAME);
+    std::fs::create_dir(&at).expect("a directory where the file should be");
+    assert_eq!(remove_descriptor(&at, my_uid()), Err(RemoveError::Failed));
+}
+
+// ---- symlinks, trailing slashes and the platform decision ------------------------------------------
+
+#[test]
+fn a_symlink_is_refused_whether_or_not_the_path_ends_in_a_slash() {
+    let target = private_dir();
+    let holder = private_dir();
+    let link = holder.path().join("dir-link");
+    std::os::unix::fs::symlink(target.path(), &link).expect("symlink");
+    let slash = PathBuf::from(format!("{}/", link.display()));
+    let slashes = PathBuf::from(format!("{}///", link.display()));
+
+    for (label, path) in [
+        ("plain", &link),
+        ("one slash", &slash),
+        ("three slashes", &slashes),
+    ] {
+        assert_eq!(
+            verify_private_dir(path, my_uid()),
+            Err(DirError::Symlink),
+            "{label}: lstat(\"link/\") would follow the link"
+        );
+    }
+    // The same through the temp-dir decision: a symlinked temp dir with a trailing slash is not
+    // "already private".
+    assert_eq!(
+        resolve_dir(&env(None, &slash)),
+        slash.join(format!("selahcue-{}", my_uid()))
+    );
+
+    // Controls: a real private directory is accepted with and without slashes.
+    let real_slash = PathBuf::from(format!("{}/", target.path().display()));
+    let real_slashes = PathBuf::from(format!("{}///", target.path().display()));
+    for path in [target.path(), real_slash.as_path(), real_slashes.as_path()] {
+        verify_private_dir(path, my_uid()).expect("a real private directory");
+    }
+}
+
+#[test]
+fn the_root_directory_is_judged_not_mangled() {
+    // Stripping trailing separators must leave "/" alone (a real kernel-owned directory: refused
+    // for its owner or its mode, never reported as missing or unreadable).
+    let got = verify_private_dir(Path::new("/"), my_uid());
+    assert!(
+        matches!(got, Err(DirError::WrongOwner | DirError::TooOpen)) || my_uid() == 0,
+        "{got:?}"
+    );
+}
+
+#[test]
+fn only_unix_refuses_a_symlinked_directory_and_the_decision_is_pure() {
+    assert!(REFUSE_SYMLINKED_DIRS, "this file only compiles on Unix");
+    // Unix: a symlink is refused, a directory passes, anything else is not a directory.
+    assert_eq!(judge_dir_kind(true, false, true), Err(DirError::Symlink));
+    assert_eq!(judge_dir_kind(true, true, true), Err(DirError::Symlink));
+    assert_eq!(judge_dir_kind(false, true, true), Ok(()));
+    assert_eq!(
+        judge_dir_kind(false, false, true),
+        Err(DirError::NotDirectory)
+    );
+    // Windows keeps its previous behaviour (directory check only): a symlink that resolves to a
+    // directory is accepted, and the refusal flag is the only difference.
+    assert_eq!(judge_dir_kind(true, true, false), Ok(()));
+    assert_eq!(judge_dir_kind(false, true, false), Ok(()));
+    assert_eq!(
+        judge_dir_kind(false, false, false),
+        Err(DirError::NotDirectory)
+    );
+}
+
+// ---- the real kernel's idea of "another user" ------------------------------------------------------
+
+/// A directory the kernel says belongs to someone else and that has no group or other bits, if one
+/// exists here (`/root` on Linux, `/private/var/audit` and friends on macOS). The injected-uid tests prove the logic;
+/// this proves the owner comparison against a uid the kernel really reports.
+fn foreign_private_dir() -> Option<PathBuf> {
+    [
+        "/root",
+        "/private/var/audit",
+        "/private/var/agentx",
+        "/private/var/install",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|dir| {
+        std::fs::symlink_metadata(dir)
+            .is_ok_and(|m| m.is_dir() && m.uid() != my_uid() && m.mode() & 0o077 == 0)
+    })
+}
+
+#[test]
+fn a_file_the_kernel_says_belongs_to_someone_else_is_refused() {
+    let hosts = Path::new("/etc/hosts");
+    let Ok(meta) = std::fs::metadata(hosts) else {
+        eprintln!("skipped: no /etc/hosts here");
+        return;
+    };
+    if meta.uid() == my_uid() {
+        eprintln!("skipped: /etc/hosts is ours (running as its owner)");
+        return;
+    }
+    assert_eq!(
+        read_file_as(hosts, MAX, my_uid()),
+        Err(ReadError::WrongOwner)
+    );
+    // Control: as its real owner the owner check is passed and the NEXT check (it is world-readable)
+    // is what refuses, so the line above is the owner check and not something earlier.
+    assert_eq!(
+        read_file_as(hosts, MAX, meta.uid()),
+        Err(ReadError::WrongMode(meta.mode() & 0o7777))
+    );
+}
+
+#[test]
+fn a_directory_the_kernel_says_belongs_to_someone_else_is_refused() {
+    let Some(dir) = foreign_private_dir() else {
+        eprintln!("skipped: no root-owned 0700 directory visible here");
+        return;
+    };
+    assert_eq!(
+        verify_private_dir(&dir, my_uid()),
+        Err(DirError::WrongOwner)
+    );
+    let owner = std::fs::symlink_metadata(&dir).expect("stat").uid();
+    verify_private_dir(&dir, owner).expect("control: judged as its real owner it is private");
+}
+
 // ---- the shell tooling must agree with the Rust resolver -----------------------------------------
 
 fn script_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../scripts/endpoint_path.py")
 }
 
-fn script_says(xdg: Option<&Path>, temp: &Path) -> PathBuf {
+/// The four environment variables the resolution reads; `None` means "unset".
+#[derive(Clone, Default)]
+struct Vars {
+    xdg_runtime: Option<std::ffi::OsString>,
+    xdg_state: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    tmpdir: Option<std::ffi::OsString>,
+}
+
+impl Vars {
+    fn pairs(&self) -> [(&'static str, &Option<std::ffi::OsString>); 4] {
+        [
+            ("XDG_RUNTIME_DIR", &self.xdg_runtime),
+            ("XDG_STATE_HOME", &self.xdg_state),
+            ("HOME", &self.home),
+            ("TMPDIR", &self.tmpdir),
+        ]
+    }
+}
+
+fn some(path: &Path) -> Option<std::ffi::OsString> {
+    Some(path.as_os_str().to_owned())
+}
+
+fn script_says(vars: &Vars) -> PathBuf {
     let mut cmd = std::process::Command::new("python3");
-    cmd.arg("-I").arg(script_path()).env("TMPDIR", temp);
-    match xdg {
-        Some(x) => cmd.env("XDG_RUNTIME_DIR", x),
-        None => cmd.env_remove("XDG_RUNTIME_DIR"),
-    };
+    cmd.arg("-I").arg(script_path());
+    for (name, value) in vars.pairs() {
+        match value {
+            Some(v) => cmd.env(name, v),
+            None => cmd.env_remove(name),
+        };
+    }
     let out = cmd.output().expect("python3 is required by `make ci`");
     assert!(
         out.status.success(),
@@ -841,53 +1563,353 @@ fn script_says(xdg: Option<&Path>, temp: &Path) -> PathBuf {
     PathBuf::from(String::from_utf8(out.stdout).expect("utf-8").trim_end())
 }
 
+/// What the real Rust pipeline (`DirEnv::current()` then `descriptor_path()`) says, in a child
+/// process that has exactly `vars` as its environment variables.
+fn rust_says(vars: &Vars) -> PathBuf {
+    let set: Vec<(&str, &std::ffi::OsStr)> = vars
+        .pairs()
+        .into_iter()
+        .filter_map(|(name, value)| value.as_deref().map(|v| (name, v)))
+        .collect();
+    let unset: Vec<&str> = vars
+        .pairs()
+        .into_iter()
+        .filter(|(_, value)| value.is_none())
+        .map(|(name, _)| name)
+        .collect();
+    let stdout = run_child("child_prints_the_descriptor_path", "", &set, &unset);
+    // libtest prints "test NAME ... " first and the captured output follows on the same line.
+    let start = stdout
+        .find("DESCRIPTOR_PATH=")
+        .expect("the child prints DESCRIPTOR_PATH=")
+        + "DESCRIPTOR_PATH=".len();
+    PathBuf::from(stdout[start..].lines().next().expect("a path"))
+}
+
 #[test]
 fn make_and_the_nfr_script_resolve_the_same_path_as_the_rust_code() {
     let xdg_ok = private_dir();
     let xdg_open = shared_dir();
+    let xdg_group_only = private_dir();
+    set_mode(xdg_group_only.path(), 0o750);
+    let holder = private_dir();
+    let xdg_file = holder.path().join("a-file");
+    std::fs::write(&xdg_file, "x").expect("file");
+    let link_target = private_dir();
+    let link = holder.path().join("xdg-link");
+    std::os::unix::fs::symlink(link_target.path(), &link).expect("symlink");
+    let link_slash = PathBuf::from(format!("{}/", link.display()));
     let shared_temp = shared_dir();
     let private_temp = private_dir();
+    let foreign = foreign_private_dir();
 
-    let cases: Vec<(&str, Option<PathBuf>, PathBuf)> = vec![
+    // Home-based scenarios, each with its own HOME so none can see another's directories.
+    let home_fresh = private_dir();
+    let home_existing = private_dir();
+    mkdir_mode(&state_dir_of(home_existing.path()), 0o700);
+    let state_home = private_dir();
+    let home_open_parent = private_dir();
+    mkdir_mode(&home_open_parent.path().join(".local").join("state"), 0o775);
+    let home_open_selahcue = private_dir();
+    mkdir_mode(&state_dir_of(home_open_selahcue.path()), 0o755);
+    let home_open = private_dir();
+    set_mode(home_open.path(), 0o777);
+    let home_symlinked = private_dir();
+    mkdir_mode(&home_symlinked.path().join(".local"), 0o700);
+    std::os::unix::fs::symlink(
+        link_target.path(),
+        home_symlinked.path().join(".local").join("state"),
+    )
+    .expect("symlink");
+
+    let with_temp = |temp: &Path| Vars {
+        tmpdir: some(temp),
+        ..Vars::default()
+    };
+    let shared = shared_temp.path();
+    let mut cases: Vec<(&str, Vars)> = vec![
         (
             "private xdg",
-            Some(xdg_ok.path().into()),
-            shared_temp.path().into(),
+            Vars {
+                xdg_runtime: some(xdg_ok.path()),
+                ..with_temp(shared)
+            },
         ),
         (
-            "xdg too open",
-            Some(xdg_open.path().into()),
-            shared_temp.path().into(),
+            "xdg too open (0777)",
+            Vars {
+                xdg_runtime: some(xdg_open.path()),
+                ..with_temp(shared)
+            },
         ),
-        ("xdg relative", Some(".".into()), shared_temp.path().into()),
+        (
+            "xdg with a group bit only (0750)",
+            Vars {
+                xdg_runtime: some(xdg_group_only.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg is a file",
+            Vars {
+                xdg_runtime: some(&xdg_file),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg is a symlink to a private directory",
+            Vars {
+                xdg_runtime: some(&link),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg is that symlink spelled with a trailing slash",
+            Vars {
+                xdg_runtime: some(&link_slash),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg relative",
+            Vars {
+                xdg_runtime: Some(".".into()),
+                ..with_temp(shared)
+            },
+        ),
         (
             "xdg relative but private",
-            Some(relative_to_cwd(xdg_ok.path())),
-            shared_temp.path().into(),
+            Vars {
+                xdg_runtime: Some(relative_to_cwd(xdg_ok.path()).into_os_string()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg empty",
+            Vars {
+                xdg_runtime: Some("".into()),
+                ..with_temp(shared)
+            },
         ),
         (
             "xdg missing path",
-            Some(shared_temp.path().join("nope")),
-            shared_temp.path().into(),
+            Vars {
+                xdg_runtime: some(&shared.join("nope")),
+                ..with_temp(shared)
+            },
         ),
-        ("no xdg, shared temp", None, shared_temp.path().into()),
-        ("no xdg, private temp", None, private_temp.path().into()),
+        ("no xdg, shared temp", with_temp(shared)),
+        ("no xdg, private temp", with_temp(private_temp.path())),
+        (
+            "private temp spelled with a trailing slash",
+            with_temp(&PathBuf::from(format!(
+                "{}/",
+                private_temp.path().display()
+            ))),
+        ),
+        (
+            "temp is a symlink to a private directory, trailing slash",
+            Vars {
+                tmpdir: Some(link_slash.clone().into_os_string()),
+                ..Vars::default()
+            },
+        ),
+        ("TMPDIR unset", Vars::default()),
+        (
+            "TMPDIR empty",
+            Vars {
+                tmpdir: Some("".into()),
+                ..Vars::default()
+            },
+        ),
+        (
+            "home, nothing created yet",
+            Vars {
+                home: some(home_fresh.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home, selahcue exists",
+            Vars {
+                home: some(home_existing.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "xdg state home",
+            Vars {
+                xdg_state: some(state_home.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "relative xdg state home falls back to home",
+            Vars {
+                xdg_state: Some(relative_to_cwd(state_home.path()).into_os_string()),
+                home: some(home_fresh.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "empty xdg state home falls back to home",
+            Vars {
+                xdg_state: Some("".into()),
+                home: some(home_fresh.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home relative",
+            Vars {
+                home: Some(relative_to_cwd(home_fresh.path()).into_os_string()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home empty",
+            Vars {
+                home: Some("".into()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home unset",
+            Vars {
+                xdg_state: None,
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home state parent group-writable",
+            Vars {
+                home: some(home_open_parent.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home selahcue too open",
+            Vars {
+                home: some(home_open_selahcue.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home itself world-writable",
+            Vars {
+                home: some(home_open.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "home state parent is a symlink",
+            Vars {
+                home: some(home_symlinked.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "private xdg beats home",
+            Vars {
+                xdg_runtime: some(xdg_ok.path()),
+                home: some(home_fresh.path()),
+                ..with_temp(shared)
+            },
+        ),
+        (
+            "private temp beats home",
+            Vars {
+                home: some(home_fresh.path()),
+                ..with_temp(private_temp.path())
+            },
+        ),
     ];
-    for (label, xdg, temp) in &cases {
-        let rust = descriptor_path_for(&env(xdg.as_deref(), temp));
-        assert_eq!(script_says(xdg.as_deref(), temp), rust, "{label}");
+    if let Some(dir) = &foreign {
+        cases.push((
+            "xdg owned by root (0700)",
+            Vars {
+                xdg_runtime: some(dir),
+                ..with_temp(shared)
+            },
+        ));
+        cases.push((
+            "home owned by root",
+            Vars {
+                home: some(dir),
+                ..with_temp(shared)
+            },
+        ));
+    } else {
+        eprintln!("note: no root-owned 0700 directory here; the foreign-owner cases are skipped");
     }
-    // Premise: the cases really cover all three outcomes.
-    assert_eq!(
-        descriptor_path_for(&env(None, shared_temp.path())),
-        subdir_of(shared_temp.path()).join(DESCRIPTOR_FILE_NAME)
-    );
-    assert_eq!(
-        descriptor_path_for(&env(None, private_temp.path())),
-        private_temp.path().join(DESCRIPTOR_FILE_NAME)
-    );
-}
 
-fn descriptor_path_for(env: &DirEnv) -> PathBuf {
-    resolve_dir(env).join(DESCRIPTOR_FILE_NAME)
+    let mut answers = std::collections::BTreeMap::new();
+    for (label, vars) in &cases {
+        let rust = rust_says(vars);
+        assert_eq!(script_says(vars), rust, "{label}");
+        answers.insert(*label, rust);
+    }
+
+    // Premises: the cases really cover the outcomes they claim to.
+    let name = DESCRIPTOR_FILE_NAME;
+    let fallback = subdir_of(shared).join(name);
+    assert_eq!(answers["private xdg"], xdg_ok.path().join(name));
+    for refused in [
+        "xdg too open (0777)",
+        "xdg with a group bit only (0750)",
+        "xdg is a file",
+        "xdg is a symlink to a private directory",
+        "xdg is that symlink spelled with a trailing slash",
+        "xdg relative",
+        "xdg relative but private",
+        "xdg empty",
+        "xdg missing path",
+        "no xdg, shared temp",
+        "home relative",
+        "home empty",
+        "home unset",
+        "home state parent group-writable",
+        "home selahcue too open",
+        "home itself world-writable",
+        "home state parent is a symlink",
+    ] {
+        assert_eq!(answers[refused], fallback, "{refused}");
+    }
+    assert_eq!(
+        answers["no xdg, private temp"],
+        private_temp.path().join(name)
+    );
+    assert_eq!(
+        answers["private temp spelled with a trailing slash"],
+        PathBuf::from(format!("{}/", private_temp.path().display())).join(name)
+    );
+    assert_ne!(
+        answers["temp is a symlink to a private directory, trailing slash"],
+        link_target.path().join(name)
+    );
+    assert_eq!(
+        answers["home, nothing created yet"],
+        state_dir_of(home_fresh.path()).join(name)
+    );
+    assert_eq!(
+        answers["home, selahcue exists"],
+        state_dir_of(home_existing.path()).join(name)
+    );
+    assert_eq!(
+        answers["xdg state home"],
+        state_home.path().join("selahcue").join(name)
+    );
+    assert_eq!(
+        answers["relative xdg state home falls back to home"],
+        state_dir_of(home_fresh.path()).join(name)
+    );
+    assert_eq!(answers["private xdg beats home"], xdg_ok.path().join(name));
+    assert_eq!(
+        answers["private temp beats home"],
+        private_temp.path().join(name)
+    );
+    if let Some(dir) = &foreign {
+        assert_ne!(answers["xdg owned by root (0700)"], dir.join(name));
+        assert_eq!(answers["home owned by root"], fallback);
+    }
 }

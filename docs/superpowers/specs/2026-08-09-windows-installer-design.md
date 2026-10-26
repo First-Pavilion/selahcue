@@ -1,5 +1,7 @@
 # Windows installer — one-click, full-featured (NDI + STT) — design
 
+> Historical note (17tnw2b9agb): wherever this document says the endpoint descriptor lives at `temp_dir()/selahcue-operator-endpoint.json`, that is superseded. The location is now a per-user private directory chosen by `selahcue_lan::local_endpoint` (see `implementation/desktop/CLAUDE.md`). The rest of this document is unchanged.
+
 - **Date:** 2026-08-09
 - **Status:** Approved design (pending spec review) → next step: implementation plan
 - **Owner decisions captured below** (from the brainstorming session)

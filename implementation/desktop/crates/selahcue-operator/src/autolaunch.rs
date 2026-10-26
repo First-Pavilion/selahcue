@@ -64,18 +64,39 @@ impl SpawnedOutput {
 /// falling back to the demo. Returns `None` when the sibling binary is absent (dev run) or the
 /// spawn fails — the caller then keeps today's behaviour.
 pub fn spawn_output_window(operator_exe: &Path, endpoint: &Path) -> Option<SpawnedOutput> {
+    spawn_output_window_with(operator_exe, endpoint, 66, Duration::from_millis(150))
+}
+
+/// [`spawn_output_window`] with the wait for the endpoint injected (66 attempts of 150 ms, about 10 s,
+/// in production), so a test can run the real spawn path without waiting that long.
+fn spawn_output_window_with(
+    operator_exe: &Path,
+    endpoint: &Path,
+    max_attempts: u32,
+    pause: Duration,
+) -> Option<SpawnedOutput> {
     let sidecar = output_sidecar_path(operator_exe);
     if !sidecar.exists() {
         // Dev run: leave any endpoint written by a hand-started output window untouched.
         return None;
     }
-    // Remove any stale endpoint from a previous run so we only ever connect to THIS instance.
-    let _ = std::fs::remove_file(endpoint);
+    // Remove any stale endpoint from a previous run so we only ever connect to THIS instance. Only
+    // from a directory that is private to this user: a symlink planted where the directory should
+    // be is refused, not followed to delete a file of someone else's choosing (17tnw2b9agb).
+    if let Err(why) = selahcue_lan::local_endpoint::remove_descriptor(
+        endpoint,
+        selahcue_lan::local_endpoint::current_uid(),
+    ) {
+        eprintln!(
+            "SelahCue operator: left the endpoint file at {} alone ({why}).",
+            endpoint.display()
+        );
+    }
     let child = Command::new(&sidecar).spawn().ok()?;
     let appeared = wait_for_endpoint(
         || endpoint.exists(),
-        66, // ~10s at 150ms per attempt
-        || std::thread::sleep(Duration::from_millis(150)),
+        max_attempts,
+        || std::thread::sleep(pause),
     );
     if !appeared {
         eprintln!(
@@ -145,6 +166,70 @@ mod tests {
         let endpoint = dir.join("selahcue-operator-endpoint.json");
         assert!(spawn_output_window(&fake_operator, &endpoint).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stand-in output window that exits at once, beside a fake operator executable, so the real
+    /// spawn path runs. `bin` must be a fresh directory.
+    #[cfg(unix)]
+    fn fake_sidecar(bin: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let sidecar = bin.join(format!("selahcue-output{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&sidecar, "#!/bin/sh\nexit 0\n").expect("write sidecar");
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        bin.join(format!("selahcue-operator{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    #[cfg(unix)]
+    fn private_dir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        dir
+    }
+
+    /// Startup removes the previous run's descriptor so the operator only connects to THIS host,
+    /// but only from a private directory. Here the descriptor path runs through a symlink to a
+    /// directory holding a file of that name; following the link would delete it.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_never_follows_a_symlinked_directory_to_delete_a_stale_endpoint() {
+        let bin = private_dir();
+        let operator = fake_sidecar(bin.path());
+        let victim_dir = private_dir();
+        let victim = victim_dir.path().join("selahcue-operator-endpoint.json");
+        std::fs::write(&victim, "precious").expect("victim");
+        let holder = private_dir();
+        let link = holder.path().join("dir-link");
+        std::os::unix::fs::symlink(victim_dir.path(), &link).expect("symlink");
+
+        let spawned = spawn_output_window_with(
+            &operator,
+            &link.join("selahcue-operator-endpoint.json"),
+            1,
+            Duration::ZERO,
+        )
+        .expect("the stand-in sidecar spawns");
+        spawned.kill();
+
+        assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "precious");
+    }
+
+    /// Positive control for the test above: the same spawn on a real private directory does remove
+    /// the stale descriptor, so "survived" above is the directory check, not a dead removal.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_removes_a_stale_endpoint_from_a_private_directory() {
+        let bin = private_dir();
+        let operator = fake_sidecar(bin.path());
+        let dir = private_dir();
+        let stale = dir.path().join("selahcue-operator-endpoint.json");
+        std::fs::write(&stale, "stale").expect("stale");
+
+        let spawned = spawn_output_window_with(&operator, &stale, 1, Duration::ZERO)
+            .expect("the stand-in sidecar spawns");
+        spawned.kill();
+
+        assert!(!stale.exists(), "a stale descriptor in a private directory is removed");
     }
 
     #[test]
