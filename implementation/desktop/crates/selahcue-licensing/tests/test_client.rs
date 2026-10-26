@@ -1607,6 +1607,10 @@ fn the_success_range_is_exactly_200_to_299() {
         (199, ActivationFailure::UnexpectedStatus(199)),
         (300, ActivationFailure::UnexpectedStatus(300)),
         (302, ActivationFailure::UnexpectedStatus(302)),
+        // 307 and 308 are the redirects that replay a request body; the production transport
+        // returns them as statuses instead of following them (17tnw2b9aaz).
+        (307, ActivationFailure::UnexpectedStatus(307)),
+        (308, ActivationFailure::UnexpectedStatus(308)),
         (399, ActivationFailure::UnexpectedStatus(399)),
         (499, ActivationFailure::UnexpectedStatus(499)),
         (500, ActivationFailure::Server(500)),
