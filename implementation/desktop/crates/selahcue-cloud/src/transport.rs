@@ -116,8 +116,8 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// [`HttpResponse`] carrying that status, and the `Location` it names is never requested.
 ///
 /// *Why.* reqwest's default policy follows up to ten redirects, and on a 307 or 308 it replays the
-/// request BODY to the new location. It strips `Authorization` and cookies when the host or port
-/// changes, but never the body, and the body is where this app's credentials travel: the account
+/// request BODY to the new location. It strips `Authorization` and cookies when the host, port or
+/// scheme changes, but never the body, and the body is where this app's credentials travel: the account
 /// password (`POST /v1/sessions`), the enrollment key (`POST /v1/activations`) and the sermon
 /// transcript (`POST /v1/notes:generate`). It also adds a `Referer` naming the URL it came from.
 /// Measured: a loopback server that answered a POST with a 307 to another port received the whole
@@ -131,13 +131,15 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// on this crate. If a consumer ever needs a redirect, that is a decision for that consumer, made
 /// per call and reviewed as its own change, not a default to turn back on here.
 ///
-/// *What the callers see.* A 3xx reaches each client as a non-2xx status and is classified like
-/// any other unexpected status, in the client's own fixed wording, with nothing of the response
-/// copied in: `selahcue-licensing` reports `UnexpectedStatus(n)`, the hosted notes client
-/// `Malformed("unexpected status n")`, the OpenAI provider `Malformed("unexpected provider status
-/// n")`. [`HttpResponse`] carries no headers, so the `Location` (which can hold a token in its
-/// query) never leaves the transport. The redirect's own body is read under the same
-/// [`MAX_TRANSPORT_RESPONSE_BYTES`] cap as any other and is not quoted by any client.
+/// *What the callers see.* A 3xx reaches each client as a non-2xx response and is classified like
+/// any other non-2xx response, in the client's own fixed wording, with nothing of the response
+/// quoted. `selahcue-licensing` parses a non-2xx body as the API's error envelope first (a coded
+/// envelope gives that code's failure) and otherwise reports `UnexpectedStatus(n)`; the hosted
+/// notes client reports `Malformed("unexpected status n")`, plus a reason code when the body
+/// carries one from its closed list; the OpenAI provider reports `Malformed("unexpected provider
+/// status n")`. [`HttpResponse`] carries no headers, so the `Location` (which can hold a token in
+/// its query) never leaves the transport. The redirect's own body is read under the same
+/// [`MAX_TRANSPORT_RESPONSE_BYTES`] cap as any other.
 ///
 /// Pinned by `tests/test_redirect_credentials.rs` and `tests/test_redirect_limit.rs`.
 #[cfg(feature = "http")]

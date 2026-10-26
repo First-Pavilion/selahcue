@@ -1,5 +1,8 @@
 //! The production transport does not follow redirects: the first hop of a chain is returned as the
-//! answer, whatever the chain's length, and the second hop is never requested (ClickUp 17tnw2b9aaz).
+//! answer and the second hop is never requested (ClickUp 17tnw2b9aaz).
+//!
+//! The file name is historical and kept on purpose (other documents cite it): there is no longer a
+//! limit to test, only the absence of a follow.
 //!
 //! This file used to be a CHARACTERISATION test of reqwest's default policy ("ten redirects are
 //! followed, the eleventh is an error"), written so that a casual `.redirect(..)` call could not
@@ -104,29 +107,6 @@ fn the_first_hop_of_a_redirect_chain_is_the_answer_and_the_second_is_never_reque
         *paths.lock().unwrap(),
         vec!["/hop/0/1".to_string()],
         "only the first hop was requested"
-    );
-}
-
-#[test]
-fn a_long_chain_is_not_walked_at_all() {
-    // The old test's two cases, restated: ten used to be followed to the end and eleven used to
-    // be an error. With no redirects both are one request and a 302, so neither length can reach
-    // a limit, and no "too many redirects" error exists to be reported.
-    assert_loopback_is_not_proxied();
-    let (port, paths) = serve_chains();
-    let transport = ReqwestTransport::new().unwrap();
-
-    for n in [10u32, 11] {
-        let response = transport
-            .get(&format!("http://127.0.0.1:{port}/hop/0/{n}"), None)
-            .unwrap_or_else(|e| panic!("a chain of {n} should answer with its first hop: {e}"));
-        assert_eq!(response.status, 302, "chain of {n}");
-    }
-
-    assert_eq!(
-        *paths.lock().unwrap(),
-        vec!["/hop/0/10".to_string(), "/hop/0/11".to_string()],
-        "exactly one request per chain"
     );
 }
 

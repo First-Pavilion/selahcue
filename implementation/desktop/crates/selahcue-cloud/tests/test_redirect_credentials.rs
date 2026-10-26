@@ -3,7 +3,7 @@
 //!
 //! The body is where this app's credentials travel: the account password (`POST /v1/sessions`),
 //! the enrollment key (`POST /v1/activations`) and the sermon transcript. reqwest strips
-//! `Authorization` and cookies when a redirect changes host or port, but on a 307 or 308 it
+//! `Authorization` and cookies when a redirect changes host, port or scheme, but on a 307 or 308 it
 //! replays the body to the new location, and it never strips the body. Measured on 0.12.28 and
 //! 0.13.5 identically: a local server that answered a POST with a 307 to another port received
 //! the whole JSON body. So the production transport does not follow redirects at all (see
@@ -11,13 +11,12 @@
 //! matters: a server that redirects gets an answer carrying the redirect status, and the redirect
 //! target is never contacted.
 //!
-//! Two properties, kept apart on purpose:
-//!
-//! - the BODY and the bearer never reach the redirect target: asserted as "the target saw no
-//!   connection at all", for every status reqwest treats as a redirect and for both verbs;
-//! - the bearer is not sent to a different host even if a future change did follow redirects:
-//!   `the_bearer_is_not_sent_to_a_different_host_after_a_redirect` is the older, policy-neutral
-//!   pin on reqwest's own stripping. It holds under either policy and is kept as defence in depth.
+//! What is asserted is that the redirect target saw NO connection at all, for every status
+//! reqwest treats as a redirect and for both verbs, so neither the body nor the bearer (nor the
+//! `Referer` reqwest adds) can have reached it. Earlier versions of this file also held a
+//! bearer-stripping test that ran the old default policy and asserted reqwest's own
+//! `Authorization` stripping; under "no redirects" the target is never contacted, so it asserted
+//! nothing and was removed rather than kept as a decoration.
 //!
 //! Every "the target saw nothing" check has a positive control: the same recorder, hit directly,
 //! does record a request and its body. Without it, "saw nothing" is indistinguishable from a
@@ -31,7 +30,6 @@ use selahcue_cloud::{SelahCueCloudClient, Token};
 use selahcue_core::providers::{NoteError, NoteProvider, ProvidersConfig};
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -57,60 +55,6 @@ fn assert_loopback_is_not_proxied() {
         !proxied || bypassed,
         "a proxy variable is set without NO_PROXY=127.0.0.1,localhost; run with it (see test_wire.rs)"
     );
-}
-
-/// Answer one connection with `reply`, send the raw request head down the channel.
-fn serve_one(reply: String) -> (u16, mpsc::Receiver<String>) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let Ok((mut s, _)) = listener.accept() else {
-            return;
-        };
-        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut buf = [0u8; 4096];
-        let n = s.read(&mut buf).unwrap_or(0);
-        let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
-        let _ = s.write_all(reply.as_bytes());
-    });
-    (port, rx)
-}
-
-#[test]
-fn the_bearer_is_not_sent_to_a_different_host_after_a_redirect() {
-    assert_loopback_is_not_proxied();
-    // B is the redirect target, on another port and under another host name.
-    let (b_port, b_seen) = serve_one(
-        "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok".to_string(),
-    );
-    let (a_port, a_seen) = serve_one(format!(
-        "HTTP/1.1 302 Found\r\nlocation: http://localhost:{b_port}/landed\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-    ));
-
-    let transport = ReqwestTransport::new().unwrap();
-    // Whether this returns Ok (redirect followed) or an error (redirect refused) is not the point
-    // of THIS test; `a_redirect_is_returned_and_its_target_is_never_contacted` pins that.
-    let _ = transport.get(&format!("http://127.0.0.1:{a_port}/start"), Some(BEARER));
-
-    // Positive control: the origin really did receive the bearer, so a "not on B" result below is
-    // about the redirect and not about a token that was never sent.
-    let a_head = a_seen.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert!(
-        a_head.contains(&format!("Bearer {BEARER}")),
-        "the origin should have received the bearer: {a_head}"
-    );
-
-    if let Ok(b_head) = b_seen.recv_timeout(Duration::from_secs(2)) {
-        assert!(
-            !b_head.contains(BEARER),
-            "the bearer followed a redirect to another host: {b_head}"
-        );
-        assert!(
-            !b_head.to_lowercase().contains("\r\nauthorization:"),
-            "an Authorization header followed a redirect to another host: {b_head}"
-        );
-    }
 }
 
 /// A loopback server that records every complete request it receives (head and body, as text)

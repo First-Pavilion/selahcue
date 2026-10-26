@@ -321,9 +321,10 @@ impl<T: HttpTransport> LicensingClient<T> {
     ///
     /// What the production transport really puts on the wire is pinned by
     /// `selahcue-cloud/tests/test_wire.rs`. The production transport never follows a redirect
-    /// (ClickUp 17tnw2b9aaz), so a 3xx comes back as a status and lands in
-    /// [`ActivationFailure::UnexpectedStatus`] below: the password and the enrollment key are
-    /// never replayed to another host, and `reqwest` never adds the `Referer` it sets on a
+    /// (ClickUp 17tnw2b9aaz), so a 3xx comes back as a status and is classified below like any
+    /// other non-2xx response (a coded error envelope in its body gives that code's failure,
+    /// otherwise [`ActivationFailure::UnexpectedStatus`]): the password and the enrollment key
+    /// are never replayed to another host, and `reqwest` never adds the `Referer` it sets on a
     /// followed redirect. The policy is the transport's to set, not this crate's.
     fn post(
         &self,
