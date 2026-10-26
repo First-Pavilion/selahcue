@@ -1,0 +1,44 @@
+# Mutation evidence for 86ak1090r (the harness is mutate.py beside this file).
+# Run against production code at commit 1fee6d3c (head of the branch before the merge-up check), 2026-10-26.
+# One textual change per mutant; the named test FILES run with their siblings (never --exact); every mutant must go RED;
+# each file is restored and compared with cmp (restored_identical). SQLite mutants ran under the repo's API_ENV command;
+# the two Postgres mutants ran against a throwaway local PostgreSQL 16.2 (pgserver, no Docker).
+# Result: 34 mutants, 34 RED, 0 survived, every restore byte-identical.
+# Two mutant specs (E8/E9/E12, A8, P2) were first written against stale source text, found 'old string found 0/2 times' and
+# were corrected and re-run; the first harness batch also lost some 'restored' flags to a backup-file name clash between two
+# harnesses running at once, so every mutant below is from the later batches with unique backup names.
+
+T1-tripwire-removed                          RED      2 failed, 177 passed in 70.13s (0:01:10)                       restored_identical=True  # AC 8: remove the in_atomic_block check from the writer
+T2-activation-optin-removed                  RED      32 failed, 159 passed in 56.17s                                restored_identical=True  # AC 8: device activation stops passing the opt-in (every first activation must fail closed)
+T3-extend-optin-removed                      RED      12 failed, 124 passed in 71.78s (0:01:11)                      restored_identical=True  # AC 8: extend stops passing the opt-in
+T4-tripwire-inverted                         RED      37 failed, 142 passed in 81.09s (0:01:21)                      restored_identical=True  # AC 8: the check fires only when the caller DID opt in
+A1-gate-removed-in-_authorise                RED      48 failed, 266 passed in 86.56s (0:01:26)                      restored_identical=True  # AC 11: the shared permission gate is a no-op (revoke, extend, and the suspend siblings)
+A2-revoke-gate-removed                       RED      39 failed, 275 passed in 86.03s (0:01:26)                      restored_identical=True  # AC 11: the lifecycle (revoke) path skips the gate
+A3-extend-gate-removed                       RED      10 failed, 304 passed in 107.18s (0:01:47)                     restored_identical=True  # AC 11: extend skips the gate
+A4-gate-after-lookup-extend                  RED      3 failed, 133 passed in 35.09s                                 restored_identical=True  # AC 11: extend looks the licence up BEFORE the gate
+A5-refusal-audit-per-actor-budget-removed    RED      2 failed, 134 passed in 39.29s                                 restored_identical=True  # AC 2: per-actor cap on refusal audit rows removed
+A6-refusal-audit-global-cap-removed          RED      2 failed, 134 passed in 51.96s                                 restored_identical=True  # AC 2: global cap on refusal audit rows removed
+A7-refusal-not-audited                       RED      11 failed, 125 passed in 44.90s                                restored_identical=True  # AC 2: a refused caller leaves no audit row
+A8-hostile-reason-stored                     RED      3 failed, 133 passed in 43.47s                                 restored_identical=True  # AC 2: the refusal row stores the caller's raw reason
+C1-credential-check-removed                  RED      7 failed, 129 passed in 49.67s                                 restored_identical=True  # a reason containing a full licence key is accepted and stored
+D0-both-bounds-removed                       RED      7 failed, 6 passed in 20.68s                                   restored_identical=True  # AC 9: depth and container bounds removed from the walker
+D1-depth-part-removed                        RED      3 failed, 146 passed in 33.90s                                 restored_identical=True  # AC 9: the depth bound removed (container cap kept)
+D2-writer-boundary-check-removed             RED      3 failed, 133 passed in 36.81s                                 restored_identical=True  # AC 9: the writer no longer refuses an over-deep payload before its transaction
+D3-container-cap-removed                     RED      1 failed, 12 passed in 11.63s                                  restored_identical=True  # AC 9: the container cap removed (depth bound kept)
+W1-revoke-assigns-status-directly            RED      1 failed, 127 passed in 42.06s                                 restored_identical=True  # AC 10: the mutations assign .status themselves (a third direct-write site)
+E1-source-precheck-removed                   RED      8 failed, 128 passed in 74.09s (0:01:14)                       restored_identical=True  # extend accepts SUSPENDED, CONVERTED, REVOKED, ARCHIVED
+E2-not-forward-check-removed                 RED      5 failed, 131 passed in 48.26s                                 restored_identical=True  # extend accepts a date that is not later than the current one
+E3-ceiling-removed                           RED      2 failed, 134 passed in 52.23s                                 restored_identical=True  # extend has no five-year ceiling
+E4-naive-accepted                            RED      2 failed, 134 passed in 60.61s (0:01:00)                       restored_identical=True  # extend accepts a datetime with no UTC offset
+E5-overlap-guard-removed                     RED      1 failed, 135 passed in 59.22s                                 restored_identical=True  # extend ignores another valid licence of the organisation
+E6-retry-lookup-removed                      RED      3 failed, 133 passed in 60.58s (0:01:00)                       restored_identical=True  # extend does not recognise its own retry
+E7-catch-inside-removed                      RED      1 failed, 135 passed in 52.85s                                 restored_identical=True  # extend lets the writer's refusal propagate out of its transaction (the DENIED row is lost)
+E8-autocommit-guard-removed-in-extend        RED      1 failed, 135 passed in 44.14s                                 restored_identical=True  # extend runs inside a caller's transaction
+E9-extend-budget-removed                     RED      2 failed, 134 passed in 44.65s                                 restored_identical=True  # extend is not throttled
+E10-status-not-restored                      RED      8 failed, 128 passed in 54.01s                                 restored_identical=True  # extend leaves EXPIRING / EXPIRED licences as they were
+E11-date-move-skipped                        RED      12 failed, 124 passed in 38.29s                                restored_identical=True  # extend writes the status and the audit row but never moves the date
+E12-archived-customer-allowed                RED      1 failed, 135 passed in 33.46s                                 restored_identical=True  # extend works on an archived customer's licence
+R1-revoke-targets-suspended                  RED      20 failed, 116 passed in 47.61s                                restored_identical=True  # revoke writes SUSPENDED instead of REVOKED
+R2-revoke-retry-not-recognised               RED      13 failed, 301 passed in 121.94s (0:02:01)                     restored_identical=True  # revoke does not ask the writer to recognise a retry
+P1-extend-org-lock-removed                   RED      4 failed, 26 passed in 91.77s (0:01:31)                        restored_identical=True  # (Postgres) extend does not take the organisation row lock
+P2-extend-licence-lock-removed               RED      2 failed, 28 passed in 99.30s (0:01:39)                        restored_identical=True  # (Postgres) extend reads the licence without FOR UPDATE
