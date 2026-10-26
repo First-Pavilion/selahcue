@@ -1276,40 +1276,63 @@ def test_no_token_material_reaches_any_audit_column_or_log_line_of_a_failed_conf
     """AC4: asserted by a test, not by inspection. Every form of every token offered -- raw,
     fingerprint, at-rest hash, masked form, and the stored row's own copies of those -- plus the
     submitted passwords, must be absent from every column of every failure row AND from every log
-    record emitted while the failures happened."""
+    record emitted while the failures happened.
+
+    Whole values are not enough: a line that logs a slice of the token, a prefix of the
+    fingerprint or the first characters of the password carries the secret just as well and
+    contains none of the whole values. So the search also covers every overlapping 12-character
+    window of each token form (any slice of 12 characters or more contains one), and the first
+    6 characters of each submitted password."""
     scenarios = build_failure_scenarios(client, sender)
 
-    needles = []
+    whole = []
     for case in scenarios.values():
         for secret in (case.token, case.password):
             if len(secret) >= 12:  # shorter strings occur in the haystack by chance
-                needles.append(secret)
+                whole.append(secret)
         if len(case.token) >= 12:
-            needles += [services._fingerprint(case.token), services._credential_token_hash(case.token)]
-            needles.append(services._mask(case.token)[2])
+            whole += [services._fingerprint(case.token), services._credential_token_hash(case.token)]
+            whole.append(services._mask(case.token)[2])
             if CredentialToken.objects.filter(token_fingerprint=services._fingerprint(case.token)).exists():
                 row = token_row(case.token)
-                needles += [row.token_fingerprint, row.token_hash, row.masked_token]
-    assert len(needles) >= 20, "too few secrets to search for; the scenarios changed shape"
+                whole += [row.token_fingerprint, row.token_hash, row.masked_token]
+    assert len(whole) >= 20, "too few secrets to search for; the scenarios changed shape"
 
-    # POSITIVE CONTROL for the search itself: a haystack that does contain each secret is found.
-    # Without this, "nothing found" is indistinguishable from a search that cannot find anything.
-    for needle in needles:
-        assert contains_any(f"prefix {needle} suffix", needles), "the search cannot find a planted secret"
-    # ...and for the log capture: a record that carries a secret reaches caplog.
+    def windows(value, size=12):
+        return {value[i : i + size] for i in range(max(len(value) - size + 1, 1))}
+
+    fragments = set()
+    for secret in whole:
+        fragments |= windows(secret)
+    for case in scenarios.values():
+        if len(case.password) >= services.MIN_PASSWORD_LENGTH:
+            fragments.add(case.password[:6])
+    needles = sorted(set(whole) | fragments)
+    assert len(needles) > 500, "the fragment search is not wide enough to catch a slice"
+
+    # POSITIVE CONTROLS. Without them "nothing found" is indistinguishable from a search that
+    # cannot find anything. (1) A haystack holding a MIDDLE fragment of a fingerprint and a
+    # password's first 6 characters is found: these are the shapes a whole-value search misses.
+    a_fingerprint = next(v for v in whole if len(v) == 64 and re.fullmatch(r"[0-9a-f]{64}", v))
+    a_password = next(c.password for c in scenarios.values() if len(c.password) >= services.MIN_PASSWORD_LENGTH)
+    for planted_fragment in (a_fingerprint[17:37], a_fingerprint[30:42], a_password[:6]):
+        assert contains_any(f"prefix {planted_fragment} suffix", needles), (
+            f"the search cannot find the fragment {planted_fragment!r}"
+        )
+    # (2) The log capture: a record that carries a fragment reaches caplog.
     caplog.set_level(logging.DEBUG)
-    logging.getLogger(services.__name__).warning("planted %s", needles[0])
+    logging.getLogger(services.__name__).warning("planted %s", a_fingerprint[17:37])
     assert contains_any(caplog.text, needles), "caplog is not capturing the accounts logger"
     caplog.clear()
-    # ...and for the audit-column half: a REAL failure-action row that carries a secret in a
-    # column the search must cover is found by `failed_rows_as_text`. (`needle in text` on a string
-    # the test built itself proves nothing about the query.) Removed again before the real run.
+    # (3) The audit-column half: a REAL failure-action row that carries a fragment in a column
+    # the search must cover is found by `failed_rows_as_text`. (`needle in text` on a string the
+    # test built itself proves nothing about the query.) Removed again before the real run.
     planted = record_audit_event(
         ActorContext(kind=ActorKind.ANONYMOUS, actor_id="src:planted"),
         action=FAILED_ACTION,
         target_type="credential_token",
         target_id="unresolved",
-        request_id=needles[1],
+        request_id=a_fingerprint[:20],
     )
     assert contains_any(failed_rows_as_text(), needles), "the audit search cannot see a planted row"
     planted.delete()
@@ -1885,18 +1908,32 @@ def test_a_reset_still_completes_while_the_trace_brake_is_spent(client, sender, 
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
 
 
+class _CountingBrokenStore(_BrokenStore):
+    def __init__(self):
+        self.calls = 0
+
+    def incr_with_expiry(self, key, window_seconds):
+        self.calls += 1
+        return super().incr_with_expiry(key, window_seconds)
+
+
 @pytest.mark.django_db
 def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows(client, sender, settings, monkeypatch):
     """With the store down every budget fails open -- right for the response -- and nothing would
     bound the rows. The ceiling is per worker, charged on every failure, and skips only the row."""
     settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (3, 3600)
     reset_token = live_reset_token(client, sender)
-    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    store = _CountingBrokenStore()
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
 
     codes = _fail_from_many_sources(client, 10)
     done = confirm(client, reset_token, GOOD_PASSWORD)
 
     assert codes == ["VALIDATION_FAILED"] * 10
+    # One store round trip per request -- the per-source budget's. Once that has failed open the
+    # cross-source brake is NOT consulted as well: against a stalled Redis that would cost a
+    # second socket timeout on every failed confirm for no extra protection.
+    assert store.calls == 11, store.calls
     assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
 
@@ -1952,6 +1989,44 @@ def test_a_failed_trace_write_leaves_no_half_row_and_does_not_poison_the_callers
         monkeypatch.setattr(services, "record_audit_event", real)
         assert error_code(confirm(client, "SC-PRS-whatever-else", GOOD_PASSWORD)) == "VALIDATION_FAILED"
         assert len(failed_rows()) == 1
+
+
+@pytest.mark.django_db
+def test_a_spent_verification_token_is_traced_as_the_wrong_kind_of_token(client, sender):
+    """A token that is BOTH consumed and the wrong purpose (the email-verification link every
+    signup spends). The label is a decision and it is pinned here: `wrong_purpose`. The kind of
+    token is the more basic fact -- it could never have reset a password, spent or not -- and
+    `consumed` would hide that someone is offering a verification link to the reset mutation."""
+    signup_and_verify(client, sender)
+    spent_verification = sender.verify_tokens[-1]
+    row = token_row(spent_verification)
+    assert row.purpose == CredentialTokenPurpose.EMAIL_VERIFY and row.consumed_at is not None, (
+        "the premise: a SPENT verification token"
+    )
+
+    assert error_code(confirm(client, spent_verification, GOOD_PASSWORD)) == "VALIDATION_FAILED"
+
+    (traced,) = failed_rows()
+    assert traced.after == {"outcome": OUTCOME.WRONG_PURPOSE.value}
+
+
+@pytest.mark.django_db
+@pytest.mark.filterwarnings("ignore::django.core.cache.backends.base.CacheKeyWarning")
+def test_a_hostile_remote_addr_is_never_stored_raw(client):
+    """`client_ip()` falls back to the raw REMOTE_ADDR text when it does not parse. Only the server
+    sets that value, never a client header, but if it were hostile nothing may store it: the
+    actor id is a hash, `after` holds only the outcome, the attempt id is random."""
+    hostile = "evil\x1b[31m host\n'; DROP TABLE x;--"
+
+    assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=hostile)) == "VALIDATION_FAILED"
+
+    (row,) = failed_rows()
+    assert re.fullmatch(r"src:[0-9a-f]{32}", row.actor_id)
+    assert row.after == {"outcome": OUTCOME.UNKNOWN_TOKEN.value}
+    text = failed_rows_as_text()
+    assert "evil" not in text and "DROP" not in text
+    for column in (row.actor_id, row.request_id, row.target_type, row.target_id, row.source_surface, row.reason):
+        assert column.isprintable(), repr(column)
 
 
 # --- AUTH-6: account-based device activation --------------------------------
