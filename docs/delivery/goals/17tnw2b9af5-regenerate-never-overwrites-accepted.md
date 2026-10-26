@@ -96,9 +96,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-004 | yes | The host answers a failed store load with `Denied`, not `draft: None`, and refuses a save when it cannot read the existing draft; an absent draft still answers `draft: None` and a first save still works | `cargo test -p selahcue-app --features server --test test_sermon_note_durability`; whole crate via `cargo test --workspace --no-fail-fast` | new tests pass (26 in the file); RED against the old handlers (M3, M4) | `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-app-green.log`, `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-app-red.log`, `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-M3-host-load-error-answered-as-no-draft.app.log`, `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-M4-host-save-guard-skipped-on-unreadable.app.log` | PASS |
 | C-005 | yes | `Backend::Local` distinguishes a failed load from "no draft" (`OperatorShell::load_sermon_note_draft` returns `Result`) | test `the_in_process_shell_tells_a_failed_load_from_no_draft` and the operator Local test | pass; RED under M5 | `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-M5-shell-folds-refusal-into-no-draft.app.log` | PASS |
 | C-006 | yes | No wire fixture changed and the frontend is untouched | `git diff --stat origin/main -- implementation/mobile implementation/desktop/crates/selahcue-lan implementation/desktop/crates/selahcue-operator/dist` | empty | command output recorded in the PR description | PASS |
-| C-007 | yes | Format, lint, tests and guards are green with exit codes captured to files | `cargo fmt --check` (workspace and operator), `cargo clippy --all-targets -D warnings` (operator: default, `openai-notes`, `dev-keys,openai-notes`; workspace), `cargo test --no-fail-fast` (operator default and `dev-keys,openai-notes`; workspace), `sh scripts/import_guards.sh`, `python3 scripts/check_launch_reachability.py` | every exit code 0 | `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-fmt-ws.exit`, `fmt-op`, `clippy-op-default`, `clippy-op-openai`, `clippy-op-devkeys`, `clippy-ws`, `test-op-default`, `test-op-devkeys`, `test-ws`, `import-guards`, `launch-reach` (all 0). NOT RUN: the separate `cargo test -p selahcue-app --features server --no-fail-fast` (free disk fell under the 12 GiB stop); its one relevant file ran green with the flag, and the workspace run unifies the same feature | PASS |
+| C-007 | yes | Format, lint, tests and guards are green with exit codes captured to files | `cargo fmt --check` (workspace and operator), `cargo clippy --all-targets -D warnings` (operator: default, `openai-notes`, `dev-keys,openai-notes`; workspace), `cargo test --no-fail-fast` (operator default and `dev-keys,openai-notes`; workspace), `cargo test -p selahcue-app --features server --no-fail-fast`, `sh scripts/import_guards.sh`, `python3 scripts/check_launch_reachability.py` | every exit code 0 | `/private/tmp/claude-501/-Users-m-oluwole-Documents-code-scph/d44903ee-54ea-452f-a384-31ccf5382277/scratchpad/w2-17tnw2b9af5-fmt-ws.exit`, `fmt-op`, `clippy-op-default`, `clippy-op-openai`, `clippy-op-devkeys`, `clippy-ws`, `test-op-default`, `test-op-devkeys`, `test-ws`, `import-guards`, `launch-reach` (all 0), `test-app-server` (0; 355 passed, 1 ignored; run once free disk was back at 12.2 GiB) | PASS |
 | C-008 | yes | Every other host-reply swallow before a destructive save in the operator and app is listed, each marked fixed here or follow-up | grep for `.ok().flatten()`, `_ => None`, `unwrap_or` on host replies in `selahcue-operator/src`, `selahcue-app/src`, `selahcue-desktop/src` | list in the PR description and the ClickUp handoff | PR description | PASS |
-| C-009 | yes | Branch is up to date with `origin/main` and the Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; state DRAFT | command output | PENDING |
+| C-009 | yes | Branch is up to date with `origin/main` and the Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; state DRAFT | PR #235 (https://github.com/First-Pavilion/selahcue/pull/235), isDraft true, base main; `rev-list --count` printed 0 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -137,7 +137,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: the change touches no wire fixture and no frontend file; the gates stay green.
 - Change or investigation: fmt, clippy in four configurations, the guard scripts, the survey of other `.ok().flatten()`-style spots.
 - Verifier executed: see C-007 and C-008.
-- Result: all exit codes 0. The separate `-p selahcue-app --features server` test run was skipped because free disk fell to 11.4 GiB, under the 12 GiB stop the orchestrator set.
+- Result: all exit codes 0. The separate `-p selahcue-app --features server` test run waited out a dip of free disk below the 12 GiB stop and then passed (355 passed, 1 ignored).
 - New evidence: exit-code files in the scratchpad with prefix `w2-17tnw2b9af5-`.
 - Decision: handoff (Draft PR; orchestrator runs the reviews)
 
@@ -158,8 +158,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9af5-regenerate-never-overwrites-accepted.md` and `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py` on the same file
-- Validator result: pending
-- Independent verification result: pending (orchestrator)
-- Terminal state: pending
-- Remaining failed or blocked criteria: pending
-- ClickUp final evidence comment: pending
+- Validator result: both validators exit 0 (structural and completion modes)
+- Independent verification result: pending (orchestrator runs the four-reviewer gate)
+- Terminal state: handoff at a Draft PR (PR #235); not VERIFIED_COMPLETE until independent review passes
+- Remaining failed or blocked criteria: none; independent review, QA and `make ci` are the orchestrator's
+- ClickUp final evidence comment: posted on 17tnw2b9af5 at handoff
