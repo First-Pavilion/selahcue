@@ -34,6 +34,13 @@ RESTRICTED_PAYLOAD_FIELDS = frozenset(
         "password_hash",
         "new_password",
         "current_password",
+        # Password-reset / email-verify credential tokens (86ak5r2pt). Neither the raw token nor
+        # anything derived from it may reach an audit `after` or a log: a fingerprint is enough
+        # to confirm a guess, and the trace of a failed confirm exists to catch exactly that guess.
+        "reset_token",
+        "raw_token",
+        "token_fingerprint",
+        "token_hash",
     }
 )
 

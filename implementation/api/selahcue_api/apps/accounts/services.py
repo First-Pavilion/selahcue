@@ -6,8 +6,10 @@ import logging
 import secrets
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
+from enum import Enum
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -29,6 +31,7 @@ from selahcue_api.apps.accounts.models import (
     CustomerUser,
     CustomerUserStatus,
 )
+from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 # Safe at module scope: `throttling.guards` depends only on the cache, the pure limiter and
 # the error enum — nothing in accounts — so this cannot close an import cycle.
@@ -37,6 +40,7 @@ from selahcue_api.apps.throttling.guards import (
     enforce_budget_reporting_outage,
 )
 from selahcue_api.graphql.context import (
+    ACTOR_ID_MAX_LENGTH,
     ActorContext,
     ActorKind,
     StaffPermission,
@@ -278,9 +282,10 @@ _last_unresolved_ip_log = float("-inf")
 def _reset_floor_overrun_reporting() -> None:
     """Test seam: forget the last report so a test can observe the first one deterministically
     without waiting out the suppression interval."""
-    global _last_floor_overrun_log, _last_unresolved_ip_log
+    global _last_floor_overrun_log, _last_unresolved_ip_log, _last_trace_loss_log
     _last_floor_overrun_log = float("-inf")
     _last_unresolved_ip_log = float("-inf")
+    _last_trace_loss_log = float("-inf")
 
 
 def _report_unresolved_client_ip(source: str) -> None:
@@ -319,6 +324,28 @@ RESEND_GLOBAL_BUDGET = (500, 3600)
 # only — `enforce_budget` reads the matching setting at call time.
 RESET_REQUEST_IP_BUDGET = (20, 3600)
 RESET_CONFIRM_IP_BUDGET = (20, 3600)
+
+# The audit action written for a `confirm_password_reset` that got past the budget and failed
+# (86ak5r2pt). See `_record_failed_reset_confirm` for what the row holds and, as much to the
+# point, what it must never hold.
+RESET_CONFIRM_FAILED_ACTION = "customer_user.password_reset_confirm_failed"
+
+
+class ResetConfirmOutcome(str, Enum):
+    """WHY a confirm failed, for the audit row only. This is a closed set the service picks
+    beside each raise; it is never an attribute of the exception and never part of a response,
+    which is what keeps the five token-failure classes mutually indistinguishable to the caller
+    (FR-529) while still being told apart in the trace."""
+
+    MALFORMED_TOKEN = "malformed_token"
+    UNKNOWN_TOKEN = "unknown_token"
+    WRONG_PURPOSE = "wrong_purpose"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+    PASSWORD_REJECTED = "password_rejected"
+    # A failure whose raise site did not name its class. Recorded anyway: a missing label must
+    # never become a missing row.
+    UNCLASSIFIED = "unclassified"
 
 # Per-target-email and global budgets for `request_password_reset` (86akcn8p4). Mirrors
 # RESEND_ADDRESS_BUDGET / RESEND_GLOBAL_BUDGET exactly — see the setting-level comment in
@@ -1354,6 +1381,113 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     return AcceptedResult(accepted=True)
 
 
+@dataclass
+class _ResetConfirmTrace:
+    """What `_consume_reset_token` learned about WHY a confirm failed, handed back beside the
+    exception rather than on it.
+
+    That separation is the FR-529 guarantee and it is structural: a `SafeAPIError` is what the
+    GraphQL layer turns into the response, so a class carried on it could one day reach a caller.
+    This object is read by `_record_failed_reset_confirm` and by nothing that builds a response.
+
+    It also holds NO token material, by construction. The only things it can carry are a class
+    from a closed enum and a user id. The recorder is never given the token, its fingerprint or
+    its masked form, so it cannot write them.
+    """
+
+    outcome: ResetConfirmOutcome | None = None
+    customer_user_id: int | None = None
+
+    def refused(self, outcome: ResetConfirmOutcome, *, customer_user_id: int | None = None) -> None:
+        self.outcome = outcome
+        self.customer_user_id = customer_user_id
+
+
+# One report a minute that failed-confirm rows are being lost, not one per request: a store that
+# refuses the row refuses it for every attempt, and an attacker can supply attempts at will. The
+# same bounded-logging rule as `_report_unresolved_client_ip`; one module-level float.
+_TRACE_LOSS_LOG_INTERVAL_SECONDS = 60.0
+_last_trace_loss_log = float("-inf")
+
+
+def _report_lost_reset_confirm_trace(outcome: ResetConfirmOutcome) -> None:
+    """Call from inside an `except` block: the traceback is the useful part of this line."""
+    global _last_trace_loss_log
+    now = time.monotonic()
+    if now - _last_trace_loss_log < _TRACE_LOSS_LOG_INTERVAL_SECONDS:
+        return
+    _last_trace_loss_log = now
+    logger.exception(
+        "could not write the audit row for a failed password-reset confirm (outcome=%s). The "
+        "caller's response is unchanged; the attempt has no trace. Further reports suppressed "
+        "for %.0fs.",
+        outcome.value,
+        _TRACE_LOSS_LOG_INTERVAL_SECONDS,
+    )
+
+
+def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None:
+    """Write the audit row for one failed confirm. Best effort, and never raises.
+
+    WHAT THE ROW HOLDS: the outcome class, the source (the same IP bucket the budget was
+    spent against), a per-attempt id, the timestamp the audit table adds itself, and the owning
+    user's id when the token row resolved. WHAT IT MUST NEVER HOLD: the raw token, its
+    fingerprint, its at-rest hash or its masked form (a reset token skimmed from a mailbox or a
+    log and polled until the moment is right is exactly the scenario this trace is for, and a
+    fingerprint in the trace would turn the trace into a way to confirm a guess). That is kept by
+    construction -- this function is never handed any of them -- and asserted by
+    `test_no_token_material_reaches_any_audit_column_or_log_line_of_a_failed_confirm`.
+    `request_id` is a fresh random id for the attempt, NOT derived from the token, unlike the
+    success row's (which stores the masked token).
+
+    The actor is ANONYMOUS and the source is the actor id, so the audit table's
+    `(actor_id, created_at)` index answers "every failed confirm from this source".
+
+    WHERE IT RUNS: after `_consume_reset_token` has returned control, i.e. after its transaction
+    rolled back. Written inside, the row would be rolled back with the failure it describes.
+    It gets its own savepoint so a failed INSERT cannot poison an enclosing transaction.
+
+    WHY IT SWALLOWS: the caller must get the answer they would have got without the trace. A 500
+    in its place would turn an audit outage into a changed contract on a path whose whole job
+    is to say one thing. The loss is reported, once a minute, instead.
+
+    WHAT IT DOES NOT COVER: a call refused by the budget never reaches this (the budget is spent
+    before the token is read, and a row per refused request would turn the flood the budget stops
+    into database writes; the shared guard already logs a sustained run of refusals), and nor does
+    a failure that is not a `SafeAPIError`.
+    """
+    outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED
+    # `actor_id` is 128 wide and an over-long value fails the INSERT on Postgres, losing the row.
+    source = source[:ACTOR_ID_MAX_LENGTH]
+    user_id = trace.customer_user_id
+    try:
+        with transaction.atomic():
+            record_audit_event(
+                ActorContext(kind=ActorKind.ANONYMOUS, actor_id=source),
+                action=RESET_CONFIRM_FAILED_ACTION,
+                target_type="customer_user" if user_id is not None else "credential_token",
+                target_id=str(user_id) if user_id is not None else "unresolved",
+                request_id=uuid.uuid4().hex,
+                result=AuditResult.DENIED,
+                source_surface=ACCOUNT_AUDIT_SURFACE,
+                after={"outcome": outcome.value, "source": source},
+            )
+    except Exception:  # noqa: BLE001 -- see "WHY IT SWALLOWS"
+        _report_lost_reset_confirm_trace(outcome)
+
+
+def _dead_token_outcome(token: CredentialToken, now) -> ResetConfirmOutcome:
+    """Label why a token that exists cannot be used. Labelling only: the guard that REFUSES it
+    stays where it is, in `_consume_reset_token`, and does not call this to decide anything."""
+    if token.purpose != CredentialTokenPurpose.PASSWORD_RESET:
+        return ResetConfirmOutcome.WRONG_PURPOSE
+    if token.consumed_at is not None:
+        return ResetConfirmOutcome.CONSUMED
+    if token.expires_at <= now:
+        return ResetConfirmOutcome.EXPIRED
+    return ResetConfirmOutcome.UNCLASSIFIED
+
+
 def confirm_password_reset(
     raw_token: str, new_password: str, client_ip: str = ""
 ) -> ConfirmPasswordResetResult:
@@ -1374,17 +1508,38 @@ def confirm_password_reset(
     from `client_ip`, checked before the token lookup runs, so it fires identically whether the
     token offered was live, dead, or never existed. It does not touch the FIVE-way collapse
     above, and it is not reachable from behind a validated token any more than in front of one.
+
+    Every failure that gets past that budget leaves one audit row (86ak5r2pt), written by
+    `_record_failed_reset_confirm` AFTER the transaction below has rolled back. The class it
+    records travels in a `_ResetConfirmTrace`, never on the exception, so the five collapsed
+    classes stay indistinguishable in the RESPONSE while being told apart in the trace.
     """
     if not client_ip:
         _report_unresolved_client_ip("confirm_password_reset")
+    source = client_ip or UNRESOLVED_CLIENT_IP
     enforce_budget(
         "password_reset_confirm_ip",
-        client_ip or UNRESOLVED_CLIENT_IP,
+        source,
         "SELAHCUE_THROTTLE_RESET_CONFIRM",
         RESET_CONFIRM_IP_BUDGET,
     )
+    trace = _ResetConfirmTrace()
+    try:
+        return _consume_reset_token(raw_token, new_password, trace)
+    except SafeAPIError:
+        _record_failed_reset_confirm(trace, source)
+        raise
+
+
+def _consume_reset_token(
+    raw_token: str, new_password: str, trace: _ResetConfirmTrace
+) -> ConfirmPasswordResetResult:
+    """The work `confirm_password_reset` does once the budget is spent: look the token up, check
+    it, check the password, consume it and set the password, all in one transaction. Every raise
+    sets `trace` first (see `_ResetConfirmTrace`)."""
     token_value = (raw_token or "").strip()
     if not token_value:
+        trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
         raise _validation_error()
     fingerprint = _fingerprint(token_value)
     now = djtz.now()
@@ -1396,14 +1551,17 @@ def confirm_password_reset(
                 .get(token_fingerprint=fingerprint)
             )
         except CredentialToken.DoesNotExist as error:
+            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
             raise _validation_error() from error
         if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
             raise _validation_error()
         if (
             token.purpose != CredentialTokenPurpose.PASSWORD_RESET
             or token.consumed_at is not None
             or token.expires_at <= now
         ):
+            trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
             raise _validation_error()
         # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
         # TOKEN LOOKUP.
@@ -1443,7 +1601,11 @@ def confirm_password_reset(
         # not believe the link-preservation property is tested by its position. It is tested
         # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
         # in the auth slice.
-        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+        try:
+            _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+        except SafeAPIError:
+            trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
+            raise
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user
