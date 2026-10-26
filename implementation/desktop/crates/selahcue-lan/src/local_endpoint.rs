@@ -326,6 +326,8 @@ pub fn read_file_as(path: &Path, max_len: u64, uid: u32) -> Result<String, ReadE
             return Err(ReadError::WrongMode(mode));
         }
     }
+    #[cfg(not(unix))]
+    let _ = uid;
     if meta.len() > max_len {
         return Err(ReadError::TooLarge);
     }

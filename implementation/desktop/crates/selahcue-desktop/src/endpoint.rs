@@ -81,15 +81,8 @@ fn transient_rename_error(e: &std::io::Error) -> bool {
     cfg!(windows) && is_sharing_error(e)
 }
 
-/// Write a local endpoint descriptor so the operator shell on this machine can
-/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
-/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
-/// safe. Returns the path written, if any.
-///
-/// Published ATOMICALLY, and on Unix owner-only from the first byte: see the module docs and
-/// [`publish_owner_only`]. On failure it returns `None` after a line on stderr; note that the
-/// release Windows build is a GUI-subsystem binary (`windows_subsystem = "windows"`), where
-/// stderr goes nowhere, so there the operator simply finds no descriptor.
+/// [`write_endpoint_as`] as the current user: the form the tests publish through.
+#[cfg(test)]
 pub(crate) fn write_endpoint(
     path: &Path,
     addr: SocketAddr,
@@ -107,8 +100,18 @@ pub(crate) fn write_endpoint(
     )
 }
 
-/// [`write_endpoint`] as user `uid` (injected, so a test can stand in for a directory owned by
-/// someone else).
+/// Write a local endpoint descriptor so the operator shell on this machine can
+/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
+/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
+/// safe. Returns the path written, if any. `uid` is the user the directory must belong to (the
+/// current user in production; injected so a test can stand in for a directory owned by someone
+/// else).
+///
+/// Published ATOMICALLY, and on Unix owner-only from the first byte, and only into a directory
+/// that is private to `uid`: see the module docs and [`publish_owner_only_as`]. On failure it
+/// returns `None` after a line on stderr; note that the release Windows build is a GUI-subsystem
+/// binary (`windows_subsystem = "windows"`), where stderr goes nowhere, so there the operator
+/// simply finds no descriptor.
 fn write_endpoint_as(
     path: &Path,
     addr: SocketAddr,
@@ -291,7 +294,9 @@ pub(crate) enum EndpointFile {
     /// the operator reads. Resolved and created when the server publishes, not when this value is
     /// built, so constructing the production environment in a test touches nothing.
     PerUser,
-    /// Exactly this path (a test's private scratch directory).
+    /// Exactly this path (a test's private scratch directory). Only tests build it; production
+    /// always publishes [`EndpointFile::PerUser`].
+    #[cfg_attr(not(test), allow(dead_code))]
     At(PathBuf),
 }
 

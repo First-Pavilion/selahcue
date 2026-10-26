@@ -626,6 +626,9 @@ fn only_exact_staging_names_parse() {
 
 // ---- the stale sweep ---------------------------------------------------------------------------
 
+// The sweep's cap is a bound on work, not a tuning knob: pinned at compile time to a sane range.
+const _: () = assert!(MAX_SWEEP_ENTRIES >= 256 && MAX_SWEEP_ENTRIES <= 65_536);
+
 fn plant_staging(dir: &Path, pid: u32, n: u64) -> PathBuf {
     let path = dir.join(staging_file_name(pid, n));
     std::fs::write(&path, "dead-token").expect("plant");
@@ -677,16 +680,29 @@ fn a_fresh_file_of_a_live_process_is_left_alone() {
 
 #[test]
 fn a_leftover_under_a_recycled_live_pid_goes_once_it_is_old_enough() {
+    // Absolute ages, NOT derived from `STALE_AFTER`: a test that ages the file "by the constant plus
+    // a bit" follows the constant wherever a mutation moves it, and stays green (found by mutation).
+    // The premise pins the constant to the range the ages below are chosen around.
+    assert!(
+        STALE_AFTER >= Duration::from_secs(30) && STALE_AFTER <= Duration::from_secs(300),
+        "STALE_AFTER moved: re-choose the ages below on purpose"
+    );
     let dir = private_dir();
     let young = plant_staging(dir.path(), 1, 0);
     let old = plant_staging(dir.path(), 1, 1);
-    age(&young, STALE_AFTER - Duration::from_secs(30));
-    age(&old, STALE_AFTER + Duration::from_secs(30));
+    age(&young, Duration::from_secs(10));
+    age(&old, Duration::from_secs(600));
 
     assert_eq!(sweep(dir.path(), my_uid(), &|_| true), 1);
 
-    assert!(young.exists(), "younger than the limit: kept");
-    assert!(!old.exists(), "older than the limit: removed");
+    assert!(
+        young.exists(),
+        "10 s old and its process is alive: an in-flight publish, kept"
+    );
+    assert!(
+        !old.exists(),
+        "10 minutes old: a leftover even though the pid is alive, removed"
+    );
 }
 
 #[test]
@@ -771,7 +787,6 @@ fn the_sweep_examines_a_bounded_number_of_entries() {
         3,
         "control: the rest go"
     );
-    assert!(MAX_SWEEP_ENTRIES >= 256 && MAX_SWEEP_ENTRIES <= 65_536);
 }
 
 #[test]
