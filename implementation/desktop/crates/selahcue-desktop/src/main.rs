@@ -4106,8 +4106,10 @@ struct ServerIo {
     /// Advertise `_selahcue._tcp` on mDNS so a phone can discover us.
     advertise_mdns: bool,
     /// Where to publish the loopback endpoint descriptor the operator shell auto-discovers.
-    /// `None` writes nothing.
-    endpoint_file: Option<std::path::PathBuf>,
+    /// `None` writes nothing. [`endpoint::EndpointFile::PerUser`] (production) is resolved and
+    /// created lazily, inside the server thread, so building the production environment in a test
+    /// touches nothing; [`endpoint::EndpointFile::At`] is a path a test owns.
+    endpoint_file: Option<endpoint::EndpointFile>,
     /// Where the "remote control ready" banner is written. Production: stdout.
     banner: Box<dyn std::io::Write + Send>,
     /// Whether that banner may carry the live Operator token: [`TokenDisclosure::Redacted`]
@@ -4143,7 +4145,7 @@ impl ServerEnv {
                 bind: Box::new(|| -> BindFuture { Box::pin(TcpListener::bind("0.0.0.0:0")) }),
                 lan_ip,
                 advertise_mdns: true,
-                endpoint_file: Some(endpoint_path()),
+                endpoint_file: Some(endpoint::EndpointFile::PerUser),
                 banner: Box::new(std::io::stdout()),
                 token_disclosure,
             },
@@ -4265,8 +4267,15 @@ async fn run_server(
     };
     // Local clients (operator shell / CLI) connect via loopback.
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
-    let endpoint = io.endpoint_file.as_deref().and_then(|path| {
-        endpoint::write_endpoint(path, local, &pin.to_hex(), device, token.as_str())
+    let endpoint = io.endpoint_file.as_ref().and_then(|target| {
+        endpoint::publish_to(
+            target,
+            &selahcue_lan::local_endpoint::DirEnv::current(),
+            local,
+            &pin.to_hex(),
+            device,
+            token.as_str(),
+        )
     });
     // The banner is only HANDED the token when a developer asked for it; otherwise it has no
     // way to print it.
@@ -4402,6 +4411,21 @@ mod remote_control_warmup_tests {
         assert_eq!(json_field(&written, "pin"), Some(pin.as_str()));
     }
 
+    /// 17tnw2b9agb: the production environment publishes into the per-user directory, resolved
+    /// lazily (building it creates nothing), and the clean-exit cleanup names the same path the
+    /// operator reads.
+    #[test]
+    fn production_publishes_into_the_per_user_directory_resolved_lazily() {
+        assert!(matches!(
+            ServerEnv::production().io.endpoint_file,
+            Some(crate::endpoint::EndpointFile::PerUser)
+        ));
+        assert_eq!(
+            super::endpoint_path(),
+            selahcue_lan::local_endpoint::descriptor_path()
+        );
+    }
+
     /// The wiring half: the hook `ServerEnv::production()` hands the real server genuinely
     /// builds the quote index — the test above uses a fake and cannot see a production hook
     /// swapped for a no-op. Runs only that hook (no server, no socket, nothing shared), then
@@ -4461,7 +4485,7 @@ mod remote_control_warmup_tests {
                 bind,
                 lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
                 advertise_mdns: false,
-                endpoint_file: Some(endpoint.to_path_buf()),
+                endpoint_file: Some(crate::endpoint::EndpointFile::At(endpoint.to_path_buf())),
                 banner: Box::new(std::io::sink()),
                 token_disclosure: TokenDisclosure::Redacted,
             },
@@ -4857,7 +4881,7 @@ mod connect_banner_token_tests {
                 bind: Box::new(|| -> BindFuture { Box::pin(TcpListener::bind("127.0.0.1:0")) }),
                 lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
                 advertise_mdns: false,
-                endpoint_file: Some(endpoint.clone()),
+                endpoint_file: Some(crate::endpoint::EndpointFile::At(endpoint.clone())),
                 banner: Box::new(capture.clone()),
                 token_disclosure,
             },
@@ -5078,11 +5102,12 @@ mod connect_banner_token_tests {
     }
 }
 
-/// The well-known endpoint descriptor path the operator shell auto-discovers. Shared by every
-/// SelahCue host on this machine, so only [`ServerEnv::production`] and the clean-exit cleanup
-/// ever name it — nothing a test drives may.
+/// The well-known endpoint descriptor path the operator shell auto-discovers: inside the per-user
+/// private directory `selahcue_lan::local_endpoint` resolves, the same call the operator makes
+/// (17tnw2b9agb). Shared by every SelahCue host of this user, so only the clean-exit cleanup ever
+/// names it — nothing a test drives may.
 fn endpoint_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("selahcue-operator-endpoint.json")
+    selahcue_lan::local_endpoint::descriptor_path()
 }
 
 fn write_connect_banner(

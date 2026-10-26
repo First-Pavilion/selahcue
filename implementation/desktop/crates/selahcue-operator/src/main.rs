@@ -5585,10 +5585,13 @@ struct Endpoint {
     token: String,
 }
 
-/// The loopback endpoint descriptor path shared with the output window (both processes agree on
-/// `temp_dir()/selahcue-operator-endpoint.json`).
+/// The loopback endpoint descriptor path shared with the output window: inside the per-user private
+/// directory `selahcue_lan::local_endpoint` resolves, the same call the output window makes, so the
+/// two processes cannot disagree (17tnw2b9agb). `$XDG_RUNTIME_DIR` when it is private to this user, the
+/// temp directory when it already is (macOS), else a `0700` `selahcue-UID` subdirectory of it (Linux's
+/// shared `/tmp`). Pure resolution: nothing is created here.
 fn endpoint_file_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("selahcue-operator-endpoint.json")
+    selahcue_lan::local_endpoint::descriptor_path()
 }
 
 /// Longest the endpoint descriptor file is trusted to be. It is four short strings of JSON —
@@ -5598,20 +5601,29 @@ fn endpoint_file_path() -> std::path::PathBuf {
 const MAX_ENDPOINT_FILE_LEN: u64 = 4096;
 
 /// Read and validate the endpoint descriptor file, applying the checks pinned TLS itself cannot
-/// (security review, Sana S-3):
+/// (security review, Sana S-3; 17tnw2b9agb). The checks themselves live in
+/// `selahcue_lan::local_endpoint::read_descriptor_as`, shared with the output window's side of the
+/// same contract:
 ///
-/// - **Mode `0600` (Unix only).** Before Tier 2a, this file was read exactly once, at process
-///   startup — a narrow window. The reconnect loop re-reads it for the whole life of the
-///   session, turning a locally-writable path into a standing target: on a multi-user machine
-///   `temp_dir()` (e.g. `/tmp`) is typically world-writable, so another local account could
-///   pre-create the file while no real host is running. `selahcue-desktop`'s own writer already
-///   sets `0600` (`write_endpoint`, matching this exact `set_permissions`/`Permissions::from_mode`
-///   pattern) — refusing anything else here is the read-side half of that same contract. This
-///   alone is the actual boundary: the OS already refuses `read_to_string` on a `0600` file this
-///   process does not own (a differently-owned `0600` planted file is unreadable to us
-///   regardless of any check we add), so the exposure this closes is specifically a file some
-///   other local account made WORLD- or GROUP-readable so our process even could read it.
-/// - **Bounded read.** `MAX_ENDPOINT_FILE_LEN` caps the read itself, not just the parsed result.
+/// - **A private directory.** The file must sit in a directory only this user can use (a real
+///   directory, owned by this user, no group or other bits). On Linux `temp_dir()` is the shared,
+///   world-writable `/tmp`, where another account could plant anything at a fixed name; the path now
+///   resolves to a per-user directory instead.
+/// - **Never blocks, never follows.** The file is opened `O_NONBLOCK | O_NOFOLLOW`. A FIFO planted at
+///   the path used to block `open(2)` for read forever, and this runs on the Tauri main thread from
+///   `setup()` (and again from the `view` command whenever a reconnect is due): the operator would
+///   hang at startup. A symlink is refused, not followed.
+/// - **Judged on the open descriptor.** Type (a regular file), owner (this user) and mode (`0600`,
+///   Unix only) come from `fstat` on the SAME open file, so there is no window between the check and
+///   the read for the file to be swapped or re-permissioned (security review, Sana S-3a: replaying
+///   the exact shape of an attacker flipping the mode between `0o600` and `0o644` let ~9.4% of
+///   attempts of an earlier path-based version pass the mode gate and read bytes the gate would have
+///   rejected).
+/// - **Bounded read.** `MAX_ENDPOINT_FILE_LEN` caps the size and the read itself (security review,
+///   Sana S-3).
+///
+/// A refusal logs one label-only line (the path and the reason, never the file's contents); "nothing
+/// there" is the ordinary case of no running output window and logs nothing.
 ///
 /// **Not implemented: pin continuity across reconnects.** An earlier draft of this fix required
 /// a reconnect's pin to match the one the console originally attached to. That is unsound here:
@@ -5619,8 +5631,8 @@ const MAX_ENDPOINT_FILE_LEN: u64 = 4096;
 /// token) on every process start — nothing about this system persists a stable identity across
 /// a restart, by design. A pin-continuity check would therefore refuse the exact scenario this
 /// feature exists to recover — the output window crashing and restarting — indistinguishably
-/// from an actual attack, defeating Tier 2a entirely. The mode check above is the fix that
-/// matches the real trust boundary (same local user), without that self-defeat.
+/// from an actual attack, defeating Tier 2a entirely. The checks above are the fix that matches
+/// the real trust boundary (same local user), without that self-defeat.
 fn read_endpoint() -> Option<Endpoint> {
     read_endpoint_at(&endpoint_file_path())
 }
@@ -5628,48 +5640,25 @@ fn read_endpoint() -> Option<Endpoint> {
 /// [`read_endpoint`]'s real body, against an injected path — tests use a private `tempfile`
 /// path instead of the shared, machine-wide `endpoint_file_path()` (touching that file races
 /// every other process on the machine that reads/writes it by convention).
-///
-/// **Check-then-use, closed (security review, Sana S-3a).** An earlier version of this function
-/// checked the path's metadata (`std::fs::metadata`) and then read it (`std::fs::read_to_string`)
-/// as two independent path resolutions — in the threat this guards against, the planted file is
-/// owned by a DIFFERENT local account, which can change its mode between those two syscalls.
-/// Sana reproduced this live: replaying the exact shape (an attacker thread flipping the mode
-/// between `0o600` and `0o644` while this function's shape ran in a loop) let ~9.4% of attempts
-/// pass the mode gate and then read bytes the gate would have rejected. Opening the file ONCE
-/// and taking every check (size, mode) from `File::metadata()` — an `fstat` on the SAME open
-/// file descriptor, not a fresh path lookup — makes the check and the read describe the same
-/// bytes by construction: there is no window between them for the file to be swapped or
-/// re-permissioned. `Read::take` bounds the read itself (not just re-checking `meta.len()`,
-/// which reads as 0 for non-regular files like a FIFO and would otherwise be advisory only).
 fn read_endpoint_at(path: &std::path::Path) -> Option<Endpoint> {
-    use std::io::Read;
-    let file = std::fs::File::open(path).ok()?;
-    let meta = file.metadata().ok()?;
-    if meta.len() > MAX_ENDPOINT_FILE_LEN {
-        eprintln!(
-            "SelahCue operator: endpoint descriptor at {} exceeds {MAX_ENDPOINT_FILE_LEN} bytes — refusing to read it.",
-            path.display()
-        );
-        return None;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = meta.permissions().mode() & 0o777;
-        if mode != 0o600 {
+    read_endpoint_with_uid(path, selahcue_lan::local_endpoint::current_uid())
+}
+
+/// [`read_endpoint_at`] as user `uid`, injected so a test can stand in for "a file owned by another
+/// user" (it cannot `chown`).
+fn read_endpoint_with_uid(path: &std::path::Path, uid: u32) -> Option<Endpoint> {
+    use selahcue_lan::local_endpoint::{read_descriptor_as, ReadError};
+    match read_descriptor_as(path, MAX_ENDPOINT_FILE_LEN, uid) {
+        Ok(data) => serde_json::from_str(&data).ok(),
+        Err(ReadError::Absent) => None,
+        Err(why) => {
             eprintln!(
-                "SelahCue operator: endpoint descriptor at {} is not mode 0600 (found {:o}) — refusing to trust it.",
-                path.display(),
-                mode
+                "SelahCue operator: endpoint descriptor at {} refused — {why}.",
+                path.display()
             );
-            return None;
+            None
         }
     }
-    let mut data = String::new();
-    file.take(MAX_ENDPOINT_FILE_LEN)
-        .read_to_string(&mut data)
-        .ok()?;
-    serde_json::from_str(&data).ok()
 }
 
 /// Parse, validate and dial an [`Endpoint`]. Enforces loopback-only — this descriptor is a
@@ -5705,6 +5694,18 @@ mod endpoint_guard_tests {
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    /// A scratch directory only we can use. The reader refuses a descriptor whose directory is not
+    /// private to the user (17tnw2b9agb), and `tempfile::tempdir()` is `0755` under the usual umask,
+    /// so every test that expects a descriptor to be ACCEPTED, or to be refused for a reason other
+    /// than its directory, must start from this.
+    #[cfg(unix)]
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod dir");
+        dir
+    }
 
     /// A non-loopback address must be refused before any network attempt — proven by using an
     /// address (`203.0.113.1`, TEST-NET-3, RFC 5737: guaranteed never routable) that would hang
@@ -5755,7 +5756,7 @@ mod endpoint_guard_tests {
     #[cfg(unix)]
     #[test]
     fn a_world_readable_descriptor_is_refused() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = private_tempdir();
         let path = dir.path().join("endpoint.json");
         std::fs::write(
             &path,
@@ -5776,7 +5777,7 @@ mod endpoint_guard_tests {
     #[cfg(unix)]
     #[test]
     fn a_0600_descriptor_is_accepted() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = private_tempdir();
         let path = dir.path().join("endpoint.json");
         std::fs::write(
             &path,
@@ -5824,7 +5825,7 @@ mod endpoint_guard_tests {
              this proves nothing about the size check specifically"
         );
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = private_tempdir();
         let path = dir.path().join("endpoint.json");
         let mut f = std::fs::File::create(&path).expect("create");
         write!(f, "{json}").expect("write the complete, valid, exactly-sized JSON object");
@@ -5839,6 +5840,153 @@ mod endpoint_guard_tests {
             read_endpoint_at(&path).is_none(),
             "a descriptor over MAX_ENDPOINT_FILE_LEN must be refused by the SIZE check, even \
              when its first MAX_ENDPOINT_FILE_LEN bytes alone would parse cleanly"
+        );
+    }
+    // ---- 17tnw2b9agb: the reader cannot be hung, redirected or fooled by what sits at the path ----
+
+    #[cfg(unix)]
+    const VALID: &[u8] = br#"{"addr":"127.0.0.1:1","pin":"00","device":"d","token":"t"}"#;
+
+    /// A private scratch directory (the reader insists the directory is ours alone) holding a valid
+    /// `0600` descriptor, and that descriptor's path.
+    #[cfg(unix)]
+    fn dir_with_valid_descriptor() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = private_tempdir();
+        let path = dir.path().join("endpoint.json");
+        std::fs::write(&path, VALID).expect("write descriptor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    fn my_uid(dir: &std::path::Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(dir).expect("stat").uid()
+    }
+
+    /// Run `f` on a thread and give it `limit`; a reader that blocks (the bug) fails the test
+    /// instead of hanging the suite. `release` unblocks the stuck thread first.
+    #[cfg(unix)]
+    fn promptly<T: Send + 'static>(
+        f: impl FnOnce() -> T + Send + 'static,
+        release: impl FnOnce(),
+    ) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(v) => v,
+            Err(_) => {
+                release();
+                panic!(
+                    "read_endpoint_at did not return within 5 s: it blocked on the planted file"
+                );
+            }
+        }
+    }
+
+    /// THE ticket's hang: a FIFO planted at the descriptor path blocks a plain `open(2)` for read
+    /// until some writer shows up, and `setup()` calls the reader on the Tauri main thread.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_at_the_descriptor_path_is_refused_without_hanging() {
+        let (dir, path) = dir_with_valid_descriptor();
+        std::fs::remove_file(&path).expect("remove regular file");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("mkfifo is a standard tool on macOS and Linux");
+        assert!(made.success(), "mkfifo failed");
+        // mkfifo honours the umask (0644 under the usual 022); give it a real descriptor's mode.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777,
+            0o600,
+            "premise: the FIFO has the right mode and owner, so only its type can refuse it"
+        );
+
+        let (p, rel) = (path.clone(), path.clone());
+        let started = std::time::Instant::now();
+        let got = promptly(
+            move || read_endpoint_at(&p).is_none(),
+            move || {
+                let _ = std::fs::OpenOptions::new().write(true).open(rel);
+            },
+        );
+        assert!(got, "a FIFO must not be accepted as a descriptor");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        // Control: the same call on a regular descriptor at the same path is accepted.
+        std::fs::remove_file(&path).expect("remove fifo");
+        std::fs::write(&path, VALID).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert!(read_endpoint_at(&path).is_some());
+        drop(dir);
+    }
+
+    /// A symlink at the path is not followed, even to a perfectly valid, owned `0600` file.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_descriptor_path_is_refused() {
+        let (dir, real) = dir_with_valid_descriptor();
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        assert!(
+            read_endpoint_at(&link).is_none(),
+            "a symlink must not be followed"
+        );
+        assert!(
+            read_endpoint_at(&real).is_some(),
+            "control: its target reads fine"
+        );
+    }
+
+    /// The reader judges the file as the uid it is given, and refuses when that is not the file's
+    /// owner (a test cannot `chown` to another user, so the current uid is injected). The file-owner
+    /// check on its own is pinned in `selahcue-lan`'s `test_local_endpoint.rs`; here the directory
+    /// check stops a foreign uid first, so this pins that the operator hands the uid through.
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_is_judged_as_the_uid_the_reader_is_given() {
+        let (dir, path) = dir_with_valid_descriptor();
+        let me = my_uid(dir.path());
+
+        assert!(read_endpoint_with_uid(&path, me.wrapping_add(1)).is_none());
+        assert!(
+            read_endpoint_with_uid(&path, me).is_some(),
+            "control: the real owner"
+        );
+    }
+
+    /// The descriptor must sit in a directory only we can write; otherwise nothing in it is ours.
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_in_a_directory_others_can_use_is_refused() {
+        let (dir, path) = dir_with_valid_descriptor();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod dir");
+        assert!(read_endpoint_at(&path).is_none());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod dir");
+        assert!(
+            read_endpoint_at(&path).is_some(),
+            "control: directory at 0700"
+        );
+    }
+
+    /// Host and operator must name ONE path. Both call the shared module; this pins the
+    /// operator's wrapper to it so a private copy of the expression cannot creep back.
+    #[test]
+    fn the_operator_names_the_shared_descriptor_path() {
+        assert_eq!(
+            endpoint_file_path(),
+            selahcue_lan::local_endpoint::descriptor_path()
+        );
+        assert_eq!(
+            endpoint_file_path().file_name().and_then(|n| n.to_str()),
+            Some(selahcue_lan::local_endpoint::DESCRIPTOR_FILE_NAME)
         );
     }
 }
