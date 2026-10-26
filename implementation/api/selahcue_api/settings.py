@@ -583,6 +583,17 @@ SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (20, 3600)
 # generous, and a caller whose send is skipped keeps the link they already had.
 SELAHCUE_RESET_SEND_DEGRADED_CEILING = (20, 3600)
 
+# How many audit rows the failed password-reset confirm trace may write (86ak5r2pt). They skip
+# the ROW only, never the response, and are flood brakes sized generously, not budgets. Outcomes
+# that name no account (unknown or malformed token) share the first pair; outcomes that name an
+# account have their own allowance PER ACCOUNT, so noise cannot blind the trace to a probe of a
+# skimmed token. The ceilings are per worker and apply only while the limiter store is down.
+# See apps/accounts/services.py (`_trace_skip_reason`) and the runbook, docs/ops/DEPLOYMENT.md.
+SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (1000, 3600)
+SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (200, 3600)
+SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (60, 3600)
+SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (30, 3600)
+
 # Per-client-IP budget for `verify_email` (86akcn92k — scoped out of 86akcmfd4's required
 # follow-up, since DEC-013 named the reset paths specifically). LOWER severity than the reset
 # paths, for a real reason: the EMAIL_VERIFY token carries 256 bits of entropy

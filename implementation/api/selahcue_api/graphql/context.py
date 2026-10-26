@@ -15,6 +15,8 @@ class ActorKind(str, Enum):
     CUSTOMER = "customer"
     DEVICE = "device"
     SERVICE = "service"
+    # Audit-row actor for a refused unauthenticated request (86ak5r2pt). No `require_*` guard admits it.
+    ANONYMOUS = "anonymous"
 
 
 class StaffPermission(str, Enum):
