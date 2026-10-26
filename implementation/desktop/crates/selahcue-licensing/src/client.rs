@@ -320,9 +320,12 @@ impl<T: HttpTransport> LicensingClient<T> {
     /// to; that is the property the native routes' CSRF exemption rests on.
     ///
     /// What the production transport really puts on the wire is pinned by
-    /// `selahcue-cloud/tests/test_wire.rs`. One caveat that test does not claim to cover: when
-    /// `reqwest` follows a redirect it adds a `Referer` of its own. The redirect policy is not
-    /// this crate's to set; it is tracked as ClickUp 17tnw2b9aaz.
+    /// `selahcue-cloud/tests/test_wire.rs`. The production transport never follows a redirect
+    /// (ClickUp 17tnw2b9aaz), so a 3xx comes back as a status and is classified below like any
+    /// other non-2xx response (a coded error envelope in its body gives that code's failure,
+    /// otherwise [`ActivationFailure::UnexpectedStatus`]): the password and the enrollment key
+    /// are never replayed to another host, and `reqwest` never adds the `Referer` it sets on a
+    /// followed redirect. The policy is the transport's to set, not this crate's.
     fn post(
         &self,
         path: &str,

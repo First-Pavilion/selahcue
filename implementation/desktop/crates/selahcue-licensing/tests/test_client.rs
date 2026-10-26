@@ -1607,6 +1607,12 @@ fn the_success_range_is_exactly_200_to_299() {
         (199, ActivationFailure::UnexpectedStatus(199)),
         (300, ActivationFailure::UnexpectedStatus(300)),
         (302, ActivationFailure::UnexpectedStatus(302)),
+        // 307 and 308 are the redirects that replay a request body. This row pins only how the
+        // CLIENT classifies those statuses (the same as 302, which was already here); the
+        // regression guard for the fix itself is the raw-transport sweep in
+        // `selahcue-cloud/tests/test_redirect_credentials.rs` (17tnw2b9aaz).
+        (307, ActivationFailure::UnexpectedStatus(307)),
+        (308, ActivationFailure::UnexpectedStatus(308)),
         (399, ActivationFailure::UnexpectedStatus(399)),
         (499, ActivationFailure::UnexpectedStatus(499)),
         (500, ActivationFailure::Server(500)),
@@ -1621,6 +1627,46 @@ fn the_success_range_is_exactly_200_to_299() {
             failure, expected,
             "status {status} carrying a success-shaped body"
         );
+    }
+}
+
+#[test]
+fn a_redirect_status_is_classified_like_any_other_non_2xx_response_and_quotes_nothing() {
+    // The production transport returns a 3xx as a status (17tnw2b9aaz) and the client parses a
+    // non-2xx body as the API's error envelope before it falls back to the status, so a 3xx
+    // that carries a coded envelope yields that code's failure, and one that does not yields
+    // `UnexpectedStatus`. Pinned here so the rule is a decision and not an accident. Neither
+    // the body's free text nor a URL it names may appear in the failure.
+    const MARKER: &str = "REDIRECT-ENVELOPE-MARKER-5d2a";
+    const LOCATION_LIKE: &str = "https://elsewhere.invalid/landed?token=REDIRECT-TOKEN-8b31";
+
+    for status in [301u16, 302, 307, 308] {
+        let coded = sign_in_failure(
+            status,
+            sign_in_error("UNAUTHENTICATED", &format!("{MARKER} {LOCATION_LIKE}")),
+        );
+        assert_eq!(
+            coded,
+            ActivationFailure::InvalidCredentials,
+            "status {status}"
+        );
+
+        let uncoded = sign_in_failure(status, format!("moved to {LOCATION_LIKE} {MARKER}"));
+        assert_eq!(
+            uncoded,
+            ActivationFailure::UnexpectedStatus(status),
+            "status {status}"
+        );
+
+        for failure in [&coded, &uncoded] {
+            let shown = format!("{failure} {failure:?}");
+            for leaked in [MARKER, "REDIRECT-TOKEN", "elsewhere.invalid"] {
+                assert!(
+                    !shown.contains(leaked),
+                    "status {status}: the failure quotes `{leaked}`: {shown}"
+                );
+            }
+        }
     }
 }
 

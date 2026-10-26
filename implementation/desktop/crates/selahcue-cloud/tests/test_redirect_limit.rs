@@ -1,13 +1,21 @@
-//! The production transport follows at most ten redirects (reqwest's default policy), no more and
-//! no fewer.
+//! The production transport does not follow redirects: the first hop of a chain is returned as the
+//! answer and the second hop is never requested (ClickUp 17tnw2b9aaz).
 //!
-//! A CHARACTERISATION test of today's behaviour, written so that a dependency bump or a casual
-//! `.redirect(..)` call cannot change it unnoticed: a chain of exactly ten redirects is followed to
-//! the end, and a chain of eleven is an error that says it was a redirect problem. It does not say
-//! the limit is RIGHT. ClickUp 17tnw2b9aaz is the open decision about whether this transport should
-//! follow redirects at all (a 307/308 replays the request body to another host); when that lands the
-//! expected values here change deliberately, in the same commit. See `test_redirect_credentials.rs`
-//! for the credential property that holds under either policy.
+//! The file name is historical and kept on purpose (other documents cite it): there is no longer a
+//! limit to test, only the absence of a follow.
+//!
+//! This file used to be a CHARACTERISATION test of reqwest's default policy ("ten redirects are
+//! followed, the eleventh is an error"), written so that a casual `.redirect(..)` call could not
+//! change the policy unnoticed, and it said the expected values would change deliberately when
+//! 17tnw2b9aaz landed. They have: following a redirect replays a 307/308 body, which is where the
+//! account password, the enrollment key and the transcript travel, to whatever host the server
+//! names, and no consumer of this transport has a reason to follow one (the hosted API and
+//! OpenAI both answer at the URL they are given). The policy is therefore "none", and this file
+//! pins it by counting what the server was asked for, not by reading the policy back.
+//!
+//! `test_redirect_credentials.rs` pins the credential consequence (the target host is never
+//! contacted); this one pins the mechanism with a same-host chain, where no credential argument
+//! can excuse a follow.
 
 #![cfg(feature = "http")]
 #![allow(clippy::unwrap_used)]
@@ -15,22 +23,36 @@
 use selahcue_cloud::transport::{HttpTransport, ReqwestTransport};
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// A loopback server whose path `/hop/{k}/{n}` redirects to `/hop/{k+1}/{n}` while `k < n`, and
-/// answers `200 done` at `k == n`: so `/hop/0/n` is a chain of exactly `n` redirects. Serves up to
-/// 40 connections (one per hop; the client is told to close each).
-fn serve_chains() -> u16 {
+/// answers `200 done` at `k == n`: so `/hop/0/n` is a chain of exactly `n` redirects. Returns the
+/// port and the path of every request it received, in order. It serves at most 40 connections and
+/// stops listening after 20 seconds.
+fn serve_chains() -> (u16, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&paths);
     std::thread::spawn(move || {
-        for s in listener.incoming().take(40) {
-            let Ok(mut s) = s else { return };
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut served = 0;
+        while served < 40 && Instant::now() < until {
+            let Ok((mut s, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            served += 1;
+            s.set_nonblocking(false).unwrap();
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut buf = [0u8; 4096];
             let n = s.read(&mut buf).unwrap_or(0);
             let head = String::from_utf8_lossy(&buf[..n]).into_owned();
             let path = head.split_whitespace().nth(1).unwrap_or("").to_string();
+            // Recorded before the reply, so the client's answer implies the record exists.
+            recorded.lock().unwrap().push(path.clone());
             let mut parts = path.trim_start_matches("/hop/").split('/');
             let k: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
             let n: u32 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -45,7 +67,7 @@ fn serve_chains() -> u16 {
             let _ = s.write_all(reply.as_bytes());
         }
     });
-    port
+    (port, paths)
 }
 
 fn assert_loopback_is_not_proxied() {
@@ -68,22 +90,38 @@ fn assert_loopback_is_not_proxied() {
 }
 
 #[test]
-fn ten_redirects_are_followed_and_the_eleventh_is_an_error() {
+fn the_first_hop_of_a_redirect_chain_is_the_answer_and_the_second_is_never_requested() {
     assert_loopback_is_not_proxied();
-    let port = serve_chains();
+    let (port, paths) = serve_chains();
     let transport = ReqwestTransport::new().unwrap();
 
-    let ten = transport
-        .get(&format!("http://127.0.0.1:{port}/hop/0/10"), None)
-        .expect("a chain of ten redirects is within the limit");
-    assert_eq!((ten.status, ten.body.as_str()), (200, "done"));
+    let first = transport
+        .get(&format!("http://127.0.0.1:{port}/hop/0/1"), None)
+        .expect("a redirect is an answer, not a transport error");
 
-    let eleven = transport
-        .get(&format!("http://127.0.0.1:{port}/hop/0/11"), None)
-        .expect_err("a chain of eleven redirects is over the limit");
-    let text = eleven.to_string().to_lowercase();
-    assert!(
-        text.contains("redirect"),
-        "the failure should say it was a redirect problem: {eleven}"
+    assert_eq!(
+        first.status, 302,
+        "the redirect itself is returned (a followed chain would end in the 200 `done`)"
     );
+    assert_eq!(
+        *paths.lock().unwrap(),
+        vec!["/hop/0/1".to_string()],
+        "only the first hop was requested"
+    );
+}
+
+#[test]
+fn the_server_does_answer_the_last_hop_of_a_chain_when_asked_for_it_directly() {
+    // Positive control: asked for the LAST hop directly the server answers `done`, so "the second
+    // hop was never requested" above is about the client and not a server that can only say 302.
+    assert_loopback_is_not_proxied();
+    let (port, paths) = serve_chains();
+    let transport = ReqwestTransport::new().unwrap();
+
+    let last = transport
+        .get(&format!("http://127.0.0.1:{port}/hop/1/1"), None)
+        .unwrap();
+
+    assert_eq!((last.status, last.body.as_str()), (200, "done"));
+    assert_eq!(*paths.lock().unwrap(), vec!["/hop/1/1".to_string()]);
 }
