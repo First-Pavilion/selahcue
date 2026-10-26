@@ -152,58 +152,69 @@ const OK_REPLY: &str = "HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: clos
 /// client that follows them has still gone where the server pointed it.
 const REDIRECT_STATUSES: [u16; 5] = [301, 302, 303, 307, 308];
 
+/// The host names a hostile `Location` can use for the same loopback target. An IP literal is the
+/// easy case; a DOMAIN NAME is the realistic one (a redirect to `evil.example`), and a policy that
+/// followed only redirects to a name would pass every check that uses an IP. `localhost` is a
+/// name that resolves to loopback, so the target is reachable and a follow would be visible.
+const TARGET_HOSTS: [&str; 2] = ["127.0.0.1", "localhost"];
+
 #[test]
 fn a_redirect_is_returned_and_its_target_is_never_contacted() {
     assert_loopback_is_not_proxied();
     for status in REDIRECT_STATUSES {
-        // B is another host:port, reached by IP so that the test does not depend on how
-        // `localhost` resolves. A answers the request with a redirect to it.
-        let b = Recorder::serve(OK_REPLY.to_string());
-        let a = Recorder::serve(redirect_to(
-            status,
-            &format!("http://127.0.0.1:{}/landed", b.port),
-        ));
-        let transport = ReqwestTransport::new().unwrap();
+        for target_host in TARGET_HOSTS {
+            let case = format!("status {status}, Location host {target_host}");
+            // B is another host:port. A answers the request with a redirect to it.
+            let b = Recorder::serve(OK_REPLY.to_string());
+            let a = Recorder::serve(redirect_to(
+                status,
+                &format!("http://{target_host}:{}/landed", b.port),
+            ));
+            let transport = ReqwestTransport::new().unwrap();
 
-        let post = transport.post_json(
-            &format!("http://127.0.0.1:{}/v1/sessions", a.port),
-            SECRET_BODY,
-            Some(BEARER),
-        );
+            let post = transport.post_json(
+                &format!("http://127.0.0.1:{}/v1/sessions", a.port),
+                SECRET_BODY,
+                Some(BEARER),
+            );
 
-        // Positive control: the origin did receive the secret body, so "B saw nothing" is about
-        // the redirect and not about a body that was never sent.
-        let a_requests = a.requests();
-        assert_eq!(a_requests.len(), 1, "status {status}: {a_requests:?}");
-        assert!(
-            a_requests[0].contains(SECRET_FRAGMENT) && a_requests[0].contains(BEARER),
-            "status {status}: the origin should have received the body and the bearer"
-        );
+            // Positive control: the origin did receive the secret body, so "B saw nothing" is
+            // about the redirect and not about a body that was never sent.
+            let a_requests = a.requests();
+            assert_eq!(a_requests.len(), 1, "{case}: {a_requests:?}");
+            assert!(
+                a_requests[0].contains(SECRET_FRAGMENT) && a_requests[0].contains(BEARER),
+                "{case}: the origin should have received the body and the bearer"
+            );
 
-        assert!(
-            b.requests().is_empty(),
-            "status {status}: the redirect was followed and the request reached another host: {:?}",
-            b.requests()
-        );
-        let post = post.unwrap_or_else(|e| {
-            panic!("a {status} on a POST should be returned, not an error: {e}")
-        });
-        assert_eq!(post.status, status, "the redirect status is returned as is");
+            assert!(
+                b.requests().is_empty(),
+                "{case}: the redirect was followed and the request reached another host: {:?}",
+                b.requests()
+            );
+            let post = post.unwrap_or_else(|e| {
+                panic!("{case}: a redirect on a POST should be returned, not an error: {e}")
+            });
+            assert_eq!(
+                post.status, status,
+                "{case}: the redirect status is returned as is"
+            );
 
-        // The same for a GET (the shape `fetch_quota` uses), which carries the bearer.
-        let get = transport.get(
-            &format!("http://127.0.0.1:{}/v1/quota", a.port),
-            Some(BEARER),
-        );
-        assert!(
-            b.requests().is_empty(),
-            "status {status}: a GET redirect was followed to another host: {:?}",
-            b.requests()
-        );
-        let get = get.unwrap_or_else(|e| {
-            panic!("a {status} on a GET should be returned, not an error: {e}")
-        });
-        assert_eq!(get.status, status);
+            // The same for a GET (the shape `fetch_quota` uses), which carries the bearer.
+            let get = transport.get(
+                &format!("http://127.0.0.1:{}/v1/quota", a.port),
+                Some(BEARER),
+            );
+            assert!(
+                b.requests().is_empty(),
+                "{case}: a GET redirect was followed to another host: {:?}",
+                b.requests()
+            );
+            let get = get.unwrap_or_else(|e| {
+                panic!("{case}: a redirect on a GET should be returned, not an error: {e}")
+            });
+            assert_eq!(get.status, status, "{case}");
+        }
     }
 }
 
@@ -231,6 +242,17 @@ fn the_recorder_does_see_a_body_when_it_is_contacted_directly() {
         "the recorder should capture the request body: {:?}",
         requests[0]
     );
+
+    // And the host-NAME form of the same target is reachable too, so the `localhost` rows of the
+    // sweep above are "refused", not "unreachable".
+    transport
+        .post_json(
+            &format!("http://localhost:{}/landed", b.port),
+            SECRET_BODY,
+            Some(BEARER),
+        )
+        .unwrap();
+    assert_eq!(b.requests().len(), 2, "the recorder is reachable by name");
 }
 
 #[test]

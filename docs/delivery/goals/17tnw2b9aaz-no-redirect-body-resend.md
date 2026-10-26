@@ -77,8 +77,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`. This contract stops a
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The new tests fail on the unfixed transport for the stated reason (the redirect is followed and the body reaches the target) | the two redirect test files run on `93bf8063` plus the new tests | exit 101; 4 of the 7 tests red with "the redirect was followed and the request reached another host" and "left: 200 right: 302" | iteration 1 | PASS |
-| C-002 | yes | A redirect (301, 302, 303, 307, 308) to another host:port, on a POST carrying a credential body and bearer and on a GET carrying a bearer, returns the redirect status and the target is never contacted; positive controls: the origin received the body and bearer, and the same recorder does capture a body when hit directly | `cargo test -p selahcue-cloud --features http --test test_redirect_credentials` | exit 0; 3 tests (the bearer-stripping test of the first push was removed: under no redirects it asserted nothing) | iteration 5 | PASS |
+| C-001 | yes | The current redirect tests and the policy read-back fail on the unfixed transport for the stated reason (the redirect is followed and the body reaches the target) | the current `tests/test_redirect_credentials.rs` (3 tests), `tests/test_redirect_limit.rs` (2 tests) and the lib tests run with `93bf8063`'s `transport.rs` swapped in (restored with `cmp`) | exit 101; exactly 4 red: the sweep ("the redirect was followed and the request reached another host"), the hosted-notes end to end, the first-hop chain test (`left: 200 right: 302`), and the policy read-back in `tls_tests.rs`; the 3 positive controls stay green. Measured by me in iteration 6 and, independently, by QA (the same four) | iterations 1 and 6 | PASS |
+| C-002 | yes | A redirect (301, 302, 303, 307, 308) to another host:port, named by an IP literal or by the host name `localhost`, on a POST carrying a credential body and bearer and on a GET carrying a bearer, returns the redirect status and the target is never contacted; positive controls: the origin received the body and bearer, and the same recorder does capture a body when hit directly, by IP and by name | `cargo test -p selahcue-cloud --features http --test test_redirect_credentials` | exit 0; 3 tests (the bearer-stripping test of the first push was removed: under no redirects it asserted nothing) | iteration 5 | PASS |
 | C-003 | yes | A same-host redirect chain is answered by its first hop and the second hop is never requested; positive control: the last hop answers when asked directly | `cargo test -p selahcue-cloud --features http --test test_redirect_limit` | exit 0; 2 tests (`a_long_chain_is_not_walked_at_all` was removed: it added nothing beyond the chain-of-1 test; the file name is kept because other documents cite it) | iteration 5 | PASS |
 | C-004 | yes | The hosted notes client over the real transport reports a 307 as exactly `Malformed("unexpected status 307")`; the transcript, bearer, a token in the `Location` query, the redirect body and the host never appear in the error; the target is never contacted | `a_redirect_through_the_hosted_notes_client_is_an_unexpected_status_that_quotes_nothing` | exit 0 | iteration 2 | PASS |
 | C-005 | yes | The licensing client classifies 307 and 308 like 302 (`UnexpectedStatus`), and a 3xx whose body is a coded error envelope as that code's failure, quoting nothing. These rows use the scripted transport and pin PRE-EXISTING client classification; the regression guard for the fix itself is the raw-transport sweep in C-002 | `cargo test -p selahcue-licensing --test test_client` (`the_success_range_is_exactly_200_to_299`, `a_redirect_status_is_classified_like_any_other_non_2xx_response_and_quotes_nothing`) | exit 0 | iteration 2 | PASS |
@@ -150,6 +150,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: the https-only follow policy is invisible to the behavioural tests and caught only by the read-back
 - Decision: gate-review
 
+### Iteration 6 (QA polish: Quinn PASS at 1dfca912, 0 blocker/major, 2 minor, 4 nit)
+
+- Target criterion: C-001, C-002, C-006
+- Hypothesis: a policy that follows only redirects to a DOMAIN NAME (the realistic hostile `Location`) passes every behavioural test while the targets are IP literals, and only the Debug read-back would catch it
+- Change or investigation: the status sweep now runs each status twice, with the second target named by an IP literal and by `localhost` (resolves to loopback, so a follow would be visible), and the recorder control also reaches the target by name; documented in `transport.rs` that an oversized (1 MiB or more) or control-byte `Location` makes hyper reject the response head, so the caller gets a `TransportError` instead of the 3xx (the target is still never contacted; for hosted notes a `TransportError` takes the degrade-to-local-draft path), as QA measured; re-measured the RED row against the current files
+- Verifier executed: the command in C-006 with a sixth substitution (M6) for `.redirect(reqwest::redirect::Policy::none());`: `.redirect(reqwest::redirect::Policy::custom(|a| if a.url().host_str().map_or(false, |h| h.parse::<std::net::IpAddr>().is_err()) { a.follow() } else { a.stop() }));`; the full gate set
+- Result: M6 red in two tests, the BEHAVIOURAL sweep (`status 301, Location host localhost: the redirect was followed and the request reached another host: GET /landed ... host: localhost:<port>`) and the read-back; restored byte-identical (`cmp`); all gates exit 0 (cloud `http` 70 passed: the sweep got longer, not a new test)
+- New evidence: none new
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: a consumer that silently relied on a redirect would now see an error. None was found (see Baseline), and the failure is loud and specific (`unexpected status 301`). The Referer a followed redirect used to send is gone as a side effect, which is the intended direction.
@@ -164,7 +174,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9aaz-no-redirect-body-resend.md`
 - Validator result: recorded in the PR description
-- Independent verification result: pending (coordinator)
+- Independent verification result: round 1 at 8e4fb322, Cody PASS WITH CONDITIONS and Shadow PASS WITH CONDITIONS (0 blocker/major), conditions fixed in iteration 5; QA at 1dfca912, Quinn PASS (0 blocker/major, 2 minor, 4 nit), the two minor items fixed in iteration 6; performance review and any final re-review are the coordinator's
 - Terminal state: GATE_REVIEW
 - Remaining failed or blocked criteria: C-010 and C-011 held for the coordinator
 - ClickUp final evidence comment: written by the coordinator

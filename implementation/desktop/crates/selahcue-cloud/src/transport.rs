@@ -141,6 +141,13 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// its query) never leaves the transport. The redirect's own body is read under the same
 /// [`MAX_TRANSPORT_RESPONSE_BYTES`] cap as any other.
 ///
+/// *One exception to "a 3xx arrives as a status".* A `Location` of 1 MiB or more, or one holding
+/// a control byte, makes hyper reject the response head, so the caller gets a [`TransportError`]
+/// ("message head is too large", "invalid HTTP header parsed") instead of the 3xx status (QA
+/// measured both). The target is still never contacted. For hosted notes a `TransportError` is
+/// the transport-class failure, so it takes the degrade-to-local-draft path rather than the
+/// visible `Malformed` error an ordinary 3xx gives.
+///
 /// Pinned by `tests/test_redirect_credentials.rs` and `tests/test_redirect_limit.rs`.
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
