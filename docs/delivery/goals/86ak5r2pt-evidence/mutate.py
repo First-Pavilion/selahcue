@@ -190,18 +190,29 @@ def pytest_env():
     # The same scrubbed environment `make api-check` uses.
     return {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LANG": os.environ.get("LANG", ""),
+        "LC_ALL": os.environ.get("LC_ALL", ""),
         "HOME": os.environ.get("HOME", ""),
         "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
         "SQL_DATABASE": ":memory:",
     }
 
 
+# One pytest run of the four files takes about a minute and a half. A mutant that makes the code
+# loop or block would otherwise hang the whole harness, so each run has a generous ceiling; a run
+# that hits it is reported as TIMEOUT (not RED: a hang is not a failing test) and fails the harness.
+RUN_TIMEOUT_SECONDS = 1200
+
+
 def run_tests(log_path, tests):
     with open(log_path, "w") as log:
-        proc = subprocess.run(
-            [PY, "-m", "pytest", "-p", "no:cacheprovider", *tests, "-q", "-rf"],
-            cwd=ROOT, env=pytest_env(), stdout=log, stderr=subprocess.STDOUT,
-        )
+        try:
+            proc = subprocess.run(
+                [PY, "-m", "pytest", "-p", "no:cacheprovider", *tests, "-q", "-rf"],
+                cwd=ROOT, env=pytest_env(), stdout=log, stderr=subprocess.STDOUT, timeout=RUN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            return None, [], f"TIMEOUT after {RUN_TIMEOUT_SECONDS}s"
     failed, summary = [], ""
     with open(log_path) as log:
         for line in log:
@@ -251,7 +262,7 @@ def main():
     code, failed, summary = run_tests(os.path.join(work, "baseline.log"), TESTS + DEVICE_TESTS[2:])
     lines.append(f"BASELINE (unmutated, all four files): exit {code}; {summary}")
     print(lines[-1], flush=True)
-    if code != 0:
+    if code != 0:  # None (a timeout) counts too
         sys.exit("baseline is not green; nothing to mutate")
 
     for index, spec in enumerate(MUTANTS):
@@ -273,7 +284,7 @@ def main():
                 text = text.replace(old, new)
             open(path, "wb").write(text.encode("utf-8"))
             code, failed, summary = run_tests(os.path.join(work, f"mutant-{index}.log"), tests)
-            verdict = "RED" if code != 0 else "SURVIVED"
+            verdict = "TIMEOUT" if code is None else ("RED" if code != 0 else "SURVIVED")
         except RuntimeError as error:
             summary = str(error)
         finally:

@@ -459,8 +459,8 @@ attempt id, the account id when the token resolved, and the source as a keyed, d
 pseudonym `src:v1:<32 hex>` (never the address). Four knobs bound how many rows are written; they
 skip the **row**, never the response, and ship in `settings.py`:
 
-- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE` (1000 an hour): outcomes that name no account (unknown or
-  malformed token), shared by everyone.
+- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE` (1000 an hour): outcomes that name no account (an unknown
+  or malformed token, or an internal error before any account was identified), shared by everyone.
 - `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT` (60 an hour): outcomes that name an account, **per
   account**, so noise cannot hide a probe of one account's link.
 - `SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING` (200 an hour) and
@@ -468,8 +468,21 @@ skip the **row**, never the response, and ship in `settings.py`:
   accounts tracked): the same two, per worker, applying only while the rate-limit store is down.
 
 A skipped or unwritable row is counted and logged once a minute per worker (`skipped N audit
-row(s)` / `could not write the audit row`), with the first one's outcome and pseudonym and up to
-20 account ids. That line is the signal to look.
+row(s)` / `could not write the audit row`), with the first one's outcome and pseudonym. The
+**skip** line also lists up to 20 account ids; the **could not write** line does not. That line is
+the signal to look.
+
+Two things to know when reading the counts:
+
+- **Allowance is charged before the write.** A row's allowance is spent before the INSERT. With a
+  healthy cache and a down audit store, each lost write still spends the account's allowance for
+  that hour (60), so after that hour's allowance is gone later rows are reported as skipped while the
+  real cause is the audit store. Bounded to the hour, and both lines are counted.
+- **Rows that name an account have no aggregate ceiling.** Each account has its own 60 an hour; there
+  is no limit across accounts. The per-source budget (20 an hour per source) only bounds that when
+  `SELAHCUE_TRUSTED_PROXY_COUNT` is right, and in an outage the per-worker table holds 1024 accounts
+  and evicts the oldest, so rotating through more than 1024 accounts gets a fresh window each time.
+  Recorded and accepted for now; a follow-up adds an aggregate ceiling and a registration throttle.
 
 To find the rows from a known address: `python manage.py failed_reset_confirms --ip <address>
 [--date YYYY-MM-DD]`. It prints account ids, so **do not run it in CI or put its output in a log

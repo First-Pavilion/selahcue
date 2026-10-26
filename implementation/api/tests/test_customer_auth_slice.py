@@ -4,16 +4,20 @@ Covers self-serve signup, email verification, login/session/logout/refresh, and 
 with the no-enumeration + session-invalidation invariants.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
 from io import StringIO
 
 import pytest
+from django.conf import settings as django_settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
 from django.core.management import call_command
@@ -23,6 +27,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as reset_confirms_command
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
     CredentialTokenPurpose,
@@ -1174,6 +1179,8 @@ def confirm(client, token, password, **extra):
 
 
 @dataclass(frozen=True)
+
+
 class FailureCase:
     token: str
     password: str
@@ -1724,15 +1731,12 @@ def test_the_row_never_holds_the_address_it_was_caused_by(client, caplog):
 
     assert contains_any(failed_rows_as_text(), needles) == [], "an address reached the audit table"
     assert contains_any(caplog.text, needles) == [], "an address reached a log line"
+
+
 def test_the_pseudonym_is_pinned_keyed_rotating_and_per_source():
     """The construction is pinned by an INDEPENDENT recomputation, not by calling the function
     under test: key = SHA-256(key_salt + SECRET_KEY) (Django's salted_hmac), then HMAC-SHA-256 of
     "<UTC date>|<bucket>" under it, first 32 hex characters, prefixed "src:v1:"."""
-    import hashlib
-    import hmac
-
-    from django.conf import settings as django_settings
-
     salt = b"selahcue_api.apps.accounts.audit_source.v1"
     key = hashlib.sha256(salt + django_settings.SECRET_KEY.encode()).digest()
     expected = "src:v1:" + hmac.new(key, b"2026-10-26|203.0.113.5", hashlib.sha256).hexdigest()[:32]
@@ -2022,6 +2026,8 @@ def test_the_trace_brakes_hold_bounded_state_however_many_sources_there_are(clie
         ), vars(tally)
         assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
         assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
+
+
 def test_the_shipped_trace_brakes_are_pinned(settings):
     """The module defaults and the shipped settings agree, and the numbers are pinned: a brake
     inflated to nothing passes every behavioural test, which tighten it to make it trip."""
@@ -2291,15 +2297,13 @@ _REAL_AUDIT_SOURCE_DAY = services._audit_source_day
 
 
 def test_the_real_audit_source_day_is_the_utc_date(monkeypatch):
-    from datetime import datetime, timedelta, timezone
-
-    before = datetime.now(timezone.utc).date()
+    before = datetime.now(dt_timezone.utc).date()
     got = _REAL_AUDIT_SOURCE_DAY()
-    assert got in {before, datetime.now(timezone.utc).date()}
+    assert got in {before, datetime.now(dt_timezone.utc).date()}
     # Not the local date, not today's date by another route: an aware time late on the 26th at
     # UTC-5 is already the 27th in UTC.
     monkeypatch.setattr(
-        services.djtz, "now", lambda: datetime(2026, 10, 26, 23, 30, tzinfo=timezone(timedelta(hours=-5)))
+        services.djtz, "now", lambda: datetime(2026, 10, 26, 23, 30, tzinfo=dt_timezone(timedelta(hours=-5)))
     )
     assert _REAL_AUDIT_SOURCE_DAY() == date(2026, 10, 27)
 
@@ -2393,10 +2397,8 @@ def test_the_pseudonym_day_is_the_utc_day_across_midnight_and_the_command_agrees
     the 26th, 18:59), then at 00:00:30 UTC on the 27th (19:00:30 at -05:00): two rows, two
     pseudonyms, one per UTC day. The operator command with no --date uses the same day the
     writer used, at each moment."""
-    from datetime import datetime, timedelta, timezone
-
     monkeypatch.setattr(services, "_audit_source_day", _REAL_AUDIT_SOURCE_DAY)
-    est = timezone(timedelta(hours=-5))
+    est = dt_timezone(timedelta(hours=-5))
     late = datetime(2026, 10, 26, 18, 59, 30, tzinfo=est)  # 23:59:30 UTC, the 26th
     monkeypatch.setattr(services.djtz, "now", lambda: late)
     confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
@@ -2424,12 +2426,10 @@ def _run_command(**options):
 
 @pytest.mark.django_db
 def test_the_command_caps_its_output_and_says_so(client, monkeypatch):
-    from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as command
-
-    assert command.MAX_ROWS == 500
+    assert reset_confirms_command.MAX_ROWS == 500
     for _ in range(4):
         confirm(client, "SC-PRS-whatever", GOOD_PASSWORD)
-    monkeypatch.setattr(command, "MAX_ROWS", 3)
+    monkeypatch.setattr(reset_confirms_command, "MAX_ROWS", 3)
 
     text = _run_command(ip=TEST_CLIENT_ADDR, date="2026-10-26")
 

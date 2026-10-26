@@ -20,3 +20,22 @@ audit rows written: 200
 process-local ceiling per worker: (200, 3600)
 WARNING selahcue_api.apps.throttling.services: rate-limit store unavailable (ConnectionError) for key=throttle:password_reset_confirm_ip:203.0.113.5; failing open. Further reports suppressed for 60s.
 WARNING selahcue_api.apps.accounts.services: skipped 1 audit row(s) for failed password-reset confirms since the last report (first: outcome=unknown_token source=src:v1:daa16c426e8a3f2618b4ef1b596bf867 rea
+
+# round 3, on the head that carries this file: both scenarios, same unreachable Redis (CACHE_URL=redis://127.0.0.1:1)
+scenario: unknown
+failed confirms posted: 300
+response codes: {'VALIDATION_FAILED': 300}
+audit rows written: 200
+process-local ceiling per worker (shared): (200, 3600)
+WARNING selahcue_api.apps.throttling.services: rate-limit store unavailable (ConnectionError) for key=throttle:password_reset_confirm_ip:203.0.113.5; failing open. Further reports suppressed for 60s.
+WARNING selahcue_api.apps.accounts.services: skipped 1 audit row(s) for failed password-reset confirms since the last report (first: outcome=unknown_token source=src:v1:daa16c426e8a3f2618b4ef1b596bf867 reason=outage ceiling spent). The callers' 
+exit=0
+
+scenario: named
+failed confirms posted: 40
+response codes: {'PASSWORD_INVALID': 40}
+audit rows written: 30
+process-local ceiling per worker (per account): (30, 3600)
+WARNING selahcue_api.apps.throttling.services: rate-limit store unavailable (ConnectionError) for key=throttle:verify_email_ip:203.0.113.9; failing open. Further reports suppressed for 60s.
+WARNING selahcue_api.apps.accounts.services: skipped 1 audit row(s) for failed password-reset confirms since the last report (first: outcome=password_rejected source=src:v1:daa16c426e8a3f2618b4ef1b596bf867 reason=account outage allowance spent; 
+exit=0
