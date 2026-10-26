@@ -12,15 +12,43 @@ and of the writer's boundary check, which the main slice file exercises with a r
 
 from __future__ import annotations
 
+import contextlib
+import signal
+
 import pytest
 
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.redaction import (
+    MAX_PAYLOAD_CONTAINERS,
     MAX_PAYLOAD_DEPTH,
     assert_no_restricted_payload_fields,
     ensure_payload_depth,
     redact_public_payload,
 )
+
+
+@contextlib.contextmanager
+def _must_finish_within(seconds: int):
+    """Turn "an unbounded walk" into a failing test instead of a hung one.
+
+    A walker with no bound on a self-referential payload does not fail, it never returns, so
+    a mutant that removes the bound would stall the suite rather than turn it red. SIGALRM is
+    Unix-only; elsewhere the guard is absent and the bound itself is what is tested.
+    """
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def on_alarm(signum, frame):
+        raise TimeoutError(f"did not finish within {seconds}s: the walk is unbounded")
+
+    previous = signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _nested_dict(levels: int, leaf="leaf"):
@@ -42,6 +70,8 @@ def _nested_list(levels: int, leaf="leaf"):
 # snapshot fixture (conftest.py), which needs the test database to exist even for a test that
 # never queries it.
 pytestmark = pytest.mark.django_db
+
+MAX_CONTAINERS_MINUS_ONE = MAX_PAYLOAD_CONTAINERS - 2  # the list itself is one container
 
 PATHOLOGICAL = 5000  # far past CPython's default recursion limit of 1000
 
@@ -84,9 +114,28 @@ def test_a_self_referential_payload_is_refused():
     cyclic: dict = {}
     cyclic["again"] = cyclic
     for function in (ensure_payload_depth, redact_public_payload, assert_no_restricted_payload_fields):
-        with pytest.raises(SafeAPIError) as raised:
+        with _must_finish_within(10), pytest.raises(SafeAPIError) as raised:
             function(cyclic)
         assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__
+
+
+def test_a_wide_self_referential_payload_is_refused_promptly():
+    """Depth alone is not enough: a mapping with many references to itself has about
+    `width ** MAX_PAYLOAD_DEPTH` paths below the depth bound, so refusing it by depth alone
+    would take effectively forever. The container cap is what makes the refusal prompt."""
+    wide: dict = {}
+    for index in range(40):
+        wide[f"again{index}"] = wide
+    for function in (ensure_payload_depth, redact_public_payload, assert_no_restricted_payload_fields):
+        with _must_finish_within(10), pytest.raises(SafeAPIError) as raised:
+            function(wide)
+        assert raised.value.code == ErrorCode.VALIDATION_FAILED, function.__name__
+
+
+def test_a_wide_but_shallow_payload_is_not_refused():
+    """The container cap counts containers, not scalars: a long flat list is fine."""
+    ensure_payload_depth({"ids": list(range(100_000)), "tags": ["a"] * 50_000})
+    ensure_payload_depth([{"k": index} for index in range(MAX_CONTAINERS_MINUS_ONE)])
 
 
 def test_mixed_nesting_counts_both_kinds_of_container():
