@@ -18,8 +18,9 @@ pub enum TransportError {
     /// WebSocket protocol error. Boxed because `tungstenite::Error` is large and
     /// would otherwise bloat every `Result<_, TransportError>`.
     Ws(Box<tokio_tungstenite::tungstenite::Error>),
-    /// A message could not be (de)serialized.
-    Json(serde_json::Error),
+    /// A message could not be (de)serialized. Carries only the failure's category and position,
+    /// never serde's message: see [`JsonFailure`] (FR-082, 17tnw2b9aec).
+    Json(JsonFailure),
     /// The peer violated the control protocol (e.g. wrong frame, bad version).
     Protocol(String),
     /// The connection closed before the exchange completed.
@@ -58,8 +59,93 @@ impl From<tokio_tungstenite::tungstenite::Error> for TransportError {
     }
 }
 impl From<serde_json::Error> for TransportError {
+    /// The one conversion every (de)serialization failure on the wire goes through. It keeps the
+    /// category and the position and drops the `serde_json::Error` itself, so nothing in the
+    /// result can quote the frame (see [`JsonFailure`]).
     fn from(e: serde_json::Error) -> Self {
-        TransportError::Json(e)
+        TransportError::Json(JsonFailure::from(&e))
+    }
+}
+
+/// What a failed JSON decode (or encode) is allowed to tell a person or a log: a category in
+/// words of our own, and the line and column. **Never serde's message.**
+///
+/// serde quotes the offending VALUE in its message: `invalid type: string "SECRET sermon words",
+/// expected a sequence` for a wrongly-typed field, ``unknown variant `SECRET`, expected one of
+/// ...`` for an unknown enum tag. The frame can be the operator's state (it carries the live
+/// transcript), a pairing grant (it carries a device token) or whatever a version-skewed, buggy
+/// or hostile peer put in the wrong place. `TransportError::Json` used to wrap the whole
+/// `serde_json::Error`, so both `Display` and the derived `Debug` printed that text, and every
+/// caller that logged the error or returned it to the UI carried it along (FR-082,
+/// 17tnw2b9aec).
+///
+/// This type holds a [`JsonFailureKind`] and two numbers, so there is no text for a derived
+/// `Debug` to leak and no `source()` to walk. It is the same approach as the cloud client's
+/// error mapping (`selahcue-cloud`, 86akbzxjg: category and position only), not a redaction pass
+/// over text: a filter can only remove what someone thought to describe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JsonFailure {
+    kind: JsonFailureKind,
+    line: usize,
+    column: usize,
+}
+
+/// What kind of JSON failure it was, as `serde_json` classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonFailureKind {
+    /// The text is not valid JSON.
+    Syntax,
+    /// Valid JSON that does not have the shape the protocol defines (a missing field, a field of
+    /// the wrong type, an unknown variant). The category serde quotes values in.
+    Data,
+    /// The text ended before the value did.
+    Eof,
+    /// Reading the text failed. Not produced by parsing a string; kept so the mapping is total.
+    Io,
+}
+
+impl JsonFailure {
+    /// The category of the failure.
+    pub fn kind(&self) -> JsonFailureKind {
+        self.kind
+    }
+
+    /// The 1-based line the failure was detected on (0 when serde has no position).
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// The 1-based column the failure was detected at (0 when serde has no position).
+    pub fn column(&self) -> usize {
+        self.column
+    }
+}
+
+impl From<&serde_json::Error> for JsonFailure {
+    fn from(e: &serde_json::Error) -> Self {
+        use serde_json::error::Category;
+        JsonFailure {
+            kind: match e.classify() {
+                Category::Syntax => JsonFailureKind::Syntax,
+                Category::Data => JsonFailureKind::Data,
+                Category::Eof => JsonFailureKind::Eof,
+                Category::Io => JsonFailureKind::Io,
+            },
+            line: e.line(),
+            column: e.column(),
+        }
+    }
+}
+
+impl std::fmt::Display for JsonFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let what = match self.kind {
+            JsonFailureKind::Syntax => "the message was not valid JSON",
+            JsonFailureKind::Data => "the message did not have the shape the protocol defines",
+            JsonFailureKind::Eof => "the message ended early",
+            JsonFailureKind::Io => "the message could not be read",
+        };
+        write!(f, "{what} at line {} column {}", self.line, self.column)
     }
 }
 
