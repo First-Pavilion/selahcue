@@ -513,6 +513,14 @@ def _activate_device_for_key(
         # or roll back together. Its DENIED refusal row rolls back here too; that only arises
         # if the table itself loses the edge, and failing closed (no device, no token) is the
         # right outcome for that.
+        #
+        # `allow_wrapping_transaction=True` is the writer's named opt-in (86ak1090r, AC 8): the
+        # writer refuses to run inside an open transaction otherwise, because a DENIED row
+        # written there would roll back with the caller. This is the deliberate wrapped caller,
+        # and the loss is accepted here for the reason above: the refusal is unreachable while
+        # the ISSUED -> ACTIVATED edge stays in the table, and if it ever does arise activation
+        # fails closed with no device and no token. Do not copy this shape for a caller whose
+        # refusals are reachable.
         if license_key.status == LicenseKeyStatus.ISSUED:
             apply_license_status_transition(
                 license_key,
@@ -522,6 +530,7 @@ def _activate_device_for_key(
                 request_id=idempotency_key,
                 source_surface=source_surface,
                 extra_after={"device_public_id": device.device_public_id},
+                allow_wrapping_transaction=True,
             )
 
         record_audit_event(

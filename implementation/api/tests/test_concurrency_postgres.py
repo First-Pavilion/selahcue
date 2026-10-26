@@ -37,10 +37,15 @@ from selahcue_api.apps.devices.services import (
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
+    EXTEND_REFUSED_ACTION,
+    ExtendLicenseKeyData,
     ReinstateLicenseKeyData,
+    RevokeLicenseKeyData,
     SuspendLicenseKeyData,
+    extend_license_key,
     lock_customer_for_key_changes,
     reinstate_license_key,
+    revoke_license_key,
     suspend_license_key,
 )
 from selahcue_api.apps.license_keys.state_machine import (
@@ -674,13 +679,33 @@ def _reinstate_call(key, idem, *, actor_id="staff_race_susp"):
 
 
 def _revoke_call(key, idem):
-    """The revoke mutation (86ak1090r) is a sibling ticket; its writer call is this."""
-    return lambda: apply_license_status_transition(
-        key,
-        to_status=LicenseKeyStatus.REVOKED,
-        actor=ActorContext(kind=ActorKind.STAFF, actor_id="staff_race_revoke"),
-        reason=RACE_REASON,
-        request_id=idem,
+    """The real revoke mutation (86ak1090r), as a staff member holding only the revoke
+    permission."""
+    return lambda: revoke_license_key(
+        ActorContext(
+            kind=ActorKind.STAFF,
+            actor_id="staff_race_revoke",
+            staff_permissions=frozenset({StaffPermission.REVOKE_LICENSE_KEY}),
+        ),
+        RevokeLicenseKeyData(
+            idempotency_key=idem, license_key_id=str(key.pk), reason=RACE_REASON
+        ),
+    )
+
+
+def _extend_call(key, idem, new_expires_at, *, actor_id="staff_race_extend"):
+    return lambda: extend_license_key(
+        ActorContext(
+            kind=ActorKind.STAFF,
+            actor_id=actor_id,
+            staff_permissions=frozenset({StaffPermission.EXTEND_LICENSE_KEY}),
+        ),
+        ExtendLicenseKeyData(
+            idempotency_key=idem,
+            license_key_id=str(key.pk),
+            new_expires_at=new_expires_at,
+            reason=RACE_REASON,
+        ),
     )
 
 
@@ -1226,3 +1251,177 @@ def test_two_simultaneous_issuances_to_two_orgs_both_succeed():
     assert errors == []
     assert len(results) == 2 and all(r.created for r in results)
     assert {k.customer_id for k in AppLicenseKey.objects.all()} == {o.pk for o in orgs}
+
+
+# --- 86ak1090r: staff extend / revoke under a real race -----------------------------------
+# Extend takes the ORG row lock and then the LICENCE row lock; revoke, suspend and activation
+# take only the licence lock, so there is no order in which two of them can wait on each other.
+# These tests park the callers on a held lock first (the same machinery as the suspend races
+# above) so that the overlap is guaranteed rather than left to scheduling.
+def _applied(results):
+    return [r for _, r in results if r.changed]
+
+
+def test_two_concurrent_extensions_with_the_same_key_apply_once():
+    """A retry racing its own original, both parked on the org lock. One applies; the other
+    waits for it, then recognises the retry under the lock and reports the original row."""
+    key, _ = _seed_license_key(tag="ext-same-key")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    call = _extend_call(key, "ext-same-key-0001", target)
+
+    results, errors, waiting = _race_behind_org_lock(org, [call, call])
+
+    assert waiting == 2, f"both callers should be parked on the org-row lock: {waiting}"
+    assert errors == [], errors
+    assert len(results) == 2 and len(_applied(results)) == 1
+    original = _applied(results)[0].audit_event
+    replay = [r for _, r in results if not r.changed][0]
+    assert replay.audit_event.pk == original.pk
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    key.refresh_from_db()
+    assert key.expires_at == target
+
+
+def test_two_concurrent_extensions_to_the_same_date_apply_once_and_reject_the_other():
+    key, _ = _seed_license_key(tag="ext-same-date")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(key, "ext-same-date-0001", target, actor_id="staff_race_a"),
+            _extend_call(key, "ext-same-date-0002", target, actor_id="staff_race_b"),
+        ],
+    )
+
+    assert waiting == 2
+    assert len(results) == 1 and results[0][1].changed is True
+    assert _error_codes(errors) == [ErrorCode.VALIDATION_FAILED], errors
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    key.refresh_from_db()
+    assert key.expires_at == target
+
+
+def test_two_concurrent_extensions_to_different_dates_leave_a_chain_the_trail_explains():
+    """Whichever is served first, the final date is the later of those that applied, every
+    applied extension has exactly one row, and a second one that applied starts where the first
+    ended. A shorter request that loses the race is rejected, never applied backwards."""
+    key, _ = _seed_license_key(tag="ext-diff-date")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    now = timezone.now().replace(microsecond=0)
+    short, long_ = now + timedelta(days=60), now + timedelta(days=90)
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(key, "ext-diff-date-0001", short, actor_id="staff_race_a"),
+            _extend_call(key, "ext-diff-date-0002", long_, actor_id="staff_race_b"),
+        ],
+    )
+
+    assert waiting == 2
+    assert set(_error_codes(errors)) <= {ErrorCode.VALIDATION_FAILED}
+    rows = list(_lifecycle_rows(key, action="license_key.extended"))
+    assert len(rows) == len(results) >= 1
+    key.refresh_from_db()
+    assert key.expires_at == max(
+        {"ext-diff-date-0001": short, "ext-diff-date-0002": long_}[r.request_id] for r in rows
+    )
+    if len(rows) == 2:
+        assert rows[1].before["expires_at"] == rows[0].after["expires_at"]
+        assert rows[0].request_id == "ext-diff-date-0001" and rows[1].request_id == "ext-diff-date-0002"
+    else:
+        assert rows[0].request_id == "ext-diff-date-0002", "only the longer one can win alone"
+        assert _error_codes(errors) == [ErrorCode.VALIDATION_FAILED]
+
+
+def test_an_extension_that_wins_the_race_against_a_revoke_is_followed_by_the_revoke():
+    key, _ = _seed_license_key(tag="ext-then-rev")
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_extend_call(key, "ext-then-rev-0001", target), _revoke_call(key, "ext-then-rev-0002")]
+    )
+
+    assert waiting == 2, f"both callers should be parked on the licence-row lock: {waiting}"
+    assert errors == [], errors
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+    assert key.expires_at == target
+    assert [r.action for r in _lifecycle_rows(key, result="SUCCESS")][-2:] == [
+        "license_key.extended",
+        "license_key.revoked",
+    ]
+    assert not _lifecycle_rows(key, result="DENIED").exists()
+
+
+def test_a_revoke_that_wins_the_race_against_an_extension_is_not_undone_by_it():
+    """THE corruption this ticket must not allow: an extension that read the licence before the
+    revoke must not resurrect it. The extension holds the org lock and waits on the licence
+    row; it is served after the revoke, re-reads under the lock, and is refused with a durable
+    DENIED row."""
+    key, _ = _seed_license_key(tag="rev-then-ext")
+    before = key.expires_at
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_revoke_call(key, "rev-then-ext-0001"), _extend_call(key, "rev-then-ext-0002", target)]
+    )
+
+    assert waiting == 2
+    assert _error_codes(errors) == [ErrorCode.CONFLICT], errors
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+    assert key.expires_at == before, "the refused extension moved nothing"
+    denied = _lifecycle_rows(key, result="DENIED").get()
+    assert denied.action == EXTEND_REFUSED_ACTION and denied.request_id == "rev-then-ext-0002"
+    assert not _lifecycle_rows(key, action="license_key.extended").exists()
+
+
+def test_two_concurrent_revokes_write_exactly_one_audit_row():
+    key, _ = _seed_license_key(tag="two-revokes")
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_revoke_call(key, "two-revokes-0001"), _revoke_call(key, "two-revokes-0002")]
+    )
+
+    assert waiting == 2
+    assert errors == [], errors
+    assert [r.changed for _, r in results] == [True, False]
+    assert _lifecycle_rows(key, action="license_key.revoked").count() == 1
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+
+
+def test_an_extension_racing_an_issuance_never_leaves_two_overlapping_valid_keys():
+    """Both move an org's dates, both take the org lock, so exactly one wins. Extending key A
+    past the instant key B starts would overlap it; issuing B while A's extension is in flight
+    would too. Either order must end with the org's valid keys non-overlapping."""
+    org = seed_org("ext-vs-issue")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    first = issue_key(
+        org, tag="ext-vs-issue-a", plan_code=plan_code,
+        starts_at=t0 - timedelta(days=20), expires_at=t0 + timedelta(days=10),
+    ).license_key
+    second_starts = first.expires_at
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(first, "ext-vs-issue-ext-01", first.expires_at + timedelta(days=5)),
+            lambda: issue_key(
+                org, tag="ext-vs-issue-b", plan_code=plan_code,
+                starts_at=second_starts, expires_at=second_starts + timedelta(days=60),
+            ),
+        ],
+    )
+
+    assert waiting == 2
+    assert len(results) == 1 and len(errors) == 1, (results, errors)
+    assert errors[0][1].code == ErrorCode.POLICY_DENIED
+    keys = list(AppLicenseKey.objects.filter(customer=org).order_by("starts_at"))
+    for left, right in zip(keys, keys[1:]):
+        assert left.expires_at <= right.starts_at, "the org's keys overlap"

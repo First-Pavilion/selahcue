@@ -60,28 +60,40 @@ wrapping a transition at all.
 
 The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
 autocommit and gets the durable case for free. Admin mutations should assert
-`not connection.in_atomic_block` at their boundary rather than assume it; suspend and
-reinstate do (`license_keys.services._require_autocommit`, 86ak5mn0c).
+`not connection.in_atomic_block` at their boundary rather than assume it; suspend, reinstate,
+revoke and extend do (`license_keys.services._require_autocommit`, 86ak5mn0c).
 
-**The one deliberate wrapped caller is device activation** (`_activate_device_for_key`,
-86ak5v7av), which transitions ISSUED -> ACTIVATED inside its own `atomic()` block because the
-status change, the device, its token and both audit rows must commit or roll back together.
-Losing the DENIED row there is accepted: the refusal is unreachable in production, since
-`require_commercial_service` has already admitted the row it holds locked, and the ISSUED ->
-ACTIVATED edge is pinned by
-`test_the_table_matches_the_prd_transition_list_except_where_documented`. It can only arise
-if that edge is removed from the table, and activation then fails closed with no device and
-no token. A new caller whose refusals ARE reachable (any staff mutation, the expiry job,
-conversion) must not copy this shape: call outside a wrapping transaction, or the denial it
-exists to record is rolled back with everything else.
+**The writer enforces this itself** (86ak1090r, AC 8). Called inside an open transaction
+(`connection.in_atomic_block`) without `allow_wrapping_transaction=True`, it raises
+`WrappedTransitionRefused` (INTERNAL) before reading or writing anything. A docstring was the
+only mitigation, with 17 `atomic()` sites in production; the loss now announces itself instead
+of being found in an audit. The opt-in is keyword-only and off by default. There are two
+opted-in callers, and neither is a shape to copy for a caller whose refusals are reachable and
+which cannot do what extend does:
+
+* **Device activation** (`_activate_device_for_key`, 86ak5v7av) transitions ISSUED -> ACTIVATED
+  inside its own `atomic()` block because the status change, the device, its token and both
+  audit rows must commit or roll back together. Losing the DENIED row there is accepted: the
+  refusal is unreachable in production, since `require_commercial_service` has already admitted
+  the row it holds locked, and the ISSUED -> ACTIVATED edge is pinned by
+  `test_the_table_matches_the_prd_transition_list_except_where_documented`. It can only arise if
+  that edge is removed from the table, and activation then fails closed with no device and no
+  token.
+* **Extend** (`extend_license_key`, 86ak1090r) moves `expires_at` and the status in one
+  transaction. It catches `IllegalLicenseTransition` INSIDE its block (case [C] above), so the
+  DENIED row commits, and re-raises after the block exits.
+
+A new caller whose refusals ARE reachable (the expiry job, conversion, archiving) must call
+outside a wrapping transaction, or catch the refusal inside its block as extend does, or the
+denial it exists to record is rolled back with everything else.
 
 **Agreed escalation, recorded so it is not re-litigated under pressure:** if a flow ever
 needs both a durable denial and a wider atomic block, the answer is a small `audit` database
 alias used for DENIED rows only — never for SUCCESS rows, which must stay transactional with
 the change they describe.
 
-The individual mutations — revoke/extend (86ak1090r), the expiry job (86ak109dv),
-suspend/reinstate (86ak5mn0c), conversion (86ak5mn2k), archiving (86ak5mn2m) — live in
+The individual mutations — revoke/extend (86ak1090r, shipped), the expiry job (86ak109dv),
+suspend/reinstate (86ak5mn0c, shipped), conversion (86ak5mn2k), archiving (86ak5mn2m) — live in
 their own tickets and write THROUGH this module. They must not assign `.status` directly;
 a raw write skips the table, the audit row and the prior-status bookkeeping at once.
 
@@ -112,6 +124,7 @@ not defaulted to ACTIVATED — guessing would silently promote an EXPIRING licen
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -124,6 +137,9 @@ from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.context import ActorContext, require_reason
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+from selahcue_api.graphql.redaction import ensure_payload_depth
+
+logger = logging.getLogger(__name__)
 
 
 class PriorStatusTarget(Enum):
@@ -254,6 +270,25 @@ AUDIT_TARGET_TYPE = "app_license_key"
 REFUSED_ACTION = "license_key.status_change_refused"
 SUSPEND_ACTION = "license_key.suspended"
 REINSTATE_ACTION = "license_key.reinstated"
+REVOKE_ACTION = "license_key.revoked"
+EXTEND_ACTION = "license_key.extended"
+
+# AC 7 of 86ak1090r, in the strict sense. `statuses_without_writer()` below is derived from the
+# TABLE: a status counts as written once some edge targets it, which is true of all eight. This
+# is the other half, about CALLERS: the statuses no production entry point writes today, each
+# with the ticket that will write it. They are deliberately unwritten, not forgotten, and
+# `tests/test_license_revoke_extend.py` drives every entry point that exists and requires the
+# produced set and this set to partition the enum. When one of these tickets lands, move its
+# status out of this mapping; that test fails until you do.
+#
+# Written by production entry points today: ISSUED (staff issuance), ACTIVATED (first device
+# activation; extend restores it), SUSPENDED (suspend), REVOKED (revoke).
+DELIBERATELY_UNWRITTEN_STATUSES: dict[LicenseKeyStatus, str] = {
+    LicenseKeyStatus.EXPIRING: "86ak109dv - the scheduled expiry job (renewal-notice window, FR-502)",
+    LicenseKeyStatus.EXPIRED: "86ak109dv - the scheduled expiry job (the clock, FR-503)",
+    LicenseKeyStatus.CONVERTED: "86ak5mn2k - trial-to-paid conversion (FR-506, gated on D1)",
+    LicenseKeyStatus.ARCHIVED: "86ak5mn2m - retention archiving (FR-507)",
+}
 
 # Derived from the audit fields, not restated. A migration that widens or narrows either
 # column moves these with it; a hardcoded copy would keep validating against the old width
@@ -300,6 +335,18 @@ class IllegalLicenseTransition(SafeAPIError):
         self.refusal_code = refusal_code
         self.detail = detail
         super().__init__(ErrorCode.CONFLICT)
+
+
+class WrappedTransitionRefused(SafeAPIError):
+    """The writer was called inside a caller's open transaction without opting in (AC 8).
+
+    Carries `ErrorCode.INTERNAL`: this is a programming error in the caller, not something the
+    requester did, and the public message says nothing about it. Raised BEFORE anything is read
+    or written, so refusing costs nothing and changes nothing.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.INTERNAL)
 
 
 class _Refused(Exception):
@@ -481,6 +528,7 @@ def apply_license_status_transition(
     extra_before: dict[str, Any] | None = None,
     extra_after: dict[str, Any] | None = None,
     recognise_retry: bool = False,
+    allow_wrapping_transaction: bool = False,
 ) -> LicenseTransitionResult:
     """The audited writer for `AppLicenseKey.status` (FR-501, FR-508, NFR-506).
 
@@ -506,6 +554,17 @@ def apply_license_status_transition(
     has since changed. Known limit: a request that was a no-op wrote no row, so it cannot be
     recognised on retry.
 
+    `allow_wrapping_transaction=True` (keyword-only, off by default) is the named opt-in for a
+    caller that is ALREADY inside a transaction (`connection.in_atomic_block`). Without it the
+    call is refused with `WrappedTransitionRefused` before anything is read or written: a
+    refusal's DENIED row is written after this function's own `atomic()` unwinds, so inside a
+    caller's transaction a propagating `IllegalLicenseTransition` rolls that row back with the
+    caller's work, and PRD §13's "refused and audited" silently fails. The opt-in says the
+    caller has weighed that and either (a) cannot reach a refusal (device activation: the edge
+    is table-pinned) or (b) catches the refusal inside its own block so the row commits
+    (extend). A caller whose refusals ARE reachable and which cannot do (b) must not opt in; it
+    needs the agreed `audit` database alias instead (module docstring).
+
     Outcomes, in the order they are decided:
 
     0. **Retry of a request that already took effect** (only with `recognise_retry`).
@@ -526,16 +585,34 @@ def apply_license_status_transition(
     Caveat worth knowing: the refusal audit row is written after this function's own
     `atomic()` block unwinds, so it survives on its own. A CALLER that wraps this in its
     own transaction and then lets `IllegalLicenseTransition` propagate will roll that row
-    back with everything else — callers that need the denial durable must not swallow the
-    transition inside a wider atomic block. Device activation is the one caller that does
-    this on purpose; see "durability of refusals" in the module docstring for why that is
-    safe there and why it is not a shape to copy.
+    back with everything else (the tripwire above refuses that shape unless the caller opted
+    in by name); catching the refusal INSIDE the wider block keeps the row. Device activation
+    and extend are the callers that opt in; see "durability of refusals" in the module
+    docstring for why each is safe and why neither is a shape to copy blindly.
     """
+    # AC 8 (86ak1090r): the mechanical tripwire for the wrapped-transaction denial loss. A
+    # docstring was the only mitigation, with 17 `atomic()` sites in production; this makes the
+    # loss announce itself instead of being discovered in an audit. Fails closed and runs first:
+    # it is about the CALLER, not the arguments, and nothing has been touched yet.
+    if transaction.get_connection().in_atomic_block and not allow_wrapping_transaction:
+        logger.error(
+            "apply_license_status_transition was called inside an open transaction without "
+            "allow_wrapping_transaction=True; refused, because a DENIED audit row written in "
+            "this state would be rolled back with the caller's transaction (durability of "
+            "refusals, state_machine docstring)."
+        )
+        raise WrappedTransitionRefused()
+
     cleaned_reason = require_reason(reason)
     cleaned_request_id = _require_request_id(request_id)
     cleaned_action = _require_action(action)
     cleaned_surface = _require_source_surface(source_surface)
     requested = _coerce_target(to_status)
+    # AC 9: a payload nested past the bound is refused HERE, with a coded error, before the row
+    # lock is taken. Left to `record_audit_event` it would fail inside the lock, and on the
+    # refusal path that destroys the DENIED row.
+    ensure_payload_depth(extra_before or {})
+    ensure_payload_depth(extra_after or {})
 
     try:
         with transaction.atomic():
@@ -650,6 +727,18 @@ def apply_license_status_transition(
             refusal_code=refused.refusal_code,
             detail=refused.detail,
         ) from None
+
+
+def earlier_success_event(
+    actor: ActorContext, *, action: str, license_key_id: int, request_id: str
+) -> AuditEvent | None:
+    """Public form of the retry lookup, for a mutation that must recognise its own retry
+    before it decides anything else (extend: a replay after the licence has moved on must not
+    be judged against the licence's NEW state). Same scoping as the writer's own check, and the
+    same requirement: call it with the licence row locked."""
+    return _earlier_success(
+        actor, action=action, target_id=str(license_key_id), request_id=request_id
+    )
 
 
 def _earlier_success(

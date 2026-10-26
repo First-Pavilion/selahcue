@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.conf import settings
 from django.contrib.auth.hashers import make_password
@@ -14,18 +15,25 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
+from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.catalogue.services import plan_device_instances_for_issuance
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
 from selahcue_api.apps.license_keys.state_machine import (
+    AUDIT_TARGET_TYPE,
+    EXTEND_ACTION,
     PRIOR_STATUS,
+    IllegalLicenseTransition,
     LicenseTransitionResult,
     PriorStatusTarget,
     apply_license_status_transition,
+    earlier_success_event,
 )
-from selahcue_api.apps.throttling.guards import enforce_budget
+from selahcue_api.apps.throttling.guards import enforce_budget, spend_budget
+from selahcue_api.apps.throttling.services import BudgetOutcome
 from selahcue_api.graphql.context import (
+    ACTOR_ID_MAX_LENGTH,
     ActorContext,
     StaffPermission,
     has_control_characters,
@@ -98,6 +106,36 @@ def _generate_full_key(key_type: LicenseKeyType) -> str:
         for _ in range(KEY_BODY_GROUPS)
     ]
     return f"SC-{key_type.value}-{'-'.join(groups)}"
+
+
+# A full licence key as `_generate_full_key` writes it: `SC-<TYPE>-` then eight groups of four.
+# Built from the same constants so a change to the key shape moves this with it. Case-insensitive
+# because the person pasting it may have retyped it. It matches the canonical spelling only: a
+# key broken across lines or re-grouped by hand evades it, which is the honest limit of a check
+# that refuses on a pattern.
+_FULL_KEY_IN_TEXT_RE = re.compile(
+    rf"SC-[A-Z_]+(?:-[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}){{{KEY_BODY_GROUPS}}}", re.IGNORECASE
+)
+
+
+def _require_reason_without_a_credential(raw_reason: str) -> str:
+    """`require_reason`, and refuse a reason that contains a full licence key.
+
+    FLOW-504 is "leaked key kill", so the person writing the reason has the leaked key in front
+    of them and pasting it is the natural slip. The audit trail is append-only and NFR-508
+    allows no plaintext licensing credential at rest, so a key that lands there can never be
+    taken back. Refused rather than redacted: quietly rewriting the reason would falsify the
+    record, and a refusal tells the person what to do instead (name the licence by its masked
+    key or its id).
+    """
+    reason = require_reason(raw_reason)
+    if _FULL_KEY_IN_TEXT_RE.search(reason):
+        raise SafeAPIError(
+            ErrorCode.VALIDATION_FAILED,
+            "The reason contains a full licence key. Refer to the licence by its masked key or "
+            "its id instead; the audit trail keeps what is written here permanently.",
+        )
+    return reason
 
 
 def _fingerprint(full_key: str) -> str:
@@ -545,6 +583,129 @@ class ReinstateLicenseKeyData:
     reason: str
 
 
+# --- Authorisation with an audited refusal (86ak1090r, AC 2 and AC 11) ---------------------
+#
+# The writer performs no authorisation, so each staff mutation gates itself FIRST: before the
+# licence is looked up, before the budget is spent, before the writer is reached. A caller who
+# is authenticated but not permitted is refused with PERMISSION_DENIED and the attempt is
+# recorded, because "someone without the permission tried to revoke a licence" is exactly what
+# an investigator needs to find (PRD §19: "§15 actor gating + FR-508 audit").
+#
+# What is deliberately NOT audited: an unauthenticated caller, and an identity too long or
+# malformed to be written to the trail. There is no actor to attribute the row to.
+#
+# The refusal row is written for a caller we do not trust, so it is built defensively and
+# BOUNDED. Every free-text field it carries is validated or replaced, never stored as sent,
+# and two budgets cap how many rows the refusal path can produce: one per identity, one global
+# (actor ids are free to vary on the dev header bridge, so a per-identity cap alone is not a
+# bound). Past a budget the call is still refused; it just stops writing rows, and the shared
+# throttle layer reports the sustained denial in the log once a minute.
+REVOKE_PERMISSION_DENIED_ACTION = "license_key.revoke_permission_denied"
+EXTEND_PERMISSION_DENIED_ACTION = "license_key.extend_permission_denied"
+EXTEND_REFUSED_ACTION = "license_key.extend_refused"
+
+REFUSAL_AUDIT_SCOPE = "admin_licence_refusal_audit"
+REFUSAL_AUDIT_SETTING = "SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT"
+REFUSAL_AUDIT_BUDGET = (5, 60)
+REFUSAL_AUDIT_GLOBAL_SETTING = "SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL"
+REFUSAL_AUDIT_GLOBAL_BUDGET = (100, 60)
+
+_PERMISSION_REFUSAL_CODE = "permission_denied"
+_UNRESOLVED_TARGET = "unresolved"
+_INVALID_REQUEST_ID = "invalid-idempotency-key"
+
+
+def _authorise(
+    actor: ActorContext | None,
+    permission: StaffPermission,
+    *,
+    denied_action: str | None,
+    raw_idempotency_key: str,
+    raw_license_key_id: str,
+    raw_reason: str,
+) -> ActorContext:
+    """`require_staff_permission`, plus an audit row when an identified actor is refused.
+
+    `denied_action=None` keeps the plain gate (suspend and reinstate, which predate this and
+    audit only transition refusals).
+    """
+    try:
+        return require_staff_permission(actor, permission)
+    except SafeAPIError as error:
+        if denied_action is not None and actor is not None and error.code is ErrorCode.PERMISSION_DENIED:
+            _audit_permission_refusal(
+                actor,
+                permission=permission,
+                action=denied_action,
+                raw_idempotency_key=raw_idempotency_key,
+                raw_license_key_id=raw_license_key_id,
+                raw_reason=raw_reason,
+            )
+        raise
+
+
+def _audit_permission_refusal(
+    actor: ActorContext,
+    *,
+    permission: StaffPermission,
+    action: str,
+    raw_idempotency_key: str,
+    raw_license_key_id: str,
+    raw_reason: str,
+) -> None:
+    """Best effort, bounded, and never able to change the answer the caller gets."""
+    actor_id = actor.actor_id or ""
+    if not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH or has_control_characters(actor_id):
+        return  # cannot be written to the trail; the refusal itself is unaffected
+
+    identity = hashlib.sha256(f"{actor.kind.value}:{actor_id}".encode("utf-8")).hexdigest()[:32]
+    if spend_budget(
+        REFUSAL_AUDIT_SCOPE, identity, REFUSAL_AUDIT_SETTING, REFUSAL_AUDIT_BUDGET
+    ) is BudgetOutcome.DENIED:
+        return
+    if spend_budget(
+        f"{REFUSAL_AUDIT_SCOPE}_global",
+        "all",
+        REFUSAL_AUDIT_GLOBAL_SETTING,
+        REFUSAL_AUDIT_GLOBAL_BUDGET,
+    ) is BudgetOutcome.DENIED:
+        return
+
+    # No lookup: whether the licence exists must not change what an unauthorised caller sees,
+    # and a refused caller does not get to make the database work.
+    target_id = _clean_license_key_id(raw_license_key_id) or _UNRESOLVED_TARGET
+    try:
+        request_id = validate_idempotency_key(raw_idempotency_key)
+    except SafeAPIError:
+        request_id = _INVALID_REQUEST_ID
+    try:
+        reason = _require_reason_without_a_credential(raw_reason)
+    except SafeAPIError:
+        reason = ""
+
+    try:
+        record_audit_event(
+            actor,
+            action=action,
+            target_type=AUDIT_TARGET_TYPE,
+            target_id=target_id,
+            request_id=request_id,
+            reason=reason,
+            result=AuditResult.DENIED,
+            after={
+                "required_permission": permission.value,
+                "refusal_code": _PERMISSION_REFUSAL_CODE,
+            },
+        )
+    except Exception:  # noqa: BLE001 - the record of a refusal must never undo the refusal
+        logger.exception(
+            "could not record a permission refusal for actor kind %s (%s); the call was still "
+            "refused.",
+            actor.kind.value,
+            action,
+        )
+
+
 def _require_autocommit() -> None:
     """Refuse to run inside a caller's transaction.
 
@@ -597,17 +758,26 @@ def _get_license_key_or_not_found(raw_id: str) -> AppLicenseKey:
     never reaches this line because `require_staff_permission` refuses them first, with the
     same answer whether or not the licence exists.
     """
+    cleaned = _clean_license_key_id(raw_id)
+    if cleaned is None:
+        raise SafeAPIError(ErrorCode.NOT_FOUND)
+    try:
+        return AppLicenseKey.objects.select_related("customer").get(pk=int(cleaned))
+    except AppLicenseKey.DoesNotExist as error:
+        raise SafeAPIError(ErrorCode.NOT_FOUND) from error
+
+
+def _clean_license_key_id(raw_id: str) -> str | None:
+    """The id as digits, or None when the text cannot name a licence. One rule for both the
+    lookup and the refusal audit row, so a value the lookup would reject is never recorded."""
     cleaned = (raw_id or "").strip()
     if (
         not cleaned
         or len(cleaned) > _MAX_LICENSE_KEY_ID_DIGITS
         or not (cleaned.isascii() and cleaned.isdecimal())
     ):
-        raise SafeAPIError(ErrorCode.NOT_FOUND)
-    try:
-        return AppLicenseKey.objects.select_related("customer").get(pk=int(cleaned))
-    except AppLicenseKey.DoesNotExist as error:
-        raise SafeAPIError(ErrorCode.NOT_FOUND) from error
+        return None
+    return cleaned
 
 
 def _lifecycle_mutation(
@@ -618,12 +788,20 @@ def _lifecycle_mutation(
     raw_idempotency_key: str,
     raw_license_key_id: str,
     raw_reason: str,
+    denied_action: str | None = None,
 ) -> LicenseTransitionResult:
-    staff = require_staff_permission(actor, permission)
+    staff = _authorise(
+        actor,
+        permission,
+        denied_action=denied_action,
+        raw_idempotency_key=raw_idempotency_key,
+        raw_license_key_id=raw_license_key_id,
+        raw_reason=raw_reason,
+    )
     _require_autocommit()
     _enforce_lifecycle_budget(staff)
     idempotency_key = validate_idempotency_key(raw_idempotency_key)
-    reason = require_reason(raw_reason)
+    reason = _require_reason_without_a_credential(raw_reason)
     license_key = _get_license_key_or_not_found(raw_license_key_id)
 
     return apply_license_status_transition(
@@ -682,3 +860,325 @@ def reinstate_license_key(
         raw_license_key_id=data.license_key_id,
         raw_reason=data.reason,
     )
+
+
+# --- Revoke (86ak1090r: FR-505, FLOW-504, NFR-503) ---------------------------------------------
+@dataclass(frozen=True)
+class RevokeLicenseKeyData:
+    idempotency_key: str
+    license_key_id: str
+    reason: str
+
+
+def revoke_license_key(
+    actor: ActorContext | None, data: RevokeLicenseKeyData
+) -> LicenseTransitionResult:
+    """Permanently kill a licence (FR-505). Staff only, reason mandatory.
+
+    Writes REVOKED through the state machine and nothing else: it does not touch a device
+    token. Tokens already issued are revoked by the hourly cascade (`cascade_license_
+    revocations`, NFR-503: at most 65 minutes online exposure), while activation and manifest
+    issuance refuse at once because REVOKED is outside `ACTIVATABLE_KEY_STATUSES`. The cached
+    offline entitlement runs to its own expiry, the accepted DEC-004/005 trade-off (RISK-501).
+
+    Allowed from every status the table gives a REVOKED edge (ISSUED, ACTIVATED, EXPIRING,
+    EXPIRED, SUSPENDED, CONVERTED). Revoking an already REVOKED licence is a no-op
+    (`changed=False`, no second audit row, nothing for a second cascade to do). Revoking an
+    ARCHIVED licence is refused with CONFLICT and one durable DENIED audit row. REVOKED is
+    permanent: no mutation moves a licence out of it except archiving.
+    """
+    return _lifecycle_mutation(
+        actor,
+        permission=StaffPermission.REVOKE_LICENSE_KEY,
+        to_status=LicenseKeyStatus.REVOKED,
+        raw_idempotency_key=data.idempotency_key,
+        raw_license_key_id=data.license_key_id,
+        raw_reason=data.reason,
+        denied_action=REVOKE_PERMISSION_DENIED_ACTION,
+    )
+
+
+# --- Extend (86ak1090r: FR-509, FLOW-503) ------------------------------------------------------
+#
+# Which statuses a licence may be extended from, and what each becomes. Decided here, flagged in
+# the PR for the owner; no change to the transition table is needed for any of it.
+#
+#   ISSUED, ACTIVATED  the date moves; the status stays. An ISSUED licence must not be
+#                      "activated" by an extension: nothing has activated it.
+#   EXPIRING, EXPIRED  the date moves and the status becomes ACTIVATED through the writer (the
+#                      FR-509 renewal edges, already in the table). An EXPIRING licence that
+#                      never had a device ends ACTIVATED with none, because the table has no
+#                      EXPIRING -> ISSUED edge; it stays activatable.
+#   SUSPENDED          refused: a hold is lifted by reinstating first (which returns the status
+#                      it came from), so extending underneath a hold would make the hold's
+#                      recorded prior status describe a window that no longer exists.
+#   CONVERTED          refused: superseded by a successor licence.
+#   REVOKED, ARCHIVED  refused: terminal.
+EXTENDABLE_SOURCES = frozenset(
+    {
+        LicenseKeyStatus.ISSUED,
+        LicenseKeyStatus.ACTIVATED,
+        LicenseKeyStatus.EXPIRING,
+        LicenseKeyStatus.EXPIRED,
+    }
+)
+_EXTENDS_TO_ACTIVATED = frozenset({LicenseKeyStatus.EXPIRING, LicenseKeyStatus.EXPIRED})
+
+# A technical sanity bound, NOT a product rule. Issuance has no ceiling and the PRD names no
+# maximum term, so this only has to stop an absurd date (year 9999, a typo of three extra
+# digits) from becoming a signed entitlement cached offline until it. Five years from NOW.
+# Flagged for the owner; changing it is one constant.
+MAX_EXTENSION_FROM_NOW = timedelta(days=5 * 365)
+
+
+@dataclass(frozen=True)
+class ExtendLicenseKeyData:
+    idempotency_key: str
+    license_key_id: str
+    new_expires_at: datetime
+    reason: str
+
+
+class _ExtendRefused(Exception):
+    """Internal control flow: abandons the extend transaction so nothing is written, then the
+    DENIED audit row is recorded OUTSIDE it (same shape as the writer's own refusal)."""
+
+    def __init__(
+        self, *, error: SafeAPIError, refusal_code: str, before: AppLicenseKey, requested: datetime
+    ) -> None:
+        self.error = error
+        self.refusal_code = refusal_code
+        self.before_status = before.status
+        self.before_prior_status = before.prior_status
+        self.before_expires_at = before.expires_at
+        self.requested = requested
+        super().__init__(refusal_code)
+
+
+def _require_new_expiry(value: datetime) -> datetime:
+    """The requested expiry as an aware UTC instant, or VALIDATION_FAILED.
+
+    Naive values are REFUSED rather than coerced to UTC the way issuance does it: a licence
+    window moved by a mis-read zone is an hours-wrong entitlement, and the console can always
+    send an offset. In the future, because an activatable licence whose window is already over
+    activates nothing; at most `MAX_EXTENSION_FROM_NOW` ahead, because of the year-9999 typo.
+    """
+    if not isinstance(value, datetime) or timezone.is_naive(value):
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+    try:
+        instant = value.astimezone(dt_timezone.utc)
+    except (OverflowError, ValueError) as error:  # year 9999 with a negative offset, etc.
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED) from error
+    now = timezone.now()
+    if instant <= now or instant > now + MAX_EXTENSION_FROM_NOW:
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+    return instant
+
+
+def _move_expiry(locked: AppLicenseKey, new_expires_at: datetime) -> None:
+    """The one place an extension writes the date. A named seam so the tests can make exactly
+    this step fail and watch the status change and the audit row roll back with it."""
+    locked.expires_at = new_expires_at
+    locked.save(update_fields=["expires_at", "updated_at"])
+
+
+def extend_license_key(
+    actor: ActorContext | None, data: ExtendLicenseKeyData
+) -> LicenseTransitionResult:
+    """Move a licence's `expires_at` forward and return a lapsed one to ACTIVATED (FR-509).
+
+    Staff only, reason mandatory. See `EXTENDABLE_SOURCES` for what each status does. The new
+    expiry must be timezone-aware, strictly later than the current one, in the future, and
+    within `MAX_EXTENSION_FROM_NOW`; it may not overlap another valid licence of the
+    organisation (the rule `require_no_overlapping_license_key` documents for exactly this
+    caller); and an archived customer's licence is not extended.
+
+    One transaction holds the organisation row lock, then the licence row lock, and commits the
+    new date, the status change and the single audit row together. Retries: the idempotency key
+    is per user intent. A retry of a request that took effect applies nothing and reports the
+    licence's CURRENT state with `changed=False` and the original audit row, checked under the
+    lock BEFORE anything else so it is never judged against the state the first call produced.
+    A new key with the date already in effect is rejected (VALIDATION_FAILED), not applied twice.
+
+    Lock order is organisation then licence. Revoke, suspend and activation take only the
+    licence lock, so nothing takes them in the opposite order.
+    """
+    staff = _authorise(
+        actor,
+        StaffPermission.EXTEND_LICENSE_KEY,
+        denied_action=EXTEND_PERMISSION_DENIED_ACTION,
+        raw_idempotency_key=data.idempotency_key,
+        raw_license_key_id=data.license_key_id,
+        raw_reason=data.reason,
+    )
+    _require_autocommit()
+    _enforce_lifecycle_budget(staff)
+    idempotency_key = validate_idempotency_key(data.idempotency_key)
+    reason = _require_reason_without_a_credential(data.reason)
+    new_expires_at = _require_new_expiry(data.new_expires_at)
+    license_key = _get_license_key_or_not_found(data.license_key_id)
+
+    try:
+        return _extend_under_locks(
+            license_key,
+            staff=staff,
+            idempotency_key=idempotency_key,
+            reason=reason,
+            new_expires_at=new_expires_at,
+        )
+    except _ExtendRefused as refused:
+        # Outside the atomic block that raised it: the transaction rolled back, this row does not.
+        record_audit_event(
+            staff,
+            action=EXTEND_REFUSED_ACTION,
+            target_type=AUDIT_TARGET_TYPE,
+            target_id=str(license_key.pk),
+            request_id=idempotency_key,
+            reason=reason,
+            result=AuditResult.DENIED,
+            before={
+                "status": refused.before_status,
+                "prior_status": refused.before_prior_status,
+                "expires_at": refused.before_expires_at.isoformat(),
+            },
+            after={
+                "status": refused.before_status,
+                "prior_status": refused.before_prior_status,
+                "expires_at": refused.before_expires_at.isoformat(),
+                "requested_expires_at": refused.requested.isoformat(),
+                "refusal_code": refused.refusal_code,
+            },
+        )
+        raise refused.error from None
+
+
+def _extend_under_locks(
+    license_key: AppLicenseKey,
+    *,
+    staff: ActorContext,
+    idempotency_key: str,
+    reason: str,
+    new_expires_at: datetime,
+) -> LicenseTransitionResult:
+    writer_refusal: IllegalLicenseTransition | None = None
+    with transaction.atomic():
+        customer = lock_customer_for_key_changes(license_key.customer_id)
+        locked = AppLicenseKey.objects.select_for_update().get(pk=license_key.pk)
+        before_status = LicenseKeyStatus(locked.status)
+        old_expires_at = locked.expires_at
+
+        # 1. A retry of a request that already took effect, decided before anything else.
+        earlier = earlier_success_event(
+            staff, action=EXTEND_ACTION, license_key_id=locked.pk, request_id=idempotency_key
+        )
+        if earlier is not None:
+            return LicenseTransitionResult(
+                license_key=locked,
+                from_status=before_status,
+                to_status=before_status,
+                changed=False,
+                audit_event=earlier,
+            )
+
+        # 2. Refusals that are audited.
+        if before_status not in EXTENDABLE_SOURCES:
+            raise _ExtendRefused(
+                error=SafeAPIError(ErrorCode.CONFLICT),
+                refusal_code="status_not_extendable",
+                before=locked,
+                requested=new_expires_at,
+            )
+        if customer.status == CustomerStatus.ARCHIVED:
+            raise _ExtendRefused(
+                error=SafeAPIError(ErrorCode.POLICY_DENIED),
+                refusal_code="customer_archived",
+                before=locked,
+                requested=new_expires_at,
+            )
+
+        # 3. Input that only the locked row can judge. Not audited: it is a bad request.
+        if new_expires_at <= old_expires_at:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+        try:
+            require_no_overlapping_license_key(
+                customer,
+                starts_at=locked.starts_at,
+                expires_at=new_expires_at,
+                exclude_key_id=locked.pk,
+                requested_by=staff.actor_id,
+            )
+        except SafeAPIError as error:
+            if error.code is not ErrorCode.POLICY_DENIED:
+                raise
+            raise _ExtendRefused(
+                error=error,
+                refusal_code="overlaps_another_licence",
+                before=locked,
+                requested=new_expires_at,
+            ) from None
+
+        # 4. Apply. The status goes through the writer, never assigned here.
+        if before_status in _EXTENDS_TO_ACTIVATED:
+            try:
+                transition = apply_license_status_transition(
+                    locked,
+                    to_status=LicenseKeyStatus.ACTIVATED,
+                    actor=staff,
+                    reason=reason,
+                    request_id=idempotency_key,
+                    action=EXTEND_ACTION,
+                    extra_before={"expires_at": old_expires_at.isoformat()},
+                    extra_after={"expires_at": new_expires_at.isoformat()},
+                    # Wrapped on purpose: the date, the status and the audit row commit together.
+                    # A refusal is unreachable while the renewal edges stay in the table, and if
+                    # one does arise it is caught right here, inside the block, so its DENIED row
+                    # commits (the "caught inside" case of the writer's durability contract).
+                    allow_wrapping_transaction=True,
+                )
+            except IllegalLicenseTransition as refusal:
+                writer_refusal = refusal
+            else:
+                _move_expiry(locked, new_expires_at)
+                return LicenseTransitionResult(
+                    license_key=locked,
+                    from_status=before_status,
+                    to_status=LicenseKeyStatus.ACTIVATED,
+                    changed=True,
+                    audit_event=transition.audit_event,
+                )
+        else:
+            _move_expiry(locked, new_expires_at)
+            event = record_audit_event(
+                staff,
+                action=EXTEND_ACTION,
+                target_type=AUDIT_TARGET_TYPE,
+                target_id=str(locked.pk),
+                request_id=idempotency_key,
+                reason=reason,
+                result=AuditResult.SUCCESS,
+                before={
+                    "status": before_status.value,
+                    "prior_status": locked.prior_status,
+                    "expires_at": old_expires_at.isoformat(),
+                },
+                after={
+                    "status": locked.status,
+                    "prior_status": locked.prior_status,
+                    "expires_at": new_expires_at.isoformat(),
+                },
+            )
+            return LicenseTransitionResult(
+                license_key=locked,
+                from_status=before_status,
+                to_status=before_status,
+                changed=True,
+                audit_event=event,
+            )
+
+    # Reached only when the writer refused: the block committed just its DENIED row. Every other
+    # path above returns or raises, so a missing refusal here is a bug in this function. Raised
+    # explicitly rather than asserted, because `python -O` strips an assert.
+    if writer_refusal is None:
+        raise RuntimeError("extend finished its transaction without a result or a refusal")
+    raise writer_refusal
