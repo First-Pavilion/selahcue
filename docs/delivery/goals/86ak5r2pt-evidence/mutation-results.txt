@@ -1,3 +1,7 @@
+# Round 3: after the harness gained a per-run timeout and the same LANG/LC_ALL as make api-check, the
+# baseline (207 passed) and 11 mutants (T1 R3 L3b B2 Q1 Q4 Q12 Z14 Y08 Z17 N8) were re-run on the head
+# that carries this file: the same verdict for each, RED and restored byte for byte. The other mutants
+# were not re-run; production code is unchanged since the runs recorded below.
 # Mutation results, 78 mutants. 75 lines are from one full run of mutate.py; the lines for B2, N8 and N10
 # are from a second run (--only B2,N8,N10) after the first run showed that B2 was an equivalent mutant,
 # that N8 needed a direct test, and that N10 had a stale pattern. The only change between the runs is
