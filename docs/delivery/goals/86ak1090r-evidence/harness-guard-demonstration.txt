@@ -1,0 +1,24 @@
+# Round 4: the harness guard tests cannot delete the real tree, and they bite when the guard is gone.
+#
+# 1. Non-destructive by construction. tests/test_mutation_harness_guards.py points the harness's REPO and API at a FAKE
+#    repository built in tmp_path (a venv, an untracked file, production code) and fences shutil.rmtree / copytree to that
+#    directory. A control test (test_the_fence_itself_holds) proves the fence raises for any path outside it.
+#
+# 2. Demonstration, run on 2026-10-26 against a copy of mutate.py with the guard layer deliberately removed (the first line of
+#    check_sandbox_holder replaced by `return holder.resolve()`), selected with MUTATE_HARNESS_UNDER_TEST:
+#
+#      pytest tests/test_mutation_harness_guards.py -k "fence or sandbox or refused or symlink"
+#      -> 9 failed, 4 passed  (the five refusal cases, the three copy-step cases and the foreign-directory case all FAIL)
+#
+#    The real checkout was compared before and after: `ls implementation/api`, the venv's python path and `git status --short`
+#    were byte-identical. The regressed guard destroyed only the fake tree, inside tmp_path.
+#
+# 3. Outside a full checkout (no docs/ directory, as in the Docker image that copies only implementation/api) the suite skips
+#    loudly, naming what is missing; with CI=1 the same condition FAILS instead of skipping:
+#
+#      MUTATE_HARNESS_UNDER_TEST=/nonexistent/mutate.py pytest tests/test_mutation_harness_guards.py -rs
+#      -> 1 passed, 19 skipped   ("CANNOT RUN here, so nothing is being checked: ... is missing")
+#      CI=1 ... -> 1 passed, 19 errors
+#
+# 4. mutate.py itself no longer needs git to be imported (it falls back to its own location in the tree), so it can be listed
+#    and tested in a container or a tarball: test_the_harness_imports_and_lists_without_git runs it with an empty PATH.

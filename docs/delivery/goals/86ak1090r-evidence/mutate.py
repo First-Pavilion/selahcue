@@ -48,15 +48,24 @@ import sys
 import tempfile
 import time
 
-REPO = pathlib.Path(
-    subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=pathlib.Path(__file__).resolve().parent,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-)
+def _repo_root() -> pathlib.Path:
+    """The repository root: `git rev-parse` when git is there, else where this file sits in the
+    tree (docs/delivery/goals/<id>-evidence/mutate.py is four levels below the root). A harness
+    that cannot even be imported without git could not be inspected, listed or tested in a
+    container or a tarball."""
+    here = pathlib.Path(__file__).resolve().parent
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=here, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        if out:
+            return pathlib.Path(out)
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    return here.parents[3]
+
+
+REPO = _repo_root()
 API = REPO / "implementation" / "api"
 
 PKG = "selahcue_api"
@@ -91,7 +100,8 @@ MUTANTS = {
         [MAIN, ACT, ACT2], ["first_activation", "activation"], note="device activation stops passing the opt-in"),
     "T3-extend-optin-removed": mutant(
         SV, "                    allow_wrapping_transaction=True,\n                )\n            except IllegalLicenseTransition",
-        "                )\n            except IllegalLicenseTransition", [MAIN], ["extend", "writer"],
+        "                )\n            except IllegalLicenseTransition", [MAIN],
+        ["test_extend_moves_the_date_and_returns_a_lapsed_licence", "recovers_after_the_extension", "loses_the_renewal_edge"],
         note="extend stops passing the opt-in"),
     "T4-tripwire-inverted": mutant(
         SM, "if in_open_transaction() and not allow_wrapping_transaction:", "if in_open_transaction() and allow_wrapping_transaction:",
@@ -171,7 +181,7 @@ MUTANTS = {
         note="adminRevokeLicenseKey ignores the submitted retry key"),
     "Q1-revoke-action-renamed": mutant(
         SM, 'REVOKE_ACTION = "license_key.revoked"', 'REVOKE_ACTION = "license_key.revoke"', [MAIN, SUSP],
-        ["action_names_are_a_contract", "revoke"], note="the audit action string for a revoke changes"),
+        ["test_the_audit_action_names_are_a_contract"], note="the audit action string for a revoke changes"),
     # --- credential guard (reason and retry key) -------------------------------------------
     "C1-credential-check-removed": mutant(
         SV, "    if _key_shaped(scanned, _GROUPED_KEY_RE) or _key_shaped(scanned, _RUN_TOGETHER_KEY_RE):", "    if False:",
@@ -305,6 +315,11 @@ MUTANTS = {
         SV, "            except IllegalLicenseTransition as refusal:\n                writer_refusal = refusal",
         "            except IllegalLicenseTransition as refusal:\n                raise", [MAIN], ["still_durable"],
         note="the writer's refusal propagates out of extend's transaction (the DENIED row is lost)"),
+    "L1-candidates-consumed-not-looked-ahead": mutant(
+        SV, 'rf"{_KEY_FLOOR}(?=((?:{_KEY_GROUP}[\\W_]{{1,3}}){{{KEY_BODY_GROUPS - 1}}}{_KEY_GROUP}){_KEY_CEILING})"',
+        'rf"{_KEY_FLOOR}((?:{_KEY_GROUP}[\\W_]{{1,3}}){{{KEY_BODY_GROUPS - 1}}}{_KEY_GROUP}){_KEY_CEILING}"',
+        [MAIN], ["real_key_after_a_hex_run"],
+        note="a matched window is consumed, so a hex run directly before a real key hides the key"),
     "R5-key-group-alphabet-widened": mutant(
         SV, '_KEY_GROUP = rf"[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}"', '_KEY_GROUP = rf"[A-Z0-9]{{{KEY_GROUP_SIZE}}}"',
         [MAIN], ["outside_the_key_alphabet"], note="groups containing I, O, 0 or 1 are treated as key groups"),
@@ -360,7 +375,8 @@ MUTANTS = {
     # --- revoke behaviour -------------------------------------------------------------------
     "R1-revoke-targets-suspended": mutant(
         SV, "        to_status=LicenseKeyStatus.REVOKED,\n        raw_idempotency_key", "        to_status=LicenseKeyStatus.SUSPENDED,\n        raw_idempotency_key",
-        [MAIN], ["revoke"], note="revoke writes SUSPENDED"),
+        [MAIN], ["test_revoke_succeeds_from_every_revocable_status", "test_graphql_revoke_happy_path", "makes_the_cascade_kill_the_device_token"],
+        note="revoke writes SUSPENDED"),
     "R2-revoke-retry-not-recognised": mutant(
         SV, "        recognise_retry=True,", "        recognise_retry=False,", [MAIN, SUSP], ["retry"],
         note="the lifecycle mutations do not ask the writer to recognise a retry"),
@@ -422,9 +438,17 @@ def sandbox_copy(destination: pathlib.Path) -> pathlib.Path:
     (holder / SANDBOX_MARKER).write_text("created by mutate.py; safe to delete\n")
     ignore = shutil.ignore_patterns(".venv-api-check", "__pycache__", "*.egg-info", "db.sqlite3", ".pytest_cache")
     target = holder / "api"
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(API, target, ignore=ignore)
+    if target.is_symlink():
+        raise UnsafeSandbox(
+            f"refusing --sandbox {destination}: <sandbox>/api is a symbolic link; removing it would "
+            "follow it to wherever it points. Remove it yourself or choose another directory."
+        )
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(API, target, ignore=ignore)
+    except OSError as error:
+        raise UnsafeSandbox(f"could not prepare the sandbox at {destination}: {error}") from error
     return target
 
 

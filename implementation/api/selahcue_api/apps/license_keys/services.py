@@ -130,16 +130,29 @@ def _generate_full_key(key_type: LicenseKeyType) -> str:
 # all-hex with probability (14/32) ** 32, about 1e-12, so a run-together candidate is a key only if
 # some character is outside the hex digits. For the grouped form, a hex run is often introduced by
 # a four-letter label ("DUMP", "HASH") that completes an eight-group window by itself, so a window
-# counts as a key only when TWO or more of its groups hold a non-hex character; a real key has
-# at most one all-hex group with probability about 1e-9 (each group is all-hex with
-# probability (14/32) ** 4, about 3.7%). Candidates are examined at EVERY start position (a
-# lookahead), so a hex window cannot hide a real key that overlaps it.
+# counts as a key only when TWO or more of its groups hold a non-hex character. The event that
+# evades this rule is "at most ONE group holds a non-hex character", i.e. at least seven of the
+# eight groups are all-hex, which for a real key has probability 8p^7(1-p)+p^8 = 6.86e-10 where
+# p = (14/32)^4, about 3.7%, is the chance that one group is all-hex. (The common case is the
+# opposite one: about 97% of real keys have at most one all-hex group.) Candidates are examined at
+# EVERY start position (a lookahead, not a consuming match), so a hex window cannot hide a real
+# key that begins inside or right after it: a seven-group hex run directly followed by a real key
+# is refused, and a consuming match missed it every time.
 #
 # What is NOT recognised, stated so nobody assumes otherwise: a key broken into groups of other
 # sizes or only partly grouped, homoglyphs from other scripts, and anything written as an image.
-# And the shape is a heuristic with known false positives that remain: eight four-letter words in
-# a row that avoid I, O, 0 and 1 look exactly like a spaced-out key, and so does a hex run with two
-# or more four-letter words next to it.
+# This catches a SLIP, not a person who means to hide a key: seven or more all-hex decoy groups
+# between consecutive real groups (about 285 characters) hide any key, and one junk token inside the
+# key, or a separator longer than three characters, already hid it under every earlier version.
+#
+# False positives that remain, all inherent to checking a shape, listed so nobody is surprised:
+#  - eight four-letter words in a row that avoid I, O, 0 and 1, and a hex run with two or more such
+#    words beside it, look exactly like a spaced-out key;
+#  - ANY run-together token of 32 characters over the key alphabet that is not all-hex is refused:
+#    an RFC 4648 base32 string such as a TOTP secret (about 13% of random ones), 32 random
+#    upper-case letters (about 8%), 32 random base36 characters (about 2.3%). Hex hashes, compact
+#    UUIDs, dashed hex groups and IPv6 addresses are never refused (0%). The retry key is checked
+#    in the grouped form only, so none of these is refused there.
 _KEY_GROUP = rf"[{KEY_ALPHABET}]{{{KEY_GROUP_SIZE}}}"
 _KEY_FLOOR = r"(?<![A-Z0-9])"
 _KEY_CEILING = r"(?![A-Z0-9])"

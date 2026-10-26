@@ -2679,13 +2679,40 @@ def test_a_hex_token_with_one_character_outside_hex_is_still_refused():
 def test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key():
     """Grouped form: a hex run introduced by a four-letter label ("DUMP") has ONE group outside
     hex and is not a key; two such groups (a label and a stray word, or a real key) are. A real
-    key has at most one all-hex group with probability about 1e-9, so nothing real slips through."""
+    key evades the rule only if at most ONE of its groups holds a non-hex character (at least
+    seven of the eight are all-hex), probability 6.86e-10; "at most one all-hex group" is the
+    common case (about 97% of keys) and is not what the rule depends on."""
     key, _ = _seed_key("cred-hex-two-groups")
     one_group = HEX_GROUPS_WITHOUT_0_OR_1[:-1] + "G"  # last group ABCG
     two_groups = "ABCG" + HEX_GROUPS_WITHOUT_0_OR_1[4:-4] + "ABCH"  # first and last group
 
     _revoke(key, reason=f"Dump {one_group} line.")
     assert _error(_revoke, key, "cred-hex-two-grp-2", reason=f"Dump {two_groups} line.").code == CREDENTIAL
+
+
+@pytest.mark.parametrize("joiner", [" ", "-", " - ", "."], ids=["space", "dash", "spaced-dash", "dot"])
+def test_a_real_key_after_a_hex_run_is_refused_whether_or_not_a_separator_joins_them(joiner):
+    """Candidates are examined at EVERY start position. A seven-group hex run directly followed by
+    a real key makes the first eight-group window one non-hex group short of a key (exempt); a
+    matcher that CONSUMES that window resumes after it, where only seven groups remain, and misses
+    the key every time. The overlapping window that starts one group later is the real key's
+    first, and it is refused."""
+    hex_run = "ABCD EF23 4567 89AB CDEF 2345 6789".replace(" ", joiner)
+    real_key = "GHJK LMNP QRST UVWX YZGH JKLM NPQR STUV".replace(" ", joiner)
+    key, _ = _seed_key("cred-lookahead")
+
+    assert _error(_revoke, key, reason=f"Seen in the log: {hex_run}{joiner}{real_key} afterwards.").code == CREDENTIAL
+    assert _error(_revoke, key, reason=f"Seen in the log: {real_key} afterwards.").code == CREDENTIAL
+    # The same hex run on its own is nothing.
+    _revoke(key, "cred-lookahead-ok-1", reason=f"Seen in the log: {hex_run} afterwards.")
+
+
+def test_a_real_key_after_a_hex_run_is_refused_as_a_retry_key_too():
+    key, _ = _seed_key("cred-lookahead-rk")
+    retry_key = "ABCD-EF23-4567-89AB-CDEF-2345-6789-GHJK-LMNP-QRST-UVWX-YZGH-JKLM-NPQR-STUV"
+
+    assert len(retry_key) <= 128
+    assert _error(_revoke, key, retry_key).code == CREDENTIAL
 
 
 @pytest.mark.parametrize("which", ["revoke", "extend"])
