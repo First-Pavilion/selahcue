@@ -4,7 +4,7 @@
 
 - Goal ID: 86ak5r2pt-reset-confirm-throttle-audit
 - Parent goal ID: NONE
-- Title: A failed `confirmPasswordReset` leaves a correlatable record that holds no token material, and the per-IP budget in front of it is pinned, fails open and is mutation-verified, with the response still indistinguishable across token failures
+- Title: A failed `confirmPasswordReset` leaves a correlatable record that holds no token material and no client address, the per-IP budget in front of it is pinned, fails open and is mutation-verified, and the response is still indistinguishable across token failures
 - Role: backend-engineer
 - Status: GATE_REVIEW
 - Execution engine: goal
@@ -16,46 +16,48 @@
 
 ## Objective
 
-Every `confirmPasswordReset` call that gets past the per-IP budget and then fails (malformed, unknown, wrong-purpose, consumed or expired token, or a rejected password behind a live token) writes one audit row carrying only the outcome class, the source IP bucket, a per-attempt id, a timestamp and, when the token row resolves, the owning user's id. No raw, fingerprinted, hashed or masked reset token appears in that row or in any log line. The response to the caller is unchanged: the five token-failure classes stay byte-identical (FR-529) and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged. The per-IP budget that already guards the mutation is pinned, shown to fail open, shown to honour `X-Forwarded-For` only behind `SELAHCUE_TRUSTED_PROXY_COUNT`, shown never to block a user who retries a weak password, and mutation-verified.
+Every `confirmPasswordReset` call that gets past the per-IP budget and then fails (malformed, unknown, wrong-purpose, consumed or expired token, a rejected password behind a live token, or an unexpected internal failure) writes one audit row carrying only the outcome class, a keyed daily-rotating pseudonym of the source, a random per-attempt id, a timestamp and, when the token row resolves, the owning user's id. No raw, fingerprinted, hashed or masked reset token, no fragment of one, and no client IP address appears in that row or in any log line. The response to the caller is unchanged: the five token-failure classes stay byte-identical (FR-529) and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged. The per-IP budget that already guards the mutation is pinned, shown to fail open, shown to honour `X-Forwarded-For` only behind `SELAHCUE_TRUSTED_PROXY_COUNT`, shown never to block a user who retries a weak password (per source), and mutation-verified. The number of trace rows is bounded by a cross-source brake and, while the limiter store is down, by a process-local ceiling; both skip the row and never the response.
 
 ## Baseline
 
 Verified on origin/main 93bf8063 (2026-10-26):
 
 - `confirm_password_reset` already spends `password_reset_confirm_ip` (20 per 3600 s per client IP, `RESET_CONFIRM_IP_BUDGET`, `SELAHCUE_THROTTLE_RESET_CONFIRM`) before the token is read (86akcmfd4). The ticket text saying the mutation has no throttle describes a state before that change. `tests/test_password_reset_throttle.py` already covers the Nth-call refusal, a spoofed `X-Forwarded-For` at proxy count 0, separate sources, and fail-open on a store outage.
-- The shipped confirm budget is the only reset budget with no value pin (`test_the_shipped_reset_budgets_are_pinned_and_their_two_copies_agree` lists the request-side budgets and the degraded ceiling only).
+- The shipped confirm budget is the only reset budget with no value pin.
 - No test offers a live token behind an exhausted budget, so moving `enforce_budget` below the consume would pass every existing test.
 - `confirm_password_reset` writes an audit row only on success (`customer_user.password_reset_completed`, actor the customer, `request_id` the masked token). No failure path writes anything. No test in `tests/test_customer_auth_slice.py` pins the success row.
-- `RESTRICTED_PAYLOAD_FIELDS` blocks `device_token`, `full_key`, `secret`, passwords and OIDC tokens from audit `before` and `after`; it has no name for a reset token, a token fingerprint or a token hash.
+- `RESTRICTED_PAYLOAD_FIELDS` blocks `device_token`, `full_key`, `secret`, passwords and OIDC tokens from audit `before` and `after`; it has no name for a reset token. Two existing writers store a device token's fingerprint under `after["token_fingerprint"]` on purpose (`device.activated`, `device_token.reminted`); no existing writer uses `reset_token`, `raw_token` or `token_hash`.
 - `ActorKind` has CUSTOMER, STAFF, DEVICE, SERVICE; an unauthenticated caller has no honest kind.
+- A `newPassword` of lone surrogates (written as JSON escapes) passes the length rule, the token is marked consumed, then the hasher raises `UnicodeEncodeError`: not a `SafeAPIError`, so no row, and the view masks it to `VALIDATION_FAILED`.
 - `tests/test_customer_auth_slice.py` and `tests/test_password_reset_throttle.py`: 83 passed on this commit.
 
 ## Inputs and evidence sources
 
 - ClickUp 86ak5r2pt: description and acceptance criteria. Source: security review of 86ak5p9aq (Sana, Finding 2).
-- `implementation/api/selahcue_api/apps/accounts/services.py` (`confirm_password_reset`, the budgets, `_report_unresolved_client_ip`).
-- `implementation/api/selahcue_api/apps/throttling/guards.py` and `services.py` (`enforce_budget`, `client_ip`).
-- `implementation/api/selahcue_api/apps/audit/services.py` (`record_audit_event`) and `graphql/redaction.py`.
-- `implementation/api/selahcue_api/graphql/errors.py` (the argument for the collapsed code and for `PASSWORD_INVALID`).
+- Review round 1 of PR #232 at ac2a4a83: Cody (0 blocker, 1 major), Shadow (0 critical or high, 3 medium), Quinn (0 blocker, 1 major). The orchestrator's decisions on each are recorded in the PR.
+- `implementation/api/selahcue_api/apps/accounts/services.py`, `apps/throttling/guards.py` and `services.py`, `apps/audit/services.py`, `graphql/redaction.py`, `graphql/errors.py`.
+- `docs/legal/PRIVACY-POLICY-PLATFORM-DRAFT.md` lines 215-222 and 372-374 (rate-limit counters expire within an hour; audit records name who acted by an internal identifier), effective 2026-10-31.
 - DEC-013 and FR-529 / CON-P6 / FR-551 as cited in the code.
 
 ## Scope
 
 ### In scope
 
-- A failed-confirm audit row (action `customer_user.password_reset_confirm_failed`, result DENIED, actor kind ANONYMOUS with the source bucket as actor id), written after the transaction has rolled back, in its own savepoint, best effort: a failure to write is logged once a minute and never changes the response.
-- A closed set of outcome classes, set by the service beside each raise, carried to the recorder in a side object and never on the exception, so a class cannot reach the response.
-- `ActorKind.ANONYMOUS` (one additive line in `graphql/context.py`; `actor_kind` is a free-text column, no migration).
-- Reset-token field names added to `RESTRICTED_PAYLOAD_FIELDS` (`reset_token`, `raw_token`, `token_fingerprint`, `token_hash`), so the audit writer redacts them anywhere in the codebase.
-- Tests, in `tests/test_customer_auth_slice.py`: one record per failure class; success row pinned and no failure row on success; no token material in any audit column or log line (with a positive control); response bodies byte-identical across the token-failure classes; recording failure leaves the response unchanged; throttle refuses before the token is read and writes no row; confirm budget pinned; weak-password retries never blocked; fail-open still reaches the service and still leaves a trace; `X-Forwarded-For` honoured only behind the proxy count and the record names the derived source; unresolved and over-long sources.
-- Mutation verification of the throttle and the redaction guard, siblings running, not `--exact`, each file restored byte for byte.
+- A failed-confirm audit row (action `customer_user.password_reset_confirm_failed`, result DENIED, actor kind ANONYMOUS), written after the transaction has rolled back, in its own `atomic()`, best effort: a failure to write is counted and reported once a minute (class name, outcome and pseudonym of the first, no traceback) and never changes the response.
+- A closed set of outcome classes, set by the service beside each raise, carried to the recorder in a side object and never on the exception. Any other exception inside the confirm is recorded as `internal_error` and re-raised; the owning user is recorded as soon as the token is validated.
+- The source is stored only as `src:<32 hex>`, HMAC-SHA256 under a key derived from SECRET_KEY with the label `audit-source-v1`, over the UTC date and the /64-bucketed address; the two address-less sources keep fixed labels (`src:unresolved-client-ip`, `src:unknown`). `after` holds only the outcome. `manage.py failed_reset_confirms --ip ... [--date ...]` computes the pseudonym for a known address and lists the rows.
+- `_validate_password` refuses strings that cannot be UTF-8 encoded, with the code it already uses.
+- A cross-source trace-rows-per-hour brake (1000 per hour, one shared cache key) and, when the limiter store is down, a per-worker ceiling (200 per hour); the brake is not consulted a second time once the per-source budget has failed open. Skipped rows are counted and reported once a minute. All bounded state is scalars.
+- `ActorKind.ANONYMOUS` (one additive line in `graphql/context.py`); `reset_token`, `raw_token` and `token_hash` added to `RESTRICTED_PAYLOAD_FIELDS`. `token_fingerprint` is deliberately not added (two existing writers store it on purpose); tests pin the values those rows hold.
+- Tests, in `tests/test_customer_auth_slice.py` (plus two pin tests next to the device audit tests), and the committed mutation harness and results under `docs/delivery/goals/86ak5r2pt-evidence/`.
 
 ### Non-goals
 
 - The budget number. 20 per hour per IP stays; the decision is recorded in the PR.
-- Setting `SELAHCUE_TRUSTED_PROXY_COUNT` in production (86ak10a13).
-- A record for a throttled (RATE_LIMITED) attempt: the shared guard already emits a once-a-minute warning per scope, and a row per refused request would re-open the write amplification the budget exists to stop.
-- Audit retention or pruning, a process-local ceiling for trace writes while the limiter is down, and padding the existing timing gaps. Listed as follow-ups in the PR.
+- Setting `SELAHCUE_TRUSTED_PROXY_COUNT` in production (86ak10a13). Until it is set the whole customer base is one source: the 20 per hour are shared by everyone and every row names the proxy.
+- A record for a throttled (RATE_LIMITED) attempt: the shared guard already warns once a minute per scope, and a row per refused request would re-open the write amplification the budget exists to stop.
+- Audit retention and anonymise-on-delete: https://app.clickup.com/t/17tnw2b9dp1 (filed by the orchestrator). Token-derived values in other audit rows, and Strawberry's ERROR logging of literal tokens: https://app.clickup.com/t/17tnw2b9dp2 (filed by the orchestrator).
+- Login with lone surrogates (found, not changed: see Risks) and padding the existing timing gaps.
 - Any database migration.
 
 ### Constraints
@@ -64,19 +66,21 @@ Verified on origin/main 93bf8063 (2026-10-26):
 - `test_every_token_failure_stays_mutually_indistinguishable` is not edited.
 - Python imports at module top level.
 - No Co-Authored-By trailer or other attribution footer; push only the ticket branch; PR opened as Draft against main; no ready, no merge, no QA move.
-- Footprint: `apps/accounts/services.py`, `tests/test_customer_auth_slice.py`, this contract; plus the two additive shared-file lines named above, declared in the PR. The other lane (86ak1090r) owns `admin_schema.py`, `redaction.py` behaviour, `license_keys` services and the state machine; if it needs a migration, stop and tell the orchestrator.
+- Footprint: `apps/accounts/services.py`, `apps/accounts/management/commands/failed_reset_confirms.py`, `tests/test_customer_auth_slice.py`, two pin tests, this contract and the evidence directory; plus the two additive shared-file edits named above, declared in the PR. The other lane (86ak1090r) owns `admin_schema.py`, `redaction.py` behaviour, `license_keys` services and the state machine; if it needs a migration, stop and tell the orchestrator.
 - Disk free above 13 GiB.
 
 ### Assumptions and unknowns
 
-- ASSUMED: the source IP bucket may be stored in the audit row. It is already held in the limiter cache for an hour; the audit table has no retention, so the row keeps it longer. Validation owner: the orchestrator and the owner, in PR review.
-- UNKNOWN: behaviour against a real Redis. The suite runs the limiter on the local-memory cache and a broken-store stand-in.
-- UNKNOWN: behaviour on Postgres. The recorder uses a savepoint, which SQLite also honours, but the Postgres-only suite is skipped locally.
+- DECIDED (was ASSUMED in round 0): the source is stored as a keyed daily-rotating pseudonym, not as the address. Round 0 stored the address twice with no expiry, which contradicts the draft privacy policy (counters expire within an hour; audit records name actors by an internal identifier). Alternatives considered: the raw address with a retention period (rejected: retention is not built, 17tnw2b9dp1), and no source at all (rejected: loses the correlation the ticket asks for). A pseudonymised address is still personal data: whoever holds SECRET_KEY can test a candidate address against the table, which is what the operator command does. Retention of these rows remains an open ticket.
+- UNKNOWN: behaviour against a real Redis in the test suite. The suite uses the local-memory cache and a broken-store stand-in; `real_redis_outage.py` in the evidence directory ran the trace against a genuinely unreachable Redis (connection refused).
+- UNKNOWN: behaviour on Postgres. The recorder's `atomic()` is a real transaction without an enclosing one and a savepoint within one; the Postgres-only suite is skipped locally.
+- NOT MEASURED: the timing of the failure branches. The INSERT and commit run on every dead-token class alike; the DEC-013 timing harness was not run here.
 
 ## Dependencies and approvals
 
-- 86akcmfd4 (the existing budget) and 86ak10a13 (production `SELAHCUE_TRUSTED_PROXY_COUNT`): context, not code dependencies.
-- The other lane (86ak1090r) in worktree w2-p2: shared package, disjoint files except the two additive lines above.
+- 86akcmfd4 (the existing budget) and 86ak10a13 (production `SELAHCUE_TRUSTED_PROXY_COUNT`; the shared-bucket lockout lever, commented on by the orchestrator): context, not code dependencies.
+- The other lane (86ak1090r) in worktree w2-p2: shared package, disjoint files except the additive lines above.
+- Owner decision on retention of the audit rows: pending (17tnw2b9dp1). The pseudonym default was applied as the safer option.
 
 ## Completion predicate
 
@@ -84,28 +88,33 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Each failure class leaves exactly one DENIED row with its outcome, source, attempt id and timestamp; the user id appears only where the token row resolves | `pytest tests/test_customer_auth_slice.py -q` (the record test) | six classes, six rows, fields as stated | test_every_failed_confirm_leaves_exactly_one_record_naming_its_outcome passed (8 scenarios, 6 outcome classes, 8 rows); mutants B1, B3, B4, B5, B8, B10 RED | PASS |
-| C-002 | yes | No raw, fingerprinted, hashed or masked reset token, and no submitted password, appears in any column of a failure row or in any log line, and the search is proven able to find a planted token | same file (the token-material test) | zero hits; planted control found | test_no_token_material_reaches_any_audit_column_or_log_line_of_a_failed_confirm passed with its two positive controls; mutants L1, L2, L3, L4 RED | PASS |
-| C-003 | yes | The audit writer redacts the reset-token field names; removing them turns a test red | same file (the redaction test) plus mutation | stored value is `[redacted]`; mutant RED | test_the_audit_writer_redacts_reset_token_material_wherever_it_is_put 6 cases passed; mutants R1 (6 RED), R2a-R2d (each name removed alone, 1-2 RED each) | PASS |
-| C-004 | yes | The five token-failure classes return byte-identical bodies, no outcome class reaches the response, and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged | same file | identical bytes; existing test GREEN and unedited (`git diff` shows no change inside it) | test_the_token_failure_responses_are_byte_identical_and_carry_no_outcome_class passed; test_every_token_failure_stays_mutually_indistinguishable passed and is outside every diff hunk (git diff -U0 shows hunks at lines 8-51 and 1124 onward only); mutant B9 RED in both | PASS |
-| C-005 | yes | A failure to write the record changes nothing the caller sees and is logged without token material | same file | same code and message as without the fault; one log line | test_a_failure_to_record_a_failed_confirm_changes_nothing_the_caller_sees passed (8 responses byte-equal with and without the fault, one logged report); mutant B2 RED | PASS |
-| C-006 | yes | A success still writes `customer_user.password_reset_completed` and no failure row | same file | one completed row, zero failed rows | test_a_successful_confirm_keeps_its_audit_row_and_leaves_no_failure_record passed; mutant B11 RED | PASS |
-| C-007 | yes | The budget refuses before the token is read: an exhausted source offering a live token and a good password is refused, the token is unspent, the password unchanged, and no row is written for the refusal | same file plus mutation (throttle removed, and throttle moved below the consume) | RATE_LIMITED; token unspent; mutants RED | test_an_exhausted_budget_refuses_a_live_token_before_it_is_read_and_writes_no_record passed; mutants T1, T2, T8 RED (T1 and T2 also turn 3 tests in test_password_reset_throttle.py RED) | PASS |
-| C-008 | yes | The shipped confirm budget is pinned at (20, 3600) and the setting equals the module default | same file | pinned | test_the_shipped_confirm_budget_is_pinned_and_its_two_copies_agree passed; mutant T4 RED | PASS |
-| C-009 | yes | A user who retries a weak password behind a live token is never blocked under the shipped budget and then resets successfully | same file | PASSWORD_INVALID each time, then success | test_a_user_who_keeps_choosing_a_weak_password_is_never_blocked_by_the_shipped_budget passed (10 PASSWORD_INVALID, then reset=true); mutant B3 RED | PASS |
-| C-010 | yes | With the limiter store down the mutation still reaches the service, completes a real reset, and still leaves its trace | same file | no RATE_LIMITED; rows written | test_when_the_limiter_store_is_down_confirm_still_completes_a_reset_and_still_leaves_a_trace passed; mutant T5 RED (4 tests) | PASS |
-| C-011 | yes | `X-Forwarded-For` is honoured only behind `SELAHCUE_TRUSTED_PROXY_COUNT`; behind it the record and the budget name the forwarded client, not the proxy | same file | separate budgets and source equal the forwarded address; ignored at count 0 | test_forwarded_for_is_honoured_only_behind_a_trusted_proxy_and_the_record_names_that_client passed; mutants T6, T7, T3 RED | PASS |
-| C-012 | yes | The mutation harness shows every guard RED with siblings running and restores each file byte for byte | harness run, `cmp` after each restore | every mutant RED; `cmp` exit 0 | 28 mutants (T1-T8, R1, R2a-d, L1-L4, B1-B11) each RED with both sibling files running in full (no -x, no --exact); cmp of the restored file against its pre-run copy exit 0 for all 28; git status clean afterwards | PASS |
-| C-013 | yes | `make api-check` exits 0, including `manage.py check` and `makemigrations --check --noinput` | `make api-check` | exit 0 | make api-check exit 0: manage.py check no issues, makemigrations --check no changes, pytest 1364 passed, 24 skipped (Postgres-only), 1 xfailed | PASS |
-| C-014 | yes | No non-ASCII in touched files, no function-local import added, no migration | scan of the diff | clean | added lines contain no non-ASCII; no indented import added; no migration; files changed: services.py, context.py, redaction.py, test_customer_auth_slice.py | PASS |
-| C-015 | yes | Branch is up to date with origin/main, pushed, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | origin/main 93bf8063 is the base and has not moved (rev-list HEAD..origin/main = 0); Draft PR recorded in the hand-off | PASS |
-| C-016 | yes | The goal contract validates structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | structural OK before work; --completion OK before the claim | PASS |
+| C-001 | yes | Each failure class leaves exactly one DENIED row with its outcome, pseudonymised source, attempt id and timestamp; the user id appears only where the token row resolves | `pytest tests/test_customer_auth_slice.py -q` (the record test) | six token or password classes, eight scenarios, eight rows; `internal_error` and `unclassified` have their own tests | test_every_failed_confirm_leaves_exactly_one_record_naming_its_outcome passed; mutants B1, B3, B4, B5a, B5b, B8, B10, B12, Q04 RED | PASS |
+| C-002 | yes | No raw, fingerprinted, hashed or masked reset token, no 12-character fragment of one, no 6-character password prefix and no submitted password appears in any column of a failure row or in any log line; the search is proven able to find a planted whole value and a planted fragment in both places | same file (the token-material test) | zero hits; planted controls found | passed; mutants L1, L1b, L2, L3, L3b, L3c, L3d, L4 RED | PASS |
+| C-003 | yes | The audit writer redacts reset-token names (`reset_token`, `raw_token`, `token_hash`) and still stores a token fingerprint; `device.activated` and `device_token.reminted` hold the real fingerprint | same file, test_activation_licence_transition.py, test_device_token_remint.py | stored values as stated | passed; mutants R1, R2a-R2c RED; R3 (fingerprint put back in the deny-list) RED in three tests across the three files | PASS |
+| C-004 | yes | The five token-failure classes return byte-identical bodies, no outcome class reaches the response, and `test_every_token_failure_stays_mutually_indistinguishable` passes unchanged | same file | identical bytes; existing test GREEN and outside every diff hunk | passed; mutant B9 RED in both | PASS |
+| C-005 | yes | A failure to record changes nothing the caller sees; the loss is counted and reported once a minute with the class, outcome and pseudonym of the first, no traceback and no token material | same file | same bytes with and without the fault; one report, then a second carrying the count | passed; mutants B2, N9, N10 RED | PASS |
+| C-006 | yes | A success still writes `customer_user.password_reset_completed` and no failure row | same file | one completed row, zero failed rows | passed; mutant B11 RED | PASS |
+| C-007 | yes | The budget refuses before the token is read; the refusal writes no row; the shipped 21st confirm from one source is refused | same file plus the sibling throttle file | RATE_LIMITED; token unspent; 20 rows | passed; mutants T1, T2, T8 RED | PASS |
+| C-008 | yes | The shipped confirm budget, the trace brake and the outage ceiling are pinned | same file | (20, 3600), (1000, 3600), (200, 3600) | passed; mutants T4, T9, T10 RED | PASS |
+| C-009 | yes | A user who retries a weak password behind a live token is never blocked under the shipped budget, from one source, and then resets successfully | same file | PASSWORD_INVALID ten times, then success | passed; mutant B3 RED | PASS |
+| C-010 | yes | With the limiter store down the mutation still reaches the service, completes a real reset, and still leaves a bounded trace | same file | no RATE_LIMITED; rows capped at the ceiling; one store round trip per request | passed; mutants T5, N3, N6 RED | PASS |
+| C-011 | yes | `X-Forwarded-For` is honoured only behind `SELAHCUE_TRUSTED_PROXY_COUNT`; behind it the budget and the record name the forwarded client, not the proxy | same file | separate budgets; actor ids equal the forwarded addresses' pseudonyms; ignored at count 0 | passed; mutants T3, T6, T7 RED | PASS |
+| C-012 | yes | A lone-surrogate password is a rejected password (PASSWORD_INVALID behind a live token, traced, link unspent; refused at signup); an unexpected failure inside the confirm leaves one `internal_error` row naming the user and answers like a dead token | same file | as stated | passed; mutants N1, N2, B5b RED | PASS |
+| C-013 | yes | No address is stored or logged; the pseudonym is pinned by an independent recomputation, keyed, rotating, per /64, with fixed labels for the two address-less sources; a hostile REMOTE_ADDR is never stored; the operator command finds the rows | same file | as stated | passed; mutants L5-L10, B7 RED | PASS |
+| C-014 | yes | The trace rows are bounded: a cross-source brake, a per-worker outage ceiling, one cache key however many sources, scalar-only tally state; skipped rows are counted and reported; a reset still completes while the brake is spent; against a genuinely unreachable Redis 300 failures write 200 rows | same file; `real_redis_outage.py` | as stated | passed; mutants N4-N8 RED; real-redis-outage.txt: 25 failures write 25 rows, 300 write 200, one fail-open warning and one skip report | PASS |
+| C-015 | yes | A failed trace write leaves no half-written row and does not poison an enclosing transaction | same file (outer `atomic()`, real IntegrityError) | no row; follow-up query and next trace work | passed; mutant N11 RED | PASS |
+| C-016 | yes | The committed harness runs every mutant with siblings running in full and restores each file byte for byte | `python3 docs/delivery/goals/86ak5r2pt-evidence/mutate.py` | baseline 178 passed; every mutant RED; restored identical | mutation-results.txt: 53 mutants run, 0 not RED or not restored | PASS |
+| C-017 | yes | `make api-check` exits 0, including `manage.py check` and `makemigrations --check --noinput` | `make api-check` | exit 0 | make api-check exit 0 on the head merged with origin/main 840ec84e: manage.py check no issues, makemigrations --check no changes, pytest 1382 passed, 24 skipped (Postgres/Redis-only), 1 xfailed | PASS |
+| C-018 | yes | No non-ASCII in added lines, no function-local import added, no migration | scan of the diff | clean | scans clean; `git diff origin/main --stat` lists no migration | PASS |
+| C-019 | yes | Branch is up to date with origin/main, pushed, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | recorded in the hand-off | PASS |
+| C-020 | yes | The goal contract validates structurally and with `--completion` | both validators | exit 0 | OK both | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
 ## Verification plan
 
-- Focused verification: the new tests in `tests/test_customer_auth_slice.py`, run with their siblings (that file and `tests/test_password_reset_throttle.py`), never `--exact`.
+- Focused verification: the tests in `tests/test_customer_auth_slice.py` run with their siblings (`tests/test_password_reset_throttle.py`, `tests/test_activation_licence_transition.py`, `tests/test_device_token_remint.py`), never `--exact`.
+- Mutation verification: `docs/delivery/goals/86ak5r2pt-evidence/mutate.py`.
 - Broader regression verification: `make api-check` (check, migrations committed, full pytest on SQLite).
 - Independent verifier: the orchestrator dispatches Cody, Shadow, Quinn and Vera; this run does not.
 - Required environment: `make api-install` venv (Python 3.14); SQLite; no Postgres or Redis.
@@ -126,16 +135,34 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Target criterion: C-001 to C-011
 - Hypothesis: with the tests written first, the existing budget already satisfies the throttle criteria and only the trace, the redaction names and the actor kind are missing
-- Change or investigation: wrote the tests first (collection error, then 16 failed / 43 passed with only constants in place), then added the trace, the recorder, the four deny-list names and ActorKind.ANONYMOUS; one test helper (`post_account`) gained a pass-through for request metadata
-- Verifier executed: both sibling files, then a 28-mutant harness, then make api-check
-- Result: 102 passed in the two files; all 28 mutants RED; api-check exit 0
-- New evidence: the throttle tests that already existed were killed by T1/T2; the new live-token and proxy-count tests were killed by T1, T2, T6, T7
+- Change or investigation: wrote the tests first (collection error, then 16 failed / 43 passed with only constants in place), then added the trace, the recorder, four deny-list names and ActorKind.ANONYMOUS
+- Verifier executed: both sibling files, a 28-mutant harness, make api-check
+- Result: 102 passed in the two files; all 28 mutants RED; api-check exit 0 (1364 passed)
+- New evidence: none against the design
+- Decision: gate-review; reviews followed
+
+### Iteration 2 (review round 1: Cody, Shadow, Quinn)
+
+- Target criterion: C-003, C-005, C-010, C-012 to C-016
+- Hypothesis: each finding is closed by a test that fails first or a mutant it kills
+- Change or investigation: removed `token_fingerprint` from the deny-list (two existing writers store it on purpose) and pinned both rows; lone-surrogate passwords refused and unexpected failures traced; cross-source brake and outage ceiling; pseudonymised source with an operator command; counted loss and skip reports without a traceback; atomic-write test; fragment search; spent verification token pinned; hostile REMOTE_ADDR; real unreachable-Redis demonstration; committed harness and results
+- Verifier executed: sibling files (118 passed; 178 across the four files), the committed harness (53 mutants), `real_redis_outage.py`, make api-check
+- Result: all green; a first draft of the outage test let a mutant survive (the per-source degraded flag was redundant with the brake's own outage detection); fixed by asserting one store round trip per request
+- New evidence: login with lone surrogates also fails masked (see Risks)
 - Decision: gate-review
 
 ## Risks and rollback
 
-- Risks: the failure row turns an unauthenticated read path into a write path. It is bounded by the per-IP budget only; while the limiter store is down (fail open) it is unbounded, and the audit table has no retention. The new INSERT runs on every failure branch alike, so it adds a constant, not a new gap, but the existing timing gaps (DEC-013) were not re-measured. The source IP is stored with no expiry.
-- Rollback or recovery: revert the commit. No migration, no data change, no settings change. Rows already written stay in the audit table and are harmless.
+- Risks:
+  - The failure row turns an unauthenticated read path into a write path. Bounded per source by the per-IP budget, across sources by the 1000 per hour brake, and while the limiter store is down by a 200 per hour per worker ceiling. A mis-set `SELAHCUE_TRUSTED_PROXY_COUNT` lets a caller choose its own left-hand `X-Forwarded-For` entry and so a fresh per-source budget per request; the cross-source brake is what bounds that case. With N workers the outage ceiling is N times 200.
+  - The brake and the ceiling skip rows, so a flood can cost legitimate failures their trace; sized generously and counted, not silent.
+  - A pseudonymised source is still personal data and the audit table has no retention (17tnw2b9dp1).
+  - Other audit rows still hold token-derived values and Strawberry logs tracebacks of masked resolver errors (17tnw2b9dp2).
+  - Until `SELAHCUE_TRUSTED_PROXY_COUNT` is set in production (86ak10a13) every caller is one source: 20 per hour shared by everyone, and every row names the proxy.
+  - Timing: the INSERT and commit run on every dead-token class; the Postgres and DEC-013 timing harness was not run, so no claim is made about the gaps.
+  - Login with lone surrogates raises an unhandled `UnicodeEncodeError` that the view masks to `VALIDATION_FAILED` for known and unknown accounts alike. It is uniform, so not an oracle, and not changed here.
+  - The hostile REMOTE_ADDR text still reaches the throttle cache key (Django warns); only the server sets it. Pre-existing.
+- Rollback or recovery: revert the commits. No migration, no data change, no settings change. Rows already written stay in the audit table and are harmless.
 
 ## Pause and escalation conditions
 
@@ -148,7 +175,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5r2pt-reset-confirm-throttle-audit.md --completion`
 - Validator result: OK (structural) and OK (--completion) on the final head
-- Independent verification result: NOT YET RUN. Code, security, QA and performance reviews are dispatched by the orchestrator; the PR stays Draft until they clear
-- Terminal state: GATE_REVIEW (all mandatory criteria PASS; not VERIFIED_COMPLETE because the independent reviews have not run)
-- Remaining failed or blocked criteria: none. Not run locally: Postgres-only and Redis-only tests, hosted CI
+- Independent verification result: round 1 done (Cody, Shadow, Quinn: no blockers); round 2 on the new head not yet run. The PR stays Draft until the reviews clear
+- Terminal state: GATE_REVIEW (all mandatory criteria PASS; not VERIFIED_COMPLETE because the independent re-review has not run)
+- Remaining failed or blocked criteria: none. Not run locally: Postgres-only and Redis-only tests (beyond the unreachable-Redis script), hosted CI, the timing harness
 - ClickUp final evidence comment: posted on 86ak5r2pt at hand-off
