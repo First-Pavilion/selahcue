@@ -34,12 +34,15 @@ RESTRICTED_PAYLOAD_FIELDS = frozenset(
         "password_hash",
         "new_password",
         "current_password",
-        # Password-reset / email-verify credential tokens (86ak5r2pt). Neither the raw token nor
-        # anything derived from it may reach an audit `after` or a log: a fingerprint is enough
-        # to confirm a guess, and the trace of a failed confirm exists to catch exactly that guess.
+        # Credential tokens (86ak5r2pt): the raw value and the at-rest hash. No existing writer
+        # puts any of these four names in an audit `after` or a /v1 payload. NOT in this set,
+        # deliberately: `token_fingerprint`. `device.activated` and `device_token.reminted`
+        # record the device token's fingerprint under that exact key so an operator can follow a
+        # device across a renewal (new fingerprint, then the next row's superseded one); listing
+        # it here silently turned both into "[redacted]". The failed password-reset confirm
+        # row needs no deny-list entry for it: its writer is never handed a fingerprint.
         "reset_token",
         "raw_token",
-        "token_fingerprint",
         "token_hash",
     }
 )
