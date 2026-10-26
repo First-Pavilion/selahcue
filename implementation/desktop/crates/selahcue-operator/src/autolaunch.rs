@@ -183,7 +183,8 @@ mod tests {
     fn private_dir() -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
         dir
     }
 
@@ -211,7 +212,10 @@ mod tests {
         .expect("the stand-in sidecar spawns");
         spawned.kill();
 
-        assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "precious");
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("victim"),
+            "precious"
+        );
     }
 
     /// Positive control for the test above: the same spawn on a real private directory does remove
@@ -229,7 +233,10 @@ mod tests {
             .expect("the stand-in sidecar spawns");
         spawned.kill();
 
-        assert!(!stale.exists(), "a stale descriptor in a private directory is removed");
+        assert!(
+            !stale.exists(),
+            "a stale descriptor in a private directory is removed"
+        );
     }
 
     #[test]

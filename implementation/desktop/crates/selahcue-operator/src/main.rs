@@ -6017,7 +6017,8 @@ mod endpoint_guard_tests {
 
         std::fs::write(&expected, VALID).expect("write descriptor");
         std::fs::set_permissions(&expected, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-        let ep = read_endpoint().expect("read_endpoint must find the descriptor in XDG_RUNTIME_DIR");
+        let ep =
+            read_endpoint().expect("read_endpoint must find the descriptor in XDG_RUNTIME_DIR");
         assert_eq!(ep.addr, "127.0.0.1:1");
     }
 }

@@ -1439,7 +1439,7 @@ fn the_root_directory_is_judged_not_mangled() {
 
 #[test]
 fn only_unix_refuses_a_symlinked_directory_and_the_decision_is_pure() {
-    assert!(REFUSE_SYMLINKED_DIRS, "this file only compiles on Unix");
+    const { assert!(REFUSE_SYMLINKED_DIRS, "this file only compiles on Unix") };
     // Unix: a symlink is refused, a directory passes, anything else is not a directory.
     assert_eq!(judge_dir_kind(true, false, true), Err(DirError::Symlink));
     assert_eq!(judge_dir_kind(true, true, true), Err(DirError::Symlink));
@@ -1843,6 +1843,17 @@ fn make_and_the_nfr_script_resolve_the_same_path_as_the_rust_code() {
         eprintln!("note: no root-owned 0700 directory here; the foreign-owner cases are skipped");
     }
 
+    // A parent that is someone else's but otherwise perfectly closed (root-owned `/usr`, mode 0755,
+    // searchable): only the OWNER comparison refuses it, which the mode-private foreign directory
+    // above cannot show for the "parent of selahcue" rule (it is unsearchable, so lstat fails first).
+    cases.push((
+        "home is a searchable directory of another user",
+        Vars {
+            home: some(Path::new("/usr")),
+            ..with_temp(shared)
+        },
+    ));
+
     let mut answers = std::collections::BTreeMap::new();
     for (label, vars) in &cases {
         let rust = rust_says(vars);
@@ -1908,6 +1919,12 @@ fn make_and_the_nfr_script_resolve_the_same_path_as_the_rust_code() {
         answers["private temp beats home"],
         private_temp.path().join(name)
     );
+    if my_uid() != 0 {
+        assert_eq!(
+            answers["home is a searchable directory of another user"],
+            fallback
+        );
+    }
     if let Some(dir) = &foreign {
         assert_ne!(answers["xdg owned by root (0700)"], dir.join(name));
         assert_eq!(answers["home owned by root"], fallback);
