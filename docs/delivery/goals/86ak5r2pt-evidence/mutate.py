@@ -44,6 +44,7 @@ SVC = "selahcue_api/apps/accounts/services.py"
 RED = "selahcue_api/graphql/redaction.py"
 THR = "selahcue_api/apps/throttling/services.py"
 GRD = "selahcue_api/apps/throttling/guards.py"
+CMD = "selahcue_api/apps/accounts/management/commands/failed_reset_confirms.py"
 
 DEVICE_TESTS = TESTS + ["tests/test_activation_licence_transition.py", "tests/test_device_token_remint.py"]
 
@@ -152,6 +153,20 @@ MUTANTS = [
     ("Q12 an unencodable token is no longer labelled malformed", SVC, [("    except UnicodeEncodeError:\n        # Lone surrogates", "    except ZeroDivisionError:\n        # Lone surrogates")]),
     ("Q13 the pseudonym is a credential-style fingerprint", SVC, [('    digest = salted_hmac(_AUDIT_SOURCE_KEY_SALT, value, algorithm="sha256").hexdigest()', "    digest = _fingerprint(value)")]),
     ("Q14 the pseudonym carries no scheme version", SVC, [('AUDIT_SOURCE_VERSIONED_PREFIX = "src:v1:"', 'AUDIT_SOURCE_VERSIONED_PREFIX = "src:"')]),
+    # ---- round 2b: Quinn's second round (ASCII, DB errors, the command, the day basis) ----
+    ("Z14 the UTF-8 check on passwords is an ASCII check", SVC, [('        password.encode("utf-8")\n', '        password.encode("ascii")\n')]),
+    ("Y08 the unexpected-failure branch catches only ValueError and OSError", SVC, [("    except Exception:\n        # Not a coded refusal", "    except (ValueError, OSError):\n        # Not a coded refusal")]),
+    ("Y07 both the trace body and the recorder swallow only RuntimeError", SVC, [
+        ('    except Exception as error:  # noqa: BLE001 -- see "WHY IT SWALLOWS"', "    except RuntimeError as error:"),
+        ("    except Exception as error:  # noqa: BLE001 -- see the docstring\n        _note_lost_trace(error, outcome, source)", "    except RuntimeError as error:\n        _note_lost_trace(error, outcome, source)")]),
+    ("Z17 the command's row cap is removed", CMD, [(")[:MAX_ROWS]", ")")]),
+    ("Z18 the command's default day is a fixed date", CMD, [('if options["date"] else audit_source_today()', 'if options["date"] else date(2000, 1, 1)')]),
+    ("Z19 the command never shows the account", CMD, [("f\"account={row.target_id if row.target_type == 'customer_user' else '-'}\"", "\"account=-\"")]),
+    ("Z20 the operator helper does not strip the address", SVC, [("    return audit_source_pseudonym(bucket_for_throttling(ipaddress.ip_address(address.strip())), day)", "    return audit_source_pseudonym(bucket_for_throttling(ipaddress.ip_address(address)), day)")]),
+    ("Z21 the skip report names the raw address", SVC, [("f\"outcome={outcome.value} source={audit_source_pseudonym(source)} reason={reason}\"", "f\"outcome={outcome.value} source={source} reason={reason}\"")]),
+    ("Z22 the lost-row report names the raw address", SVC, [("            label = audit_source_pseudonym(source)\n", "            label = source\n")]),
+    ("Z23 the unexpected-failure branch ignores the degraded flag", SVC, [("        trace.failed_unexpectedly()\n        _trace_failed_confirm(trace, source, limiter_degraded)", "        trace.failed_unexpectedly()\n        _trace_failed_confirm(trace, source, False)")]),
+    ("Z24 the report detail is cut at 96 characters again", SVC, [("_TRACE_REPORT_DETAIL_MAX = 160", "_TRACE_REPORT_DETAIL_MAX = 96")]),
     ("N1 unencodable passwords accepted again", SVC, [('    try:\n        password.encode("utf-8")\n    except UnicodeEncodeError:\n        raise SafeAPIError(code) from None\n', "")]),
     ("N2 unexpected exceptions not recorded", SVC, [("    except Exception:\n        # Not a coded refusal", "    except ZeroDivisionError:\n        # Not a coded refusal")]),
     ("N3 outage not reported to the trace", SVC, [("    trace = _ResetConfirmTrace()\n    try:\n        return _consume_reset_token(raw_token, new_password, trace)", "    limiter_degraded = False\n    trace = _ResetConfirmTrace()\n    try:\n        return _consume_reset_token(raw_token, new_password, trace)")]),

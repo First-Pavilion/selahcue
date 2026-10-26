@@ -1506,6 +1506,12 @@ def audit_source_pseudonym(source: str, day: date | None = None) -> str:
     return AUDIT_SOURCE_VERSIONED_PREFIX + digest[:32]
 
 
+def audit_source_today() -> date:
+    """Today's UTC date as the writer sees it: the operator command's default day, so the command
+    and the rows can never disagree about which day "today" is."""
+    return _audit_source_day()
+
+
 def audit_source_pseudonym_for_address(address: str, day: date | None = None) -> str:
     """Operator-facing: the pseudonym for a LITERAL address, bucketed exactly as `client_ip()`
     buckets it (IPv4 as is, IPv6 to its /64). Raises ValueError for text that is not an address.
@@ -1520,7 +1526,9 @@ def audit_source_pseudonym_for_address(address: str, day: date | None = None) ->
 
 # --- bounded reporting for the trace itself ---------------------------------------------------
 _TRACE_REPORT_INTERVAL_SECONDS = 60.0
-_TRACE_REPORT_DETAIL_MAX = 96
+# Long enough for the longest first-event detail (outcome, pseudonym and reason) without cutting
+# the reason off mid-word.
+_TRACE_REPORT_DETAIL_MAX = 160
 # How many distinct skipped account ids one report names. The set is capped, so the tally stays
 # bounded however many accounts are probed.
 _TRACE_REPORT_ACCOUNTS_MAX = 20
@@ -1534,9 +1542,12 @@ class _SuppressedTally:
     float and a set of at most `_TRACE_REPORT_ACCOUNTS_MAX` ints, whatever the event rate and
     however many distinct sources or accounts there are. A per-source map would be keyed by
     attacker-chosen values on an unauthenticated endpoint -- the unbounded growth the repo
-    forbids -- and would grow fastest exactly during the flood this reports on. The count of a
-    burst is released with the NEXT report after it, so a burst followed by silence is reported
-    when the next event arrives, not before.
+    forbids -- and would grow fastest exactly during the flood this reports on.
+
+    WHEN COUNTS FLUSH: the FIRST event is released at once (the first skipped row is reported as
+    "skipped 1"). After that, events are only counted; the count, with the first of them
+    described, is released by the next event to arrive once the interval has passed. So a burst
+    followed by silence is reported when the next event arrives, not before.
     """
 
     def __init__(self) -> None:
@@ -1669,8 +1680,8 @@ def _trace_skip_reason(trace: _ResetConfirmTrace, limiter_degraded: bool) -> str
         def claim_in_process() -> bool:
             return _reset_confirm_trace_ceiling.claim()
 
-        spent = "cross-source trace budget spent"
-        spent_in_outage = "limiter down and the process-local ceiling is spent"
+        spent = "shared brake spent"
+        spent_in_outage = "outage ceiling spent"
     else:
         budget = (
             RESET_CONFIRM_TRACE_ACCOUNT_SCOPE,
@@ -1682,8 +1693,8 @@ def _trace_skip_reason(trace: _ResetConfirmTrace, limiter_degraded: bool) -> str
         def claim_in_process() -> bool:
             return _reset_confirm_trace_account_ceilings.claim(account_id)
 
-        spent = "per-account trace allowance spent"
-        spent_in_outage = "limiter down and the account's process-local allowance is spent"
+        spent = "account allowance spent"
+        spent_in_outage = "account outage allowance spent"
     if not limiter_degraded:
         outcome = spend_budget(*budget, report_denial=False)
         if outcome is BudgetOutcome.DENIED:

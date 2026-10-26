@@ -18,7 +18,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import transaction
+from django.db import IntegrityError, OperationalError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -1425,14 +1425,23 @@ def test_the_token_failure_responses_are_byte_identical_and_carry_no_outcome_cla
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: RuntimeError("audit store down"),
+        lambda: OperationalError("database is gone"),
+        lambda: IntegrityError("duplicate key"),
+    ],
+    ids=["RuntimeError", "OperationalError", "IntegrityError"],
+)
 def test_a_failure_to_record_a_failed_confirm_changes_nothing_the_caller_sees(
-    client, sender, settings, monkeypatch, caplog
+    client, sender, settings, monkeypatch, caplog, make_error
 ):
     """The trace is best effort. If the audit store refuses the row, the caller must still get the
     answer they would have got -- a 500 in its place would turn an audit outage into a changed
     contract -- and the loss must be reported, once a minute, with a count, without any token
     material and without a traceback (the traceback's frames hold the raw token and the submitted
-    password as locals)."""
+    password as locals). Parametrised over real database errors as well as a plain RuntimeError."""
     # Out of reach: this test makes 17 more confirms from one address, and the point is the audit
     # fault, not the budget.
     settings.SELAHCUE_THROTTLE_RESET_CONFIRM = (1000, 3600)
@@ -1446,7 +1455,7 @@ def test_a_failure_to_record_a_failed_confirm_changes_nothing_the_caller_sees(
 
     def refuse_only_the_failure_rows(actor, **kwargs):
         if kwargs.get("action") == FAILED_ACTION:
-            raise RuntimeError("audit store down")
+            raise make_error()
         return real(actor, **kwargs)
 
     monkeypatch.setattr(services, "record_audit_event", refuse_only_the_failure_rows)
@@ -1464,7 +1473,7 @@ def test_a_failure_to_record_a_failed_confirm_changes_nothing_the_caller_sees(
 
     (first,) = lost_reports()
     message = first.getMessage()
-    assert "1 failed" in message and "RuntimeError" in message and pseudo(TEST_CLIENT_ADDR) in message
+    assert "1 failed" in message and type(make_error()).__name__ in message and pseudo(TEST_CLIENT_ADDR) in message
     # (Not `"Traceback" not in caplog.text`: strawberry's own ERROR logging of the masked
     # resolver errors prints tracebacks of its own; this is about OUR report.)
     assert first.exc_info is None and "Traceback" not in message, "the report carries a traceback"
@@ -1824,22 +1833,52 @@ def test_a_password_that_cannot_be_utf8_encoded_is_a_rejected_password_not_a_cra
 
 
 @pytest.mark.django_db
-def test_an_unexpected_failure_inside_the_confirm_still_leaves_one_row_naming_the_user(client, sender, monkeypatch):
-    """A failure that is not a coded refusal (here: the hasher blowing up after the token has been
-    consumed) is not a gap in the trace, and it names the account whose link was in use. The
-    response is exactly the one a dead token gets."""
+@pytest.mark.parametrize(
+    ("where", "make_error"),
+    [
+        ("hasher", lambda: RuntimeError("hasher exploded")),
+        ("hasher", lambda: UnicodeEncodeError("utf-8", "x", 0, 1, "hasher exploded")),
+        ("hasher", lambda: OperationalError("database is gone")),
+        ("hasher", lambda: IntegrityError("duplicate key")),
+        ("token_save", lambda: OperationalError("database is gone")),
+        ("token_save", lambda: IntegrityError("duplicate key")),
+    ],
+    ids=[
+        "hasher-RuntimeError",
+        "hasher-UnicodeEncodeError",
+        "hasher-OperationalError",
+        "hasher-IntegrityError",
+        "token-save-OperationalError",
+        "token-save-IntegrityError",
+    ],
+)
+def test_an_unexpected_failure_inside_the_confirm_still_leaves_one_row_naming_the_user(
+    client, sender, monkeypatch, caplog, where, make_error
+):
+    """A failure that is not a coded refusal -- the hasher blowing up after the token has been
+    consumed, or a real database error while saving it -- is not a gap in the trace, and it names
+    the account whose link was in use. The response is exactly the one a dead token gets, the
+    link is still live (the transaction rolled back), nothing token-shaped reached a log line,
+    and the next real reset completes. Parametrised over real DB errors too, so narrowing the
+    catch to the exceptions one happens to think of fails here."""
     email = "pastor@grace.example"
     reset_token = live_reset_token(client, sender, email=email)
     user = CustomerUser.objects.get(email=email)
     original = user.password_hash
+    fingerprint = services._fingerprint(reset_token)
     dead = confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD).content
     assert failed_rows()[-1].after == {"outcome": OUTCOME.UNKNOWN_TOKEN.value}
 
     def explode(*args, **kwargs):
-        raise UnicodeEncodeError("utf-8", "x", 0, 1, "hasher exploded")
+        raise make_error()
 
-    monkeypatch.setattr(services, "make_password", explode)
-    resp = confirm(client, reset_token, GOOD_PASSWORD)
+    caplog.clear()
+    with monkeypatch.context() as patch:
+        if where == "hasher":
+            patch.setattr(services, "make_password", explode)
+        else:
+            patch.setattr(CredentialToken, "save", explode)
+        resp = confirm(client, reset_token, GOOD_PASSWORD)
 
     assert resp.content == dead, "an unexpected failure answers differently from a dead token"
     assert token_row(reset_token).consumed_at is None, "the rolled-back transaction must leave the link live"
@@ -1848,6 +1887,10 @@ def test_an_unexpected_failure_inside_the_confirm_still_leaves_one_row_naming_th
     assert len(rows) == 2
     assert rows[-1].after == {"outcome": OUTCOME.INTERNAL_ERROR.value}
     assert (rows[-1].target_type, rows[-1].target_id) == ("customer_user", str(user.id))
+    assert reset_token not in caplog.text and fingerprint not in caplog.text and GOOD_PASSWORD not in caplog.text
+    # and the account is not stuck: the next real attempt completes
+    done = confirm(client, reset_token, GOOD_PASSWORD)
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
 
 
 # --- the flood brakes: they skip the ROW, never the response ---------------------------------
@@ -1896,7 +1939,11 @@ def test_many_sources_cannot_cause_more_trace_rows_than_the_cross_source_brake_a
     # be false here; the brake reports its own skips (below) in its own words.
     assert not [r for r in caplog.records if "is refusing requests" in r.getMessage()]
     skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
-    assert len(skipped) == 1 and "skipped 1 audit row(s)" in skipped[0] and "cross-source" in skipped[0]
+    assert len(skipped) == 1 and "skipped 1 audit row(s)" in skipped[0]
+    # The first skipped row is reported at once, readable and not cut off, and it names the source
+    # by its pseudonym, never by the address (the 4th source is the first one past the limit of 3).
+    assert "reason=shared brake spent" in skipped[0], skipped[0]
+    assert pseudo("198.51.100.4") in skipped[0] and "198.51.100.4" not in skipped[0].replace(pseudo("198.51.100.4"), "")
     clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
     _fail_from_many_sources(client, 1, first=11)
     skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
@@ -2191,7 +2238,7 @@ def test_the_skip_report_lists_the_accounts_whose_rows_were_skipped(client, send
     confirm(client, token_a, SHORT_PASSWORD)
 
     skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
-    assert len(skipped) == 2 and "per-account" in skipped[0]
+    assert len(skipped) == 2 and "reason=account allowance spent" in skipped[0], skipped[0]
     assert f"accounts [{min(user_a, user_b)}, {max(user_a, user_b)}]" in skipped[1], skipped[1]
 
 
@@ -2271,6 +2318,135 @@ def test_an_unencodable_token_is_a_malformed_token_with_the_ordinary_answer(clie
         OUTCOME.UNKNOWN_TOKEN.value,
         OUTCOME.MALFORMED_TOKEN.value,
     ]
+
+
+# --- the UTF-8 check must not turn into an ASCII check ---------------------------------------
+NON_ASCII_PASSWORDS = [
+    pytest.param("caf\u00e9-cr\u00e8me-br\u00fbl\u00e9e-1", id="accented"),
+    pytest.param("\u5bc6\u7801\u5f88\u5b89\u5168\u7684\u5bc6\u7801\u5341\u4e2a\u5b57", id="cjk"),
+    pytest.param("horse-\U0001F525-battery-staple", id="emoji"),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("password", NON_ASCII_PASSWORDS)
+def test_non_ascii_passwords_are_still_accepted_at_signup_and_at_reset(client, sender, password):
+    """`_validate_password` now refuses strings that cannot be UTF-8 encoded (lone surrogates). A
+    check written as `.encode("ascii")` would pass every test that uses an ASCII password and
+    reject every legitimate accented, CJK or emoji one. Pinned through both callers."""
+    assert services.MIN_PASSWORD_LENGTH <= len(password) <= services.MAX_PASSWORD_LENGTH, "the premise"
+    email = "unicode@grace.example"
+
+    signup = post_account(client, REGISTER, register_input(idem="signup-unicode-1", email=email, password=password))
+    assert body(signup)["data"]["registerCustomerUser"]["accepted"] is True
+    assert check_password(password, CustomerUser.objects.get(email=email).password_hash)
+
+    post_account(client, VERIFY, {"t": sender.verify_tokens[-1]})
+    post_account(client, REQUEST_RESET, {"e": email})
+    new_password = password + "-2"
+    done = confirm(client, sender.reset_tokens[-1], new_password)
+
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+    assert check_password(new_password, CustomerUser.objects.get(email=email).password_hash)
+    assert failed_rows() == []
+    login = post_account(client, LOGIN, {"input": {"email": email, "password": new_password}})
+    assert body(login)["data"]["login"]["sessionToken"]
+
+
+# --- the unexpected-failure branch honours the degraded flag too -------------------------------
+@pytest.mark.django_db
+def test_an_unexpected_failure_does_not_ask_the_failed_store_a_second_time(client, sender, settings, monkeypatch):
+    """The wrapper has two failure branches and both must pass the per-source budget's fail-open on
+    to the trace. If the unexpected-failure branch forgot it, every such failure would cost a
+    second round trip to a store already known to be down (a second socket timeout against a
+    stalled Redis). Counted at the store; rows are still bounded by the account's outage allowance."""
+    reset_token = live_reset_token(client, sender)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (2, 3600)
+    store = _CountingBrokenStore()
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+
+    def explode(*args, **kwargs):
+        raise OperationalError("database is gone")
+
+    monkeypatch.setattr(services, "make_password", explode)
+    for _ in range(3):
+        assert error_code(confirm(client, reset_token, GOOD_PASSWORD)) == "VALIDATION_FAILED"
+
+    assert store.calls == 3, f"{store.calls} store round trips for 3 requests"
+    assert [row.after["outcome"] for row in failed_rows()] == [OUTCOME.INTERNAL_ERROR.value] * 2
+
+
+# --- the day basis, pinned near UTC midnight ----------------------------------------------------
+@pytest.mark.django_db
+def test_the_pseudonym_day_is_the_utc_day_across_midnight_and_the_command_agrees(client, monkeypatch):
+    """Frozen at 23:59:30 UTC on the 26th, written at -05:00 (so the wall clock there still says
+    the 26th, 18:59), then at 00:00:30 UTC on the 27th (19:00:30 at -05:00): two rows, two
+    pseudonyms, one per UTC day. The operator command with no --date uses the same day the
+    writer used, at each moment."""
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(services, "_audit_source_day", _REAL_AUDIT_SOURCE_DAY)
+    est = timezone(timedelta(hours=-5))
+    late = datetime(2026, 10, 26, 18, 59, 30, tzinfo=est)  # 23:59:30 UTC, the 26th
+    monkeypatch.setattr(services.djtz, "now", lambda: late)
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+    out_26 = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out_26)
+
+    monkeypatch.setattr(services.djtz, "now", lambda: late + timedelta(seconds=60))  # 00:00:30 UTC, the 27th
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+    out_27 = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out_27)
+
+    first, second = failed_rows()
+    assert first.actor_id == pseudo("203.0.113.5", date(2026, 10, 26))
+    assert second.actor_id == pseudo("203.0.113.5", date(2026, 10, 27))
+    assert "pseudonym for 2026-10-26" in out_26.getvalue() and "1 failed confirm(s)" in out_26.getvalue()
+    assert "pseudonym for 2026-10-27" in out_27.getvalue() and "1 failed confirm(s)" in out_27.getvalue()
+
+
+# --- the operator command's own behaviour --------------------------------------------------------
+def _run_command(**options):
+    out = StringIO()
+    call_command("failed_reset_confirms", stdout=out, **options)
+    return out.getvalue()
+
+
+@pytest.mark.django_db
+def test_the_command_caps_its_output_and_says_so(client, monkeypatch):
+    from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as command
+
+    assert command.MAX_ROWS == 500
+    for _ in range(4):
+        confirm(client, "SC-PRS-whatever", GOOD_PASSWORD)
+    monkeypatch.setattr(command, "MAX_ROWS", 3)
+
+    text = _run_command(ip=TEST_CLIENT_ADDR, date="2026-10-26")
+
+    assert text.count("outcome=") == 3 and "3 failed confirm(s) (first 3 shown)" in text
+
+
+@pytest.mark.django_db
+def test_the_command_shows_the_account_when_the_token_resolved_and_a_dash_when_not(client, sender):
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+    user = CustomerUser.objects.get(email=email)
+    confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD)
+    confirm(client, reset_token, SHORT_PASSWORD)
+
+    lines = [line for line in _run_command(ip=TEST_CLIENT_ADDR, date="2026-10-26").splitlines() if "outcome=" in line]
+
+    assert [line.split("outcome=")[1] for line in lines] == [
+        "unknown_token  account=-",
+        f"password_rejected  account={user.id}",
+    ]
+
+
+@pytest.mark.django_db
+def test_the_command_accepts_an_address_with_surrounding_whitespace(client):
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+
+    assert "1 failed confirm(s)" in _run_command(ip="  203.0.113.5 \t", date="2026-10-26")
 
 
 # --- AUTH-6: account-based device activation --------------------------------

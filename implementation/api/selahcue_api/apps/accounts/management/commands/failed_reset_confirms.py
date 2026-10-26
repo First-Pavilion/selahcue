@@ -19,13 +19,14 @@ address afterwards. See the runbook, docs/ops/DEPLOYMENT.md section 6b.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
 from selahcue_api.apps.accounts.services import (
     RESET_CONFIRM_FAILED_ACTION,
     audit_source_pseudonym_for_address,
+    audit_source_today,
 )
 from selahcue_api.apps.audit.models import AuditEvent
 
@@ -44,7 +45,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         try:
-            day = date.fromisoformat(options["date"]) if options["date"] else datetime.now(timezone.utc).date()
+            day = date.fromisoformat(options["date"]) if options["date"] else audit_source_today()
         except ValueError as error:
             raise CommandError("--date must be YYYY-MM-DD") from error
         try:
