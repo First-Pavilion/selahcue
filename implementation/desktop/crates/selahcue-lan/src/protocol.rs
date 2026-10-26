@@ -1981,11 +1981,22 @@ impl PairingInvite {
 }
 
 /// Serialize any protocol message to a JSON string for transport.
+///
+/// **Do not display, log or store the returned error as it is.** A serialization error can carry
+/// the message of a `Serialize` implementation's own error, which may quote a value of the message
+/// being sent (a transcript, a token). Convert it with `TransportError::from` (the `server`
+/// feature), which keeps only the category and, when serde has one, the position (FR-082, 17tnw2b9aec).
 pub fn to_json<T: Serialize>(msg: &T) -> Result<String, serde_json::Error> {
     serde_json::to_string(msg)
 }
 
 /// Parse a protocol message from a JSON string received over the wire.
+///
+/// **Do not display, log or store the returned error as it is.** serde quotes the offending
+/// value in its message (`invalid type: string "..."`, ``unknown variant `...` ``), and the frame
+/// can carry a transcript or a token. Convert it with `TransportError::from` (the `server`
+/// feature), which keeps only the category and, when serde has one, the position, or print
+/// `Error::classify`/`line`/`column` yourself (FR-082, 17tnw2b9aec).
 pub fn from_json<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T, serde_json::Error> {
     serde_json::from_str(s)
 }
