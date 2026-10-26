@@ -464,6 +464,17 @@ fn the_shipped_connect_timeout_is_on_the_client_builder() {
         shown.contains(&connect),
         "no connect timeout on the builder: {shown}"
     );
+    // The redirect policy is read back the same way (17tnw2b9aaz): reqwest prints a "none" policy
+    // as `Policy(None)` and any custom policy as `Custom`, so a policy that follows some redirects
+    // (an https-only follow, a same-origin follow) changes this text. The behavioural tests in
+    // `tests/test_redirect_*.rs` are the primary guard and catch a policy that follows a plain
+    // http redirect; this read-back also catches one that follows only https, which a loopback
+    // http test cannot reach. Debug text is not a stable API, the same trade the timeout check
+    // above already makes.
+    assert!(
+        shown.contains("redirect_policy: Policy(None)"),
+        "the shipped builder does not carry the no-redirect policy: {shown}"
+    );
 }
 
 #[test]
