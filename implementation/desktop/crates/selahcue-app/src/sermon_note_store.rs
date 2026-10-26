@@ -63,7 +63,10 @@ pub trait SermonNoteStore: Send {
         draft: &SermonNoteDraftInput,
     ) -> Result<SermonNoteDraftView, String>;
     /// Load the persisted draft for `transcript_id`, if any. `Ok(None)` is the common, expected
-    /// case (nothing generated yet, or the desktop store is unavailable) — never an error.
+    /// case (nothing generated yet) — never an error. `Err` is a genuine storage failure and
+    /// must stay distinct from `Ok(None)`: [`LiveController::apply`](crate::LiveController::apply)
+    /// answers it with [`crate::ControllerReply::Deny`], never with "no draft", because a caller
+    /// that read "no draft" would go on to save over a draft that is there (17tnw2b9af5).
     fn load_draft(&mut self, transcript_id: i64) -> Result<Option<SermonNoteDraftView>, String>;
     /// Apply a text-only edit to the existing draft for `transcript_id`. An implementation
     /// returns `Err` (never panics) when no draft exists yet for this id, or the edit is

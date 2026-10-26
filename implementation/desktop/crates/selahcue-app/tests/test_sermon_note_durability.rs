@@ -53,6 +53,9 @@ struct SpyState {
     /// `LiveController`'s dispatch, not a full re-implementation of the repo.
     pending: Option<(i64, SermonNoteDraftView)>,
     fail_next: bool,
+    /// Unlike `fail_next` this is not consumed: while set, EVERY `load_draft` fails, the way a
+    /// store that can no longer read its rows does (17tnw2b9af5).
+    fail_loads: bool,
 }
 
 impl SpyStore {
@@ -77,6 +80,17 @@ impl SpyStore {
     }
     fn has_pending(&self) -> bool {
         self.0.lock().unwrap().pending.is_some()
+    }
+    fn fail_every_load(&self, fail: bool) {
+        self.0.lock().unwrap().fail_loads = fail;
+    }
+    fn persisted_title(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap()
+            .persisted
+            .as_ref()
+            .map(|(_, v)| v.title.clone())
     }
 }
 
@@ -111,6 +125,9 @@ impl SermonNoteStore for SpyStore {
     }
     fn load_draft(&mut self, transcript_id: i64) -> Result<Option<SermonNoteDraftView>, String> {
         let s = self.0.lock().unwrap();
+        if s.fail_loads {
+            return Err("simulated load failure".into());
+        }
         Ok(s.persisted
             .as_ref()
             .filter(|(id, _)| *id == transcript_id)
@@ -850,5 +867,146 @@ fn controller_snapshot_stays_untouched_by_sermon_note_activity() {
     assert_eq!(
         before, after,
         "ControllerSnapshot must be completely unaffected by sermon-note draft persistence"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// 17tnw2b9af5: "could not read the existing draft" is a third answer, distinct from "there is
+// no draft". The host used to collapse the two (a failed load went out as `draft: None`), so
+// the operator's regenerate flow saw "no accepted draft" and saved over the one it could not
+// read. These tests pin the host's half: a failed read is a refusal, never an empty answer.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_failed_load_is_denied_and_never_reported_as_no_draft() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+
+    // Positive control: while the store can read, the same load returns the draft, so the
+    // refusal below is caused by the failing read and by nothing else.
+    match c.apply(&Command::LoadSermonNoteDraft { transcript_id: 7 }) {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => assert_eq!(view.title, sample_draft().title),
+        other => panic!("control: expected the saved draft, got {other:?}"),
+    }
+
+    store.fail_every_load(true);
+    let reply = c.apply(&Command::LoadSermonNoteDraft { transcript_id: 7 });
+    assert!(
+        matches!(
+            reply,
+            selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+        ),
+        "a store that cannot read must be refused, not answered as 'no draft': {reply:?}"
+    );
+}
+
+#[test]
+fn a_save_is_refused_when_the_existing_draft_cannot_be_read() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    assert_eq!(store.saved_calls().len(), 1);
+
+    store.fail_every_load(true);
+
+    // An AI-generated payload over an AI-generated draft the host cannot read.
+    let mut regenerated = sample_draft();
+    regenerated.title = "Regenerated over an unreadable draft".into();
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: regenerated,
+    });
+    assert!(
+        matches!(
+            reply,
+            selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+        ),
+        "{reply:?}"
+    );
+
+    // The case the old `.ok().flatten().unwrap_or(false)` made reachable: a HUMAN-authored
+    // payload over the AI-generated draft. With the read failing, the "once AI-generated, always
+    // AI-generated" guard cannot run, so the save must not run either.
+    let mut downgrade = sample_draft();
+    downgrade.title = "Human-authored over an unreadable AI draft".into();
+    downgrade.ai_generated = false;
+    downgrade.disclosure = None;
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: downgrade,
+    });
+    assert!(
+        matches!(
+            reply,
+            selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+        ),
+        "{reply:?}"
+    );
+
+    assert_eq!(
+        store.saved_calls().len(),
+        1,
+        "neither refused save may have reached the store"
+    );
+    assert_eq!(
+        store.persisted_title().as_deref(),
+        Some(sample_draft().title.as_str()),
+        "the accepted draft is untouched"
+    );
+
+    // Positive control: once the store can read again the very same save goes through, so the
+    // refusals above came from the failed read and not from the payload.
+    store.fail_every_load(false);
+    let mut again = sample_draft();
+    again.title = "Saved once the store can read".into();
+    assert!(matches!(
+        c.apply(&Command::SaveSermonNoteDraft {
+            transcript_id: 7,
+            draft: again,
+        }),
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(store.saved_calls().len(), 2);
+}
+
+/// The in-process shell (`Backend::Local`) must carry the third answer too: the old signature
+/// returned `Option`, so a refused load and an empty one were the same `None`.
+#[test]
+fn the_in_process_shell_tells_a_failed_load_from_no_draft() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    let shell = selahcue_app::OperatorShell::new(Arc::new(Mutex::new(c)));
+
+    // No draft: a clean "nothing there".
+    assert_eq!(shell.load_sermon_note_draft(7), Ok(None));
+
+    // A draft: returned.
+    shell.save_sermon_note_draft(7, sample_draft()).unwrap();
+    let loaded = shell.load_sermon_note_draft(7).unwrap().unwrap();
+    assert_eq!(loaded.title, sample_draft().title);
+
+    // A failed read: an error, and the error text names nothing from the store.
+    store.fail_every_load(true);
+    let failed = shell.load_sermon_note_draft(7);
+    let err = failed.expect_err("a failed read must not look like 'no draft'");
+    assert!(
+        !err.contains("simulated") && !err.contains(&sample_draft().title),
+        "label-only error, got {err:?}"
     );
 }

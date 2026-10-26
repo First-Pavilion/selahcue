@@ -3507,14 +3507,13 @@ impl LiveController {
                         transcript_id: *transcript_id,
                         draft,
                     }),
-                    // An absent draft and a storage failure both read the same way to the
-                    // caller here (no draft to show) — `load_sermon_note_draft` is documented
-                    // as "never an error" at the wire layer; a real storage problem still
-                    // reaches stderr from the store implementation itself.
-                    Err(_) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
-                        transcript_id: *transcript_id,
-                        draft: None,
-                    }),
+                    // A storage failure is NOT "no draft" (17tnw2b9af5). It used to be
+                    // answered as `draft: None`, which told the operator's regenerate flow
+                    // there was nothing to keep, so it saved the new draft over the one this
+                    // store could not read. Refuse instead; the reply carries no store text
+                    // (FR-082). An absent draft is still `Ok(None)` above. The operator reads
+                    // `Denied` as a failed check (`operator_reply::expect_sermon_note_draft`).
+                    Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
                 }
             }
             Command::SaveSermonNoteDraft {
@@ -3538,13 +3537,13 @@ impl LiveController {
                 if !draft.disclosure_pairing_is_consistent() {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
-                let existing_ai_generated = self
-                    .sermon_notes
-                    .load_draft(*transcript_id)
-                    .ok()
-                    .flatten()
-                    .map(|existing| existing.ai_generated)
-                    .unwrap_or(false);
+                // A failed read is NOT "no draft" here either (17tnw2b9af5): with the existing
+                // draft unreadable the no-downgrade check below cannot run, and the save is an
+                // upsert that would replace it. Refuse rather than skip the guard.
+                let existing_ai_generated = match self.sermon_notes.load_draft(*transcript_id) {
+                    Ok(existing) => existing.is_some_and(|existing| existing.ai_generated),
+                    Err(_) => return ControllerReply::Deny(DenyReason::BadRequest),
+                };
                 if existing_ai_generated && !draft.ai_generated {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }

@@ -900,7 +900,7 @@ impl Backend {
                 .load_sermon_note_draft(transcript_id)
                 .await
                 .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.load_sermon_note_draft(transcript_id)),
+            Backend::Local(s) => s.load_sermon_note_draft(transcript_id),
         }
     }
     /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
@@ -8007,25 +8007,71 @@ struct PersistOutcome {
     previous_draft: Option<serde_json::Value>,
 }
 
+/// What the host told us about the accepted draft for a transcript, BEFORE we decide whether a
+/// freshly generated one may be saved (17tnw2b9af5; FR-129).
+///
+/// There are three answers, not two. "There is no draft" and "I could not find out" must never
+/// be the same value: the first licenses an immediate save (an upsert that REPLACES), the second
+/// licenses nothing. This used to be `load(..).await.ok().flatten()`, which folded an error into
+/// `None` and so turned every failed check into permission to overwrite the operator's notes.
+/// The type has no `From<Result<..>>` that drops errors silently and no `Default`; the one
+/// conversion, [`ExistingDraft::from_load`], keeps the error as [`ExistingDraft::CheckFailed`],
+/// and [`persist_generated_draft`] matches on all three arms with no wildcard.
+#[must_use]
+enum ExistingDraft {
+    /// The host answered, and there is no accepted draft: saving cannot destroy anything.
+    Absent,
+    /// The host answered with the accepted draft: it must be kept, so a new one is staged.
+    Present(selahcue_lan::protocol::SermonNoteDraftView),
+    /// The host could not or would not say (a reply of the wrong type, a refusal, a decoding
+    /// error, a dead link). Carries NO error text: FR-082 forbids draft text, serde values and
+    /// transcript text in any error, log or UI string, and the only safe amount of it to keep
+    /// is none.
+    CheckFailed,
+}
+
+impl ExistingDraft {
+    fn from_load(
+        loaded: Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String>,
+    ) -> Self {
+        match loaded {
+            Ok(Some(view)) => ExistingDraft::Present(view),
+            Ok(None) => ExistingDraft::Absent,
+            // Dropped on purpose, see the variant's doc: no error text is kept (FR-082).
+            Err(_) => ExistingDraft::CheckFailed,
+        }
+    }
+}
+
+/// Returned by [`persist_generated_draft`] when the check for an existing draft failed: nothing
+/// was saved and nothing was staged. A unit struct on purpose, see [`ExistingDraft::CheckFailed`].
+#[derive(Debug, PartialEq, Eq)]
+struct ExistingDraftCheckFailed;
+
+/// What the operator is told. Fixed text, never built from the load error (FR-082). Shown by the
+/// console as "Couldn't generate notes — <this>" (`transcripts.js` `showGenErrorInner`).
+const EXISTING_DRAFT_CHECK_FAILED_MESSAGE: &str = "Could not check for an existing draft, so \
+     nothing was saved. Your current notes are unchanged.";
+
 /// Persist a freshly generated draft against `transcript_id`, applying the FR-129 rule
 /// described on [`PersistOutcome`]. Best-effort, mirroring the pre-86akgqdx8 behaviour this
 /// replaces: persistence failing never blocks the draft from being generated and shown —
 /// only the persisted/pending state is affected.
+///
+/// The one exception is a failed check for an existing draft (17tnw2b9af5): that is an `Err`,
+/// because the safe outcome (save nothing) must be visible to the caller, not folded into a
+/// "persisted nothing" `PersistOutcome` that reads like any other soft failure.
 async fn persist_generated_draft(
     state: &State<'_, AppState>,
     transcript_id: i64,
     draft: selahcue_lan::protocol::SermonNoteDraftInput,
-) -> PersistOutcome {
-    let existing = state
-        .backend
-        .load_sermon_note_draft(transcript_id)
-        .await
-        .ok()
-        .flatten();
-    match existing {
+) -> Result<PersistOutcome, ExistingDraftCheckFailed> {
+    let existing =
+        ExistingDraft::from_load(state.backend.load_sermon_note_draft(transcript_id).await);
+    Ok(match existing {
         // An accepted draft already exists: STAGE, never upsert-replace directly — the
         // whole point of FR-129 is that this call must not be able to destroy it.
-        Some(existing_view) => {
+        ExistingDraft::Present(existing_view) => {
             match state
                 .backend
                 .stage_sermon_note_regeneration(transcript_id, draft)
@@ -8066,7 +8112,7 @@ async fn persist_generated_draft(
             }
         }
         // No accepted draft yet: the ORIGINAL, unchanged immediate-save path.
-        None => match state
+        ExistingDraft::Absent => match state
             .backend
             .save_sermon_note_draft(transcript_id, draft)
             .await
@@ -8093,7 +8139,17 @@ async fn persist_generated_draft(
                 }
             }
         },
-    }
+        // The check itself failed, so whether an accepted draft exists is UNKNOWN. Neither
+        // arm above is safe: the save would replace a draft we could not see, and the stage
+        // would be refused by the host if there is none. Do nothing, and say so.
+        ExistingDraft::CheckFailed => {
+            // Label only (FR-082): the load error is never interpolated, see `transcript_get`.
+            eprintln!(
+                "selahcue-operator: could not check for an existing sermon-note draft, nothing was saved"
+            );
+            return Err(ExistingDraftCheckFailed);
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -8320,7 +8376,22 @@ async fn save_and_describe_generated_notes(
     // the live response did. (They used to be filtered out here, which is what made them
     // vanish.)
     let draft = sermon_note_caveats::draft_input_for(outcome);
-    let persist = persist_generated_draft(state, id, draft).await;
+    let persist = match persist_generated_draft(state, id, draft).await {
+        Ok(persist) => persist,
+        // 17tnw2b9af5: the check for an existing draft failed, so NOTHING was saved or staged
+        // and the accepted draft is untouched. Tell the operator plainly instead of showing a
+        // draft that exists nowhere. `transport` is an existing code the console already renders
+        // generically (label + message), so the frontend contract is unchanged; the message is
+        // fixed text, never the load error (FR-082).
+        Err(ExistingDraftCheckFailed) => {
+            return serde_json::json!({
+                "ok": false,
+                "error": "transport",
+                "message": EXISTING_DRAFT_CHECK_FAILED_MESSAGE,
+                "clamp": clamp,
+            });
+        }
+    };
 
     serde_json::json!({
         "ok": true,
@@ -9164,6 +9235,15 @@ mod regenerate_with_retention_tests {
     fn state_with_transcript(
         consent_cloud_notes: bool,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
+        state_with_wrapped_store(consent_cloud_notes, |store| Box::new(store))
+    }
+
+    /// [`state_with_transcript`] with the sermon-note store wrapped by `wrap` before the
+    /// controller gets it, so a test can make the store misbehave (17tnw2b9af5).
+    fn state_with_wrapped_store(
+        consent_cloud_notes: bool,
+        wrap: impl FnOnce(DbStore) -> Box<dyn SermonNoteStore>,
+    ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
         // 17tnw2b0ntd: `transcript_generate_notes` reads the stored transcript through
         // `AppState::transcript_db` (a different handle from the sermon-note store below), so the
         // same ended transcript is seeded into BOTH — fresh in-memory DBs hand out the same id.
@@ -9208,7 +9288,7 @@ mod regenerate_with_retention_tests {
         controller
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .set_sermon_note_store(Box::new(DbStore { db }));
+            .set_sermon_note_store(wrap(DbStore { db }));
         let shell = OperatorShell::new(controller);
 
         let mut providers = selahcue_core::providers::ProvidersConfig::default();
@@ -9252,7 +9332,9 @@ mod regenerate_with_retention_tests {
     async fn persist_with_no_existing_draft_saves_immediately_not_staged() {
         let (app, id) = state_with_transcript(true);
         let state = app.state::<AppState>();
-        let outcome = persist_generated_draft(&state, id, sample_draft("First draft", true)).await;
+        let outcome = persist_generated_draft(&state, id, sample_draft("First draft", true))
+            .await
+            .expect("the existence check succeeds against a real store");
         assert_eq!(outcome.transcript_id, Some(id));
         assert!(
             !outcome.pending_confirmation,
@@ -9277,10 +9359,13 @@ mod regenerate_with_retention_tests {
         let (app, id) = state_with_transcript(true);
         let state = app.state::<AppState>();
         // Seed an accepted draft the way a true first-time generate would.
-        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Original notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
 
-        let outcome =
-            persist_generated_draft(&state, id, sample_draft("Regenerated notes", true)).await;
+        let outcome = persist_generated_draft(&state, id, sample_draft("Regenerated notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
         assert_eq!(outcome.transcript_id, Some(id));
         assert!(
             outcome.pending_confirmation,
@@ -9309,11 +9394,15 @@ mod regenerate_with_retention_tests {
     async fn a_refused_stage_never_touches_the_accepted_draft_or_leaves_a_pending_row() {
         let (app, id) = state_with_transcript(true);
         let state = app.state::<AppState>();
-        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Original notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
 
         let mut oversized = sample_draft("Regenerated notes", true);
         oversized.title = "x".repeat(10_000); // past sermon_note_repo::MAX_TITLE_CHARS (300)
-        let outcome = persist_generated_draft(&state, id, oversized).await;
+        let outcome = persist_generated_draft(&state, id, oversized)
+            .await
+            .expect("the existence check succeeds against a real store");
         assert_eq!(
             outcome.transcript_id, None,
             "a refused stage must not be reported as persisted"
@@ -9339,6 +9428,517 @@ mod regenerate_with_retention_tests {
             slot.pending.is_none(),
             "the refused stage must not have left a pending row"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // 17tnw2b9af5: when the check for an existing draft FAILS, regenerating must save nothing,
+    // stage nothing, tell the operator, and leave the accepted draft exactly as it was.
+    //
+    // Mutation record for these tests lives in the PR description. The two that matter: put the
+    // old `.ok().flatten()` behaviour back in `ExistingDraft::from_load` (Err -> Absent) and
+    // every test below that makes a load fail goes RED, with its siblings running.
+    // ---------------------------------------------------------------------------------------
+
+    /// Planted in every error the misbehaving store or host returns. It stands in for draft
+    /// text, a serde value or transcript text (FR-082): it must never reach a reply.
+    const LOAD_ERROR_MARKER: &str = "SECRET-DRAFT-TEXT-9d1e";
+
+    /// What reached the store (or the host) underneath, and whether reads currently fail.
+    #[derive(Default)]
+    struct StoreGate {
+        fail_loads: std::sync::atomic::AtomicBool,
+        saves: std::sync::atomic::AtomicUsize,
+        stages: std::sync::atomic::AtomicUsize,
+    }
+
+    impl StoreGate {
+        fn fail_loads(&self, fail: bool) {
+            self.fail_loads
+                .store(fail, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn loads_fail(&self) -> bool {
+            self.fail_loads.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn saves(&self) -> usize {
+            self.saves.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn stages(&self) -> usize {
+            self.stages.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn count_save(&self) {
+            self.saves.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn count_stage(&self) {
+            self.stages
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A [`DbStore`] whose reads can be made to fail, counting every save and stage that reaches
+    /// it. Everything else is the real thing, so "the accepted draft is unchanged" is read back
+    /// from a real repository, not from a mock's own bookkeeping.
+    struct FlakyLoadStore {
+        inner: DbStore,
+        gate: Arc<StoreGate>,
+    }
+
+    impl SermonNoteStore for FlakyLoadStore {
+        fn active_transcript_id(&mut self) -> Result<Option<i64>, String> {
+            self.inner.active_transcript_id()
+        }
+        fn save_draft(
+            &mut self,
+            transcript_id: i64,
+            draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+        ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+            self.gate.count_save();
+            self.inner.save_draft(transcript_id, draft)
+        }
+        fn load_draft(
+            &mut self,
+            transcript_id: i64,
+        ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+            if self.gate.loads_fail() {
+                return Err(format!(
+                    "{LOAD_ERROR_MARKER}: could not decode the stored row"
+                ));
+            }
+            self.inner.load_draft(transcript_id)
+        }
+        fn update_draft(
+            &mut self,
+            transcript_id: i64,
+            edit: &selahcue_lan::protocol::SermonNoteEditInput,
+        ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+            self.inner.update_draft(transcript_id, edit)
+        }
+        fn stage_regeneration(
+            &mut self,
+            transcript_id: i64,
+            draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+        ) -> Result<RegenerationSlot, String> {
+            self.gate.count_stage();
+            self.inner.stage_regeneration(transcript_id, draft)
+        }
+        fn confirm_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+            self.inner.confirm_regeneration(transcript_id)
+        }
+        fn discard_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+            self.inner.discard_regeneration(transcript_id)
+        }
+    }
+
+    fn flaky_state(
+        consent_cloud_notes: bool,
+    ) -> (tauri::App<tauri::test::MockRuntime>, i64, Arc<StoreGate>) {
+        let gate = Arc::new(StoreGate::default());
+        let wrap_gate = gate.clone();
+        let (app, id) = state_with_wrapped_store(consent_cloud_notes, move |inner| {
+            Box::new(FlakyLoadStore {
+                inner,
+                gate: wrap_gate,
+            })
+        });
+        (app, id, gate)
+    }
+
+    /// An accepted draft the operator has since EDITED: the thing that must survive.
+    async fn seed_edited_accepted_draft(
+        state: &State<'_, AppState>,
+        id: i64,
+    ) -> selahcue_lan::protocol::SermonNoteDraftView {
+        persist_generated_draft(state, id, sample_draft("Original notes", true))
+            .await
+            .expect("the seeding save succeeds");
+        state
+            .backend
+            .update_sermon_note_draft(
+                id,
+                selahcue_lan::protocol::SermonNoteEditInput {
+                    title: "Edited by the operator".to_string(),
+                    summary: Some("The operator's own summary".to_string()),
+                    sections_json: "[]".to_string(),
+                    scriptures_json: "[]".to_string(),
+                },
+            )
+            .await
+            .expect("the edit reaches the store")
+            .expect("the store accepts the edit");
+        state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("the accepted draft loads")
+            .expect("the accepted draft exists")
+    }
+
+    /// The whole property, against whatever backend `state` sits on: with reads failing, a
+    /// regenerate returns the failed-check error, neither a save nor a stage reaches the store,
+    /// and the edited accepted draft reads back identical once reads work again. Ends with a
+    /// positive control: the very same call then succeeds (it stages), so the refusal above came
+    /// from the failing read and from nothing else.
+    async fn assert_a_failed_check_changes_nothing(
+        state: &State<'_, AppState>,
+        id: i64,
+        gate: &StoreGate,
+    ) {
+        let accepted = seed_edited_accepted_draft(state, id).await;
+        assert_eq!(accepted.title, "Edited by the operator", "premise");
+        let (saves, stages) = (gate.saves(), gate.stages());
+        assert!(saves >= 1, "premise: the seed save reached the store");
+
+        gate.fail_loads(true);
+        let failed =
+            persist_generated_draft(state, id, sample_draft("Regenerated notes", true)).await;
+        assert!(
+            matches!(failed, Err(ExistingDraftCheckFailed)),
+            "a failed check must be reported as a failed check, not as 'no draft'"
+        );
+        assert_eq!(
+            gate.saves(),
+            saves,
+            "nothing may be saved over a draft we could not see"
+        );
+        assert_eq!(gate.stages(), stages, "nothing may be staged either");
+
+        gate.fail_loads(false);
+        let after = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("the accepted draft loads")
+            .expect("the accepted draft is still there");
+        assert_eq!(
+            after, accepted,
+            "the accepted draft is byte-for-byte unchanged"
+        );
+        let slot = state
+            .backend
+            .discard_sermon_note_regeneration(id)
+            .await
+            .expect("discard against a real store succeeds")
+            .expect("slot");
+        assert!(slot.pending.is_none(), "no pending row was left behind");
+
+        let staged = persist_generated_draft(state, id, sample_draft("Regenerated notes", true))
+            .await
+            .expect("with reads working again the same call succeeds");
+        assert!(
+            staged.pending_confirmation,
+            "control: with the check working, an existing draft is staged"
+        );
+        assert_eq!(gate.stages(), stages + 1);
+    }
+
+    /// The in-process backend (`Backend::Local`): the host's refusal has to survive the shell.
+    #[tokio::test]
+    async fn a_failed_check_saves_nothing_stages_nothing_and_leaves_the_accepted_draft_unchanged() {
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        assert_a_failed_check_changes_nothing(&state, id, &gate).await;
+    }
+
+    /// What the operator console is told: `ok: false`, an existing (frozen) error code, a fixed
+    /// message, no draft, and none of the planted store text.
+    #[tokio::test]
+    async fn a_failed_check_is_reported_as_not_saved_with_a_fixed_label_only_message() {
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        let accepted = seed_edited_accepted_draft(&state, id).await;
+        gate.fail_loads(true);
+
+        let clamp = Some(TranscriptClampNotice {
+            total_chars: 500_000,
+            dropped_chars: 100_000,
+            max_chars: 400_000,
+        });
+        let reply = save_and_describe_generated_notes(
+            &state,
+            id,
+            &outcome_with_empties(&["Chapter markers"], "Illustrations"),
+            &clamp,
+        )
+        .await;
+
+        assert_eq!(reply["ok"], false);
+        assert_eq!(
+            reply["message"],
+            "Could not check for an existing draft, so nothing was saved. \
+             Your current notes are unchanged."
+        );
+        let code = reply["error"].as_str().expect("an error code");
+        assert!(
+            [
+                "consent_required",
+                "not_configured",
+                "quota_exceeded",
+                "transport",
+                "malformed"
+            ]
+            .contains(&code),
+            "the frontend only knows its five codes; got {code}"
+        );
+        assert_eq!(code, "transport");
+        assert!(
+            reply.get("draft").is_none() && reply.get("transcript_id").is_none(),
+            "a draft that was not saved must not be shown as one: {reply}"
+        );
+        assert_eq!(
+            reply["clamp"]["dropped_chars"], 100_000,
+            "the clamp is still echoed"
+        );
+        assert!(
+            !reply.to_string().contains(LOAD_ERROR_MARKER),
+            "FR-082: no store text in the reply"
+        );
+
+        gate.fail_loads(false);
+        let after = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("loads")
+            .expect("still there");
+        assert_eq!(after, accepted);
+    }
+
+    /// The conversion that used to be `.ok().flatten()`: every class of load failure the ticket
+    /// names (a reply of the wrong type, a refusal, a decoding error) plus a dead link maps to
+    /// `CheckFailed`, never to `Absent`; the two real answers still map to themselves.
+    #[test]
+    fn a_load_error_is_never_read_as_no_draft() {
+        use selahcue_lan::TransportError;
+        let json_error = serde_json::from_str::<selahcue_lan::protocol::ServerMessage>(
+            r#"{"event":"sermon_note_draft","transcript_id":"SECRET-DRAFT-TEXT-9d1e"}"#,
+        )
+        .expect_err("a mistyped field does not decode");
+        // The strings the backend hands over: `Backend::load_sermon_note_draft` stringifies the
+        // transport error.
+        let errors = [
+            TransportError::Protocol("expected sermon_note_draft, got: error".to_string())
+                .to_string(),
+            TransportError::Json(json_error).to_string(),
+            TransportError::Closed.to_string(),
+            "denied".to_string(),
+        ];
+        for e in errors {
+            assert!(
+                matches!(
+                    ExistingDraft::from_load(Err(e.clone())),
+                    ExistingDraft::CheckFailed
+                ),
+                "a load error must be CheckFailed: {e}"
+            );
+        }
+        assert!(matches!(
+            ExistingDraft::from_load(Ok(None)),
+            ExistingDraft::Absent
+        ));
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
+            title: "T".to_string(),
+            summary: None,
+            sections_json: "[]".to_string(),
+            scriptures_json: "[]".to_string(),
+            ai_generated: true,
+            disclosure: Some("d".to_string()),
+            provider: "p".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 1,
+        };
+        assert!(
+            matches!(ExistingDraft::from_load(Ok(Some(view))), ExistingDraft::Present(v) if v.title == "T")
+        );
+    }
+
+    /// A pinned-TLS control host on loopback with one paired Operator device, answering through
+    /// `handler`. Its own runtime, like `link_reconnect_tests::spawn_server`.
+    fn spawn_host(
+        handler: selahcue_lan::server::Handler,
+    ) -> (SocketAddr, CertPin, tokio::runtime::Runtime) {
+        use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
+        use selahcue_lan::{ControlServer, Role, SelfSigned};
+        let identity = SelfSigned::generate(vec!["localhost".into()]).expect("self-signed cert");
+        let pin = identity.pin;
+        let mut registry = SessionRegistry::new();
+        let now = std::time::Instant::now();
+        registry.offer_pairing(
+            "p",
+            Role::Operator,
+            now,
+            std::time::Duration::from_secs(300),
+        );
+        registry
+            .redeem(
+                "p",
+                DeviceId("operator".into()),
+                SessionToken::new("tok-operator"),
+                now,
+            )
+            .expect("redeem the test pairing code");
+        let server = Arc::new(
+            ControlServer::new(
+                &identity,
+                Arc::new(tokio::sync::Mutex::new(registry)),
+                handler,
+            )
+            .expect("build control server"),
+        );
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        std_listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking for tokio");
+        let addr = std_listener.local_addr().expect("local addr");
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build dedicated server runtime");
+        rt.spawn(async move {
+            let listener =
+                tokio::net::TcpListener::from_std(std_listener).expect("tokio listener from std");
+            let _ = server.run(listener).await;
+        });
+        (addr, pin, rt)
+    }
+
+    /// An app whose backend is a REAL `RemoteOperator` connected to `addr`.
+    async fn remote_app(addr: SocketAddr, pin: CertPin) -> tauri::App<tauri::test::MockRuntime> {
+        let remote = RemoteOperator::connect(addr, "localhost", pin, "operator", "tok-operator")
+            .await
+            .expect("connect to the test host");
+        let app = tauri::test::mock_app();
+        app.handle().manage(AppState {
+            backend: Backend::Remote(Box::new(tokio::sync::Mutex::new(remote))),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::connected()),
+            link_next_attempt: Mutex::new(None),
+            media_store: None,
+        });
+        app
+    }
+
+    /// Hosts that cannot give the operator a usable answer to "is there an accepted draft?",
+    /// over the real link: a reply of the wrong type, and a refusal (`Denied`). Each must leave
+    /// the HOST having received zero save and zero stage commands. The control host answers the
+    /// same question with a clean "no draft" and DOES receive the save, so the zero above is the
+    /// check failing and not a harness that never reaches the save.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_host_that_cannot_answer_the_check_gets_no_save_and_no_stage_over_the_real_link() {
+        use selahcue_lan::protocol::{Command, DenyReason, ServerMessage};
+        use selahcue_lan::server::Reply;
+
+        type Load = fn() -> Reply;
+        let wrong_type: Load = || {
+            Reply::Message(Box::new(ServerMessage::Error {
+                message: LOAD_ERROR_MARKER.to_string(),
+            }))
+        };
+        let denied: Load = || Reply::Deny(DenyReason::BadRequest);
+        let no_draft: Load = || {
+            Reply::Message(Box::new(ServerMessage::SermonNoteDraft {
+                transcript_id: 1,
+                draft: None,
+            }))
+        };
+
+        for (name, load, check_fails) in [
+            ("wrong reply type", wrong_type, true),
+            ("denied", denied, true),
+            ("control: a clean 'no draft'", no_draft, false),
+        ] {
+            let gate = Arc::new(StoreGate::default());
+            let host_gate = gate.clone();
+            let (addr, pin, host) = spawn_host(Arc::new(move |_role, cmd| match cmd {
+                Command::LoadSermonNoteDraft { .. } => load(),
+                Command::SaveSermonNoteDraft { draft, .. } => {
+                    host_gate.count_save();
+                    Reply::Message(Box::new(ServerMessage::SermonNoteDraft {
+                        transcript_id: 1,
+                        draft: Some(selahcue_lan::protocol::SermonNoteDraftView {
+                            title: draft.title.clone(),
+                            summary: draft.summary.clone(),
+                            sections_json: draft.sections_json.clone(),
+                            scriptures_json: draft.scriptures_json.clone(),
+                            ai_generated: draft.ai_generated,
+                            disclosure: draft.disclosure.clone(),
+                            provider: draft.provider.clone(),
+                            model: draft.model.clone(),
+                            created_at_ms: 1,
+                            edited_at_ms: 1,
+                        }),
+                    }))
+                }
+                Command::StageSermonNoteRegeneration { .. } => {
+                    host_gate.count_stage();
+                    Reply::Deny(DenyReason::BadRequest)
+                }
+                _ => Reply::Ack,
+            }));
+            let app = remote_app(addr, pin).await;
+            let state = app.state::<AppState>();
+
+            let result =
+                persist_generated_draft(&state, 1, sample_draft("Regenerated notes", true)).await;
+            if check_fails {
+                assert!(
+                    matches!(result, Err(ExistingDraftCheckFailed)),
+                    "{name}: must be a failed check"
+                );
+                assert_eq!(gate.saves(), 0, "{name}: no save may reach the host");
+                assert_eq!(gate.stages(), 0, "{name}: no stage may reach the host");
+            } else {
+                let outcome = result.expect("the control host answers the check");
+                assert_eq!(outcome.transcript_id, Some(1), "{name}");
+                assert_eq!(gate.saves(), 1, "{name}: the save reached the host");
+                assert_eq!(gate.stages(), 0, "{name}");
+            }
+            host.shutdown_background();
+        }
+    }
+
+    /// End to end across both halves: a REAL host controller whose store cannot read, behind the
+    /// real link, driven by the operator's real backend. The host must answer the failed read
+    /// with a refusal (not "no draft"), and the operator must turn that into a failed check.
+    /// Revert EITHER half and this goes RED: with the old host handler the operator sees
+    /// "no draft" and saves; with the old operator the refusal is read as "no draft".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_real_host_storage_failure_reaches_the_operator_as_a_failed_check() {
+        let gate = Arc::new(StoreGate::default());
+        let host_db = Database::open_in_memory().expect("in-memory host db opens");
+        let id = transcript_repo::create(
+            &host_db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript on the host");
+        transcript_repo::append_segment(&host_db, id, 0, 1_000, "Good morning, church.")
+            .expect("append segment");
+        transcript_repo::end(&host_db, id, 1_000).expect("end transcript");
+
+        let mut plan = ServicePlan::new("Test Service");
+        plan.add_item(ItemKind::Section, "Sermon");
+        let mut controller = LiveController::new(plan, 320, 180, Theme::dark());
+        controller.set_sermon_note_store(Box::new(FlakyLoadStore {
+            inner: DbStore { db: host_db },
+            gate: gate.clone(),
+        }));
+        let (addr, pin, host) =
+            spawn_host(selahcue_app::handler_for(Arc::new(Mutex::new(controller))));
+        let app = remote_app(addr, pin).await;
+        let state = app.state::<AppState>();
+
+        assert_a_failed_check_changes_nothing(&state, id, &gate).await;
+        host.shutdown_background();
     }
 
     /// AC5 / privacy gate (17tnw2b0ntd): a DIRECT call on a transcript that is still being recorded
@@ -9457,7 +10057,9 @@ mod regenerate_with_retention_tests {
         // Seed an accepted draft directly against the store (bypassing the command, which would
         // itself refuse with consent off) so this transcript is genuinely in the "already has a
         // draft" state the Regenerate affordance targets.
-        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Original notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
 
         let result = transcript_generate_notes(id, state.clone())
             .await
@@ -9500,14 +10102,17 @@ mod regenerate_with_retention_tests {
         // The existing accepted draft was itself never AI-generated (a human-authored draft, or
         // an earlier degraded one) — `selahcue-data`'s own positive control already proves
         // confirming a degraded regeneration over such a draft is ALLOWED.
-        persist_generated_draft(&state, id, sample_draft("Human notes", false)).await;
+        persist_generated_draft(&state, id, sample_draft("Human notes", false))
+            .await
+            .expect("the existence check succeeds against a real store");
 
         let outcome = persist_generated_draft(
             &state,
             id,
             sample_draft("Degraded regenerated notes", false),
         )
-        .await;
+        .await
+        .expect("the existence check succeeds against a real store");
         assert!(
             outcome.pending_confirmation,
             "even a degraded regenerate must be staged, not auto-applied"
@@ -9536,8 +10141,12 @@ mod regenerate_with_retention_tests {
     async fn confirm_and_discard_commands_round_trip_through_a_real_backend() {
         let (app, id) = state_with_transcript(true);
         let state = app.state::<AppState>();
-        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
-        persist_generated_draft(&state, id, sample_draft("Regenerated notes", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Original notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
+        persist_generated_draft(&state, id, sample_draft("Regenerated notes", true))
+            .await
+            .expect("the existence check succeeds against a real store");
 
         // Discard first: the accepted draft must come back unchanged.
         let discarded = discard_sermon_note_regeneration(id, state.clone())
@@ -9550,7 +10159,9 @@ mod regenerate_with_retention_tests {
         );
 
         // Stage again, then confirm: the accepted draft must now be the regenerated one.
-        persist_generated_draft(&state, id, sample_draft("Regenerated notes 2", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Regenerated notes 2", true))
+            .await
+            .expect("the existence check succeeds against a real store");
         let confirmed = confirm_sermon_note_regeneration(id, state.clone())
             .await
             .expect("confirm_sermon_note_regeneration command succeeds");

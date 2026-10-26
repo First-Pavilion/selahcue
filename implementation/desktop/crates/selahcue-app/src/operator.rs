@@ -682,16 +682,21 @@ impl OperatorShell {
     }
 
     /// Load the persisted sermon-note draft for `transcript_id`, if any (86akgqdv0).
+    ///
+    /// Three answers (17tnw2b9af5): `Ok(Some(_))` a draft, `Ok(None)` no draft, `Err(_)` the
+    /// store could not be read. The last used to be folded into `None`, so a caller deciding
+    /// whether it may save over an existing draft could not tell "nothing there" from "could
+    /// not look". The error text is a fixed label (FR-082), never the store's own message.
     pub fn load_sermon_note_draft(
         &self,
         transcript_id: i64,
-    ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
         self.with(
             |c| match c.apply(&Command::LoadSermonNoteDraft { transcript_id }) {
                 crate::ControllerReply::Message(
                     selahcue_lan::protocol::ServerMessage::SermonNoteDraft { draft, .. },
-                ) => draft,
-                _ => None,
+                ) => Ok(draft),
+                _ => Err("the sermon-note draft could not be read".to_string()),
             },
         )
     }
