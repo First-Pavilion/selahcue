@@ -40,4 +40,6 @@ pub use server::{
     generate_pairing_code, generate_token, ControlServer, Handler, Reply, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "server")]
-pub use tls::{client_config, server_config, SelfSigned, TransportError};
+pub use tls::{
+    client_config, server_config, JsonFailure, JsonFailureKind, SelfSigned, TransportError,
+};
