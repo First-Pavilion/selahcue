@@ -9754,7 +9754,7 @@ mod regenerate_with_retention_tests {
                 .to_string(),
             TransportError::Protocol("expected sermon_note_draft, got: denied".to_string())
                 .to_string(),
-            TransportError::Json(json_error).to_string(),
+            TransportError::from(json_error).to_string(),
             TransportError::Closed.to_string(),
         ];
         for e in errors {
