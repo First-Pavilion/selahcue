@@ -1,25 +1,34 @@
-# Mutation results for 86ak1090r (staff revoke + extend), round 2.
-# Harness: mutate.py beside this file (runs from the repository; see its docstring for the two commands).
-# Run against production and test code at commit bea57670 (the head before the documentation commits that follow it).
-# One textual change per mutant; the named test FILES run with all their siblings (never --exact); a mutant is KILLED only when
-# at least one of its INTENDED tests goes red (KILLED-ELSEWHERE means red, but only for an unrelated reason, and counts as a failure).
-# Each file is restored and compared byte for byte with the repository copy (restored_identical).
+# Mutation results for 86ak1090r (staff revoke + extend), round 3.
+# Harness: mutate.py beside this file (runs from the repository; see its docstring for the commands, --self-check and --list).
+# Run against production and test code at commit 6569058a (the head before the documentation commits that follow it).
+# One textual change per mutant; the named test FILES run with all their siblings (never --exact). A mutant is KILLED only when
+#  (1) the unmutated baseline for the same test files was GREEN (the 'baseline' lines), and
+#  (2) at least one of its INTENDED tests goes red; intended tests are matched on the test's own name after '::', never on its path.
+# KILLED-ELSEWHERE (red only for an unrelated reason), SURVIVED and SPEC-ERROR all count as failures. Each file is restored and
+# compared byte for byte with the repository copy (restored_identical).
 # SQLite mutants ran under the repo's API_ENV command (env -i, SQL_DATABASE=:memory:) on Python 3.14; the three Postgres mutants (P*)
-# ran against a throwaway local PostgreSQL 16.2 (pgserver, Python 3.12 venv, no Docker).
-# Result: 69 mutants, 69 KILLED, 0 not killed, 69 of 69 restored byte-identical.
+# ran against a throwaway local PostgreSQL 16.2 (pgserver, Python 3.12 venv, TCP on 127.0.0.1, no unix socket).
+# Result: 86 mutants, 86 KILLED, 0 not killed, 86 of 86 restored byte-identical, 12 baseline runs all GREEN.
 #
 # Notes:
-#  - Round 1 ran 34 mutants against dca6eccf; round 2 (this file) re-ran those guards (several renamed or split) against the new head and added the rest.
-#  - Round 1 found C3 (format characters) alive; the test spellings that put a zero-width space or soft hyphen INSIDE a group now kill it.
-#  - Mutants that are NOT in this list because no single-line change can be killed by exactly one test: the offset-replay test
-#    (test_the_same_instant_written_in_another_offset_is_still_a_replay) is covered by two defences (the UTC normalisation of the
-#    requested date and the instant comparison), so removing either alone leaves it green; it is kept as a behavioural pin.
-#  - Quinn's depth constant 8 -> 9 survived in round 1 because every test was built from the constant; D5 and D6 now kill it.
+#  - The harness ran as four processes (T/A/G/X/S, C/D/H/Q, E/R/W/B, and the Postgres ones). The first process was started with a
+#    per-FILE baseline, which went red for tests/test_throttling_guards.py run on its own (it needs the session's test database, which a
+#    sibling file provides); the baseline was made per test-LIST and that process was re-run. The other three processes had already
+#    started with the per-file baseline; every file they use was GREEN, and each mutant's own run uses the same lists as before.
+#  - Round 1 and round 2 results are superseded by this file; round 3 added the mutants for the review findings (R5-R8, E3d-E3f, H1-H4, X1-X2, S1-S3).
+#  - Not killable by exactly one single-line mutant: the offset-replay test (test_the_same_instant_written_in_another_offset_is_still_a_replay)
+#    is covered by two defences (UTC normalisation of the requested date, and the instant comparison); it is kept as a behavioural pin.
 
-T1-tripwire-removed  KILLED  [2 failed, 345 passed in 132.62s (0:02:12)]  restored_identical=True  # remove the in_atomic_block check from the writer
+baseline tests/test_license_revoke_extend.py  GREEN  [345 passed in 65.00s (0:01:05)]
+baseline tests/test_license_revoke_extend.py + tests/test_activation_licence_transition.py  GREEN  [388 passed in 81.62s (0:01:21)]
+baseline tests/test_license_revoke_extend.py + tests/test_activation_licence_transition.py + tests/test_device_activation_slice.py  GREEN  [400 passed in 85.29s (0:01:25)]
+baseline tests/test_license_revoke_extend.py + tests/test_license_suspend_reinstate.py  GREEN  [523 passed in 85.09s (0:01:25)]
+baseline tests/test_license_revoke_extend.py + tests/test_throttling_guards.py  GREEN  [349 passed in 55.59s]
+T1-tripwire-removed  KILLED  [3 failed, 385 passed in 65.39s (0:01:05)]  restored_identical=True  # remove the in_atomic_block check from the writer
       red: tests/test_license_revoke_extend.py::test_the_tripwire_logs_an_error_naming_the_cause_and_no_secret
+      red: tests/test_license_revoke_extend.py::test_the_writer_itself_refuses_a_transaction_opened_by_hand
       red: tests/test_license_revoke_extend.py::test_the_writer_refuses_to_run_inside_a_callers_transaction_without_the_opt_in
-T2-activation-optin-removed  KILLED  [33 failed, 326 passed in 107.10s (0:01:47)]  restored_identical=True  # device activation stops passing the opt-in
+T2-activation-optin-removed  KILLED  [33 failed, 367 passed in 73.84s (0:01:13)]  restored_identical=True  # device activation stops passing the opt-in
       red: tests/test_activation_licence_transition.py::test_a_failing_device_audit_write_rolls_back_in_the_production_shape
       red: tests/test_activation_licence_transition.py::test_a_failing_device_audit_write_rolls_the_licence_transition_back_too
       red: tests/test_activation_licence_transition.py::test_a_known_install_re_enrolling_under_a_new_request_id_writes_no_second_transition[enrollment]
@@ -53,7 +62,7 @@ T2-activation-optin-removed  KILLED  [33 failed, 326 passed in 107.10s (0:01:47)
       red: tests/test_license_revoke_extend.py::test_revoking_a_licence_over_graphql_makes_the_cascade_kill_the_device_token
       red: tests/test_license_revoke_extend.py::test_revoking_from_suspended_removes_the_protection_suspension_gave_the_tokens
       red: tests/test_license_revoke_extend.py::test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten
-T3-extend-optin-removed  KILLED  [14 failed, 290 passed in 70.27s (0:01:10)]  restored_identical=True  # extend stops passing the opt-in
+T3-extend-optin-removed  KILLED  [14 failed, 331 passed in 61.93s (0:01:01)]  restored_identical=True  # extend stops passing the opt-in
       red: tests/test_license_revoke_extend.py::test_a_device_whose_licence_lapsed_recovers_after_the_extension
       red: tests/test_license_revoke_extend.py::test_a_failure_while_moving_the_date_rolls_the_status_and_the_audit_row_back[EXPIRED]
       red: tests/test_license_revoke_extend.py::test_a_licence_that_lapsed_long_ago_is_bounded_from_now_not_from_its_old_date
@@ -68,7 +77,7 @@ T3-extend-optin-removed  KILLED  [14 failed, 290 passed in 70.27s (0:01:10)]  re
       red: tests/test_license_revoke_extend.py::test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction
       red: tests/test_license_revoke_extend.py::test_revoke_and_extend_write_through_the_state_machine_not_a_direct_status_write
       red: tests/test_license_revoke_extend.py::test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten
-T4-tripwire-inverted  KILLED  [38 failed, 309 passed in 95.16s (0:01:35)]  restored_identical=True  # the check fires only when the caller DID opt in
+T4-tripwire-inverted  KILLED  [39 failed, 349 passed in 75.06s (0:01:15)]  restored_identical=True  # the check fires only when the caller DID opt in
       red: tests/test_activation_licence_transition.py::test_a_failing_device_audit_write_rolls_back_in_the_production_shape
       red: tests/test_activation_licence_transition.py::test_a_failing_device_audit_write_rolls_the_licence_transition_back_too
       red: tests/test_activation_licence_transition.py::test_a_known_install_re_enrolling_under_a_new_request_id_writes_no_second_transition[enrollment]
@@ -106,14 +115,18 @@ T4-tripwire-inverted  KILLED  [38 failed, 309 passed in 95.16s (0:01:35)]  resto
       red: tests/test_license_revoke_extend.py::test_the_tripwire_has_positive_controls_so_it_is_the_only_thing_that_stopped_the_call
       red: tests/test_license_revoke_extend.py::test_the_tripwire_logs_an_error_naming_the_cause_and_no_secret
       red: tests/test_license_revoke_extend.py::test_the_wrapped_denial_loss_the_tripwire_exists_for_is_real
+      red: tests/test_license_revoke_extend.py::test_the_writer_itself_refuses_a_transaction_opened_by_hand
       red: tests/test_license_revoke_extend.py::test_the_writer_refuses_to_run_inside_a_callers_transaction_without_the_opt_in
-T5-tripwire-default-on  KILLED  [3 failed, 344 passed in 84.47s (0:01:24)]  restored_identical=True  # the opt-in defaults to True
+T5-tripwire-default-on  KILLED  [4 failed, 384 passed in 72.08s (0:01:12)]  restored_identical=True  # the opt-in defaults to True
       red: tests/test_license_revoke_extend.py::test_the_opt_in_is_keyword_only_and_off_by_default
       red: tests/test_license_revoke_extend.py::test_the_tripwire_logs_an_error_naming_the_cause_and_no_secret
+      red: tests/test_license_revoke_extend.py::test_the_writer_itself_refuses_a_transaction_opened_by_hand
       red: tests/test_license_revoke_extend.py::test_the_writer_refuses_to_run_inside_a_callers_transaction_without_the_opt_in
-T6-extra-optin-site  KILLED  [1 failed, 303 passed in 89.46s (0:01:29)]  restored_identical=True  # a third caller opts in (the scan that pins the opt-in sites must notice)
+T6-extra-optin-site  KILLED  [1 failed, 344 passed in 55.69s]  restored_identical=True  # a third caller opts in (the scan that pins the opt-in sites must notice)
       red: tests/test_license_revoke_extend.py::test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction
-A1-gate-removed-in-_authorise  KILLED  [109 failed, 373 passed in 110.69s (0:01:50)]  restored_identical=True  # the shared permission gate is a no-op
+A1-gate-removed-in-_authorise  KILLED  [112 failed, 411 passed in 84.18s (0:01:24)]  restored_identical=True  # the shared permission gate is a no-op
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[extend]
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[revoke]
       red: tests/test_license_revoke_extend.py::test_a_failure_to_write_the_refusal_row_never_turns_the_refusal_into_a_success
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[extend]
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[revoke]
@@ -195,6 +208,7 @@ A1-gate-removed-in-_authorise  KILLED  [109 failed, 373 passed in 110.69s (0:01:
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[extend]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[revoke]
+      red: tests/test_license_revoke_extend.py::test_the_sustained_denial_log_line_names_the_kind_of_actor_that_tripped_the_cap
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_does_not_leak_a_transaction_complaint
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_is_identical_for_an_existing_and_a_missing_licence[extend]
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_is_identical_for_an_existing_and_a_missing_licence[revoke]
@@ -223,7 +237,8 @@ A1-gate-removed-in-_authorise  KILLED  [109 failed, 373 passed in 110.69s (0:01:
       red: tests/test_license_suspend_reinstate.py::test_suspend_is_refused_to_anyone_without_the_suspend_permission[staff-with-every-other-licence-permission]
       red: tests/test_license_suspend_reinstate.py::test_the_transaction_guard_does_not_leak_into_the_unauthorised_answer
       red: tests/test_license_suspend_reinstate.py::test_the_two_permissions_are_separate_authorities
-A2-revoke-gate-removed  KILLED  [69 failed, 413 passed in 120.71s (0:02:00)]  restored_identical=True  # the lifecycle (revoke) path skips the gate
+A2-revoke-gate-removed  KILLED  [71 failed, 452 passed in 82.43s (0:01:22)]  restored_identical=True  # the lifecycle (revoke) path skips the gate
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[revoke]
       red: tests/test_license_revoke_extend.py::test_a_failure_to_write_the_refusal_row_never_turns_the_refusal_into_a_success
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-revoke]
@@ -266,6 +281,7 @@ A2-revoke-gate-removed  KILLED  [69 failed, 413 passed in 120.71s (0:02:00)]  re
       red: tests/test_license_revoke_extend.py::test_the_gate_runs_before_the_writer_and_before_any_lookup[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[revoke]
+      red: tests/test_license_revoke_extend.py::test_the_sustained_denial_log_line_names_the_kind_of_actor_that_tripped_the_cap
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_does_not_leak_a_transaction_complaint
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_is_identical_for_an_existing_and_a_missing_licence[revoke]
       red: tests/test_license_suspend_reinstate.py::test_an_actor_id_longer_than_the_audit_column_is_refused_before_any_write
@@ -293,7 +309,8 @@ A2-revoke-gate-removed  KILLED  [69 failed, 413 passed in 120.71s (0:02:00)]  re
       red: tests/test_license_suspend_reinstate.py::test_suspend_is_refused_to_anyone_without_the_suspend_permission[staff-with-every-other-licence-permission]
       red: tests/test_license_suspend_reinstate.py::test_the_transaction_guard_does_not_leak_into_the_unauthorised_answer
       red: tests/test_license_suspend_reinstate.py::test_the_two_permissions_are_separate_authorities
-A3-extend-gate-removed  KILLED  [41 failed, 441 passed in 174.30s (0:02:54)]  restored_identical=True  # extend skips the gate
+A3-extend-gate-removed  KILLED  [42 failed, 481 passed in 79.05s (0:01:19)]  restored_identical=True  # extend skips the gate
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[extend]
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-digits-extend]
@@ -335,7 +352,7 @@ A3-extend-gate-removed  KILLED  [41 failed, 441 passed in 174.30s (0:02:54)]  re
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[extend]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[extend]
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_is_identical_for_an_existing_and_a_missing_licence[extend]
-A4-gate-after-lookup-extend  KILLED  [17 failed, 287 passed in 87.10s (0:01:27)]  restored_identical=True  # extend looks the licence up BEFORE the gate
+A4-gate-after-lookup-extend  KILLED  [18 failed, 327 passed in 55.97s]  restored_identical=True  # extend looks the licence up BEFORE the gate
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-digits-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[arabic-indic-digits-extend]
@@ -349,19 +366,24 @@ A4-gate-after-lookup-extend  KILLED  [17 failed, 287 passed in 87.10s (0:01:27)]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[nul-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[padded-digits-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[signed-extend]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[extend]
       red: tests/test_license_revoke_extend.py::test_hostile_input_from_an_unauthorised_actor_cannot_bloat_or_break_the_audit_row[extend]
       red: tests/test_license_revoke_extend.py::test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database[extend]
       red: tests/test_license_revoke_extend.py::test_the_gate_runs_before_the_writer_and_before_any_lookup[extend]
       red: tests/test_license_revoke_extend.py::test_the_unauthorised_answer_is_identical_for_an_existing_and_a_missing_licence[extend]
-A5-refusal-audit-per-actor-budget-removed  KILLED  [2 failed, 302 passed in 89.91s (0:01:29)]  restored_identical=True  # per-actor cap on refusal audit rows removed
+A5-refusal-audit-per-actor-budget-removed  KILLED  [4 failed, 341 passed in 57.15s]  restored_identical=True  # per-actor cap on refusal audit rows removed
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[extend]
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[extend]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[revoke]
-A6-refusal-audit-global-cap-removed  KILLED  [4 failed, 300 passed in 75.31s (0:01:15)]  restored_identical=True  # per-kind cap on refusal audit rows removed
+A6-refusal-audit-global-cap-removed  KILLED  [4 failed, 341 passed in 55.26s]  restored_identical=True  # per-kind cap on refusal audit rows removed
       red: tests/test_license_revoke_extend.py::test_customers_cannot_crowd_staff_out_of_the_refusal_audit[extend]
       red: tests/test_license_revoke_extend.py::test_customers_cannot_crowd_staff_out_of_the_refusal_audit[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[extend]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[revoke]
-A7-refusal-not-audited  KILLED  [42 failed, 262 passed in 85.47s (0:01:25)]  restored_identical=True  # a refused caller leaves no audit row
+A7-refusal-not-audited  KILLED  [45 failed, 300 passed in 64.99s (0:01:04)]  restored_identical=True  # a refused caller leaves no audit row
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[extend]
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[revoke]
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[extend]
       red: tests/test_license_revoke_extend.py::test_a_refusal_for_an_authenticated_actor_writes_one_denied_audit_row[revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-extend]
@@ -404,17 +426,19 @@ A7-refusal-not-audited  KILLED  [42 failed, 262 passed in 85.47s (0:01:25)]  res
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_has_a_global_cap_too[revoke]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[extend]
       red: tests/test_license_revoke_extend.py::test_the_refusal_audit_is_bounded_per_actor[revoke]
-A8-global-cap-shared-by-every-kind  KILLED  [2 failed, 302 passed in 127.60s (0:02:07)]  restored_identical=True  # one global refusal-audit cap shared by every kind of actor
+      red: tests/test_license_revoke_extend.py::test_the_sustained_denial_log_line_names_the_kind_of_actor_that_tripped_the_cap
+A8-global-cap-shared-by-every-kind  KILLED  [3 failed, 342 passed in 65.30s (0:01:05)]  restored_identical=True  # one global refusal-audit cap shared by every kind of actor
       red: tests/test_license_revoke_extend.py::test_customers_cannot_crowd_staff_out_of_the_refusal_audit[extend]
       red: tests/test_license_revoke_extend.py::test_customers_cannot_crowd_staff_out_of_the_refusal_audit[revoke]
-A9-refused-reason-stored  KILLED  [6 failed, 298 passed in 100.57s (0:01:40)]  restored_identical=True  # the refusal row stores a reason
+      red: tests/test_license_revoke_extend.py::test_the_sustained_denial_log_line_names_the_kind_of_actor_that_tripped_the_cap
+A9-refused-reason-stored  KILLED  [6 failed, 339 passed in 59.62s]  restored_identical=True  # the refusal row stores a reason
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_reason_is_never_stored[extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_reason_is_never_stored[revoke]
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[extend]
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[revoke]
       red: tests/test_license_revoke_extend.py::test_hostile_input_from_an_unauthorised_actor_cannot_bloat_or_break_the_audit_row[extend]
       red: tests/test_license_revoke_extend.py::test_hostile_input_from_an_unauthorised_actor_cannot_bloat_or_break_the_audit_row[revoke]
-A10-actor-id-guard-removed  KILLED  [30 failed, 274 passed in 114.10s (0:01:54)]  restored_identical=True  # the refusal audit no longer skips an id it cannot store
+A10-actor-id-guard-removed  KILLED  [30 failed, 315 passed in 61.92s (0:01:01)]  restored_identical=True  # the refusal audit no longer skips an id it cannot store
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[129-characters-customer-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[129-characters-customer-revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[129-characters-device-extend]
@@ -445,11 +469,11 @@ A10-actor-id-guard-removed  KILLED  [30 failed, 274 passed in 114.10s (0:01:54)]
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[empty-device-revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[empty-service-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_identity_that_cannot_be_audited_is_refused_and_leaves_no_row[empty-service-revoke]
-A11-audit-failure-escapes  KILLED  [1 failed, 303 passed in 89.62s (0:01:29)]  restored_identical=True  # a failure to write the refusal row turns the refusal into a crash
+A11-audit-failure-escapes  KILLED  [1 failed, 344 passed in 58.85s]  restored_identical=True  # a failure to write the refusal row turns the refusal into a crash
       red: tests/test_license_revoke_extend.py::test_a_failure_to_write_the_refusal_row_never_turns_the_refusal_into_a_success
-A12-throttle-log-names-password-reset  KILLED  [1 failed, 307 passed in 96.50s (0:01:36)]  restored_identical=True  # the sustained-denial log line talks about password reset again
+A12-throttle-log-names-password-reset  KILLED  [1 failed, 348 passed in 60.84s (0:01:00)]  restored_identical=True  # the sustained-denial log line talks about password reset again
       red: tests/test_license_revoke_extend.py::test_the_sustained_denial_log_line_names_its_scope_and_is_not_about_password_reset
-A13-refused-target-id-stored-as-sent  KILLED  [24 failed, 280 passed in 83.68s (0:01:23)]  restored_identical=True  # a refused caller's licence id (a full key, a NUL, a C1 control) is written to the trail as sent
+A13-refused-target-id-stored-as-sent  KILLED  [24 failed, 321 passed in 55.44s]  restored_identical=True  # a refused caller's licence id (a full key, a NUL, a C1 control) is written to the trail as sent
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[130-characters-revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[arabic-indic-digits-extend]
@@ -474,19 +498,47 @@ A13-refused-target-id-stored-as-sent  KILLED  [24 failed, 280 passed in 83.68s (
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[padded-digits-revoke]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[signed-extend]
       red: tests/test_license_revoke_extend.py::test_a_refused_callers_licence_id_is_never_stored_as_sent[signed-revoke]
-G1-lifecycle-autocommit-guard-removed  KILLED  [3 failed, 479 passed in 119.81s (0:01:59)]  restored_identical=True  # revoke, suspend and reinstate run inside a caller's transaction
+G1-lifecycle-autocommit-guard-removed  KILLED  [6 failed, 517 passed in 78.53s (0:01:18)]  restored_identical=True  # revoke, suspend and reinstate run inside a caller's transaction
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[reinstate]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[revoke]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[suspend]
       red: tests/test_license_revoke_extend.py::test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database[reinstate]
       red: tests/test_license_revoke_extend.py::test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database[revoke]
       red: tests/test_license_revoke_extend.py::test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database[suspend]
-G2-extend-autocommit-guard-removed  KILLED  [2 failed, 302 passed in 68.47s (0:01:08)]  restored_identical=True  # extend runs inside a caller's transaction
+G2-extend-autocommit-guard-removed  KILLED  [3 failed, 342 passed in 50.81s]  restored_identical=True  # extend runs inside a caller's transaction
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[extend]
       red: tests/test_license_revoke_extend.py::test_extend_inside_a_transaction_fails_closed_before_changing_anything
       red: tests/test_license_revoke_extend.py::test_the_autocommit_guard_stops_every_lifecycle_mutation_before_it_touches_the_database[extend]
-G3-extend-budget-removed  KILLED  [2 failed, 302 passed in 60.32s (0:01:00)]  restored_identical=True  # extend is not throttled
+G3-extend-budget-removed  KILLED  [2 failed, 343 passed in 55.00s]  restored_identical=True  # extend is not throttled
       red: tests/test_license_revoke_extend.py::test_revoke_suspend_and_extend_draw_on_one_shared_lifecycle_budget
       red: tests/test_license_revoke_extend.py::test_the_throttle_is_per_call_through_graphql_too
-Q1-revoke-action-renamed  KILLED  [1 failed, 481 passed in 162.58s (0:02:42)]  restored_identical=True  # the audit action string for a revoke changes
+X1-hand-opened-transaction-not-detected  KILLED  [5 failed, 340 passed in 57.19s]  restored_identical=True  # autocommit switched off by hand is not a transaction
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[extend]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[reinstate]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[revoke]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[suspend]
+      red: tests/test_license_revoke_extend.py::test_the_writer_itself_refuses_a_transaction_opened_by_hand
+X2-services-guard-ignores-a-hand-opened-transaction  KILLED  [4 failed, 341 passed in 58.05s]  restored_identical=True  # the staff mutations' autocommit guard only looks at atomic()
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[extend]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[reinstate]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[revoke]
+      red: tests/test_license_revoke_extend.py::test_every_lifecycle_mutation_refuses_a_transaction_opened_by_hand[suspend]
+S1-optin-through-a-star-dict  KILLED  [2 failed, 343 passed in 51.82s]  restored_identical=True  # a third caller opts in through a ** dict literal
+      red: tests/test_license_revoke_extend.py::test_no_production_module_writes_a_status_the_record_calls_unwritten
+      red: tests/test_license_revoke_extend.py::test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction
+S2-star-args-to-the-writer  KILLED  [2 failed, 343 passed in 52.88s]  restored_identical=True  # the writer is called with ** arguments that could carry anything
+      red: tests/test_license_revoke_extend.py::test_no_production_module_writes_a_status_the_record_calls_unwritten
+      red: tests/test_license_revoke_extend.py::test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction
+S3-unwritten-status-through-a-call  KILLED  [1 failed, 344 passed in 58.70s]  restored_identical=True  # EXPIRED is written through LicenseKeyStatus("EXPIRED")
+      red: tests/test_license_revoke_extend.py::test_no_production_module_writes_a_status_the_record_calls_unwritten
+baseline tests/test_license_revoke_extend.py  GREEN  [345 passed in 69.11s (0:01:09)]
+baseline tests/test_license_suspend_reinstate.py  GREEN  [178 passed in 31.78s]
+baseline tests/test_redaction_depth_bound.py  GREEN  [15 passed in 0.52s]
+Q1-revoke-action-renamed  KILLED  [1 failed, 522 passed in 86.23s (0:01:26)]  restored_identical=True  # the audit action string for a revoke changes
       red: tests/test_license_revoke_extend.py::test_the_audit_action_names_are_a_contract
-C1-credential-check-removed  KILLED  [66 failed, 238 passed in 86.03s (0:01:26)]  restored_identical=True  # a reason containing a full key is accepted and stored
+C1-credential-check-removed  KILLED  [68 failed, 277 passed in 56.84s]  restored_identical=True  # a reason containing a full key is accepted and stored
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+      red: tests/test_license_revoke_extend.py::test_a_hex_token_with_one_character_outside_hex_is_still_refused
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-extend]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-revoke]
@@ -553,12 +605,12 @@ C1-credential-check-removed  KILLED  [66 failed, 238 passed in 86.03s (0:01:26)]
       red: tests/test_license_revoke_extend.py::test_a_reason_that_is_only_the_key_is_refused_too[suspend]
       red: tests/test_license_revoke_extend.py::test_eight_four_letter_words_in_a_row_are_a_known_false_positive
       red: tests/test_license_revoke_extend.py::test_graphql_a_pasted_key_in_the_reason_gets_its_own_error_code_and_no_key_in_the_answer
-C2-nfkc-removed  KILLED  [4 failed, 300 passed in 70.00s (0:01:09)]  restored_identical=True  # full-width letters slip past
+C2-nfkc-removed  KILLED  [4 failed, 341 passed in 52.96s]  restored_identical=True  # full-width letters slip past
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[fullwidth-letters-extend]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[fullwidth-letters-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[fullwidth-letters-revoke]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[fullwidth-letters-suspend]
-C3-format-characters-kept  KILLED  [12 failed, 292 passed in 81.99s (0:01:21)]  restored_identical=True  # zero-width and soft-hyphen characters hide a key
+C3-format-characters-kept  KILLED  [12 failed, 333 passed in 64.79s (0:01:04)]  restored_identical=True  # zero-width and soft-hyphen characters hide a key
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[soft-hyphens-inside-every-group-extend]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[soft-hyphens-inside-every-group-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[soft-hyphens-inside-every-group-revoke]
@@ -571,7 +623,8 @@ C3-format-characters-kept  KILLED  [12 failed, 292 passed in 81.99s (0:01:21)]  
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-space-inside-a-group-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-space-inside-a-group-revoke]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-space-inside-a-group-suspend]
-C4-run-together-not-checked  KILLED  [8 failed, 296 passed in 68.87s (0:01:08)]  restored_identical=True  # a key pasted as 32 characters is accepted
+C4-run-together-not-checked  KILLED  [9 failed, 336 passed in 62.89s (0:01:02)]  restored_identical=True  # a key pasted as 32 characters is accepted
+      red: tests/test_license_revoke_extend.py::test_a_hex_token_with_one_character_outside_hex_is_still_refused
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-extend]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-revoke]
@@ -580,7 +633,7 @@ C4-run-together-not-checked  KILLED  [8 failed, 296 passed in 68.87s (0:01:08)] 
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-revoke]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-suspend]
-C5-separators-narrowed  KILLED  [8 failed, 296 passed in 89.16s (0:01:29)]  restored_identical=True  # only single-character separators are recognised
+C5-separators-narrowed  KILLED  [8 failed, 337 passed in 75.17s (0:01:15)]  restored_identical=True  # only single-character separators are recognised
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[dots-and-spaces-extend]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[dots-and-spaces-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[dots-and-spaces-revoke]
@@ -589,7 +642,9 @@ C5-separators-narrowed  KILLED  [8 failed, 296 passed in 89.16s (0:01:29)]  rest
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[prefix-with-spaces-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[prefix-with-spaces-revoke]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[prefix-with-spaces-suspend]
-C6-retry-key-check-removed  KILLED  [7 failed, 297 passed in 72.78s (0:01:12)]  restored_identical=True  # a licence key is accepted as a retry key
+C6-retry-key-check-removed  KILLED  [9 failed, 336 passed in 67.08s (0:01:07)]  restored_identical=True  # a licence key is accepted as a retry key
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[extend]
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[revoke]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[extend]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[reinstate]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[revoke]
@@ -597,7 +652,9 @@ C6-retry-key-check-removed  KILLED  [7 failed, 297 passed in 72.78s (0:01:12)]  
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[extend]
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[revoke]
       red: tests/test_license_revoke_extend.py::test_graphql_a_key_used_as_the_retry_key_gets_the_same_code
-C7-lifecycle-uses-plain-reason  KILLED  [50 failed, 254 passed in 70.98s (0:01:10)]  restored_identical=True  # revoke, suspend and reinstate use the plain reason check
+C7-lifecycle-uses-plain-reason  KILLED  [52 failed, 293 passed in 57.91s]  restored_identical=True  # revoke, suspend and reinstate use the plain reason check
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+      red: tests/test_license_revoke_extend.py::test_a_hex_token_with_one_character_outside_hex_is_still_refused
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-reinstate]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-revoke]
       red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[as-issued-suspend]
@@ -648,7 +705,11 @@ C7-lifecycle-uses-plain-reason  KILLED  [50 failed, 254 passed in 70.98s (0:01:1
       red: tests/test_license_revoke_extend.py::test_a_reason_that_is_only_the_key_is_refused_too[suspend]
       red: tests/test_license_revoke_extend.py::test_eight_four_letter_words_in_a_row_are_a_known_false_positive
       red: tests/test_license_revoke_extend.py::test_graphql_a_pasted_key_in_the_reason_gets_its_own_error_code_and_no_key_in_the_answer
-C8-credential-error-is-generic  KILLED  [71 failed, 233 passed in 76.14s (0:01:16)]  restored_identical=True  # the refusal is the generic validation error again
+C8-credential-error-is-generic  KILLED  [75 failed, 270 passed in 56.06s]  restored_identical=True  # the refusal is the generic validation error again
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[extend]
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[revoke]
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+      red: tests/test_license_revoke_extend.py::test_a_hex_token_with_one_character_outside_hex_is_still_refused
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[extend]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[reinstate]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[revoke]
@@ -720,25 +781,31 @@ C8-credential-error-is-generic  KILLED  [71 failed, 233 passed in 76.14s (0:01:1
       red: tests/test_license_revoke_extend.py::test_eight_four_letter_words_in_a_row_are_a_known_false_positive
       red: tests/test_license_revoke_extend.py::test_graphql_a_key_used_as_the_retry_key_gets_the_same_code
       red: tests/test_license_revoke_extend.py::test_graphql_a_pasted_key_in_the_reason_gets_its_own_error_code_and_no_key_in_the_answer
-C9-refusal-row-stores-a-key-shaped-retry-key  KILLED  [2 failed, 302 passed in 107.58s (0:01:47)]  restored_identical=True  # a refused caller's key-shaped retry key is stored as request_id
+C9-refusal-row-stores-a-key-shaped-retry-key  KILLED  [2 failed, 343 passed in 54.97s]  restored_identical=True  # a refused caller's key-shaped retry key is stored as request_id
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[extend]
       red: tests/test_license_revoke_extend.py::test_an_unauthorised_callers_pasted_key_is_not_stored_in_the_refusal_row[revoke]
-C10-lifecycle-retry-key-unchecked  KILLED  [3 failed, 301 passed in 104.47s (0:01:44)]  restored_identical=True  # revoke, suspend and reinstate accept a key as a retry key
+C10-lifecycle-retry-key-unchecked  KILLED  [4 failed, 341 passed in 57.06s]  restored_identical=True  # revoke, suspend and reinstate accept a key as a retry key
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[revoke]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[reinstate]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[revoke]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[suspend]
-C11-extend-retry-key-unchecked  KILLED  [2 failed, 302 passed in 89.29s (0:01:29)]  restored_identical=True  # extend accepts a key as a retry key
+C11-extend-retry-key-unchecked  KILLED  [3 failed, 342 passed in 62.19s (0:01:02)]  restored_identical=True  # extend accepts a key as a retry key
+      red: tests/test_license_revoke_extend.py::test_a_grouped_non_hex_key_shape_as_a_retry_key_is_still_refused[extend]
       red: tests/test_license_revoke_extend.py::test_a_licence_key_used_as_the_retry_key_is_refused_before_it_can_be_stored[extend]
       red: tests/test_license_revoke_extend.py::test_graphql_a_key_used_as_the_retry_key_gets_the_same_code
-C12-key-ceiling-boundary-removed  KILLED  [3 failed, 301 passed in 84.38s (0:01:24)]  restored_identical=True  # the first 32 characters of a longer token count as a key
+C12-key-ceiling-boundary-removed  KILLED  [3 failed, 342 passed in 61.66s (0:01:01)]  restored_identical=True  # the first 32 characters of a longer token count as a key
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-33-glued-behind]
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-33-glued-in-front]
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-64]
-C13-key-floor-boundary-removed  KILLED  [3 failed, 301 passed in 76.21s (0:01:16)]  restored_identical=True  # the last 32 characters of a longer token count as a key
+C13-key-floor-boundary-removed  KILLED  [7 failed, 338 passed in 63.22s (0:01:03)]  restored_identical=True  # the last 32 characters of a longer token count as a key
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[0]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[1]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[I]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[O]
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-33-glued-behind]
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-33-glued-in-front]
       red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[token-of-64]
-D0-both-bounds-removed  KILLED  [9 failed, 6 passed in 20.50s]  restored_identical=True  # depth and container bounds removed from the walker
+D0-both-bounds-removed  KILLED  [9 failed, 6 passed in 20.47s]  restored_identical=True  # depth and container bounds removed from the walker
       red: tests/test_redaction_depth_bound.py::test_a_pathological_payload_is_refused_not_a_recursion_error[dicts]
       red: tests/test_redaction_depth_bound.py::test_a_pathological_payload_is_refused_not_a_recursion_error[lists]
       red: tests/test_redaction_depth_bound.py::test_a_payload_one_past_the_bound_is_refused_by_every_function[dicts]
@@ -748,43 +815,70 @@ D0-both-bounds-removed  KILLED  [9 failed, 6 passed in 20.50s]  restored_identic
       red: tests/test_redaction_depth_bound.py::test_mixed_nesting_counts_both_kinds_of_container
       red: tests/test_redaction_depth_bound.py::test_the_container_cap_is_exactly_two_thousand
       red: tests/test_redaction_depth_bound.py::test_the_depth_bound_is_exactly_eight
-D1-depth-part-removed  KILLED  [4 failed, 315 passed in 107.91s (0:01:47)]  restored_identical=True  # the depth bound removed (container cap kept)
+D1-depth-part-removed  KILLED  [4 failed, 356 passed in 57.19s]  restored_identical=True  # the depth bound removed (container cap kept)
       red: tests/test_redaction_depth_bound.py::test_a_payload_one_past_the_bound_is_refused_by_every_function[dicts]
       red: tests/test_redaction_depth_bound.py::test_a_payload_one_past_the_bound_is_refused_by_every_function[lists]
       red: tests/test_redaction_depth_bound.py::test_mixed_nesting_counts_both_kinds_of_container
       red: tests/test_redaction_depth_bound.py::test_the_depth_bound_is_exactly_eight
-D2-writer-boundary-check-removed  KILLED  [3 failed, 301 passed in 109.05s (0:01:49)]  restored_identical=True  # the writer no longer refuses an over-deep payload before its transaction
+D2-writer-boundary-check-removed  KILLED  [3 failed, 342 passed in 54.94s]  restored_identical=True  # the writer no longer refuses an over-deep payload before its transaction
       red: tests/test_license_revoke_extend.py::test_a_pathological_extra_payload_is_refused_at_the_writers_boundary[extra_after]
       red: tests/test_license_revoke_extend.py::test_a_pathological_extra_payload_is_refused_at_the_writers_boundary[extra_before]
       red: tests/test_license_revoke_extend.py::test_a_pathological_payload_does_not_destroy_the_denied_row_of_a_later_refusal
-D3-container-cap-removed  KILLED  [2 failed, 13 passed in 10.80s]  restored_identical=True  # the container cap removed (depth bound kept)
+D3-container-cap-removed  KILLED  [2 failed, 13 passed in 10.35s]  restored_identical=True  # the container cap removed (depth bound kept)
       red: tests/test_redaction_depth_bound.py::test_a_payload_that_fans_out_through_shared_substructure_is_refused_promptly
       red: tests/test_redaction_depth_bound.py::test_the_container_cap_is_exactly_two_thousand
-D5-depth-bound-nine  KILLED  [1 failed, 14 passed in 1.40s]  restored_identical=True  # the depth bound is 9 instead of 8
+D5-depth-bound-nine  KILLED  [1 failed, 14 passed in 0.42s]  restored_identical=True  # the depth bound is 9 instead of 8
       red: tests/test_redaction_depth_bound.py::test_the_depth_bound_is_exactly_eight
-D6-depth-bound-seven  KILLED  [1 failed, 14 passed in 1.47s]  restored_identical=True  # the depth bound is 7 instead of 8
+D6-depth-bound-seven  KILLED  [1 failed, 14 passed in 0.50s]  restored_identical=True  # the depth bound is 7 instead of 8
       red: tests/test_redaction_depth_bound.py::test_the_depth_bound_is_exactly_eight
-D4-container-cap-raised-tenfold  KILLED  [1 failed, 14 passed in 2.68s]  restored_identical=True  # the container cap is 20000 instead of 2000
+D4-container-cap-raised-tenfold  KILLED  [1 failed, 14 passed in 1.18s]  restored_identical=True  # the container cap is 20000 instead of 2000
       red: tests/test_redaction_depth_bound.py::test_the_container_cap_is_exactly_two_thousand
-B1-extend-resolver-reason-hardcoded  KILLED  [2 failed, 302 passed in 115.46s (0:01:55)]  restored_identical=True  # adminExtendLicenseKey ignores the submitted reason
+H1-hex-exemption-removed  KILLED  [8 failed, 337 passed in 56.37s]  restored_identical=True  # all-hex tokens and hex dumps are refused as keys
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[hex-dump-line]
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[hex-groups-dashed]
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[hex-token-lower-case]
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[hex-token-no-0-1]
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[ipv6-shaped]
+      red: tests/test_license_revoke_extend.py::test_ordinary_retry_keys_are_not_mistaken_for_a_key[hex-groups-dashed]
+      red: tests/test_license_revoke_extend.py::test_ordinary_retry_keys_are_not_mistaken_for_a_key[ipv6-shaped]
+H2-grouped-threshold-one  KILLED  [2 failed, 343 passed in 55.21s]  restored_identical=True  # one group outside hex is enough to call a run a key
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+      red: tests/test_license_revoke_extend.py::test_ordinary_reasons_are_not_mistaken_for_a_key[hex-dump-line]
+H3-grouped-threshold-three  KILLED  [1 failed, 344 passed in 53.39s]  restored_identical=True  # three groups outside hex are needed
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+H4-run-together-threshold-two  KILLED  [9 failed, 336 passed in 52.34s]  restored_identical=True  # a run-together token needs two groups outside hex (it has one)
+      red: tests/test_license_revoke_extend.py::test_a_hex_token_with_one_character_outside_hex_is_still_refused
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-extend]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-reinstate]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-revoke]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[run-together-suspend]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-extend]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-reinstate]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-revoke]
+      red: tests/test_license_revoke_extend.py::test_a_reason_containing_a_full_licence_key_is_refused_and_nothing_is_stored[zero-width-inside-a-run-together-key-suspend]
+baseline tests/test_license_revoke_extend.py  GREEN  [345 passed in 68.79s (0:01:08)]
+baseline tests/test_license_state_machine.py  GREEN  [128 passed in 27.77s]
+baseline tests/test_license_suspend_reinstate.py  GREEN  [178 passed in 31.72s]
+B1-extend-resolver-reason-hardcoded  KILLED  [2 failed, 343 passed in 55.51s]  restored_identical=True  # adminExtendLicenseKey ignores the submitted reason
       red: tests/test_license_revoke_extend.py::test_graphql_extend_happy_path
       red: tests/test_license_revoke_extend.py::test_graphql_extend_of_a_never_activated_licence_records_the_submitted_text_too
-B2-revoke-resolver-reason-hardcoded  KILLED  [2 failed, 302 passed in 83.21s (0:01:23)]  restored_identical=True  # adminRevokeLicenseKey ignores the submitted reason
+B2-revoke-resolver-reason-hardcoded  KILLED  [2 failed, 343 passed in 54.51s]  restored_identical=True  # adminRevokeLicenseKey ignores the submitted reason
       red: tests/test_license_revoke_extend.py::test_graphql_a_pasted_key_in_the_reason_gets_its_own_error_code_and_no_key_in_the_answer
       red: tests/test_license_revoke_extend.py::test_graphql_revoke_happy_path
-B3-extend-resolver-retry-key-hardcoded  KILLED  [4 failed, 300 passed in 80.06s (0:01:20)]  restored_identical=True  # adminExtendLicenseKey ignores the submitted retry key
+B3-extend-resolver-retry-key-hardcoded  KILLED  [4 failed, 341 passed in 52.96s]  restored_identical=True  # adminExtendLicenseKey ignores the submitted retry key
       red: tests/test_license_revoke_extend.py::test_graphql_a_key_used_as_the_retry_key_gets_the_same_code
       red: tests/test_license_revoke_extend.py::test_graphql_a_refused_revoke_and_a_refused_extend_leave_their_denied_rows
       red: tests/test_license_revoke_extend.py::test_graphql_extend_happy_path
       red: tests/test_license_revoke_extend.py::test_graphql_extend_of_a_never_activated_licence_records_the_submitted_text_too
-B4-revoke-resolver-retry-key-hardcoded  KILLED  [2 failed, 302 passed in 74.90s (0:01:14)]  restored_identical=True  # adminRevokeLicenseKey ignores the submitted retry key
+B4-revoke-resolver-retry-key-hardcoded  KILLED  [2 failed, 343 passed in 63.29s (0:01:03)]  restored_identical=True  # adminRevokeLicenseKey ignores the submitted retry key
       red: tests/test_license_revoke_extend.py::test_graphql_revoke_happy_path
       red: tests/test_license_revoke_extend.py::test_graphql_revoke_retry_is_flagged_and_a_plain_no_op_is_not
-W1-revoke-assigns-status-directly  KILLED  [1 failed, 127 passed in 38.43s]  restored_identical=True  # the mutations assign .status themselves
+W1-revoke-assigns-status-directly  KILLED  [1 failed, 127 passed in 26.97s]  restored_identical=True  # the mutations assign .status themselves
       red: tests/test_license_state_machine.py::test_no_production_module_writes_a_licence_status_outside_the_state_machine
-W2-unwritten-status-written  KILLED  [1 failed, 303 passed in 66.67s (0:01:06)]  restored_identical=True  # a module starts writing EXPIRING without moving it out of the unwritten record
+W2-unwritten-status-written  KILLED  [1 failed, 344 passed in 68.00s (0:01:07)]  restored_identical=True  # a module starts writing EXPIRING without moving it out of the unwritten record
       red: tests/test_license_revoke_extend.py::test_no_production_module_writes_a_status_the_record_calls_unwritten
-E1-source-precheck-removed  KILLED  [8 failed, 296 passed in 89.46s (0:01:29)]  restored_identical=True  # extend accepts SUSPENDED, CONVERTED, REVOKED, ARCHIVED
+E1-source-precheck-removed  KILLED  [8 failed, 337 passed in 70.97s (0:01:10)]  restored_identical=True  # extend accepts SUSPENDED, CONVERTED, REVOKED, ARCHIVED
       red: tests/test_license_revoke_extend.py::test_a_suspended_licence_is_reinstated_first_and_then_extended
       red: tests/test_license_revoke_extend.py::test_extend_refuses_a_status_it_may_not_move_and_the_denial_survives[ARCHIVED]
       red: tests/test_license_revoke_extend.py::test_extend_refuses_a_status_it_may_not_move_and_the_denial_survives[CONVERTED]
@@ -793,41 +887,58 @@ E1-source-precheck-removed  KILLED  [8 failed, 296 passed in 89.46s (0:01:29)]  
       red: tests/test_license_revoke_extend.py::test_extend_then_revoke_keeps_the_new_date_and_revoke_then_extend_is_refused
       red: tests/test_license_revoke_extend.py::test_graphql_a_refused_revoke_and_a_refused_extend_leave_their_denied_rows
       red: tests/test_license_revoke_extend.py::test_the_other_mutations_cannot_leave_revoked_either
-E2-not-forward-check-removed  KILLED  [5 failed, 299 passed in 72.46s (0:01:12)]  restored_identical=True  # extend accepts a date that is not later than the current one
+E2-not-forward-check-removed  KILLED  [5 failed, 340 passed in 62.58s (0:01:02)]  restored_identical=True  # extend accepts a date that is not later than the current one
       red: tests/test_license_revoke_extend.py::test_a_second_extension_with_a_new_key_and_the_same_date_is_rejected
       red: tests/test_license_revoke_extend.py::test_extend_rejects_a_bad_date_and_changes_nothing[earlier-than-current]
       red: tests/test_license_revoke_extend.py::test_extend_rejects_a_bad_date_and_changes_nothing[equal-to-current]
       red: tests/test_license_revoke_extend.py::test_graphql_extend_rejects_a_naive_datetime_and_an_old_one
       red: tests/test_license_revoke_extend.py::test_the_same_key_from_another_staff_member_is_a_different_request
-E3-ceiling-removed  KILLED  [5 failed, 299 passed in 69.81s (0:01:09)]  restored_identical=True  # extend has no five-year ceiling
+E3-ceiling-removed  KILLED  [7 failed, 338 passed in 55.04s]  restored_identical=True  # extend has no five-year ceiling
       red: tests/test_license_revoke_extend.py::test_a_licence_that_lapsed_long_ago_is_bounded_from_now_not_from_its_old_date
       red: tests/test_license_revoke_extend.py::test_a_year_9999_typo_is_still_refused_whatever_the_licences_own_date
       red: tests/test_license_revoke_extend.py::test_extend_rejects_a_bad_date_and_changes_nothing[beyond-the-ceiling]
       red: tests/test_license_revoke_extend.py::test_extend_rejects_a_bad_date_and_changes_nothing[year-9999]
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry
-E3b-ceiling-from-now  KILLED  [2 failed, 302 passed in 74.46s (0:01:14)]  restored_identical=True  # the ceiling is measured from now alone
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
+      red: tests/test_license_revoke_extend.py::test_the_year_9999_refusals_still_hold_for_a_licence_that_is_not_near_it
+E3b-ceiling-from-now  KILLED  [5 failed, 340 passed in 56.27s]  restored_identical=True  # the ceiling is measured from now alone
       red: tests/test_license_revoke_extend.py::test_a_licence_already_past_the_ceiling_can_still_be_extended_by_a_day
+      red: tests/test_license_revoke_extend.py::test_a_licence_near_year_9999_is_extended_cleanly_not_with_an_overflow
+      red: tests/test_license_revoke_extend.py::test_the_ceiling_is_a_per_step_limit_not_an_absolute_cap
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry
-E3c-ceiling-from-old-expiry  KILLED  [1 failed, 303 passed in 100.53s (0:01:40)]  restored_identical=True  # the ceiling is measured from the old expiry alone
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
+E3c-ceiling-from-old-expiry  KILLED  [1 failed, 344 passed in 54.18s]  restored_identical=True  # the ceiling is measured from the old expiry alone
       red: tests/test_license_revoke_extend.py::test_a_licence_that_lapsed_long_ago_is_bounded_from_now_not_from_its_old_date
-E4-naive-accepted  KILLED  [2 failed, 302 passed in 107.05s (0:01:47)]  restored_identical=True  # extend accepts a datetime with no UTC offset
+E3d-ceiling-by-addition-overflows  KILLED  [1 failed, 344 passed in 58.82s]  restored_identical=True  # the ceiling is computed by addition and overflows near year 9999
+      red: tests/test_license_revoke_extend.py::test_a_licence_near_year_9999_is_extended_cleanly_not_with_an_overflow
+E3e-ceiling-boundary-exclusive  KILLED  [1 failed, 344 passed in 61.40s (0:01:01)]  restored_identical=True  # the exact five-year boundary is refused
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
+E3f-ceiling-a-day-wider  KILLED  [1 failed, 344 passed in 62.54s (0:01:02)]  restored_identical=True  # the ceiling is five years and a day
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
+E4-naive-accepted  KILLED  [2 failed, 343 passed in 64.02s (0:01:04)]  restored_identical=True  # extend accepts a datetime with no UTC offset
       red: tests/test_license_revoke_extend.py::test_extend_rejects_a_bad_date_and_changes_nothing[naive-datetime]
       red: tests/test_license_revoke_extend.py::test_graphql_extend_rejects_a_naive_datetime_and_an_old_one
-E5-overlap-guard-removed  KILLED  [1 failed, 303 passed in 86.51s (0:01:26)]  restored_identical=True  # extend ignores another valid licence of the organisation
+E5-overlap-guard-removed  KILLED  [1 failed, 344 passed in 57.27s]  restored_identical=True  # extend ignores another valid licence of the organisation
       red: tests/test_license_revoke_extend.py::test_extend_refuses_a_date_that_would_overlap_the_organisations_next_licence
-E5b-overlap-guard-counts-itself  KILLED  [33 failed, 271 passed in 92.31s (0:01:32)]  restored_identical=True  # the overlap check no longer excludes the licence being extended
+E5b-overlap-guard-counts-itself  KILLED  [41 failed, 304 passed in 56.82s]  restored_identical=True  # the overlap check no longer excludes the licence being extended
       red: tests/test_license_revoke_extend.py::test_a_device_whose_licence_lapsed_recovers_after_the_extension
       red: tests/test_license_revoke_extend.py::test_a_different_date_on_a_retry_is_refused_over_graphql_too
       red: tests/test_license_revoke_extend.py::test_a_failure_while_moving_the_date_rolls_the_status_and_the_audit_row_back[ACTIVATED]
       red: tests/test_license_revoke_extend.py::test_a_failure_while_moving_the_date_rolls_the_status_and_the_audit_row_back[EXPIRED]
       red: tests/test_license_revoke_extend.py::test_a_finished_licence_in_the_same_organisation_does_not_block_an_extension
       red: tests/test_license_revoke_extend.py::test_a_licence_already_past_the_ceiling_can_still_be_extended_by_a_day
+      red: tests/test_license_revoke_extend.py::test_a_licence_near_year_9999_is_extended_cleanly_not_with_an_overflow
       red: tests/test_license_revoke_extend.py::test_a_licence_that_lapsed_long_ago_is_bounded_from_now_not_from_its_old_date
       red: tests/test_license_revoke_extend.py::test_a_retry_after_another_staff_action_does_not_undo_that_action
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_idempotency_key_applies_nothing_and_reports_the_original
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing
       red: tests/test_license_revoke_extend.py::test_a_second_extension_with_a_new_key_and_the_same_date_is_rejected
       red: tests/test_license_revoke_extend.py::test_a_suspended_licence_is_reinstated_first_and_then_extended
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[empty]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[field-missing]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-date]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-string]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[null]
       red: tests/test_license_revoke_extend.py::test_another_organisations_licence_never_blocks_an_extension
       red: tests/test_license_revoke_extend.py::test_extend_accepts_an_aware_datetime_in_any_offset_and_stores_it_as_the_same_instant
       red: tests/test_license_revoke_extend.py::test_extend_inside_a_transaction_fails_closed_before_changing_anything
@@ -843,27 +954,53 @@ E5b-overlap-guard-counts-itself  KILLED  [33 failed, 271 passed in 92.31s (0:01:
       red: tests/test_license_revoke_extend.py::test_if_the_table_ever_loses_the_renewal_edge_the_refusal_is_still_durable
       red: tests/test_license_revoke_extend.py::test_revoke_and_extend_write_through_the_state_machine_not_a_direct_status_write
       red: tests/test_license_revoke_extend.py::test_revoke_suspend_and_extend_draw_on_one_shared_lifecycle_budget
+      red: tests/test_license_revoke_extend.py::test_the_ceiling_is_a_per_step_limit_not_an_absolute_cap
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_a_sanity_bound_and_a_date_just_inside_it_is_accepted
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
       red: tests/test_license_revoke_extend.py::test_the_same_instant_written_in_another_offset_is_still_a_replay
       red: tests/test_license_revoke_extend.py::test_the_same_key_from_another_staff_member_is_a_different_request
       red: tests/test_license_revoke_extend.py::test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten
       red: tests/test_license_revoke_extend.py::test_the_throttle_is_per_call_through_graphql_too
-E6-retry-lookup-removed  KILLED  [6 failed, 298 passed in 74.57s (0:01:14)]  restored_identical=True  # extend does not recognise its own retry
+E6-retry-lookup-removed  KILLED  [6 failed, 339 passed in 55.85s]  restored_identical=True  # extend does not recognise its own retry
       red: tests/test_license_revoke_extend.py::test_a_different_date_on_a_retry_is_refused_over_graphql_too
       red: tests/test_license_revoke_extend.py::test_a_retry_after_another_staff_action_does_not_undo_that_action
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_idempotency_key_applies_nothing_and_reports_the_original
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing
       red: tests/test_license_revoke_extend.py::test_graphql_extend_happy_path
       red: tests/test_license_revoke_extend.py::test_the_same_instant_written_in_another_offset_is_still_a_replay
-E6b-retry-checked-after-status  KILLED  [1 failed, 303 passed in 80.03s (0:01:20)]  restored_identical=True  # the replay is judged against the state the first call left
+E6b-retry-checked-after-status  KILLED  [1 failed, 344 passed in 55.32s]  restored_identical=True  # the replay is judged against the state the first call left
       red: tests/test_license_revoke_extend.py::test_a_retry_after_another_staff_action_does_not_undo_that_action
-E6c-replay-date-not-compared  KILLED  [2 failed, 302 passed in 129.79s (0:02:09)]  restored_identical=True  # the same key with a different date is reported as a replay
+E6c-replay-date-not-compared  KILLED  [7 failed, 338 passed in 54.42s]  restored_identical=True  # the same key with a different date is reported as a replay
       red: tests/test_license_revoke_extend.py::test_a_different_date_on_a_retry_is_refused_over_graphql_too
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing
-E7-catch-inside-removed  KILLED  [1 failed, 303 passed in 95.89s (0:01:35)]  restored_identical=True  # the writer's refusal propagates out of extend's transaction (the DENIED row is lost)
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[empty]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[field-missing]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-date]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-string]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[null]
+E7-catch-inside-removed  KILLED  [1 failed, 344 passed in 52.65s]  restored_identical=True  # the writer's refusal propagates out of extend's transaction (the DENIED row is lost)
       red: tests/test_license_revoke_extend.py::test_if_the_table_ever_loses_the_renewal_edge_the_refusal_is_still_durable
-E10-status-not-restored  KILLED  [8 failed, 296 passed in 117.27s (0:01:57)]  restored_identical=True  # EXPIRING and EXPIRED are not returned to ACTIVATED
+R5-key-group-alphabet-widened  KILLED  [5 failed, 340 passed in 54.39s]  restored_identical=True  # groups containing I, O, 0 or 1 are treated as key groups
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[0]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[1]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[I]
+      red: tests/test_license_revoke_extend.py::test_a_group_containing_a_character_outside_the_key_alphabet_is_not_a_key[O]
+      red: tests/test_license_revoke_extend.py::test_a_hex_run_needs_two_groups_outside_hex_to_count_as_a_key
+R6-retry-key-checks-the-run-together-form  KILLED  [2 failed, 343 passed in 57.41s]  restored_identical=True  # a bare 32-character token is refused as a retry key
+      red: tests/test_license_revoke_extend.py::test_a_bare_32_character_key_alphabet_token_is_accepted_as_a_retry_key
+      red: tests/test_license_revoke_extend.py::test_ordinary_retry_keys_are_not_mistaken_for_a_key[bare-32-character-key-alphabet-token]
+R7-refusal-identity-without-the-kind  KILLED  [2 failed, 343 passed in 54.99s]  restored_identical=True  # a customer and a staff member with the same id share a refusal budget
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[extend]
+      red: tests/test_license_revoke_extend.py::test_a_customer_and_a_staff_member_with_the_same_id_do_not_share_a_refusal_budget[revoke]
+R8a-damaged-record-not-a-string-is-a-replay  KILLED  [3 failed, 342 passed in 61.03s (0:01:01)]  restored_identical=True  # a record without a string expiry counts as a replay
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[field-missing]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-string]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[null]
+R8b-damaged-record-unparseable-is-a-replay  KILLED  [2 failed, 343 passed in 63.58s (0:01:03)]  restored_identical=True  # a record whose expiry cannot be parsed counts as a replay
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[empty]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-date]
+E10-status-not-restored  KILLED  [8 failed, 337 passed in 62.13s (0:01:02)]  restored_identical=True  # EXPIRING and EXPIRED are not returned to ACTIVATED
       red: tests/test_license_revoke_extend.py::test_a_device_whose_licence_lapsed_recovers_after_the_extension
       red: tests/test_license_revoke_extend.py::test_a_suspended_licence_is_reinstated_first_and_then_extended
       red: tests/test_license_revoke_extend.py::test_extend_moves_the_date_and_returns_a_lapsed_licence_to_an_activatable_status[EXPIRED]
@@ -872,11 +1009,17 @@ E10-status-not-restored  KILLED  [8 failed, 296 passed in 117.27s (0:01:57)]  re
       red: tests/test_license_revoke_extend.py::test_if_the_table_ever_loses_the_renewal_edge_the_refusal_is_still_durable
       red: tests/test_license_revoke_extend.py::test_revoke_and_extend_write_through_the_state_machine_not_a_direct_status_write
       red: tests/test_license_revoke_extend.py::test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten
-E11-date-move-skipped  KILLED  [14 failed, 290 passed in 89.50s (0:01:29)]  restored_identical=True  # extend writes the status and the audit row but never moves the date
+E11-date-move-skipped  KILLED  [22 failed, 323 passed in 60.92s (0:01:00)]  restored_identical=True  # extend writes the status and the audit row but never moves the date
       red: tests/test_license_revoke_extend.py::test_a_device_whose_licence_lapsed_recovers_after_the_extension
+      red: tests/test_license_revoke_extend.py::test_a_licence_near_year_9999_is_extended_cleanly_not_with_an_overflow
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_idempotency_key_applies_nothing_and_reports_the_original
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing
       red: tests/test_license_revoke_extend.py::test_a_second_extension_with_a_new_key_and_the_same_date_is_rejected
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[empty]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[field-missing]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-date]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[not-a-string]
+      red: tests/test_license_revoke_extend.py::test_an_unreadable_earlier_record_counts_as_a_mismatch_never_as_a_replay[null]
       red: tests/test_license_revoke_extend.py::test_extend_accepts_an_aware_datetime_in_any_offset_and_stores_it_as_the_same_instant
       red: tests/test_license_revoke_extend.py::test_extend_moves_the_date_and_returns_a_lapsed_licence_to_an_activatable_status[ACTIVATED]
       red: tests/test_license_revoke_extend.py::test_extend_moves_the_date_and_returns_a_lapsed_licence_to_an_activatable_status[EXPIRED]
@@ -884,12 +1027,14 @@ E11-date-move-skipped  KILLED  [14 failed, 290 passed in 89.50s (0:01:29)]  rest
       red: tests/test_license_revoke_extend.py::test_extend_moves_the_date_and_returns_a_lapsed_licence_to_an_activatable_status[ISSUED]
       red: tests/test_license_revoke_extend.py::test_extensions_chain_forward_each_with_its_own_audit_row
       red: tests/test_license_revoke_extend.py::test_graphql_extend_happy_path
+      red: tests/test_license_revoke_extend.py::test_the_ceiling_is_a_per_step_limit_not_an_absolute_cap
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_a_sanity_bound_and_a_date_just_inside_it_is_accepted
       red: tests/test_license_revoke_extend.py::test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry
+      red: tests/test_license_revoke_extend.py::test_the_exact_five_year_boundary_is_accepted_and_one_microsecond_more_is_refused
       red: tests/test_license_revoke_extend.py::test_the_same_key_from_another_staff_member_is_a_different_request
-E12-archived-customer-allowed  KILLED  [1 failed, 303 passed in 92.99s (0:01:32)]  restored_identical=True  # extend works on an archived customer's licence
+E12-archived-customer-allowed  KILLED  [1 failed, 344 passed in 59.56s]  restored_identical=True  # extend works on an archived customer's licence
       red: tests/test_license_revoke_extend.py::test_extend_is_refused_for_an_archived_customer_but_revoke_is_not
-R1-revoke-targets-suspended  KILLED  [16 failed, 288 passed in 85.67s (0:01:25)]  restored_identical=True  # revoke writes SUSPENDED
+R1-revoke-targets-suspended  KILLED  [16 failed, 329 passed in 62.44s (0:01:02)]  restored_identical=True  # revoke writes SUSPENDED
       red: tests/test_license_revoke_extend.py::test_a_finished_licence_in_the_same_organisation_does_not_block_an_extension
       red: tests/test_license_revoke_extend.py::test_a_retry_after_another_staff_action_does_not_undo_that_action
       red: tests/test_license_revoke_extend.py::test_extend_then_revoke_keeps_the_new_date_and_revoke_then_extend_is_refused
@@ -906,7 +1051,7 @@ R1-revoke-targets-suspended  KILLED  [16 failed, 288 passed in 85.67s (0:01:25)]
       red: tests/test_license_revoke_extend.py::test_revoking_an_archived_licence_is_refused_and_the_denial_survives
       red: tests/test_license_revoke_extend.py::test_revoking_from_suspended_removes_the_protection_suspension_gave_the_tokens
       red: tests/test_license_revoke_extend.py::test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten
-R2-revoke-retry-not-recognised  KILLED  [13 failed, 469 passed in 122.61s (0:02:02)]  restored_identical=True  # the lifecycle mutations do not ask the writer to recognise a retry
+R2-revoke-retry-not-recognised  KILLED  [13 failed, 510 passed in 82.03s (0:01:22)]  restored_identical=True  # the lifecycle mutations do not ask the writer to recognise a retry
       red: tests/test_license_revoke_extend.py::test_a_retry_with_the_same_idempotency_key_reports_the_original_row
       red: tests/test_license_revoke_extend.py::test_graphql_revoke_retry_is_flagged_and_a_plain_no_op_is_not
       red: tests/test_license_revoke_extend.py::test_revoke_and_extend_write_through_the_state_machine_not_a_direct_status_write
@@ -920,17 +1065,18 @@ R2-revoke-retry-not-recognised  KILLED  [13 failed, 469 passed in 122.61s (0:02:
       red: tests/test_license_suspend_reinstate.py::test_the_same_reinstate_request_sent_twice_takes_effect_once
       red: tests/test_license_suspend_reinstate.py::test_the_same_suspend_request_sent_twice_takes_effect_once
       red: tests/test_license_suspend_reinstate.py::test_writes_go_through_the_state_machine_not_a_direct_status_write
-P1-extend-org-lock-removed  KILLED  [4 failed, 30 passed in 123.42s (0:02:03)]  restored_identical=True  # extend does not take the organisation row lock
+baseline tests/test_concurrency_postgres.py  GREEN  [34 passed in 26.69s]
+P1-extend-org-lock-removed  KILLED  [4 failed, 30 passed in 86.80s (0:01:26)]  restored_identical=True  # extend does not take the organisation row lock
       red: tests/test_concurrency_postgres.py::test_an_extension_racing_an_issuance_never_leaves_two_overlapping_valid_keys
       red: tests/test_concurrency_postgres.py::test_two_concurrent_extensions_to_different_dates_leave_a_chain_the_trail_explains
       red: tests/test_concurrency_postgres.py::test_two_concurrent_extensions_to_the_same_date_apply_once_and_reject_the_other
       red: tests/test_concurrency_postgres.py::test_two_concurrent_extensions_with_the_same_key_apply_once
-P2-extend-licence-lock-removed  KILLED  [4 failed, 30 passed in 193.00s (0:03:12)]  restored_identical=True  # extend reads the licence without FOR UPDATE
+P2-extend-licence-lock-removed  KILLED  [4 failed, 30 passed in 173.31s (0:02:53)]  restored_identical=True  # extend reads the licence without FOR UPDATE
       red: tests/test_concurrency_postgres.py::test_a_revoke_that_wins_the_race_against_an_extension_is_not_undone_by_it
       red: tests/test_concurrency_postgres.py::test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[activation-first]
       red: tests/test_concurrency_postgres.py::test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[extension-first]
       red: tests/test_concurrency_postgres.py::test_an_extension_that_wins_the_race_against_a_revoke_is_followed_by_the_revoke
-P3-activation-lock-covers-the-org-again  KILLED  [3 failed, 31 passed in 24.56s]  restored_identical=True  # activation's lock query also locks the org row it joins (the deadlock found in round 2)
+P3-activation-lock-covers-the-org-again  KILLED  [3 failed, 31 passed in 15.72s]  restored_identical=True  # activation's lock query also locks the org row it joins (the deadlock found in round 2)
       red: tests/test_concurrency_postgres.py::test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[activation-first]
       red: tests/test_concurrency_postgres.py::test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent
       red: tests/test_concurrency_postgres.py::test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins

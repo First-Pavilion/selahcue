@@ -14,7 +14,7 @@ run side by side (give each its own --sandbox). Run it in your own worktree. The
 OUTSIDE the repository and either new, empty, or created by this harness: anything else is
 refused (`--self-check` demonstrates the refusals), because the copy step deletes `<sandbox>/api`.
 The default sandbox is a temp directory and is removed when the run ends. Before any mutant it runs
-every test file it needs UNMUTATED once; a red baseline aborts (or is subtracted with
+every list of test files it needs UNMUTATED once; a red baseline aborts (or is subtracted with
 --allow-red-baseline), so KILLED always means "green, then red".
 
 Usage, from anywhere inside the repository:
@@ -548,21 +548,25 @@ def main() -> int:
 def run(chosen, sandbox_api: pathlib.Path, python: str, args) -> int:
     lines, failures = [], 0
 
-    # Baseline: every test file the chosen mutants run, UNMUTATED, once. A mutant is only KILLED
-    # against a green baseline; a red one aborts, or with --allow-red-baseline its failures are
-    # ignored in every mutant's result.
+    # Baseline: every distinct list of test files the chosen mutants run, UNMUTATED, once. By list,
+    # not by file: some files cannot run alone (a test module with no database mark needs the
+    # session's test database, which a sibling file in the same run provides), and a baseline that
+    # differs from the mutant's own run proves nothing about it. A mutant is only KILLED against a
+    # green baseline; a red one aborts, or with --allow-red-baseline its failures are ignored in
+    # every mutant's result.
     baseline_red: set[str] = set()
-    files = sorted({f for mid in chosen for f in MUTANTS[mid]["tests"]})
-    for test_file in files:
+    lists = sorted({tuple(MUTANTS[mid]["tests"]) for mid in chosen})
+    for test_list in lists:
         started = time.monotonic()
-        code, output = run_tests(sandbox_api, python, [test_file], args.postgres)
+        code, output = run_tests(sandbox_api, python, list(test_list), args.postgres)
         summary = (output.strip().splitlines() or [""])[-1]
         red = failed_nodes(output) if code != 0 else []
-        lines.append(f"baseline {test_file}  {'GREEN' if code == 0 else 'RED'}  [{summary[:70]}]")
+        label = " + ".join(test_list)
+        lines.append(f"baseline {label}  {'GREEN' if code == 0 else 'RED'}  [{summary[:70]}]")
         print(lines[-1], f"({time.monotonic() - started:.0f}s)", flush=True)
         if code != 0:
             if not args.allow_red_baseline:
-                print(f"the unmutated baseline is red in {test_file}; fix it or pass --allow-red-baseline")
+                print(f"the unmutated baseline is red for {label}; fix it or pass --allow-red-baseline")
                 if args.out:
                     pathlib.Path(args.out).write_text("\n".join(lines) + "\n")
                 return 2
