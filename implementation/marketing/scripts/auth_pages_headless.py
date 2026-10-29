@@ -139,7 +139,11 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # remain and follow the approved wording; no scenario or privacy/TTL check was removed.
 # The complete real rendered gate must confirm this exact count; its receipt is retained
 # with the ticket's delivery evidence. Equality below remains strict in both directions.
-EXPECTED_MIN_CHECKS = 2575
+# 2575 -> 2608 in shared sign-out (17tnw2b2ka8), measured in hosted CI 40941630343
+# on d46097bb: 73 scenarios, 2608 checks, zero behavioural failures. Adds real dual-control
+# composition, late-failure recovery after Account leaves, and mobile modal announcements.
+# The first run exited 4 solely on this old exact-count guard; rerun with this measured count.
+EXPECTED_MIN_CHECKS = 2608
 
 
 def find_chrome() -> str | None:

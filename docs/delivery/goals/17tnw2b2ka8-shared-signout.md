@@ -98,6 +98,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: source/test diff and root handoff for this frozen revision. The exact browser check count is deliberately not guessed: retain the old strict guard until the first hosted run reports the measured new count, then update it and rerun before acceptance.
 - Decision: handoff
 
+### Iteration 3
+
+- Target criterion: C-002 through C-004.
+- Hypothesis: adopting the actual measured browser check total will let the strict guard accept the added scenarios without removing checks or changing bounds.
+- Change or investigation: update only EXPECTED_MIN_CHECKS from 2575 to the measured 2608 and record the receipt. Inspect existing workflow ordering for the subsequent WebKit infrastructure failure; do not change workflow or tests.
+- Verifier executed: read hosted CI run 40941630343 for source d46097bb803899bfefdd370097a1244bade6a891, saved wave2-20261029/frontend-green-attempt1.log, lines 188-190; inspect .github/workflows/ci.yml marketing step ordering; Python stdlib AST, Goal Contract structural validation and full baseline-to-HEAD diff check.
+- Result: Browser behaviour passed 73 scenarios and 2608 checks with zero failures, but the command exited 4 because the old exact-count guard expected 2575. The later Playwright install step uses the default success condition and was skipped after that failure; WebKit explicitly uses `if: !cancelled()` and therefore ran without Playwright and exited 3. This is not evidence of a WebKit product regression. The complete hosted rerun remains mandatory.
+- New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40941630343 and the saved full failed log. Static gates PASS; no local project runtime.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a global pending flag can stick after unmount; duplicate live regions can announce twice; sharing across SSR routers can leak state. Tests must cover each relevant boundary.
