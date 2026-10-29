@@ -1,6 +1,7 @@
 """Bound repeated outage cost without changing budget decisions (17tnw2b2kab)."""
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -12,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from django.contrib.auth.hashers import PBKDF2PasswordHasher
 from django.core.cache import cache
 from django.core.cache.backends.locmem import LocMemCache
 from django.core.cache.backends.redis import RedisCache
@@ -26,6 +28,7 @@ from test_cache_socket_timeouts import (
 
 from selahcue_api.apps.throttling import services
 from selahcue_api.apps.throttling.services import BudgetOutcome
+from test_native_login_outage import native_client, native_login
 
 
 pytestmark = pytest.mark.django_db
@@ -343,7 +346,7 @@ def test_default_circuit_preserves_mail_outage_ceiling(client, settings, field, 
 
 
 def test_real_redis_healthy_limits_and_recovery_probe(clock):
-    url = os.environ.get("SELAHCUE_CIRCUIT_TEST_REDIS_URL")
+    url = os.environ.get("SELAHCUE_CIRCUIT_TEST_REDIS_URL") or os.environ.get("CACHE_URL")
     if not url:
         pytest.skip("set SELAHCUE_CIRCUIT_TEST_REDIS_URL for a dedicated Redis integration run")
     backend = RedisCache(url, {"KEY_PREFIX": f"circuit-{uuid.uuid4()}"})
@@ -410,3 +413,60 @@ def test_simultaneous_closed_failures_trip_without_serializing_store_io(clock):
     later = FailingStore()
     assert evaluate(later) is BudgetOutcome.STORE_UNAVAILABLE
     assert later.calls == 0
+
+
+def test_open_circuit_preserves_merged_native_refusal_device_failopen_and_neutral_logs(
+    settings, monkeypatch, clock, caplog,
+):
+    settings.CACHES = {"default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": f"circuit-native-composition-{uuid.uuid4()}",
+    }}
+    client = native_client()
+    hashes = []
+    actual_hash = PBKDF2PasswordHasher.encode
+
+    def count_hash(self, password, salt, iterations=None):
+        hashes.append(1)
+        return actual_hash(self, password, salt, iterations)
+
+    monkeypatch.setattr(PBKDF2PasswordHasher, "encode", count_hash)
+    monkeypatch.setattr(services, "_last_store_error_log", float("-inf"))
+    caplog.set_level(logging.WARNING, logger=services.logger.name)
+    calls = []
+
+    def fail_cache(*args, **kwargs):
+        calls.append(1)
+        raise RuntimeError("PRIVATE-CIRCUIT-CACHE-ERROR")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(LocMemCache, "add", fail_cache)
+        responses = [native_login(client) for _ in range(25)]
+        assert len(calls) == 3
+        assert hashes == []
+        assert [response.status_code for response in responses] == [429] * 25
+        for response in responses:
+            assert response.json()["error"]["code"] == "RATE_LIMITED"
+            assert response["Retry-After"] == "60"
+            assert response["Cache-Control"] == "no-store"
+            assert not response.cookies
+        # The SAME circuit does not alter device availability or add password work.
+        device = client.post("/v1/activations", data=ACTIVATION_BODY, content_type="application/json")
+        assert device.status_code == 404
+        assert len(calls) == 3
+        assert hashes == []
+        # Exercise the direct fixed-label report branch, without an artificial exception.
+        monkeypatch.setattr(services, "_last_store_error_log", float("-inf"))
+        caplog.clear()
+        assert evaluate(FailingStore()) is BudgetOutcome.STORE_UNAVAILABLE
+        records = [record for record in caplog.records if record.name == services.logger.name]
+        assert len(records) == 1
+        assert records[0].args[0] == "CircuitOpen"
+        assert "failing open" not in records[0].getMessage()
+        assert "private-test-key" not in records[0].getMessage()
+        assert "PRIVATE-CIRCUIT-CACHE-ERROR" not in records[0].getMessage()
+        assert records[0].exc_info is None
+    # Actual healthy cache probe closes circuit; normal unknown-account hash runs once.
+    clock.now += 5
+    assert native_login(client).status_code == 401
+    assert hashes == [1]

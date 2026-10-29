@@ -48,15 +48,15 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 
 ## Dependencies and approvals
 
-- PR186 verified merged by coordinator. Native outage task 17tnw2b1wq9 pending actual merge; root owns integration and all external actions.
+- PR186 verified merged by coordinator. Native outage task 17tnw2b1wq9 verified actually merged as d5476edde13649e8b1c4fbfc92647d07e2f9e3eb (PR261); root owns integration and all external actions.
 
 ## Completion predicate
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Threshold, recovery, exactly one concurrent probe and stale responses behave correctly | pytest test_cache_circuit_breaker.py | all pass including mutation control | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-focused.log | PASS |
-| C-002 | yes | Validated tunables, bounded state, actual stalled Redis bypass in milliseconds | pytest test_cache_circuit_breaker.py | config matrix and actual socket checks pass | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-focused.log | PASS |
-| C-003 | yes | Existing auth, native and throttle behavior preserved after actual dependency merge | full API pytest and Django checks | all pass or owner disposition of baseline failures | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-report.md | BLOCKED |
+| C-001 | yes | Threshold, recovery, exactly one concurrent probe and stale responses behave correctly | pytest test_cache_circuit_breaker.py | all pass including mutation control | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-integrated-restored.log | PASS |
+| C-002 | yes | Validated tunables, bounded state, actual stalled Redis bypass in milliseconds | pytest test_cache_circuit_breaker.py | config matrix and actual socket checks pass | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-integrated-restored.log | PASS |
+| C-003 | yes | Existing auth, native and throttle behavior preserved after actual dependency merge | full API pytest and Django checks | all pass or owner disposition of baseline failures | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-report.md | PENDING |
 | C-004 | yes | Four independent reviews, hosted CI and release checks passed | coordinator evidence | all four pass at frozen revision | coordinator review report | PENDING |
 
 ## Verification plan
@@ -98,6 +98,16 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 - New evidence: mutation and static logs in /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-*.log.
 - Decision: blocked
 
+### Iteration 4
+
+- Target criterion: C-003
+- Hypothesis: actual merged native-outage helper and policy compose with circuit skips without additional admission decisions.
+- Change or investigation: fetched actual origin/main d5476edd, merged PR261, resolved services.py overlap by direct fixed CircuitOpen reporting; retained merged locked neutral/redacted helper and native-only fail-closed guard. Updated prior native outage test's expected actual cache touches from25 to3 and added same-circuit refusal/device availability/recovery/hash/log checks.
+- Verifier executed: combined circuit/native/throttle/socket/deployment checks then full API against private PG and dedicated Redis or disclosed LocMem fallback.
+- Result: exact restored integrated circuit/native/throttle/socket/deployment checks 297 passed in40.82s with dedicated Redis, no skips. Integrated admission-off mutation15failed60passed32.79s, source restored exactly. System check and migration drift checks exit0; expected deployment warning W001 with proxy count0.
+- New evidence: actual3stalls0.659052s,50cooldown budgets0.000061s,3connections;100dedicated Redis PINGs had zero errors, maximum0.011777s. Full API starts from this frozen clean revision with PID, source fingerprints and atomic result receipts.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: per-process fail-open capacity during outage persists by design; thresholds are technical operational bounds. Healthy slow responses below socket timeout do not trip circuit.
@@ -112,6 +122,6 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2kab-cache-circuit-breaker.md
 - Validator result: structural PASS; completion intentionally pending
 - Independent verification result: pending coordinator
-- Terminal state: BLOCKED pending actual WQ9 merge and coordinator review
-- Remaining failed or blocked criteria: C-003 actual native-outage integration/full API and C-004 independent reviews/CI pending
+- Terminal state: ACTIVE for merged dependency integration and regression; coordinator review pending
+- Remaining failed or blocked criteria: C-003 combined full API and C-004 independent reviews/CI pending
 - ClickUp final evidence comment: coordinator owned
