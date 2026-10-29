@@ -230,6 +230,7 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
                 platform: "macos".into(),
                 token_meta: TokenMetaDto::default(),
                 license: license(),
+                session_cleanup: None,
             }
         ),
     ));

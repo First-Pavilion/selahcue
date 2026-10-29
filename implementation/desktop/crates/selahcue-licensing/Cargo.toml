@@ -29,3 +29,8 @@ sha2 = "0.11"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Drive the actual licensing activation/cleanup method over the shipped HTTP transport
+# against a local socket; no live API/provider or OS keychain is needed.
+selahcue-cloud = { path = "../selahcue-cloud", features = ["http"] }

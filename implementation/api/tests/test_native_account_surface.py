@@ -63,6 +63,7 @@ EMAIL = "pastor@grace.example"
 EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/activations",
     "v1/sessions",
+    "v1/sessions:revoke",
     "v1/activations:with-session",
     "v1/license:refresh",
     "v1/downloads:prepare",

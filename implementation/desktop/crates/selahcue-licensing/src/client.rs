@@ -13,6 +13,8 @@
 //!   token, and this client sends neither: the transport seam can carry a bearer and
 //!   nothing else, and `tests/test_client.rs` pins that nothing here names a cookie, a CSRF
 //!   header or the browser's `/graphql/account` route.
+//!   A valid activation is followed by one `/v1/sessions:revoke` attempt; its
+//!   separate cleanup result never masks the activated device.
 //! - [`LicensingClient::activate_with_enrollment_key`] is the **delegation** path, and is
 //!   not legacy. It exists for the case DEC-011 records: a volunteer setting up machines
 //!   in the sound booth, who would otherwise need the administrator's account password on
@@ -37,8 +39,8 @@
 
 use crate::contract::{
     ActivationRequest, ActivationResponse, ApiErrorEnvelope, ErrorCode, LicenseDto,
-    SessionActivationRequest, SessionRequest, SessionResponse, TokenMetaDto, ACTIVATIONS_PATH,
-    ACTIVATIONS_WITH_SESSION_PATH, SESSIONS_PATH,
+    SessionActivationRequest, SessionRequest, SessionResponse, SessionRevokeResponse, TokenMetaDto,
+    ACTIVATIONS_PATH, ACTIVATIONS_WITH_SESSION_PATH, SESSIONS_PATH, SESSION_REVOKE_PATH,
 };
 use crate::custody::DeviceCredentials;
 use crate::device::{DeviceIdentity, IdempotencyKey};
@@ -104,6 +106,26 @@ pub enum PersistOutcome {
     MissingLocally,
 }
 
+/// The bootstrap account session's cleanup, independent of device activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionCleanup {
+    /// The server positively acknowledged revoking the presented session.
+    Revoked,
+    /// One cleanup attempt was not confirmed. Retain custody for an explicit retry;
+    /// never erase a device credential or turn the valid activation into a failure.
+    RetryRequired(ActivationFailure),
+}
+
+/// Device persistence and local account cleanup have separate outcomes.
+#[derive(Debug, Clone)]
+pub struct PersistedActivation {
+    pub activation: Activation,
+    pub device_persistence: Result<PersistOutcome, SecretError>,
+    /// False when remote cleanup was unconfirmed or another session is stored.
+    /// A keychain error is reported separately from the successfully activated device.
+    pub account_session_cleared: Result<bool, SecretError>,
+}
+
 /// A successful activation. Both paths answer with the same body, so every field is
 /// present whichever way the device was activated.
 #[derive(Debug, Clone)]
@@ -123,6 +145,8 @@ pub struct Activation {
     pub token_meta: TokenMetaDto,
     /// The backing licence.
     pub license: LicenseDto,
+    /// Account activations attempt one immediate native cleanup; enrollment activation is None.
+    pub session_cleanup: Option<SessionCleanup>,
 }
 
 impl Activation {
@@ -257,6 +281,17 @@ impl<T: HttpTransport> LicensingClient<T> {
         identity: &DeviceIdentity,
         idempotency_key: &IdempotencyKey,
     ) -> Result<Activation, ActivationFailure> {
+        let mut activation = self.request_session_activation(session, identity, idempotency_key)?;
+        self.cleanup_session(session, &mut activation);
+        Ok(activation)
+    }
+
+    fn request_session_activation(
+        &self,
+        session: &Token,
+        identity: &DeviceIdentity,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<Activation, ActivationFailure> {
         if Self::unusable_bearer(session) {
             // Nothing sensible can be sent: the server would answer 401 to a blank bearer, and
             // a control character cannot be put in a header at all. Say so without a request.
@@ -276,6 +311,64 @@ impl<T: HttpTransport> LicensingClient<T> {
         })?;
 
         Self::activation(ActivationPath::AccountSession, parsed)
+    }
+
+    fn cleanup_session(&self, session: &Token, activation: &mut Activation) {
+        activation.session_cleanup = Some(match self.revoke_session(session) {
+            Ok(()) => SessionCleanup::Revoked,
+            Err(failure) => SessionCleanup::RetryRequired(failure),
+        });
+    }
+
+    /// End this account session without cookies or CSRF. One request, no implicit retries.
+    /// This is also the explicit cancellation/retry operation; it never touches device custody.
+    pub fn revoke_session(&self, session: &Token) -> Result<(), ActivationFailure> {
+        if Self::unusable_bearer(session) {
+            return Err(ActivationFailure::Unauthenticated);
+        }
+        let response = self.post(SESSION_REVOKE_PATH, "{}", Some(session))?;
+        let parsed: SessionRevokeResponse = Self::decode(response, |code| match code {
+            // NOT_FOUND here does not mean the device's license has lapsed.
+            ErrorCode::NotFound => ActivationFailure::Coded(ErrorCode::NotFound),
+            other => ActivationFailure::from_code(other, ActivationPath::AccountSession),
+        })?;
+        if !parsed.revoked {
+            return Err(ActivationFailure::Malformed(
+                "session cleanup was not acknowledged".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Complete the existing activation path and persist its device credential, while
+    /// clearing only the matching account entry after confirmed remote cleanup.
+    ///
+    /// The caller owns/serializes this credential lifecycle. Neither cleanup nor keychain
+    /// failure masks a valid activation: separate outcomes preserve the device token and
+    /// allow explicit recovery. An unsuccessful/ambiguous activation retains its session
+    /// for retrying the same idempotency key; no cleanup request is sent in that case.
+    pub fn activate_and_persist_with_session<S: SecretStore>(
+        &self,
+        session: &Token,
+        identity: &DeviceIdentity,
+        idempotency_key: &IdempotencyKey,
+        credentials: &DeviceCredentials<S>,
+    ) -> Result<PersistedActivation, ActivationFailure> {
+        let mut activation = self.request_session_activation(session, identity, idempotency_key)?;
+        // Preserve the show-once device token before waiting on a second remote operation.
+        let device_persistence = activation.persist(credentials);
+        self.cleanup_session(session, &mut activation);
+        let account_session_cleared = if activation.session_cleanup == Some(SessionCleanup::Revoked)
+        {
+            credentials.clear_account_session_if_matches(session)
+        } else {
+            Ok(false)
+        };
+        Ok(PersistedActivation {
+            activation,
+            device_persistence,
+            account_session_cleared,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -368,6 +461,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             platform: response.device.platform,
             token_meta: response.token,
             license: response.license,
+            session_cleanup: None,
         })
     }
 
