@@ -13,6 +13,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import math
+import threading
 import time
 from enum import Enum
 
@@ -24,11 +25,31 @@ from django.core.cache.backends.redis import RedisCache
 logger = logging.getLogger(__name__)
 
 # One report per outage, not one per request. A five-minute Redis outage at 100 rps would
-# otherwise emit ~30,000 log records — unbounded logging, which the repo forbids. State is a
-# single module-level float, so this stays bounded in memory too. A benign race between
-# threads costs at most one extra line.
+# otherwise emit ~30,000 log records — unbounded logging, which the repo forbids. State is
+# one module-level float and a lock, bounded independently of caller/key cardinality.
 _STORE_ERROR_LOG_INTERVAL_SECONDS = 60.0
 _last_store_error_log = float("-inf")
+_store_error_log_lock = threading.Lock()
+
+
+def _report_store_unavailable(error_type: str) -> None:
+    """Bounded outage signal, without keys/identities or exception text.
+
+    Admission belongs to the caller: device routes fail open, native bootstrap login refuses.
+    Only the exception's type name (or a fixed event label) enters this shared warning.
+    """
+    global _last_store_error_log
+    with _store_error_log_lock:
+        now = time.monotonic()
+        if now - _last_store_error_log < _STORE_ERROR_LOG_INTERVAL_SECONDS:
+            return
+        _last_store_error_log = now
+    logger.warning(
+        "rate-limit store unavailable (%s); budget check unavailable. "
+        "Caller policy determines admission. Further reports suppressed for %.0fs.",
+        error_type,
+        _STORE_ERROR_LOG_INTERVAL_SECONDS,
+    )
 
 
 class CacheStore:
@@ -131,33 +152,19 @@ class BudgetOutcome(str, Enum):
 def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetOutcome:
     """Spend one unit of `key`'s budget and report what happened.
 
-    **Still fails open** — `STORE_UNAVAILABLE` is a permit, not a refusal. Refusing all
-    device traffic because the limiter is unavailable would cause the outage it is meant to
-    prevent. The difference is that the caller can now SEE that it was a fail-open, and a
-    caller with an expensive side effect (sending mail) can bound that side effect instead of
-    treating the outage as a clean allow.
+    `STORE_UNAVAILABLE` leaves admission to the caller. Ordinary device traffic still fails
+    open; native bootstrap login explicitly refuses before expensive password work. Callers
+    with other expensive side effects (sending mail, say) retain their existing outage policy.
 
     This branch runs only when the store RAISES. A store that is up but wedged does not raise,
     it blocks — so a wedged Redis reaches here only because the cache connection carries socket
     timeouts (`settings.CACHE_SOCKET_CONNECT_TIMEOUT` / `CACHE_SOCKET_TIMEOUT`, 17tnw2b1wrx). Take
-    them off and "fails open" silently shrinks back to "fails open when the store is down".
+    them off and no caller's outage policy can run while that store operation is blocked.
     """
-    global _last_store_error_log
     try:
         count = store.incr_with_expiry(key, window_seconds)
     except Exception as error:
-        now = time.monotonic()
-        if now - _last_store_error_log >= _STORE_ERROR_LOG_INTERVAL_SECONDS:
-            _last_store_error_log = now
-            # warning, not exception: a traceback per failing request is the unbounded-log
-            # problem. The store is either up or down; one line per minute says so.
-            logger.warning(
-                "rate-limit store unavailable (%s) for key=%s; failing open. "
-                "Further reports suppressed for %.0fs.",
-                type(error).__name__,
-                key,
-                _STORE_ERROR_LOG_INTERVAL_SECONDS,
-            )
+        _report_store_unavailable(type(error).__name__)
         return BudgetOutcome.STORE_UNAVAILABLE
     return BudgetOutcome.ALLOWED if count <= limit else BudgetOutcome.DENIED
 
