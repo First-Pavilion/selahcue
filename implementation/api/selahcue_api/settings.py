@@ -48,12 +48,16 @@ def _database_config() -> dict:
 
 # dev | staging | prod. Anything but exactly `dev` counts as deployed: it switches on the SECRET_KEY
 # requirement below, the real-SMTP mail defaults, the TLS-proxy warning (selahcue_accounts.W002) and
-# the refusal of eager Celery in prod. It does not touch DEBUG, and it gates no error monitoring:
-# nothing in this repo consumes SENTRY_DSN (see the end of this file).
+# the refusal of eager Celery in prod. DEBUG and the actor-header bridge are refused outside dev.
+# It gates no error monitoring: nothing here consumes SENTRY_DSN (see the end of this file).
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 
 # `DEBUG=1` / `DEBUG=0`, the house convention. env_bool also accepts true/yes/on.
 DEBUG = env_bool("DEBUG", False)
+if DEBUG and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured(
+        f"DEBUG must not be enabled when ENVIRONMENT={ENVIRONMENT!r}: debug mode is only available in dev."
+    )
 
 # Required outside dev. yharah raises unconditionally, but SelahCue's tests run bare (no
 # container env), so the hard requirement is scoped to non-dev — still stricter than the
@@ -339,7 +343,16 @@ GRAPHQL_ALLOW_QUERIES_VIA_GET = False
 GRAPHQL_MULTIPART_UPLOADS_ENABLED = False
 GRAPHQL_IDE = "graphiql" if DEBUG else None
 GRAPHQL_INTROSPECTION_ENABLED = DEBUG
-SELAHCUE_TRUST_ACTOR_HEADERS = env_bool("SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG)
+# Caller-chosen identities are a local dev bridge, never a deployed authenticator.
+# Explicit opt-in is refused too: ingress stripping cannot enable this bridge outside dev.
+SELAHCUE_TRUST_ACTOR_HEADERS = env_bool(
+    "SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG if ENVIRONMENT == "dev" else False
+)
+if SELAHCUE_TRUST_ACTOR_HEADERS and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured(
+        f"SELAHCUE_TRUST_ACTOR_HEADERS must not be enabled when ENVIRONMENT={ENVIRONMENT!r}: "
+        "caller-supplied actor identity is only available in dev."
+    )
 
 # --- Celery / Redis (house convention: yharah-logistics core/settings.py) -------------------
 # `redis` is the compose service name; db 2 is the broker, matching the sibling project so the

@@ -158,6 +158,24 @@ def test_header_actor_context_is_trusted_only_when_explicitly_enabled(settings):
     assert actor.staff_permissions == frozenset({StaffPermission.VIEW_PLATFORM_HEALTH})
 
 
+@pytest.mark.parametrize("kind", ["staff", "customer", "device", "service", "anonymous"])
+@override_settings(SELAHCUE_TRUST_ACTOR_HEADERS=True)
+def test_dev_actor_header_bridge_refuses_only_the_internal_anonymous_kind(kind):
+    from selahcue_api.graphql.context import ActorKind, actor_from_request
+
+    request = RequestFactory().get(
+        "/graphql/admin",
+        HTTP_X_SELAHCUE_ACTOR_KIND=kind,
+        HTTP_X_SELAHCUE_ACTOR_ID="actor_1",
+    )
+    actor = actor_from_request(request)
+    if kind == "anonymous":
+        assert actor is None
+    else:
+        assert actor.kind is ActorKind(kind)
+        assert actor.actor_id == "actor_1"
+
+
 @pytest.mark.django_db
 def test_django_app_boundaries_are_registered(settings):
     import django
