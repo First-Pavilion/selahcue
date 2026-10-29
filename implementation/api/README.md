@@ -23,6 +23,10 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 
 The API does not yet issue download leases, serve licensed Bible text, sync billing providers, or store provider secrets. Header-derived actors remain a local/test bridge for **staff** only — customer identity now goes through real session auth, and `SELAHCUE_TRUST_ACTOR_HEADERS` must be false in production.
 
+## Activation input
+
+Both native activation routes and account GraphQL activation validate device metadata before writing a device or token. Fields must be strings; control characters and invalid Unicode are refused. `platform` is one of `macos`, `windows`, or `linux`, matching the desktop licensing client. Fingerprints and display names are at most128 characters, app versions at most32; optional version/name fields may be omitted or empty. Native routes return JSON400 `VALIDATION_FAILED` for malformed, excessively nested or oversized JSON bodies, using Django's existing body-size limit. No field is converted from an array, object, boolean or number into text.
+
 ## `GET /v1/entitlements/manifest`
 
 The signed offline entitlement (DEC-004). Device-token auth via `Authorization: Bearer <device_token>`. Returns an Ed25519 envelope:

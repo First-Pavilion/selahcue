@@ -2,6 +2,7 @@ import json
 import logging
 from functools import wraps
 
+from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
@@ -60,24 +61,19 @@ def activate_device(request):
     """POST /v1/activations — register an account-bound device instance for a presented
     enrollment key and return a show-once device token (DEC-004). Authenticated by the
     presented key (`app_key_then_device_token`); the device is its own actor."""
-    try:
-        raw = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
-        return command_error_response(
-            code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
-        )
-    if not isinstance(raw, dict):
+    raw = _json_object(request)
+    if raw is None:
         return command_error_response(
             code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
         )
 
     data = ActivateDeviceData(
-        idempotency_key=str(raw.get("idempotency_key") or ""),
-        presented_key=str(raw.get("license_key") or ""),
-        device_fingerprint=str(raw.get("device_fingerprint") or ""),
-        platform=str(raw.get("platform") or ""),
-        app_version=str(raw.get("app_version") or ""),
-        display_name=str(raw.get("display_name") or ""),
+        idempotency_key=raw.get("idempotency_key", ""),
+        presented_key=raw.get("license_key", ""),
+        device_fingerprint=raw.get("device_fingerprint", ""),
+        platform=raw.get("platform", ""),
+        app_version=raw.get("app_version", ""),
+        display_name=raw.get("display_name", ""),
     )
     try:
         result = _activate_device_service(data)
@@ -181,7 +177,7 @@ def _json_object(request) -> dict | None:
     as a 500 on an unauthenticated route."""
     try:
         raw = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError, RecursionError):
+    except (ValueError, UnicodeDecodeError, RecursionError, RequestDataTooBig):
         return None
     return raw if isinstance(raw, dict) else None
 
@@ -289,11 +285,11 @@ def activate_device_with_session(request):
         )
     actor = actor_from_session_token(_account_session_bearer(request))
     data = ActivateDeviceWithSessionData(
-        idempotency_key=str(raw.get("idempotency_key") or ""),
-        device_fingerprint=str(raw.get("device_fingerprint") or ""),
-        platform=str(raw.get("platform") or ""),
-        app_version=str(raw.get("app_version") or ""),
-        display_name=str(raw.get("display_name") or ""),
+        idempotency_key=raw.get("idempotency_key", ""),
+        device_fingerprint=raw.get("device_fingerprint", ""),
+        platform=raw.get("platform", ""),
+        app_version=raw.get("app_version", ""),
+        display_name=raw.get("display_name", ""),
     )
     try:
         result = _activate_device_with_session_service(
