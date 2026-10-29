@@ -312,6 +312,40 @@ DEPLOYED_ENVIRONMENTS = [
 OTHER_THAN_PROD = DEPLOYED_ENVIRONMENTS[1:]
 
 
+# The later owner instruction on 17tnw2b9d9z covers EVERY non-dev environment,
+# superseding the original description's explicit ingress opt-in.
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("flag", ["DEBUG", "SELAHCUE_TRUST_ACTOR_HEADERS"])
+@pytest.mark.parametrize("value", ["1", "true", "yes", " ON "])
+def test_non_dev_refuses_debug_and_actor_header_trust(monkeypatch, environment, flag, value):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY="non-public-test-key", **{flag: value})
+    assert flag in str(refusal.value)
+    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off"])
+def test_non_dev_boots_with_debug_and_actor_header_trust_disabled(monkeypatch, environment, value):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SECRET_KEY="non-public-test-key",
+        DEBUG=value, SELAHCUE_TRUST_ACTOR_HEADERS=value,
+    )
+    assert module.DEBUG is False
+    assert module.SELAHCUE_TRUST_ACTOR_HEADERS is False
+
+
+@pytest.mark.parametrize(
+    "debug,trust,expected",
+    [(None, None, False), ("0", None, False), ("1", None, True),
+     ("1", "0", False), ("0", "1", True), ("yes", "on", True)],
+)
+def test_dev_keeps_debug_default_and_explicit_actor_header_controls(monkeypatch, debug, trust, expected):
+    module = _fresh_settings(monkeypatch, ENVIRONMENT="dev", DEBUG=debug, SELAHCUE_TRUST_ACTOR_HEADERS=trust)
+    assert module.DEBUG is (debug in {"1", "yes"})
+    assert module.SELAHCUE_TRUST_ACTOR_HEADERS is expected
+
+
 def _assert_refused(monkeypatch, environment, secret_key):
     with pytest.raises(ImproperlyConfigured) as refusal:
         _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
