@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Refuse debug and caller-supplied actor identity outside dev
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9d9z
 - Created: 2026-10-29
@@ -84,9 +84,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: import guards plus a bridge-only enum refusal enforce the later owner instruction.
 - Change or investigation: baseline traced; test-first regression cases prepared before source changes.
 - Verifier executed: source inspection and resource admission snapshots.
-- Result: baseline lacks both refusals; growing pageouts prevent local suite admission. Runtime RED remains pending.
-- New evidence: parent receives resource counters and frozen test/source evidence.
+- Result: hosted RED run 40940404118, diagnostic ac20e0c (test source 9f0c21f), proves 41 behavioral failures and 40 positive controls in 2.24s. All 40 non-dev truthy cases failed to raise; anonymous bridge returned ActorContext. Setup, checks and migrations passed. Local project runtime was not run.
+- New evidence: wave2-20261029/api-debug-guard/red.log; https://github.com/First-Pavilion/selahcue/actions/runs/40940404118
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: two import-time guards and bridge-only anonymous rejection satisfy the failing behavior without changing internal audit construction.
+- Change or investigation: refuse DEBUG and explicit header trust outside exact dev, default header trust false outside dev; reject only anonymous at header parsing; update the registry, ops guide, API README and sample comment.
+- Verifier executed: stdlib syntax inspection, diff checks and structural contract validator; full runtime is delegated to hosted CI.
+- Result: source candidate prepared; hosted GREEN and all independent gates remain pending.
+- New evidence: wave2-20261029/api-debug-guard/verification.log and candidate manifest.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -103,6 +113,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9d9z-deployment-debug-guard.md
 - Validator result: initial structural validation PASS; production unchanged for hosted RED.
 - Independent verification result: pending parent review round.
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: all gates pending execution.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: hosted GREEN, full API regression, all independent reviews, merge and QA remain pending.
 - ClickUp final evidence comment: parent owns publication.

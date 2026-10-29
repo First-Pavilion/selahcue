@@ -164,7 +164,8 @@ def test_dev_actor_header_bridge_refuses_only_the_internal_anonymous_kind(kind):
     from selahcue_api.graphql.context import ActorKind, actor_from_request
 
     request = RequestFactory().get(
-        "/graphql/admin", HTTP_X_SELAHCUE_ACTOR_KIND=kind,
+        "/graphql/admin",
+        HTTP_X_SELAHCUE_ACTOR_KIND=kind,
         HTTP_X_SELAHCUE_ACTOR_ID="actor_1",
     )
     actor = actor_from_request(request)

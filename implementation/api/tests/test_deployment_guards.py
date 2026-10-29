@@ -328,8 +328,11 @@ def test_non_dev_refuses_debug_and_actor_header_trust(monkeypatch, environment, 
 @pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off"])
 def test_non_dev_boots_with_debug_and_actor_header_trust_disabled(monkeypatch, environment, value):
     module = _fresh_settings(
-        monkeypatch, ENVIRONMENT=environment, SECRET_KEY="non-public-test-key",
-        DEBUG=value, SELAHCUE_TRUST_ACTOR_HEADERS=value,
+        monkeypatch,
+        ENVIRONMENT=environment,
+        SECRET_KEY="non-public-test-key",
+        DEBUG=value,
+        SELAHCUE_TRUST_ACTOR_HEADERS=value,
     )
     assert module.DEBUG is False
     assert module.SELAHCUE_TRUST_ACTOR_HEADERS is False
@@ -337,8 +340,14 @@ def test_non_dev_boots_with_debug_and_actor_header_trust_disabled(monkeypatch, e
 
 @pytest.mark.parametrize(
     "debug,trust,expected",
-    [(None, None, False), ("0", None, False), ("1", None, True),
-     ("1", "0", False), ("0", "1", True), ("yes", "on", True)],
+    [
+        (None, None, False),
+        ("0", None, False),
+        ("1", None, True),
+        ("1", "0", False),
+        ("0", "1", True),
+        ("yes", "on", True),
+    ],
 )
 def test_dev_keeps_debug_default_and_explicit_actor_header_controls(monkeypatch, debug, trust, expected):
     module = _fresh_settings(monkeypatch, ENVIRONMENT="dev", DEBUG=debug, SELAHCUE_TRUST_ACTOR_HEADERS=trust)

@@ -212,9 +212,9 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 
 | Variable | Default | Production |
 |----------|---------|-----------|
-| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Unset means `dev`, and `dev` is the only mode in which the API starts on the public dev signing key (`selahcue-dev-only-insecure-key`, which is in this repository), with no error and whatever else you set. It also gates the mail backend and the `SECRET_KEY` check below |
+| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Unset means `dev`, and `dev` is the only mode in which the API starts on the public dev signing key (`selahcue-dev-only-insecure-key`, which is in this repository), with no error and whatever else you set. It also gates the mail backend, the `SECRET_KEY` check below, and refusal of enabled `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` outside exact `dev` |
 | `SECRET_KEY` | dev-only fallback | **Required, and not a public value. The app refuses to boot when `ENVIRONMENT != dev` and this is empty, equals the dev key, or equals the `replace-me-with-a-fresh-key` placeholder that earlier copies of `.env.sample` carried (letter case, whitespace, matched ASCII quotes and invisible format characters such as a BOM, zero-width space or joiner, or soft hyphen are ignored when comparing).** It is also the HMAC pepper for licence-key, device-token and account-session fingerprints: rotating it invalidates them all |
-| `DEBUG` | `0` | Leave `0` — see the warning below |
+| `DEBUG` | `0` | **Startup refuses true outside exact `dev`, including staging.** Leave `0` or unset; see below |
 | `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated) |
 | `SQL_ENGINE` | `…backends.sqlite3` | `django.db.backends.postgresql` — row-locking is required, see below |
 | `SQL_DATABASE` / `SQL_USER` / `SQL_PASSWORD` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `postgres` / `localhost` / `5432` | **Required** for Postgres |
@@ -235,7 +235,7 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
 | `SENTRY_DSN` | empty | Read into settings, but nothing consumes it yet (no Sentry SDK is wired), so setting it changes nothing today. Intended for staging/prod only, never locally |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Leave empty. It is read but **not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set |
-| `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` | **Must be false.** See below |
+| `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` in dev; false elsewhere | **Startup refuses true outside exact `dev`, including staging and explicit opt-in.** See below |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
@@ -257,11 +257,14 @@ Generate a secret key:
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-> **`DEBUG` controls more than error pages.** `SELAHCUE_TRUST_ACTOR_HEADERS` defaults to the
-> value of `DEBUG`, and when true the API accepts caller-supplied identity headers — turning on
-> debug in production would let a client assert any actor. Debug also enables the GraphQL IDE and
-> introspection, and zeroes HSTS. Set `DEBUG=0` explicitly rather than relying on the
-> default.
+> **`DEBUG` and the actor-header bridge are dev-only.** Startup raises an actionable error
+> naming the flag and environment if either `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` is true
+> when `ENVIRONMENT` is anything other than exact `dev`. This includes staging: an explicit
+> bridge opt-in is refused even behind an ingress that strips identity headers. In dev the
+> bridge follows `DEBUG` unless explicitly overridden; debug also enables the GraphQL IDE and
+> introspection and zeroes HSTS. The bridge rejects `anonymous`, which remains available only
+> for internally generated failed-confirm audit actors. Keep both flags false/unset outside dev;
+> production staff identity integration remains a separate prerequisite.
 
 ---
 
@@ -301,23 +304,21 @@ expires (DEC-005), regardless of key changes.
 
 ## 6b. Ops requirements — ingress, throttling and Redis
 
-Three properties the *deployment* must hold. None of them can be fixed in application code:
-each is a promise the edge makes that the app then relies on. Deploying without them does not
-fail loudly — it just quietly removes a control the app assumes is there.
+The deployment remains responsible for stripping identity headers, edge flood protection and
+shared Redis. The startup guards in §6 refuse the dev identity bridge outside dev; those guards
+do not replace the edge and Redis controls below.
 
 ### The ingress must strip inbound `X-SelahCue-*` headers
 
-Do this **before** `SELAHCUE_TRUST_ACTOR_HEADERS` is ever set true anywhere, including staging.
+Strip inbound identity headers at the edge and verify a forged header does not survive to
+Django. Keep `SELAHCUE_TRUST_ACTOR_HEADERS` false/unset in every shared deployment, including
+staging. **Stripping does not permit enabling the bridge outside dev:** startup refuses it.
 
-When that flag is on, the API reads the actor's identity — who they are and what they may do —
-from request headers. It has no way to distinguish a header your load balancer set from one the
-client typed: by the time Django sees them they are the same bytes. So if the flag is on and the
-ingress passes client headers through, any caller can assert any actor, including staff
-permissions. That is total authentication bypass, not privilege escalation at the margins.
-
-The safe order is: strip at the edge first, verify a forged header does not survive to the app,
-*then* enable the flag. The default is off and follows `DEBUG` (§6) — keep it that way until the
-strip rule is deployed and tested.
+The dev bridge cannot distinguish a caller's identity headers from headers an ingress added.
+When enabled locally it trusts caller-selected identities and staff permissions, so use it only
+in a trusted local development environment. It rejects the `anonymous` kind; internal
+failed-confirm audit rows still use that kind. Real customer session authentication takes
+precedence over the bridge. Production staff identity integration remains separate.
 
 ### Per-IP flood protection belongs at the edge
 
