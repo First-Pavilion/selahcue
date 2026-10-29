@@ -85,13 +85,18 @@
 //! returns at once and is refused on its type, so no input can make the call wait. The read itself is
 //! capped.
 //!
-//! # Sweeping ([`sweep_stale_staging_with`])
+//! # Sweeping ([`sweep_stale_staging`])
 //!
 //! A host killed between creating its staging file and renaming it leaves
-//! `.selahcue-endpoint.PID.N.tmp` (mode `0600`, a dead token). The next publish removes such a file
+//! `.selahcue-endpoint.PID.N.tmp` (mode `0600`, a dead token). New files live in the private
+//! [`STAGING_DIR_NAME`] subdirectory; the descriptor itself keeps its original location. The next
+//! publish starts cleanup in both namespaces, removing such a file
 //! when it is a regular file of ours (`lstat`, never a symlink), its name parses exactly, and either its
 //! process is gone or it is older than [`STALE_AFTER`]. A fresh file of a live process is an in-flight
-//! publish and is left alone. At most [`MAX_SWEEP_ENTRIES`] directory entries are examined.
+//! publish and is left alone. Each namespace gets at most [`MAX_SWEEP_ENTRIES`] foreground entries;
+//! one background worker continues the same iterators in chunks of that size, without a queue.
+//! Finite legacy leftovers therefore converge during a normal run, including beyond unrelated
+//! session files. On restart a new pass starts; endless early crashes cannot guarantee migration.
 //!
 //! Every error here is label-only: it names a condition, never the descriptor's contents.
 
@@ -107,6 +112,9 @@ pub const DESCRIPTOR_FILE_NAME: &str = "selahcue-operator-endpoint.json";
 pub const STAGING_PREFIX: &str = ".selahcue-endpoint";
 /// See [`STAGING_PREFIX`].
 pub const STAGING_SUFFIX: &str = ".tmp";
+
+/// App-owned staging namespace, below the unchanged descriptor directory.
+pub const STAGING_DIR_NAME: &str = ".selahcue-endpoint-staging";
 
 /// A staging file of a live process is left alone until it is this old. A real publish takes
 /// microseconds, so a file this old is a leftover even if its pid has since been recycled.
@@ -421,6 +429,18 @@ pub fn prepare_dir(env: &DirEnv) -> Result<PathBuf, DirError> {
     }
 }
 
+/// Prepare the app-owned staging namespace on the descriptor's filesystem. Existing entries
+/// are verified, never repaired or followed on Unix. Failure leaves the descriptor untouched.
+pub fn prepare_staging_dir(dir: &Path, uid: u32) -> Result<PathBuf, DirError> {
+    verify_private_dir(dir, uid)?;
+    let staging = dir.join(STAGING_DIR_NAME);
+    if verify_private_dir(&staging, uid) == Err(DirError::Missing) {
+        create_private_dir(&staging)?;
+    }
+    verify_private_dir(&staging, uid)?;
+    Ok(staging)
+}
+
 /// Create the home step's directory (and only the missing components above it, each `0700`), then
 /// verify it and its parent. An existing component is never touched.
 #[cfg(unix)]
@@ -471,12 +491,53 @@ fn set_exactly_0700(dir: &Path) -> Result<(), DirError> {
     use rustix::fs::OFlags;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let flags = (OFlags::NOFOLLOW | OFlags::DIRECTORY).bits() as i32;
-    std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(flags)
         .open(dir)
-        .and_then(|handle| handle.set_permissions(std::fs::Permissions::from_mode(0o700)))
-        .map_err(|_| DirError::CreateFailed)
+    {
+        Ok(handle) => handle.set_permissions(std::fs::Permissions::from_mode(0o700)),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            // e.g. umask 0400 created a 0300 directory: O_RDONLY cannot open it. This
+            // fallback is ONLY reached after our successful mkdir, never for EEXIST.
+            set_created_dir_without_read_permission(dir)
+        }
+        Err(error) => Err(error),
+    }
+    .map_err(|_| DirError::CreateFailed)
+}
+
+// Linux rustix 1.1.4 deliberately does not emulate fchmodat(AT_SYMLINK_NOFOLLOW).
+// Hold a no-follow O_PATH directory fd, then chmod its kernel fd alias. This follows only the
+// held inode, never a replacement at `dir`; without procfs it fails closed. No new dependency,
+// unsafe code, process-global umask mutation, or repair of an existing directory is involved.
+#[cfg(target_os = "linux")]
+fn set_created_dir_without_read_permission(dir: &Path) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::PermissionsExt;
+    let fd = rustix::fs::open(
+        dir,
+        rustix::fs::OFlags::PATH
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let alias = PathBuf::from(format!("/proc/self/fd/{}", fd.as_raw_fd()));
+    std::fs::set_permissions(alias, std::fs::Permissions::from_mode(0o700))
+}
+
+// Other supported Unix hosts have native no-follow chmodat. A substituted symlink cannot
+// change its target's mode. prepare_dir/prepare_staging_dir verify the final directory again.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn set_created_dir_without_read_permission(dir: &Path) -> std::io::Result<()> {
+    rustix::fs::chmodat(
+        rustix::fs::CWD,
+        dir,
+        rustix::fs::Mode::RWXU,
+        rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(Into::into)
 }
 
 #[cfg(not(unix))]
@@ -712,23 +773,95 @@ pub fn pid_is_alive(pid: u32) -> bool {
     }
 }
 
-/// Remove the staging files a crashed publisher left in `dir`: the real clock, the real liveness check
-/// and [`MAX_SWEEP_ENTRIES`]. Returns how many were removed.
+/// Sweep one bounded foreground chunk, then continue a large directory in bounded background
+/// chunks using the SAME iterator. Returns only the foreground removal count. At most one
+/// continuation worker exists per process; this form owns one iterator and releases it on exit/error.
+///
+/// Publishers use an app-owned staging namespace, so unrelated session files cannot hide new
+/// crash files. This full pass also migrates finite legacy leftovers in the descriptor parent.
+/// A later startup starts a new pass: no nonportable directory cookies are persisted. Migration
+/// requires a normally running process; endless crashes before useful I/O cannot guarantee it.
 pub fn sweep_stale_staging(dir: &Path, uid: u32) -> usize {
-    sweep_stale_staging_with(
-        dir,
-        uid,
-        SystemTime::now(),
-        &pid_is_alive,
-        MAX_SWEEP_ENTRIES,
-    )
+    sweep_staging_dirs([Some(dir), None], uid)
 }
 
-/// [`sweep_stale_staging`] with the clock, the liveness check and the entry cap injected.
-///
-/// Only a regular file (`lstat`: a symlink or a directory is left alone, and nothing is followed),
-/// owned by `uid`, whose name parses as a staging name, and whose process is gone (`alive` says no) or
-/// that is at least [`STALE_AFTER`] old.
+/// Sweep the legacy parent and the new namespace in the same bounded worker. At most two
+/// iterators are retained, so a large new namespace cannot prevent legacy migration or vice versa.
+pub fn sweep_stale_staging_pair(legacy: &Path, staging: &Path, uid: u32) -> usize {
+    sweep_staging_dirs([Some(legacy), Some(staging)], uid)
+}
+
+fn sweep_staging_dirs(dirs: [Option<&Path>; 2], uid: u32) -> usize {
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    struct WorkerGuard;
+    impl Drop for WorkerGuard {
+        fn drop(&mut self) {
+            RUNNING.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    let mut pending = Vec::with_capacity(2);
+    let mut removed = 0;
+    for dir in dirs.into_iter().flatten() {
+        if verify_private_dir(dir, uid).is_err() {
+            continue;
+        }
+        let Ok(mut entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let (count, more) = sweep_chunk(
+            &mut entries,
+            dir,
+            uid,
+            SystemTime::now(),
+            &pid_is_alive,
+            MAX_SWEEP_ENTRIES,
+        );
+        removed += count;
+        if more {
+            pending.push((dir.to_owned(), entries));
+        }
+    }
+    if !pending.is_empty()
+        && RUNNING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    {
+        let guard = WorkerGuard;
+        // Dropping the JoinHandle detaches the worker; no completed handles or directory queues
+        // accumulate. If spawning fails, dropping the closure releases guard and iterators.
+        let _ = std::thread::Builder::new()
+            .name("endpoint-cleanup".into())
+            .spawn(move || {
+                let _guard = guard;
+                for (dir, mut entries) in pending {
+                    loop {
+                        let (_, more) = sweep_chunk(
+                            &mut entries,
+                            &dir,
+                            uid,
+                            SystemTime::now(),
+                            &pid_is_alive,
+                            MAX_SWEEP_ENTRIES,
+                        );
+                        if !more {
+                            break;
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            });
+    }
+    removed
+}
+
+/// One synchronous bounded chunk, with the clock, liveness check and entry cap injected.
+/// Unlike the production wrapper, this deterministic test seam schedules no continuation.
 pub fn sweep_stale_staging_with(
     dir: &Path,
     uid: u32,
@@ -736,12 +869,34 @@ pub fn sweep_stale_staging_with(
     alive: &dyn Fn(u32) -> bool,
     max_entries: usize,
 ) -> usize {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    if verify_private_dir(dir, uid).is_err() {
+        return 0;
+    }
+    let Ok(mut entries) = std::fs::read_dir(dir) else {
         return 0;
     };
+    sweep_chunk(&mut entries, dir, uid, now, alive, max_entries).0
+}
+
+// `more` means the cap was reached; the next chunk observes EOF without a look-ahead read.
+// Every chunk rechecks the private parent, counts ALL entries against its budget, and applies
+// the same name/type/owner/liveness policy. Read errors end the pass; the next publish retries.
+fn sweep_chunk(
+    entries: &mut std::fs::ReadDir,
+    dir: &Path,
+    uid: u32,
+    now: SystemTime,
+    alive: &dyn Fn(u32) -> bool,
+    max_entries: usize,
+) -> (usize, bool) {
+    if verify_private_dir(dir, uid).is_err() {
+        return (0, false);
+    }
     let mut removed = 0;
-    for entry in entries.take(max_entries) {
-        let Ok(entry) = entry else { continue };
+    for _ in 0..max_entries {
+        let Some(Ok(entry)) = entries.next() else {
+            return (removed, false);
+        };
         let file_name = entry.file_name();
         let Some((pid, _)) = file_name.to_str().and_then(parse_staging_name) else {
             continue;
@@ -759,13 +914,13 @@ pub fn sweep_stale_staging_with(
             .and_then(|modified| now.duration_since(modified).ok())
             .is_some_and(|age| age >= STALE_AFTER);
         if alive(pid) && !old {
-            continue; // an in-flight publish
+            continue;
         }
         if std::fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
-    removed
+    (removed, max_entries != 0)
 }
 
 fn owned_by(meta: &std::fs::Metadata, uid: u32) -> bool {

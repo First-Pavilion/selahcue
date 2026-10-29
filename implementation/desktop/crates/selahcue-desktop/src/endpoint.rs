@@ -10,7 +10,7 @@
 //! ubuntu CI) or, on Linux where `temp_dir()` is the shared `/tmp`, a world-readable file holding
 //! the token.
 //!
-//! [`write_endpoint`] therefore stages the bytes in an owner-only sibling file and `rename`s it
+//! [`write_endpoint`] therefore stages the bytes in an owner-only file in a private subdirectory and `rename`s it
 //! over the path. "Owner-only" is a Unix guarantee (creation mode `0600`, then an explicit
 //! `chmod`); on Windows the staging file and the descriptor keep the ACL they inherit from the
 //! per-user `%TEMP%` (no owner or mode is checked there).
@@ -20,8 +20,8 @@
 //! publish fail. The production target ([`EndpointFile::PerUser`]) is therefore a per-user private
 //! directory chosen by `selahcue_lan::local_endpoint` (the same call the operator makes), and
 //! [`write_endpoint`] itself refuses any directory that is not private to the current user, so a
-//! planted neighbour cannot get in whichever path it is handed. Each publish also sweeps the staging
-//! files a crashed predecessor left behind (never a live publisher's, nor anything that is not a
+//! planted neighbour cannot get in whichever path it is handed. Each publish starts a bounded-chunk
+//! sweep in both the legacy parent and the new staging namespace, removing files a crashed predecessor left behind (never a live publisher's, nor anything that is not a
 //! regular file of ours).
 
 use selahcue_lan::local_endpoint::{self, DirEnv, DESCRIPTOR_FILE_NAME};
@@ -152,14 +152,14 @@ fn remove_as(path: &Path, uid: u32) {
     }
 }
 
-/// A fresh staging file name beside `path`: same directory (so the final rename never crosses a
-/// filesystem), dot-prefixed, and unique per CALL — the pid separates processes, a process-wide
+/// A fresh staging file name beside the supplied staging base `path` (production supplies a
+/// base inside the app-owned staging namespace on the descriptor filesystem), dot-prefixed, and unique per CALL — the pid separates processes, a process-wide
 /// counter separates calls within one. That fixes two things the first cut's per-process name got
 /// wrong: two publishers in one process shared a file (torn reads, failed publishes), and a
 /// crashed predecessor's leftover under a recycled pid blocked every later publish.
 ///
 /// The name is still predictable (pid plus a counter from 0). That no longer matters across
-/// accounts: the staging files live beside the descriptor, in a directory only the current user
+/// accounts: the staging files live below the descriptor parent, in a directory only the current user
 /// can write to ([`publish_owner_only_as`] refuses any other), so nobody else can pre-create a
 /// name there. (Before 17tnw2b9agb they sat in the shared `/tmp`, where an account that could see
 /// our pid could take all [`MAX_STAGING_ATTEMPTS`] names and make the publish fail.)
@@ -180,11 +180,12 @@ fn staging_path(path: &Path) -> PathBuf {
 /// There is no `fsync`: the descriptor is ephemeral and regenerated, with a fresh token and
 /// port, on every start, so losing it in a crash loses nothing. A process killed between creating
 /// the staging file and renaming it leaves one dot-file (mode `0600` on Unix) holding a token
-/// that died with the process; the next publish sweeps it.
+/// that died with the process; the next publish starts its cleanup (large directories continue
+/// in bounded background chunks).
 ///
 /// Before anything is created the directory is checked ([`local_endpoint::verify_private_dir`]:
-/// a real directory, owned by `uid`, no group or other bits) and the stale staging files are
-/// swept. A directory that fails the check is never published into, whoever planted it.
+/// a real directory, owned by `uid`, no group or other bits), as is the app-owned staging namespace.
+/// Cleanup starts in both namespaces, without delaying publication for the full legacy pass. A directory that fails the check is never published into, whoever planted it.
 fn publish_owner_only_as(path: &Path, contents: &[u8], uid: u32) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
@@ -196,8 +197,13 @@ fn publish_owner_only_as(path: &Path, contents: &[u8], uid: u32) -> std::io::Res
             dir.display()
         ))
     })?;
-    local_endpoint::sweep_stale_staging(dir, uid);
-    publish_with(path, contents, &mut || staging_path(path))
+    let staging_dir = local_endpoint::prepare_staging_dir(dir, uid).map_err(|why| {
+        std::io::Error::other(format!("endpoint staging directory refused ({why})"))
+    })?;
+    // New staging files cannot grow the legacy population in the shared session directory.
+    local_endpoint::sweep_stale_staging_pair(dir, &staging_dir, uid);
+    let staging_base = staging_dir.join(DESCRIPTOR_FILE_NAME);
+    publish_with(path, contents, &mut || staging_path(&staging_base))
 }
 
 /// [`publish_owner_only`] with the staging names injected, so a test can plant something at the
@@ -402,7 +408,21 @@ pub(crate) mod test_support {
         }
 
         pub(crate) fn entries(&self) -> usize {
-            std::fs::read_dir(&self.0).expect("list scratch").count()
+            std::fs::read_dir(&self.0)
+                .expect("list scratch")
+                .map(|entry| {
+                    let entry = entry.expect("scratch entry");
+                    if entry.file_name() == selahcue_lan::local_endpoint::STAGING_DIR_NAME
+                        && entry.file_type().expect("kind").is_dir()
+                    {
+                        std::fs::read_dir(entry.path())
+                            .expect("list staging")
+                            .count()
+                    } else {
+                        1
+                    }
+                })
+                .sum()
         }
     }
 
@@ -497,9 +517,17 @@ mod tests {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
+        let staging_entries =
+            std::fs::read_dir(dir.join(selahcue_lan::local_endpoint::STAGING_DIR_NAME));
         entries
+            .chain(staging_entries.into_iter().flatten())
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(STAGING_PREFIX))
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .and_then(selahcue_lan::local_endpoint::parse_staging_name)
+                    .is_some()
+            })
             .filter_map(|e| {
                 let meta = std::fs::File::open(e.path()).ok()?.metadata().ok()?;
                 (mode_of(&meta) != 0o600)
@@ -1041,14 +1069,21 @@ mod tests {
         std::fs::write(blocked.join("keep"), "x").expect("make it non-empty");
         assert!(publish(&blocked, "tok").is_none());
         assert!(blocked.is_dir() && blocked.join("keep").exists());
-        let names: Vec<_> = std::fs::read_dir(&scratch.0)
-            .expect("list scratch")
-            .map(|e| e.expect("entry").file_name())
-            .collect();
         assert_eq!(
-            names,
-            [std::ffi::OsString::from("endpoint.json")],
-            "a failed publish must not leave its staging file behind"
+            scratch.entries(),
+            1,
+            "a failed publish leaves only the blocked destination and an empty staging namespace"
+        );
+        assert_eq!(
+            std::fs::read_dir(
+                scratch
+                    .0
+                    .join(selahcue_lan::local_endpoint::STAGING_DIR_NAME)
+            )
+            .expect("staging namespace")
+            .count(),
+            0,
+            "no staging file may remain"
         );
     }
 
@@ -1431,6 +1466,129 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn publishing_uses_a_private_staging_namespace_and_fails_closed_on_a_planted_one() {
+        let scratch = Scratch::new("staging-namespace");
+        let path = scratch.descriptor();
+        let stage = scratch
+            .0
+            .join(selahcue_lan::local_endpoint::STAGING_DIR_NAME);
+        let victim = Scratch::new("staging-victim");
+        std::os::unix::fs::symlink(&victim.0, &stage).expect("symlink");
+        assert!(publish(&path, "tok").is_none());
+        assert!(!path.exists());
+        assert_eq!(victim.entries(), 0);
+        std::fs::remove_file(&stage).expect("remove symlink");
+        assert!(publish(&path, "old").is_some());
+        assert_eq!(mode_of(&std::fs::metadata(&stage).expect("staging")), 0o700);
+        let stale = plant_staging(&stage, i32::MAX as u32, 0);
+        let live = plant_staging(&stage, std::process::id(), 99);
+        assert!(publish(&path, "new").is_some());
+        assert!(!stale.exists());
+        assert!(live.exists());
+        let old = std::fs::read_to_string(&path).expect("old descriptor");
+        set_mode(&stage, 0o755);
+        assert!(publish(&path, "refused").is_none());
+        assert_eq!(std::fs::read_to_string(&path).expect("unchanged"), old);
+        assert_eq!(mode_of(&std::fs::metadata(&stage).expect("staging")), 0o755);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_publish_completes_a_large_legacy_migration_after_restart() {
+        let scratch = Scratch::new("busy-migration");
+        let dead: Vec<_> = (0..32)
+            .map(|n| plant_staging(&scratch.0, i32::MAX as u32, n))
+            .collect();
+        for n in 0..6000 {
+            std::fs::write(
+                scratch.0.join(format!(".aaaa-unrelated-{n:05}")),
+                "precious",
+            )
+            .expect("unrelated");
+        }
+        let positions: Vec<_> = std::fs::read_dir(&scratch.0)
+            .expect("entries")
+            .enumerate()
+            .filter_map(|(i, entry)| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_str()
+                    .and_then(selahcue_lan::local_endpoint::parse_staging_name)
+                    .map(|_| i)
+            })
+            .collect();
+        assert!(
+            positions
+                .iter()
+                .any(|i| *i >= selahcue_lan::local_endpoint::MAX_SWEEP_ENTRIES),
+            "fixture must exercise the production cap: {positions:?}"
+        );
+        let staging =
+            selahcue_lan::local_endpoint::prepare_staging_dir(&scratch.0, owner_of(&scratch.0))
+                .expect("staging");
+        for n in 0..4200 {
+            plant_staging(&staging, i32::MAX as u32, n);
+        }
+        // A partially completed older process is gone; a fresh startup scans the legacy parent
+        // again. Two fresh processes also prove idempotent startup and worker-guard re-entry.
+        for _ in 0..2 {
+            super::test_support::run_child_test(
+                "endpoint::tests::large_migration_child",
+                "",
+                &[("SELAHCUE_SWEEP_TEST_DIR", scratch.0.as_os_str())],
+            );
+        }
+        assert!(dead.iter().all(|path| !path.exists()));
+        for n in 0..6000 {
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join(format!(".aaaa-unrelated-{n:05}")))
+                    .expect("unrelated survives"),
+                "precious"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child of production_publish_completes_a_large_legacy_migration_after_restart"]
+    fn large_migration_child() {
+        let dir = PathBuf::from(std::env::var_os("SELAHCUE_SWEEP_TEST_DIR").expect("fixture"));
+        let path = dir.join("endpoint.json");
+        for _ in 0..5 {
+            assert!(publish(&path, "synthetic-token").is_some());
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (0..32).any(|n| {
+            dir.join(selahcue_lan::local_endpoint::staging_file_name(
+                i32::MAX as u32,
+                n,
+            ))
+            .exists()
+        }) || std::fs::read_dir(dir.join(selahcue_lan::local_endpoint::STAGING_DIR_NAME))
+            .expect("staging")
+            .next()
+            .is_some()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "production migration did not finish"
+            );
+            std::thread::yield_now();
+        }
+        assert!(is_complete_descriptor(
+            &std::fs::read_to_string(&path).expect("descriptor")
+        ));
+        assert_eq!(
+            std::fs::read_dir(dir.join(selahcue_lan::local_endpoint::STAGING_DIR_NAME))
+                .expect("staging")
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
     fn env_in(temp: &Path, xdg: Option<&Path>) -> selahcue_lan::local_endpoint::DirEnv {
         selahcue_lan::local_endpoint::DirEnv {
             xdg_runtime_dir: xdg.map(|p| p.as_os_str().to_owned()),
@@ -1637,7 +1795,18 @@ mod tests {
             std::fs::read_dir(path.parent().expect("parent"))
                 .expect("list")
                 .count(),
-            1,
+            2,
+            "only the descriptor and the staging namespace may remain"
+        );
+        assert_eq!(
+            std::fs::read_dir(
+                path.parent()
+                    .expect("parent")
+                    .join(selahcue_lan::local_endpoint::STAGING_DIR_NAME)
+            )
+            .expect("staging")
+            .count(),
+            0,
             "a failed write must not leave its staging file behind"
         );
     }

@@ -14,14 +14,14 @@
 #![cfg(unix)]
 
 use selahcue_lan::local_endpoint::{
-    descriptor_path, judge_dir_kind, parse_staging_name, pid_is_alive, prepare_dir,
+    descriptor_path, parse_staging_name, pid_is_alive, prepare_dir, prepare_staging_dir,
     read_descriptor_as, read_file_as, remove_descriptor, resolve_dir, staging_file_name,
     sweep_stale_staging, sweep_stale_staging_with, verify_private_dir, DirEnv, DirError, ReadError,
-    RemoveError, DESCRIPTOR_FILE_NAME, MAX_SWEEP_ENTRIES, REFUSE_SYMLINKED_DIRS, STAGING_PREFIX,
+    RemoveError, DESCRIPTOR_FILE_NAME, MAX_SWEEP_ENTRIES, STAGING_DIR_NAME, STAGING_PREFIX,
     STAGING_SUFFIX, STALE_AFTER,
 };
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
@@ -825,6 +825,169 @@ fn the_production_sweep_keeps_our_own_fresh_file_and_removes_a_dead_one() {
     assert!(!dead.exists());
 }
 
+#[test]
+fn crash_leftovers_beyond_the_cap_are_eventually_swept_on_restart() {
+    let dir = private_dir();
+    let dead: Vec<_> = (0..32)
+        .map(|n| plant_staging(dir.path(), i32::MAX as u32, n))
+        .collect();
+    for n in 0..6000 {
+        std::fs::write(
+            dir.path().join(format!(".aaaa-unrelated-{n:05}")),
+            "precious",
+        )
+        .expect("unrelated");
+    }
+    let positions: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("entries")
+        .enumerate()
+        .filter_map(|(i, entry)| {
+            let entry = entry.expect("entry");
+            entry
+                .file_name()
+                .to_str()
+                .and_then(parse_staging_name)
+                .map(|_| i)
+        })
+        .collect();
+    assert!(
+        positions.iter().any(|i| *i >= MAX_SWEEP_ENTRIES),
+        "fixture must exercise a staging file beyond the production cap: {positions:?}"
+    );
+    let live = plant_staging(dir.path(), std::process::id(), 99);
+    let victim = dir.path().join("victim.txt");
+    std::fs::write(&victim, "precious").expect("victim");
+    let link = dir.path().join(staging_file_name(i32::MAX as u32, 100));
+    std::os::unix::fs::symlink(&victim, &link).expect("symlink");
+    let directory = dir.path().join(staging_file_name(i32::MAX as u32, 101));
+    std::fs::create_dir(&directory).expect("directory");
+    let fifo = dir.path().join(staging_file_name(i32::MAX as u32, 102));
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo")
+        .success());
+    let descriptor = descriptor_in(dir.path(), 0o600, BODY.as_bytes());
+    for _ in 0..5 {
+        let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--ignored", "--exact", "sweep_restart_child"])
+            .env("SELAHCUE_SWEEP_TEST_DIR", dir.path())
+            .status()
+            .expect("child");
+        assert!(status.success());
+    }
+    assert_eq!(
+        dead.iter().filter(|path| path.exists()).count(),
+        0,
+        "reopening the same prefix must not strand crash leftovers"
+    );
+    assert!(live.exists());
+    assert!(std::fs::symlink_metadata(&link)
+        .expect("link")
+        .file_type()
+        .is_symlink());
+    assert!(directory.is_dir());
+    assert!(std::fs::symlink_metadata(&fifo)
+        .expect("FIFO")
+        .file_type()
+        .is_fifo());
+    assert_eq!(
+        std::fs::read_to_string(&victim).expect("victim"),
+        "precious"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&descriptor).expect("descriptor"),
+        BODY
+    );
+    for n in 0..6000 {
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(format!(".aaaa-unrelated-{n:05}")))
+                .expect("unrelated survives"),
+            "precious"
+        );
+    }
+}
+
+#[test]
+#[ignore = "child process for crash_leftovers_beyond_the_cap_are_eventually_swept_on_restart"]
+fn sweep_restart_child() {
+    let dir = std::env::var_os("SELAHCUE_SWEEP_TEST_DIR").expect("private fixture");
+    let dir = Path::new(&dir);
+    sweep_stale_staging(dir, my_uid());
+    // Observe real completion, with a watchdog rather than a fixed sleep. Production cleanup
+    // becomes asynchronous beyond its foreground cap, and the test process must stay alive.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let stale = (0..32).any(|n| dir.join(staging_file_name(i32::MAX as u32, n)).exists());
+        if !stale {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "background sweep never reached legacy leftovers"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn staging_namespace_is_private_idempotent_and_refuses_unsafe_existing_entries() {
+    let dir = private_dir();
+    let staging = prepare_staging_dir(dir.path(), my_uid()).expect("create staging");
+    assert_eq!(staging, dir.path().join(STAGING_DIR_NAME));
+    assert_eq!(mode_of(&staging), 0o700);
+    assert_eq!(
+        prepare_staging_dir(dir.path(), my_uid()).expect("idempotent"),
+        staging
+    );
+    assert_eq!(
+        prepare_staging_dir(dir.path(), my_uid().wrapping_add(1)),
+        Err(DirError::WrongOwner)
+    );
+    set_mode(&staging, 0o755);
+    assert_eq!(
+        prepare_staging_dir(dir.path(), my_uid()),
+        Err(DirError::TooOpen)
+    );
+    assert_eq!(
+        mode_of(&staging),
+        0o755,
+        "never repair an existing directory"
+    );
+    std::fs::remove_dir(&staging).expect("remove");
+    let target = private_dir();
+    std::os::unix::fs::symlink(target.path(), &staging).expect("plant symlink");
+    assert_eq!(
+        prepare_staging_dir(dir.path(), my_uid()),
+        Err(DirError::Symlink)
+    );
+    assert_eq!(std::fs::read_dir(target.path()).expect("target").count(), 0);
+    std::fs::remove_file(&staging).expect("unlink");
+    std::fs::write(&staging, "precious").expect("plant file");
+    assert_eq!(
+        prepare_staging_dir(dir.path(), my_uid()),
+        Err(DirError::NotDirectory)
+    );
+    assert_eq!(std::fs::read_to_string(&staging).expect("file"), "precious");
+    std::fs::remove_file(&staging).expect("remove file");
+    assert!(
+        prepare_staging_dir(dir.path(), my_uid()).is_ok(),
+        "recovery after refusal"
+    );
+}
+
+#[test]
+fn a_failed_sweep_can_be_reentered_after_directory_permissions_are_restored() {
+    let dir = private_dir();
+    let stale = plant_staging(dir.path(), i32::MAX as u32, 0);
+    set_mode(dir.path(), 0o755);
+    assert_eq!(sweep_stale_staging(dir.path(), my_uid()), 0);
+    assert!(stale.exists());
+    set_mode(dir.path(), 0o700);
+    assert_eq!(sweep_stale_staging(dir.path(), my_uid()), 1);
+    assert!(!stale.exists());
+}
+
 // ---- the home step: a private `selahcue` directory under the user's state directory --------------
 
 fn home_env(home: &Path, temp: &Path) -> DirEnv {
@@ -1157,6 +1320,9 @@ fn child_prepares_under_a_hostile_umask() {
     let fallback = prepare_dir(&env(None, &temp)).expect("last resort");
     assert_eq!(mode_of(&fallback), 0o700, "last-resort directory");
 
+    let staging = prepare_staging_dir(&fallback, my_uid()).expect("staging");
+    assert_eq!(mode_of(&staging), 0o700, "staging directory");
+
     // The home step: every component we create.
     let created = prepare_dir(&home_env(&home, &temp)).expect("home step");
     assert_eq!(created, state_dir_of(&home));
@@ -1171,19 +1337,22 @@ fn child_prepares_under_a_hostile_umask() {
 
 #[test]
 fn directories_we_create_are_exactly_0700_even_under_a_hostile_umask() {
-    // `umask 0277` turns a `mkdir` mode of 0700 into 0400: a directory we then cannot use, for good.
-    let temp = shared_dir();
-    let home = private_dir();
-    run_child(
-        "child_prepares_under_a_hostile_umask",
-        "umask 0277;",
-        &[
-            ("CHILD_TEMP", temp.path().as_os_str()),
-            ("CHILD_HOME", home.path().as_os_str()),
-        ],
-        &[],
-    );
-    assert_eq!(mode_of(&subdir_of(temp.path())), 0o700);
+    // 0277 leaves read-only, 0400 removes owner read, and 0777 removes all access.
+    // Each child starts from fresh directories, so it exercises creation rather than reuse.
+    for mask in ["0277", "0400", "0777"] {
+        let temp = shared_dir();
+        let home = private_dir();
+        run_child(
+            "child_prepares_under_a_hostile_umask",
+            &format!("umask {mask};"),
+            &[
+                ("CHILD_TEMP", temp.path().as_os_str()),
+                ("CHILD_HOME", home.path().as_os_str()),
+            ],
+            &[],
+        );
+        assert_eq!(mode_of(&subdir_of(temp.path())), 0o700);
+    }
 }
 
 // ---- DirEnv::current is the real environment ------------------------------------------------------
@@ -1434,27 +1603,6 @@ fn the_root_directory_is_judged_not_mangled() {
     assert!(
         matches!(got, Err(DirError::WrongOwner | DirError::TooOpen)) || my_uid() == 0,
         "{got:?}"
-    );
-}
-
-#[test]
-fn only_unix_refuses_a_symlinked_directory_and_the_decision_is_pure() {
-    const { assert!(REFUSE_SYMLINKED_DIRS, "this file only compiles on Unix") };
-    // Unix: a symlink is refused, a directory passes, anything else is not a directory.
-    assert_eq!(judge_dir_kind(true, false, true), Err(DirError::Symlink));
-    assert_eq!(judge_dir_kind(true, true, true), Err(DirError::Symlink));
-    assert_eq!(judge_dir_kind(false, true, true), Ok(()));
-    assert_eq!(
-        judge_dir_kind(false, false, true),
-        Err(DirError::NotDirectory)
-    );
-    // Windows keeps its previous behaviour (directory check only): a symlink that resolves to a
-    // directory is accepted, and the refusal flag is the only difference.
-    assert_eq!(judge_dir_kind(true, true, false), Ok(()));
-    assert_eq!(judge_dir_kind(false, true, false), Ok(()));
-    assert_eq!(
-        judge_dir_kind(false, false, false),
-        Err(DirError::NotDirectory)
     );
 }
 
