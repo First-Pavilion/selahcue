@@ -23,7 +23,7 @@
     "test:core": "npm run build && python3 tests/core_pages_headless.py --engine both --require"
   },
   "dependencies": {
-    "vue": "^3.5.43",
+    "vue": "^3.5.44",
     "vue-router": "^5.4.0"
   },
   "devDependencies": {
