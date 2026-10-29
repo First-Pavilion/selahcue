@@ -117,11 +117,27 @@
   // last confirmed model, visibly label the uncertainty and try one authoritative resync. The
   // warning survives a second failure; a later successful snapshot clears it. Never expose raw
   // IPC errors here (Tauri may reject with a string rather than an Error).
-  function reconcile() {
+  function showUnconfirmed() {
     var error = document.getElementById("rc-action-error");
     if (error) error.hidden = false;
     announce("Change not confirmed by the host. Showing the last confirmed device state.");
+  }
+  function reconcile() {
+    showUnconfirmed();
     return loadSnapshot();
+  }
+  // The host deliberately resolves snapshots for no-ops too (for example a full session
+  // registry or a target another operator already removed). A reply alone is not a receipt.
+  function mutationConfirmed(cmd, args, snap) {
+    if (!snap || !Array.isArray(snap.devices) || !Array.isArray(snap.pending)) return false;
+    var device = snap.devices.find(function (d) { return d.device_id === args.deviceId; });
+    var pending = snap.pending.some(function (p) { return p.device_id === args.deviceId; });
+    if (cmd === "remote_approve") return !pending && !!device && device.role === args.role;
+    // A vanished request might have been approved elsewhere. Do not say Denied while paired.
+    if (cmd === "remote_deny") return !pending && !device;
+    if (cmd === "remote_revoke") return !device;
+    if (cmd === "remote_set_role") return !!device && device.role === args.role;
+    return false;
   }
   function mutate(cmd, args, success) {
     if (mutationPending) return;
@@ -130,7 +146,8 @@
     render();
     return invoke(cmd, args).then(function (snap) {
       applySnapshot(snap);
-      announce(success);
+      if (mutationConfirmed(cmd, args, snap)) announce(success);
+      else showUnconfirmed();
     }).catch(reconcile).finally(function () {
       mutationPending = false;
       render();

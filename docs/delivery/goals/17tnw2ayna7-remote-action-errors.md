@@ -57,7 +57,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | Rejected approve/deny/revoke/role actions plus rejected snapshot preserve confirmed list/role and show visible accessible warning | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | All four actual DOM failure cases pass | /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-green.log | PASS |
-| C-002 | yes | Successful actions apply host snapshots, retain two-step revoke and recover from prior warning | Same full real-DOM gate | Success/recovery controls pass | Same log | PASS |
+| C-002 | yes | Successful actions apply host snapshots, confirm the requested postcondition, retain two-step revoke and recover from prior warning | Same full real-DOM gate | Success/recovery controls pass | Same log | PASS |
 | C-003 | yes | Pending work does not announce success or dispatch duplicate actions; warning never exposes raw host error | Same real-DOM gate | Deferred action and hostile error controls pass | Same log | PASS |
 | C-004 | yes | Full operator gate and source syntax/diff checks pass | Same gate; node --check remote.js; Python compilation; git diff --check | Exit 0 and zero failures | Report and logs | PASS |
 | C-005 | yes | Independent Cody/Quinn/Vera/Shadow reviews and applicable final CI pass | Coordinator review/CI evidence | All pass at final revision | Coordinator report | BLOCKED |
@@ -92,6 +92,26 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-green.log
 - Decision: handoff
 
+### Iteration 3 — independent review C-REMOTE-1
+
+- Target criterion: C-002
+- Hypothesis: a resolved host snapshot can be an unchanged no-op, so awaiting the reply alone cannot justify a success announcement.
+- Change or investigation: verified the actual host absorbs NoSuchRequest/TooManySessions into successful snapshot replies and existing host tests pin unknown-target no-ops. Added actual DOM no-op cases for all four actions, missing role target and stale Deny after another actor approved the target.
+- Verifier executed: full mandatory-Chrome operator_headless.py on unchanged be231c25 production.
+- Result: first RED2345 checks/5 behavioral failures; expanded RED2347 checks/6 behavioral failures, exit4. All2335 earlier checks passed. Count drift expected before recording the measured2347 total.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-noop-red.log and17tnw2ayna7-noop-deny-red.log; Cody report17tnw2ayna7-cody.md.
+- Decision: iterate
+
+### Iteration 4 — remediate C-REMOTE-1
+
+- Target criterion: C-002
+- Hypothesis: compare the requested result with the returned host snapshot before positive feedback; keep the authoritative list and show fixed unconfirmed feedback when the result is absent.
+- Change or investigation: approval requires matching paired role and no pending request; denial requires no pending request or paired target; revocation requires target absence; role change requires target presence with the requested role. Unfulfilled resolved replies use the existing visible uncertainty warning without an unnecessary second fetch. Copy advises checking the list/output window without claiming a transport error.
+- Verifier executed: full mandatory-Chrome browser gate, JavaScript/Python syntax and diff checks.
+- Result: GREEN2347 checks/0FAIL, exit0. All12 no-op assertions and all prior reject/deferred/success/recovery controls passed. Syntax/diff checks passed.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-noop-green.log.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: asynchronous polls can interleave with actions; keep last confirmed model and serialize mutation controls without introducing another poll.
@@ -105,7 +125,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2ayna7-remote-action-errors.md
 - Validator result: structural PASS; completion blocked by independent review/delivery C-005,C-006
-- Independent verification result: pending coordinator
+- Independent verification result: initial Cody C-REMOTE-1 remediated; all four current-revision reviews pending coordinator
 - Terminal state: BLOCKED
 - Remaining failed or blocked criteria: C-005,C-006
 - ClickUp final evidence comment: coordinator owned
