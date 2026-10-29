@@ -3552,6 +3552,19 @@ STUB = r"""
       if (tg === "quota_exceeded")
         return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly note-generation quota exceeded", clamp:null});
       if (tg === "transport") return Promise.reject("network down");
+      if (tg === "regenerate_staging_failure") {
+        // 17tnw2b9dq6: generation succeeded but the host could not stage it. The accepted
+        // TR.detail draft is deliberately untouched. Null id is the existing real reply shape;
+        // the explicit not_saved flag makes the generated draft's persistence state unambiguous.
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null,
+          transcript_id:null, not_saved:true, pending_confirmation:false, previous_draft:null,
+          draft:{title:"Unsaved replacement from AI", summary:"This draft was never staged.",
+            sections:[{heading:"Main points", items:["New unsaved wording"], points:[]}], scriptures:[]},
+          quota:null, clamp:null,
+        });
+      }
       if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
         // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
         // branches above — a caller is expected to have already generated a real accepted draft
@@ -8448,6 +8461,84 @@ DRIVER = r"""
          !window.__TR.detail[1].pending,
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
+
+      // 17tnw2b9dq6: a generated but UNSAVED reply must never inherit openId's accepted
+      // draft identity. Exercise the real Edit/Save buttons if the bug exposes them, so
+      // an accidental update is detected as both a command and a changed accepted row.
+      var dq6OriginalDetail = JSON.parse(JSON.stringify(window.__TR.detail[1]));
+      try {
+        var dq6Detail = window.__TR.detail[1];
+        dq6Detail.draft = {title:"Accepted offline outline", summary:"Operator's accepted summary",
+          sections:[{heading:"Outline", items:["Operator's accepted wording"], points:[]}], scriptures:[]};
+        dq6Detail.ai_generated = false;
+        dq6Detail.ai_label = "AI-generated draft";
+        dq6Detail.disclosure = null;
+        dq6Detail.notes_provider = "Local (offline)";
+        dq6Detail.notes_generated = true;
+        dq6Detail.pending = null;
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+        var dq6AcceptedEdit = el("tr-gen-edit");
+        ok(!!dq6AcceptedEdit, "DQ6 control: an actually saved numeric-id draft remains editable");
+        var dq6ControlUpdates = trCall("update_sermon_note_draft").length;
+        if (dq6AcceptedEdit) dq6AcceptedEdit.click();
+        var dq6Title = el("tr-edit-title");
+        if (dq6Title) dq6Title.value = "Hand-edited accepted offline outline";
+        var dq6ControlSave = el("tr-gen-save");
+        if (dq6ControlSave) dq6ControlSave.click();
+        await sleep(60);
+        ok(trCall("update_sermon_note_draft").length === dq6ControlUpdates + 1 &&
+           window.__TR.detail[1].draft.title === "Hand-edited accepted offline outline",
+           "DQ6 control: real accepted Edit/Save sends one update and persists the operator's wording");
+        var dq6Accepted = JSON.stringify(window.__TR.detail[1]);
+        var dq6Updates = trCall("update_sermon_note_draft").length;
+        window.__trGen = "regenerate_staging_failure";
+        trEntry().click();
+        await sleep(40);
+        el("tr-gen-preview-confirm").click();
+        await sleep(80);
+        var dq6Result = el("tr-gen-result");
+        ok(/Unsaved replacement from AI/.test(dq6Result.textContent),
+           "DQ6: the generated unsaved content is still readable");
+        var dq6Notice = dq6Result.querySelector('[role="alert"]');
+        ok(!!dq6Notice && /Not saved/i.test(dq6Notice.textContent) && /read.only/i.test(dq6Notice.textContent) &&
+           getComputedStyle(dq6Notice).display !== "none",
+           "DQ6: failed staging renders a computed-visible Not saved/read-only notice");
+        ok(/Not saved/i.test(el("tr-detail-notes").textContent),
+           "DQ6: the displayed replacement's badge does not claim that these unsaved notes were saved");
+        ok(!el("tr-gen-edit") && !el("tr-gen-save"),
+           "DQ6: an unsaved generated draft exposes neither Edit nor Save for the accepted draft");
+        ok(!el("tr-gen-regen-confirm") && !el("tr-gen-regen-discard") && !window.__TR.detail[1].pending,
+           "DQ6: staging failure cannot masquerade as an accepted or staged replacement");
+        ok(/Not saved/i.test(el("tr-gen-live").textContent) && !/Sermon notes are ready\./.test(el("tr-gen-live").textContent),
+           "DQ6: the live announcement identifies unsaved notes instead of claiming saved readiness");
+        // Do not skip the exploit path on RED: if Edit/Save are incorrectly present, use them.
+        var dq6UnsafeEdit = el("tr-gen-edit");
+        if (dq6UnsafeEdit) dq6UnsafeEdit.click();
+        var dq6UnsafeSave = el("tr-gen-save");
+        if (dq6UnsafeSave) dq6UnsafeSave.click();
+        await sleep(80);
+        ok(trCall("update_sermon_note_draft").length === dq6Updates,
+           "DQ6: attempting the exposed controls sends no update against the accepted transcript");
+        ok(JSON.stringify(window.__TR.detail[1]) === dq6Accepted,
+           "DQ6: accepted hand-edited text and non-AI provenance remain byte-for-byte unchanged");
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+        ok(/Hand-edited accepted offline outline/.test(el("tr-gen-result").textContent) &&
+           !/Unsaved replacement from AI/.test(el("tr-gen-result").textContent) && !!el("tr-gen-edit"),
+           "DQ6 control: reopening reads the accepted draft and restores its legitimate Edit action");
+      } finally {
+        window.__TR.detail[1] = dq6OriginalDetail;
+        window.__trGen = "ok";
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+      }
 
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
       // against the Transcripts page (the one surface that now renders them) ===
