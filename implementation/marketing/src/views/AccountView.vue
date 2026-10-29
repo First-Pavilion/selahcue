@@ -17,7 +17,7 @@ import SkeletonLoader from '@/components/SkeletonLoader.vue'
  * the cookie is HttpOnly and only the server can end the session. The rules live in
  * `lib/auth/signOutFlow.ts`.
  */
-const { pending: signOutPending, error: signOutError, run: runSignOut } = useSignOut('/signin')
+const { pending: signOutPending, error: signOutError, run: runSignOut } = useSignOut()
 const signOutButton = ref<InstanceType<typeof UiButton> | null>(null)
 
 const handleSignOut = async () => {

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { isProbablySignedIn, signOut } from '@/lib/auth/sessionStore.ts'
+import { useRoute } from 'vue-router'
+import { isProbablySignedIn } from '@/lib/auth/sessionStore.ts'
+import { useSignOut } from '@/lib/auth/useSignOut.ts'
+import { SIGN_OUT_LABEL, SIGN_OUT_PENDING_LABEL } from '@/lib/auth/signOutFlow.ts'
 import { pageScrollLock } from '@/lib/ui/scrollLock.ts'
 import { pageInertLock } from '@/lib/ui/inertLock.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '@/lib/ui/focusTrap.ts'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
 import UiButton from '@/components/UiButton.vue'
+import SrOnly from '@/components/core/SrOnly.vue'
 
-const router = useRouter()
 const route = useRoute()
 
 const isScrolled = ref(false)
@@ -19,56 +21,10 @@ const toggleEl = ref<HTMLButtonElement | null>(null)
 const closeEl = ref<HTMLButtonElement | null>(null)
 const sheetEl = ref<HTMLElement | null>(null)
 
-const signOutPending = ref(false)
-/** Empty when there is nothing to report. Announced, because it is a failed action. */
-const signOutError = ref('')
-
-/**
- * Sign out for real, and say so honestly when it does not work.
- *
- * The session cookie is HttpOnly — JavaScript cannot delete it. Only the server can, and
- * it does that by responding to the `logout` mutation. So there is no local "clear it
- * anyway" fallback available here, and pretending otherwise would be the worst thing
- * this component could do: painting "signed out" over a browser that is still carrying a
- * working credential, on a machine that in this product is frequently a shared church
- * office PC. `signOut` rejects when the session survived, and this shows that.
- */
-const SIGN_OUT_FAILED = "We couldn't sign you out. Check your connection and try again."
+const { pending: signOutPending, error: signOutError, run: runSignOut } = useSignOut()
 
 const handleSignOut = async () => {
-  if (signOutPending.value) return
-  signOutPending.value = true
-  signOutError.value = ''
-
-  // ONE call inside the try, for the same reason `SignInView`'s `submit` was rewritten
-  // (PR #17, HIGH-1). `await router.push('/')` used to live in here, so a rejected
-  // navigation — a lazy route whose chunk a deploy removed, a guard that threw — was
-  // reported as "We couldn't sign you out" over a revocation the server had already
-  // performed. That message is worse than merely wrong: this product runs on shared
-  // church-office machines, and it tells someone their session is still live when it is
-  // not, so they stay logged in on purpose. `tests/authViews.test.ts` refuses the shape.
-  let revoked = false
-  try {
-    await signOut()
-    revoked = true
-  } catch {
-    signOutError.value = SIGN_OUT_FAILED
-  } finally {
-    signOutPending.value = false
-  }
-  if (!revoked) return
-
-  // ---- the session is GONE. Nothing below may suggest otherwise. ----
-  closeMobileMenu({ restoreFocus: false })
-  try {
-    await router.push('/')
-  } catch {
-    // The revocation succeeded and only the navigation failed. A full document load is
-    // both the honest outcome (they end up signed out, on the home page) and the actual
-    // remedy for the usual cause, which is a running page pointing at chunks a deploy
-    // has already removed.
-    window.location.assign('/')
-  }
+  if (await runSignOut()) closeMobileMenu({ restoreFocus: false })
 }
 
 /**
@@ -245,7 +201,7 @@ onBeforeUnmount(() => {
             :disabled="signOutPending"
             @click="handleSignOut"
           >
-            {{ signOutPending ? 'Signing out…' : 'Sign out' }}
+            {{ signOutPending ? SIGN_OUT_PENDING_LABEL : SIGN_OUT_LABEL }}
           </button>
         </template>
         <router-link v-else to="/signin" class="signin-btn">Sign in</router-link>
@@ -267,11 +223,10 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- Announced: a sign-out that silently did nothing is the failure most worth
-         hearing about, and the button returns to its resting label either way. While the
-         sheet is open the header is behind the scrim, so the same message is rendered
-         inside the sheet instead (never both at once). -->
-    <p v-if="signOutError && !isMobileMenuOpen" class="signout-error" role="alert">{{ signOutError }}</p>
+    <!-- Account owns feedback on its route. The mobile modal owns it while the app is inert.
+         This region stays mounted before an action; SrOnly takes no space in the bar. -->
+    <SrOnly role="status" aria-live="polite">{{ signOutPending && !isMobileMenuOpen && route.name !== 'account' ? SIGN_OUT_PENDING_LABEL : '' }}</SrOnly>
+    <p v-if="signOutError && !isMobileMenuOpen && route.name !== 'account'" class="signout-error" role="alert">{{ signOutError }}</p>
   </header>
 
   <!-- Mobile sheet. Teleported to <body> because the header is `backdrop-filter`ed once
@@ -302,6 +257,7 @@ onBeforeUnmount(() => {
           </nav>
 
           <div class="mobile-actions">
+            <SrOnly role="status" aria-live="polite">{{ signOutPending ? SIGN_OUT_PENDING_LABEL : '' }}</SrOnly>
             <p v-if="signOutError" class="signout-error" role="alert">{{ signOutError }}</p>
             <template v-if="isProbablySignedIn">
               <router-link to="/account" class="mobile-link account-link" @click="closeMobileMenu()">Account</router-link>
@@ -311,7 +267,7 @@ onBeforeUnmount(() => {
                 :disabled="signOutPending"
                 @click="handleSignOut"
               >
-                {{ signOutPending ? 'Signing out…' : 'Sign out' }}
+                {{ signOutPending ? SIGN_OUT_PENDING_LABEL : SIGN_OUT_LABEL }}
               </button>
             </template>
             <router-link v-else to="/signin" class="mobile-link account-link" @click="closeMobileMenu()">Sign in</router-link>

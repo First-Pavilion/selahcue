@@ -139,7 +139,11 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # remain and follow the approved wording; no scenario or privacy/TTL check was removed.
 # The complete real rendered gate must confirm this exact count; its receipt is retained
 # with the ticket's delivery evidence. Equality below remains strict in both directions.
-EXPECTED_MIN_CHECKS = 2575
+# 2575 -> 2608 in shared sign-out (17tnw2b2ka8), measured in hosted CI 40941630343
+# on d46097bb: 73 scenarios, 2608 checks, zero behavioural failures. Adds real dual-control
+# composition, late-failure recovery after Account leaves, and mobile modal announcements.
+# The first run exited 4 solely on this old exact-count guard; rerun with this measured count.
+EXPECTED_MIN_CHECKS = 2608
 
 
 def find_chrome() -> str | None:
@@ -502,6 +506,29 @@ DRIVER = r"""
     },
     // The visitor leaves /account while Logout is held, then the reply arrives (Shadow LOW-2).
     'account-signout-leave': (function () {
+      var heldLogout = gated(function () {
+        signedOut = true;
+        return json({ data: { logout: { revoked: true } } });
+      });
+      return function (op) {
+        if (op === 'Logout') return heldLogout(op);
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
+    'account-signout-leave-failure': (function () {
+      var attempts = 0;
+      var heldLogout = gated(function () { return Promise.reject(new TypeError('Failed to fetch')); });
+      return function (op) {
+        if (op === 'Logout') {
+          attempts += 1;
+          if (attempts === 1) return heldLogout(op);
+          signedOut = true;
+          return json({ data: { logout: { revoked: true } } });
+        }
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
+    'account-signout-mobile-pending': (function () {
       var heldLogout = gated(function () {
         signedOut = true;
         return json({ data: { logout: { revoked: true } } });
@@ -2675,10 +2702,8 @@ DRIVER = r"""
       check('the local hint was cleared',
             window.localStorage.getItem('selahcue.session') === null,
             'still held: ' + window.localStorage.getItem('selahcue.session'));
-      // TEMPORARY. The navbar lands on `/`; the owner's decision (2026-10-05) is that BOTH Sign out
-      // buttons land on /signin, and 17tnw2b2ka8 moves this one. That ticket changes this check to
-      // '/signin' and deletes the pin in `tests/accountSignOut.test.ts` that points here.
-      check('left the account route', location.pathname === '/');
+      check('the navbar lands on the same owner-approved /signin destination', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
 
       // AND THE PART THAT MATTERS: the protected route is unreachable afterwards.
       check('drove a real client-side navigation', navigate('/account'));
@@ -2779,7 +2804,11 @@ DRIVER = r"""
             idleRegion.textContent.trim() === '',
             'region: ' + (idleRegion && idleRegion.outerHTML));
       var idleHeight = accountHeaderHeight();
+      var navbarBefore = navbarSignOutControl();
       if (control) control.click();
+      // Same browser turn, before Vue has painted disabled controls: the flow guard, rather
+      // than the button's disabled attribute, must prevent the second component's request.
+      if (navbarBefore) navbarBefore.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
       // The request is out and the reply is held. Poll for it rather than sleeping, so the
       // check below reads the in-flight state and not a guess about timing.
@@ -2793,6 +2822,9 @@ DRIVER = r"""
       check('it reads "Signing out…"', !!pending && pending.textContent.trim() === 'Signing out…',
             'read: ' + (pending && pending.textContent.trim()));
       check('and is disabled', !!pending && pending.disabled === true);
+      var navbarPending = navbarSignOutControl();
+      check('the real navbar observes the same pending label and disabled state',
+            !!navbarPending && navbarPending.disabled && navbarPending.textContent.trim() === 'Signing out…');
       var pendingRegion = accountStatusRegion();
       check('the pending state is announced to a screen reader through the polite status region',
             !!pendingRegion && pendingRegion.textContent.trim() === 'Signing out…',
@@ -2800,6 +2832,10 @@ DRIVER = r"""
       check('and announcing it moved nothing: the header is exactly as tall as when idle',
             idleHeight > 0 && Math.abs(accountHeaderHeight() - idleHeight) < 0.5,
             'idle ' + idleHeight + 'px, pending ' + accountHeaderHeight() + 'px');
+      check('one active status region announces shared pending, rather than two voices',
+            Array.prototype.filter.call(document.querySelectorAll('[role="status"]'), function (el) {
+              return !el.closest('[inert]') && el.textContent.trim() === 'Signing out…';
+            }).length === 1);
       check('nothing has been cleared yet: the server has not answered',
             window.localStorage.getItem('selahcue.session') !== null);
       check('and the visitor is still on /account', location.pathname === '/account',
@@ -2861,15 +2897,16 @@ DRIVER = r"""
       check('pressing it again retries', logoutCount() === 2, 'logouts: ' + logoutCount());
       check('and the failure is still reported', signOutAlert(true) !== '');
 
-      // PARITY with the navbar's control, in the same failing state: the same words.
+      // Both controls drive the same failure. Account owns its route's announcement;
+      // duplicate navbar and Account alerts would speak the same action twice.
       var navbarControl = navbarSignOutControl();
       if (navbarControl) navbarControl.click();
       await wait(800);
-      var navbarMessage = signOutAlert(false);
-      check('the navbar reports the failure too', navbarMessage !== '');
-      check('in word for word the same message as the Account page',
-            navbarMessage !== '' && navbarMessage === message,
-            '"' + navbarMessage + '" vs "' + message + '"');
+      check('a navbar retry reports the same shared failure through Account', signOutAlert(true) === message);
+      check('only one alert announces the shared failure on Account',
+            Array.prototype.filter.call(document.querySelectorAll('[role="alert"]'), function (el) {
+              return has(el.textContent, "couldn't sign you out");
+            }).length === 1);
       csrfChecks();
     },
 
@@ -2902,6 +2939,77 @@ DRIVER = r"""
             'still held: ' + window.localStorage.getItem('selahcue.session'));
       check('and the navbar now offers Sign in, not Sign out',
             !navbarSignOutControl() && !!document.querySelector('header a[href="/signin"]'));
+      csrfChecks();
+    },
+
+    'account-signout-leave-failure': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('Account is mounted with a sign-out control', !!control);
+      if (control) control.click();
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      check('the request is out before leaving', logoutCount() === 1);
+      check('drove navigation away from Account', navigate('/pricing'));
+      await wait(1000);
+      check('Account has unmounted', !document.querySelector('.account-portal'));
+      var region = document.querySelector('.navbar-header [role="status"]');
+      check('surviving chrome announces the operation while still pending',
+            !!region && region.textContent.trim() === 'Signing out…' && region.getAttribute('aria-live') === 'polite');
+      releaseGate();
+      await wait(1000);
+      check('a failed late request leaves the visitor on Pricing', location.pathname === '/pricing');
+      check('the surviving navbar reports the failure in an alert', signOutAlert(false) !== '');
+      check('the server failure keeps the signed-in hint', window.localStorage.getItem('selahcue.session') !== null);
+      var retry = navbarSignOutControl();
+      check('the shared pending state releases and navbar can retry', !!retry && !retry.disabled && retry.textContent.trim() === 'Sign out');
+      check('the pending announcement clears when the alert takes over', !!region && region.textContent.trim() === '');
+      if (retry) retry.click();
+      await wait(1500);
+      check('retry through surviving navbar sends exactly a second request', logoutCount() === 2);
+      check('successful retry clears the hint', window.localStorage.getItem('selahcue.session') === null);
+      check('successful navbar retry lands on /signin', location.pathname === '/signin');
+      csrfChecks();
+    },
+
+    'account-signout-mobile-pending': async function () {
+      await wait(800);
+      check('this scenario uses the phone viewport', window.innerWidth < 768);
+      var toggle = document.querySelector('.mobile-toggle');
+      if (toggle) toggle.click();
+      await wait(300);
+      var sheet = document.querySelector('#mobile-nav-sheet');
+      var control = sheet && sheet.querySelector('.signout-row');
+      var region = sheet && sheet.querySelector('[role="status"]');
+      check('the real modal and mobile sign-out control are visible',
+            !!sheet && sheet.getBoundingClientRect().width > 0 && !!control);
+      check('the modal status region exists empty before the press',
+            !!region && region.getAttribute('aria-live') === 'polite' && region.textContent.trim() === '');
+      var idleHeight = sheet ? sheet.getBoundingClientRect().height : -1;
+      if (control) control.click();
+      var account = accountSignOutControl();
+      if (account) account.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      await wait(100);
+      check('mobile and Account presses send one real Logout', logoutCount() === 1);
+      check('the mobile control shares disabled pending state',
+            !!control && control.disabled && control.textContent.trim() === 'Signing out…');
+      check('pending is announced inside the active modal', !!region && region.textContent.trim() === 'Signing out…');
+      check('the page behind the modal is inert', !!document.querySelector('#app[inert]'));
+      check('exactly one non-inert status region speaks pending',
+            Array.prototype.filter.call(document.querySelectorAll('[role="status"]'), function (el) {
+              return !el.closest('[inert]') && el.textContent.trim() === 'Signing out…';
+            }).length === 1);
+      check('the pending announcement does not change sheet geometry',
+            idleHeight > 0 && Math.abs(sheet.getBoundingClientRect().height - idleHeight) < 0.5);
+      releaseGate();
+      await wait(1500);
+      check('mobile sign-out lands on /signin', location.pathname === '/signin');
+      check('the modal closes and releases inert after success',
+            !document.querySelector('#mobile-nav-sheet') && !document.querySelector('#app[inert]'));
+      check('mobile sign-out clears the hint and sends no duplicate request',
+            window.localStorage.getItem('selahcue.session') === null && logoutCount() === 1);
       csrfChecks();
     },
 
@@ -3650,6 +3758,8 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-signout-pending", "/account"),
     ("account-signout-failure", "/account"),
     ("account-signout-leave", "/account"),
+    ("account-signout-leave-failure", "/account"),
+    ("account-signout-mobile-pending", "/account"),
     # ------------------------------------------------------------ create account --
     ("signup-form", "/signup"),
     ("signup-short-password", "/signup"),
@@ -3955,7 +4065,7 @@ def main() -> int:
                         # Chrome's 800x600 default the navbar's desktop group is below its
                         # breakpoint and `display:none`, so any assertion about the
                         # signed-in controls would be measuring the window, not the app.
-                        "--window-size=1440,900",
+                        "--window-size=390,844" if scenario == "account-signout-mobile-pending" else "--window-size=1440,900",
                         "--no-first-run",
                         "--disable-extensions",
                         "--virtual-time-budget=8000",
