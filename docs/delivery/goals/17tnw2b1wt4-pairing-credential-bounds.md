@@ -24,6 +24,8 @@ Freshly fetched main be3bd43576757d2963b6ef1748fe29afa1f1e622 (tree d2b920ab) re
 
 Read full captured task in wave2-20261029/mobile-qualification/17tnw2b1wt4.json. Its connector comments response is a quota error. Root separately qualified comments in the signed-in UI with all activity categories and Comments enabled; the root receipt 17tnw2b1wt4-comments-ui-qualification.md records no owner-comment entries. No runtime baseline is claimed from source inspection.
 
+After actual test-only RED, ordinary merge 4389e9c9 integrated freshly fetched main 6a1f414cc3213006b333a071893db394ffd03039. Its API/deployment-only delta has no mobile subtree changes. No source history was rewritten.
+
 ## Inputs and evidence sources
 
 - Existing task description/acceptance criteria, no declared dependencies, and root's separate UI comments qualification.
@@ -58,7 +60,7 @@ Read full captured task in wave2-20261029/mobile-qualification/17tnw2b1wt4.json.
 - 1024 is the concrete technical bound for the task's approximately 1 KiB credentials. Printable ASCII matches its non-ASCII/control-character examples while accepting opaque punctuation and embedded spaces.
 - Reason text uses a display cap, not a closed vocabulary; an oversized reason is still an explicit rejection.
 - Real-host end-to-end tests exercise the existing pinned TLS client; physical-device/storage backend behavior is not claimed.
-- Hosted RED, corrected GREEN, independent reviews and delivery remain pending root execution.
+- Actual hosted test-only RED is established; corrected GREEN, independent reviews and delivery remain pending root execution.
 
 ## Dependencies and approvals
 
@@ -73,7 +75,7 @@ Read full captured task in wave2-20261029/mobile-qualification/17tnw2b1wt4.json.
 | C-001 | yes | Invalid issued credentials cannot pair or write storage | Pure shape tests and real TLS PairingController negatives for huge/NUL/control/blank/non-ASCII/over-bound values | PairMalformed, malformed-host message, null outcome, zero writes/deletes and no stored profile | Hosted focused regression receipts | PENDING |
 | C-002 | yes | Bounded opaque and real-host credentials retain behavior | Exact 1024/1025 parser boundary and real host dev-hex/64-hex pairing controls | At-bound and real-host fields unchanged; over-bound malformed; valid pairing saved once | Hosted parser and pairing controls | PENDING |
 | C-003 | yes | Displayed rejection reasons are capped without verdict changes | Pair/Auth parser reason boundaries and real TLS 1 MiB rejection | Truncated bounded reason; short Unicode unchanged; explicit rejection retained; nothing saved | Hosted focused reason receipts | PENDING |
-| C-004 | yes | Regressions detect the missing bounds | Frozen test-only source before production edit; repeat after removing validation/cap if needed | Each negative shape and huge reason fails behaviorally, controls pass, no setup/analyzer failure mistaken for RED | Root hosted RED/mutation receipts | PENDING |
+| C-004 | yes | Regressions detect the missing bounds | Frozen test-only source before production edit; repeat after removing validation/cap if needed | Each negative shape and huge reason fails behaviorally, controls pass, no setup/analyzer failure mistaken for RED | PR 271 CI 40948228392 at 6023d371, analysis passed, 401 tests passed and 42 behavior regressions failed; mobile-credential-red.log | PASS |
 | C-005 | yes | Broader mobile behavior passes on corrected source | Hosted flutter analyze and full flutter test | Analysis exits 0, applicable full suite passes with existing role/auth/malformed controls | Root exact-source CI receipt | PENDING |
 | C-006 | yes | Independent review and authorized delivery close | Cody, Quinn, Vera, Shadow and root delivery | Four current-source passes, actual merge verified, exact linked ticket QA persisted/reread | Root reviews/merge/QA receipts | PENDING |
 
@@ -91,10 +93,20 @@ Read full captured task in wave2-20261029/mobile-qualification/17tnw2b1wt4.json.
 - Target criterion: C-001 through C-004
 - Hypothesis: missing field-length/printability validation admits malformed grants to persistence, and unbounded reason parsing admits oversized display text.
 - Change or investigation: inspect full task/UI qualification/current main and write parser plus real TLS controller regressions/positive boundary controls before production changes.
-- Verifier executed: structural Goal validator and full baseline diff check; hosted test-only RED pending root.
-- Result: pending hosted execution
-- New evidence: existing real pinned-TLS/keystore fixtures cover the actual save/error path without adding production seams.
-- Decision: freeze tests only, then wait for root's actual hosted behavioral RED.
+- Verifier executed: structural Goal validator/full baseline diff check, then root-hosted Flutter analysis and full tests on frozen test-only commit 6023d3710a9cf5e6af74751c8ccb521b91551786.
+- Result: actual behavioral RED, PR 271 CI 40948228392. Analysis passed; 401 tests passed and 42 failed. Invalid credential parser cases returned PairGranted, real TLS invalid grants returned PairedOutcome and could overwrite the prior profile, and oversized pair/auth reasons exceeded the cap. Real-host credentials, exact-limit opaque credentials/unknown role, short Unicode/1024-unit reasons and existing verdict/close controls passed.
+- New evidence: saved wave2-20261029/mobile-credential-red.log was inspected before production edits; the failures exercise actual parser and persistence consequences rather than setup errors.
+- Decision: iterate with scoped validation and display cap; retain the observed test source unchanged.
+
+### Iteration 2
+
+- Target criterion: C-001 through C-003, C-005 and C-006
+- Hypothesis: validating issued values before PairGranted construction prevents storage/auth reuse of malformed credentials; capping shared reason parsing bounds display text while preserving rejection classification.
+- Change or investigation: add a length-first, bounded printable-ASCII/non-blank credential validator; retain accepted strings unchanged and unknown-role behavior. Cap shared rejection text at 1024 UTF-16 units, stepping back when a cut ends on a leading surrogate. No transport/controller/storage policy change. Integrate API-only current main ordinarily before publishing the corrected candidate.
+- Verifier executed: source inspection, full current-main baseline diff check, structural Goal validator, and unchanged-test source diff. No local project runtime was executed while resource admission remained unavailable.
+- Result: corrected source prepared; fresh hosted analysis/full tests and all four independent current-source reviews remain pending root.
+- New evidence: production diff is confined to protocol.dart validation and shared reason parsing. Test files remain identical to the observed RED commit.
+- Decision: hand off frozen candidate for hosted GREEN/reviews and remediate valid findings within the remaining iteration budget.
 
 ## Risks and rollback
 
@@ -103,15 +115,15 @@ Read full captured task in wave2-20261029/mobile-qualification/17tnw2b1wt4.json.
 
 ## Pause and escalation conditions
 
-- Wait for root's actual test-only behavioral RED before production edits.
+- Actual test-only behavioral RED was observed before production edits; await corrected-source hosted checks and independent review before completion.
 - Keep valid findings and unexecuted gates explicit; remediate within eight iterations.
 - Route genuine owner-policy questions to root; do not invent revocation/role policy or bypass local resource admission.
 
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1wt4-pairing-credential-bounds.md
-- Validator result: structural validation passed (exit 0); behavior awaits hosted test-only execution
+- Validator result: structural validation passed (exit 0); corrected-source behavior awaits hosted execution
 - Independent verification result: pending root
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-001 through C-006
+- Remaining failed or blocked criteria: C-001 through C-003, C-005 and C-006; C-004 passed on frozen test-only source
 - ClickUp final evidence comment: root owns publication
