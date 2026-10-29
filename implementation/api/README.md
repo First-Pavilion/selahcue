@@ -29,6 +29,8 @@ Both native activation routes and account GraphQL activation validate device met
 
 Enrollment activation requires `Content-Type: application/json` before any throttle budget or database work. A browser-simple non-JSON request receives400 `VALIDATION_FAILED` without spending the shared-egress budget. License refresh applies the same rule to its JSON body-token fallback. Its existing `Authorization: Bearer` form remains usable without a JSON body or Content-Type; the existing token authentication and header-over-body precedence still apply. GET manifest requests are unchanged (17tnw2b1wqb).
 
+Shared `/v1` throttle denials return the existing 429 `RATE_LIMITED` JSON envelope with `Cache-Control: no-store` and `Retry-After` as remaining fixed-window seconds, rounded up to at least one. Expiry is read from the existing counter only after denial (Redis primary PTTL; local-memory expiry under its lock). Redis denials pay one additional command under the existing socket timeout; allowed and fail-open requests do not. If expiry metadata cannot be read or a custom backend has no supported expiry reader, the denial remains 429 with a bounded full-window retry hint. Keys, configured budgets and response bodies are unchanged. These headers do not extend to Django method guards or other framework errors (17tnw2b1wqc).
+
 ## `GET /v1/entitlements/manifest`
 
 The signed offline entitlement (DEC-004). Device-token auth via `Authorization: Bearer <device_token>`. Returns an Ed25519 envelope:

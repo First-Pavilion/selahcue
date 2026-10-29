@@ -22,10 +22,14 @@ def throttle(scope: str, setting_name: str, default: tuple[int, int]):
         def wrapper(request, *args, **kwargs):
             limit, window = getattr(settings, setting_name, default)
             key = f"throttle:{scope}:{client_ip(request)}"
-            if not should_allow(CacheStore(cache), key, limit, window):
-                return command_error_response(
+            store = CacheStore(cache)
+            if not should_allow(store, key, limit, window):
+                response = command_error_response(
                     code=ErrorCode.RATE_LIMITED, surface="desktop", operation=scope
                 )
+                response["Cache-Control"] = "no-store"
+                response["Retry-After"] = str(store.retry_after(key, window))
+                return response
             return view(request, *args, **kwargs)
 
         return wrapper

@@ -404,6 +404,12 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
     budgets (a reset or resend), and 1.69 s for the **first** call on a fresh connection (it also
     paid the three handshake commands).
 
+  A shared `/v1` throttle **denial** also reads the existing counter's `PTTL` on the primary
+  to provide `Retry-After` (17tnw2b1wqc). That is one extra command under the same socket timeout:
+  up to about 0.5 s more at the defaults if Redis becomes slow after the counter decision.
+  Allowed and fail-open requests do not pay it. If this metadata read fails, the response remains
+  429 with a full-window retry hint; no new key, counter write or retry is introduced.
+
   It is a ceiling, not a retry: a timed-out call is not repeated.
 - **Allowed range.** Each variable must be from `0.05` to `10` seconds, inclusive; a blank value
   means the default. Anything else makes the API refuse to start, with an error naming the
