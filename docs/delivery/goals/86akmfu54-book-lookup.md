@@ -99,6 +99,15 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: generated-flutter-lock.diff and integration proof/receipt artifacts in the coordinator evidence directory. No dependency/lock change ships.
 - Decision: author handoff only after the final checks pass; all four independent reviews, exact-head hosted CI, publication/merge and linked QA readback remain coordinator-owned.
 
+### Iteration 5 — latest native outage main integration
+- Target criterion: preserve C-001 through C-005 against the latest target before review freeze.
+- Hypothesis: main d5476edde13649e8b1c4fbfc92647d07e2f9e3eb adds only native API outage handling and documentation; its combined affected API regressions can verify integration while unchanged native/mobile components retain their prior full/focused evidence.
+- Change or investigation: final behind check detected the newly merged main before patch export. Merge it cleanly as 0fdfa6bba8d2086f6416c09e06f44a84ea056f81. The seven newly integrated API/docs paths do not change desktop, mobile, Makefile, launcher or workflow sources. No production/test changes authored here; current parser and complete desktop/mobile tree equality to the full40f48c2f gate are recorded in final-freeze.json.
+- Verifier executed: combined native-login-outage, native-auth-observability, native account, throttling, guards, header and deployment-doc tests on SQLite/local cache.
+- Result:261 passed,1 existing real-Redis-header skip (CACHE_URL absent),65.80s. Receipt:86akmfu54-final-outage-integration.log/.exit in the coordinator evidence directory. Earlier244-case receipt remains separately tied to its then-current source. Fresh core280/lint/format and launcher/workflow evidence remains applicable by unchanged component/source proof. No full make ci, native broad suite or benchmark rerun is implied.
+- New evidence: after this evidence-only update, repeat documentation and structural/diff/ancestry checks before the final clean evidence commit; final receipts and exact immutable review SHA are in86akmfu54-report.md. No tracked edits after those verifiers apart from committing the checked bytes.
+- Decision: author freeze and release cache/Flutter reservations when own processes have finished. C-006/C-007 remain coordinator-owned.
+
 ### Verification runtime and byte-budget decision
 The historical MAX_VERIFIED_REFERENCES name is superseded by the current MAX_LIST_REFERENCES and MAX_EMBEDDED_REFERENCES. Both document verdict/lookup counts, not full scanning time or bytes. The detector materializes each body's candidates before applying the embedded verdict budget; long ordinary text and repeated references still require work. This patch improves each lookup, not the asymptotic scan or its input budget.
 
