@@ -49,9 +49,29 @@ reporting adds at most five fixed denial timestamps and one aggregate failure ti
 by the shared reporting lock, with no per-identity maps or database writes. State resets on worker
 restart; fleets can emit one warning per scope/event per worker each minute. This application
 warning bound does not change Django's existing request-status logs or broker/cache-outage logs.
-Browser GraphQL login, authentication decisions, budgets, outage behavior, response envelopes,
+Browser GraphQL login, authentication decisions, budgets and response envelopes,
 remaining-window retry headers and native cookie/content-type guards keep their existing behavior
 (17tnw2b1wqa).
+
+## Native bootstrap login during limiter outages
+
+`POST /v1/sessions` returns the existing429 `RATE_LIMITED` JSON response when the limiter store
+is unavailable, before calling the login service or hashing a password (17tnw2b1wq9). This
+intentionally prevents new native sign-ins during a cache outage: bootstrap availability is
+traded for bounded password work. Twentyfive such attempts perform zero password hashes.
+Healthy behavior remains ten attempts per 60 seconds per IP, with the existing account lockout.
+Browser GraphQL login does not gain this native policy. Enrollment/session-based activation,
+license refresh and entitlement reads retain their existing fail-open limiter policy; already
+activated devices can refresh with their existing device tokens during the same cache outage.
+
+Outage refusal retains `Cache-Control: no-store`, sets no cookie and uses a conservative
+full-window `Retry-After` hint (60 seconds at the default); it does not query failed-store expiry
+metadata. A real budget denial still reports the actual remaining-window hint. Admission resumes
+as soon as the store recovers; the hint is not a separate local lock or per-identity fallback.
+Each request may still pay the existing bounded store timeout; no circuit breaker is introduced.
+The shared outage warning reports unavailable budget evaluation, without keys, IPs, credentials
+or exception text, once per 60 seconds per process under a reporting lock. Admission is decided by
+the caller; the separate scope-only native denial warning retains its existing suppression.
 
 ## `GET /v1/entitlements/manifest`
 
