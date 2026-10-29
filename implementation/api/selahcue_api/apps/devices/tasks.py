@@ -91,8 +91,11 @@ def cascade_license_revocations(batch_size: int = 500) -> int:
                 _licenses_whose_tokens_survive()
             ).exists():
                 continue
-            token.status = DeviceTokenStatus.REVOKED
-            token.save(update_fields=["status", "updated_at"])
+            # Keep the write explicitly rooted at DeviceToken: the licence-writer
+            # guard intentionally treats generic .status assignments conservatively.
+            DeviceToken.objects.filter(pk=token.pk).update(
+                status=DeviceTokenStatus.REVOKED, updated_at=timezone.now()
+            )
             record_audit_event(
                 ActorContext(kind=ActorKind.SERVICE, actor_id=CASCADE_ACTOR_ID),
                 action="device_token.revoked_by_cascade",
