@@ -57,11 +57,12 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Imported40emoji source can be disabled through the actual Broadcast UI | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | Correct command reaches host and settled UI is off | /private/tmp/selahcue-batch20-20261029/17tnw2ayetf-green.log | PASS |
+| C-001 | yes | Imported40emoji source can be disabled through the actual Broadcast UI | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | Correct command reaches host and settled UI is off | /private/tmp/selahcue-batch20-20261029/17tnw2ayetf-green-final.log | PASS |
 | C-002 | yes |64scalars accepted;65refused with length explanation; controls keep their own explanation | Same behavioral gate | Boundary and negative controls pass | Same log | PASS |
 | C-003 | yes | Field does not truncate valid astral names through a UTF16 maxlength | Same behavioral gate | Actual field permits64astral scalars | Same log | PASS |
 | C-004 | yes | Existing operator suite and source checks pass | Same behavioral gate; node --check app.js; Python syntax compilation; git diff --check | Gates exit0, no hidden skips | Report and logs | PASS |
 | C-005 | yes | Four independent reviews and final required hosted CI pass on reviewed revision | Coordinator code/QA/security/performance reviews and CI | All required checks pass | Coordinator evidence | BLOCKED |
+| C-007 | yes | Oversized names are rejected after at most65 scalar iterator reads | Instrumented actual-handler case in the full browser gate | A million-scalar name is refused with <=65 reads, no host call and length explanation | /private/tmp/selahcue-batch20-20261029/17tnw2ayetf-green-final.log | PASS |
 | C-006 | yes | PR is merged and ticket QA state read back | Coordinator GitHub/ClickUp read-back | Verified merged and QA | Coordinator evidence | BLOCKED |
 
 ## Verification plan
@@ -96,6 +97,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ### Verification scope ruling
 
 - Coordinator explicitly requested full local JS behavioral suite and source checks for this JS-only delta, with no cold Rust rebuild. No Rust, dependency, build configuration or wire contract changed. Final applicable hosted CI remains required before merge.
+
+### Iteration3 — independent review remediation
+
+- Target criterion: C-007 and accurate C-001..C-003 evidence.
+- Hypothesis: full scalar-array construction is unnecessary because65scalars prove refusal; a for-of loop can stop there.
+- Change or investigation: accepted Vera V246-1 and Cody C20-NDI-1. Added an instrumented actual-handler test for a million-scalar name before changing production code; the unchanged array predicate read all1000000scalars, and only this new check failed (2303checks,1FAIL, plus expected exact-count drift; exit4).
+- Verifier executed: full SELAHCUE_HEADLESS_REQUIRE=1 browser gate before and after the loop correction; JavaScript/Python syntax, diff and structural goal checks.
+- Result: final2303checks,0FAIL,exit0; the oversized-name case reads exactly65scalars with no host call, while40/64/65astral cases and prior NDI controls pass. The loop avoids a full-name array; this bounds the length predicate, not existing input storage or trim work. Corrected the C-001 evidence pointer to the actual final GREEN log, inherited by C-002/C-003.
+- New evidence: 17tnw2ayetf-review-red.log; 17tnw2ayetf-green-final.log. The prior2302-check GREEN is preserved as17tnw2ayetf-green-pre-review.log.
+- Decision: handoff for scoped independent re-review and remaining gates.
 
 ## Risks and rollback
 

@@ -1923,7 +1923,9 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # 2295 ->2302 (17tnw2ayetf): seven real NDI inspector checks for imported 40-emoji
 # Broadcast OFF, scalar boundaries, truthful refusal copy and no UTF16 truncation.
 # Count measured by the RED full run, followed by the GREEN full run.
-EXPECTED_MIN_CHECKS = 2302  # measured:2302 checks; final result recorded in the goal
+# 2302 ->2303 (V246-1): instrumented iterator bound for an oversized paste;
+# measured by the review RED run before the bounded-scalar implementation.
+EXPECTED_MIN_CHECKS = 2303  # measured:2303 checks; final result recorded in the goal
 
 
 def find_chrome():
@@ -6166,6 +6168,36 @@ DRIVER = r"""
       ok(window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === unicodeTooLongBefore &&
          /control characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
          "NDI Unicode: control-character refusal remains distinct and never reaches the host");
+      // V246-1: count actual iterator reads in the shipped handler, not elapsed time.
+      // Only the oversized string's iterator is instrumented; restore the intrinsic before
+      // any await or subsequent test. A spread count reads all 1 million scalars; a bounded
+      // scalar decision needs at most 65, regardless of total pasted length.
+      var oversizedNdiName = "x".repeat(1000000);
+      var oversizedNdiVisits = 0;
+      var originalNdiIterator = String.prototype[Symbol.iterator];
+      var oversizedNdiCallsBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      try {
+        String.prototype[Symbol.iterator] = function(){
+          var iterator = originalNdiIterator.call(this);
+          if (String(this) !== oversizedNdiName) return iterator;
+          return {
+            next: function(){
+              var step = iterator.next();
+              if (!step.done) oversizedNdiVisits++;
+              return step;
+            },
+            [Symbol.iterator]: function(){ return this; }
+          };
+        };
+        unicodeNdiField.value = oversizedNdiName;
+        unicodeNdiField.dispatchEvent(new Event("change"));
+      } finally {
+        String.prototype[Symbol.iterator] = originalNdiIterator;
+      }
+      ok(oversizedNdiVisits <= 65 &&
+         window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === oversizedNdiCallsBefore &&
+         /64 characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: a million-scalar name is refused after at most 65 iterator reads (got " + oversizedNdiVisits + "), with no host call");
       // Restore the exact broadcasting fixture consumed by the existing duplicate-name checks.
       unicodeNdiConfig().ndi_name = "Test NDI"; unicodeNdiConfig().ndi_enabled = true;
       await waitFor(function(){ return /Broadcasting NDI · Test NDI/.test(document.getElementById("screens-inspector").textContent); });

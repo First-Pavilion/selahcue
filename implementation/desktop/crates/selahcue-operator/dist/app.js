@@ -1380,7 +1380,14 @@
 
           // Mirrors ndi_name_valid's Unicode scalar count and Cc control refusal in the
           // host. String.length counts UTF16 units, so 40 emoji would incorrectly exceed 64.
-          const ndiNameTooLong = (name) => [...name].length > 64;
+          // Stop at the first excess scalar; an oversized paste needs no full-name array.
+          const ndiNameTooLong = (name) => {
+            let scalars = 0;
+            for (const scalar of name) {
+              if (++scalars > 64) return true;
+            }
+            return false;
+          };
           const ndiNameHasControl = (name) => /[\x00-\x1f\x7f-\x9f]/.test(name);
 
           // Commit the name + a target enabled state atomically to the host — but first,
