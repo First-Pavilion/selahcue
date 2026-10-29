@@ -45,9 +45,16 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 **`POST /v1/activations:with-session`** — activate this device for the signed-in administrator's organisation (the `activateDeviceWithSession` mutation's native twin; ADMIN only, same instance limit).
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
-- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?}` — the `POST /v1/activations` body without `license_key`.
+- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?, "replace_token"?: boolean}` — the `POST /v1/activations` body without `license_key`.
 - `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
 - `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `429 RATE_LIMITED`.
+
+For explicit response-loss recovery, an ADMIN may send `replace_token: true` with the
+known installation fingerprint and a new idempotency key. The same org/licence/plan checks
+apply; this cannot create a new device or replace another org's token. The old credential
+is revoked atomically; persist the show-once replacement. A retry of that intent returns
+null, and another lost response requires another explicit intent. The default remains
+unchanged. See `implementation/api/README.md` for live-token renewal and recovery.
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
 

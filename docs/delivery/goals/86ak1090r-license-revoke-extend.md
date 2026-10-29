@@ -6,11 +6,11 @@
 - Parent goal ID: NONE
 - Title: Staff can revoke and extend a licence key through two audited, permission-gated mutations that write only through the licence state machine; the writer announces a lost denial; audit payload redaction is depth-bounded
 - Role: backend-engineer
-- Status: GATE_REVIEW
+- Status: BLOCKED
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak1090r
 - Created: 2026-10-26
-- Updated: 2026-10-26
+- Updated: 2026-10-29
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -53,10 +53,10 @@ Verified on origin/main 93bf8063 (2026-10-26):
 ### Non-goals
 
 - Scheduled EXPIRING / EXPIRED transitions (86ak109dv), suspend and reinstate (shipped), CONVERTED (86ak5mn2k), ARCHIVED (86ak5mn2m), billing-driven suspension (G10).
-- Synchronously revoking device tokens on revoke: the hourly cascade stays the mechanism (NFR-503, 65 minutes).
+- Synchronously revoking device tokens on revoke: the cascade stays the mechanism (NFR-503, 65 minutes), with bounded prompt drain and minute recovery added by PR233 remediation.
 - Any database migration. None is created.
 - Any change to `LEGAL_TRANSITIONS`.
-- The confirmPasswordReset lane (86ak5r2pt): `account_schema.py`, `accounts/services.py`, `test_customer_auth_slice.py` are not touched.
+- The confirmPasswordReset lane (86ak5r2pt): `accounts/services.py` and `test_customer_auth_slice.py` remain outside remediation. `account_schema.py` receives only the explicitly approved ADMIN replacement input.
 
 ### Constraints
 
@@ -104,9 +104,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-014 | yes | AC 7 recorded: the statuses a production entry point writes are ISSUED, ACTIVATED, SUSPENDED, REVOKED; EXPIRING, EXPIRED, CONVERTED, ARCHIVED are documented as deliberately unwritten with the owning ticket; the record is pinned by a test that fails if the two sets overlap or leave a status out | new file | as stated | OPEN / OWNER-DECISION. The record is built and pinned (test_the_statuses_a_production_entry_point_writes_and_the_deliberately_unwritten; an AST scan now also fails when a production module outside the writer passes EXPIRING, EXPIRED, CONVERTED or ARCHIVED as a to_status), but the ticket's AC 7 says "at least 6 of 8 statuses have a writer": that is 8 of 8 by the table-derived sweep and 4 of 8 by production entry point (ISSUED, ACTIVATED, SUSPENDED, REVOKED), and it cannot be 6 until 86ak109dv (EXPIRING, EXPIRED), 86ak5mn2k or 86ak5mn2m lands. The owner has not recorded acceptance of the table-level reading. The PR must NOT be described as meeting AC 7 until the owner does | BLOCKED |
 | C-015 | yes | Both mutations work end to end over the admin GraphQL schema and the HTTP view with a permitted and a refused actor, with error codes in the response | new file | as stated | GraphQL tests over /graphql/admin: revoke and extend happy paths, replay flags, missing and wrong permission, customer actor, unauthenticated, not found, refusals with DENIED rows, naive date, required fields, no customer data in the payload (6 shapes), throttle | PASS |
 | C-016 | yes | Mutation verification: removing the AC 8 tripwire, the AC 11 gate (each mutation), the refusal-audit budget, the depth bound and the writer call each turns named tests RED with siblings running; each file restored byte-identical | mutation script, `cmp` | every mutant RED, every restore identical | 86 mutants (83 SQLite, 3 Postgres), all KILLED by one of their intended tests with siblings running (never --exact), after an unmutated GREEN baseline for the same test files, every restore compared byte for byte. Covers the tripwire and its opt-ins, hand-opened transactions, the gate on each mutation, the refusal-audit caps and what the row stores, the actor-id and licence-id guards, the credential detector (spellings, hex exemption and its thresholds, boundaries, retry key), the depth bound and container cap at their literal edges, writer discipline and both AST scans (including ** arguments and LicenseKeyStatus('EXPIRED')), the autocommit guard, the extend and revoke behaviour (ceiling by subtraction, exact boundary, replay date, unreadable earlier record), the GraphQL resolvers and the Postgres locks. Harness: docs/delivery/goals/86ak1090r-evidence/mutate.py (runs from the repository, refuses to delete the real tree, --self-check); results with the failing test names: mutation-results.txt | PASS |
-| C-017 | yes | No regression: the full API suite and the Django gates | `make api-check` | exit 0, all tests green | make api-check exit 0 on 6569058a plus the documentation commits (origin/main 3ab74050 merged in): manage.py check, makemigrations --check, pytest 1717 passed, 35 skipped (34 Postgres-only plus the Redis one), 1 xfailed; baseline on 93bf8063 was 1345 passed, 24 skipped, 1 xfailed. Whole suite on a local PostgreSQL 16.2, same API tree: exit 0, 1751 passed, 1 skipped (Redis), 1 xfailed | PASS |
-| C-018 | yes | Branch is up to date with origin/main, pushed to its own branch, and a Draft PR exists against main | `git rev-list --count HEAD..origin/main`, `gh pr view` | 0; Draft | origin/main 3ab74050 (PR #235; the last of the merges after 840ec84e and 93bf8063) is merged into the branch and is an ancestor; `git rev-list --count HEAD..origin/main` is 0 after the final fetch before the push; pushed to origin/feat/86ak1090r-license-revoke-extend; Draft PR https://github.com/First-Pavilion/selahcue/pull/233 against main, isDraft true | PASS |
-| C-019 | yes | The goal contract validates, structurally now and with `--completion` before the claim | `validate_goal_contract.py` | exit 0 both times | validate_goal_contract.py: structural OK before work and at every round. `--completion` / `--require-complete` passed at round 1; since round 2 it fails ONLY on C-014 (BLOCKED, owner decision), by design | PASS |
+| C-017 | yes | No regression: the full API suite and the Django gates | Complete final PR API CI, same Django checks and pytest suite | exit 0, all tests green | Current pre-correction full local result:1848 passed,1 failed (writer AST guard),1 xfailed,no skips; corrected covering194 passed. Complete final-revision CI pending; historical prior-revision results remain in the ledger | PENDING |
+| C-018 | yes | Branch is up to date with origin/main, pushed to its own branch, and a Draft PR exists against main | git ancestry/parity and coordinator provider readback | original head/main ancestors; final source published to existing PR233 | Local original source/main ancestry verified; implementer does not push under current assignment. Coordinator publication and provider readback pending | PENDING |
+| C-019 | yes | The goal contract validates structurally and with --completion before VERIFIED_COMPLETE | validate_goal_contract.py with and without --completion | exit0 for both before completion claim | Structural validation passes; completion intentionally remains blocked by owner/CI/publication/review gates | BLOCKED |
 
 | C-020 | yes | Lock order: an extension and a first activation of ONE licence never deadlock, in either arrival order and over 50 unaligned races, and the activation lock statement names only the licence table | `pytest tests/test_concurrency_postgres.py -q -k "never_deadlock or activation_lock_names"` on Postgres | all pass; before the fix the deterministic interleaving and the first unaligned iteration deadlock | MEASURED BEFORE THE FIX on PostgreSQL 16.2: activation-first interleaving FAILED with deadlock detected; the 50-iteration race FAILED on iteration 0 (docs/delivery/goals/86ak1090r-evidence/lock-order-evidence.txt). After `of=("self",)` on the activation lock: 4 passed, 50 of 50 clean. Mutant P3 (of= removed) RED | PASS |
 | C-021 | yes | A retry that repeats the idempotency key with a DIFFERENT date is refused, not replayed with the date dropped; the ceiling is five years beyond the later of now and the licence's own expiry (a licence already past it can be extended; year 9999 is still refused) | `pytest tests/test_license_revoke_extend.py -q -k "different_date or ceiling or year_9999"` | as stated | test_a_retry_with_the_same_key_and_a_different_date_is_refused_and_changes_nothing (+ GraphQL variant, + offset variant), test_a_licence_already_past_the_ceiling..., test_the_ceiling_is_five_years_beyond_the_later_of_now_and_the_current_expiry, test_a_licence_that_lapsed_long_ago..., test_a_year_9999_typo...; mutants E6c, E3, E3b, E3c RED. Suspend, reinstate and revoke have no request parameter that can differ on a retry, so they do not share the bug | PASS |
@@ -208,3 +208,65 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Terminal state: GATE_REVIEW (not VERIFIED_COMPLETE: C-014 is open for the owner and the round-3 changes are unreviewed)
 - Remaining failed or blocked criteria: C-014 only. AC 7's "at least 6 of 8 statuses have a writer" is 8 of 8 by the table-derived sweep and 4 of 8 by production entry point; the PR must not be described as meeting AC 7 until the owner records acceptance. Not run: hosted CI, the Windows and macOS matrix, anything outside implementation/api
 - ClickUp final evidence comment: posted on 86ak1090r at hand-off
+
+
+## Iteration 6: PR233 remediation contract (2026-10-29, maximum 8)
+
+Existing owner gates, historical test evidence and C-014 BLOCKED remain binding. This
+remediation does not claim VERIFIED_COMPLETE. ClickUp quota is exhausted and the approved
+REST fallback is unconfigured; pending evidence is recorded locally for coordinator delivery.
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| R-001 | yes | Live-token HTTP refresh after extension rotates and caller adopts replacement; dead tokens never revive | `pytest tests/test_license_revoke_extend.py -k "next_refresh_rotates or extension_never_lets" -q` | all pass; old credential refused | docs/delivery/goals/86ak1090r-evidence/pr233-remediation-20261029.md | PASS |
+| R-002 | yes | Historical successful extension replays after target expiry; new queued/past requests refuse | `pytest tests/test_license_revoke_extend.py -k "successful_extension_replays_after or extension_expiring_while" -q` | all pass; no duplicate write | docs/delivery/goals/86ak1090r-evidence/pr233-remediation-20261029.md | PASS |
+| R-003 | yes | More than 500 stale tokens converge within the same bounded batch cycle; DB state recovers interruption | `pytest tests/test_revocation_cascade.py -q` | all pass | docs/delivery/goals/86ak1090r-evidence/pr233-remediation-20261029.md | PASS |
+| R-004 | yes | Complete API regression and real Postgres races pass | Complete final PR API CI plus covering Postgres command in remediation evidence | complete final result green | Pre-correction full exit1 (sole AST guard failure),1848 passed,1 xfailed; corrected covering194 passed. Final complete CI pending per coordinator | PENDING |
+| R-005 | yes | New revision passes independent code/security/QA/performance review and owner requirements are disposed | coordinator reviews and owner decision records | all gates pass explicitly | coordinator handoff | BLOCKED |
+
+RED: commit 7357366 reproduces four failures with three dead-token negative controls
+passing. Delayed retry is rejected; queued stale target is accepted; refresh keeps original
+expiry; scheduled backlog returns 500 with two ACTIVE tokens remaining. Log:
+`/private/tmp/selahcue-remediation-20261029/task-1-red.log`.
+
+
+## Iteration 7: live rotation and response-loss recovery
+
+- Live refresh rotates only under licence/device/token locks after re-authentication and
+  current commercial validity/plan checks. Raw replacement goes only to its show-once HTTP
+  response; normal status reads and audit rows contain no raw credential.
+- Coordinator authorized a narrow `replace_token` option on existing ADMIN session/account
+  activation after the lost-response seam proved ordinary reactivation returned no secret.
+  It requires a known same-org ACTIVE installation and a fresh intent; defaults and
+  enrollment-key behavior remain unchanged. This is a material security/QA review item.
+- Recovery RED: nine meaningful HTTP contract failures; GREEN: eleven selected checks.
+  Queued Postgres refresh/revoke/extension and duplicate-cascade seams: nine passed.
+- No tracked refresh consumer was found by searching `implementation` and `scripts` for
+  `license:refresh`, `license_refresh`, `refresh_license`, `refreshLicense`, `licenseRefresh`
+  and token expiry names. Native `selahcue-licensing` implements activation and manifest
+  retrieval, not refresh. API response/adoption/recovery are verified over real HTTP routes.
+
+Owner gates remain separate: C-014/AC7 has no accepted production-writer interpretation;
+ADMIN-GQL-006 confirmation is explicitly unbuilt with open owner/architect decision
+17tnw2b9dpq (no accepted token protocol to implement); DEC-020 remains PROPOSED. No available
+record authorizes waiving any of these. No independent review has yet passed this revision.
+
+
+## Iteration 8: final verification and immutable handoff
+
+Evidence: `docs/delivery/goals/86ak1090r-evidence/pr233-remediation-20261029.md`.
+
+The complete realistic local gate finished in541.915s with1848 passed,1 failed,1 xfailed
+and no skips. The sole failure was the conservative licence-writer scan newly recognizing
+`token.status` in the cascade module. A separate correction uses a DeviceToken-rooted update
+under the same locks/transaction; no guard was weakened. The whole state-machine/cascade/
+Postgres-concurrency covering gate then passed194 tests in56.18s with no skips/warnings.
+API CI now has a bounded30minute timeout after the previous hosted15minute timeout; all
+checks/services remain. Workflow lint, minute policy and46 API-gate selftests pass.
+
+Coordinator explicitly requires final PR CI as the complete corrected-revision gate rather
+than another full local run. Therefore C-017/R-004 remain PENDING; the older full run is not
+called green. C-018 publication/readback and R-005 independent review remain pending, while
+owner gates still block completion. No push/merge/ClickUp write occurred. Status BLOCKED
+records unmet external/owner requirements, while authorized implementation is ready for
+independent review. No extra bounded implementation iteration is required to await owners.
