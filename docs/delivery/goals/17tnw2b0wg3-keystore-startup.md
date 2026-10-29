@@ -99,9 +99,19 @@ The full live task and no-comment response are saved in the orchestration eviden
 - Hypothesis: guarding only StoredSession.load with the existing PairingView-style Object catch routes an unavailable profile through the established null-profile path without changing reconnect or navigation ownership.
 - Change or investigation: guard the read in Launcher._start; leave profile storage untouched and preserve the existing brand delay, mounted checks and separate narrow connect guard. Tests remain unchanged from the observed RED commit.
 - Verifier executed: source inspection, git diff --check and structural Goal Contract validator. No local Flutter runtime was run because host resource admission remains unavailable.
-- Result: source candidate prepared; hosted corrected-source analysis/full tests and four independent reviews remain pending root execution.
+- Result: hosted candidate CI 40940861759 failed Flutter analysis before tests. The mutable stored variable lost non-null promotion inside the setState and navigation closures (main.dart:140:56 and :179:66). No candidate behavior pass is claimed.
 - New evidence: production diff is confined to the guarded stored-profile load and clarifying the separate connect-guard comment.
 - Decision: hand off frozen candidate to root for hosted GREEN and independent review; remediate valid findings within the remaining iteration budget.
+
+### Iteration 3
+
+- Target criterion: C-001, C-002, C-004, C-005
+- Hypothesis: a final alias of the guarded nullable result can retain non-null promotion after the null-profile return, including inside closures.
+- Change or investigation: inspected mobile-green-attempt1.log, renamed the mutable read target to loaded, then assigned final stored = loaded before the mounted/null checks. Preserved regression/control tests and all storage/navigation behavior. Cody's full-baseline whitespace finding was separately corrected by removing the goal's trailing blank line in f8e86eef.
+- Verifier executed: full baseline git diff --check, structural Goal Contract validator and source inspection. Hosted CI on the prior candidate established the two analyzer errors; no local Flutter runtime was executed.
+- Result: correction prepared for fresh hosted analysis and full Flutter tests; C-004 remains pending, as do corrected behavior and independent reviews.
+- New evidence: CI 40940861759 analyzer errors are saved at wave2-20261029/mobile-green-attempt1.log. The test file remains identical to the observed test-only RED commit.
+- Decision: hand off the corrected frozen candidate to root for fresh full CI and current-head independent reviews.
 
 ## Risks and rollback
 

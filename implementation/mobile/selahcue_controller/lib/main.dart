@@ -122,14 +122,15 @@ class _LauncherState extends State<Launcher> {
     // A brief brand moment, run in parallel with the reconnect attempt so the
     // splash never adds perceptible delay.
     final brand = Future<void>.delayed(const Duration(milliseconds: 900));
-    StoredSession? stored;
+    StoredSession? loaded;
     try {
-      stored = await StoredSession.load();
+      loaded = await StoredSession.load();
     } on Object {
       // An unavailable keystore must not strand startup on the splash. Keep
       // the stored profile intact and use the existing first-run Connect path.
-      stored = null;
+      loaded = null;
     }
+    final stored = loaded;
     if (!mounted) return;
     if (stored == null) {
       // First run: no delay-then-pair; show the splash briefly, then Connect.
