@@ -383,7 +383,10 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   (26 ms at worst in this change's performance review), so the default is at least 19 times the
   worst healthy sample.
 - **A stalled Redis is treated exactly like a down one.** The call raises, the throttle **permits
-  the request**, the degraded send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
+  the request** except native `POST /v1/sessions`: bootstrap login returns429 before password
+  work when its budget cannot be checked (17tnw2b1wq9; see the API README). Already activated
+  devices and other native routes retain their existing fail-open availability. The degraded
+  send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
   `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each

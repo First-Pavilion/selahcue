@@ -231,7 +231,10 @@ def _account_session_bearer(request) -> str:
 # app-level per-IP limit the browser login mutation does not carry; the durable per-account
 # lockout lives in `login` itself and therefore applies here exactly as it does there.
 @_json_content_type_only("session_login")
-@throttle("session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60))
+@throttle(
+    "session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60),
+    fail_closed_on_store_unavailable=True,
+)
 def create_session(request):
     """POST /v1/sessions — exchange an account email + password for an account session token, for
     a native client that cannot take part in the browser CSRF ceremony (DEC-011 pt 3).

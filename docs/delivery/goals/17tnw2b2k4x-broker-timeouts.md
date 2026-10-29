@@ -108,6 +108,16 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 - New evidence: remediated-auth.log/json/exit and remediated-full-api.log/json/exit under /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-; the full API took 1173.44 seconds. The previous lost 69-percent process is incomplete, and earlier Redis failures/interruption remain separate in the handoff. Full executed source equals head871977cb plus dirty diff49e7f691; only this goal evidence changed after those passing snapshots. Final source fingerprints and fresh focused/docs/static checks are recorded in the handoff.
 - Decision: handoff
 
+### Iteration 5
+
+- Target criterion: C-004, C-005
+- Hypothesis: preserving published history with merge commits and keeping the tested email/frontend tree unchanged permits a proportional fresh-main integration check without repeating the complete previous snapshots.
+- Change or investigation: merge the published1097d570 history into8c7585c5, resolving only the goal add/add conflict with the current evidence. Before any main integration, verify the complete merge tree equals tested8c tree00116b777b71b83df77e38b691bba6c865609f4b. Then merge actually published main d5476edd (native bootstrap fail-closed) without rebasing. Preserve its native-bootstrap deployment exception and this ticket's broker-bound paragraphs.
+- Verifier executed: exact tree and ancestry proofs; byte comparisons for all email publisher/caller/frontend/helper/tests against8c and incoming native-bootstrap code/tests against main; fresh broker/email/native-outage/deployment checks and static checks recorded in the handoff.
+- Result: the published1097 history is an ancestor, the history-only merge tree exactly matches8c, and the email/frontend/caller source is unchanged from the passing complete snapshots. The original1676-pass PostgreSQL/LocMem and71-scenario rendered runs predate WQ9; fresh focused coverage must verify the combined source and final hosted CI remains mandatory. No complete full/API browser rerun is claimed for the combined tree.
+- New evidence: history-merge-proof.json; main-merge-fingerprints.json; integration-focused.log and integration-static.log under /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a timed-out publish has unknown delivery outcome; no automatic retry is promised. Healthy Redis round trips and DNS remain operational concerns.
