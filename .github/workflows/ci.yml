@@ -1,245 +1,15 @@
-# SelahCue CI — Linux gates + GPU parity + Flutter + dependency audit; Windows on demand.
-#
-# Hosting: GitHub (user decision, 2026-07-24). The repository is PRIVATE on the Team plan, so
-# hosted runners bill minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
-# x10, and with no payment method every job is BLOCKED once the quota is gone. Measured on the 100
-# runs of 2026-10-02..05, a three-OS run cost a median 241 billable minutes, 155 of them macOS.
-# Owner decision 2026-10-05:
-#   - macOS is NOT in CI at all. The owner's local `make ci` is the only macOS gate. Do not add a
-#     macos-* runner back (.github/scripts/check_ci_minutes.py refuses it).
-#   - Pull requests and pushes to `main` run the LINUX legs only (about 21 billable minutes a run).
-#   - The WINDOWS legs (about 45 more) run on a weekly schedule, on workflow_dispatch with
-#     `windows: true`, on a pull request carrying the `full-ci` label, and on release tags `v*`.
-#   Which of those a run is, is decided once, in the `tier` step of the `changes` job below, and
-#   handed to the matrices as `needs.changes.outputs.os`.
-#
-# Local parity: `make ci` runs the same gates on a developer machine.
-#
-# GPU matrix note: the ADR-0015 parity tests (CPU rasterizer vs wgpu compositor,
-# SSIM >= 0.99) run wherever a GPU adapter exists and SKIP gracefully otherwise:
-#   - Ubuntu runners: Mesa software Vulkan (lavapipe, installed below)
-#   - Windows runners (weekly / on demand): DX12/WARP where available
-#   - Metal is exercised only by the owner's local `make ci` on a Mac.
-name: ci
-#
-# TOOLCHAIN: every Rust job below installs the EXACT version pinned in
-# rust-toolchain.toml (read once by the `changes` job, passed down as
-# `needs.changes.outputs.rust`), and then runs scripts/check_toolchain.sh to prove
-# that is what is actually running. `make ci` runs the same script, so the local
-# gate and this pipeline compile with the same compiler by construction.
-#
-# `dtolnay/rust-toolchain@stable` still appears below: `@stable` there is the
-# ACTION's own git ref (the branch the action lives on), NOT the Rust channel. The
-# Rust version comes solely from the `toolchain:` input. Do not "simplify" it back
-# to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
-# that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
-
-# Docs-only changes skip the whole workflow (saves runner minutes; docs carry no code to
-# verify; not even the lint job runs, which is cheaper than running it). A `changes` job
-# (below) further gates the desktop vs mobile jobs by path, so a single-side commit doesn't
-# pay for the other side.
-# NOTE: this gates DOWNSTREAM jobs with `if:`, so a skipped required check would
-# DEADLOCK a PR. It is safe only because this repo pushes to main with no branch
-# protection. Before enabling required status checks, add a single aggregator
-# job (`needs:` all jobs; passes if each result is success OR skipped) and
-# require THAT, not the individual matrix jobs (task 86ajq0569).
+# Temporary measurement workflow; never merged into main.
+name: Reset floor diagnostic
 on:
-  push:
-    branches: [main]
-    # Release tags run the full tier (Windows included). GitHub does not evaluate path
-    # filters for tag pushes, so `paths-ignore` below cannot swallow a tag.
-    tags: ["v[0-9]*"]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
-  pull_request:
-    # `labeled` is here so that adding `full-ci` to an OPEN pull request starts the Windows
-    # legs at once, instead of waiting for the next push (which would cost a run). Every
-    # OTHER label (Dependabot adds two or three to each PR it opens) starts a run whose jobs
-    # are all skipped by the guard on `changes` and `lint-workflows`: no runner starts, so it
-    # bills nothing, and the concurrency group below keeps it from cancelling a real run.
-    types: [opened, synchronize, reopened, labeled]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
-  # The Windows legs, weekly: the one scheduled run that exercises the OS a trimmed push to
-  # `main` no longer tests. Sunday 03:17 UTC (off the Monday 06:00 canary and Dependabot
-  # slots, and off the top of the hour). A scheduled run always runs on the default branch.
-  schedule:
-    - cron: "17 3 * * 0"
-  # Lets the alarm (and the whole matrix) be driven on demand against `main`. Without
-  # this the alarm's first ever execution would be in production on an already-broken
-  # `main`, which is precisely when you do not want to find a typo in it. Every area runs
-  # on a dispatch; Windows only if asked (it is about 45 billable minutes on its own).
   workflow_dispatch:
     inputs:
       windows:
-        description: "Also run the Windows legs (about 45 billable minutes)"
         type: boolean
         default: false
-
-concurrency:
-  # One group per ref AND event, so a weekly or manual run is never replaced while it waits
-  # behind a push run (a pending run is cancelled by a newer one in its group). A label that
-  # does not start Windows gets its own group so that it cannot cancel the real run.
-  group: ci-${{ github.ref }}-${{ github.event_name }}${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') && '-ignored-label' || '' }}
-  # Cancel superseded PR runs, but never a main run — every main commit keeps a
-  # real pass/fail verdict (revert/bisect/audit trails need it).
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-env:
-  CARGO_TERM_COLOR: always
-
+permissions:
+  contents: read
 jobs:
-  # Which side of the repo changed. Most commits touch only the desktop OR only
-  # the mobile side, so the other side's jobs are pure waste — and Windows runners
-  # bill at 2x minutes. Each filter also matches this workflow so
-  # a CI change re-runs everything. (Docs-only changes are already skipped at the
-  # trigger's paths-ignore.) This is the cheap fan-out gate for the costly jobs.
-  #
-  # It also decides the TIER of the run (17tnw2b2nxk), in the `tier` step: every area runs
-  # (no path filter) on a weekly run, a manual dispatch and a release tag, and the matrices
-  # get Windows only when that step says so. One place decides, so the PR path and the
-  # weekly path cannot drift into two sets of rules.
-  changes:
-    name: detect changed areas
-    # A label other than `full-ci` starts a run only so that the label shows up in the list.
-    # Skipping here skips every job below that needs this one; `lint-workflows` carries the
-    # same guard. No runner starts, so such a run bills nothing.
-    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') }}
-    runs-on: ubuntu-latest
-    # `dorny/paths-filter` compares against the merge base using git on a push, but on a
-    # PULL_REQUEST it calls the GitHub API (`listFiles`) instead, which needs
-    # `pull-requests: read`. The repository default grants only contents+packages, so the
-    # job failed with "Resource not accessible by integration" and every downstream job
-    # was skipped -- a whole pipeline reporting nothing.
-    #
-    # This was latent for months rather than new: the only previous PR run in this repo
-    # (run 30718327254, 2026-08-01) died the same way in 17s. It went unnoticed because
-    # work is pushed straight to `main`, where the git path is used and no API call
-    # happens, so nothing exercised the PR path. `contents: read` is listed explicitly
-    # because naming any scope sets the rest to `none` -- checkout needs it.
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      # `everything` (weekly, dispatch, release tag) turns every area on; otherwise the path
-      # filter decides. When it is true the filter step below is skipped and its outputs are
-      # empty, which the `||` makes harmless.
-      desktop: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.desktop == 'true' }}
-      mobile: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.mobile == 'true' }}
-      android: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.android == 'true' }}
-      api: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.api == 'true' }}
-      marketing: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.marketing == 'true' }}
-      # Whether this run includes the Windows legs, and the matrix that says so: a JSON array
-      # the `rust`, `operator` and `operator-native` jobs read with fromJSON. `windows` is also
-      # handed to the alarm, which must know whether a matrix job's result covered Windows.
-      windows: ${{ steps.tier.outputs.windows }}
-      os: ${{ steps.tier.outputs.os }}
-      # The one Rust version every Rust job below installs. Read from
-      # rust-toolchain.toml so the file is the single source of truth and CI cannot
-      # drift from `make ci` (86ak5rc9c).
-      rust: ${{ steps.toolchain.outputs.channel }}
-    steps:
-      - uses: actions/checkout@v7
-      # Which tier is this run. Inputs reach the script through `env:`, never spliced into the
-      # script text (a label name is attacker-chosen text). Windows is added ONLY by:
-      #   schedule              the weekly run (and every area, no path filter)
-      #   workflow_dispatch     the `windows` input; every area runs either way
-      #   push of a `v*` tag    a release (every area)
-      #   pull_request          the `full-ci` label, with the usual path filters
-      # A push to `main` and any other pull request are Linux only. Nothing here names macOS.
-      - id: tier
-        name: Decide the tier of this run (Linux only, or Linux and Windows)
-        env:
-          EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
-          DISPATCH_WINDOWS: ${{ inputs.windows }}
-          HAS_FULL_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
-        run: |
-          windows=false
-          everything=false
-          reason="a pull request or a push to main: Linux legs only"
-          case "$EVENT" in
-            schedule)
-              windows=true
-              everything=true
-              reason="the weekly run: every area, Linux and Windows"
-              ;;
-            workflow_dispatch)
-              everything=true
-              reason="a manual run: every area, Linux only (the windows input is off)"
-              if [ "$DISPATCH_WINDOWS" = "true" ]; then
-                windows=true
-                reason="a manual run: every area, Linux and Windows"
-              fi
-              ;;
-            push)
-              case "$REF" in
-                refs/tags/*)
-                  windows=true
-                  everything=true
-                  reason="a release tag: every area, Linux and Windows"
-                  ;;
-              esac
-              ;;
-            pull_request)
-              if [ "$HAS_FULL_CI_LABEL" = "true" ]; then
-                windows=true
-                reason="a pull request labelled full-ci: Linux and Windows legs, changed areas only"
-              fi
-              ;;
-          esac
-          if [ "$windows" = "true" ]; then
-            os='["ubuntu-latest","windows-latest"]'
-          else
-            os='["ubuntu-latest"]'
-          fi
-          {
-            echo "windows=$windows"
-            echo "everything=$everything"
-            echo "os=$os"
-          } >> "$GITHUB_OUTPUT"
-          echo "tier: $reason (os=$os)"
-          echo "CI tier: $reason. Runner matrix: \`$os\`." >> "$GITHUB_STEP_SUMMARY"
-      - uses: dorny/paths-filter@v4
-        id: filter
-        # Not needed (and not run) when every area runs anyway.
-        if: steps.tier.outputs.everything != 'true'
-        with:
-          filters: |
-            desktop:
-              - 'implementation/desktop/**'
-              # Shared build/NFR tooling the desktop jobs invoke (make nfr, the
-              # NFR proxy script) — a change here must re-run the desktop matrix.
-              - 'Makefile'
-              - 'scripts/**'
-              # Catch-all for any OTHER top-level code area (e.g. implementation/web)
-              # so a change there is never silently unverified. Add a dedicated
-              # filter + job if such an area grows its own build — which is what
-              # `marketing:` below is, and why it is no longer caught here.
-              - 'implementation/web/**'
-              - '.github/workflows/ci.yml'
-              # A toolchain bump changes which compiler every desktop gate runs, so
-              # it must re-run the whole desktop matrix.
-              - 'rust-toolchain.toml'
-            mobile:
-              - 'implementation/mobile/**'
-              - '.github/workflows/ci.yml'
-            android:
-              - 'implementation/mobile/selahcue_controller/android/**'
-              - 'implementation/mobile/selahcue_controller/lib/controllers/discovery_controller.dart'
-              - 'implementation/mobile/selahcue_controller/lib/models/multicast_lock.dart'
-              # A Flutter/plugin dep bump can change the Android build too.
-              - 'implementation/mobile/selahcue_controller/pubspec.yaml'
-              - 'implementation/mobile/selahcue_controller/pubspec.lock'
-              - '.github/workflows/ci.yml'
-            # The Django Platform API. Before this filter existed, implementation/api
-            # matched NO filter at all — neither desktop nor mobile — so an API-only
-            # push triggered the workflow and then ran nothing.
-            api:
+  api:
               - 'implementation/api/**'
               # tests/test_nginx_forwarded_proto.py reads this file: it is the nginx half of
               # the Django TLS-proxy chain (17tnw2b1wtr), so a change must re-run the api job.
@@ -450,7 +220,6 @@ jobs:
 
   rust:
     name: rust (${{ matrix.os }})
-    needs: changes
     if: needs.changes.outputs.desktop == 'true'
     strategy:
       fail-fast: false
@@ -926,7 +695,6 @@ jobs:
   # `make launch` cover it) and Windows was never possible here, see the matrix below.
   launch-smoke:
     name: launch-smoke (${{ matrix.os }})
-    needs: changes
     if: needs.changes.outputs.desktop == 'true'
     # Hard CI backstop: the in-app 30s watchdog can't catch a hang INSIDE
     # window/adapter creation (before the event loop's first about_to_wait), so
@@ -989,7 +757,6 @@ jobs:
 
   operator:
     name: operator shell (${{ matrix.os }})
-    needs: changes
     if: needs.changes.outputs.desktop == 'true'
     # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
     # not GitHub's 6h default (audit #11 review).
@@ -1230,7 +997,6 @@ jobs:
   # one -- not a silent creep in a job whose name gives no hint what is eating the clock.
   operator-native:
     name: operator shell — release & native-toolchain features (${{ matrix.os }})
-    needs: changes
     if: needs.changes.outputs.desktop == 'true'
     # Sized from real per-step timings, not a guess. Run 33984097274 (windows-latest, this
     # job's slowest OS, COLD cache -- the first run the RELEASE steps ever executed) recorded
@@ -1425,7 +1191,6 @@ jobs:
 
   flutter:
     name: flutter controller
-    needs: changes
     if: needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     defaults:
@@ -1469,8 +1234,6 @@ jobs:
   # ran the change-detection job and nothing else.
   api:
     name: api (django)
-    needs: changes
-    if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -1530,239 +1293,13 @@ jobs:
           SQL_PORT: "5432"
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
-        run: python -m pytest tests -q
-
-  marketing:
-    name: marketing (vue spa)
-    needs: changes
-    if: needs.changes.outputs.marketing == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: implementation/marketing
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: implementation/marketing/package-lock.json
-      # BOTH halves of the mirror check are derived from a Python runtime, so the runtime
-      # is pinned rather than inherited: the whitespace set comes out of CPython's own
-      # Unicode tables, and validating it under whatever interpreter a runner image
-      # happens to ship is a mirror checked against a different runtime from production's.
-      # 3.14 is what `api (django)` pins and what the API Dockerfile runs. It also avoids
-      # PEP 668 — `pip install` into a distro-managed python3 is refused as an
-      # externally-managed environment. Measured: the 29-code-point whitespace set is
-      # identical under 3.12 and 3.14.5, so this pin is a guard, not a fix.
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.14"
-      - name: Install
-        run: npm ci
-      # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
-      # Calls the SAME Makefile target `make ci` calls, rather than re-listing the npm
-      # scripts here, so the local gate and this job cannot drift apart (the marketing
-      # half of 86ak5rjh7: `make ci` used to verify nothing about this site). The target
-      # runs from the repo root, so this step overrides the job's default
-      # `working-directory`. It never installs; the step above did.
-      - name: Type-check, lint, test, build (make marketing-check)
-        working-directory: .
-        run: make marketing-check
-      # The client/server predicate mirrors, re-derived from the runtimes that decide:
-      # CPython for the whitespace set, and the PINNED Django for the email validator.
-      # It needs a real Django, so it gets one here from the API's own pin rather than a
-      # version pinned twice. The script fails closed on a missing Django all by itself;
-      # SELAHCUE_MIRRORS_REQUIRE=1 additionally outranks the opt-out, so a variable set
-      # elsewhere on a runner cannot downgrade this gate to a skip. A skip that reads as
-      # a pass is how the email mirror shipped with two wrong verdicts (PR #17, round 3).
-      - name: Install the pinned Django for the mirror check
-        run: |
-          python3 -m pip install --quiet --upgrade pip
-          # Anchored on a version specifier: the project DESCRIPTION in the same file
-          # begins "Django and Strawberry Platform API…", and a looser pattern installs that.
-          pin="$(grep -oE '"Django[<>=!~][^"]*"' ../../implementation/api/pyproject.toml | tr -d '"')"
-          test -n "$pin" || { echo "no Django pin found in the API pyproject"; exit 1; }
-          echo "installing $pin"
-          python3 -m pip install --quiet "$pin"
-      - name: Client/server mirrors
-        env:
-          SELAHCUE_MIRRORS_REQUIRE: "1"
-        run: npm run test:mirrors
-      # Drives the real built bundle in headless Chrome (same pattern as
-      # scripts/operator_headless.py). SELAHCUE_HEADLESS_REQUIRE=1 turns a missing
-      # Chrome into a hard failure — without it the script skips, which on a runner
-      # would silently report success while checking nothing.
-      - name: Auth page states (headless)
-        env:
-          SELAHCUE_HEADLESS_REQUIRE: "1"
-        run: npm run test:states
-      # GAP-07 (ClickUp 17tnw2b0q9g): every route at 320/375/768/1024/1440 in a real browser --
-      # no sideways scroll, no clipped content, the mobile nav sheet's focus/Escape/scroll-lock
-      # paths, footer sections, 44px touch targets, reduced motion. Runs against the `dist/`
-      # the Build step just produced. Both engines, because the WebKit-only layout traps
-      # (flex <select>, grid implicit rows, `hidden` vs a class `display`) do not reproduce in
-      # Blink. Playwright is pinned to the same release the operator WebKit smoke uses so the
-      # engines under test are reproducible; bump them together. REQUIRE=1 makes a missing
-      # engine a hard failure instead of a silent skip that reads as a pass.
-      - name: Install Playwright (Chromium + WebKit)
-        run: |
-          python3 -m pip install --quiet playwright==1.60.0
-          python3 -m playwright install --with-deps chromium webkit
-      - name: Responsive sweep (Chromium)
-        env:
-          SELAHCUE_SWEEP_REQUIRE: "1"
-        run: python3 scripts/responsive_sweep.py --engine chromium
-      - name: Responsive sweep (WebKit)
-        if: ${{ !cancelled() }}
-        env:
-          SELAHCUE_SWEEP_REQUIRE: "1"
-        run: python3 scripts/responsive_sweep.py --engine webkit
-
-  audit:
-    name: dependency audit (RustSec)
-    needs: changes
-    if: needs.changes.outputs.desktop == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      # 86akmdkdn (performance review, Vera): this is a fast, filesystem-only check with no
-      # cargo/network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather
-      # than after, so a coverage-drift finding fails in seconds instead of after paying for
-      # every audit step first. It is the same hand-maintained-list bug class this repo hit
-      # twice before (86akc2kmh, 86akd10dq): it derives the "must be audited" set by walking
-      # the repo for every `Cargo.lock` on disk (the literal artefact `cargo audit` reads,
-      # unioned with any `[workspace]`/`[workspace.package]` table as an early-warning signal
-      # for a not-yet-built crate) and fails loudly if any of them has no matching
-      # `working-directory` step below, instead of relying on someone remembering to edit this
-      # job by hand or reading `implementation/desktop/Cargo.toml`'s `exclude = [...]` list,
-      # which security review (Sana) proved is NOT load-bearing in this repo -- see
-      # scripts/check_dependency_audit_coverage.py's module docstring for the full derivation
-      # history (two rounds of this same lesson).
-      - name: Verify dependency-audit coverage of every Cargo.lock in the repo
-        run: python3 scripts/check_dependency_audit_coverage.py
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-audit
-      - name: Audit desktop workspace
-        working-directory: implementation/desktop
-        run: cargo audit
-      - name: Audit operator shell
-        working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo audit
-      # selahcue-stt is a third independent Cargo root (its own `[workspace]` table, its own
-      # Cargo.lock — see selahcue-stt/Cargo.toml's own comment) with a real network dependency
-      # (rustls via ureq's model-download feature). It shipped invisible to this job until
-      # 86akmdkdn: PR #39's rustls CVE bump only touched the two roots above, so
-      # selahcue-stt/Cargo.lock kept the vulnerable rustls 0.23.43 (RUSTSEC-2026-0285)
-      # unpatched on `main` until the PR #41 hotfix. This step, plus the coverage-check step
-      # above, close that gap.
-      - name: Audit STT crate
-        working-directory: implementation/desktop/crates/selahcue-stt
-        run: cargo audit
-
-  supply-chain:
-    # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
-    # deny.toml) + a CycloneDX SBOM artifact per build. Advisories live in the
-    # RustSec job above.
-    name: supply chain (licenses + SBOM)
-    needs: changes
-    if: needs.changes.outputs.desktop == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny,cargo-cyclonedx
-      - name: License / source / bans policy (desktop workspace)
-        working-directory: implementation/desktop
-        run: cargo deny check licenses sources bans
-      - name: License / source / bans policy (operator shell)
-        working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo deny check licenses sources bans
-      - name: Generate CycloneDX SBOM (desktop workspace)
-        working-directory: implementation/desktop
-        run: cargo cyclonedx --format json
-      - name: Generate CycloneDX SBOM (operator shell)
-        working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo cyclonedx --format json
-      - name: Upload SBOMs
+          RESET_FLOOR_MEASUREMENT_MODE: baseline
+          RESET_FLOOR_EVIDENCE_DIR: reset-floor-evidence
+        run: python -m pytest tests/test_customer_auth_slice.py -q -s -k "not allowed_reset_request_pads_after_its_commit"
+      - name: Preserve raw timing receipt
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: sbom-cyclonedx
-          path: implementation/desktop/**/*.cdx.json
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
-  # The alarm. Nine days without a green run on `main` went unnoticed because a
-  # failure notifies nobody, and branch protection is unavailable for a private repo
-  # on this plan -- so a red commit lands regardless and an alarm is the ONLY control
-  # available. ClickUp 86ak5rc9c.
-  #
-  # It tracks WHICH jobs are outstanding, not a single red/green bit, because CI
-  # path-filters by area: an api-only push to `main` SKIPS the entire desktop matrix.
-  # A red/green alarm would read that skip as "nothing failed" and close itself while
-  # `main` was still broken on `rust`, having verified nothing about `rust`. A job
-  # leaves the outstanding set only by actually reporting success.
-  #
-  # The logic lives in a script with a self-test rather than in `if:` expressions,
-  # because expressions cannot be tested and this one has to be right the first time
-  # it matters -- by definition that is a moment when `main` is already broken.
-  ci-alarm:
-    name: alarm (main red/green tracking)
-    needs:
-      [changes, lint-workflows, rust, launch-smoke, operator, operator-native, flutter, api,
-       marketing, audit, supply-chain]
-    # always(): several of the above are legitimately skipped by the path filters, and a
-    # skipped dependency would otherwise skip the alarm exactly when it is needed.
-    # Every job that can fail on `main` must be in this list, or its failure is invisible
-    # -- which is the nine-days-unnoticed failure mode, recreated for one job.
-    # A push only ever reaches here from `main` (a release-tag push fails the `github.ref` test
-    # below). A dispatch is additionally allowed from ANY ref so the alarm can be rehearsed before it is
-    # merged -- but off `main` it runs in DRY_RUN, doing every read and withholding
-    # every write. Without that, its first execution ever would be on an already-broken
-    # `main`, which is the worst possible moment to discover a typo; and letting a
-    # branch's results write to the real issue could close a genuine alarm.
-    # The weekly run (17tnw2b2nxk) is the only run that exercises the Windows legs on `main`, so
-    # it MUST reach the alarm: a Windows failure found on a Sunday has nowhere else to go. A
-    # scheduled run is always on the default branch, so it writes for real.
-    if: >-
-      ${{ always()
-          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
-              || github.event_name == 'schedule'
-              || github.event_name == 'workflow_dispatch') }}
-    runs-on: ubuntu-latest
-    # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
-    # NOT listed to `none`, so an `issues: write`-only block leaves `contents: none` --
-    # and on a private repo that means actions/checkout cannot clone, the first step
-    # fails, and the alarm never runs at all. A dead alarm shipped next to a CLAUDE.md
-    # that calls it "the only alarm" is this ticket's own worst case. 86ak5rc9c.
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          # This job holds `issues: write`; nothing here needs the token afterwards
-          # (the reconcile step gets it via a step-scoped `env:`), so keep it out of
-          # .git/config rather than leaving a writable credential lying in the tree.
-          persist-credentials: false
-      # Prove the reconcile logic before trusting it with the verdict. Cheap, and it
-      # runs on every main push, so the alarm cannot rot into being wrong unnoticed.
-      - name: Self-test the alarm logic
-        run: python3 .github/scripts/ci_alarm.py --self-test
-      - name: Reconcile the ci-red issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          SHA: ${{ github.sha }}
-          NEEDS: ${{ toJSON(needs) }}
-          # Did this run include the Windows legs? `rust`, `operator` and `operator-native` are
-          # matrix jobs and report ONE result for all their legs, so the alarm needs this to know
-          # what a success covered. It is the same value that built the matrix. Absent or anything
-          # but "true" is read as "Linux only", the stricter reading (see ci_alarm.py).
-          WINDOWS_RAN: ${{ needs.changes.outputs.windows }}
-          DRY_RUN: ${{ github.ref != 'refs/heads/main' }}
-        run: python3 .github/scripts/ci_alarm.py
+          name: reset-floor-baseline
+          path: implementation/api/reset-floor-evidence/
+          if-no-files-found: warn
