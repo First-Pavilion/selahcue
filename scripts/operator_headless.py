@@ -1925,7 +1925,9 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # Count measured by the RED full run, followed by the GREEN full run.
 # 2302 ->2303 (V246-1): instrumented iterator bound for an oversized paste;
 # measured by the review RED run before the bounded-scalar implementation.
-EXPECTED_MIN_CHECKS = 2303  # measured:2303 checks; final result recorded in the goal
+#2303 ->2315 (17tnw2ayetg): four startup-state combinations, with three DOM,
+# explanation and no-mutation checks each. Count measured by the RED full run.
+EXPECTED_MIN_CHECKS = 2315  # measured:2315 checks; result recorded in the goal
 
 
 def find_chrome():
@@ -6292,6 +6294,52 @@ DRIVER = r"""
       var insp5 = document.getElementById("screens-inspector");
       ok(!insp5.querySelector('input[aria-label="Broadcast main as an NDI source"]').disabled,
          "CON-158 (control): ndi_available reverting to unknown (null) re-enables the control — absent must never render as unavailable");
+
+      //17tnw2ayetg: cover four separate host-startup configurations. Switching the
+      // fixture here is test setup, not a promise that NDI capability hot-switches at runtime.
+      var savedNdiState = V.screens.find(function(s){ return s.screen === "main"; }).config;
+      var savedNdiEnabledBefore = savedNdiState.ndi_enabled;
+      var savedNdiNameBefore = savedNdiState.ndi_name;
+      var savedNdiAvailableBefore = V.ndi_available;
+      var ndiStartupCases = [
+        {available:true, enabled:true, label:"available/saved-on"},
+        {available:true, enabled:false, label:"available/saved-off"},
+        {available:false, enabled:true, label:"unavailable/saved-on"},
+        {available:false, enabled:false, label:"unavailable/saved-off"}
+      ];
+      for (var startupCase of ndiStartupCases) {
+        savedNdiState.ndi_enabled = startupCase.enabled;
+        savedNdiState.ndi_name = "Saved Main Feed";
+        V.ndi_available = startupCase.available;
+        var startupNdiCallsBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+        await waitFor(function(){
+          var toggle = document.querySelector('input[aria-label="Broadcast main as an NDI source"]');
+          var field = document.querySelector('input[aria-label="NDI source name for main"]');
+          return toggle && field && toggle.checked === startupCase.enabled &&
+            toggle.disabled === !startupCase.available && field.value === "Saved Main Feed";
+        });
+        var startupNdiInspector = document.getElementById("screens-inspector");
+        var startupNdiToggle = startupNdiInspector.querySelector('input[aria-label="Broadcast main as an NDI source"]');
+        var startupNdiSignal = startupNdiInspector.querySelector(".scr-signal");
+        var startupNdiText = startupNdiSignal.textContent;
+        ok(startupNdiToggle.checked === startupCase.enabled && startupNdiToggle.disabled === !startupCase.available,
+           "NDI startup " + startupCase.label + ": the checkbox preserves the saved preference and host availability");
+        var startupNdiCopyOk;
+        if (!startupCase.available) {
+          startupNdiCopyOk = /NDI runtime unavailable/.test(startupNdiText) && !/Broadcasting NDI/.test(startupNdiText) &&
+            (startupCase.enabled ? /saved as on/.test(startupNdiText) && /not broadcasting now/.test(startupNdiText) : !/saved as on/.test(startupNdiText));
+        } else {
+          startupNdiCopyOk = startupCase.enabled ? /Broadcasting NDI · Saved Main Feed/.test(startupNdiText) : /NDI off/.test(startupNdiText);
+        }
+        ok(startupNdiCopyOk && startupNdiSignal.getAttribute("role") === "status",
+           "NDI startup " + startupCase.label + ": visible announced copy explains the actual state without a false broadcast claim");
+        ok(savedNdiState.ndi_enabled === startupCase.enabled && savedNdiState.ndi_name === "Saved Main Feed" &&
+           window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === startupNdiCallsBefore,
+           "NDI startup " + startupCase.label + ": rendering neither rewrites the preference nor sends a host mutation");
+      }
+      savedNdiState.ndi_enabled = savedNdiEnabledBefore;
+      savedNdiState.ndi_name = savedNdiNameBefore;
+      V.ndi_available = savedNdiAvailableBefore;
 
       // Restore: the set_ndi_output mock above (CON-156/157/158) is a REAL mutation, unlike the
       // rest of this file's earlier no-op stub for it, so "stream" and "main" are genuinely left

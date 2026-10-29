@@ -1440,7 +1440,8 @@
           ));
           // Honest status: runtime unavailable, broadcasting (with the source name), or off.
           if (ndiUnavailable) {
-            setSignal("warn", "⚠ NDI runtime unavailable — build with the ndi feature to broadcast");
+            setSignal("warn", "⚠ NDI runtime unavailable — build with the ndi feature to broadcast" +
+              (cfg.ndi_enabled ? ". Broadcast is saved as on; it is not broadcasting now." : ""));
           } else if (cfg.ndi_enabled && cfg.ndi_name) {
             setSignal("ok", "● Broadcasting NDI · " + cfg.ndi_name);
           } else {
