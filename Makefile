@@ -49,8 +49,10 @@ PROFILE_NAME := $(if $(filter 1,$(RELEASE)),release,debug)
 # `dev-keys`/`openai-notes` were here from 86akcmzrd; `cloud-stt` is added by 86akd10dq -- see the
 # long comment on `STT_FEATURES` below for why cloud-stt joins this list and plain `stt` does not.
 RELEASE_UNSAFE_FEATURES := dev-keys openai-notes cloud-stt
-# The local endpoint file the output window writes (matches Rust's std::env::temp_dir()).
-ENDPOINT := $(shell python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))" 2>/dev/null)
+# The local endpoint file the output window writes: in a per-user private directory ($XDG_RUNTIME_DIR,
+# or the temp dir when private, else a selahcue-UID subdirectory of it; 17tnw2b9agb). The script
+# mirrors selahcue_lan::local_endpoint and a Rust test pins the two together.
+ENDPOINT := $(shell python3 "$(CURDIR)/scripts/endpoint_path.py" 2>/dev/null)
 CMD      ?= next
 SECS     ?=
 # On-device STT (whisper.cpp + cpal) for the live transcript, run by the operator shell. It needs

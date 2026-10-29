@@ -19,7 +19,8 @@ BUDGET_COLD_S=3.0
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DESKTOP="$ROOT/implementation/desktop"
-ENDPOINT=$(python3 -c "import tempfile,os;print(os.path.join(tempfile.gettempdir(),'selahcue-operator-endpoint.json'))")
+# The host publishes in a per-user private directory (17tnw2b9agb); this mirrors the Rust resolver.
+ENDPOINT=$(python3 "$ROOT/scripts/endpoint_path.py")
 BIN="$DESKTOP/target/release/selahcue-output"
 
 echo ">> building release binary…"

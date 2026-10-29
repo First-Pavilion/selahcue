@@ -3599,6 +3599,7 @@ dependencies = [
  "futures-util",
  "rcgen",
  "ring",
+ "rustix",
  "rustls",
  "selahcue-core",
  "serde",
