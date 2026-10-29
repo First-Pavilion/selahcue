@@ -70,7 +70,7 @@ def test_enqueue_failure_does_not_break_the_caller(monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("broker down")
 
-    monkeypatch.setattr(email_module.send_verification_email_task, "delay", boom)
+    monkeypatch.setattr(email_module.send_verification_email_task, "apply_async", boom)
     sender = email_module.CeleryEmailSender()
 
     class FakeUser:

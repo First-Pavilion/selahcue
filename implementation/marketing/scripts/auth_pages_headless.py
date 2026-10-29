@@ -1792,6 +1792,7 @@ DRIVER = r"""
       check('V5 phrasing is conditional ("If ... has a SelahCue account")',
             has(text, 'If pastor@yourchurch.org has a SelahCue account'));
       check('V5 states the 24 hour TTL', has(text, 'expires in 24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('V5 explains only the newest link works', has(text, 'Only the newest link works'));
       alignmentChecks('V5', false, true);
       // verify-v5-01: the helper note is 12.5px on a 17px line in the secondary ink, 4.5:1 or better.
@@ -2307,6 +2308,7 @@ DRIVER = r"""
       check('sent state phrasing is conditional',
             has(text, 'If pastor@yourchurch.org has a SelahCue account'));
       check('sent state states the 1 hour TTL, not 24', has(text, 'expires in 1 hour'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('called requestPasswordReset (a mutation that really exists)',
             calls.some(function (c) { return c.op === 'RequestPasswordReset'; }));
       universalChecks();
@@ -2550,6 +2552,7 @@ DRIVER = r"""
       check('phrasing stays conditional',
             has(text, 'has a SelahCue account waiting to be verified'));
       check('states the 24 hour TTL', has(text, 'expires in 24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       var resend = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
       check('dispatched the real resend mutation', !!resend);
       check('asked for the real field name',
@@ -3012,6 +3015,7 @@ DRIVER = r"""
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
       check('states the 24 hour TTL', has(text, '24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('FR-552: offers a resend', has(text, 'Resend verification email'));
       var register = calls.filter(function (c) { return c.op === 'RegisterCustomerUser'; })[0];
       check('dispatched registerCustomerUser', !!register);
@@ -3324,6 +3328,7 @@ DRIVER = r"""
       check('sent state title', has(text, 'Check your inbox'));
       check('phrasing is conditional', has(text, 'has a SelahCue account'));
       check('states the 1 hour TTL, not 24', has(text, 'expires in 1 hour'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('dispatched requestPasswordReset',
             calls.some(function (c) { return c.op === 'RequestPasswordReset'; }));
       recordBranch('forgot-registered');

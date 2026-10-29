@@ -446,8 +446,9 @@ onBeforeUnmount(() => {
            answer for an address that is unknown, unverified or already verified, so a
            direct claim would be both a lie and an oracle. -->
       <p class="au-body">
-        If {{ email.trim() }} has a SelahCue account waiting to be verified, a new link is
-        on its way. It expires in 24 hours.
+        Your request for {{ email.trim() }} was accepted. If this account needs verification,
+        check your inbox for a new link. A verification link expires in 24 hours.
+        If no email arrives, try again in a moment.
       </p>
       <div class="au-actions">
         <UiButton
