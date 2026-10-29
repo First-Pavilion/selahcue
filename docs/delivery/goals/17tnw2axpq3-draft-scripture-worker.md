@@ -77,6 +77,25 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: 17tnw2axpq3-red.log, focused.log, mutation.log, cargo-default.log under /private/tmp/selahcue-batch20-20261029/.
 - Decision: iterate; full serialized make ci running on f121aaba plus this production patch.
 
+### Iteration 3 — complete local gate on original target
+- Target criterion: C-003.
+- Hypothesis: all configured native feature boundaries and broad regressions remain compatible with the worker placement.
+- Change or investigation: no source edits during full make ci; coordinator temporarily held the running process while freeing review capacity. Inspected final exit file and complete stage summaries before recording results.
+- Verifier executed: CARGO_TARGET_DIR=/private/tmp/selahcue-review238-target CARGO_INCREMENTAL=0 make ci.
+- Result: exit0, ALL GREEN on f121aaba plus this patch. SQLite API: 1,520 passed, 24 service-dependent skips and 1 expected failure; system/migrations clean. Operator default 434 / dev-keys 447 / openai-notes 438 / combined 451 / release 451 passed with 1 ignored each; stt+cloud-stt 460 passed, 2 ignored. Workspace and server/encryption/scripture/cloud debug/release checks and clippy passed. Real cached Whisper large-v3/Metal cold-start test actually loaded a 1,623.92 MB model and passed, rather than taking an absent-model early return. Headless: 2,315 checks, 0 failures; Flutter analyze clean and 380 tests passed. All three audit roots passed, with existing allowed warnings (workspace 2 / operator 4 / STT 0); no waiver added.
+- New evidence: 17tnw2axpq3-make-ci.log and make-ci.exit0. Flutter generated only the unrelated SDK-floor lock edit 3.41 to 3.44; saved exact diff and restored it after asserting no other lock difference. Production main.rs SHA256 364882e1e6efcfc1cfbff1c77d31f4ef7b0787921866ac33221226170601af92 unchanged throughout.
+- Decision: iterate for current merged target712358a2 integration and proportionate fresh checks; do not claim full make ci was rerun on that later head.
+
+
+### Iteration 4 — merged target integration and final refresh
+- Target criterion: C-003 freshness.
+- Hypothesis: the reviewed Remote Control UI and API throttle-header changes compose with the unchanged Rust conversion; refresh their browser boundary and the actual native command suite.
+- Change or investigation: inspected the entire 12-file, 753-insertion target delta from f121aaba to merged main 712358a209a01d293fb4b310ebe0ca0d6d3f8846. It changes Remote Control HTML/JS/headless tests, throttle expiry/headers/tests, and supporting docs/goals. No Rust source, dependency or workflow change. Committed implementation 165bebe7 and cleanly merged target into 6182909bc749d67b1f9b4ca47019ed359e7e8f8c. The production Rust file is byte-identical across the merge. No unmerged PR253 branch was integrated.
+- Verifier executed: fresh mandatory-Chrome full operator_headless.py and full actual default operator Cargo suite on integrated source. Structural validator, Cargo format and diff checks after final tracked goal prose. Deployment environment docs guard also run after final prose as a proportional check of the newly integrated ops documentation.
+- Result: headless 2,347 checks with 0 failures, exit0; native 434 passed, 1 ignored, exit0. These runs include the real loaded-draft runtime-placement and recovery tests. Full make ci remains honestly pinned to the original target plus native patch, rather than claimed on this later merge. Coordinator separately supplies exact hosted API 1,563-pass evidence for the merged header change; Mika did not rerun that entire API suite.
+- New evidence: 17tnw2axpq3-integrated-headless.log/.exit and integrated-native.log/.exit; target-delta.diff; final validators and docs-guard log in the batch evidence directory.
+- Decision: handoff frozen source for all four independent reviews and exact-head hosted CI. No merge or QA claim.
+
 ## Risks and rollback
 - Risks: worker join can fail; return existing unavailable-draft shape with a fixed diagnostic. Threadpool contention is possible, with no new admission limit in this ticket.
 - Rollback or recovery: revert only this ticket; worker conversion is read-only and never changes stored data.
@@ -86,17 +105,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2axpq3-draft-scripture-worker.md
-- Validator result: pending
+- Validator result: structural PASS; completion intentionally blocked on C-004/C-005
 - Independent verification result: coordinator pending
-- Terminal state: ACTIVE
-- Remaining failed or blocked criteria: implementation pending, C-004/C-005 coordinator-owned
+- Terminal state: BLOCKED on independent review and delivery; implementation verification passed
+- Remaining failed or blocked criteria: C-004/C-005 coordinator-owned
 - ClickUp final evidence comment: coordinator-owned
-
-### Iteration 3 — complete local gate on original target
-- Target criterion: C-003.
-- Hypothesis: all configured native feature boundaries and broad regressions remain compatible with the worker placement.
-- Change or investigation: no source edits during full make ci; coordinator temporarily held the running process while freeing review capacity. Inspected final exit file and complete stage summaries before recording results.
-- Verifier executed: CARGO_TARGET_DIR=/private/tmp/selahcue-review238-target CARGO_INCREMENTAL=0 make ci.
-- Result: exit0, ALL GREEN on f121aaba plus this patch. SQLite API1520 passed/24 service-dependent skips/1 expected failure; system/migrations clean. Operator default434/dev-keys447/openai-notes438/combined451/release451 passed with1 ignored each; stt+cloud-stt460 passed/2 ignored. Workspace and server/encryption/scripture/cloud debug/release checks and clippy passed. Real cached Whisper large-v3/Metal cold-start test actually loaded1623.92MB model and passed, rather than taking an absent-model early return. Headless2315 checks/0FAIL; Flutter analyze clean and380 tests passed. All three audit roots passed, with existing allowed warnings (workspace2/operator4/STT0); no waiver added.
-- New evidence: 17tnw2axpq3-make-ci.log and make-ci.exit0. Flutter generated only the unrelated SDK-floor lock edit3.41→3.44; saved exact diff and restored it after asserting no other lock difference. Production main.rs SHA256364882e1e6efcfc1cfbff1c77d31f4ef7b0787921866ac33221226170601af92 unchanged throughout.
-- Decision: iterate for current merged target712358a2 integration and proportionate fresh checks; do not claim full make ci was rerun on that later head.
