@@ -325,13 +325,40 @@ class _SignalGuard(object):
                 pass
 
 
-def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
-    """Load `page_html` in headless Chrome, return a `ChromeRun`. See the module docstring.
+def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None, *, page_url=None):
+    """Load HTML or an already served URL and return a `ChromeRun`.
 
-    `flags` are the caller's own flags (`--headless=new`, budget, ...); the hardening flags, the
-    `--dump-dom` and the page URL are appended here. `tmp_root` is where the private work dir is
-    made and where url-fetcher litter is swept (default: the system temp dir).
+    Existing HTML callers keep their private page file. For an HTTP server or
+    existing file, pass `page_html=None, page_url=url`; the URL is forwarded
+    unchanged, including query/fragment. Flags, hardening and cleanup are shared.
     """
+    if (page_html is None) == (page_url is None):
+        raise ValueError("supply exactly one of page_html or page_url")
+
+    def make_argv(workdir):
+        url = page_url
+        if page_html is not None:
+            page = os.path.join(workdir, "page.html")
+            with open(page, "w", encoding="utf-8") as f:
+                f.write(page_html)
+            url = "file://" + page
+        return [chrome] + list(flags) + list(CHROME_HARDENING_FLAGS) + ["--dump-dom", url]
+
+    return _run_with_files(make_argv, timeout, tmp_root, chrome_cleanup=True)
+
+
+def run_command(command, timeout, env=None, tmp_root=None):
+    """Run a non-browser command with the SAME file/PID/timeout/signal cleanup.
+
+    Return the existing `ChromeRun` shape. No browser flags, page file or Chrome
+    litter sweep is applied. `env` follows Popen's replacement-environment rule.
+    The caller owns interpreting a nonzero exit or `timed_out` as a failure.
+    """
+    return _run_with_files(lambda _workdir: list(command), timeout, tmp_root, env=env)
+
+
+def _run_with_files(make_argv, timeout, tmp_root=None, env=None, chrome_cleanup=False):
+    """The one process lifecycle used by browser and native command callers."""
     tmp_root = tmp_root or tempfile.gettempdir()
     guard = _SignalGuard()
     workdir = None
@@ -340,21 +367,19 @@ def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
     existed_before = None
     try:
         guard.install()
-        existed_before = _list_names(tmp_root)
+        if chrome_cleanup:
+            existed_before = _list_names(tmp_root)
         workdir = tempfile.mkdtemp(prefix="selahcue-headless-", dir=tmp_root)
-        page = os.path.join(workdir, "page.html")
         out_path = os.path.join(workdir, "chrome.stdout")
         err_path = os.path.join(workdir, "chrome.stderr")
-        with open(page, "w", encoding="utf-8") as f:
-            f.write(page_html)
-        argv = [chrome] + list(flags) + list(CHROME_HARDENING_FLAGS) + ["--dump-dom", "file://" + page]
+        argv = make_argv(workdir)
         popen_kwargs = {"start_new_session": True} if os.name == "posix" else {}
         timed_out = False
         returncode = None
         guard.raise_if_pending()  # told to stop before we started: do not start a browser for nothing
         started = time.time()
         with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f, **popen_kwargs)
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f, env=env, **popen_kwargs)
             guard.arm()  # `proc` exists from here on, so a signal can safely unwind
             try:
                 returncode = proc.wait(timeout=timeout)
@@ -383,7 +408,8 @@ def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
             exited_at = time.time()
         if workdir is not None and _best_effort("remove the work dir", _remove_tree, workdir) is False:
             print("WARN: could not remove headless Chrome work dir %s" % workdir, file=sys.stderr)
-        _best_effort("sweep url-fetcher litter", _sweep_chrome_litter, tmp_root, existed_before, exited_at)
+        if chrome_cleanup:
+            _best_effort("sweep url-fetcher litter", _sweep_chrome_litter, tmp_root, existed_before, exited_at)
         guard.restore()
         guard.raise_if_pending()  # a signal that could not interrupt us is honoured, after cleanup
 
