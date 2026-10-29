@@ -1,11 +1,11 @@
 # Reset timing replay evidence
 
-These are the complete timing receipts retained for QA-265-1. They contain every warmup, target pair and interleaved same-path null pair from the original studies, with runtime/configuration and real publish/commit/body counts. No sample was removed or rewritten. Source commits in the receipts identify GitHub's tested synthetic checkout or the nonshipping diagnostic branch, rather than pretending they are the PR branch SHA.
+The complete timing receipts retained for QA-265-1 live inside the API-owned `implementation/api/tests/fixtures/reset_timing/` directory, which is included by the repository checkout, Docker API-only build context, and compose API-only bind mount. This provenance document stays with the goal evidence; the JSON files have one authoritative copy each in the API fixture directory. They contain every warmup, target pair and interleaved same-path null pair from the original studies, with runtime/configuration and real publish/commit/body counts. No sample was removed or rewritten. Source commits in the receipts identify GitHub's tested synthetic checkout or the nonshipping diagnostic branch, rather than pretending they are the PR branch SHA.
 
 | Receipt | Original run | SHA256 of retained file |
 | --- | --- | --- |
-| `pr-ci40923541126.json` | [Failed full PR CI](https://github.com/First-Pavilion/selahcue/actions/runs/40923541126) | `7c98bc392b98bec3784e567784c5a5b79832233e9b7f01a5a7d453be14196974` |
-| `pad-removal40923575228.json` | [Frozen-source candidate/mutation/restoration diagnostic](https://github.com/First-Pavilion/selahcue/actions/runs/40923575228) | `62f2f900af7da4126ac86820a78de7274e019e59a56624b305b202ae614be9fa` |
+| [`pr-ci40923541126.json`](../../../../implementation/api/tests/fixtures/reset_timing/pr-ci40923541126.json) | [Failed full PR CI](https://github.com/First-Pavilion/selahcue/actions/runs/40923541126) | `7c98bc392b98bec3784e567784c5a5b79832233e9b7f01a5a7d453be14196974` |
+| [`pad-removal40923575228.json`](../../../../implementation/api/tests/fixtures/reset_timing/pad-removal40923575228.json) | [Frozen-source candidate/mutation/restoration diagnostic](https://github.com/First-Pavilion/selahcue/actions/runs/40923575228) | `62f2f900af7da4126ac86820a78de7274e019e59a56624b305b202ae614be9fa` |
 
 The failed full suite recorded one unknown-address HTTP request at 450.772ms. Its all-sample mean interval was [-33.098, 11.170]ms and included zero: precision was insufficient to establish mean equivalence or an outside-band signed gap. The old assertion incorrectly called that proof of account-existence distinguishability. The cause of the slow request is unproven; the receipt is preserved, not relabeled as a proven harmless product event. The actual pad-removal receipt independently retains a repeatable positive branch gap.
 
@@ -22,3 +22,9 @@ Deterministic tests in the existing `test_customer_auth_slice.py` replay both co
 ## Evidence boundary
 
 This establishes paired-location equivalence within the measured band with a retained evidenced signed-mean-gap veto. It does not prove equality of arbitrary latency distributions, rare tails, variance, or arbitrary network/scheduling conditions. The mean veto prevents a median-only gate from hiding the demonstrated minority-delay mean asymmetry, but finite 32-pair evidence cannot exclude every rare tail. All raw values remain available for further investigation, and production overruns retain the existing bounded report. Production `ACCOUNT_RESET_REQUEST_MIN_SECONDS` remains 0.1s and service behavior is unchanged by this test-instrument correction.
+
+## C265-2 API packaging correction
+
+The first fixture loader reached outside the supported API-only context into repository-level docs. A tracked API-only copy reproduced both active replays failing with FileNotFoundError before the statistical protocol ran. The JSON files were moved byte-for-byte into the API-owned fixture directory and the loader now resolves them beside its test module. The hashes above remain unchanged, and each receipt has exactly one authoritative copy.
+
+The corrected active replays and two existing database-refusal controls passed in an isolated tracked API-only source context, with no outside repository docs available. The API package resolved from that copy. This was a small source-context check using the existing Python3.14 environment and SQLite, not a Docker image build, PostgreSQL full suite, or timing measurement. All149 module function/class ASTs are identical apart from the fixture-path assignment; all other function/class source bytes, production code and raw data are identical to d56bee06. Final-head full hosted CI and refreshed review remain separate gates.

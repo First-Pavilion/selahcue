@@ -2935,7 +2935,7 @@ def _reset_timing_verdict(target, null):
     ],
 )
 def test_reset_timing_protocol_replays_retained_actual_runs(filename, expected_pass, expected_classification):
-    evidence = Path(__file__).resolve().parents[3] / "docs/delivery/goals/86ak7kka2-evidence" / filename
+    evidence = Path(__file__).resolve().parent / "fixtures/reset_timing" / filename
     original = evidence.read_bytes()
     evidence_hash = hashlib.sha256(original).hexdigest()
     receipt = json.loads(original)
