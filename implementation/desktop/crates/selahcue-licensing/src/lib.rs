@@ -80,7 +80,8 @@ pub mod script;
 pub mod trust;
 
 pub use client::{
-    AccountSession, Activation, ActivationPath, LicensingClient, PersistOutcome, TokenDisposition,
+    AccountSession, Activation, ActivationPath, LicensingClient, PersistOutcome,
+    PersistedActivation, SessionCleanup, TokenDisposition,
 };
 pub use contract::{EntitlementEnvelope, ErrorCode};
 pub use custody::{DeviceCredentials, ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME, KEYRING_SERVICE};

@@ -1,8 +1,8 @@
 //! A sequenced [`HttpTransport`] for tests and the operator dev-build.
 //!
 //! `selahcue_cloud::MockTransport` answers every call with one canned response, which is
-//! right for a single-call surface and wrong here: the primary activation path is two
-//! calls — sign in, then activate — and a test that cannot give them different answers
+//! right for a single-call surface and wrong here: the primary activation path includes three
+//! calls — sign in, activate, then account-session cleanup — and a test that cannot give them different answers
 //! cannot exercise it.
 //!
 //! This transport hands back queued responses in order and records every request, so a

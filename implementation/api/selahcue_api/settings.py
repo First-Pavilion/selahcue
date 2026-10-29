@@ -560,6 +560,8 @@ SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 # limit the browser login mutation does not have (that one relies on the edge); the durable
 # per-account lockout in `login` applies to both.
 SELAHCUE_THROTTLE_SESSION_LOGIN = (10, 60)
+# Native single-session cleanup has a separate per-IP bucket; it cannot spend sign-in/activation budgets.
+SELAHCUE_THROTTLE_SESSION_REVOKE = (10, 60)
 
 # Resend-verification is unauthenticated AND sends email on demand, so it is both a spam
 # vector (flooding an arbitrary victim's mailbox) and a cost vector. Three budgets, because

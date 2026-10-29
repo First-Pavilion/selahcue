@@ -13,7 +13,7 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 - **Customer authentication** (DEC-007 / ADR-0023): signup, email verification, login/logout, session refresh, password reset — opaque server-side hashed sessions, not JWT
 - **Device activation** `POST /v1/activations` — enrollment-key authed, instance-limit enforced, show-once device token
 - **Account-based activation** `activateDeviceWithSession` (GraphQL, ADMIN-only per DEC-005)
-- **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls (`selahcue-licensing`, ClickUp 17tnw2b1we2); it never calls `/graphql/account`, which authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. The two routes are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
+- **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls (`selahcue-licensing`, ClickUp 17tnw2b1we2); it never calls `/graphql/account`, which authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. These routes and the single-session cleanup route below are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
 - **License refresh** `POST /v1/license:refresh` — device-token authed, pure read
 - **Signed offline entitlement** `GET /v1/entitlements/manifest` — see below
 
@@ -36,7 +36,7 @@ Shared `/v1` throttle denials return the existing 429 `RATE_LIMITED` JSON envelo
 The application logger `selahcue_api.apps.throttling.guards` warns when a shared native
 throttle actually refuses requests, at most once per 60 seconds per scope per worker process.
 The fixed scopes are `activation`, `session_login`, `activation_with_session`, `license_refresh`
-and `entitlement_manifest`; they reuse the existing scope-only denial suppression. A separate
+`entitlement_manifest`, and `session_revoke`; they reuse the existing scope-only denial suppression. A separate
 aggregate `scope=session_login refused sign-ins` warning reports login-service refusals, including
 wrong credentials, lockouts, account-policy refusals and service validation errors, at most once
 per 60 seconds per worker. It does not distinguish these outcomes, count attempts or identify
@@ -45,7 +45,7 @@ by the native transport/body checks before calling the login service, and succes
 do not emit the service-failure warning.
 
 These warnings contain no IP, email, customer ID, password, token, fingerprint or exception. Native
-reporting adds at most five fixed denial timestamps and one aggregate failure timestamp, protected
+reporting adds at most six fixed denial timestamps and one aggregate failure timestamp, protected
 by the shared reporting lock, with no per-identity maps or database writes. State resets on worker
 restart; fleets can emit one warning per scope/event per worker each minute. This application
 warning bound does not change Django's existing request-status logs or broker/cache-outage logs.
@@ -122,3 +122,7 @@ By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run
 ```
 
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.
+
+### Native single-session cleanup (17tnw2b1wf2)
+
+`POST /v1/sessions:revoke` requires an account bearer, `Content-Type: application/json` and `{}`; it never reads/sets cookies, accepts a body token or exposes an all-sessions option. It reuses account logout/auth/audit with `desktop_v1` provenance; an inactive token is401. The independent fixed `SELAHCUE_THROTTLE_SESSION_REVOKE` budget is10/minute/IP (a code setting, not an environment option). Simple content types and non-POST methods do not spend it;429 includes `Retry-After`/`no-store`. Device tokens, other account sessions and live output are unchanged. Native cleanup failure does not invalidate successful device activation; the client/handoff document exposes explicit retry and local secret-store outcomes. DEC-007 TTL and ADR-0029 Proposed status remain unchanged.
