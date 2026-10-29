@@ -122,4 +122,3 @@ The full live task and no-comment response are saved in the orchestration eviden
 - Terminal state: pending
 - Remaining failed or blocked criteria: C-001, C-002, C-004 and C-005; C-003 passed on the frozen test-only commit
 - ClickUp final evidence comment: root owns publication
-
