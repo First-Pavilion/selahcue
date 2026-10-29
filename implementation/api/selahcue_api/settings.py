@@ -1,7 +1,7 @@
 import os
 import unicodedata
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -480,6 +480,18 @@ def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> di
     tests can aim the identical configuration at a stalled stub."""
     if not url:
         return {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
+    # redis-py parses URL query names once with urlparse/parse_qs and gives their values
+    # precedence over OPTIONS. Refuse both timeout names, even blank or in range, so the
+    # validated environment variables remain authoritative. Keep all other URL options intact.
+    query_options = parse_qs(urlparse(url).query, keep_blank_values=True)
+    for name in ("socket_connect_timeout", "socket_timeout"):
+        if name in query_options:
+            # Only fixed option/variable names: the URL, its credentials and values are secrets.
+            raise ImproperlyConfigured(
+                f"CACHE_URL query option {name} is not supported. Remove it and configure "
+                "CACHE_SOCKET_CONNECT_TIMEOUT and CACHE_SOCKET_TIMEOUT instead; see "
+                "docs/ops/DEPLOYMENT.md §6b."
+            ) from None
     return {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": url,

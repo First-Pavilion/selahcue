@@ -692,3 +692,78 @@ def test_a_healthy_redis_still_counts_and_denies_with_the_timeouts_configured(se
         BudgetOutcome.DENIED,
         BudgetOutcome.DENIED,
     ]
+
+
+# --- URL query options must not override the validated timeout environment -----------------
+@pytest.mark.parametrize("name", ["socket_timeout", "socket_connect_timeout"])
+@pytest.mark.parametrize("value", ["86400", "0", "0.5", "", "PRIVATE-QUERY-VALUE-4ac9"])
+@pytest.mark.parametrize("spelling", ["plain", "encoded_underscore", "encoded_first_letter"])
+def test_query_timeout_options_refuse_startup_without_disclosing_secrets(name, value, spelling):
+    query_name = {
+        "plain": name,
+        "encoded_underscore": name.replace("_", "%5f"),
+        "encoded_first_letter": "%73" + name[1:],
+    }[spelling]
+    url = f"{FAKE_CACHE_URL}?{query_name}={value}"
+    result = _settings_in_subprocess(CACHE_URL=url)
+    assert result.returncode != 0, f"query option {name} was accepted"
+    assert "ImproperlyConfigured" in result.stderr
+    assert f"CACHE_URL query option {name}" in result.stderr
+    assert "CACHE_SOCKET_CONNECT_TIMEOUT" in result.stderr
+    assert "CACHE_SOCKET_TIMEOUT" in result.stderr
+    for output in (result.stdout, result.stderr):
+        for secret in (
+            url, FAKE_CACHE_URL_PASSWORD, FAKE_CACHE_URL_USER, FAKE_CACHE_URL_HOST,
+            "PRIVATE-QUERY-VALUE-4ac9",
+        ):
+            assert secret not in output
+
+
+@pytest.mark.parametrize("name", ["socket_timeout", "socket_connect_timeout"])
+def test_query_timeout_is_refused_even_with_blank_first_duplicate(name):
+    result = _settings_in_subprocess(
+        CACHE_URL=f"{FAKE_CACHE_URL}?{name}=&{name}=86400",
+        CACHE_SOCKET_CONNECT_TIMEOUT="0.7",
+        CACHE_SOCKET_TIMEOUT="0.9",
+    )
+    assert result.returncode != 0
+    assert f"CACHE_URL query option {name}" in result.stderr
+    assert FAKE_CACHE_URL_PASSWORD not in result.stderr
+
+
+@pytest.mark.parametrize("scheme", ["redis", "rediss", "unix"])
+def test_other_query_options_preserve_effective_pool_configuration(settings, scheme):
+    address = "example.invalid:6379/1" if scheme != "unix" else "/tmp/fake-cache.sock"
+    url = f"{scheme}://{address}?db=9&socket_keepalive=False&health_check_interval=17&client%5fname=cache-probe"
+    settings.CACHES = {"default": project_settings._cache_config(url, 0.7, 0.9)}
+    assert settings.CACHES["default"]["LOCATION"] == url
+    pool = caches["default"]._cache.get_client(write=True).connection_pool
+    assert pool.connection_kwargs["socket_connect_timeout"] == 0.7
+    assert pool.connection_kwargs["socket_timeout"] == 0.9
+    assert pool.connection_kwargs["db"] == 9
+    assert pool.connection_kwargs["socket_keepalive"] is False
+    assert pool.connection_kwargs["health_check_interval"] == 17
+    assert pool.connection_kwargs["client_name"] == "cache-probe"
+
+
+def test_unrelated_query_options_still_load_through_real_startup():
+    url = "redis://example.invalid:6379/1?db=9&client_name=cache-probe"
+    result = _settings_in_subprocess(CACHE_URL=url, CACHE_SOCKET_TIMEOUT="2")
+    assert result.returncode == 0, result.stderr
+    config = json.loads(result.stdout)
+    assert config["LOCATION"] == url
+    assert config["OPTIONS"] == {"socket_connect_timeout": 0.5, "socket_timeout": 2.0}
+
+
+def test_timeout_words_outside_query_names_are_not_refused(settings):
+    url = (
+        "redis://socket_timeout:socket_connect_timeout@example.invalid:6379/1"
+        "?client_name=socket_timeout%3D86400#socket_connect_timeout=0"
+    )
+    settings.CACHES = {"default": project_settings._cache_config(url, 0.7, 0.9)}
+    kwargs = caches["default"]._cache.get_client(write=True).connection_pool.connection_kwargs
+    assert kwargs["username"] == "socket_timeout"
+    assert kwargs["password"] == "socket_connect_timeout"
+    assert kwargs["client_name"] == "socket_timeout=86400"
+    assert kwargs["socket_timeout"] == 0.9
+    assert kwargs["socket_connect_timeout"] == 0.7
