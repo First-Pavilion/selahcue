@@ -416,7 +416,8 @@ def _run_with_files(make_argv, timeout, tmp_root=None, env=None, chrome_cleanup=
 
 # ---------------------------------------------------------------------------------------------
 # Self-test. Runs the REAL `run_headless_chrome` against fake browsers (python scripts), so every
-# behaviour above is checked on the code path the gate uses, in a few seconds and without Chrome.
+# behaviour above is checked on the code path the gate uses, without Chrome. Scheduling/cost
+# decisions and measured scope are recorded in docs/ops/HEADLESS-GATE.md.
 # Each scenario's comment names the defect it guards; every scenario was mutation-checked (the
 # edit that must turn it red is in the PR description and on ClickUp 17tnw2b1f32).
 # The fake is run as `python <script> <flags...>`, never as an executable file of its own: macOS
@@ -821,13 +822,14 @@ def self_test(verdict=None, expected_checks=3):
         # 3. AC2: a browser that PRINTS A COMPLETE BLOCK and then never exits is still a timeout:
         #    red, never rescued from its partial output. Browser AND helper must be gone, no temp dirs.
         name = "hung browser"
-        for attempt, timeout in enumerate((3, 20)):
+        for attempt, timeout in enumerate((1, 3, 20)):
             case = _Case(root, "hang", tag="hang%d" % attempt)
             run = case.run(timeout=timeout)
             helpers = pids_of(case, "self", "helper")
             if len(helpers) == 2:
                 break
-            # A loaded machine can start the fake after a 3 s timeout: inconclusive, not a verdict.
+            # Missing readiness is inconclusive, not a verdict. Try1s first to avoid paying3s
+            # on a ready machine; retain3s (not2s) and20s retries for loaded-host startup.
         if len(helpers) != 2:
             problems.append("%s: the fake never started, the scenario proves nothing" % name)
         else:

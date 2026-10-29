@@ -14,9 +14,11 @@ exits 0 with a LOUD SKIP notice so `make ci` on a Chrome-less box still passes â
 UNLESS SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a
 hard failure so the gate can never silently no-op.
 
-Before Chrome is looked for at all, the gate runs a ~4 s self-test of its own Chrome launcher
+Before Chrome is looked for at all, the gate runs the self-test of its own Chrome launcher
 (scripts/headless_chrome.py) against fake browsers. That needs no Chrome, so it also runs on a
 Chrome-less box, and a failure there exits 2 (infra) without ever looking for Chrome (17tnw2b1f32).
+Its current cost/scheduling decisions are recorded in docs/ops/HEADLESS-GATE.md; the older~4s
+measurement predates the environment CLI scenarios and is not a current startup-time claim.
 
 FIDELITY NOTE (known gap): this drives Blink (headless Chrome), NOT the engine Tauri
 actually ships on â€” WebKitGTK (Linux), WKWebView (macOS), WebView2 (Windows). It is
@@ -1972,14 +1974,15 @@ def find_chrome():
 #
 # Before Chrome is even looked for, `check_headless_launch_contract()` runs that real launcher and
 # this real mapping against fake browsers (python scripts), so a regression of the launch or of the
-# mapping fails here in a few seconds instead of surfacing as a flaky red hours later. Its PASS
+# mapping fails in this pre-browser contract instead of surfacing as a flaky red later. Its PASS
 # line is not a counted check (like the filter-guard static check above), so it does not touch
 # EXPECTED_MIN_CHECKS.
 # ---------------------------------------------------------------------------------------------
 
 # Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 90 s
-# virtual-time budget is fast-forwarded, so a healthy run takes ~4-10 s here (the slowest passing
-# browser phase seen was 79.8 s, at a machine load of 117).
+# virtual-time budget is fast-forwarded. Historical PR153 recorded a79.8s passing phase at
+# load117 (10.2s/12.8% runtime headroom); current observations and the decision to keep90s
+# rather than150s are recorded separately in docs/ops/HEADLESS-GATE.md.
 _CHROME_TIMEOUT_S = 90
 
 _RESULTS_RE = re.compile(r"RESULTS\n(.*?)\nDONE\((\d+)\)", re.S)
