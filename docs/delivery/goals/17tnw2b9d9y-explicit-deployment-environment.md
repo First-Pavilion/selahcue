@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Refuse an unset deployment environment with an empty key and non-local hosts
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9d9y
 - Created: 2026-10-29
@@ -86,9 +86,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: the narrow accepted option(a) catches the omitted-environment legacy-doc deployment without breaking intentional local dev.
 - Change or investigation: read complete task and owner comments, fetch main, create isolated worktree and prepare tests before production changes.
 - Verifier executed: static syntax, diff check and structural contract validation only.
-- Result: test-only candidate awaits hosted behavioral RED; production unchanged.
-- New evidence: wave2-20261029/api-explicit-environment/test-only-manifest.json.
-- Decision: handoff
+- Result: actual hosted RED40944471627 on source6616cac2 produced18failed/25passed in1.65s:17behavioral DID NOT RAISE failures plus1stale documentation explanation failure. No setup failures; production was unchanged.
+- New evidence: wave2-20261029/api-explicit-environment/red.log and https://github.com/First-Pavilion/selahcue/actions/runs/40944471627
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: check raw configuration before public-key fallback, using the exact accepted local-host allowlist.
+- Change or investigation: move existing allowed-host parsing before secret fallback; add the conjunctive import-time refusal and actionable fixed error; describe exact boundaries in both deployment guides and sample comments. Preserve explicit dev, configured-key behavior, existing non-dev guards and database configuration.
+- Verifier executed: stdlib syntax, diff check, structural goal validation and source inspection only; no local project runtime.
+- Result: candidate prepared for hosted GREEN and all independent gates, which remain pending.
+- New evidence: wave2-20261029/api-explicit-environment/candidate-manifest.json and verification.log.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -103,8 +113,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9d9y-explicit-deployment-environment.md
-- Validator result: initial structural validation PASS; test-only source syntax and diff checks PASS.
+- Validator result: structural validation PASS; candidate source/test syntax and diff checks PASS.
 - Independent verification result: pending parent orchestration.
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: hosted RED/GREEN and all completion gates pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: hosted GREEN, full API regression, all four independent reviews, merge and exact QA readback remain pending.
 - ClickUp final evidence comment: parent owns publication.
