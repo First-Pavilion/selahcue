@@ -226,6 +226,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
+| `CACHE_CIRCUIT_FAILURE_THRESHOLD` | `3` | Integer `1` to `100`; consecutive cache errors before this worker bypasses the store. See §6b |
+| `CACHE_CIRCUIT_COOLDOWN` | `5` (seconds) | Finite `0.1` to `60`; bypass duration before a single recovery probe. See §6b |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | `0` (off) | Set `1` (or `true`/`yes`/`on`) behind a TLS-terminating proxy that overwrites `X-Forwarded-Proto`, else browser CSRF fails and HSTS is never sent. Opt-in because the header is forgeable, and it makes HSTS live. See §6c |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Exact `https://host[:port]` origins (no `*`, no path), only if the browser `Origin` differs from the forwarded `Host`. A bad entry refuses to boot. See §6c |
@@ -379,6 +381,24 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | `0.05` to `10` | Opening the TCP connection to Redis, and nothing after it |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` | `0.05` to `10` | Waiting on Redis for anything once the TCP connection is open: each command, and on a new connection the handshake too |
 
+- **Per-process cache circuit (17tnw2b2kab).** After `CACHE_CIRCUIT_FAILURE_THRESHOLD`
+  consecutive budget-store errors (default `3`), that worker skips store access for
+  `CACHE_CIRCUIT_COOLDOWN` seconds (default `5`). A successful counter operation, including a
+  real denial, resets the consecutive error count. The threshold accepts integers `1` to `100`;
+  cooldown accepts finite seconds `0.1` to `60`. Blank uses the default; invalid values refuse
+  startup with a diagnostic naming only the setting. These operational limits prevent a typo
+  from making every transient error open the circuit indefinitely or allowing an excessive
+  run of failing requests before protection starts. Tune against measured traffic and recovery.
+  After cooldown exactly one request probes Redis; concurrent requests continue to receive
+  the existing unavailable outcome. Success closes the circuit; failure starts a fresh cooldown.
+  Calls already in flight may still finish; their older results cannot close or extend a newer
+  outage. No circuit lock is held during Redis I/O. State is a few counters, a timestamp and a
+  lock per worker, shared across identities; restart clears it. Workers recover independently.
+  Bypassed checks retain the unavailable outcome, caller-specific admission and degraded mail
+  ceilings, plus the existing once-per-minute outage report. They do not consume a Redis budget.
+  The first three sequential stalls still pay the socket timeout; cooldown traffic does not.
+  This circuit does not detect a slow store that keeps answering within its socket timeout.
+  Celery broker publication is a separate connection and ticket; it has no cache circuit.
 - **Healthy Redis: nothing changes.** A healthy Redis answered one command in a few milliseconds
   (26 ms at worst in this change's performance review), so the default is at least 19 times the
   worst healthy sample.
@@ -443,9 +463,8 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   the slowest healthy round trips you can measure on your own Redis (including, on `rediss://`, the
   TLS and handshake round trips of a reconnect, which all count against `CACHE_SOCKET_TIMEOUT`)
   come within a few times of 0.5 s; a managed or TLS Redis that needs it is likely to be well served
-  by a value between `0.2` and `5`. Raising a timeout multiplies every figure above, and nothing in
-  the app yet stops later requests each paying the full stall during a long outage (a per-process
-  circuit breaker would; it is not built), so stay as low as the measurements allow and keep the
+  by a value between `0.2` and `5`. Raising a timeout multiplies every figure above, so stay as low
+  as the measurements allow, even with the circuit bypass, and keep the
   timeout times the commands a route spends (up to 9, rarely a few more, on a three-budget route;
   12 on a fresh connection) below any request timeout your host or proxy enforces. Size threads or
   workers for arrival rate times the added latency.

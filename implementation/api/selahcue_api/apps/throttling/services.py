@@ -22,6 +22,8 @@ from django.core.cache import cache as default_cache, caches
 from django.core.cache.backends.locmem import LocMemCache
 from django.core.cache.backends.redis import RedisCache
 
+from selahcue_api.apps.throttling.circuit import CACHE_CIRCUIT
+
 logger = logging.getLogger(__name__)
 
 # One report per outage, not one per request. A five-minute Redis outage at 100 rps would
@@ -150,22 +152,37 @@ class BudgetOutcome(str, Enum):
 
 
 def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetOutcome:
-    """Spend one unit of `key`'s budget and report what happened.
+    """Spend one budget unit, preserving the caller's existing outage policy.
 
-    `STORE_UNAVAILABLE` leaves admission to the caller. Ordinary device traffic still fails
-    open; native bootstrap login explicitly refuses before expensive password work. Callers
-    with other expensive side effects (sending mail, say) retain their existing outage policy.
-
-    This branch runs only when the store RAISES. A store that is up but wedged does not raise,
-    it blocks — so a wedged Redis reaches here only because the cache connection carries socket
-    timeouts (`settings.CACHE_SOCKET_CONNECT_TIMEOUT` / `CACHE_SOCKET_TIMEOUT`, 17tnw2b1wrx). Take
-    them off and no caller's outage policy can run while that store operation is blocked.
+    STORE_UNAVAILABLE leaves admission to the caller: ordinary device traffic fails
+    open, native bootstrap login refuses before password work, and mail callers
+    retain their degraded send ceilings. The process circuit skips known failures;
+    socket timeouts still bound each actual cache operation and recovery probe.
     """
+    token = CACHE_CIRCUIT.admit()
+    if token is None:
+        _report_store_unavailable("CircuitOpen")
+        return BudgetOutcome.STORE_UNAVAILABLE
     try:
         count = store.incr_with_expiry(key, window_seconds)
     except Exception as error:
+        CACHE_CIRCUIT.finish(
+            token, success=False, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+            cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+        )
         _report_store_unavailable(type(error).__name__)
         return BudgetOutcome.STORE_UNAVAILABLE
+    except BaseException:
+        # Do not strand the half-open slot on cancellation/watchdog termination.
+        CACHE_CIRCUIT.finish(
+            token, success=False, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+            cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+        )
+        raise
+    CACHE_CIRCUIT.finish(
+        token, success=True, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+    )
     return BudgetOutcome.ALLOWED if count <= limit else BudgetOutcome.DENIED
 
 
