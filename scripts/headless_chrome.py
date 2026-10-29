@@ -1156,7 +1156,7 @@ def self_test(verdict=None, expected_checks=3):
 def _environment_self_test(root):
     """Exercise the real CLI boundaries, not a copy of their error-selection logic (17tnw2b1x27).
 
-    A child gate skips only its recursive launcher self-test. Its Chrome is a tiny executable
+    A child gate skips only its recursive launcher self-test. Its Chrome is an interpreter-backed program
     with no result block, so a positive selection proves launch and deliberately exits2, never
     impersonating a passing browser gate. Controlled discovery prevents accidental real Chrome
     fallback in a broken negative case. Allocation cases run the actual self-test instead.
@@ -1165,14 +1165,16 @@ def _environment_self_test(root):
     gate = os.path.join(here, "operator_headless.py")
     work = os.path.join(root, "environment")
     os.makedirs(work)
-    good = os.path.join(work, "configured-chrome")
+    # Match _Case.run(): no newly written executable is needed for a positive control. TMPDIR
+    # can be writable/noexec; the installed interpreter reads this ordinary data file.
+    good = sys.executable
+    script = os.path.join(work, "configured-chrome.py")
     marker = os.path.join(work, "launched")
-    with open(good, "w") as f:
-        f.write("#!%s\nfrom pathlib import Path\nPath(%r).write_text('launched')\n"
-                "print('ENV_FAKE_BROWSER')\n" % (sys.executable, marker))
-    os.chmod(good, 0o700)
+    with open(script, "w") as f:
+        f.write("from pathlib import Path\nPath(%r).write_text('launched')\n"
+                "print('ENV_FAKE_BROWSER')\n" % marker)
     nonexec = os.path.join(work, "not-executable")
-    shutil.copyfile(good, nonexec)
+    shutil.copyfile(script, nonexec)
     os.chmod(nonexec, 0o600)
     bad_shebang = os.path.join(work, "bad-shebang")
     bad_format = os.path.join(work, "bad-format")
@@ -1194,11 +1196,19 @@ def _environment_self_test(root):
         ("newline in path", os.path.join(work, "missing\nbrowser"), "1", 3, False),
         ("valid configured", good, "1", 2, True),
         ("default discovery", None, "1", 2, True),
+        ("valid configured on noexec", good, "1", 2, True),
+        ("default discovery on noexec", None, "1", 2, True),
     ]
     problems = []
     base = ("import errno, os, runpy, shutil, sys, tempfile\n"
             "sys.path.insert(0, %r)\nimport headless_chrome as h\n"
-            "shutil.which = lambda name: %r\n" % (here, good))
+            "shutil.which = lambda name: %r\n"
+            "real_run = h.run_headless_chrome\n"
+            "def interpreter_browser(chrome, html, flags, timeout, tmp_root=None):\n"
+            "    if chrome == %r:\n"
+            "        flags = [%r] + list(flags)\n"
+            "    return real_run(chrome, html, flags, timeout, tmp_root=tmp_root)\n"
+            "h.run_headless_chrome = interpreter_browser\n" % (here, good, good, script))
     for name, chrome, require, want, launched in cases:
         if os.path.exists(marker):
             os.unlink(marker)
@@ -1207,7 +1217,17 @@ def _environment_self_test(root):
             env.pop("CHROME_BIN", None)
         else:
             env["CHROME_BIN"] = chrome
-        code = base + "h.self_test = lambda **kwargs: []\nrunpy.run_path(%r, run_name='__main__')\n" % gate
+        code = base
+        if name.endswith("on noexec"):
+            # Model only kernel EACCES for a directly executed temporary file. An installed
+            # interpreter reading a script argument must remain usable, as in _Case.run().
+            code += ("real_popen = h.subprocess.Popen\n"
+                     "def noexec(argv, *args, **kwargs):\n"
+                     "    if isinstance(argv, (list, tuple)) and argv and str(argv[0]).startswith(%r):\n"
+                     "        raise PermissionError(13, 'Permission denied (noexec fixture)', argv[0])\n"
+                     "    return real_popen(argv, *args, **kwargs)\n"
+                     "h.subprocess.Popen = noexec\n" % (work + os.sep))
+        code += "h.self_test = lambda **kwargs: []\nrunpy.run_path(%r, run_name='__main__')\n" % gate
         run = subprocess.run([sys.executable, "-c", code], env=env,
                              capture_output=True, text=True, timeout=20)
         output = run.stdout + run.stderr

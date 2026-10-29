@@ -59,7 +59,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-001 | yes | Self-test ENOSPC/EACCES returns exit2 with one-line reason/no traceback before Chrome | python3 scripts/headless_chrome.py with actual-entrypoint regressions | Environment scenarios pass | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log | PASS |
 | C-002 | yes | Explicit missing/nonexec/directory/empty/bad-shebang CHROME_BIN names variable/path and returns2or3 without fallback/traceback; valid/default discovery works | Same self-test subprocess scenarios | Invalid cases refuse and positive controls launch | Same log | PASS |
 | C-003 | yes | Removing new protections makes meaningful regressions red; restored siblings pass | Focused temporary mutation runs | Expected scenarios fail; restored self-test passes | Mutation logs/report | PASS |
-| C-004 | yes | Full browser and existing cleanup/signal/timeout/result contracts pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py; syntax/diff/goal checks | Full measured browser count0FAIL/exit0 | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log | PASS |
+| C-004 | yes | Full browser and existing cleanup/signal/timeout/result contracts pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py; syntax/diff/goal checks | Full measured browser count0FAIL/exit0 | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log | PENDING |
 | C-005 | yes | Cody/Quinn/Vera/Shadow and final CI pass on final head | Coordinator reviews/hostedCI | All pass | Coordinator evidence | BLOCKED |
 | C-006 | yes | PR merged and linked ticket QA persisted | Coordinator GitHub/ClickUp read-back | Merged revision and saved QA | Coordinator evidence | BLOCKED |
 
@@ -112,6 +112,26 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log.
 - Decision: handoff
 
+### Iteration 5 — review C-ENV-1
+
+- Target criterion: C-002
+- Hypothesis: positive-control executables inside TMPDIR violate the existing supported noexec-filesystem contract.
+- Change or investigation: verified existing _Case.run documentation and Cody's narrow EACCES probe. Added configured/discovered positive cases that deny direct execution only from the private temporary fixture tree.
+- Verifier executed: complete helper CLI self-test before fixture correction.
+- Result: RED exit1 with exactly4 diagnostics, exclusively the2 noexec positive scenarios. All14 earlier scenarios and launcher siblings passed.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-noexec-red.log.
+- Decision: iterate
+
+### Iteration 6 — correct C-ENV-1
+
+- Target criterion: C-002
+- Hypothesis: an installed Python interpreter can read the fixture as an ordinary data-file argument on writable/noexec TMPDIR, matching the existing _Case pattern.
+- Change or investigation: positive selection uses sys.executable and injects the fixture script as an argument only for that selected test interpreter; the real launcher, CLI error mapper and strict missing-result refusal still execute. Genuine invalid paths, execute-permission failures, bad format/shebang and allocation cases remain. No production CHROME_BIN validation or permissions changed.
+- Verifier executed: complete helper CLI self-test, Python compilation and diff checks.
+- Result: GREEN exit0; all16 environment scenarios (including2 noexec positives) and prior process/cleanup/signal/timeout/result siblings pass. Initial four mapping protections are byte-unchanged; prior focused mutation evidence retains its scope.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-noexec-green.log.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: child self-test recursion and unwanted real Chrome fallback; skip only the child launch-contract check in selection cases and provide controlled fake discovery. Outer real launcher/self-test still executes.
@@ -125,7 +145,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1x27-headless-env-errors.md
 - Validator result: structural PASS; completion blocked only C-005,C-006
-- Independent verification result: pending coordinator
+- Independent verification result: initial Cody C-ENV-1 remediated; corrected-head four-review round pending coordinator
 - Terminal state: BLOCKED
 - Remaining failed or blocked criteria: C-005,C-006
 - ClickUp final evidence comment: coordinator owned
