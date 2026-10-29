@@ -3,7 +3,7 @@
 ## Identity
 
 - Goal ID: TASK-17tnw2b0wg3
-- Parent goal ID: NONE
+- Parent goal ID: WAVE2-SELAHCUE-20
 - Title: A failed keystore read at launch reaches Connect instead of a stuck splash
 - Role: mobile-engineer
 - Status: ACTIVE
@@ -56,7 +56,7 @@ The full live task and no-comment response are saved in the orchestration eviden
 ### Assumptions and unknowns
 
 - The issue is at the shared Flutter storage interface. Platform-specific restore behavior is not reproduced locally; tests inject the actual plugin channel failure.
-- Hosted baseline RED and candidate GREEN remain unknown until root executes the frozen commits.
+- Hosted baseline RED is established on the test-only commit; corrected-candidate GREEN remains unknown until root executes the frozen commit.
 
 ## Dependencies and approvals
 
@@ -70,7 +70,7 @@ The full live task and no-comment response are saved in the orchestration eviden
 |---|---|---|---|---|---|---|
 | C-001 | yes | Platform read failure reaches Connect without an unhandled error or connect attempt | Real Launcher widget regression with secure-storage read throwing PlatformException | Connect shown after brand delay; splash gone; no framework exception; no storage delete/write | Hosted test-first RED and corrected launcher widget receipts | PENDING |
 | C-002 | yes | Null-profile and valid-profile startup paths retain behavior | Widget controls for null profile and a valid profile passed to injected connect | Null reaches Connect without network; valid attempts reconnect with exact stored fields | Hosted launcher widget control receipts | PENDING |
-| C-003 | yes | The new regression fails when the guard is absent | Frozen test-only commit before production edit | Actual assertion or unhandled keystore error demonstrates the missing behavior, not setup failure | Root hosted RED log for test-only commit | PENDING |
+| C-003 | yes | The new regression fails when the guard is absent | Frozen test-only commit before production edit | Actual assertion or unhandled keystore error demonstrates the missing behavior, not setup failure | PR 266, CI 40940174437, commit a7c931b4; PlatformException and missing PairingView; orchestration evidence wave2-20261029/mobile-red.log | PASS |
 | C-004 | yes | Corrected source passes the relevant broader mobile gates | Hosted flutter analyze and flutter test on current integrated source | Analysis exits0 and full applicable Flutter suite passes | Root exact-source CI receipt | PENDING |
 | C-005 | yes | Independent reviews and authorized delivery gates close | Cody, Quinn, Vera, Shadow; root merge/QA receipt | All current-source reviews pass, actual merge verified, exact QA status reread | Root delivery evidence and ClickUp handoff | PENDING |
 
@@ -88,10 +88,20 @@ The full live task and no-comment response are saved in the orchestration eviden
 - Target criterion: C-001, C-002, C-003
 - Hypothesis: a platform read error escapes before Launcher reaches any navigation; guarding this read as PairingView does will recover through the existing first-run path.
 - Change or investigation: inspect exact source, create isolated branch, and add regression/control tests before modifying production.
-- Verifier executed: structural goal validator; root-hosted test-only RED to follow.
-- Result: pending
-- New evidence: current main contains the unguarded read and an established guarded reference in PairingView.
+- Verifier executed: structural goal validator; root-hosted Flutter analysis and full test suite on test-only commit a7c931b42003141b7c45ac07d1dfa3b476b9e4ac.
+- Result: actual behavioral RED. Flutter analysis passed. The full suite reported 382 passed and 1 failed: the new platform-keystore-read test raised PlatformException(keystore_unavailable) and found zero PairingView widgets. Both null-profile and valid-profile controls passed.
+- New evidence: PR 266 / CI 40940174437, saved by root at wave2-20261029/mobile-red.log; inspected the exception, missing-route assertion and control results before changing production.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001, C-002, C-004, C-005
+- Hypothesis: guarding only StoredSession.load with the existing PairingView-style Object catch routes an unavailable profile through the established null-profile path without changing reconnect or navigation ownership.
+- Change or investigation: guard the read in Launcher._start; leave profile storage untouched and preserve the existing brand delay, mounted checks and separate narrow connect guard. Tests remain unchanged from the observed RED commit.
+- Verifier executed: source inspection, git diff --check and structural Goal Contract validator. No local Flutter runtime was run because host resource admission remains unavailable.
+- Result: source candidate prepared; hosted corrected-source analysis/full tests and four independent reviews remain pending root execution.
+- New evidence: production diff is confined to the guarded stored-profile load and clarifying the separate connect-guard comment.
+- Decision: hand off frozen candidate to root for hosted GREEN and independent review; remediate valid findings within the remaining iteration budget.
 
 ## Risks and rollback
 
@@ -100,7 +110,7 @@ The full live task and no-comment response are saved in the orchestration eviden
 
 ## Pause and escalation conditions
 
-- Wait for root's actual hosted test-only RED before production changes.
+- Test-only RED was observed before production changes; wait for root's corrected-source hosted results and independent reviews before claiming completion.
 - Return any genuine owner decision or missing runtime evidence to root; continue independent allowed work without a user permission request.
 - Do not run local heavy verification to bypass failed resource admission.
 
@@ -110,6 +120,6 @@ The full live task and no-comment response are saved in the orchestration eviden
 - Validator result: structural validation passed (exit 0); behavior remains pending hosted execution
 - Independent verification result: pending root
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-001 through C-005
+- Remaining failed or blocked criteria: C-001, C-002, C-004 and C-005; C-003 passed on the frozen test-only commit
 - ClickUp final evidence comment: root owns publication
 
