@@ -7779,6 +7779,8 @@ fn sermon_note_draft_json(
     v: &selahcue_lan::protocol::SermonNoteDraftView,
     segments: &[selahcue_core::transcript::TranscriptSegment],
 ) -> (serde_json::Value, Option<&'static str>) {
+    #[cfg(test)]
+    sermon_note_codec_tests::record_codec_call();
     let (sections, stored_requested_empty) = sermon_note_caveats::decode_sections(&v.sections_json);
     let sections = sections_from_input(sections);
     let scriptures: Vec<String> = serde_json::from_str(&v.scriptures_json).unwrap_or_default();
@@ -7833,6 +7835,20 @@ fn sermon_note_draft_json(
 mod sermon_note_codec_tests {
     use super::*;
     use selahcue_core::providers::{NotePoint, NoteSection};
+
+    // Observe the actual codec entry on each OS thread. This is compiled only in tests;
+    // it neither replaces verification nor changes its production inputs/outputs.
+    std::thread_local! {
+        static CODEC_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    pub(super) fn record_codec_call() {
+        CODEC_CALLS.with(|calls| calls.set(calls.get() + 1));
+    }
+
+    pub(super) fn codec_calls_on_this_thread() -> usize {
+        CODEC_CALLS.with(std::cell::Cell::get)
+    }
 
     #[test]
     fn sections_to_json_round_trips_through_sections_from_input() {
@@ -9043,22 +9059,23 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
             // Best-effort (86akgqdw0): a segments-read failure here must never block loading
             // the draft itself — see `transcript_segments_for`'s own doc comment.
             let segments = transcript_segments_for(&state, transcript_id);
-            let (draft, scripture_verification_note) = sermon_note_draft_json(&view, &segments);
-            Ok(serde_json::json!({
-                "ok": true,
-                "transcript_id": transcript_id,
-                "ai_generated": view.ai_generated,
-                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
-                // FR-123/FR-128: the label and disclosure travel with the draft through a
-                // restart exactly as they did through an edit — read back verbatim from
-                // what the host persisted, never re-derived here.
-                "disclosure": view.disclosure,
-                "provider": view.provider,
-                // 86akby820 (Sana F4): re-verified fresh on every load — see
-                // `sermon_note_draft_json`'s doc comment for why this is safe and cheap.
-                "scripture_verification_note": scripture_verification_note,
-                "draft": draft,
-            }))
+            // 17tnw2axpq3: the offline scripture scan is CPU-bound. Move the owned
+            // read snapshot onto the existing blocking pool so it cannot occupy an
+            // async Tauri worker. No State/DB guard crosses this await and the job
+            // only derives JSON: cancellation cannot change the persisted draft.
+            match tauri::async_runtime::spawn_blocking(move || {
+                sermon_note_view_ok_json(transcript_id, &view, &segments)
+            })
+            .await
+            {
+                Ok(reply) => Ok(reply),
+                Err(_) => {
+                    // A worker failure is recoverable like a backend read failure.
+                    // Never print its panic payload: it can contain draft content.
+                    eprintln!("selahcue-operator: failed to verify loaded sermon-note draft");
+                    Ok(serde_json::json!({ "ok": false }))
+                }
+            }
         }
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
         Err(_) => {
@@ -9511,6 +9528,100 @@ mod regenerate_with_retention_tests {
             provider: "Local (offline)".to_string(),
             model: None,
         }
+    }
+
+    // Regression: putting sermon_note_draft_json back inline must fail this test.
+    // A current-thread runtime keeps the caller on this OS thread across await; the
+    // codec observer counts real executions, without timing thresholds or fake work.
+    #[tokio::test(flavor = "current_thread")]
+    async fn loaded_draft_verifies_off_the_async_caller_and_preserves_the_result() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let mut input = sample_draft("Saved notes", true);
+        input.sections_json =
+            r#"[{"heading":"Chapter markers","items":["Good morning, church."]}]"#.into();
+        input.scriptures_json = r#"["John 3:16","John 99:1"]"#.into();
+        state
+            .backend
+            .save_sermon_note_draft(id, input)
+            .await
+            .expect("save");
+        let before = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("read")
+            .expect("draft");
+        let calls = sermon_note_codec_tests::codec_calls_on_this_thread();
+        // Positive control: the observer really sees the production codec on this thread.
+        let _ = sermon_note_draft_json(&before, &[]);
+        assert_eq!(
+            sermon_note_codec_tests::codec_calls_on_this_thread(),
+            calls + 1
+        );
+        let reply = load_sermon_note_draft(state.clone())
+            .await
+            .expect("command");
+        assert_eq!(
+            sermon_note_codec_tests::codec_calls_on_this_thread(),
+            calls + 1,
+            "persisted-draft CPU verification ran on the async caller thread"
+        );
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["transcript_id"], id);
+        assert_eq!(reply["ai_generated"], true);
+        assert_eq!(reply["disclosure"], "AI-generated; verify before use.");
+        assert_eq!(reply["provider"], "Local (offline)");
+        assert_eq!(reply["draft"]["title"], "Saved notes");
+        assert_eq!(reply["draft"]["scripture_verdicts"][0]["verified"], true);
+        assert_eq!(reply["draft"]["scripture_verdicts"][1]["verified"], false);
+        assert!(reply["scripture_verification_note"].is_string());
+        assert_eq!(
+            reply["draft"]["timestamps"],
+            serde_json::json!([
+                {"heading":"Chapter markers", "text":"Good morning, church.", "offset_ms":0}
+            ])
+        );
+        assert_eq!(
+            state
+                .backend
+                .load_sermon_note_draft(id)
+                .await
+                .expect("read")
+                .expect("draft"),
+            before
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loaded_draft_absence_and_read_failure_allow_a_later_retry() {
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        assert_eq!(
+            load_sermon_note_draft(state.clone()).await.expect("absent"),
+            serde_json::json!({"ok":false})
+        );
+        let accepted = seed_edited_accepted_draft(&state, id).await;
+        gate.fail_loads(true);
+        assert_eq!(
+            load_sermon_note_draft(state.clone())
+                .await
+                .expect("failed read"),
+            serde_json::json!({"ok":false})
+        );
+        gate.fail_loads(false);
+        let reply = load_sermon_note_draft(state.clone()).await.expect("retry");
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["draft"]["title"], "Edited by the operator");
+        assert_eq!(
+            state
+                .backend
+                .load_sermon_note_draft(id)
+                .await
+                .expect("read")
+                .expect("draft"),
+            accepted
+        );
     }
 
     /// C-007 (first half): no accepted draft exists yet — `persist_generated_draft` takes the
