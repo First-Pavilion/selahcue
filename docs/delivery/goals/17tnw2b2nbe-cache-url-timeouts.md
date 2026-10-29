@@ -20,7 +20,7 @@ Reject either Redis socket timeout query option in the cache URL, including in-r
 
 ## Baseline
 
-Verified main 8f7d610e includes prerequisite PR186 (d064bd96). Redis-py parses URL query arguments and gives them precedence over Django backend options. Existing tests only prove URL-free timeout options.
+Verified starting main 8f7d610e includes prerequisite PR186 (d064bd96). Before publication, integrated fresh main c0b8f84aa801ae97ac3faf7717cc313dcc4b312b (merged password-reset KDF PR255) with no conflicts; its source changes only account services and associated tests/goal, with no timeout guard overlap. Redis-py parses URL query arguments and gives them precedence over Django backend options. Existing tests only prove URL-free timeout options.
 
 ## Inputs and evidence sources
 
@@ -90,6 +90,16 @@ Verified main 8f7d610e includes prerequisite PR186 (d064bd96). Redis-py parses U
 - Result: 216 passed in 19.45s, no skips; system check exits zero with existing proxy-count warning W001 at default count zero; no migration changes. Startup, encoded/blank/in-range/duplicate query refusal and secret redaction pass. Redis/rediss/unix lazy pool compatibility, unrelated query options, environment bounds, real healthy Redis and stalled-server controls pass.
 - New evidence: guard emits fixed names only, never user-controlled values.
 - Decision: handoff after a fresh gate covering this final evidence edit; root owns full CI and independent reviews.
+
+### Iteration 3
+
+- Target criterion: C-001, C-002, C-003 integration freshness.
+- Hypothesis: startup-only timeout rejection preserves the newly merged password-reset KDF transaction and PostgreSQL concurrency guarantees.
+- Change or investigation: integrate main c0b8f84a before publication and independent review; no production source conflict or additional behavior change. Complete this evidence prose before final tests.
+- Verifier executed: rerun the complete 216 timeout/deployment-doc/deployment-guard cases with PostgreSQL and Redis, then the 17 reset KDF cases with actual PostgreSQL and local memory cache; repeat structural/diff/system/migration checks.
+- Result: final execution receipts belong in /private/tmp/selahcue-batch20-20261029/17tnw2b2nbe-report.md and integrated-timeouts.log / integrated-kdf.log; retain earlier verification with its original source scope. No full local API repeat is claimed; final hosted full CI remains mandatory.
+- New evidence: root verified PR255 all four reviews and full 1577-test hosted API CI before its merge; this is dependency evidence, not a replacement for this ticket's final CI.
+- Decision: handoff only after the fresh integrated gates pass; freeze without subsequent tracked edits. Escalate any new failure to root.
 
 ## Risks and rollback
 
