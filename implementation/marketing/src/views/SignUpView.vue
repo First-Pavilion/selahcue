@@ -389,21 +389,15 @@ onBeforeUnmount(() => {
       </AuthBanner>
     </template>
 
-    <!-- ================================================== accepted (A13 equivalent) -->
-    <!-- THE STATE THAT MUST NOT BRANCH. It is reached for a brand-new address and for one
-         that already has an account, and it renders identically for both, because the
-         response is identical for both. The copy is chosen to be TRUE of both: an email
-         genuinely goes out either way — the verification link, or the "someone tried to
-         sign up with your address" notice to the real owner — so "an email is on its way"
-         is accurate without naming which, where "we've sent your verification link" would
-         be false in one branch and "if this address is not already registered" would hand
-         back the oracle in the shape of a hint. -->
+    <!-- Accepted means the request was processed, not that email delivery was confirmed.
+         Keep this state identical for new/existing addresses and broker failures. -->
     <template v-else-if="state === 'sent'">
       <StatusDisc tone="brand" glyph="✉" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your email to finish setting up</h1>
       <p class="au-body">
-        An email is on its way to {{ submittedEmail }}. Open it to finish setting up your
-        account — verification links expire 24 hours after they are sent.
+        Your request for {{ submittedEmail }} was accepted. Check your inbox for the email.
+        If it does not arrive, request another link. Verification links expire 24 hours after
+        they are sent.
       </p>
       <div class="au-actions">
         <UiButton
@@ -434,8 +428,9 @@ onBeforeUnmount(() => {
       <!-- Conditional by construction, exactly as V5 — `resendVerificationEmail` answers
            the same for an unknown, unverified or already-verified address. -->
       <p class="au-body">
-        If {{ submittedEmail }} has a SelahCue account waiting to be verified, a new link is
-        on its way. It expires in 24 hours.
+        Your request for {{ submittedEmail }} was accepted. If this account needs verification,
+        check your inbox for a new link. A verification link expires in 24 hours.
+        If no email arrives, try again in a moment.
       </p>
       <div class="au-actions">
         <UiButton to="/signin" variant="secondary" size="lg" class="au-btn au-btn-secondary">

@@ -434,7 +434,7 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
     if value is None or not (_SOCKET_TIMEOUT_MIN_SECONDS <= value <= _SOCKET_TIMEOUT_MAX_SECONDS):
         raise ImproperlyConfigured(
             f"{name} must be a number of seconds from {_SOCKET_TIMEOUT_MIN_SECONDS:g} to "
-            f"{_SOCKET_TIMEOUT_MAX_SECONDS:g} (got {raw!r}). It bounds how long a stalled cache "
+            f"{_SOCKET_TIMEOUT_MAX_SECONDS:g}. It bounds how long a stalled Redis "
             "store can hold a request; see docs/ops/DEPLOYMENT.md §6b."
         )
     return value
@@ -470,6 +470,17 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
 # silently multiplying the stall.
 # Raising these buys tolerance of a slow-but-working Redis at the cost of every figure above:
 # keep timeout x commands-per-request below any request timeout in front of this service.
+# The same validated bounds also cover the Redis task broker, independently of CACHE_URL.
+CELERY_BROKER_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds(
+    "CELERY_BROKER_SOCKET_CONNECT_TIMEOUT", "0.5"
+)
+CELERY_BROKER_SOCKET_TIMEOUT = _socket_timeout_seconds("CELERY_BROKER_SOCKET_TIMEOUT", "0.5")
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "socket_connect_timeout": CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+    "socket_timeout": CELERY_BROKER_SOCKET_TIMEOUT,
+    "retry_on_timeout": False,
+}
+
 CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIMEOUT", "0.5")
 CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
 

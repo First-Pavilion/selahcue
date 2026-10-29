@@ -220,6 +220,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `SQL_DATABASE` / `SQL_USER` / `SQL_PASSWORD` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `postgres` / `localhost` / `5432` | **Required** for Postgres |
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
+| `CELERY_BROKER_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Redis broker TCP connect timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
+| `CELERY_BROKER_SOCKET_TIMEOUT` | `0.5` (seconds) | Redis broker per-command timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
@@ -460,16 +462,37 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   whatever collects your process output: page on them there. It is also visible from outside:
   while it lasts, every throttled response is slower by the figures above and `RATE_LIMITED`
   (429) answers stop appearing, so a flood is no longer refused.
-- **Scope: the Celery broker is not covered.** These settings cover `CACHE_URL` — the throttle
-  counters in db 1 — only. kombu 5.6.2's Redis transport defaults both of its socket timeouts to
-  `None` and `settings.py` sets no `CELERY_BROKER_TRANSPORT_OPTIONS`, so a stalled broker still
-  holds a request that publishes a task. That has a consequence while one Redis serves both the
-  cache and the broker (db 1 and db 2 of the same server, as in the compose file): if that Redis
-  wedges, `requestPasswordReset` for an address that **has an account** still blocks, because it
-  mints a token and publishes the email task to the stalled broker (still blocked at 12 s and at
-  30 s in two separate test runs), while an unknown address is answered after the cache timeouts
-  (about 1.5 s at the defaults). Response time then shows whether an account exists. Tracked in
-  17tnw2b2k4x.
+- **The task broker has its own socket limits (17tnw2b2k4x).** The two broker timeout
+  variables in the API environment table use the same inclusive 0.05–10 second validation as
+  the cache, with 0.5 second defaults. They configure Kombu's Redis transport through the Python setting
+  `CELERY_BROKER_TRANSPORT_OPTIONS` (not another environment variable);
+  cache settings do not configure the broker. Set them using the explicit environment variables.
+  Kombu does not accept socket-timeout or retry options in the Redis broker URL query; these
+  unsupported query options cannot override the transport settings and publishing fails safely.
+  Email publishing opens a dedicated connection and sets connection retries to zero and publish
+  retries off. This avoids waiting for a pooled producer and bounds a completely silent broker
+  to one read timeout after connecting, plus request/database/password work and scheduler jitter.
+  Redis command retries on timeout are disabled. These email callers consume no task results,
+  so each email publish sets `ignore_result=True`. This prevents Celery from subscribing to the
+  independent `CELERY_RESULT_BACKEND` before sending: broker socket limits do not configure that
+  result client's socket limits. Email task defaults, global result settings, worker reconnect
+  and unrelated task-publisher retry/result policies are unchanged. The per-message result flag
+  applies only to emails submitted through this sender.
+- **A socket timeout is per command, not a request deadline.** An answering-but-slow broker can
+  perform several bounded reads (authentication, CLIENT SETINFO, SELECT, PING, queue declaration,
+  and publish); TLS handshakes use the read timeout. DNS resolution is controlled by the host's
+  resolver, not these socket limits. Keep those cumulative costs below the host/proxy request
+  budget. There is still no application-server request deadline in this repository.
+- **A failed publish has an unknown delivery outcome.** A lost response can follow a successful
+  enqueue. The sender does not automatically retry, does not return broker errors or account
+  existence to callers, and logs only the fixed task name and exception type, at most once per
+  process per minute. Alert on `email delivery unconfirmed`. The existing accepted response
+  confirms processing, not email delivery; the request acknowledgements explain checking the
+  inbox and requesting another link if nothing arrives. Account and token commits remain intact,
+  so a user can use the existing resend/reset flows. Do not infer guaranteed delivery from an
+  accepted request or silently replay uncertain publishes. The reset timing-floor follow-up
+  remains separate: finite broker waits alone do not equalise registered/unknown response times.
+
 
 ### The failed password-reset confirm trace (86ak5r2pt)
 

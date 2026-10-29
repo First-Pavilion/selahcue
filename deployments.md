@@ -79,6 +79,8 @@ Redis db **1** is the cache/throttle store and db **2** is the Celery broker; ke
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
 | `CELERY_BROKER_URL` | **prod: yes** | **SECRET** (may carry a password) | `redis://redis:6379/2` | Celery broker (Redis db 2). |
+| `CELERY_BROKER_SOCKET_CONNECT_TIMEOUT` | no | no | `0.5` (seconds) | Redis broker connection timeout. Allowed `0.05` to `10`; invalid values refuse startup. |
+| `CELERY_BROKER_SOCKET_TIMEOUT` | no | no | `0.5` (seconds) | Redis broker per-command timeout. Allowed `0.05` to `10`; email publishing does not reconnect or retry on the request thread. See DEPLOYMENT §6b. |
 | `CELERY_RESULT_BACKEND` | **prod: yes** | **SECRET** (may carry a password) | `redis://redis:6379/2` | Celery result backend. |
 | `CELERY_TASK_ALWAYS_EAGER` | no | no | `false` | Run tasks inline in the web process. Test/debug lever: **the API refuses to start with it on when `ENVIRONMENT` is `prod`.** |
 | `CELERY_TASK_EAGER_PROPAGATES` | no | no | = `CELERY_TASK_ALWAYS_EAGER` | Re-raise task exceptions in the caller while eager. |
