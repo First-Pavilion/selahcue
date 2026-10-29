@@ -733,6 +733,13 @@ ACCOUNT_MIN_PASSWORD_LENGTH = int(os.getenv("ACCOUNT_MIN_PASSWORD_LENGTH", "10")
 # and should only ever be done in tests.
 ACCOUNT_RESEND_MIN_SECONDS = float(os.getenv("ACCOUNT_RESEND_MIN_SECONDS", "0.4"))
 
+# Allowed reset-request timing floor (86ak7kka2), including the real transaction commit and
+# synchronous Celery/Redis publish. The reference study's slowest branch was 29.121ms; 100ms
+# retains >70ms headroom under those healthy conditions. Slower deployments must measure
+# and tune this knob; overruns share resend's bounded warning. Refused budgets never pad.
+# Keep in sync with RESET_REQUEST_MIN_SECONDS_DEFAULT in accounts/services.py. 0 is for tests.
+ACCOUNT_RESET_REQUEST_MIN_SECONDS = float(os.getenv("ACCOUNT_RESET_REQUEST_MIN_SECONDS", "0.1"))
+
 # Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
 # the emails minted here link to live token-landing pages.
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
