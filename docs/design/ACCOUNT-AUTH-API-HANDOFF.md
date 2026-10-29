@@ -46,15 +46,18 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
 - Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?, "replace_token"?: boolean}` — the `POST /v1/activations` body without `license_key`.
-- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
-- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `429 RATE_LIMITED`.
+- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on a successful replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
+- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `409 CONFLICT` (consumed recovery intent with no live token), `429 RATE_LIMITED`.
 
 For explicit response-loss recovery, an ADMIN may send `replace_token: true` with the
 known installation fingerprint and a new idempotency key. The same org/licence/plan checks
 apply; this cannot create a new device or replace another org's token. The old credential
 is revoked atomically; persist the show-once replacement. A retry of that intent returns
-null, and another lost response requires another explicit intent. The default remains
-unchanged. See `implementation/api/README.md` for live-token renewal and recovery.
+`activation_token: null` while a live token remains. If no live token remains, retrying
+the consumed intent returns `409 CONFLICT`; an ADMIN must use a fresh explicit recovery
+intent with a new idempotency key. Another lost response also requires a fresh explicit
+intent. The default remains unchanged. See `implementation/api/README.md` for live-token
+renewal and recovery.
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
 

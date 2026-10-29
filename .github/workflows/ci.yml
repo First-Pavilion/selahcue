@@ -265,6 +265,8 @@ jobs:
             # desktop catch-all is not a substitute.
             marketing:
               - 'implementation/marketing/**'
+              # apiSeam.test.ts derives the client error-code contract from this enum.
+              - 'implementation/api/selahcue_api/graphql/errors.py'
               - '.github/workflows/ci.yml'
               # NOT a stray path. The marketing job re-derives the client's email rule
               # from the Django the API pins, and installs that Django by READING this
