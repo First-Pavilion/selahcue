@@ -12,10 +12,14 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import time
 from enum import Enum
 
 from django.conf import settings
+from django.core.cache import cache as default_cache, caches
+from django.core.cache.backends.locmem import LocMemCache
+from django.core.cache.backends.redis import RedisCache
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,9 @@ class CacheStore:
     """
 
     def __init__(self, cache):
-        self._cache = cache
+        # Resolve Django's default connection proxy through its public handler so the
+        # expiry adapter below sees the actual backend, including settings overrides.
+        self._cache = caches["default"] if cache is default_cache else cache
 
     def incr_with_expiry(self, key: str, window_seconds: int) -> int:
         # add() is SET NX EX — atomic, and its success is what starts a window.
@@ -70,6 +76,43 @@ class CacheStore:
             # Redis-only code path that the no-Redis test suite could not exercise.)
             self._cache.touch(key, window_seconds)
         return count
+
+    def retry_after(self, key: str, window_seconds: int) -> int:
+        """Remaining fixed-window seconds for an already DENIED request, rounded up.
+
+        Django's generic cache API has no TTL query. These two narrow adapters read the
+        existing counter's actual expiry from the only backends configured by this repo
+        (pinned Django 6.1.2); they never create metadata keys or touch/increment the counter.
+        Redis reads PTTL on the primary, not a potentially lagging read replica. Local
+        memory uses the backend's lock just as its own expiry checks do.
+
+        This is a retry HINT, not a second budget decision. If expiry disappears between
+        denial and read, one second is sufficient. A persistent key, unsupported backend
+        or TTL-read error gets a bounded full-window hint; the proven denial remains 429.
+        No error details or additional per-request logs escape this best-effort read.
+        """
+        fallback = max(1, int(window_seconds))
+        try:
+            backend = self._cache
+            cache_key = backend.make_and_validate_key(key)
+            if isinstance(backend, RedisCache):
+                milliseconds = backend._cache.get_client(cache_key, write=True).pttl(cache_key)
+                if milliseconds == -1:  # Persistent; the expected TTL is unavailable.
+                    return fallback
+                remaining = milliseconds / 1000
+            elif isinstance(backend, LocMemCache):
+                with backend._lock:
+                    expires = backend._expire_info.get(cache_key, -1)
+                    if expires is None:
+                        return fallback
+                    remaining = expires - time.time()
+            else:
+                return fallback
+            return max(1, min(fallback, math.ceil(remaining)))
+        except Exception:
+            # Counter spending already succeeded and denied. TTL metadata availability
+            # must not turn that refusal into a 500 or a fail-open allowance.
+            return fallback
 
 
 class BudgetOutcome(str, Enum):
