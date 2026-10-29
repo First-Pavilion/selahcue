@@ -212,10 +212,10 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 
 | Variable | Default | Production |
 |----------|---------|-----------|
-| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Unset means `dev`, and `dev` is the only mode in which the API starts on the public dev signing key (`selahcue-dev-only-insecure-key`, which is in this repository), with no error and whatever else you set. It also gates the mail backend, the `SECRET_KEY` check below, and refusal of enabled `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` outside exact `dev` |
+| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Genuinely unset with an absent/empty raw `SECRET_KEY` and any non-local `DJANGO_ALLOWED_HOSTS` entry refuses settings import. Local-only defaults still select dev; explicit `dev` and a configured raw key remain outside that narrow guard. See the precise boundary below. It also gates the mail backend, the `SECRET_KEY` check below, and refusal of enabled `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` outside exact `dev` |
 | `SECRET_KEY` | dev-only fallback | **Required, and not a public value. The app refuses to boot when `ENVIRONMENT != dev` and this is empty, equals the dev key, or equals the `replace-me-with-a-fresh-key` placeholder that earlier copies of `.env.sample` carried (letter case, whitespace, matched ASCII quotes and invisible format characters such as a BOM, zero-width space or joiner, or soft hyphen are ignored when comparing).** It is also the HMAC pepper for licence-key, device-token and account-session fingerprints: rotating it invalidates them all |
 | `DEBUG` | `0` | **Startup refuses true outside exact `dev`, including staging.** Leave `0` or unset; see below |
-| `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated) |
+| `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated). Non-local entries trigger the omitted-environment/empty-key guard described below |
 | `SQL_ENGINE` | `…backends.sqlite3` | `django.db.backends.postgresql` — row-locking is required, see below |
 | `SQL_DATABASE` / `SQL_USER` / `SQL_PASSWORD` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `postgres` / `localhost` / `5432` | **Required** for Postgres |
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
@@ -250,6 +250,20 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 > (`has_select_for_update = False`). On SQLite two concurrent activations can both observe
 > `active_devices = 0` and exceed `device_limit`. The guard is not wrong — it simply has no
 > effect without a row-locking backend.
+
+The omitted-environment guard runs when settings are imported, including under gunicorn or
+uwsgi; it does not rely on `manage.py check`. It refuses only the conjunction of genuinely
+unset `ENVIRONMENT`, absent/empty raw `SECRET_KEY`, and at least one non-local
+`DJANGO_ALLOWED_HOSTS` entry. The local set is exactly `localhost`, `127.0.0.1`, `::1`
+(including Django's bracketed `[::1]` spelling), and `testserver`. Wildcards, suffix patterns,
+and other addresses are non-local. A mixed local/non-local list is refused too.
+
+This uses option (a) from [17tnw2b9d9y](https://app.clickup.com/t/17tnw2b9d9y): it works for every settings entry point without
+assuming Coolify uses a particular Dockerfile, while keeping bare local development available.
+It is a narrow omission guard, not a universal deployment detector: explicit `dev` and a
+configured nonempty raw key retain their existing behavior. Set `ENVIRONMENT=staging` or
+`ENVIRONMENT=prod` and a real key in deployed environments; those modes also select the real
+SMTP defaults and enable the TLS-proxy warning.
 
 Generate a secret key:
 
