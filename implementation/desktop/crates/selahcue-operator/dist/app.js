@@ -1358,7 +1358,8 @@
           const nameInput = document.createElement("input");
           nameInput.type = "text"; nameInput.className = "scr-input";
           nameInput.value = cfg.ndi_name;
-          nameInput.maxLength = 64;
+          // HTML maxlength counts UTF16 units and can split astral scalars. Validate the
+          // host's 64-scalar limit on commit instead, including names loaded from config.
           nameInput.placeholder = "e.g. SelahCue Program";
           nameInput.setAttribute("aria-label", "NDI source name for " + s.screen);
           nameInput.disabled = ndiUnavailable;
@@ -1377,13 +1378,17 @@
             st.textContent = text;
           };
 
-          // Mirrors `ndi_name_valid` (selahcue-app/src/controller.rs) exactly: a bounded,
-          // control-character-free name. `nameInput.maxLength = 64` above stops most of this at
-          // the keyboard, but does not stop a PASTE from carrying a control character — Cody's
-          // PR #85 review found this was the one host refusal rule commitNdi did not mirror, so
-          // a pasted name with a stray control character still hit the silent-revert path this
-          // whole change exists to close.
-          const ndiNameValid = (name) => name.length <= 64 && !/[\x00-\x1f\x7f-\x9f]/.test(name);
+          // Mirrors ndi_name_valid's Unicode scalar count and Cc control refusal in the
+          // host. String.length counts UTF16 units, so 40 emoji would incorrectly exceed 64.
+          // Stop at the first excess scalar; an oversized paste needs no full-name array.
+          const ndiNameTooLong = (name) => {
+            let scalars = 0;
+            for (const scalar of name) {
+              if (++scalars > 64) return true;
+            }
+            return false;
+          };
+          const ndiNameHasControl = (name) => /[\x00-\x1f\x7f-\x9f]/.test(name);
 
           // Commit the name + a target enabled state atomically to the host — but first,
           // CON-156/157: check the SAME rules the host itself enforces
@@ -1397,7 +1402,11 @@
           const commitNdi = (enabled) => {
             nameInput.classList.remove("mismatch");
             const name = nameInput.value.trim();
-            if (!ndiNameValid(name)) {
+            if (ndiNameTooLong(name)) {
+              setSignal("warn", "⚠ That source name is too long — use at most 64 characters");
+              return;
+            }
+            if (ndiNameHasControl(name)) {
               setSignal("warn", "⚠ That source name isn't valid — remove any control characters");
               return;
             }

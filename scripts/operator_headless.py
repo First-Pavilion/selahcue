@@ -1920,7 +1920,12 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # 2294 -> 2295 (17tnw2b9arx round 3): +1 check that deleting the last presentation, when the host could not
 # number a blank replacement, tells the operator the editor holds an unsaved copy. The retry check was made
 # non-vacuous (same count). Measured by a clean run.
-EXPECTED_MIN_CHECKS = 2295  # measured: 2295 checks, 0 FAIL
+# 2295 ->2302 (17tnw2ayetf): seven real NDI inspector checks for imported 40-emoji
+# Broadcast OFF, scalar boundaries, truthful refusal copy and no UTF16 truncation.
+# Count measured by the RED full run, followed by the GREEN full run.
+# 2302 ->2303 (V246-1): instrumented iterator bound for an oversized paste;
+# measured by the review RED run before the bounded-scalar implementation.
+EXPECTED_MIN_CHECKS = 2303  # measured:2303 checks; final result recorded in the goal
 
 
 def find_chrome():
@@ -6118,6 +6123,84 @@ DRIVER = r"""
       await waitFor(function(){ return /Broadcasting NDI · Test NDI/.test(insp2.textContent); });
       ok(/Broadcasting NDI · Test NDI/.test(insp2.textContent),
          "inspector: stream settles into the confirmed broadcasting state (the mock now really persists it, like set_screen_enabled does)");
+
+      // 17tnw2ayetf: exercise imported host-valid astral names through the REAL inspector.
+      // The host counts Unicode scalars, not UTF16 units; a valid imported name must not
+      // strand Broadcast ON. No fake validator: only the existing host-command seam is mocked.
+      var unicodeNdiConfig = function(){ return V.screens.find(function(s){ return s.screen === "stream"; }).config; };
+      var fortyNdiEmoji = "😀".repeat(40);
+      unicodeNdiConfig().ndi_name = fortyNdiEmoji;
+      await waitFor(function(){
+        var n = document.querySelector('input[aria-label="NDI source name for stream"]');
+        return n && n.value === fortyNdiEmoji;
+      });
+      var unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      ok(unicodeNdiField.maxLength < 0,
+         "NDI Unicode: no UTF16 maxlength can truncate a valid astral scalar or split a surrogate pair");
+      var unicodeOffBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      document.querySelector('input[aria-label="Broadcast stream as an NDI source"]').click();
+      var unicodeOffCalls = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; });
+      ok(unicodeOffCalls.length === unicodeOffBefore + 1 &&
+         unicodeOffCalls[unicodeOffCalls.length - 1].args.name === fortyNdiEmoji &&
+         unicodeOffCalls[unicodeOffCalls.length - 1].args.enabled === false,
+         "NDI Unicode: Broadcast OFF for an imported 40-emoji source reaches the host with unchanged name");
+      await waitFor(function(){ return unicodeNdiConfig().ndi_enabled === false; });
+      ok(unicodeNdiConfig().ndi_enabled === false,
+         "NDI Unicode: the host-confirmed source actually stops broadcasting");
+      //64 astral scalars (128 UTF16 units) are a valid boundary;65 must be refused.
+      unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      unicodeNdiField.value = "😀".repeat(64);
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      await waitFor(function(){ return unicodeNdiConfig().ndi_name === "😀".repeat(64); });
+      ok(unicodeNdiConfig().ndi_name === "😀".repeat(64),
+         "NDI Unicode: exactly 64 astral scalars are accepted unchanged, despite 128 UTF16 units");
+      unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      var unicodeTooLongBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      unicodeNdiField.value = "😀".repeat(65);
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      ok(window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === unicodeTooLongBefore,
+         "NDI Unicode: 65 scalars are refused before a host round trip");
+      ok(/64 characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent) &&
+         !/control characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: a length refusal explains 64 characters instead of blaming control characters");
+      unicodeNdiField.value = "Bad\u0007Name";
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      ok(window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === unicodeTooLongBefore &&
+         /control characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: control-character refusal remains distinct and never reaches the host");
+      // V246-1: count actual iterator reads in the shipped handler, not elapsed time.
+      // Only the oversized string's iterator is instrumented; restore the intrinsic before
+      // any await or subsequent test. A spread count reads all 1 million scalars; a bounded
+      // scalar decision needs at most 65, regardless of total pasted length.
+      var oversizedNdiName = "x".repeat(1000000);
+      var oversizedNdiVisits = 0;
+      var originalNdiIterator = String.prototype[Symbol.iterator];
+      var oversizedNdiCallsBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      try {
+        String.prototype[Symbol.iterator] = function(){
+          var iterator = originalNdiIterator.call(this);
+          if (String(this) !== oversizedNdiName) return iterator;
+          return {
+            next: function(){
+              var step = iterator.next();
+              if (!step.done) oversizedNdiVisits++;
+              return step;
+            },
+            [Symbol.iterator]: function(){ return this; }
+          };
+        };
+        unicodeNdiField.value = oversizedNdiName;
+        unicodeNdiField.dispatchEvent(new Event("change"));
+      } finally {
+        String.prototype[Symbol.iterator] = originalNdiIterator;
+      }
+      ok(oversizedNdiVisits <= 65 &&
+         window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === oversizedNdiCallsBefore &&
+         /64 characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: a million-scalar name is refused after at most 65 iterator reads (got " + oversizedNdiVisits + "), with no host call");
+      // Restore the exact broadcasting fixture consumed by the existing duplicate-name checks.
+      unicodeNdiConfig().ndi_name = "Test NDI"; unicodeNdiConfig().ndi_enabled = true;
+      await waitFor(function(){ return /Broadcasting NDI · Test NDI/.test(document.getElementById("screens-inspector").textContent); });
 
       // === CON-156/157/158 (Frame F states 4/5/6, node 462:194) — NDI rejection/unavailable
       // messages. Previously a rejected enable reverted the toggle with NO explanation at all;
