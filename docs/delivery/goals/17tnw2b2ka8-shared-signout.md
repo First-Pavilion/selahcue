@@ -83,9 +83,19 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Target criterion: C-001.
 - Hypothesis: two component scopes sharing one real router currently each send a revoke request; an assertion on shared pending and request count exposes the duplicate flow.
 - Change or investigation: create tests-only regression against unchanged production before implementing shared state.
-- Verifier executed: structural Goal Contract validation; project runtime deferred to hosted root execution.
-- Result: Pending actual hosted assertion RED; no product code changed.
-- New evidence: tests/sharedSignOut.test.ts; root handoff records exact test commit and commands.
+- Verifier executed: hosted CI run 40940516583, diagnostic f6f15157, source bd25796d81a09ee76ea348ca23d257e3602edad6; `node --test tests/sharedSignOut.test.ts`.
+- Result: Observed assertion RED, expected one revoke and actual two; distinct-router positive control PASS (one pass, one fail). No product code was changed before this evidence.
+- New evidence: wave2-20261029/frontend-red.log; https://github.com/First-Pavilion/selahcue/actions/runs/40940516583.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: sharing operation refs per real router, while retaining per-caller disposal, prevents cross-control duplicate revocation without redirecting a departed Account caller.
+- Change or investigation: both components adopt the same composable and `/signin`; surviving chrome reports late failures; pending always settles; late rejected navigation is disposal-gated. Account, navbar header and mobile modal have one active announcement owner. Replace source-label parity pins with runtime composition and scripted simultaneous real-control presses. Add node coverage of the default revoke through the real session store/account seam, router isolation, retry/remount and navigation rejection.
+- Verifier executed: Python stdlib AST of the changed headless script, Goal Contract structural validator and baseline-to-candidate `git diff --check`; no local project runtime under resource restriction.
+- Result: Static gates PASS. Hosted GREEN, type/lint/build, real browser gates and independent review remain unexecuted on this candidate.
+- New evidence: source/test diff and root handoff for this frozen revision. The exact browser check count is deliberately not guessed: retain the old strict guard until the first hosted run reports the measured new count, then update it and rerun before acceptance.
 - Decision: handoff
 
 ## Risks and rollback
@@ -103,6 +113,6 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2ka8-shared-signout.md
 - Validator result: PASS structural validation on 2026-10-29; project runtime remains unexecuted locally.
 - Independent verification result: Pending root review pipeline.
-- Terminal state: ACTIVE; tests-only handoff awaiting hosted RED.
+- Terminal state: BLOCKED on root-owned hosted candidate verification and independent reviews; implementation prepared.
 - Remaining failed or blocked criteria: C-001 through C-005 pending.
 - ClickUp final evidence comment: Root owns publication after implementation, CI and review.

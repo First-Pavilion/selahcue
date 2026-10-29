@@ -5,7 +5,7 @@
  * `tests/accountSignOut.test.ts` can drive every branch under `node --test`. `useSignOut.ts`
  * is the thin wiring that gives it the real ones.
  *
- * THE HONEST MODEL (the same one `Navbar.vue` documents, and `sessionStore.signOut` enforces)
+ * THE HONEST MODEL (the one `sessionStore.signOut` enforces)
  * -----------------------------------------------------------------------------------------
  * The session cookie is HttpOnly. JavaScript cannot delete it; only the server can, by
  * answering the `logout` mutation. So there is no "clear it locally anyway" fallback:
@@ -25,14 +25,24 @@
  * second request for a session that no longer exists.
  */
 
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
 
-/** The idle label. `Navbar.vue` says the same word for word: `tests/accountSignOut.test.ts` pins it. */
+/** Shared wording and the owner-approved destination for both controls. */
 export const SIGN_OUT_LABEL = 'Sign out'
 export const SIGN_OUT_PENDING_LABEL = 'Signing out…'
+export const SIGN_OUT_LANDING = '/signin'
 
-/** What a sign-out that did not complete says. Also pinned against `Navbar.vue`'s copy. */
+/** What a sign-out that did not complete says. */
 export const SIGN_OUT_FAILED = "We couldn't sign you out. Check your connection and try again."
+
+export interface SignOutState {
+  pending: Ref<boolean>
+  error: Ref<string>
+}
+
+export function createSignOutState(): SignOutState {
+  return { pending: ref(false), error: ref('') }
+}
 
 export interface SignOutDeps {
   /** Revoke the session on the server. Rejects when it was NOT revoked. */
@@ -45,10 +55,8 @@ export interface SignOutDeps {
   landing: string
 }
 
-export function createSignOutFlow(deps: SignOutDeps) {
-  const pending = ref(false)
-  /** Empty when there is nothing to report. Rendered where it is announced, because it is a failed action. */
-  const error = ref('')
+export function createSignOutFlow(deps: SignOutDeps, state: SignOutState = createSignOutState()) {
+  const { pending, error } = state
   let disposed = false
 
   /**
@@ -58,9 +66,8 @@ export function createSignOutFlow(deps: SignOutDeps) {
    * It stops the flow ACTING, nothing more. The request is not cancelled: a logout that may
    * already have landed must not be abandoned, and `revoke` clears the session hint itself when
    * the server says yes. What a late reply must not do is act for a page that is no longer
-   * there: a success pulling the visitor off the page they chose, or a failure written to a
-   * message nobody can see. A late failure leaves them still signed in and the navbar still
-   * showing "Sign out", which is the truth.
+   * there: a success pulling the visitor off the page they chose. The operation's state still
+   * settles: surviving shared chrome reports a late failure and allows a retry.
    */
   function dispose(): void {
     disposed = true
@@ -68,33 +75,32 @@ export function createSignOutFlow(deps: SignOutDeps) {
 
   /** Resolves true when the visitor is signed out, false when they are not (or a press was ignored). */
   async function run(): Promise<boolean> {
-    if (pending.value) return false
+    if (disposed || pending.value) return false
     pending.value = true
     error.value = ''
 
     try {
-      await deps.revoke()
-    } catch {
-      if (!disposed) {
+      try {
+        await deps.revoke()
+      } catch {
         error.value = SIGN_OUT_FAILED
-        pending.value = false
+        return false
       }
-      return false
-    }
 
-    // ---- the session is GONE. Nothing below may suggest otherwise. ----
-    if (disposed) return true
-    try {
-      await deps.navigate(deps.landing)
-    } catch {
-      // The revocation succeeded and only the navigation failed. A full document load is both
-      // the honest outcome (they end up signed out, on the landing page) and the actual remedy
-      // for the usual cause: a running page pointing at chunks a deploy has already removed.
-      deps.hardNavigate(deps.landing)
+      // ---- the session is GONE. Nothing below may suggest otherwise. ----
+      if (disposed) return true
+      try {
+        await deps.navigate(deps.landing)
+      } catch {
+        // A lazy chunk may have disappeared in a deploy. A caller that has since unmounted
+        // must not pull the visitor away with a late full-page navigation either.
+        if (!disposed) deps.hardNavigate(deps.landing)
+      }
+      return true
+    } finally {
+      // Shared chrome survives the initiating page. Never strand its controls on pending.
+      pending.value = false
     }
-    // The navigation itself unmounts the page that asked, so this is usually a no-op.
-    if (!disposed) pending.value = false
-    return true
   }
 
   return { pending, error, run, dispose }
