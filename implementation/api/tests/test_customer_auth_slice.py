@@ -2556,3 +2556,91 @@ def test_account_activation_is_idempotent(client, sender):
     assert body(second)["data"]["activateDeviceWithSession"]["fullToken"] is None
     from selahcue_api.apps.devices.models import Device, DeviceToken
     assert Device.objects.count() == 1 and DeviceToken.objects.count() == 1
+
+
+# --- 86ak5qy3p: preflight, off-lock KDF and current locked revalidation -------
+@pytest.mark.django_db
+@pytest.mark.parametrize("state", ["unknown", "empty", "consumed", "expired", "wrong-purpose"])
+def test_reset_kdf_never_runs_for_an_initially_invalid_token(client, sender, monkeypatch, state):
+    raw = live_reset_token(client, sender)
+    row = token_row(raw)
+    if state == "unknown":
+        raw = "SC-PRS-not-a-real-reset-token"
+    elif state == "empty":
+        raw = ""
+    elif state == "consumed":
+        CredentialToken.objects.filter(pk=row.pk).update(consumed_at=timezone.now())
+    elif state == "expired":
+        CredentialToken.objects.filter(pk=row.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+    else:
+        CredentialToken.objects.filter(pk=row.pk).update(purpose=CredentialTokenPurpose.EMAIL_VERIFY)
+    hashes = []
+
+    def unexpected_hash(*args, **kwargs):
+        hashes.append(True)
+        raise AssertionError("a refused reset token must not cause password hashing")
+
+    monkeypatch.setattr(services, "make_password", unexpected_hash)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, GOOD_PASSWORD, client_ip="203.0.113.90")
+    assert refused.value.code is ErrorCode.VALIDATION_FAILED
+    assert hashes == []
+
+
+@pytest.mark.django_db
+def test_reset_kdf_preserves_live_token_password_error_without_hashing(client, sender, monkeypatch):
+    raw = live_reset_token(client, sender)
+    hashes = []
+
+    def unexpected_hash(*args, **kwargs):
+        hashes.append(True)
+        raise AssertionError("a policy-rejected password must not reach PBKDF2")
+
+    monkeypatch.setattr(services, "make_password", unexpected_hash)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, SHORT_PASSWORD, client_ip="203.0.113.90")
+    assert refused.value.code is ErrorCode.PASSWORD_INVALID
+    assert token_row(raw).consumed_at is None
+    assert hashes == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("change", ["consumed", "expired", "wrong-purpose", "fingerprint", "time-passed"])
+def test_reset_kdf_rechecks_token_state_and_time_after_hashing(client, sender, monkeypatch, change):
+    raw = live_reset_token(client, sender)
+    row = token_row(raw)
+    user = row.customer_user
+    original_hash = user.password_hash
+    session, _ = services._new_session(user, timezone.now())
+    real_hash = services.make_password
+    current_time = [timezone.now()]
+    monkeypatch.setattr(services.djtz, "now", lambda: current_time[0])
+    hashed = []
+
+    def hash_then_change(*args, **kwargs):
+        encoded = real_hash(*args, **kwargs)
+        hashed.append(True)
+        if change == "consumed":
+            CredentialToken.objects.filter(pk=row.pk).update(consumed_at=current_time[0])
+        elif change == "expired":
+            CredentialToken.objects.filter(pk=row.pk).update(expires_at=current_time[0] - timedelta(seconds=1))
+        elif change == "wrong-purpose":
+            CredentialToken.objects.filter(pk=row.pk).update(purpose=CredentialTokenPurpose.EMAIL_VERIFY)
+        elif change == "fingerprint":
+            CredentialToken.objects.filter(pk=row.pk).update(token_fingerprint=services._fingerprint("replacement"))
+        else:
+            # No row edit: real time can pass while hashing or waiting for a lock. A
+            # pre-hash timestamp must not authorize an already-expired token afterward.
+            current_time[0] = row.expires_at + timedelta(seconds=1)
+        return encoded
+
+    monkeypatch.setattr(services, "make_password", hash_then_change)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, GOOD_PASSWORD, client_ip="203.0.113.90")
+    assert hashed == [True], "the token must have passed the initial liveness check"
+    assert refused.value.code is ErrorCode.VALIDATION_FAILED
+    user.refresh_from_db()
+    session.refresh_from_db()
+    assert user.password_hash == original_hash
+    assert session.status == "ACTIVE", "a refused reset must not revoke an existing session"
+    assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
