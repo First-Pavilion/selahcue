@@ -82,7 +82,12 @@ def _report_sustained_denial(scope: str) -> None:
 
 
 def spend_budget(
-    scope: str, identity: str, setting_name: str, default: tuple[int, int]
+    scope: str,
+    identity: str,
+    setting_name: str,
+    default: tuple[int, int],
+    *,
+    report_denial: bool = True,
 ) -> BudgetOutcome:
     """Spend one unit of `identity`'s `scope` budget and report the outcome.
 
@@ -97,10 +102,15 @@ def spend_budget(
     A DENIED outcome also reports a sustained-denial warning (86akcn92k, F3) — done HERE,
     the one place every caller (`within_budget`, `enforce_budget`,
     `enforce_budget_reporting_outage`) routes through, rather than in each of them.
+
+    `report_denial=False` is for a scope where a DENIED outcome refuses nothing the caller sees
+    -- a budget that only decides whether to write an audit row -- and whose owner reports the
+    skips in its own words. That warning says "refusing requests (RATE_LIMITED)", which would
+    be false there.
     """
     limit, window = getattr(settings, setting_name, default)
     outcome = evaluate_budget(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
-    if outcome is BudgetOutcome.DENIED:
+    if outcome is BudgetOutcome.DENIED and report_denial:
         _report_sustained_denial(scope)
     return outcome
 

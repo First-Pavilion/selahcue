@@ -591,6 +591,32 @@ def test_remint_is_audited_without_the_full_token(client):
     assert full_key not in dumped
 
 
+def test_the_remint_audit_row_chains_the_old_fingerprint_to_the_new_one(client):
+    """86ak5r2pt. The row exists so an operator can follow a device across a renewal: this row's
+    `token_fingerprint` is the NEW credential's, its `superseded_token_fingerprint` the old one's.
+    The test above reads only the second; a deny-list entry for the first name once turned it into
+    "[redacted]" and broke the chain (the next renewal's superseded value would never match)."""
+    now = timezone.now().replace(microsecond=0)
+    key, full_key = _seed_license_key(
+        tag="chain", starts_at=now - timedelta(days=40), expires_at=now + timedelta(minutes=5)
+    )
+    first = _activate(client, license_key=full_key, fingerprint="mac-chain", idem="remint-chain-01")
+    old_fingerprint = first.json()["token"]["fingerprint"]
+    expired_at = now - timedelta(days=1)
+    AppLicenseKey.objects.filter(pk=key.pk).update(expires_at=expired_at, status=LicenseKeyStatus.EXPIRED)
+    _expire_tokens(key, at=expired_at)
+    _renew(key, expires_at=now + timedelta(days=365))
+
+    again = _activate(client, license_key=full_key, fingerprint="mac-chain", idem="remint-chain-02")
+
+    event = AuditEvent.objects.get(action="device_token.reminted")
+    new_fingerprint = again.json()["token"]["fingerprint"]
+    assert new_fingerprint != old_fingerprint
+    assert event.after["token_fingerprint"] == new_fingerprint
+    assert event.after["superseded_token_fingerprint"] == old_fingerprint
+    assert DeviceToken.objects.get(token_fingerprint=event.after["token_fingerprint"]).status == DeviceTokenStatus.ACTIVE
+
+
 # --- the account-session activation path re-mints too -----------------------------------
 def test_account_session_path_also_remints(client):
     """Both entry points converge on the shared core, so the DEC-005 account path must show

@@ -195,6 +195,11 @@ def _bucket_for_throttling(address: ipaddress.IPv4Address | ipaddress.IPv6Addres
     return str(network.network_address)
 
 
+# The public name, for callers outside this module that must key on the same bucket the
+# limiter does (the failed-reset-confirm trace, 86ak5r2pt).
+bucket_for_throttling = _bucket_for_throttling
+
+
 
 def client_ip(request) -> str:
     """The caller's IP, trusting `X-Forwarded-For` ONLY behind a known proxy count.
