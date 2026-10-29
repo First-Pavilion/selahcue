@@ -52,7 +52,7 @@ Verified main b8fbb7c34a093cf98a612f76f4abe65a6cb84d2f includes PR260's bounded 
 ## Dependencies and approvals
 
 - Root-approved ticket and four-review/fix/CI/merge/QA delivery. PR260 is actually merged and all reviews/CI passed.
-- Root owns ClickUp comments/status, PR publication/push/merge, all four independent reviews and exact main CI. New circuit/native work is unpublished and must not be copied.
+- Root owns ClickUp comments/status, PR publication/push/merge, all four independent reviews and exact main CI. Circuit PR263 and native revoke PR264 were actually merged at 68a33883 and 0035e9b7; this branch includes actual origin/main0035e9b7 by an ordinary merge, with no copied unmerged source.
 
 ## Completion predicate
 
@@ -102,6 +102,16 @@ Verified main b8fbb7c34a093cf98a612f76f4abe65a6cb84d2f includes PR260's bounded 
 - Result: baseline receipt verified; candidate paired interval, mutation RED and full current-main regression pending.
 - New evidence: baseline raw receipt and full hosted log persist in batch20-recovery/reset-floor/baseline-hosted/ and baseline-hosted.log. Diagnostic driver requires uniformity's paired interval assertion to fail, not merely a missing sleep control.
 - Decision: freeze candidate for hosted statistical/mutation verification, then required independent reviews and final current-main regression.
+
+### Iteration 4
+
+- Target criterion: C-004
+- Hypothesis: integrating the actual merged circuit/native source preserves the reset finally boundary and strict outage-admission controls without manual source resolution.
+- Change or investigation: ordinary fetch and merge origin/main0035e9b7c3d73124ad92c67a6dda7dec6d51ec57 into the ticket branch; conflict-free integration commit34bdea264e8ac8aabeb0350f16bc5c4889c0fb63. No history rewrite.
+- Verifier executed: light current-tree deterministic/deployment checks60 passed,117 deselected2.55s; deterministic circuit subset20 passed,17 deselected3.44s; strict merged customer-auth outage control1 passed,123 deselected0.74s. The latter retains exactly3 physical store calls, all11 logical per-source calls, three audit rows and successful final reset. Django/migration/diff checks pass. origin/main reachable, zero commits behind.
+- Result: proportionate local integration checks passed. No local statistical measurements or heavy suite ran. Hosted candidate/mutation run40922554376 on pre-integration12a source and exact final-head hosted full regression remain separate pending coordinator gates.
+- New evidence: current-main-light.log, current-main-circuit-light.log, current-main-strict-circuit-auth.log in persistent reset-floor evidence folder. Root separately verified combined circuit/native run40920741819 with1758 API passes/no skips before actual merges; that is dependency evidence, not this ticket's final full regression.
+- Decision: freeze source for coordinator publication, hosted statistical/mutation receipt review, independent four-role review and exact final-head CI.
 
 ## Risks and rollback
 
