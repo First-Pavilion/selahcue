@@ -312,6 +312,95 @@ DEPLOYED_ENVIRONMENTS = [
 OTHER_THAN_PROD = DEPLOYED_ENVIRONMENTS[1:]
 
 
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize(
+    "engine",
+    [None, "", " \t", "django.db.backends.sqlite3", "sqlite3", "custom.backend.sqlite3"],
+    ids=["unset", "empty", "blank", "django-sqlite", "short-sqlite", "sqlite-suffix"],
+)
+def test_nondev_refuses_missing_or_sqlite_database_engine(monkeypatch, environment, engine):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+            SQL_ENGINE=engine, SQL_PASSWORD="configured-test-password",
+        )
+    assert "SQL_ENGINE" in str(refusal.value)
+    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("password", [None, "", " \t", "postgres"], ids=["unset", "empty", "blank", "public-default"])
+def test_nondev_refuses_missing_or_default_database_password(monkeypatch, environment, password):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+            SQL_ENGINE="django.db.backends.postgresql", SQL_PASSWORD=password,
+        )
+    message = str(refusal.value)
+    assert "SQL_PASSWORD" in message
+    assert f"ENVIRONMENT={environment!r}" in message
+    if password:
+        assert password not in message
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("password", ["configured-test-password", "postgres-with-a-private-suffix"])
+def test_nondev_accepts_configured_postgres_settings(monkeypatch, environment, password):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+        SQL_ENGINE="django.db.backends.postgresql", SQL_DATABASE="configured-db",
+        SQL_USER="configured-user", SQL_PASSWORD=password, SQL_HOST="db.internal", SQL_PORT="5433",
+    )
+    assert module.DATABASES["default"] == {
+        "ENGINE": "django.db.backends.postgresql", "NAME": "configured-db", "USER": "configured-user",
+        "PASSWORD": password, "HOST": "db.internal", "PORT": "5433", "CONN_MAX_AGE": 60,
+    }
+
+
+@pytest.mark.parametrize("environment", [None, "dev"], ids=["bare-local", "explicit-dev"])
+@pytest.mark.parametrize("engine", [None, "django.db.backends.sqlite3"], ids=["default-engine", "explicit-sqlite"])
+def test_dev_retains_sqlite_database_default(monkeypatch, environment, engine):
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SQL_ENGINE=engine)
+    assert module.ENVIRONMENT == "dev"
+    assert module.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+    assert module.DATABASES["default"]["NAME"] == str(API_ROOT / "db.sqlite3")
+
+
+@pytest.mark.parametrize("environment", [None, "dev"], ids=["bare-local", "explicit-dev"])
+@pytest.mark.parametrize("password", [None, "postgres"], ids=["default-password", "explicit-public-password"])
+def test_dev_retains_postgres_password_default(monkeypatch, environment, password):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SQL_ENGINE="django.db.backends.postgresql", SQL_PASSWORD=password,
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.DATABASES["default"]["PASSWORD"] == "postgres"
+
+
+def test_configured_nondev_postgres_can_connect_in_hosted_environment():
+    """Use the real hosted service and a fresh deployed settings import, without writing data."""
+    if os.environ.get("SQL_ENGINE") != "django.db.backends.postgresql":
+        pytest.skip("Requires the hosted PostgreSQL service")
+    deployed = {name: os.environ.get(name) for name in (
+        "SQL_ENGINE", "SQL_DATABASE", "SQL_USER", "SQL_PASSWORD", "SQL_HOST", "SQL_PORT",
+    )}
+    env = _environment({**deployed, "ENVIRONMENT": "prod", "SECRET_KEY": "a-configured-test-key"})
+    env["DJANGO_SETTINGS_MODULE"] = "selahcue_api.settings"
+    result = subprocess.run(
+        [sys.executable, "-c", """import django
+django.setup()
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute('SELECT 1')
+    assert cursor.fetchone() == (1,)
+connection.close()
+print('configured deployed PostgreSQL connected')
+"""],
+        cwd=API_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "configured deployed PostgreSQL connected"
+
+
 # The later owner instruction on 17tnw2b9d9z covers EVERY non-dev environment,
 # superseding the original description's explicit ingress opt-in.
 @pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
