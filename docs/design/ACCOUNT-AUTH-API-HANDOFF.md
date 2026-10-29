@@ -52,6 +52,8 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
 
+Enrollment `POST /v1/activations` also requires `application/json` before spending throttle budget or querying the database. For `POST /v1/license:refresh`, that guard applies when the token comes from the JSON body. Existing bearer-header refresh requests may omit the body and Content-Type: the Authorization header already requires a cross-origin preflight, and its token still passes the existing authentication checks. A header credential continues to take precedence over a body token; no cookie authentication or GET requirement is added (17tnw2b1wqb).
+
 ## Frontend follow-ups (net-new vs the current A0/A1 design)
 
 1. **Sign-UP screen** — the existing `ACCOUNT-SETUP-HANDOFF.md` (A0/A1) assumes the org already exists; self-serve signup needs a create-account form collecting **email, password, org name, country** (+ optional display name). First user becomes Admin.
