@@ -1462,7 +1462,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Prior hosted runs hit 15m during the full suite; the realistic local
+    # Postgres/Redis gate takes 9m before runner/setup overhead. Keep every check
+    # and allow bounded headroom for the slower shared Linux runner.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: implementation/api
