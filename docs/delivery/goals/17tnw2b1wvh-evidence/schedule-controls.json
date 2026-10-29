@@ -1,0 +1,164 @@
+{
+  "base": "8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e",
+  "scope": "exact source-linked hang controller, actual Case/launcher/PID/temp and real verdict checks; not full16CLI repeated",
+  "baseline_ast": "c8472e0e1f37144c2d84db8b890d2cadb65a61ba7b2f23ee53d59cb1748d9974",
+  "candidate_ast": "cfdd2e3916d02692cea40e8a0cfd18d2efd17740d97fec0b4a5b993ebf1841f5",
+  "pairs": [],
+  "controls": [
+    {
+      "label": "forced-startup-delay",
+      "wall_s": 4.020839125,
+      "loadavg": [
+        8.5341796875,
+        9.33544921875,
+        9.267578125
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.007190417,
+          "run_elapsed_s": 1.006150245666504,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 3,
+          "wall_s": 3.011585083,
+          "run_elapsed_s": 3.0079150199890137,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 75035,
+            "helper": 75038
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [],
+      "startup_retries": 1,
+      "terminal_flake": false,
+      "synthetic_delay_s": 1.5,
+      "wrong_timeout_injected": false
+    },
+    {
+      "label": "forced-startup-delay",
+      "wall_s": 24.048032292000002,
+      "loadavg": [
+        8.36865234375,
+        9.279296875,
+        9.2509765625
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.0067777500000004,
+          "run_elapsed_s": 1.005082130432129,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 3,
+          "wall_s": 3.0142504580000002,
+          "run_elapsed_s": 3.008641004562378,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 20,
+          "wall_s": 20.020147082999998,
+          "run_elapsed_s": 20.01490879058838,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 75113,
+            "helper": 75124
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [],
+      "startup_retries": 2,
+      "terminal_flake": false,
+      "synthetic_delay_s": 4.0,
+      "wrong_timeout_injected": false
+    },
+    {
+      "label": "incorrect-timeout-verdict",
+      "wall_s": 1.0100091659999997,
+      "loadavg": [
+        8.36865234375,
+        9.279296875,
+        9.2509765625
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.009227709000001,
+          "run_elapsed_s": 1.0081000328063965,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 75247,
+            "helper": 75248
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [
+        "hung browser: a Chrome that never exits was not reported as timed out",
+        "hung browser: the gate would exit 0, expected 2"
+      ],
+      "startup_retries": 0,
+      "terminal_flake": true,
+      "synthetic_delay_s": 0,
+      "wrong_timeout_injected": true
+    }
+  ],
+  "samples_started_at": 1793272710.357424,
+  "samples_finished_at": 1793272739.4426692
+}
