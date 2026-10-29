@@ -15,6 +15,8 @@ registered by the worker.
 
 from __future__ import annotations
 
+from time import monotonic
+
 from celery import shared_task
 from django.db import transaction
 from django.db.models import Q
@@ -23,7 +25,7 @@ from django.utils import timezone
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.devices.models import DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.services import ACTIVATABLE_KEY_STATUSES
-from selahcue_api.apps.license_keys.models import LicenseKeyStatus
+from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.context import ActorContext, ActorKind
 
 # The cascade acts on its own authority, on a schedule, with no request behind it.
@@ -65,18 +67,30 @@ def cascade_license_revocations(batch_size: int = 500) -> int:
     Idempotent: already-revoked tokens are excluded by the `status=ACTIVE` filter, so a
     redelivered run (CELERY_TASK_ACKS_LATE) finds nothing and writes no second audit row.
     Bounded by `batch_size` so a large tenant cannot produce an unbounded query or an
-    unbounded working set — beat re-runs hourly and drains the remainder.
+    unbounded working set. The scheduled wrapper drains successive batches promptly;
+    each transaction rechecks eligibility under the licence then token locks.
     """
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     stale = list(
-        DeviceToken.objects.select_related("device__license_key")
-        .filter(status=DeviceTokenStatus.ACTIVE)
+        DeviceToken.objects.filter(status=DeviceTokenStatus.ACTIVE)
         .exclude(_licenses_whose_tokens_survive())
-        .order_by("id")[:batch_size]
+        .order_by("id").values_list("id", "device__license_key_id")[:batch_size]
     )
     now = timezone.now()
     changed = 0
-    for token in stale:
+    for token_id, license_id in stale:
         with transaction.atomic():
+            # Match refresh/activation's lock order and re-read after waiting. A snapshot
+            # taken before renewal must neither kill its replacement nor duplicate audits.
+            license_key = AppLicenseKey.objects.select_for_update().get(pk=license_id)
+            token = DeviceToken.objects.select_for_update().filter(pk=token_id).first()
+            if token is None or token.status != DeviceTokenStatus.ACTIVE:
+                continue
+            if not DeviceToken.objects.filter(pk=token_id).exclude(
+                _licenses_whose_tokens_survive()
+            ).exists():
+                continue
             token.status = DeviceTokenStatus.REVOKED
             token.save(update_fields=["status", "updated_at"])
             record_audit_event(
@@ -85,14 +99,28 @@ def cascade_license_revocations(batch_size: int = 500) -> int:
                 target_type="device_token",
                 target_id=str(token.id),
                 request_id=f"cascade-{now.isoformat()}",
-                reason=f"licence status {token.device.license_key.status} is not activatable",
+                reason=f"licence status {license_key.status} is not activatable",
                 source_surface="desktop_v1",
                 after={"status": DeviceTokenStatus.REVOKED.value},
             )
-        changed += 1
+            changed += 1
     return changed
 
 
 @shared_task(name="devices.cascade_license_revocations")
 def cascade_license_revocations_task() -> int:
-    return cascade_license_revocations()
+    # Bound each working set and each delivery's runtime, without waiting another hour
+    # after token 500. Remaining ACTIVE rows are the durable queue: minute beat recovers
+    # interrupted/lost continuations, including a worker death after the last commit.
+    deadline = monotonic() + 240
+    total = 0
+    while True:
+        changed = cascade_license_revocations()
+        total += changed
+        if not DeviceToken.objects.filter(status=DeviceTokenStatus.ACTIVE).exclude(
+            _licenses_whose_tokens_survive()
+        ).exists():
+            return total
+        if monotonic() >= deadline:
+            cascade_license_revocations_task.delay()
+            return total

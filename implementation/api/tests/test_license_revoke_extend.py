@@ -54,7 +54,8 @@ from selahcue_api.apps.throttling import guards as throttle_guards
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.devices.models import DeviceToken, DeviceTokenStatus
-from selahcue_api.apps.devices.services import license_allows_commercial_service
+from selahcue_api.apps.devices import services as device_services
+from selahcue_api.apps.devices.services import license_allows_commercial_service, refresh_license
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys import state_machine
@@ -2854,3 +2855,40 @@ def test_extension_never_lets_a_dead_token_rotate_itself(client, monkeypatch, de
                            HTTP_AUTHORIZATION=f"Bearer {credential}")
     assert response.status_code == 401
     assert DeviceToken.objects.filter(device=old.device).count() == 1
+
+
+
+def test_rotation_failure_rolls_back_supersession_and_audit(client, monkeypatch):
+    key, full_key = _seed_key("refresh-atomic")
+    activated = _activate(client, full_key, fingerprint="refresh-atomic", idem="refresh-atomic-act")
+    credential = activated.json()["activation_token"]
+    _extend(key, key.expires_at + timedelta(days=30), "refresh-atomic-ext")
+    def failing_audit(*args, **kwargs):
+        raise RuntimeError("injected audit storage failure")
+    with monkeypatch.context() as failure:
+        failure.setattr(device_services, "record_audit_event", failing_audit)
+        with pytest.raises(RuntimeError, match="injected audit storage failure"):
+            refresh_license(credential)
+    assert DeviceToken.objects.filter(device__license_key=key).count() == 1
+    assert DeviceToken.objects.get(device__license_key=key).status == DeviceTokenStatus.ACTIVE
+    renewed = refresh_license(credential)
+    assert renewed.full_token
+    audit = AuditEvent.objects.get(action="device_token.reminted")
+    serialized = json.dumps({"before": audit.before, "after": audit.after, "reason": audit.reason})
+    assert credential not in serialized and renewed.full_token not in serialized
+
+
+def test_refresh_rechecks_token_expiry_after_licence_lock_wait(client, monkeypatch):
+    key, full_key = _seed_key("refresh-lock-clock")
+    activated = _activate(client, full_key, fingerprint="refresh-lock-clock", idem="refresh-clock-act")
+    old = DeviceToken.objects.get(device__license_key=key)
+    _extend(key, key.expires_at + timedelta(days=30), "refresh-clock-ext")
+    original = AppLicenseKey.objects.select_for_update
+    def delayed_lock(*args, **kwargs):
+        monkeypatch.setattr(timezone, "now", lambda: old.expires_at + timedelta(seconds=1))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(AppLicenseKey.objects, "select_for_update", delayed_lock)
+    with pytest.raises(SafeAPIError) as refused:
+        refresh_license(activated.json()["activation_token"])
+    assert refused.value.code == ErrorCode.UNAUTHENTICATED
+    assert DeviceToken.objects.filter(device__license_key=key).count() == 1

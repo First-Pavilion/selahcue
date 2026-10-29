@@ -374,10 +374,11 @@ from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it
 # `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
 # interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
 CELERY_BEAT_SCHEDULE = {
-    # Hourly: a revoked licence should stop working within the hour, not at expiry.
+    # Minute recovery tick: the bounded cascade drains batches in one cycle, and DB
+    # eligibility survives broker/worker interruption (NFR-503, 65 minute maximum).
     "cascade-license-revocations": {
         "task": "devices.cascade_license_revocations",
-        "schedule": crontab(minute=0),
+        "schedule": crontab(),
     },
     # Nightly: pure row hygiene, no behavioural effect.
     "sweep-expired-credentials": {

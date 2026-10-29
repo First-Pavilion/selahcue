@@ -19,8 +19,13 @@ from django.utils import timezone
 from licensing_test_support import seat_plan_code
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
-from selahcue_api.apps.devices.tasks import cascade_license_revocations
+from selahcue_api.apps.devices import tasks as cascade_tasks
+from selahcue_api.apps.devices.services import authenticate_device_token
+from selahcue_api.apps.devices.tasks import cascade_license_revocations, cascade_license_revocations_task
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.license_keys.services import RevokeLicenseKeyData, revoke_license_key
+from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = pytest.mark.django_db
 
@@ -382,8 +387,9 @@ def test_every_beat_scheduled_task_is_registered_in_a_worker_process():
 
 
 # More than one bounded batch must converge in the same scheduled run.
-def test_scheduled_cascade_drains_backlog_beyond_one_batch(activated):
-    from selahcue_api.apps.devices.tasks import cascade_license_revocations_task
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_scheduled_cascade_drains_backlog_beyond_one_batch(activated, monkeypatch, interrupted):
     device, credential, key = activated
     template = DeviceToken.objects.get(device=device)
     copies = []
@@ -393,8 +399,36 @@ def test_scheduled_cascade_drains_backlog_beyond_one_batch(activated):
             token_hash=template.token_hash, token_fingerprint=f"backlog-{i:056d}",
             issued_at=template.issued_at, expires_at=template.expires_at, timezone="UTC"))
     DeviceToken.objects.bulk_create(copies)
-    AppLicenseKey.objects.filter(pk=key.pk).update(status=LicenseKeyStatus.REVOKED)
-    assert cascade_license_revocations_task() == 502
+    revoked_at = timezone.now()
+    revoke_license_key(
+        ActorContext(kind=ActorKind.STAFF, actor_id="cascade-revoke-staff",
+                     staff_permissions=frozenset({StaffPermission.REVOKE_LICENSE_KEY})),
+        RevokeLicenseKeyData(idempotency_key="backlog-revoke-request", license_key_id=str(key.pk),
+                             reason="Confirmed permanent revocation for backlog test."))
+    monkeypatch.setattr(timezone, "now", lambda: revoked_at + timedelta(minutes=59))
+    if interrupted:
+        # The worker loses its continuation after its bounded budget: DB ACTIVE rows
+        # remain eligible, so the next minute tick recovers without broker state.
+        with monkeypatch.context() as delivery:
+            instants = iter([0, 241])
+            delivery.setattr(cascade_tasks, "monotonic", lambda: next(instants))
+            queued = []
+            delivery.setattr(cascade_license_revocations_task, "delay", lambda: queued.append(True))
+            assert cascade_license_revocations_task() == 500
+            assert queued == [True]
+        assert cascade_license_revocations_task() == 2
+    else:
+        assert cascade_license_revocations_task() == 502
     assert not DeviceToken.objects.filter(device=device, status=DeviceTokenStatus.ACTIVE).exists()
     assert AuditEvent.objects.filter(action="device_token.revoked_by_cascade").count() == 502
     assert cascade_license_revocations_task() == 0
+    monkeypatch.setattr(timezone, "now", lambda: revoked_at + timedelta(minutes=66))
+    with pytest.raises(SafeAPIError) as refused:
+        authenticate_device_token(credential)
+    assert refused.value.code == ErrorCode.UNAUTHENTICATED
+    assert cascade_tasks.cascade_license_revocations_task.name == "devices.cascade_license_revocations"
+
+
+def test_cascade_recovery_tick_is_every_minute(settings):
+    schedule = settings.CELERY_BEAT_SCHEDULE["cascade-license-revocations"]["schedule"]
+    assert schedule.minute == set(range(60))

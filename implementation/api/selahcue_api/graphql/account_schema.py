@@ -117,6 +117,7 @@ class ActivateDeviceInput:
     platform: str
     app_version: str = ""
     display_name: str = ""
+    replace_token: bool = False
 
 
 @strawberry.type
@@ -265,6 +266,7 @@ class AccountMutation:
                 platform=input.platform,
                 app_version=input.app_version,
                 display_name=input.display_name,
+                replace_token=input.replace_token,
             ),
         )
         return ActivateDevicePayload(

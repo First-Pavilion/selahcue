@@ -35,7 +35,9 @@ from selahcue_api.apps.devices.services import (
     ActivateDeviceWithSessionData,
     activate_device,
     activate_device_with_session,
+    refresh_license,
 )
+from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
@@ -1541,3 +1543,87 @@ def test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins():
     for sql in joined:
         assert f'FOR UPDATE OF "{AppLicenseKey._meta.db_table}"' in sql, sql
         assert org_table not in sql.split("FOR UPDATE", 1)[1], sql
+
+
+# FR-509 refresh renewal: genuine queued row-lock interleavings, not start barriers.
+def _live_extended_device(tag):
+    key, full_key = _seed_license_key(tag=tag)
+    activated = _enroll(full_key, idem=f"{tag}-activation", fingerprint=f"fp-{tag}")()
+    _extend_call(key, f"{tag}-extension", key.expires_at + timedelta(days=30))()
+    return key, activated
+
+
+def test_two_live_refreshes_rotate_only_once_under_real_contention():
+    key, activated = _live_extended_device("two-refreshes")
+    results = []
+    def refresh():
+        results.append(refresh_license(activated.full_token))
+    errors, waiting = _race_behind_row_lock(key, [refresh, refresh])
+    assert waiting == 2
+    assert len(errors) == 1 and errors[0].code == ErrorCode.UNAUTHENTICATED
+    assert len(results) == 1 and results[0].full_token
+    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == 1
+    assert refresh_license(results[0].full_token).full_token is None
+
+
+@pytest.mark.parametrize("revoke_first", [True, False])
+def test_refresh_and_revoke_respect_licence_lock_arrival_order(revoke_first):
+    key, activated = _live_extended_device(f"refresh-revoke-{revoke_first}")
+    renewal = lambda: refresh_license(activated.full_token)
+    revoke = _revoke_call(key, f"refresh-revoke-{revoke_first}-req")
+    calls = [revoke, renewal] if revoke_first else [renewal, revoke]
+    results, errors, waiting = _race_in_arrival_order(key, calls)
+    assert waiting == 2 and errors == []
+    renewal_result = dict(results)[1 if revoke_first else 0]
+    assert bool(renewal_result.full_token) is (not revoke_first)
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == (not revoke_first)
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+
+
+@pytest.mark.parametrize("extend_first", [True, False])
+def test_refresh_and_extension_observe_the_serialized_expiry(extend_first):
+    key, full_key = _seed_license_key(tag=f"refresh-extend-{extend_first}")
+    activated = _enroll(full_key, idem=f"refresh-extend-{extend_first}-act", fingerprint="fp-refresh-ext")()
+    target = key.expires_at + timedelta(days=30)
+    renewal = lambda: refresh_license(activated.full_token)
+    extension = _extend_call(key, f"refresh-extend-{extend_first}-req", target)
+    results, errors, waiting = _race_in_arrival_order(
+        key, [extension, renewal] if extend_first else [renewal, extension])
+    assert waiting == 2 and errors == []
+    renewed = dict(results)[1 if extend_first else 0]
+    assert bool(renewed.full_token) is extend_first
+    if not extend_first:
+        renewed = refresh_license(activated.full_token)
+    assert renewed.token_expires_at == target.isoformat() and renewed.full_token
+    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+
+
+def test_two_cascades_cannot_duplicate_a_token_revocation_audit():
+    key, full_key = _seed_license_key(tag="concurrent-cascade")
+    activated = _enroll(full_key, idem="concurrent-cascade-act", fingerprint="concurrent-cascade")()
+    _revoke_call(key, "concurrent-cascade-rev")()
+    results = []
+    errors, waiting = _race_behind_row_lock(key, [lambda: results.append(cascade_license_revocations()),
+                                               lambda: results.append(cascade_license_revocations())])
+    assert waiting == 2 and errors == []
+    assert sorted(results) == [0, 1]
+    assert AuditEvent.objects.filter(action="device_token.revoked_by_cascade").count() == 1
+
+
+@pytest.mark.parametrize("same_intent", [True, False])
+def test_concurrent_admin_replacements_are_locked_and_show_once(same_intent):
+    key, full_key = _seed_license_key(tag=f"replace-{same_intent}")
+    activated = _enroll(full_key, idem=f"replace-{same_intent}-activation", fingerprint="fp-replace")()
+    admin = _session_admin(key, tag=f"replace-{same_intent}")
+    def replace(index):
+        return lambda: activate_device_with_session(admin, ActivateDeviceWithSessionData(
+            idempotency_key=f"replace-request-{0 if same_intent else index}",
+            device_fingerprint="fp-replace", platform="macos", replace_token=True))
+    results, errors, waiting = _race_in_arrival_order(key, [replace(0), replace(1)])
+    assert waiting == 2 and errors == []
+    assert sum(bool(result.full_token) for _, result in results) == (1 if same_intent else 2)
+    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert DeviceToken.objects.get(pk=activated.device_token.pk).status == DeviceTokenStatus.REVOKED
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == (1 if same_intent else 2)

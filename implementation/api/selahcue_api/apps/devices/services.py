@@ -12,6 +12,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.devices.models import (
     Device,
@@ -60,6 +61,7 @@ class LicenseRefreshResult:
     token_expires_at: str
     feature_scope: str
     territory: str
+    full_token: str | None = None
 
 
 @dataclass(frozen=True)
@@ -251,18 +253,20 @@ def _remint_device_token(
     idempotency_key: str,
     audit_actor: ActorContext | None,
     source_surface: str,
+    reason: str = "device held no usable token; licence is currently activatable",
 ) -> tuple[DeviceToken, str]:
-    """Issue a REPLACEMENT token for an existing device that holds no usable one.
+    """Issue a replacement after activation credentials or a locked, live-token renewal.
 
-    AUTHORISATION (the one non-obvious part of this slice). Re-mint is authorised by exactly
-    the evidence that authorises a FIRST activation and by nothing else: this function is
-    reachable only from `_activate_device_for_key`, whose two callers are `activate_device`
+    AUTHORISATION: dead-token re-mint requires the same authority as first activation.
+    This function is normally reached from `_activate_device_for_key`, whose callers are `activate_device`
     (a presented enrollment key, resolved by fingerprint and confirmed with `check_password`)
     and `activate_device_with_session` (a valid ADMIN account session). The device's own dead
     token is never read, never compared, and never sufficient — `authenticate_device_token`
-    deliberately has NO re-mint path, so a token can never be the credential that revives
-    itself. That also keeps re-mint useless as a revocation bypass: the licence-status gate
-    (`require_commercial_service`) has already run under the row lock before we get here.
+    deliberately has NO dead-token re-mint path, so a token can never revive itself.
+    FR-509 also permits `refresh_license` to rotate a STILL LIVE token after an extension:
+    that caller locks licence, device and token, re-authenticates and checks commercial validity
+    before calling here. Lost responses require explicit ADMIN account replacement,
+    never a dead credential. Both callers check commercial validity under the licence lock.
 
     The new expiry comes from `license_key.expires_at` as re-read under that lock, so it
     tracks the licence's CURRENT window rather than the value frozen at first activation.
@@ -290,7 +294,7 @@ def _remint_device_token(
         target_type="device_token",
         target_id=str(token.id),
         request_id=idempotency_key,
-        reason="device held no usable token; licence is currently activatable",
+        reason=reason,
         source_surface=source_surface,
         after={
             "license_key_id": str(license_key.id),
@@ -361,22 +365,42 @@ def _existing_device_result(
     idempotency_key: str,
     audit_actor: ActorContext | None,
     source_surface: str,
+    replace_token: bool = False,
 ) -> ActivateDeviceResult:
     """Shared outcome for a device that ALREADY exists — an idempotent retry (same
     idempotency key) or a known install re-enrolling (same fingerprint).
 
-    Show-once is preserved while the device holds a usable token: replaying it would let a
+    Default show-once is preserved while the device holds a usable token: replaying it would let a
     stolen enrollment key harvest the live credential of a running install, which is strictly
     worse than the status quo. Only when there is NO usable token — expired with the licence,
     revoked by the cascade, or absent — is a replacement minted, because that device is
     otherwise permanently dead with no exit but a new fingerprint it cannot afford.
 
+    Explicit ADMIN account replacement is a separate intent (replace_token=True), audited
+    and show-once even on retry. It never discloses the existing raw credential.
+
     A re-mint is additionally gated on the plan's allowance (`_remint_is_within_plan_allowance`)
     — reviving a device is where a downgraded licence would otherwise leak extra seats.
     """
     _assert_device_activatable(device)
+    # Explicit replacement is reachable only through verified ADMIN account authority.
+    # Retry recognition is under the licence lock and never returns a stored raw token.
+    replacement_replayed = False
+    if replace_token:
+        if audit_actor is None:
+            raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+        if idempotency_key == device.idempotency_key:
+            raise _validation_error()  # replacement needs a new, explicit user intent
+        replacement_replayed = AuditEvent.objects.filter(
+            actor_kind=audit_actor.kind.value,
+            actor_id=audit_actor.actor_id,
+            action="device_token.reminted",
+            result=AuditResult.SUCCESS,
+            request_id=idempotency_key,
+            after__device_public_id=device.device_public_id,
+        ).exists()
     live = _live_token(device)
-    if live is not None:
+    if live is not None and (not replace_token or replacement_replayed):
         # Untouched by the allowance check on purpose: this device is already running, so
         # refusing its replay would revoke nothing and would break retry-idempotency for a
         # device that never lost its token. The plan is enforced where a credential is ISSUED.
@@ -388,6 +412,8 @@ def _existing_device_result(
             created=False,
             reminted=False,
         )
+    if replacement_replayed:
+        raise SafeAPIError(ErrorCode.CONFLICT)  # consumed intent cannot mint again
     if not _remint_is_within_plan_allowance(device, license_key):
         # Same coded error a NEW over-limit device gets, because it is the same fact about the
         # plan: there is no seat for this device. Freeing one (deactivating another device)
@@ -399,6 +425,8 @@ def _existing_device_result(
         idempotency_key=idempotency_key,
         audit_actor=audit_actor,
         source_surface=source_surface,
+        reason=("administrator explicitly replaced a lost device token" if replace_token
+                else "device held no usable token; licence is currently activatable"),
     )
     return ActivateDeviceResult(
         device=device,
@@ -421,6 +449,7 @@ def _activate_device_for_key(
     activated_by_actor_id: str | None = None,
     audit_actor: ActorContext | None = None,
     source_surface: str = "desktop_v1",
+    replace_token: bool = False,
 ) -> ActivateDeviceResult:
     """Core activation for an ALREADY-RESOLVED license key. Shared by the enrollment-key path
     (activate_device) and the account-session path (activate_device_with_session) so both converge
@@ -461,6 +490,7 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                replace_token=replace_token,
             )
 
         # Natural identity: a known install (same fingerprint) re-enrolling with a different
@@ -481,7 +511,11 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                replace_token=replace_token,
             )
+
+        if replace_token:
+            raise SafeAPIError(ErrorCode.NOT_FOUND)
 
         # Instance limit (DEC-004): active devices under this key may not exceed the plan limit.
         active_devices = Device.objects.filter(
@@ -604,6 +638,7 @@ class ActivateDeviceWithSessionData:
     platform: str
     app_version: str = ""
     display_name: str = ""
+    replace_token: bool = False
 
 
 def _resolve_org_active_license_key(org_id: str) -> AppLicenseKey:
@@ -640,6 +675,8 @@ def activate_device_with_session(
     POST /v1/activations enrollment path."""
     # Only Administrators manage devices (FR-137).
     checked = require_customer_role(actor, CustomerRole.ADMIN)
+    if type(data.replace_token) is not bool:
+        raise _validation_error()
     idempotency_key = validate_idempotency_key(data.idempotency_key)
     fingerprint = data.device_fingerprint.strip()
     platform = data.platform.strip()
@@ -657,6 +694,7 @@ def activate_device_with_session(
         activated_by_actor_id=checked.actor_id,
         audit_actor=checked,
         source_surface=source_surface,
+        replace_token=data.replace_token,
     )
 
 
@@ -693,29 +731,46 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
 
 
 def refresh_license(presented_token: str) -> LicenseRefreshResult:
-    """Return the current license/entitlement status for an authenticated device token, so the
-    desktop can refresh its cached offline entitlement (DEC-004). Pure read — no mutation. The
-    *license* status is reported truthfully (incl. expired/revoked) so the client can act; only an
-    invalid *token* denies (via `authenticate_device_token`)."""
-    token = authenticate_device_token(presented_token)
-    device = token.device
-    license_key = device.license_key
+    """Report licence status; rotate a still-live token after a valid extension (FR-509).
 
-    instances_used = Device.objects.filter(
-        license_key=license_key, status=DeviceStatus.ACTIVE
-    ).count()
-    valid_now = license_allows_commercial_service(license_key)
-
-    return LicenseRefreshResult(
-        device_public_id=device.device_public_id,
-        device_status=device.status,
-        license_status=license_key.status,
-        license_starts_at=license_key.starts_at.isoformat(),
-        license_expires_at=license_key.expires_at.isoformat(),
-        license_valid_now=valid_now,
-        instances_used=instances_used,
-        instances_limit=license_key.device_limit,
-        token_expires_at=token.expires_at.isoformat(),
-        feature_scope=license_key.feature_scope,
-        territory=license_key.territory,
-    )
+    A dead credential cannot renew itself. Lock order matches activation: licence, device,
+    token. Re-authenticate after every lock wait, so a concurrent revoke or renewal wins
+    cleanly. The replacement is show-once; the caller must persist it before its next call.
+    """
+    authenticated = authenticate_device_token(presented_token)
+    with transaction.atomic():
+        license_key = AppLicenseKey.objects.select_for_update().get(
+            pk=authenticated.device.license_key_id
+        )
+        device = Device.objects.select_for_update().get(pk=authenticated.device_id)
+        DeviceToken.objects.select_for_update().get(pk=authenticated.pk)
+        token = authenticate_device_token(presented_token)
+        full_token = None
+        valid_now = license_allows_commercial_service(license_key)
+        if valid_now and license_key.expires_at > token.expires_at:
+            if not _remint_is_within_plan_allowance(device, license_key):
+                raise SafeAPIError(ErrorCode.POLICY_DENIED)
+            token, full_token = _remint_device_token(
+                device, license_key,
+                idempotency_key=f"refresh-{token.pk}",
+                audit_actor=None,
+                source_surface="desktop_v1",
+                reason="live device token renewed after licence extension",
+            )
+        instances_used = Device.objects.filter(
+            license_key=license_key, status=DeviceStatus.ACTIVE
+        ).count()
+        return LicenseRefreshResult(
+            device_public_id=device.device_public_id,
+            device_status=device.status,
+            license_status=license_key.status,
+            license_starts_at=license_key.starts_at.isoformat(),
+            license_expires_at=license_key.expires_at.isoformat(),
+            license_valid_now=valid_now,
+            instances_used=instances_used,
+            instances_limit=license_key.device_limit,
+            token_expires_at=token.expires_at.isoformat(),
+            feature_scope=license_key.feature_scope,
+            territory=license_key.territory,
+            full_token=full_token,
+        )

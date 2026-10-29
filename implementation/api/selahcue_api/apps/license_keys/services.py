@@ -959,7 +959,7 @@ def revoke_license_key(
     """Permanently kill a licence (FR-505). Staff only, reason mandatory.
 
     Writes REVOKED through the state machine and nothing else: it does not touch a device
-    token. Tokens already issued are revoked by the hourly cascade (`cascade_license_
+    token. Tokens already issued are revoked by the bounded cascade (`cascade_license_
     revocations`, NFR-503: at most 65 minutes online exposure), while activation and manifest
     issuance refuse at once because REVOKED is outside `ACTIVATABLE_KEY_STATUSES`. The cached
     offline entitlement runs to its own expiry, the accepted DEC-004/005 trade-off (RISK-501).
@@ -1047,8 +1047,8 @@ def _require_new_expiry(value: datetime) -> datetime:
 
     Naive values are REFUSED rather than coerced to UTC the way issuance does it: a licence window
     moved by a mis-read zone is an hours-wrong entitlement, and the console can always send an
-    offset. In the future, because an activatable licence whose window is already over activates
-    nothing. The ceiling is NOT checked here: it is measured from the licence's own current
+    offset. Moving time constraints are checked after replay recognition under the locks; a
+    successful historical request remains replayable after its requested expiry. The ceiling is NOT checked here: it is measured from the licence's own current
     expiry, which is only known under the lock (see `_extend_under_locks`).
     """
     if not isinstance(value, datetime) or timezone.is_naive(value):
@@ -1057,9 +1057,6 @@ def _require_new_expiry(value: datetime) -> datetime:
         instant = value.astimezone(dt_timezone.utc)
     except (OverflowError, ValueError) as error:  # year 9999 with a negative offset, etc.
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED) from error
-    now = timezone.now()
-    if instant <= now:
-        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
     return instant
 
 
@@ -1213,13 +1210,14 @@ def _extend_under_locks(
             )
 
         # 3. Input that only the locked row can judge. Not audited: it is a bad request.
-        if new_expires_at <= old_expires_at:
+        now = timezone.now()
+        if new_expires_at <= now or new_expires_at <= old_expires_at:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
         # A subtraction, never `base + MAX_EXTENSION_FROM_NOW`: a licence whose expiry is within
         # five years of year 9999 would overflow the addition (OverflowError), and issuance
         # accepts such licences. The step is measured from the later of now and the current
         # expiry, so this is a limit on each extension, not an absolute cap.
-        if new_expires_at - max(timezone.now(), old_expires_at) > MAX_EXTENSION_FROM_NOW:
+        if new_expires_at - max(now, old_expires_at) > MAX_EXTENSION_FROM_NOW:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
         try:
