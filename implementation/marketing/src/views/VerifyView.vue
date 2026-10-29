@@ -314,8 +314,9 @@ onBeforeUnmount(() => {
            API returns the same answer for an address that has no account at all, so a
            direct claim would be both a lie and an existence oracle. -->
       <p class="au-body">
-        If {{ sentToEmail }} has a SelahCue account waiting to be verified, a new link is
-        on its way. It expires in 24 hours.
+        Your request for {{ sentToEmail }} was accepted. If this account needs verification,
+        check your inbox for a new link. A verification link expires in 24 hours.
+        If no email arrives, try again in a moment.
       </p>
       <div class="au-actions">
         <UiButton to="/signin" variant="secondary" size="lg" class="au-btn au-btn-secondary">

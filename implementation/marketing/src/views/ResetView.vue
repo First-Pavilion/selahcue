@@ -486,8 +486,9 @@ onBeforeUnmount(() => {
            accepted:true for an address with no account, so any direct claim would be an
            existence oracle. The TTL here is 1 hour, not verification's 24. -->
       <p class="au-body">
-        If {{ sentToEmail }} has a SelahCue account, a new reset link is on its way. It
-        expires in 1 hour.
+        Your request for {{ sentToEmail }} was accepted. If this address has a SelahCue account,
+        check your inbox for a reset link. A reset link expires in 1 hour.
+        If no email arrives, try again in a moment.
       </p>
       <div class="au-actions">
         <UiButton to="/signin" variant="secondary" size="lg" class="au-btn au-btn-secondary">

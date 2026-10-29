@@ -7,6 +7,8 @@ authoritative — change it there first, not here.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from django.template.loader import render_to_string
 
@@ -19,6 +21,27 @@ from selahcue_api.apps.accounts.tasks import (
 )
 
 logger = logging.getLogger(__name__)
+_publish_failure_lock = threading.Lock()
+_last_publish_failure_log = float("-inf")
+
+
+def _report_publish_failure(task_name: str, error: Exception) -> None:
+    """One diagnostic per process per minute; neither exception text nor traceback is safe.
+
+    A failed write may have reached Redis before its reply was lost. Report an unknown outcome,
+    never assert that nothing was sent. Keep state constant-sized during an outage.
+    """
+    global _last_publish_failure_log
+    now = time.monotonic()
+    with _publish_failure_lock:
+        if now - _last_publish_failure_log < 60:
+            return
+        _last_publish_failure_log = now
+    logger.error(
+        "could not confirm enqueue %s (%s); email delivery unconfirmed",
+        task_name,
+        type(error).__name__,
+    )
 
 
 def render_verification(verify_url: str) -> tuple[str, str]:
@@ -47,15 +70,19 @@ def render_account_exists() -> tuple[str, str]:
 
 class CeleryEmailSender(EmailSender):
     """Dispatches to the worker. Enqueue failure is logged, never raised: signup
-    succeeding with a delayed email is recoverable; signup 500ing because the broker
-    blinked is not."""
+    succeeding without confirmed delivery is recoverable through resend; signup 500ing
+    because the broker blinked is not."""
 
     @staticmethod
     def _dispatch(task, *args) -> None:
         try:
-            task.delay(*args)
-        except Exception:
-            logger.exception("could not enqueue %s; email not sent", task.name)
+            # Do not wait for a pooled producer, reconnect, or retry a possibly delivered write
+            # on this request thread. Scope the connection retry choice to email publishing;
+            # workers and unrelated task producers retain their own recovery policies.
+            with task.app.connection_for_write(transport_options={"max_retries": 0}) as connection:
+                task.apply_async(args=args, connection=connection, retry=False)
+        except Exception as error:
+            _report_publish_failure(task.name, error)
 
     def send_email_verification(self, user: CustomerUser, raw_token: str) -> None:
         self._dispatch(send_verification_email_task, user.email, raw_token)

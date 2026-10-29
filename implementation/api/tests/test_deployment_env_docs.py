@@ -89,7 +89,7 @@ NOT_ENV_VARIABLES = {
     "SECURE_PROXY_SSL_HEADER": "Django setting the TLS-proxy flag sets in settings.py",
     "SILENCED_SYSTEM_CHECKS": "Django setting an operator may add to silence W002",
     "LOGGING": "Django setting; the docs say the repo configures none",
-    "CELERY_BROKER_TRANSPORT_OPTIONS": "Celery setting; the docs say settings.py sets none",
+    "CELERY_BROKER_TRANSPORT_OPTIONS": "Python Celery setting populated by the explicit broker socket environment variables",
     # Fixed budgets, edited in settings.py itself; the docs say so on purpose.
     "SELAHCUE_THROTTLE_ACTIVATION": "fixed budget in settings.py, not an environment variable",
     "SELAHCUE_THROTTLE_SESSION_LOGIN": "fixed budget in settings.py, not an environment variable",
