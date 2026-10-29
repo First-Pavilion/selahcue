@@ -684,6 +684,7 @@ def self_test(verdict=None, expected_checks=3):
 
     try:
         problems.extend(_environment_self_test(root))
+        problems.extend(_environment_timeout_self_test(root))
         # 0. Pure helpers. A negative status used to print bare (`-11`).
         if describe_exit(-11) != "-11 (killed by SIGSEGV)" or describe_exit(7) != "7" \
                 or describe_exit(None) != "none (never exited)":
@@ -1228,8 +1229,14 @@ def _environment_self_test(root):
                      "    return real_popen(argv, *args, **kwargs)\n"
                      "h.subprocess.Popen = noexec\n" % (work + os.sep))
         code += "h.self_test = lambda **kwargs: []\nrunpy.run_path(%r, run_name='__main__')\n" % gate
-        run = subprocess.run([sys.executable, "-c", code], env=env,
-                             capture_output=True, text=True, timeout=20)
+        # The child uses the real90s launcher plus cleanup. Like _Case.gate_subprocess,
+        # its outer bound must leave that work time to finish, including a loaded-host start.
+        try:
+            run = subprocess.run([sys.executable, "-c", code], env=env,
+                                 capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            problems.append("environment %s: CLI did not finish within120s" % name)
+            continue
         output = run.stdout + run.stderr
         failure_lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
         if run.returncode != want or os.path.exists(marker) != launched or "Traceback" in output:
@@ -1254,14 +1261,40 @@ def _environment_self_test(root):
                            "tempfile.mkdtemp = refused\n" % (number, reason))
             code += ("runpy.run_path(%r, run_name='__main__')\n" % gate if entrypoint == "operator"
                      else "sys.exit(h.main())\n")
-            run = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, CHROME_BIN=good),
-                                 capture_output=True, text=True, timeout=20)
+            try:
+                run = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, CHROME_BIN=good),
+                                     capture_output=True, text=True, timeout=120)
+            except subprocess.TimeoutExpired:
+                problems.append("environment %s allocation errno%d: CLI did not finish within120s" % (entrypoint, number))
+                continue
             output = run.stdout + run.stderr
             lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
             if run.returncode != 2 or "Traceback" in output or len(lines) != 1 or reason not in lines[0] or os.path.exists(marker):
                 problems.append("environment %s allocation errno%d: exit%d, expected2/one reason/no traceback; %r" %
                                 (entrypoint, number, run.returncode, lines))
     return problems
+
+
+def _environment_timeout_self_test(root):
+    """A timed-out CLI probe must remain a named test failure, never a traceback/false Pass."""
+    work = os.path.join(root, "environment-timeout")
+    os.mkdir(work)
+    real_run = subprocess.run
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    subprocess.run = timed_out
+    try:
+        failures = _environment_self_test(work)
+    finally:
+        subprocess.run = real_run
+    # Exercise both loop families, including the final scenario: one timeout must not abandon
+    # the remaining cases. Other real-CLI behaviors are checked separately, not mocked here.
+    if not any(p.startswith("environment missing required: CLI did not finish") for p in failures) \
+            or not any(p.startswith("environment helper allocation errno13: CLI did not finish") for p in failures):
+        return ["environment timeout: probe failure was not named and retained through both case families"]
+    return []
 
 
 def main():

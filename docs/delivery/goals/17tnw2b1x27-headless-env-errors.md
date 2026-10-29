@@ -56,10 +56,10 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Self-test ENOSPC/EACCES returns exit2 with one-line reason/no traceback before Chrome | python3 scripts/headless_chrome.py with actual-entrypoint regressions | Environment scenarios pass | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log | PASS |
+| C-001 | yes | Self-test ENOSPC/EACCES returns exit2 with one-line reason/no traceback before Chrome | python3 scripts/headless_chrome.py with actual-entrypoint regressions | Environment scenarios pass | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-final-browser-green.log | PASS |
 | C-002 | yes | Explicit missing/nonexec/directory/empty/bad-shebang CHROME_BIN names variable/path and returns2or3 without fallback/traceback; valid/default discovery works | Same self-test subprocess scenarios | Invalid cases refuse and positive controls launch | Same log | PASS |
 | C-003 | yes | Removing new protections makes meaningful regressions red; restored siblings pass | Focused temporary mutation runs | Expected scenarios fail; restored self-test passes | Mutation logs/report | PASS |
-| C-004 | yes | Full browser and existing cleanup/signal/timeout/result contracts pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py; syntax/diff/goal checks | Full measured browser count0FAIL/exit0 | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-browser-green.log | PENDING |
+| C-004 | yes | Full browser and existing cleanup/signal/timeout/result contracts pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py; syntax/diff/goal checks | Full measured browser count0FAIL/exit0 | /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-final-browser-green.log | PASS |
 | C-005 | yes | Cody/Quinn/Vera/Shadow and final CI pass on final head | Coordinator reviews/hostedCI | All pass | Coordinator evidence | BLOCKED |
 | C-006 | yes | PR merged and linked ticket QA persisted | Coordinator GitHub/ClickUp read-back | Merged revision and saved QA | Coordinator evidence | BLOCKED |
 
@@ -131,6 +131,26 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Result: GREEN exit0; all16 environment scenarios (including2 noexec positives) and prior process/cleanup/signal/timeout/result siblings pass. Initial four mapping protections are byte-unchanged; prior focused mutation evidence retains its scope.
 - New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-noexec-green.log.
 - Decision: iterate
+
+### Iteration 7 — current-target integration and observed test deadline
+
+- Target criterion: C-004
+- Hypothesis: the target API header-only delta does not overlap either script, so integrate and run the final browser gate.
+- Change or investigation: merged main712358a209a01d293fb4b310ebe0ca0d6d3f8846 cleanly into caed32e57f37e2a0fbf14c07074ee47baed8aa6f; source/test scripts unchanged by that8-file API integration.
+- Verifier executed: complete mandatory-Chrome gate.
+- Result: FAIL before the real Chrome phase: an ordinary positive CLI probe exceeded its introduced20s outer bound and uncaught TimeoutExpired escaped. Its old exception omitted configured-vs-discovery identity. No owned process remained for the exact failed root. Exact transient cause not proved.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-integration-attempt1-failure.md (observed tool-output record).
+- Decision: iterate
+
+### Iteration 8 — bounded test deadline mapping and final proof
+
+- Target criterion: C-004
+- Hypothesis: align the test-only outer deadline with the existing120s _Case policy, covering the unchanged90s launcher plus cleanup, and make timeout failures named rather than tracebacks.
+- Change or investigation: instrumented all16 CLI cases and child spawn/wait phases. All pass; fake positive programs exit about0.07s after spawn, total2.4–4.0s mostly before spawn; a missing-path/no-browser case takes10.143s. No recursive gate invocation observed. Test-only TimeoutExpired now becomes a named failure in both loops; cheap OS-boundary injection verifies continuation through both case families.
+- Verifier executed:16-case phase probe, timeout-mapping injection, final complete mandatory-Chrome gate, Python compilation, diff/structural checks and target ancestry/behind count.
+- Result: GREEN exit0,2347browser checks/0FAIL. All16 environment scenarios, noexec controls, timeout-mapping regression and all previous process/cleanup/signal/timeout/result siblings pass. No production browser deadline or cleanup/result rule changed. Exact cause of the earlier transient20s delay remains unproven and is not represented as a fixed fixture recursion.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2b1x27-final-browser-green.log and17tnw2b1x27-cli-timing.log.
+- Decision: handoff
 
 ## Risks and rollback
 
