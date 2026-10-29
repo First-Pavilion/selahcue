@@ -5,7 +5,7 @@
 - Parent goal ID: NONE
 - Title: Scripture book lookup preserves parsing without per-candidate allocation
 - Role: mobile-engineer
-- Status: ACTIVE
+- Status: BLOCKED
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akmfu54
 - Created: 2026-10-29
@@ -52,7 +52,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-002 | yes | Canonical/alias/normalization/detection behavior and public API preserved | Complete core tests plus explicit canonical/alias controls | All pass, no API change | /private/tmp/selahcue-batch20-20261029/86akmfu54-core.log | PASS |
 | C-003 | yes | Release quick brown miss at least 3x faster than baseline | Identical black_box benchmark binaries; approved quiet windows; best of 7 rounds of 20,000 | baseline best / candidate best >=3; all rounds/provenance saved | /private/tmp/selahcue-batch20-20261029/86akmfu54-benchmark.md | PASS |
 | C-004 | yes | Verification docs state verdict/lookup limits do not bound full scanning time; async decision explicit | Actual call-site audit and revised current-constant docs | Correct scope, no silent budget/worker change | This goal and source docs | PASS |
-| C-005 | yes | Complete required local gate passes | Serialized make ci, format and lint | exit0 with limitations explicit | /private/tmp/selahcue-batch20-20261029/86akmfu54-make-ci.log | PENDING |
+| C-005 | yes | Complete required local gate passes | Serialized make ci, format and lint | exit0 with limitations explicit | /private/tmp/selahcue-batch20-20261029/86akmfu54-make-ci-recovered.log and final integration receipts | PASS |
 | C-006 | yes | All four independent reviews pass frozen revision | Cody, Quinn, Vera and Shadow | Four passes after remediation | Coordinator reports | BLOCKED |
 | C-007 | yes | Exact-head hosted CI, merge and linked task QA readback succeed | Coordinator delivery verification | Merge and QA persisted | Coordinator evidence | BLOCKED |
 
@@ -81,6 +81,24 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: allocation-red.log, allocation.log, mutation.log, core.log, core-release.log, clippy.log and full benchmark artifacts prefixed 86akmfu54 under /private/tmp/selahcue-batch20-20261029/. Benchmark report includes all samples, compiler/source/binary hashes, flags and CPU conditions. Initial virtual-workspace formatter had no targets; corrected to the core package.
 - Decision: iterate for merged-main integration and reserved complete make ci. No historical metric, universal speedup or full scan-time bound claimed.
 
+### Iteration 3 — recover and complete the full local gate
+- Target criterion: C-005.
+- Hypothesis: a durable wrapper can complete and retain the required full gate after the original session disappeared, without repeating the already-proven release benchmark.
+- Change or investigation: the first log stops at API 45%, lacks an exit marker and has no surviving book make/pytest process; termination cause is unknown. Preserve that incomplete attempt. Merge main c72ae6f7 into 40f48c2f210999599384edc13338612fb83f2dbe, then run make ci through a detached wrapper with exact revision, environment, PID and timestamps.
+- Verifier executed: CARGO_TARGET_DIR=/private/tmp/selahcue-review238-target CARGO_INCREMENTAL=0 make ci, with no audit skip flag.
+- Result: exit0 and ALL GREEN banner, started 2026-10-29T12:24:07.854835+00:00 and finished 2026-10-29T13:22:54.066391+00:00. Marketing1217 passed0 skipped, API1592 passed28 skipped (PostgreSQL/Redis requirements named in log), Flutter380 passed and analyzer clean. Rust368 suite invocations:6549 passed test executions,0 failed,29 ignored executions (includes repeat feature runs and child/manual probes; not6549 unique tests). All three Cargo roots passed audit; workspace2/operator4 allowed warnings retained, STT root no warning. No failure-summary line in the complete log. Wrapper is no longer running.
+- New evidence: 86akmfu54-make-ci-recovered.log/.json/.exit and make-ci-summary.json in the coordinator evidence directory. This full-gate receipt applies to40f48c2f, not an untested later integration revision. Original incomplete log remains separate. CI-only platforms, Postgres/Redis and other omissions remain those listed in Makefile ci header; this is not hosted CI.
+- Decision: C-005 PASS; proceed to proportional fresh integration and final author handoff.
+
+### Iteration 4 — current-main integration and author freeze
+- Target criterion: preserve C-001 through C-005 on current target; hand off C-006/C-007.
+- Hypothesis: main6ef0e0980a950a179b22c5ea6e960b96e654ddd9 adds only API observability and pipe-safe launcher/workflow changes, leaving measured parser/native/mobile sources unchanged, so focused affected-area regressions plus fresh core/static checks provide proportional integration evidence.
+- Change or investigation: save and restore only this run's generated pubspec.lock Flutter SDK floor change (3.41 to3.44; no dependency changes), merge current main cleanly as3615e0c91595d9c54650a1079897d430decd61e5. Full diff from full-gate source has14 API/launcher/workflow/docs paths and no implementation/desktop, implementation/mobile or Makefile difference. Parser SHA256 remains63ae3c4d31b9bf215fec1170d43a393e7e8d3901a351912370d3b146316d33ff, matching the immutable measured candidate. Benchmark binaries/driver hashes were rechecked, not rerun under load.
+- Verifier executed: complete core tests and strict core lint/format; new/native/throttling/guard/header/deployment-doc API regression set; pipe-safe launcher caller suite; workflow/minute self-tests and checks; target ancestry/behind0, structural goal and diff checks. Actual receipts and final immutable SHA are recorded in 86akmfu54-report.md and matching final logs under /private/tmp/selahcue-batch20-20261029/.
+- Result: fresh core280 passed across14 targets,0 failed/ignored; strict lint/format PASS. Focused API244 passed1 existing real-Redis-header skip (CACHE_URL absent); this is not a current-head full API or Redis result. Launcher15 cases across5 test methods PASS with no surviving fixture helpers; workflow101-case self-test and5-workflow/17-job check PASS, minute self-test and5-workflow check PASS. Full make ci is not repeated on the later integration because Rust/Flutter/Makefile trees are byte-identical; no newer full-suite or newer benchmark claim is implied. No production source/test edit was made during recovery/finalization. Final docs/static verification follows this evidence-only update before commit.
+- New evidence: generated-flutter-lock.diff and integration proof/receipt artifacts in the coordinator evidence directory. No dependency/lock change ships.
+- Decision: author handoff only after the final checks pass; all four independent reviews, exact-head hosted CI, publication/merge and linked QA readback remain coordinator-owned.
+
 ### Verification runtime and byte-budget decision
 The historical MAX_VERIFIED_REFERENCES name is superseded by the current MAX_LIST_REFERENCES and MAX_EMBEDDED_REFERENCES. Both document verdict/lookup counts, not full scanning time or bytes. The detector materializes each body's candidates before applying the embedded verdict budget; long ordinary text and repeated references still require work. This patch improves each lookup, not the asymptotic scan or its input budget.
 
@@ -106,8 +124,8 @@ Changing those command lifecycles belongs to a separately scoped native scheduli
 
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86akmfu54-book-lookup.md
-- Validator result: pending
+- Validator result: structural PASS; final docs/static receipt after the evidence-only update is in the author report
 - Independent verification result: coordinator pending
-- Terminal state: ACTIVE
-- Remaining failed or blocked criteria: implementation and coordinator gates pending
+- Terminal state: BLOCKED pending coordinator independent review and delivery
+- Remaining failed or blocked criteria: C-006 and C-007; final author receipts recorded separately
 - ClickUp final evidence comment: coordinator-owned
