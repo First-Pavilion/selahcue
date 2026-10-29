@@ -134,7 +134,12 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # clicks away while Logout is held: not pulled back to /signin, request not repeated, hint still cleared; 12 checks) and the
 # polite "Signing out…" status region (before the press, while pending, and cleared after a failure) with a check that
 # announcing it moves nothing (4 checks across the pending and failure scenarios).
-EXPECTED_MIN_CHECKS = 2570
+# 2570 -> 2575 in the broker-publishing ticket (17tnw2b2k4x): the same 71 scenarios,
+# with five added request-acknowledgement checks. The four existing conditional-copy checks
+# remain and follow the approved wording; no scenario or privacy/TTL check was removed.
+# The complete real rendered gate must confirm this exact count; its receipt is retained
+# with the ticket's delivery evidence. Equality below remains strict in both directions.
+EXPECTED_MIN_CHECKS = 2575
 
 
 def find_chrome() -> str | None:
@@ -1789,8 +1794,8 @@ DRIVER = r"""
       var text = cardText();
       check('V5 title', has(text, 'Check your inbox'));
       // Load-bearing for no-enumeration: conditional, never a direct claim.
-      check('V5 phrasing is conditional ("If ... has a SelahCue account")',
-            has(text, 'If pastor@yourchurch.org has a SelahCue account'));
+      check('V5 phrasing remains conditional on needing verification',
+            has(text, 'If this account needs verification,'));
       check('V5 states the 24 hour TTL', has(text, 'expires in 24 hours'));
       check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('V5 explains only the newest link works', has(text, 'Only the newest link works'));
@@ -2306,7 +2311,7 @@ DRIVER = r"""
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
       check('sent state phrasing is conditional',
-            has(text, 'If pastor@yourchurch.org has a SelahCue account'));
+            has(text, 'If this address has a SelahCue account,'));
       check('sent state states the 1 hour TTL, not 24', has(text, 'expires in 1 hour'));
       check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('called requestPasswordReset (a mutation that really exists)',
@@ -2550,7 +2555,7 @@ DRIVER = r"""
       // one awaiting verification, and this state is also reachable when the cause was
       // deactivation — in which case nothing was sent.
       check('phrasing stays conditional',
-            has(text, 'has a SelahCue account waiting to be verified'));
+            has(text, 'If this account needs verification,') && !has(text, 'on its way'));
       check('states the 24 hour TTL', has(text, 'expires in 24 hours'));
       check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       var resend = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
@@ -3141,7 +3146,7 @@ DRIVER = r"""
       await wait(800);
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
-      check('phrasing stays conditional', has(text, 'has a SelahCue account waiting to be verified'));
+      check('phrasing stays conditional', has(text, 'If this account needs verification,') && !has(text, 'on its way'));
       check('dispatched the resend mutation',
             calls.some(function (c) { return c.op === 'ResendVerification'; }));
       universalChecks();

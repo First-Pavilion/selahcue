@@ -53,10 +53,10 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Both broker timeout knobs validate and reach Redis | broker timeout tests | valid bounds accepted; invalid refused | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-green.log | PASS |
-| C-002 | yes | All three callers bound silent-broker failures and publish healthy tasks | broker timeout integration tests | accepted responses; one connection per failed publish; healthy task payloads correct | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-green.log | PASS |
-| C-003 | yes | Logs redact secrets and copy promises no delivery | email and copy tests | safe diagnostics and generic accepted copy | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-green.log | PENDING |
-| C-004 | yes | Regression and deployment documentation checks pass | API pytest suite and deployment-env-doc tests | no attributable regression; registry documented | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-report.md | PENDING |
+| C-001 | yes | Both broker timeout knobs validate and reach Redis | broker timeout tests | valid bounds accepted; invalid refused | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-final-remediation-focused.log | PASS |
+| C-002 | yes | All three callers bound silent-broker failures and publish healthy tasks | broker timeout integration tests | accepted responses; one connection per failed publish; healthy task payloads correct | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-final-remediation-focused.log | PASS |
+| C-003 | yes | Logs redact secrets and copy promises no delivery | email and copy tests | safe diagnostics and generic accepted copy | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-remediated-auth.log and final-remediation-focused.log | PASS |
+| C-004 | yes | Regression and deployment documentation checks pass | API pytest suite and deployment-env-doc tests | no attributable regression; registry documented | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-report.md | PASS |
 | C-005 | yes | All independent reviews and hosted CI pass | root coordinated Cody Quinn Vera Shadow review and CI | all pass | root delivery evidence | PENDING |
 
 ## Verification plan
@@ -98,6 +98,16 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 - New evidence: mutation.log, full-api.log, baseline-retry.log and candidate-retry.log under the same evidence prefix.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-003, C-004, C-005
+- Hypothesis: retaining all checks but matching the approved conditional acknowledgement wording and the five added assertions' exact count restores the rendered gate.
+- Change or investigation: Cody found four stale substring assertions and the unchanged 2570 count. Correct only those four expectations and the exact 2575 count/provenance; preserve all 71 scenarios, privacy pairs, TTL checks and no-delivery-claim checks. Integrate actually merged native-observability and shared launcher fixes through main 6ef0e098.
+- Verifier executed: actual hosted CI40875032873 establishes RED (71 scenarios, 2575 checks, four conditional-copy failures and stale exact2570 guard). After correction, complete real required-Chrome auth gate and durable full PostgreSQL/LocMem API run executed to completion with atomic exit0 receipts.
+- Result: rendered gate passes all 71 scenarios, 2575 checks and zero failures; Vue typecheck/build passes. Full PostgreSQL/LocMem API passes 1676 tests with exactly two real-cache-only skips (healthy cache counting and response headers; CACHE_URL is empty). Dedicated real-broker healthy cases and silent broker fixtures ran. This proves the supported LocMem configuration, not the final hosted PostgreSQL/Redis gate.
+- New evidence: remediated-auth.log/json/exit and remediated-full-api.log/json/exit under /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-; the full API took 1173.44 seconds. The previous lost 69-percent process is incomplete, and earlier Redis failures/interruption remain separate in the handoff. Full executed source equals head871977cb plus dirty diff49e7f691; only this goal evidence changed after those passing snapshots. Final source fingerprints and fresh focused/docs/static checks are recorded in the handoff.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a timed-out publish has unknown delivery outcome; no automatic retry is promised. Healthy Redis round trips and DNS remain operational concerns.
@@ -110,8 +120,8 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2k4x-broker-timeouts.md
-- Validator result: structural validator passes; completion validation remains gated on pending review and verification criteria.
+- Validator result: structural validation PASS; completion validation remains gated on C-005 independent reviews and hosted CI.
 - Independent verification result: pending root
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-003 requires root-coordinated rendered copy checks; C-004 retains whole-suite failure limits; C-005 requires all four independent reviews and hosted CI.
+- Remaining failed or blocked criteria: C-005 requires all four fresh independent reviews and the new full hosted PostgreSQL/Redis and marketing CI. Local C-004 PASS is bounded to the supported PostgreSQL/LocMem configuration and explicit skips; previous failed/incomplete runs remain disclosed.
 - ClickUp final evidence comment: root owns publication
