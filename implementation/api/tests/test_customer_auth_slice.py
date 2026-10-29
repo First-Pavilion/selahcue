@@ -23,6 +23,8 @@ from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from io import StringIO
 
+import celery
+import django
 import pytest
 from celery import Celery
 from celery.backends.redis import RedisBackend
@@ -2745,6 +2747,59 @@ def test_reset_request_refusal_does_no_query_or_padding(settings, monkeypatch, d
     assert clock.sleeps == [], "a refusal must not occupy a padded request thread"
 
 
+@pytest.mark.django_db(transaction=True)
+def test_reset_floor_overruns_reuse_resends_bounded_report(settings, monkeypatch, caplog):
+    """Per-request reports, independent reset suppression, or silent overruns break this."""
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.25
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (100, 3600)
+    user = _reset_floor_user(uuid.uuid4().hex)
+    clock = ResetFloorClock(monkeypatch)
+
+    class OverrunningSender(services.EmailSender):
+        def send_password_reset(self, target, raw_token):
+            clock.now += 1.0
+
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(OverrunningSender())
+    services._reset_floor_overrun_reporting()
+    caplog.set_level(logging.WARNING, logger=services.__name__)
+    try:
+        for _ in range(3):
+            assert services.request_password_reset(user.email, client_ip="192.0.2.72").accepted
+        services._pad_to_floor(clock.monotonic() - 1.0)
+        reports = [r for r in caplog.records if "constant-time floor" in r.getMessage()]
+        assert len(reports) == 1, "reset/resend must share the existing report suppression window"
+        message = reports[0].getMessage()
+        assert "ACCOUNT_RESET_REQUEST_MIN_SECONDS" in message
+        assert "overran by 750ms" in message and "1000ms elapsed" in message
+        assert reports[0].exc_info is None and user.email not in message
+        clock.now += 61.0
+        services.request_password_reset(user.email, client_ip="192.0.2.72")
+        assert len([r for r in caplog.records if "constant-time floor" in r.getMessage()]) == 2
+        assert clock.sleeps == [], "an overrun must not add another floor after work has finished"
+    finally:
+        services.set_email_sender(previous_sender)
+        services._reset_floor_overrun_reporting()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reset_floor_waits_after_rollback_without_publishing(settings, monkeypatch, sender):
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    user = _reset_floor_user(uuid.uuid4().hex)
+    clock = ResetFloorClock(monkeypatch)
+
+    def mint_fails(*args, **kwargs):
+        raise RuntimeError("synthetic mint refusal")
+
+    monkeypatch.setattr(services, "_mint_credential_token", mint_fails)
+    with pytest.raises(RuntimeError, match="synthetic mint refusal"):
+        services.request_password_reset(user.email, client_ip="192.0.2.73")
+    assert clock.sleeps == [(0.25, False)]
+    assert not CredentialToken.objects.filter(purpose=CredentialTokenPurpose.PASSWORD_RESET).exists()
+    assert sender.reset_tokens == []
+
+
 @contextmanager
 def _real_reset_publisher(monkeypatch, url):
     """Actual shared task and production sender; only the owned broker namespace changes.
@@ -2813,6 +2868,7 @@ def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
     known_count = 0
     committed_count = 0
     queue_count = 0
+    redis_version = None
     sample_number = 0
     orders = []
     pairs = []
@@ -2821,6 +2877,7 @@ def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
     url = os.environ["CELERY_BROKER_URL"]
     try:
         with _real_reset_publisher(monkeypatch, url) as (redis, queue):
+            redis_version = redis.info("server")["redis_version"]
             def sample(kind):
                 nonlocal known_count, committed_count, queue_count, sample_number
                 sample_number += 1
@@ -2871,10 +2928,15 @@ def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
     report = {
         "mode": "baseline" if baseline else "candidate", "python": platform.python_version(),
         "platform": platform.platform(), "database": connection.vendor,
+        "postgres_version": connection.pg_version, "redis_version": redis_version,
+        "django": django.get_version(), "celery": celery.__version__,
+        "source_commit": os.getenv("GITHUB_SHA", "local"),
+        "github_run_id": os.getenv("GITHUB_RUN_ID", "local"),
         "broker": "real Redis; production CeleryEmailSender; actual shared reset task; no worker",
         "broker_socket_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_TIMEOUT,
         "broker_connect_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
-        "floor_seconds": floor, "warmup_pairs": warmup, "pair_orders": orders,
+        "floor_seconds": floor, "equivalence_band_seconds": None if baseline else 0.003,
+        "warmup_pairs": warmup, "pair_orders": orders,
         "pairs": pairs, "same_path_null_pairs": null_pairs,
         "paired_summary": _reset_timing_pair_summary(pairs),
         "null_summary": _reset_timing_pair_summary(null_pairs),
@@ -2898,3 +2960,32 @@ def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
 def test_reset_request_unpadded_reference_measurement(client, settings, monkeypatch):
     """Opt-in sizing study, not an assertion that an unpadded endpoint is safe."""
     _measure_real_reset_requests(client, settings, monkeypatch, baseline=True)
+
+
+@pytest.mark.skipif(not os.getenv("CELERY_BROKER_URL"), reason="real Redis broker required for reset timing")
+@pytest.mark.skipif(os.getenv("RESET_FLOOR_MEASUREMENT_MODE") == "baseline", reason="reference sizing run, not a candidate gate")
+@pytest.mark.django_db(transaction=True)
+def test_reset_request_real_publisher_timing_is_uniform(client, settings, monkeypatch):
+    """Removing only reset's pad must fail the paired interval, with sibling tests running.
+
+    The 3ms equivalence band was fixed BEFORE the candidate measurement from hosted baseline
+    40921509007: the 32 interleaved same-path null pairs had mean 0.111ms, a 95% paired
+    interval [-0.131, 0.352]ms and maximum individual difference 2.448ms. 3ms exceeds that
+    observed individual noise while remaining below the unpadded existence interval's lower
+    endpoint (6.075ms). The candidate reports its own null control but cannot widen its band.
+    This is equivalence within a measured band, not proof of arbitrary-network constant time.
+    """
+    report = _measure_real_reset_requests(client, settings, monkeypatch, baseline=False)
+    band = 0.003
+    low, high = report["paired_summary"]["ci95_seconds"]
+    assert -band <= low <= high <= band, (
+        f"paired timing interval [{low:.6f}, {high:.6f}]s escapes the preregistered +/-{band:.3f}s "
+        "noise band; real broker/commit branch timing distinguishes account existence"
+    )
+    null_low, null_high = report["null_summary"]["ci95_seconds"]
+    assert -band <= null_low <= null_high <= band, "same-path null control cannot resolve the declared band"
+    floor = report["floor_seconds"]
+    assert floor > 0
+    assert min(pair[kind] for pair in report["pairs"] for kind in ("known", "unknown")) >= floor, (
+        "positive control: benign known and unknown requests must actually reach the enabled floor"
+    )

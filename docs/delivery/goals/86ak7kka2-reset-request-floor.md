@@ -46,7 +46,8 @@ Verified main b8fbb7c34a093cf98a612f76f4abe65a6cb84d2f includes PR260's bounded 
 
 ### Assumptions and unknowns
 
-- The necessary default floor and measured noise band are UNKNOWN until the authorized quiet-window baseline. Network and overrun limits must remain explicit; there is no universal constant-time claim.
+- Verified isolated hosted baseline run 40921509007: real commit/shared task/Redis publish, 36 queued messages and separate-connection committed-token checks, one response body; paired gap 7.347734ms, 95% CI [6.075278, 8.620191]ms, slowest known 29.120103ms including warmup. Chosen floor 100ms leaves 70.879897ms of observed headroom.
+- Fixed candidate equivalence band +/-3ms before candidate data: same-path null mean 0.110694ms, 95% CI [-0.130815, 0.352202]ms, max absolute individual pair 2.447775ms. Candidate cannot widen its own band. This does not imply arbitrary-network constant time.
 
 ## Dependencies and approvals
 
@@ -57,7 +58,7 @@ Verified main b8fbb7c34a093cf98a612f76f4abe65a6cb84d2f includes PR260's bounded 
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Allowed reset work pads after commit; denied traffic unchanged; existing overrun report reused | deterministic mechanism/no-extra-work tests in test_customer_auth_slice.py plus refusal controls | positive pad and shared bounded reporting; refusal does no extra work | /Users/m.oluwole/.codex/visualizations/2026/10/29/01a18528-5063-7712-beaa-3c2952075e3a/batch20-recovery/86ak7kka2-report.md | PENDING |
+| C-001 | yes | Allowed reset work pads after commit; denied traffic unchanged; existing overrun report reused | deterministic mechanism/no-extra-work tests in test_customer_auth_slice.py plus refusal controls | positive pad and shared bounded reporting; refusal does no extra work | batch20-recovery/reset-floor/deterministic-and-docs-green.log (60 passed including 7 controls) | PASS |
 | C-002 | yes | Real sender/broker committed HTTP paired samples meet measured floor/noise bounds with identical response bytes | baseline/candidate paired test with raw timing/config receipt | actual shared task publishes private messages before HTTP returns; paired interval inside declared noise band | /Users/m.oluwole/.codex/visualizations/2026/10/29/01a18528-5063-7712-beaa-3c2952075e3a/batch20-recovery/reset-floor/measurements | PENDING |
 | C-003 | yes | Removing only reset pad makes uniformity test fail with siblings running | bounded mutation driver and exact source restoration | RED with only pad removed; restored tests PASS; positive benign pad control executes | /Users/m.oluwole/.codex/visualizations/2026/10/29/01a18528-5063-7712-beaa-3c2952075e3a/batch20-recovery/reset-floor/mutation.log | PENDING |
 | C-004 | yes | Focused/broad regression and docs/static checks pass on fresh merged main | fresh environment API tests, deployment docs guard, Django checks, main ancestry | actual results disclosed separately from earlier snapshots/skips; no attributable regression | /Users/m.oluwole/.codex/visualizations/2026/10/29/01a18528-5063-7712-beaa-3c2952075e3a/batch20-recovery/86ak7kka2-report.md | PENDING |
@@ -78,9 +79,29 @@ Verified main b8fbb7c34a093cf98a612f76f4abe65a6cb84d2f includes PR260's bounded 
 - Hypothesis: existing request reset leaves a deterministic pad-wiring gap; committed real sender measurements will determine a sufficient floor and noise band.
 - Change or investigation: trace resend's padding/report and reset's guards; create fresh environment; write deterministic RED tests and prepare measurement harness without taking timing samples before window release.
 - Verifier executed: structural validator before execution; deterministic tests and later measurement receipts recorded in handoff.
-- Result: pending
+- Result: deterministic RED reproduced, then 7 controls passed in 0.46s on SQLite with fake clock; hosted sizing remains pending.
 - New evidence: source trace confirms current unpadded reset and synchronous on_commit broker publish; parent correction/merged broker prerequisite verified by root. Fresh Python 3.14.5 venv installed from pyproject. Deterministic tests: 3 expected failures (allowed reset has no outside-transaction sleep), 2 refusal controls passed, 116 deselected in 1.27s; no local statistical samples taken. New harness measures 4 warmup pairs, 32 AB/BA pairs and 32 interleaved same-path null pairs with actual Redis tasks and separate-connection committed-token checks.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001
+- Hypothesis: a reset-only finally after all budget/degraded admission guards covers the known, unknown and allowed-degraded returns without holding the database transaction through sleep.
+- Change or investigation: parameterize the existing floor/report helper with the endpoint setting and fallback; put reset's commit/publish work inside try/finally; preserve three refusal guards and send ceiling. No new logging state.
+- Verifier executed: seven deterministic controls in test_customer_auth_slice.py, fresh Python 3.14 venv, SQLite, fake clock; full source review and diff check.
+- Result: 7 passed, 116 deselected, 0.46s. Overrun/rollback controls previously failed against unchanged source (2 failed, 121 deselected, 0.58s). No local statistical or heavy suites executed.
+- New evidence: the owned transaction exits before each sleep, on_commit sender sees no atomic block, refused requests make zero database queries and never sleep; reset and resend share one warning interval.
+- Decision: await isolated hosted baseline before selecting the production default and statistical noise band; production default is chosen only in the subsequent measured iteration.
+
+### Iteration 3
+
+- Target criterion: C-002, C-003, C-004
+- Hypothesis: a 100ms floor covers the separately observed 29.120103ms maximum with substantial healthy-runner headroom; a preregistered 3ms paired-interval band absorbs the independently measured null noise but rejects the unpadded branch interval.
+- Change or investigation: root executed baseline on isolated hosted Python 3.14.9/Linux/PostgreSQL/Redis via production CeleryEmailSender and actual shared task; select 100ms default and fixed 3ms equivalence band, document scope/overruns/thread cost, prepare AST-only pad-removal driver with exact restoration and full module siblings.
+- Verifier executed: local light deterministic controls and deployment docs, fresh venv: 60 passed, 117 deselected, 1.97s; Django system checks and migration drift both pass. Candidate and mutation are delegated to isolated hosted runtime; no local statistical samples.
+- Result: baseline receipt verified; candidate paired interval, mutation RED and full current-main regression pending.
+- New evidence: baseline raw receipt and full hosted log persist in batch20-recovery/reset-floor/baseline-hosted/ and baseline-hosted.log. Diagnostic driver requires uniformity's paired interval assertion to fail, not merely a missing sleep control.
+- Decision: freeze candidate for hosted statistical/mutation verification, then required independent reviews and final current-main regression.
 
 ## Risks and rollback
 
