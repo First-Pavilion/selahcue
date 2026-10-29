@@ -1884,12 +1884,52 @@ def confirm_password_reset(
         raise
 
 
+def _live_reset_token(
+    fingerprint: str, trace: _ResetConfirmTrace, *, for_update: bool = False
+) -> CredentialToken:
+    """Read and validate current liveness; the write-phase caller already owns atomic().
+
+    Read the clock AFTER the query returns: hashing or waiting for a row lock can carry
+    a formerly live token past expiry. Both preflight and the locked read use the same
+    collapsed-token checks, while only the latter authorizes the password write.
+    """
+    tokens = CredentialToken.objects
+    if for_update:
+        # Keep the existing joined user lock as well as the token lock. Do not write a
+        # stale preflight user instance after concurrent login/reset work has completed.
+        tokens = tokens.select_for_update().select_related("customer_user")
+    try:
+        token = tokens.get(token_fingerprint=fingerprint)
+    except CredentialToken.DoesNotExist as error:
+        trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
+        raise _validation_error() from error
+    if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+        trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
+        raise _validation_error()
+    now = djtz.now()
+    if (
+        token.purpose != CredentialTokenPurpose.PASSWORD_RESET
+        or token.consumed_at is not None
+        or token.expires_at <= now
+    ):
+        trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
+        raise _validation_error()
+    trace.resolved(token.customer_user_id)
+    return token
+
+
 def _consume_reset_token(
     raw_token: str, new_password: str, trace: _ResetConfirmTrace
 ) -> ConfirmPasswordResetResult:
-    """The work `confirm_password_reset` does once the budget is spent: look the token up, check
-    it, check the password, consume it and set the password, all in one transaction. Every raise
-    sets `trace` first (see `_ResetConfirmTrace`)."""
+    """Preflight a live token, hash off-lock, then revalidate and write atomically.
+
+    86ak5qy3p chooses off-lock PBKDF2 rather than retaining CPU work under the token/user
+    locks. Initial token validation must precede password policy AND hashing (FR-551,
+    FR-529). It is only a preflight: another reset or expiry can invalidate the token while
+    hashing, so a fresh locked liveness check below remains the authority to consume it.
+    This service opens no transaction around hashing; caller-owned outer transactions
+    remain caller-owned (production does not enable ATOMIC_REQUESTS).
+    """
     token_value = (raw_token or "").strip()
     if not token_value:
         trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
@@ -1902,75 +1942,24 @@ def _consume_reset_token(
         trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
         raise _validation_error() from None
     fingerprint = _fingerprint(token_value)
-    now = djtz.now()
+    token = _live_reset_token(fingerprint, trace)
+    # A LIVE link may expose PASSWORD_INVALID (DEC-017); a dead link never reaches this.
+    # Rejection happens before any consume, so it cannot burn the caller's reset link.
+    # The write transaction still owns rollback of consume/password/session/audit changes
+    # if a later operation fails; see the existing failed-reset rollback regression.
+    try:
+        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+    except SafeAPIError:
+        trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
+        raise
+    password_hash = make_password(new_password)
     with transaction.atomic():
-        try:
-            token = (
-                CredentialToken.objects.select_for_update()
-                .select_related("customer_user")
-                .get(token_fingerprint=fingerprint)
-            )
-        except CredentialToken.DoesNotExist as error:
-            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
-            raise _validation_error() from error
-        if not hmac.compare_digest(token.token_fingerprint, fingerprint):
-            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
-            raise _validation_error()
-        if (
-            token.purpose != CredentialTokenPurpose.PASSWORD_RESET
-            or token.consumed_at is not None
-            or token.expires_at <= now
-        ):
-            trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
-            raise _validation_error()
-        trace.resolved(token.customer_user_id)
-        # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
-        # TOKEN LOOKUP.
-        #
-        # The token is now known live, so the caller has proved possession of a working link
-        # and may safely be told that it is their PASSWORD that is wrong. Run before this
-        # block, the password check reached everyone — and, raising the same collapsed
-        # VALIDATION_FAILED as every token failure, told a user with a perfectly good link
-        # that the link was broken. They fetched a fresh one, retyped the same short
-        # password, and looped with no exit and no clue (DEC-012 (a)).
-        #
-        # WHY THIS LEAKS NOTHING is argued ONCE, beside `ErrorCode.PASSWORD_INVALID` in
-        # `selahcue_api/graphql/errors.py`. Do not restate it here: the argument was being
-        # maintained in four places, and by the first review round one copy had drifted.
-        #
-        # ON THE PLACEMENT RELATIVE TO THE CONSUME BELOW — read this before "tidying" it.
-        # A rejected password does not burn the user's link. That guarantee comes from the
-        # enclosing `transaction.atomic()`, which rolls the consume back on the raise; it
-        # does NOT come from this line sitting above `token.consumed_at`. The two are
-        # redundant, and the transaction is the one doing the work.
-        #
-        # Said plainly because an earlier version of this comment claimed the opposite — and
-        # with numbers, because the version after that understated them. Measured over the
-        # whole API suite, at 523 tests:
-        #
-        #   this call moved BELOW the consume, `atomic()` intact   523 passed — nothing notices
-        #   `atomic()` removed, this call left where it is         1 failed
-        #   BOTH                                                   5 failed
-        #
-        # Two reviewers measured the same shape independently on the 520-test tree that went
-        # into review: 520 passed / 1 failed / 4 failed. The counts move as tests are added;
-        # the shape is what matters, and it has now been reproduced three times.
-        #
-        # So the placement is inert while the transaction holds, and removing the transaction
-        # is loud whether or not the placement goes with it. Keep the placement — it is
-        # defence in depth for the day the transaction boundary is refactored away — but do
-        # not believe the link-preservation property is tested by its position. It is tested
-        # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
-        # in the auth slice.
-        try:
-            _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
-        except SafeAPIError:
-            trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
-            raise
+        token = _live_reset_token(fingerprint, trace, for_update=True)
+        now = djtz.now()
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user
-        user.password_hash = make_password(new_password)
+        user.password_hash = password_hash
         user.password_changed_at = now
         user.failed_login_count = 0
         user.locked_until = None
