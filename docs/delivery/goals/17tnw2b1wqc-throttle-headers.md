@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Return remaining retry and no-store headers on shared /v1 throttle denials
 - Role: backend-engineer
-- Status: ACTIVE
+- Status: BLOCKED
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/90131572460/17tnw2b1wqc
 - Created: 2026-10-29
@@ -67,7 +67,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-001 | yes | Shared429 has remaining Retry-After and no-store with unchanged bodies/budget | pytest focused headers and native strict regression | All pass; strict xfail becomes ordinary pass | /private/tmp/selahcue-batch20-20261029/17tnw2b1wqc-focused-final.log | PASS |
 | C-002 | yes | Real local/Redis expiry and read-error behavior correct | Clock/Redis/failure tests | Partial window decreases, ceil/min-one, read error remains denial | /private/tmp/selahcue-batch20-20261029/17tnw2b1wqc-postgres-redis.log | PASS |
 | C-003 | yes | Existing throttle/native/activation and complete API regressions remain green | Covering modules then full API pytest | No introduced failures; SQLite and real PostgreSQL/Redis separated | /private/tmp/selahcue-batch20-20261029/17tnw2b1wqc-postgres-redis.log and 17tnw2b1wqc-full-api.log | PASS |
-| C-004 | yes | Clean branch includes currenttarget; system/migrations clean | diff check, Django check, makemigrations, ancestry/behind | Exit0, no migration, target ancestor and behind0 at handoff | /private/tmp/selahcue-batch20-20261029/17tnw2b1wqc-report.md | PENDING |
+| C-004 | yes | Clean branch includes currenttarget; system/migrations clean | diff check, Django check, makemigrations, ancestry/behind | Exit0, no migration, target ancestor and behind0 at handoff | /private/tmp/selahcue-batch20-20261029/17tnw2b1wqc-report.md | PASS |
 | C-005 | yes | All four reviews pass final revision after valid fixes | Cody, Quinn, Vera, Shadow exact-head reports | Four Pass, no unresolved blocking findings | Coordinator reports | BLOCKED |
 | C-006 | yes | Final CI passes, PR merges and ticket savedQA | Coordinator hosted CI/merge/ClickUp read-back | Exact revision passes, merge verified, QA persisted | Coordinator delivery report | BLOCKED |
 
@@ -103,11 +103,11 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1wqc-throttle-headers.md
-- Validator result: pending.
-- Independent verification result: pending root.
-- Terminal state: ACTIVE.
-- Remaining failed or blocked criteria: C-001..C-006.
-- ClickUp final evidence comment: root-owned pending.
+- Validator result: structural PASS. Completion intentionally BLOCKED only on C-005/C-006.
+- Independent verification result: pending root-owned Cody/Quinn/Vera/Shadow reviews.
+- Terminal state: BLOCKED on independent review and delivery; implementation verifiers passed.
+- Remaining failed or blocked criteria: C-005/C-006 only.
+- ClickUp final evidence comment: exact handoff supplied to root; no task mutation by implementer.
 
 
 ### Iteration2 — expiry and response implementation
@@ -127,6 +127,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: the shared response-only change preserves all API account/device/guard behavior, and the new target's Rust-only slice does not change that tested API tree.
 - Change or investigation: ran complete API pytest against dedicated PostgreSQL16.2/Redis databases. Fetched and fast-forwarded mainf121aaba5b632ed5d41771f57ae4897dc8b21edd after the full run. Entire8992daa5..f121aaba delta is the reviewed dev_env Rust file and its goal; implementation/api and CI workflow are unchanged. Final cleanup adjusts prose/whitespace and test-only cache-handler access/Redis connection cleanup; no executable production behavior changed after the full run.
 - Verifier executed: full API suite, target/API tree equality, then final integrated focused backend checks and static checks.
-- Result: full suite1563passed, zero skipped/xfail,429.53seconds, exit0. Final integrated focused and static results pending below.
+- Result: full suite1563passed, zero skipped/xfail,429.53seconds, exit0. Final integrated PostgreSQL/Redis focused19passed in4.36seconds, exit0; system checks/migrations/diff/structural validator all passed. Implementation commita7f6ff5007d67f1de6749d1c096d5611d98698c3 clean, behind0 and mainf121aaba ancestor verified.
 - New evidence:17tnw2b1wqc-full-api.log and .exit, scoped target diff and final integrated checks.
 - Decision: hand off for independent reviews when final checks pass; no merge/QA completion claim.
