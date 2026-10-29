@@ -62,9 +62,10 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-002 | yes | Delayed startup uses3s/20s fallbacks; a complete result plus genuine hang remains failing with no surviving process/temp files | Scoped controlled readiness cases, injected wrong timeout verdict and full launcher self-test | Forced fallback controls pass; incorrect timeout verdict isRED | Original and integrated-controls.json; integrated controls log/report | PASS |
 | C-003 | yes | Every-run versusCI-only and90s versus150s decisions record current scope and historical/fresh headroom separately | Committed decision document plus one full timed gate | Decisions explicit; exact current/historical calculations, no old measurements presented as current | docs/ops/HEADLESS-GATE.md and full-gate timing | PASS |
 | C-004 | yes | Full operator gate, launcher siblings and syntax/diff/goal checks pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py plus syntax/diff/validator |2347browser checks0FAIL, complete self-test exit0 | Original browser-green.log; new integrated-operator.log | PASS |
-| C-005 | yes | Parent17tnw2b1f32 description replaces~1MB claim with Vera's historical~59KB measurement and persisted read-back | Root narrow description edit/read-back, no status change | Exact edited phrase saved; other contents/status preserved | Root tracker evidence | BLOCKED |
+| C-005 | yes | Parent17tnw2b1f32 description replaces~1MB claim with Vera's historical~59KB measurement and persisted read-back | Root narrow description edit/read-back, no status change | Exact edited phrase saved; other contents/status preserved | Batch17tnw2b1wvh-parent-readback.json; exact-other-Markdown/status verified | PASS |
 | C-006 | yes | Cody/Quinn/Vera/Shadow and final applicableCI pass on final revision | Coordinator independent reviews/CI | All pass | Coordinator evidence | BLOCKED |
 | C-007 | yes | PR merged and linked taskQA persisted | Root GitHub/ClickUp read-back | Verified merged and saved QA | Coordinator evidence | BLOCKED |
+| C-008 | yes | Opt-in measurement status/output never follow preplanted links; private controls and legitimate pause/atomic result behavior remain valid | Private security fixture tests and actual functional controls |8 tests PASS; victim bytes preserved; controls/cleanup pass | Batch security-red.log, security-final.log and secure-controls.json | PASS |
 
 ## Verification plan
 
@@ -135,6 +136,26 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: batch integrated-operator.log and final refresh report.
 - Decision: handoff
 
+### Iteration 7 — S257-1 author remediation
+
+- Target criterion: C-008
+- Hypothesis: a predictable shared control folder and Path.write_text allow a local preplanted status symlink to truncate another file; unique verified private controls plus descriptor-anchored atomic writes remove that authority.
+- Change or investigation: reproduce Shadow's exact attack shape with synthetic victims only under private fixtures.6 cases RED before edits, including victim clobber, directory swapping and unsafe permissions. Replace predictable root with unique0700 TemporaryDirectory; refuse symlink components/non-owned or writable-by-others directories/linked targets, preflight result output before sampling, and publish new0600 JSON through verified directory descriptors. Preserve discovered per-run pause path and semantics; no runtime launcher change.
+- Verifier executed: private test_measure_schedule.py before/after remediation; actual current-source functional --controls.
+- Result: security tests8/8 PASS after6/6 RED, including legitimate pause, failed atomic publication preserving prior bytes, and a leaf swapped after preflight never following the victim. Actual readiness/fallback/wrong-timeout controls PASS; no real shared-temp planting, user files, Chrome, Cargo or Flutter touched. Measurement-tool SHA binds current controls separately from original benchmark metadata.
+- New evidence: batch17tnw2b1wvh-security-red.log, security-final.log, secure-controls.log/.json.
+- Decision: iterate
+
+### Iteration 8 — final safety verification and parent receipt
+
+- Target criterion: C-002,C-004,C-005,C-008
+- Hypothesis: source-only research-tool safety changes preserve the runtime composition already verified at348 and the four immutable original study artifacts.
+- Change or investigation: verify runtime files and original4JSON artifacts unchanged; rerun security tests/static/paired preflight guard. Add the coordinator-authorized fast private-fixture suite to the existing always-run workflow after caller contracts, with no new runner/dependency/permissions or actual research sampling. Read root's saved parent receipt: exact soleabout1MB replacement with historical59KB, other Markdown byte-identical and statusQA unchanged.
+- Verifier executed:8 private tests, actual secure functional controls; compilation/diff/goal/target/source/hash checks; actionlint/workflow101self-tests/all5workflows/minute rules; persisted parent receipt inspection.
+- Result: PASS for local criteria and parent C-005. No repeat real browser because launcher runtime is unchanged;348 full operator2347/0 and15caller contracts remain the exact runtime evidence. Fresh all4reviews and new exact-head CI remain required for this security revision; no original2.003454s benchmark remeasurement/claim.
+- New evidence: final security refresh report/logs and parent-readback.json.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: wall-clock scheduling variability and benchmark overlap; record all samples and defer during explicit quiet windows. Startup retry is inconclusive, distinct from a failing terminal verdict.
@@ -147,8 +168,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1wvh-launcher-selftest-cost.md
-- Validator result: structural PASS; completion blocked only C-005,C-006,C-007
-- Independent verification result: root reports original8ae all4 scopedPass and CI retryPass; refreshed composition all4/CI pending root
+- Validator result: structural PASS; completion blocked only C-006,C-007
+- Independent verification result: root reports original8ae scopedPass/CI, but Shadow S257-1 found during348 refresh is author-remediated; new final all4/CI pending root
 - Terminal state: BLOCKED
-- Remaining failed or blocked criteria: C-005,C-006,C-007
+- Remaining failed or blocked criteria: C-006,C-007
 - ClickUp final evidence comment: root owned

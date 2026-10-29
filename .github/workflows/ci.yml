@@ -349,6 +349,7 @@ jobs:
           # Existing visual-parity dependency; pin matches its documented runtime.
           python3 -m pip install --quiet --break-system-packages 'Pillow==11.3.0'
           python3 scripts/test_pipe_safe_launchers.py
+          python3 docs/delivery/goals/17tnw2b1wvh-evidence/test_measure_schedule.py
       # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
       # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
       # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`

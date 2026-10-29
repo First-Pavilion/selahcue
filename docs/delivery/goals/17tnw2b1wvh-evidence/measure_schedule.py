@@ -1,12 +1,15 @@
 import argparse
 import ast
 import copy
+import errno
 import hashlib
 import inspect
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
+import stat
 import statistics
 import subprocess
 import sys
@@ -14,8 +17,11 @@ import tempfile
 import time
 
 REPO = Path(__file__).resolve().parents[4]
-OUT = Path(tempfile.gettempdir()) / 'selahcue-launcher-schedule'
-OUT.mkdir(exist_ok=True)
+# Match the launcher's private-temp pattern, never a predictable shared directory.
+# Canonicalize the system temp root before allocation (macOS /var is a symlink).
+_CONTROL = tempfile.TemporaryDirectory(prefix='selahcue-launcher-schedule-',
+                                       dir=str(Path(tempfile.gettempdir()).resolve()))
+OUT = Path(_CONTROL.name)
 BASE = '8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e'
 PAUSE = OUT / '17tnw2b1wvh-measurement.pause'
 STATUS = OUT / '17tnw2b1wvh-measurement-status.json'
@@ -23,11 +29,84 @@ sys.path.insert(0, str(REPO / 'scripts'))
 import headless_chrome as h
 
 
+def _open_directory(path, private=False):
+    """Anchor operations to a verified directory descriptor; no symlink component."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open(os.path.sep, flags)
+    try:
+        for part in Path(os.path.abspath(path)).parts[1:]:
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        forbidden = 0o077 if private else 0o022
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & forbidden:
+            raise PermissionError(errno.EACCES, 'measurement directory must be owned and protected from other writers', str(path))
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _check_target(directory, name):
+    try:
+        info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+        raise OSError(errno.ELOOP, 'measurement target must be an owned regular file, not a link', name)
+    return True
+
+
+def validate_output(path):
+    directory = _open_directory(path.parent)
+    try:
+        _check_target(directory, path.name)
+    finally:
+        os.close(directory)
+
+
+def write_json(path, data, private=False):
+    """Write a new0600 file and atomically replace only the anchored leaf name."""
+    directory = _open_directory(path.parent, private=private)
+    temporary = '.measurement-' + secrets.token_hex(16)
+    created = False
+    try:
+        _check_target(directory, path.name)
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory)
+        created = True
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Both names are relative to the same verified directory. Even a leaf
+        # swapped after the check is replaced, never opened/followed/truncated.
+        os.replace(temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory)
+    finally:
+        try:
+            if created:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(directory)
+
+
+def pause_requested():
+    directory = _open_directory(OUT, private=True)
+    try:
+        return _check_target(directory, PAUSE.name)
+    finally:
+        os.close(directory)
+
+
 def pause_if_requested():
     announced = False
-    while PAUSE.exists():
+    while pause_requested():
         if not announced:
-            STATUS.write_text(json.dumps({'state': 'paused', 'pid': os.getpid(), 'time': time.time()}))
+            write_json(STATUS, {'state': 'paused', 'pid': os.getpid(), 'time': time.time()}, private=True)
             print('PAUSED: no browser/helper remains in flight', flush=True)
             announced = True
         time.sleep(0.25)
@@ -94,7 +173,7 @@ def run_sample(label, controller, verdict, delay=0, wrong_timeout=False):
 
         def run(self, *args, **kwargs):
             pause_if_requested()
-            STATUS.write_text(json.dumps({'state': 'running', 'label': label, 'pid': os.getpid(), 'time': time.time()}))
+            write_json(STATUS, {'state': 'running', 'label': label, 'pid': os.getpid(), 'time': time.time()}, private=True)
             before = time.perf_counter()
             result = super().run(*args, **kwargs)
             pids = {key: h._read_pid(self.pid_dir, key) for key in ('self', 'helper')}
@@ -128,6 +207,9 @@ def main():
     parser.add_argument('--controls', action='store_true')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
+    output = Path(os.path.abspath(args.output))
+    validate_output(output)  # Refuse planted links/unsafe parents before any sample.
+    print('CONTROL_DIRECTORY=' + str(OUT), flush=True)
     baseline_source = subprocess.check_output(['git', 'show', BASE + ':scripts/headless_chrome.py'], cwd=REPO, text=True)
     candidate_source = (REPO / 'scripts/headless_chrome.py').read_text()
     # The scoped before/after comparison may share the live implementation only when all
@@ -146,6 +228,7 @@ def main():
             'baseline_ast': baseline['ast_sha256'], 'candidate_ast': candidate['ast_sha256'],
             'mode': 'current-source functional controls' if args.controls else 'paired original-baseline comparison',
             'candidate_source_sha256': hashlib.sha256(candidate_source.encode()).hexdigest(),
+            'measurement_tool_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             'original_baseline_primitives_match': primitives_match,
             'pairs': [], 'controls': [], 'samples_started_at': time.time()}
     try:
@@ -173,8 +256,8 @@ def main():
             print('PASS median paired saving %.3fs' % data['median_paired_saving_s'], flush=True)
     finally:
         data['samples_finished_at'] = time.time()
-        Path(args.output).write_text(json.dumps(data, indent=2))
-        STATUS.write_text(json.dumps({'state': 'finished', 'pid': os.getpid(), 'time': time.time()}))
+        write_json(output, data)
+        write_json(STATUS, {'state': 'finished', 'pid': os.getpid(), 'time': time.time()}, private=True)
 
 
 if __name__ == '__main__':

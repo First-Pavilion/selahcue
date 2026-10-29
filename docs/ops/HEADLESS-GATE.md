@@ -63,13 +63,14 @@ The older 4.1-second/62% overhead and monthly-runner estimates are historical, n
 The phase record and exact script hashes are in
 [gate-timing.json](../delivery/goals/17tnw2b1wvh-evidence/gate-timing.json).
 
-Reproduce the frozen scoped study from `8ae21ff6` in an isolated checkout. Later launcher
-primitive changes require a new comparison baseline; `--pairs` refuses them. Current-source
-`--controls` is functional verification only and records its source hash separately:
+The original study is pinned to `8ae21ff6`; its raw observations remain available for
+inspection. Do not reuse that historical tool's predictable shared control files.
+The current secured runner's paired mode still refuses incompatible launcher primitives;
+a future paired study needs an appropriate comparison baseline. Reproduce current-source
+functional controls, with separate source metadata, using the secured runner:
 
 ```sh
-python3 docs/delivery/goals/17tnw2b1wvh-evidence/measure_schedule.py --pairs 20 --output /tmp/selahcue-schedule.json
-python3 docs/delivery/goals/17tnw2b1wvh-evidence/measure_schedule.py --controls --output /tmp/selahcue-controls.json
+python3 docs/delivery/goals/17tnw2b1wvh-evidence/measure_schedule.py --controls --output ./selahcue-controls.json
 ```
 
 At the original study revision, the checked-in runner changed only workspace/output path binding
@@ -96,7 +97,29 @@ refresh handoff separately from the original benchmark. The real operator refres
 a separate private-branch auth gate; it is functional evidence, not an isolated timing or
 resource-attribution study.
 
-The parent ticket's separate size correction is root-owned: replace only the obsolete `~1 MB`
-claim with `~59 KB (Vera's measurement in PR #153)`, preserve the rest of its description and
-status, and read back the saved phrase. It records a historical measurement, not today's source
-file size.
+## Measurement control-file safety
+
+The opt-in runner allocates a unique 0700 control directory using the same private-temp
+pattern as the launcher, and prints `CONTROL_DIRECTORY=...` before sampling. To pause,
+create `17tnw2b1wvh-measurement.pause` inside that directory; remove it to resume.
+Status JSON lives beside it, is atomically replaced as a 0600 regular file, and the
+control directory is removed at process exit. Use the printed path for each run;
+the old predictable shared directory is not used or modified.
+
+The explicit `--output` parent must be owned by the current user and have no group
+or other write permission. Directory components and existing targets cannot be
+symlinks; use a canonical path (on macOS `/tmp` and `/var` are symlinks). Output
+preflight refuses unsafe targets before sampling. Result and status writes create
+an exclusive 0600 temporary file and replace the leaf through the verified directory
+descriptor, without following a planted link. If publication raises before the atomic replacement,
+the previous file remains intact and temporary-file cleanup runs. These changes affect
+the research tool's control/output files, not the launcher runtime or original study.
+
+Run `python3 docs/delivery/goals/17tnw2b1wvh-evidence/test_measure_schedule.py` for
+private-fixture symlink/preplant/permission, atomic-failure/race and legitimate-pause
+regressions without Chrome or a build. The existing always-run Linux workflow invokes
+this fast suite after the caller contracts; actual research sampling remains opt-in.
+
+The parent size correction was saved and read back by root on 29 October 2026:
+`~59 KB (Vera's measurement in PR #153)`. All other Markdown was byte-identical and
+parent status remained QA. It records the historical measurement, not today's file size.
