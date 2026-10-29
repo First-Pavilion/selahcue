@@ -767,3 +767,31 @@ def test_timeout_words_outside_query_names_are_not_refused(settings):
     assert kwargs["client_name"] == "socket_timeout=86400"
     assert kwargs["socket_timeout"] == 0.9
     assert kwargs["socket_connect_timeout"] == 0.7
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["", "?socket_timeout=PRIVATE-QUERY-VALUE-4ac9",
+     "?socket_connect_timeout=PRIVATE-QUERY-VALUE-4ac9"],
+)
+@pytest.mark.parametrize("malformation", ["nfkc-userinfo", "invalid-ipv6"])
+def test_malformed_cache_url_startup_errors_never_disclose_secrets(query, malformation):
+    password = FAKE_CACHE_URL_PASSWORD
+    if malformation == "nfkc-userinfo":
+        # urllib's raw NFKC refusal embeds the complete netloc, including this password.
+        password += "／invalid"
+        host = FAKE_CACHE_URL_HOST
+    else:
+        host = "[not-a-valid-ipv6-address]"
+    url = f"redis://{FAKE_CACHE_URL_USER}:{password}@{host}:6379/1{query}"
+    result = _settings_in_subprocess(CACHE_URL=url)
+    assert result.returncode != 0
+    # Assert redaction before the exception type so the baseline proves the actual leak.
+    for output in (result.stdout, result.stderr):
+        for secret in (
+            url, password, FAKE_CACHE_URL_PASSWORD, FAKE_CACHE_URL_USER,
+            host, "PRIVATE-QUERY-VALUE-4ac9",
+        ):
+            assert secret not in output
+    assert "ImproperlyConfigured: CACHE_URL could not be parsed" in result.stderr
+    assert "ValueError" not in result.stderr, "parser exception chaining must be suppressed"

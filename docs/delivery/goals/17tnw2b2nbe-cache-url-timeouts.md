@@ -101,6 +101,16 @@ Verified starting main 8f7d610e includes prerequisite PR186 (d064bd96). Before p
 - New evidence: root verified PR255 all four reviews and full 1577-test hosted API CI before its merge; this is dependency evidence, not a replacement for this ticket's final CI.
 - Decision: handoff only after the fresh integrated gates pass; freeze without subsequent tracked edits. Escalate any new failure to root.
 
+### Iteration 4
+
+- Target criterion: C-001 startup diagnostic redaction; independent review remediation S-CACHEURL-1.
+- Hypothesis: translating only parser ValueError into a fixed configuration diagnostic with suppressed exception chaining closes the malformed-netloc disclosure while preserving valid URL behavior.
+- Change or investigation: Shadow and Cody independently confirmed the same issue at 5c72a296; deduplicated once. Added six real settings-startup regressions for NFKC-invalid userinfo and invalid IPv6 syntax, each without query and with each timeout name. Actual baseline exposes synthetic password on all three NFKC cases; every new case fails while all 100 prior timeout siblings pass.
+- Verifier executed: complete timeout module baseline RED: 6 failed, 100 passed in 45.81s; log /private/tmp/selahcue-batch20-20261029/17tnw2b2nbe-redaction-red.log. Corrected complete module and final timeout/docs/guards/PostgreSQL integration gates follow; final receipts remain in author report to avoid post-verification tracked edits.
+- Result: narrow parser exception mapper and operator syntax diagnostic documentation added. No broader URL acceptance policy, broker behavior, timeout range, valid URL option or request path changed. Fixed message never interpolates URL, parser exception, userinfo or query value.
+- New evidence: prior redaction matrix covered well-formed URLs only; this malformed parser failure was a gap in the original author verification. Earlier well-formed tests retain their scope and do not establish corrected malformed behavior.
+- Decision: require new exact-head hosted CI and all four scoped independent re-reviews after final checks; do not publish or merge from author role.
+
 ## Risks and rollback
 
 - Risks: deployments using URL timeouts intentionally must move them to the documented environment variables before startup.

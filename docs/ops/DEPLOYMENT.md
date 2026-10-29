@@ -430,8 +430,10 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   the backend's validated settings, so even an in-range URL timeout is refused to keep one
   authoritative channel. Remove the option from the URL and set the corresponding environment
   variable instead. The error names the option and supported variables without echoing the URL,
-  credentials or query value. Other query options and URLs without timeout options retain their
-  existing behavior; an unset `CACHE_URL` still selects the local memory cache.
+  credentials or query value. A malformed URL that the parser cannot read also refuses startup
+  with a fixed syntax diagnostic, suppressing the parser exception that can contain credentials.
+  Other query options and well-formed URLs without timeout options retain their existing behavior;
+  an unset `CACHE_URL` still selects the local memory cache.
 - **Tuning.** Keep the defaults unless you have measured a reason not to. Raise a timeout only when
   the slowest healthy round trips you can measure on your own Redis (including, on `rediss://`, the
   TLS and handshake round trips of a reconnect, which all count against `CACHE_SOCKET_TIMEOUT`)

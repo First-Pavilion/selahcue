@@ -483,7 +483,15 @@ def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> di
     # redis-py parses URL query names once with urlparse/parse_qs and gives their values
     # precedence over OPTIONS. Refuse both timeout names, even blank or in range, so the
     # validated environment variables remain authoritative. Keep all other URL options intact.
-    query_options = parse_qs(urlparse(url).query, keep_blank_values=True)
+    try:
+        query_options = parse_qs(urlparse(url).query, keep_blank_values=True)
+    except ValueError:
+        # urllib's malformed-netloc errors can include userinfo. Do not expose the
+        # parser's exception text or chain, even when there is no timeout query option.
+        raise ImproperlyConfigured(
+            "CACHE_URL could not be parsed. Check its URL syntax; see "
+            "docs/ops/DEPLOYMENT.md §6b."
+        ) from None
     for name in ("socket_connect_timeout", "socket_timeout"):
         if name in query_options:
             # Only fixed option/variable names: the URL, its credentials and values are secrets.
