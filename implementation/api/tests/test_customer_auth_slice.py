@@ -4,29 +4,42 @@ Covers self-serve signup, email verification, login/session/logout/refresh, and 
 with the no-enumeration + session-invalidation invariants.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import os
+import platform
+from pathlib import Path
 import re
+import statistics
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from io import StringIO
 
 import pytest
+from celery import Celery
+from celery.backends.redis import RedisBackend
 from django.conf import settings as django_settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import IntegrityError, OperationalError, transaction
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from redis import Redis
 
+from selahcue_api import settings as project_settings
+from selahcue_api.apps.accounts import email as email_module
 from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts.email import CeleryEmailSender
 from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as reset_confirms_command
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
@@ -60,6 +73,13 @@ def _fresh_reset_throttle_budget():
     """
     cache.clear()
     services._reset_trace_reporting()
+
+
+@pytest.fixture(autouse=True)
+def _no_reset_request_floor(settings):
+    # Ordinary auth regressions need not park a thread per reset. The floor's own
+    # mechanism and real-publisher tests explicitly enable it below.
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.0
 
 
 # --- helpers ---------------------------------------------------------------
@@ -1552,6 +1572,7 @@ def test_an_exhausted_budget_refuses_a_live_token_before_it_is_read_and_writes_n
         "the throttled call changed the password"
     )
     assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
+
     assert len(failed_rows()) == 2, "a throttled request wrote a failure row"
 
     # CONTROL: the refusal was the BUDGET, not the token -- another source resets with the same link.
@@ -2644,3 +2665,236 @@ def test_reset_kdf_rechecks_token_state_and_time_after_hashing(client, sender, m
     assert user.password_hash == original_hash
     assert session.status == "ACTIVE", "a refused reset must not revoke an existing session"
     assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
+
+
+# --- Allowed reset-request timing floor (86ak7kka2) -------------------------
+class ResetFloorClock:
+    """A deterministic sleep/transaction observer, confined to the service's clock."""
+
+    def __init__(self, monkeypatch):
+        self.now = 10_000.0
+        self.sleeps = []
+        monkeypatch.setattr(services, "time", self)
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append((seconds, connection.in_atomic_block))
+        self.now += seconds
+
+
+def _reset_floor_user(tag):
+    email = f"reset-floor-{tag}@example.test"
+    org = CustomerOrg.objects.create(
+        name="Reset timing fixture", slug=f"reset-floor-{tag}",
+        primary_contact_email=email, country="NG", created_by_actor_id="test",
+        idempotency_key=f"reset-floor-org-{tag}",
+    )
+    return CustomerUser.objects.create(
+        customer=org, email=email, email_fingerprint=services._email_fingerprint(email),
+        password_hash="!", status=CustomerUserStatus.ACTIVE, role=CustomerRole.ADMIN,
+        email_verified_at=timezone.now(), created_by_actor_id="test",
+        idempotency_key=f"reset-floor-user-{tag}",
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("case", ["unknown", "known", "degraded-send-refused"])
+def test_allowed_reset_request_pads_after_its_commit(client, settings, monkeypatch, case):
+    """Removing reset's finally-pad, or sleeping inside atomic, breaks this control."""
+    user = _reset_floor_user(uuid.uuid4().hex)
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    sent = []
+
+    class CommitObservingSender(services.EmailSender):
+        def send_password_reset(self, target, raw_token):
+            sent.append((target.id, connection.in_atomic_block))
+
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(CommitObservingSender())
+    if case == "degraded-send-refused":
+        monkeypatch.setattr(services, "enforce_budget_reporting_outage", lambda *a, **kw: True)
+        monkeypatch.setattr(services, "_claim_degraded_reset_send", lambda: False)
+    clock = ResetFloorClock(monkeypatch)
+    email = "unknown-floor@example.test" if case == "unknown" else user.email
+    try:
+        response = client.post(
+            "/graphql/account", data=json.dumps({"query": REQUEST_RESET, "variables": {"e": email}}),
+            content_type="application/json",
+        )
+    finally:
+        services.set_email_sender(previous_sender)
+    assert response.json() == {"data": {"requestPasswordReset": {"accepted": True}}}
+    assert clock.sleeps == [(0.25, False)], "allowed reset did not pad outside its own transaction"
+    assert sent == ([(user.id, False)] if case == "known" else [])
+    assert CredentialToken.objects.filter(purpose=CredentialTokenPurpose.PASSWORD_RESET).count() == (
+        1 if case == "known" else 0
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("case", ["invalid-email", "budget-refused"])
+def test_reset_request_refusal_does_no_query_or_padding(settings, monkeypatch, django_assert_num_queries, case):
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (0, 3600)
+    clock = ResetFloorClock(monkeypatch)
+    email = "invalid" if case == "invalid-email" else "valid-floor@example.test"
+    with django_assert_num_queries(0), pytest.raises(SafeAPIError):
+        services.request_password_reset(email, client_ip="192.0.2.71")
+    assert clock.sleeps == [], "a refusal must not occupy a padded request thread"
+
+
+@contextmanager
+def _real_reset_publisher(monkeypatch, url):
+    """Actual shared task and production sender; only the owned broker namespace changes.
+
+    Kept here because importing test_broker_socket_timeouts would import this module back.
+    No worker consumes this queue and no SMTP operation runs.
+    """
+    prefix = f"reset-timing-{uuid.uuid4().hex}:"
+    queue = "reset-timing"
+    monkeypatch.setenv("CELERY_BROKER_URL", url)
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", url)
+    app = Celery("reset_timing", broker=url, backend=url, set_as_current=False)
+    app.conf.update(
+        broker_transport_options={
+            **project_settings.CELERY_BROKER_TRANSPORT_OPTIONS, "global_keyprefix": prefix,
+        },
+        task_default_queue=queue, task_always_eager=False,
+    )
+    original = email_module.send_password_reset_task
+    monkeypatch.setattr(email_module, "send_password_reset_task", app.tasks[original.name])
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(CeleryEmailSender())
+    redis = Redis.from_url(url, socket_timeout=1, socket_connect_timeout=1)
+    try:
+        redis.ping()
+        yield redis, prefix + queue
+    finally:
+        services.set_email_sender(previous_sender)
+        # Delete only this test's random Kombu namespace, never a shared database.
+        keys = list(redis.scan_iter(match=prefix + "*"))
+        if keys:
+            redis.delete(*keys)
+        redis.close()
+        if isinstance(app.backend, RedisBackend):
+            app.backend.result_consumer.stop()
+            app.backend.client.close()
+            app.backend.client.connection_pool.disconnect()
+        app.close()
+
+
+def _reset_timing_pair_summary(pairs):
+    differences = [pair["known"] - pair["unknown"] for pair in pairs]
+    mean = statistics.mean(differences)
+    # Student t, 95% two-sided, df=31 for the fixed 32-pair design below.
+    radius = 2.040 * statistics.stdev(differences) / len(differences) ** 0.5
+    return {"mean_gap_seconds": mean, "ci95_seconds": [mean - radius, mean + radius]}
+
+
+def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
+    """Paired HTTP samples include real commits and a synchronous Redis publish.
+
+    Every eligible response is followed by inspection of the already-queued task and
+    a second DB connection observing its committed token. Neither inspection is timed.
+    Raw output contains durations/config only; no address, token or broker URL is printed.
+    """
+    assert connection.vendor == "postgresql", "the reference study requires production-shaped PostgreSQL"
+    assert not connection.in_atomic_block, "captured callbacks would miss the real commit/publish"
+    user = _reset_floor_user(uuid.uuid4().hex)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (100_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (100_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (100_000, 3600)
+    floor = 0.0 if baseline else getattr(project_settings, "ACCOUNT_RESET_REQUEST_MIN_SECONDS", 0.0)
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = floor
+    observer = connection.copy(alias="reset_timing_observer")
+    bodies = set()
+    known_count = 0
+    committed_count = 0
+    queue_count = 0
+    sample_number = 0
+    orders = []
+    pairs = []
+    null_pairs = []
+    warmup = []
+    url = os.environ["CELERY_BROKER_URL"]
+    try:
+        with _real_reset_publisher(monkeypatch, url) as (redis, queue):
+            def sample(kind):
+                nonlocal known_count, committed_count, queue_count, sample_number
+                sample_number += 1
+                email = user.email if kind == "known" else f"unknown-{sample_number}@reset-timing.example"
+                before_queue = redis.llen(queue)
+                started = time.perf_counter()
+                response = client.post(
+                    "/graphql/account", data=json.dumps({"query": REQUEST_RESET, "variables": {"e": email}}),
+                    content_type="application/json",
+                )
+                elapsed = time.perf_counter() - started
+                assert response.status_code == 200
+                assert response.json() == {"data": {"requestPasswordReset": {"accepted": True}}}
+                bodies.add(response.content)
+                assert not connection.in_atomic_block
+                if kind == "known":
+                    known_count += 1
+                    assert redis.llen(queue) == before_queue + 1, "HTTP returned before the actual task was queued"
+                    payload = json.loads(redis.lpop(queue))
+                    assert payload["headers"]["task"] == "accounts.send_password_reset"
+                    assert payload["headers"]["argsrepr"] == "(<redacted>)"
+                    args, kwargs, _ = json.loads(base64.b64decode(payload["body"]))
+                    assert args[0] == user.email and kwargs == {}
+                    queue_count += 1
+                    with observer.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT count(*) FROM selahcue_accounts_credentialtoken WHERE token_fingerprint = %s",
+                            [services._fingerprint(args[1])],
+                        )
+                        assert cursor.fetchone()[0] == 1, "queued token was not committed before HTTP returned"
+                    committed_count += 1
+                else:
+                    assert redis.llen(queue) == before_queue, "unknown account unexpectedly published email"
+                return elapsed
+
+            # Four per-branch warmups, then alternate AB/BA to avoid monotonic drift bias.
+            for _ in range(4):
+                warmup.append({"known": sample("known"), "unknown": sample("unknown")})
+            for index in range(32):
+                order = ["known", "unknown"] if index % 2 == 0 else ["unknown", "known"]
+                orders.append(order)
+                pairs.append({kind: sample(kind) for kind in order})
+                # Same-path null pair, sampled throughout the study, estimates runner noise
+                # without pretending the old no-op sender measured broker latency.
+                null_pairs.append({"known": sample("unknown"), "unknown": sample("unknown")})
+    finally:
+        observer.close()
+    report = {
+        "mode": "baseline" if baseline else "candidate", "python": platform.python_version(),
+        "platform": platform.platform(), "database": connection.vendor,
+        "broker": "real Redis; production CeleryEmailSender; actual shared reset task; no worker",
+        "broker_socket_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_TIMEOUT,
+        "broker_connect_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+        "floor_seconds": floor, "warmup_pairs": warmup, "pair_orders": orders,
+        "pairs": pairs, "same_path_null_pairs": null_pairs,
+        "paired_summary": _reset_timing_pair_summary(pairs),
+        "null_summary": _reset_timing_pair_summary(null_pairs),
+        "known_requests": known_count, "actual_queued_messages_checked": queue_count,
+        "committed_tokens_checked_on_separate_connection": committed_count,
+        "distinct_response_bodies": len(bodies),
+    }
+    print("RESET_TIMING_RECEIPT=" + json.dumps(report, sort_keys=True))
+    evidence_dir = os.getenv("RESET_FLOOR_EVIDENCE_DIR")
+    if evidence_dir:
+        evidence_path = Path(evidence_dir)
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        (evidence_path / (report["mode"] + "-timing.json")).write_text(json.dumps(report, indent=2, sort_keys=True))
+    assert len(bodies) == 1
+    assert known_count == queue_count == committed_count == 36
+    return report
+
+
+@pytest.mark.skipif(os.getenv("RESET_FLOOR_MEASUREMENT_MODE") != "baseline", reason="explicit unpadded reference measurement only")
+@pytest.mark.django_db(transaction=True)
+def test_reset_request_unpadded_reference_measurement(client, settings, monkeypatch):
+    """Opt-in sizing study, not an assertion that an unpadded endpoint is safe."""
+    _measure_real_reset_requests(client, settings, monkeypatch, baseline=True)
