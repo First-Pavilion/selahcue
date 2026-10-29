@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import logging
 import secrets
 import threading
 import time
+import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import date, timedelta
+from datetime import timezone as dt_timezone
+from enum import Enum
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
@@ -16,6 +21,7 @@ from django.core.validators import validate_email
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone as djtz
+from django.utils.crypto import salted_hmac
 from django.utils.text import slugify
 
 from selahcue_api.apps.accounts.models import (
@@ -29,13 +35,16 @@ from selahcue_api.apps.accounts.models import (
     CustomerUser,
     CustomerUserStatus,
 )
+from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 # Safe at module scope: `throttling.guards` depends only on the cache, the pure limiter and
 # the error enum — nothing in accounts — so this cannot close an import cycle.
 from selahcue_api.apps.throttling.guards import (
     enforce_budget,
     enforce_budget_reporting_outage,
+    spend_budget,
 )
+from selahcue_api.apps.throttling.services import BudgetOutcome, bucket_for_throttling
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -320,6 +329,58 @@ RESEND_GLOBAL_BUDGET = (500, 3600)
 RESET_REQUEST_IP_BUDGET = (20, 3600)
 RESET_CONFIRM_IP_BUDGET = (20, 3600)
 
+# The audit action written for a `confirm_password_reset` that got past the budget and failed
+# (86ak5r2pt). See `_record_failed_reset_confirm` for what the row holds and, as much to the
+# point, what it must never hold.
+RESET_CONFIRM_FAILED_ACTION = "customer_user.password_reset_confirm_failed"
+
+# Bounds on how many of those rows are written. The per-source budget bounds one source; it does
+# not bound a flood from many sources (a trusted-proxy hop count set too high lets a caller pick
+# its own left-hand X-Forwarded-For entry per request, i.e. a fresh source per request) and it
+# bounds nothing at all while the store is down and every budget fails open. All of these skip
+# the ROW and never the response, and all are sized generously: a legitimate failed confirm must
+# not lose its trace, so they are flood brakes and not budgets. Settings of the same names ship
+# in settings.py.
+#
+# TWO allowances, because one shared counter would let anyone blind the trace to the outcomes it
+# exists for (see `_trace_skip_reason`):
+#   - outcomes that name NO account (unknown or malformed token, an internal error before any
+#     account was identified) spend a SHARED budget per hour, and a per-worker ceiling in an
+#     outage;
+#   - outcomes that name an ACCOUNT (consumed, expired, wrong purpose, rejected password, an
+#     internal error after the token validated) spend only that account's own allowance, keyed by
+#     user id: 60 an hour (a person retrying a weak password needs a handful, and the per-source
+#     budget already caps one source at 20), and 30 an hour per worker in an outage, tracked in a
+#     table of at most RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX accounts.
+RESET_CONFIRM_TRACE_SCOPE = "password_reset_confirm_trace_global"
+RESET_CONFIRM_TRACE_BUDGET = (1000, 3600)
+RESET_CONFIRM_TRACE_DEGRADED_CEILING = (200, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_SCOPE = "password_reset_confirm_trace_account"
+RESET_CONFIRM_TRACE_ACCOUNT_BUDGET = (60, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (30, 3600)
+RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX = 1024
+
+
+class ResetConfirmOutcome(str, Enum):
+    """WHY a confirm failed, for the audit row only. This is a closed set the service picks
+    beside each raise; it is never an attribute of the exception and never part of a response,
+    which is what keeps the five token-failure classes mutually indistinguishable to the caller
+    (FR-529) while still being told apart in the trace."""
+
+    MALFORMED_TOKEN = "malformed_token"
+    UNKNOWN_TOKEN = "unknown_token"
+    WRONG_PURPOSE = "wrong_purpose"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+    PASSWORD_REJECTED = "password_rejected"
+    # A failure whose raise site did not name its class. Recorded anyway: a missing label must
+    # never become a missing row.
+    UNCLASSIFIED = "unclassified"
+    # The confirm failed with something that is not a coded refusal (a database error, a hasher
+    # error...). The caller sees the same masked answer as for a dead token; the trace says what
+    # it was.
+    INTERNAL_ERROR = "internal_error"
+
 # Per-target-email and global budgets for `request_password_reset` (86akcn8p4). Mirrors
 # RESEND_ADDRESS_BUDGET / RESEND_GLOBAL_BUDGET exactly — see the setting-level comment in
 # settings.py for why this closes the mail-bombing gap the per-IP budget above does not.
@@ -601,6 +662,14 @@ def _validate_password(password: str, *, code: ErrorCode = ErrorCode.VALIDATION_
     # Do NOT strip — spaces can be intentional — but reject an all-whitespace password.
     if not isinstance(password, str) or not password.strip():
         raise SafeAPIError(code)
+    # A string that cannot be encoded as UTF-8 (lone surrogates, which JSON "\ud800" escapes
+    # produce) passes the length rule and then makes the hasher raise UnicodeEncodeError. In
+    # `confirm_password_reset` that happens after the token has been marked consumed, inside
+    # the transaction, so it was an unexpected failure rather than a refused password.
+    try:
+        password.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SafeAPIError(code) from None
     if not (MIN_PASSWORD_LENGTH <= len(password) <= MAX_PASSWORD_LENGTH):
         raise SafeAPIError(code)
 
@@ -1354,6 +1423,414 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     return AcceptedResult(accepted=True)
 
 
+@dataclass
+class _ResetConfirmTrace:
+    """What `_consume_reset_token` learned about WHY a confirm failed, handed back beside the
+    exception rather than on it.
+
+    That separation is the FR-529 guarantee and it is structural: a `SafeAPIError` is what the
+    GraphQL layer turns into the response, so a class carried on it could one day reach a caller.
+    This object is read by `_record_failed_reset_confirm` and by nothing that builds a response.
+
+    It also holds NO token material, by construction. The only things it can carry are a class
+    from a closed enum and a user id. The recorder is never given the token, its fingerprint or
+    its masked form, so it cannot write them.
+    """
+
+    outcome: ResetConfirmOutcome | None = None
+    customer_user_id: int | None = None
+
+    def resolved(self, customer_user_id: int) -> None:
+        """The token row exists, is live and belongs to this user. Called as soon as that is
+        known, so that even a failure nobody classified (a database error, a hasher error) names
+        the account whose link was being used."""
+        self.customer_user_id = customer_user_id
+
+    def refused(self, outcome: ResetConfirmOutcome, *, customer_user_id: int | None = None) -> None:
+        self.outcome = outcome
+        if customer_user_id is not None:
+            self.customer_user_id = customer_user_id
+
+    def failed_unexpectedly(self) -> None:
+        self.outcome = ResetConfirmOutcome.INTERNAL_ERROR
+
+
+# --- who the row says did it -----------------------------------------------------------------
+# The row must let an operator ask "every failed confirm from this source" without the table
+# holding the address itself: the draft privacy policy promises that rate-limit counters expire
+# within an hour and that audit records name who acted by an internal identifier. So the actor id
+# is a KEYED, DAILY-ROTATING PSEUDONYM of the source bucket, `src:v1:<32 hex>`:
+#
+#   salted_hmac(key_salt = "...audit_source.v1", value = "<UTC date>|<bucket>", SHA-256)[:32]
+#
+# i.e. Django's own derivation, key = SHA-256(key_salt + SECRET_KEY), then HMAC-SHA-256 under that
+# key. It is structurally unlike `_fingerprint` (HMAC keyed by SECRET_KEY itself over the value),
+# so no pseudonym can ever coincide with a credential fingerprint, whatever string is hashed.
+#
+# - keyed, so a table dump alone does not reveal addresses and a rainbow table of IPv4 space is
+#   useless without SECRET_KEY;
+# - rotating, so the same address is a different pseudonym tomorrow and a source cannot be
+#   followed across days from the table alone;
+# - versioned (`v1`), so a future change of scheme is recognisable in the stored value;
+# - computed from the same /64-bucketed string `client_ip()` gives the budget, so the record and
+#   the budget agree about what "one source" is.
+#
+# ROTATING SECRET_KEY ORPHANS EVERY OLDER ROW: the pseudonym is recomputed from the CURRENT key
+# (`SECRET_KEY_FALLBACKS` is not consulted), so rows written before the rotation can no longer be
+# found from an address; they remain, unreadable as sources, until retention removes them.
+#
+# It is STILL PERSONAL DATA: whoever holds SECRET_KEY can test a candidate address against the
+# table, which is exactly what `manage.py failed_reset_confirms --ip` does. Pseudonymising is not
+# anonymising, and it is no substitute for a retention period for these rows, which is a
+# separate open ticket (17tnw2b9dp1). The two fixed labels below carry no address at all.
+_AUDIT_SOURCE_KEY_SALT = "selahcue_api.apps.accounts.audit_source.v1"
+AUDIT_SOURCE_PREFIX = "src:"
+AUDIT_SOURCE_VERSIONED_PREFIX = "src:v1:"
+# `client_ip()` returns "unknown" when REMOTE_ADDR is absent; this module substitutes
+# UNRESOLVED_CLIENT_IP when the resolver had no request at all. Neither is an address.
+_UNATTRIBUTED_SOURCES = frozenset({UNRESOLVED_CLIENT_IP, "unknown"})
+
+
+def _audit_source_day() -> date:
+    """The UTC date a pseudonym is minted for. A seam: tests move it to show rotation."""
+    return djtz.now().astimezone(dt_timezone.utc).date()
+
+
+def audit_source_pseudonym(source: str, day: date | None = None) -> str:
+    """The actor id a failed-confirm row carries for `source` (an already-bucketed address, as
+    `client_ip()` returns it) on `day` (UTC; default today)."""
+    if source in _UNATTRIBUTED_SOURCES:
+        return f"{AUDIT_SOURCE_PREFIX}{source}"
+    value = f"{(day or _audit_source_day()).isoformat()}|{source}"
+    digest = salted_hmac(_AUDIT_SOURCE_KEY_SALT, value, algorithm="sha256").hexdigest()
+    return AUDIT_SOURCE_VERSIONED_PREFIX + digest[:32]
+
+
+def audit_source_today() -> date:
+    """Today's UTC date as the writer sees it: the operator command's default day, so the command
+    and the rows can never disagree about which day "today" is."""
+    return _audit_source_day()
+
+
+def audit_source_pseudonym_for_address(address: str, day: date | None = None) -> str:
+    """Operator-facing: the pseudonym for a LITERAL address, bucketed exactly as `client_ip()`
+    buckets it (IPv4 as is, IPv6 to its /64). Raises ValueError for text that is not an address.
+    Used by `manage.py failed_reset_confirms`; from a shell:
+
+        from selahcue_api.apps.accounts.services import audit_source_pseudonym_for_address
+        audit_source_pseudonym_for_address("203.0.113.5")
+        # then: AuditEvent.objects.filter(action=RESET_CONFIRM_FAILED_ACTION, actor_id=<that>)
+    """
+    return audit_source_pseudonym(bucket_for_throttling(ipaddress.ip_address(address.strip())), day)
+
+
+# --- bounded reporting for the trace itself ---------------------------------------------------
+_TRACE_REPORT_INTERVAL_SECONDS = 60.0
+# Long enough for the longest first-event detail (outcome, pseudonym and reason) without cutting
+# the reason off mid-word.
+_TRACE_REPORT_DETAIL_MAX = 160
+# How many distinct skipped account ids one report names. The set is capped, so the tally stays
+# bounded however many accounts are probed.
+_TRACE_REPORT_ACCOUNTS_MAX = 20
+
+
+class _SuppressedTally:
+    """Counts events and releases ONE report a minute: how many since the last report, what the
+    first of them looked like, and up to `_TRACE_REPORT_ACCOUNTS_MAX` distinct account ids.
+
+    State is a lock, one int, one string capped at `_TRACE_REPORT_DETAIL_MAX` characters, one
+    float and a set of at most `_TRACE_REPORT_ACCOUNTS_MAX` ints, whatever the event rate and
+    however many distinct sources or accounts there are. A per-source map would be keyed by
+    attacker-chosen values on an unauthenticated endpoint -- the unbounded growth the repo
+    forbids -- and would grow fastest exactly during the flood this reports on.
+
+    WHEN COUNTS FLUSH: the FIRST event is released at once (the first skipped row is reported as
+    "skipped 1"). After that, events are only counted; the count, with the first of them
+    described, is released by the next event to arrive once the interval has passed. So a burst
+    followed by silence is reported when the next event arrives, not before.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.reset()
+
+    def reset(self) -> None:
+        """Test seam."""
+        with self._lock:
+            self._count = 0
+            self._first = ""
+            self._accounts: set[int] = set()
+            self._last_report = float("-inf")
+
+    def note(self, detail: str, account_id: int | None = None) -> tuple[int, str, list[int]] | None:
+        """Record one event. Returns (count since the last report, first detail, the distinct
+        account ids seen, capped) when a report is due, resetting the tally, else None."""
+        now = time.monotonic()
+        with self._lock:
+            if self._count == 0:
+                self._first = detail[:_TRACE_REPORT_DETAIL_MAX]
+            self._count += 1
+            if account_id is not None and len(self._accounts) < _TRACE_REPORT_ACCOUNTS_MAX:
+                self._accounts.add(account_id)
+            if now - self._last_report < _TRACE_REPORT_INTERVAL_SECONDS:
+                return None
+            released = (self._count, self._first, sorted(self._accounts))
+            self._count = 0
+            self._first = ""
+            self._accounts = set()
+            self._last_report = now
+            return released
+
+
+class _AccountCeilings:
+    """Per-worker, per-account fixed windows: the outage stand-in for the per-account allowance.
+
+    Process-local on purpose (the shared store is what is down), so with N workers the real
+    allowance is N times the limit. MEMORY IS BOUNDED BY CONSTRUCTION: at most `max_entries`
+    accounts are tracked, and starting a window for a new account first evicts the
+    least-recently-started one. An account keyed here is a real account (the id comes from a
+    token row that exists), never an attacker-chosen string. Eviction forgets an account's count,
+    so a caller who can name more than `max_entries` accounts in an hour gets a fresh window for
+    the ones evicted: a bounded loss of protection, chosen over unbounded growth.
+    """
+
+    def __init__(self, *, setting_name: str, default: tuple[int, int], max_entries: int):
+        self._setting_name = setting_name
+        self._default = default
+        self._max_entries = max_entries
+        self._lock = threading.Lock()
+        self._windows: OrderedDict[int, list[float]] = OrderedDict()
+
+    def reset(self) -> None:
+        """Test seam."""
+        with self._lock:
+            self._windows.clear()
+
+    def claim(self, account_id: int) -> bool:
+        """Claim one unit of `account_id`'s window. False means: skip the row."""
+        limit, window = getattr(settings, self._setting_name, self._default)
+        limit, window = int(limit), float(window)
+        now = time.monotonic()
+        with self._lock:
+            entry = self._windows.get(account_id)
+            if entry is None or now - entry[0] >= window:
+                entry = [now, 0]
+                self._windows[account_id] = entry
+                self._windows.move_to_end(account_id)
+                while len(self._windows) > self._max_entries:
+                    self._windows.popitem(last=False)
+            if entry[1] >= limit:
+                return False
+            entry[1] += 1
+            return True
+
+
+_trace_lost_tally = _SuppressedTally()
+_trace_skipped_tally = _SuppressedTally()
+# The outage stand-ins, one per kind of outcome (see `_trace_skip_reason`). Same mechanism as the
+# send ceilings above; only `claim()` is used, the reporting is the tally's.
+_reset_confirm_trace_ceiling = _DegradedSendCeiling(
+    label="password-reset-confirm-trace",
+    setting_name="SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING",
+    default=RESET_CONFIRM_TRACE_DEGRADED_CEILING,
+)
+_reset_confirm_trace_account_ceilings = _AccountCeilings(
+    setting_name="SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING",
+    default=RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING,
+    max_entries=RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX,
+)
+
+
+def _reset_trace_reporting() -> None:
+    """Test seam: forget the trace tallies and the outage ceilings' windows."""
+    _trace_lost_tally.reset()
+    _trace_skipped_tally.reset()
+    _reset_confirm_trace_ceiling.reset()
+    _reset_confirm_trace_account_ceilings.reset()
+
+
+def _trace_skip_reason(trace: _ResetConfirmTrace, limiter_degraded: bool) -> str | None:
+    """Why this failure's ROW must not be written, or None to write it. Never affects the
+    response.
+
+    TWO allowances, because one shared counter lets a flood blind the trace to exactly the
+    outcomes it exists for. Unauthenticated noise (an unknown or malformed token, or an internal
+    error before any account was identified) costs nothing to produce and spends the SHARED
+    brake. An outcome that NAMES AN ACCOUNT (consumed, expired, wrong purpose, a rejected
+    password, or an internal error after the token validated) is what a probe of a skimmed token
+    looks like, so it spends only that account's own allowance, keyed by user id: a stranger
+    cannot fill another account's allowance (they would need that account's own token), and the
+    key space is bounded by real accounts. A SEPARATE shared bucket for named outcomes would not
+    do: anyone can mint wrong-purpose noise from tokens of accounts they own.
+
+    Healthy store: the budget lives in the shared store. Store down -- either the per-source
+    budget already failed open, or this very call finds the store unavailable -- a process-local
+    ceiling of the same shape stands in. Once the per-source budget has failed open the store is
+    not asked again (one round trip per request, so a stalled Redis costs one timeout, not two).
+    """
+    account_id = trace.customer_user_id
+    if account_id is None:
+        budget = (
+            RESET_CONFIRM_TRACE_SCOPE,
+            "all",
+            "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE",
+            RESET_CONFIRM_TRACE_BUDGET,
+        )
+
+        def claim_in_process() -> bool:
+            return _reset_confirm_trace_ceiling.claim()
+
+        spent = "shared brake spent"
+        spent_in_outage = "outage ceiling spent"
+    else:
+        budget = (
+            RESET_CONFIRM_TRACE_ACCOUNT_SCOPE,
+            str(account_id),
+            "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT",
+            RESET_CONFIRM_TRACE_ACCOUNT_BUDGET,
+        )
+
+        def claim_in_process() -> bool:
+            return _reset_confirm_trace_account_ceilings.claim(account_id)
+
+        spent = "account allowance spent"
+        spent_in_outage = "account outage allowance spent"
+    if not limiter_degraded:
+        outcome = spend_budget(*budget, report_denial=False)
+        if outcome is BudgetOutcome.DENIED:
+            return spent
+        limiter_degraded = outcome is BudgetOutcome.STORE_UNAVAILABLE
+    if limiter_degraded and not claim_in_process():
+        return spent_in_outage
+    return None
+
+
+def _note_lost_trace(error: Exception, outcome: ResetConfirmOutcome, source: str) -> None:
+    """Count a trace row that could not be written or decided, and report it at most once a
+    minute: the count, and the exception CLASS, outcome and pseudonym of the first. No traceback
+    (see `_record_failed_reset_confirm`). Never raises: if even this fails there is nothing left
+    to report with, and the response must not change."""
+    try:
+        try:
+            label = audit_source_pseudonym(source)
+        except Exception:  # noqa: BLE001 -- the pseudonym is what may have failed
+            label = "unlabelled"
+        released = _trace_lost_tally.note(f"{type(error).__name__} outcome={outcome.value} source={label}")
+        if released is not None:
+            count, first, _accounts = released
+            logger.warning(
+                "could not write the audit row for %d failed password-reset confirm(s) since the "
+                "last report (first: %s). The callers' responses were unchanged; those attempts "
+                "have no trace. Further reports suppressed for %.0fs.",
+                count,
+                first,
+                _TRACE_REPORT_INTERVAL_SECONDS,
+            )
+    except Exception:  # noqa: BLE001 -- see the docstring
+        pass
+
+
+def _trace_failed_confirm(trace: _ResetConfirmTrace, source: str, limiter_degraded: bool) -> None:
+    """Write the row for one failed confirm unless it is being skipped. NEVER RAISES: the whole
+    body is protected, not just the INSERT -- a malformed setting, a failing ceiling or a failing
+    log call is counted as a lost row like a failing write, and the caller still gets the answer
+    they would have got without the trace."""
+    outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED
+    try:
+        reason = _trace_skip_reason(trace, limiter_degraded)
+        if reason is None:
+            _record_failed_reset_confirm(trace, source)
+            return
+        released = _trace_skipped_tally.note(
+            f"outcome={outcome.value} source={audit_source_pseudonym(source)} reason={reason}",
+            trace.customer_user_id,
+        )
+        if released is not None:
+            count, first, accounts = released
+            logger.warning(
+                "skipped %d audit row(s) for failed password-reset confirms since the last report "
+                "(first: %s%s). The callers' responses were unchanged; those attempts have no "
+                "trace. Further reports suppressed for %.0fs.",
+                count,
+                first,
+                f"; accounts {accounts}" if accounts else "",
+                _TRACE_REPORT_INTERVAL_SECONDS,
+            )
+    except Exception as error:  # noqa: BLE001 -- see the docstring
+        _note_lost_trace(error, outcome, source)
+
+
+def _record_failed_reset_confirm(trace: _ResetConfirmTrace, source: str) -> None:
+    """Write the audit row for one failed confirm. Best effort, and never raises.
+
+    WHAT THE ROW HOLDS: the outcome class, a per-attempt id, the timestamp the audit table adds
+    itself, the owning user's id when the token row resolved, and as the actor the pseudonym of
+    the source (see `audit_source_pseudonym`). The address itself is NOT stored, here or in
+    `after`. WHAT IT MUST NEVER HOLD: the raw token, its fingerprint, its at-rest hash or its
+    masked form (a reset token skimmed from a mailbox or a log and polled until the moment is
+    right is exactly the scenario this trace is for, and a fingerprint in the trace would turn
+    the trace into a way to confirm a guess). That is kept by construction -- this function is
+    never handed any of them -- and asserted by
+    `test_no_token_material_reaches_any_audit_column_or_log_line_of_a_failed_confirm`.
+    `request_id` is a fresh random id for the attempt, NOT derived from the token, unlike the
+    success row's (which stores the masked token).
+
+    The actor is ANONYMOUS and the pseudonym is the actor id, so the audit table's
+    `(actor_id, created_at)` index answers "every failed confirm from this source today".
+
+    WHERE IT RUNS: after `_consume_reset_token` has returned control, i.e. after its transaction
+    rolled back. Written inside, the row would be rolled back with the failure it describes.
+    The write has its own `atomic()`: with no enclosing transaction (production -- the project
+    sets no ATOMIC_REQUESTS) that is a real transaction, so a half-written row cannot be left
+    behind; inside an enclosing one (every pytest-django test) it is a savepoint, so a failed
+    INSERT cannot poison the caller's transaction either. No `_require_autocommit`-style guard
+    like the licence writers have: that one refuses, because a lost DENIED row there is a lost
+    compliance record; here the trace is best effort by design and refusing a password reset
+    because its trace might roll back would invert the priority (and fail every test, which all
+    run inside pytest-django's transaction).
+
+    WHY IT SWALLOWS: the caller must get the answer they would have got without the trace. A 500
+    in its place would turn an audit outage into a changed contract on a path whose whole job
+    is to say one thing. The loss is reported instead (`_note_lost_trace`), once a minute with a
+    count, and WITHOUT the traceback: this runs while the original failure is being handled, so
+    a chained traceback would carry frames whose locals hold the raw token and the submitted
+    password to any log handler that captures locals.
+
+    WHAT IT DOES NOT COVER: a call refused by the budget never reaches this (the budget is spent
+    before the token is read, and a row per refused request would turn the flood the budget stops
+    into database writes; the shared guard already logs a sustained run of refusals).
+    """
+    outcome = trace.outcome or ResetConfirmOutcome.UNCLASSIFIED
+    user_id = trace.customer_user_id
+    try:
+        actor_id = audit_source_pseudonym(source)
+        with transaction.atomic():
+            record_audit_event(
+                ActorContext(kind=ActorKind.ANONYMOUS, actor_id=actor_id),
+                action=RESET_CONFIRM_FAILED_ACTION,
+                target_type="customer_user" if user_id is not None else "credential_token",
+                target_id=str(user_id) if user_id is not None else "unresolved",
+                request_id=uuid.uuid4().hex,
+                result=AuditResult.DENIED,
+                source_surface=ACCOUNT_AUDIT_SURFACE,
+                after={"outcome": outcome.value},
+            )
+    except Exception as error:  # noqa: BLE001 -- see "WHY IT SWALLOWS"
+        _note_lost_trace(error, outcome, source)
+
+
+def _dead_token_outcome(token: CredentialToken, now) -> ResetConfirmOutcome:
+    """Label why a token that exists cannot be used. Labelling only: the guard that REFUSES it
+    stays where it is, in `_consume_reset_token`, and does not call this to decide anything."""
+    if token.purpose != CredentialTokenPurpose.PASSWORD_RESET:
+        return ResetConfirmOutcome.WRONG_PURPOSE
+    if token.consumed_at is not None:
+        return ResetConfirmOutcome.CONSUMED
+    if token.expires_at <= now:
+        return ResetConfirmOutcome.EXPIRED
+    return ResetConfirmOutcome.UNCLASSIFIED
+
+
 def confirm_password_reset(
     raw_token: str, new_password: str, client_ip: str = ""
 ) -> ConfirmPasswordResetResult:
@@ -1374,18 +1851,56 @@ def confirm_password_reset(
     from `client_ip`, checked before the token lookup runs, so it fires identically whether the
     token offered was live, dead, or never existed. It does not touch the FIVE-way collapse
     above, and it is not reachable from behind a validated token any more than in front of one.
+
+    Every failure that gets past that budget leaves one audit row (86ak5r2pt), written by
+    `_record_failed_reset_confirm` AFTER the transaction below has rolled back, unless a flood
+    brake skips the ROW (never the response; see `_trace_skip_reason`). The class it records
+    travels in a `_ResetConfirmTrace`, never on the exception, so the five collapsed classes stay
+    indistinguishable in the RESPONSE while being told apart in the trace.
     """
     if not client_ip:
         _report_unresolved_client_ip("confirm_password_reset")
-    enforce_budget(
+    source = client_ip or UNRESOLVED_CLIENT_IP
+    # `_reporting_outage`: a fail-open is still a permit for the RESPONSE, but it means nothing is
+    # bounding how many trace rows the caller can cause (see `_trace_skip_reason`).
+    limiter_degraded = enforce_budget_reporting_outage(
         "password_reset_confirm_ip",
-        client_ip or UNRESOLVED_CLIENT_IP,
+        source,
         "SELAHCUE_THROTTLE_RESET_CONFIRM",
         RESET_CONFIRM_IP_BUDGET,
     )
+    trace = _ResetConfirmTrace()
+    try:
+        return _consume_reset_token(raw_token, new_password, trace)
+    except SafeAPIError:
+        _trace_failed_confirm(trace, source, limiter_degraded)
+        raise
+    except Exception:
+        # Not a coded refusal: a database error, a hasher error. The caller's answer is whatever
+        # the view makes of it (the same masked answer a dead token gets); the trace must not
+        # depend on the failure being a tidy one.
+        trace.failed_unexpectedly()
+        _trace_failed_confirm(trace, source, limiter_degraded)
+        raise
+
+
+def _consume_reset_token(
+    raw_token: str, new_password: str, trace: _ResetConfirmTrace
+) -> ConfirmPasswordResetResult:
+    """The work `confirm_password_reset` does once the budget is spent: look the token up, check
+    it, check the password, consume it and set the password, all in one transaction. Every raise
+    sets `trace` first (see `_ResetConfirmTrace`)."""
     token_value = (raw_token or "").strip()
     if not token_value:
+        trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
         raise _validation_error()
+    try:
+        token_value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Lone surrogates (JSON "\ud800" escapes): no token can look like that, and hashing it
+        # would raise. Same collapsed answer as any other malformed token.
+        trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
+        raise _validation_error() from None
     fingerprint = _fingerprint(token_value)
     now = djtz.now()
     with transaction.atomic():
@@ -1396,15 +1911,19 @@ def confirm_password_reset(
                 .get(token_fingerprint=fingerprint)
             )
         except CredentialToken.DoesNotExist as error:
+            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
             raise _validation_error() from error
         if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
             raise _validation_error()
         if (
             token.purpose != CredentialTokenPurpose.PASSWORD_RESET
             or token.consumed_at is not None
             or token.expires_at <= now
         ):
+            trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
             raise _validation_error()
+        trace.resolved(token.customer_user_id)
         # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
         # TOKEN LOOKUP.
         #
@@ -1443,7 +1962,11 @@ def confirm_password_reset(
         # not believe the link-preservation property is tested by its position. It is tested
         # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
         # in the auth slice.
-        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+        try:
+            _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+        except SafeAPIError:
+            trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
+            raise
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user

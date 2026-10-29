@@ -240,6 +240,21 @@ def test_the_device_level_row_is_still_written_and_unchanged():
     assert row.after["device_public_id"] == result.device.device_public_id
 
 
+def test_the_device_activated_row_keeps_the_token_fingerprint_it_documents():
+    """86ak5r2pt. `after["token_fingerprint"]` is stored on purpose (the writer's own comment:
+    "the masked triple + fingerprint"), and it is what an operator follows across a renewal. The
+    key-name pin above cannot see its VALUE: a deny-list entry for that name once turned it into
+    "[redacted]" and nothing noticed. Pin the value."""
+    key, full_key = _seed_license_key(tag="fpdevice")
+
+    result = _activate(full_key, idem="transition-fp-0001")
+
+    row = _device_activated_rows().get()
+    fingerprint = result.device_token.token_fingerprint
+    assert len(fingerprint) == 64 and fingerprint != "[redacted]"
+    assert row.after["token_fingerprint"] == fingerprint
+
+
 def test_the_account_session_path_audits_the_customer_as_actor():
     key, _full_key = _seed_license_key(tag="session")
     user, admin = _session_admin(key, tag="session")

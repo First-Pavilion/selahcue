@@ -4,16 +4,30 @@ Covers self-serve signup, email verification, login/session/logout/refresh, and 
 with the no-enumeration + session-invalidation invariants.
 """
 
+import hashlib
+import hmac
 import json
+import logging
+import re
+import threading
+import time
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from datetime import timezone as dt_timezone
+from io import StringIO
 
 import pytest
+from django.conf import settings as django_settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
-from django.db import transaction
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.db import IntegrityError, OperationalError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as reset_confirms_command
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
     CredentialTokenPurpose,
@@ -23,7 +37,12 @@ from selahcue_api.apps.accounts.models import (
     CustomerUser,
     CustomerUserStatus,
 )
+from selahcue_api.apps.audit.models import AuditEvent, AuditResult
+from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.throttling import guards
+from selahcue_api.graphql.context import ActorContext, ActorKind
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 
 @pytest.fixture(autouse=True)
@@ -35,13 +54,18 @@ def _fresh_reset_throttle_budget():
     ONE budget and the later ones would start seeing RATE_LIMITED instead of the codes they
     assert on. Mirrors `_fresh_throttle_budget` in test_resend_verification.py, which pins the
     same fixture for the same reason on the resend mutation.
+
+    The failed-confirm trace (86ak5r2pt) also keeps process-local state -- its outage ceiling and
+    its once-a-minute report tallies -- so that is reset here too, for the same reason.
     """
     cache.clear()
+    services._reset_trace_reporting()
 
 
 # --- helpers ---------------------------------------------------------------
-def post_account(client, query, variables=None, *, bearer=None):
-    extra = {}
+def post_account(client, query, variables=None, *, bearer=None, **request_meta):
+    # `request_meta` goes straight to the test client (REMOTE_ADDR, HTTP_X_FORWARDED_FOR...).
+    extra = dict(request_meta)
     if bearer is not None:
         extra["HTTP_AUTHORIZATION"] = f"Bearer {bearer}"
     # Email dispatch is registered with `transaction.on_commit` so a rolled-back signup or
@@ -1110,6 +1134,1329 @@ def test_a_failed_reset_rolls_back_the_consume_and_the_password(client, sender, 
     assert CustomerUser.objects.get(email=email).password_hash == original, (
         "the password was changed even though the reset failed"
     )
+
+
+# --- 86ak5r2pt: a failed confirm leaves a trace, and the budget in front of it is pinned --------
+#
+# The per-IP budget on `confirmPasswordReset` already existed on main (86akcmfd4) and
+# `test_password_reset_throttle.py` covers its basics. What this section adds is (1) the
+# trace a failed confirm never left, and (2) the budget properties that file does not pin: the
+# confirm budget's value, a LIVE token offered behind an exhausted budget, the retry-after-
+# weak-password flow, fail-open that still completes a real reset and still traces, and
+# `X-Forwarded-For` honoured behind the proxy count (that file only proves it is IGNORED at 0).
+FAILED_ACTION = services.RESET_CONFIRM_FAILED_ACTION
+OUTCOME = services.ResetConfirmOutcome
+# The Django test client's default REMOTE_ADDR, and so the source every un-overridden call has.
+TEST_CLIENT_ADDR = "127.0.0.1"
+UNRESOLVED_TARGET = ("credential_token", "unresolved")
+# Pseudonyms rotate daily, so a test that writes a row just before UTC midnight and computes the
+# expected value just after would flake. Every test here runs on this day unless it moves it.
+TEST_DAY = date(2026, 10, 26)
+
+
+@pytest.fixture(autouse=True)
+def _pinned_audit_day(monkeypatch):
+    monkeypatch.setattr(services, "_audit_source_day", lambda: TEST_DAY)
+
+
+def pseudo(address, day=TEST_DAY):
+    """The actor id the trace writes for a source already in `client_ip()`'s form."""
+    return services.audit_source_pseudonym(address, day)
+
+
+def failed_rows():
+    return list(AuditEvent.objects.filter(action=FAILED_ACTION).order_by("id"))
+
+
+def failed_rows_as_text():
+    """EVERY column of EVERY failure row, flattened to one string, so a token that turned up in
+    any column (request_id, target_id, reason, before, after, actor_id...) is found."""
+    return json.dumps(list(AuditEvent.objects.filter(action=FAILED_ACTION).values()), default=str)
+
+
+def confirm(client, token, password, **extra):
+    return post_account(client, CONFIRM_RESET, {"input": {"token": token, "newPassword": password}}, **extra)
+
+
+@dataclass(frozen=True)
+
+
+class FailureCase:
+    token: str
+    password: str
+    code: str
+    outcome: "services.ResetConfirmOutcome"
+    target: tuple
+
+
+def build_failure_scenarios(client, sender):
+    """One request for every way a confirm can fail, each set up so that ONLY the clause named
+    can refuse it. Nothing here calls the mutation on a case that is meant to fail, so the
+    failure rows are all produced by the caller. (The one successful confirm that spends the
+    `consumed` token writes a completed row, not a failure row.)"""
+    elder_email = "elder@grace.example"
+    signup_and_verify(client, sender, email="pastor@grace.example")
+    pastor = CustomerUser.objects.get(email="pastor@grace.example")
+
+    post_account(client, REQUEST_RESET, {"e": pastor.email})
+    spent = sender.reset_tokens[-1]
+    first_ok = confirm(client, spent, "a-first-new-passphrase")
+    assert body(first_ok)["data"]["confirmPasswordReset"]["reset"] is True
+    assert token_row(spent).consumed_at is not None, "the consumed case was NOT set up"
+
+    post_account(client, REQUEST_RESET, {"e": pastor.email})
+    stale = sender.reset_tokens[-1]
+    stale_row = token_row(stale)
+    stale_row.expires_at = timezone.now() - timezone.timedelta(seconds=1)
+    stale_row.save(update_fields=["expires_at"])
+    assert token_row(stale).consumed_at is None, "the expired case was spent, so it is not testing EXPIRY"
+
+    # A different user, because minting a reset supersedes (consumes) the user's earlier live ones.
+    signup_and_verify(client, sender, email=elder_email, idem="sv-signup-0002")
+    elder = CustomerUser.objects.get(email=elder_email)
+    post_account(client, REQUEST_RESET, {"e": elder_email})
+    live = sender.reset_tokens[-1]
+
+    verify_token = live_verify_token(client, sender, idem="trace-purpose-0001", email="verger@grace.example")
+    assert_only_the_purpose_clause_can_refuse(verify_token)
+    verger_id = str(token_row(verify_token).customer_user_id)
+
+    pastor_target = ("customer_user", str(pastor.id))
+    good = "another-fine-passphrase"
+    vf = "VALIDATION_FAILED"
+    return {
+        "malformed_empty": FailureCase("", good, vf, OUTCOME.MALFORMED_TOKEN, UNRESOLVED_TARGET),
+        "malformed_whitespace": FailureCase("   ", good, vf, OUTCOME.MALFORMED_TOKEN, UNRESOLVED_TARGET),
+        "wrong_shape": FailureCase("not-a-token-shape", good, vf, OUTCOME.UNKNOWN_TOKEN, UNRESOLVED_TARGET),
+        "unknown": FailureCase("SC-PRS-nobody-minted-this", good, vf, OUTCOME.UNKNOWN_TOKEN, UNRESOLVED_TARGET),
+        "consumed": FailureCase(spent, good, vf, OUTCOME.CONSUMED, pastor_target),
+        "expired": FailureCase(stale, good, vf, OUTCOME.EXPIRED, pastor_target),
+        "wrong_purpose": FailureCase(verify_token, good, vf, OUTCOME.WRONG_PURPOSE, ("customer_user", verger_id)),
+        "password_rejected": FailureCase(
+            live, SHORT_PASSWORD, "PASSWORD_INVALID", OUTCOME.PASSWORD_REJECTED, ("customer_user", str(elder.id))
+        ),
+    }
+
+
+@pytest.mark.django_db
+def test_every_failed_confirm_leaves_exactly_one_record_naming_its_outcome(client, sender):
+    """AC3. One row per failed attempt, for EVERY class, carrying the outcome class, the source
+    (as a pseudonym), a per-attempt id and a timestamp. The rows are written after the reset's
+    transaction has rolled back: a row written inside it would be rolled back with it, and the
+    five classes that fail inside the transaction (unknown, consumed, expired, wrong purpose,
+    rejected password) would have no row at all. Only the empty token raises outside it."""
+    scenarios = build_failure_scenarios(client, sender)
+    assert failed_rows() == [], "setup itself produced failure rows, so the counts below prove nothing"
+
+    for name, case in scenarios.items():
+        before = len(failed_rows())
+        resp = confirm(client, case.token, case.password)
+        assert error_code(resp) == case.code, f"{name}: the case did not fail the way it was built to"
+        rows = failed_rows()
+        assert len(rows) == before + 1, f"{name}: expected exactly one new failure row, got {len(rows) - before}"
+        row = rows[-1]
+        assert row.after == {"outcome": case.outcome.value}, name
+        assert row.result == AuditResult.DENIED, name
+        assert row.actor_kind == ActorKind.ANONYMOUS.value, name
+        assert row.actor_id == pseudo(TEST_CLIENT_ADDR), name
+        assert row.source_surface == services.ACCOUNT_AUDIT_SURFACE, name
+        assert (row.target_type, row.target_id) == case.target, name
+        assert row.before == {}, name
+        assert re.fullmatch(r"[0-9a-f]{32}", row.request_id), f"{name}: request_id {row.request_id!r}"
+        assert row.created_at is not None, name
+
+    rows = failed_rows()
+    assert len(rows) == len(scenarios)
+    assert len({row.request_id for row in rows}) == len(rows), "attempt ids must be distinct per attempt"
+    covered_elsewhere = {OUTCOME.UNCLASSIFIED, OUTCOME.INTERNAL_ERROR}  # see their own tests below
+    assert {row.after["outcome"] for row in rows} == {
+        outcome.value for outcome in OUTCOME if outcome not in covered_elsewhere
+    }, "a failure class has no scenario in this test, so it is untested"
+
+
+def contains_any(text, needles):
+    return [needle for needle in needles if needle and needle in text]
+
+
+@pytest.mark.django_db
+def test_no_token_material_reaches_any_audit_column_or_log_line_of_a_failed_confirm(client, sender, caplog):
+    """AC4: asserted by a test, not by inspection. Every form of every token offered -- raw,
+    fingerprint, at-rest hash, masked form, and the stored row's own copies of those -- plus the
+    submitted passwords, must be absent from every column of every failure row AND from every log
+    record emitted while the failures happened.
+
+    Whole values are not enough: a line that logs a slice of the token, a prefix of the
+    fingerprint or the first characters of the password carries the secret just as well and
+    contains none of the whole values. So the search also covers every overlapping 12-character
+    window of each token form (any slice of 12 characters or more contains one), and the first
+    6 characters of each submitted password."""
+    scenarios = build_failure_scenarios(client, sender)
+
+    whole = []
+    for case in scenarios.values():
+        for secret in (case.token, case.password):
+            if len(secret) >= 12:  # shorter strings occur in the haystack by chance
+                whole.append(secret)
+        if len(case.token) >= 12:
+            whole += [services._fingerprint(case.token), services._credential_token_hash(case.token)]
+            whole.append(services._mask(case.token)[2])
+            if CredentialToken.objects.filter(token_fingerprint=services._fingerprint(case.token)).exists():
+                row = token_row(case.token)
+                whole += [row.token_fingerprint, row.token_hash, row.masked_token]
+    assert len(whole) >= 20, "too few secrets to search for; the scenarios changed shape"
+
+    def windows(value, size=12):
+        return {value[i : i + size] for i in range(max(len(value) - size + 1, 1))}
+
+    fragments = set()
+    for secret in whole:
+        fragments |= windows(secret)
+    for case in scenarios.values():
+        if len(case.password) >= services.MIN_PASSWORD_LENGTH:
+            fragments.add(case.password[:6])
+    needles = sorted(set(whole) | fragments)
+    assert len(needles) > 500, "the fragment search is not wide enough to catch a slice"
+
+    # POSITIVE CONTROLS. Without them "nothing found" is indistinguishable from a search that
+    # cannot find anything. (1) A haystack holding a MIDDLE fragment of a fingerprint and a
+    # password's first 6 characters is found: these are the shapes a whole-value search misses.
+    a_fingerprint = next(v for v in whole if len(v) == 64 and re.fullmatch(r"[0-9a-f]{64}", v))
+    a_password = next(c.password for c in scenarios.values() if len(c.password) >= services.MIN_PASSWORD_LENGTH)
+    for planted_fragment in (a_fingerprint[17:37], a_fingerprint[30:42], a_password[:6]):
+        assert contains_any(f"prefix {planted_fragment} suffix", needles), (
+            f"the search cannot find the fragment {planted_fragment!r}"
+        )
+    # (2) The log capture: a record that carries a fragment reaches caplog.
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger(services.__name__).warning("planted %s", a_fingerprint[17:37])
+    assert contains_any(caplog.text, needles), "caplog is not capturing the accounts logger"
+    caplog.clear()
+    # (3) The audit-column half: a REAL failure-action row that carries a fragment in a column
+    # the search must cover is found by `failed_rows_as_text`. (`needle in text` on a string the
+    # test built itself proves nothing about the query.) Removed again before the real run.
+    planted = record_audit_event(
+        ActorContext(kind=ActorKind.ANONYMOUS, actor_id="src:planted"),
+        action=FAILED_ACTION,
+        target_type="credential_token",
+        target_id="unresolved",
+        request_id=a_fingerprint[:20],
+    )
+    assert contains_any(failed_rows_as_text(), needles), "the audit search cannot see a planted row"
+    planted.delete()
+    assert failed_rows() == [], "the planted row was not removed"
+
+    for case in scenarios.values():
+        confirm(client, case.token, case.password)
+
+    rows_text = failed_rows_as_text()
+    assert len(failed_rows()) == len(scenarios)
+    assert "unknown_token" in rows_text and "password_rejected" in rows_text, "the rows were not searched"
+    assert contains_any(rows_text, needles) == [], "token or password material reached an audit row"
+    assert contains_any(caplog.text, needles) == [], "token or password material reached a log line"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("key", ["reset_token", "raw_token", "token_hash", "resetToken", "Token-Hash"])
+def test_the_audit_writer_redacts_reset_token_material_wherever_it_is_put(key):
+    """The redaction guard. `device_token`, `full_key` and `secret` were already blocked from audit
+    `before`/`after`; a reset token's names were not. Without these names a future caller that
+    wrote `after={"reset_token": raw}` would store the credential. The writer replaces the value
+    (it does not raise), so the assertion is on what was STORED.
+
+    `token_fingerprint` is deliberately NOT here: see the next test."""
+    secret = "SC-PRS-" + "q" * 43
+    event = record_audit_event(
+        ActorContext(kind=ActorKind.ANONYMOUS, actor_id=TEST_CLIENT_ADDR),
+        action="test.redaction",
+        target_type="credential_token",
+        target_id="unresolved",
+        request_id="r" * 32,
+        before={key: secret},
+        after={key: secret, "outcome": "unknown_token"},
+    )
+    stored = AuditEvent.objects.get(pk=event.pk)
+    assert stored.before == {key: "[redacted]"}
+    assert stored.after == {key: "[redacted]", "outcome": "unknown_token"}, (
+        "the reset-token name was not redacted, or the redaction swallowed an ordinary field"
+    )
+    assert secret not in json.dumps(list(AuditEvent.objects.filter(pk=event.pk).values()), default=str)
+
+
+@pytest.mark.django_db
+def test_the_audit_writer_still_stores_a_token_fingerprint_where_a_writer_documents_one():
+    """The counterpart of the test above. `device.activated` and `device_token.reminted` store the
+    device token's fingerprint under `after["token_fingerprint"]` ON PURPOSE, so an operator can
+    follow a device across a renewal. An earlier version of this change put that name in the
+    deny-list and turned both rows' value into "[redacted]" without any test noticing. The rows
+    themselves are pinned in test_activation_licence_transition.py and test_device_token_remint.py;
+    this pins the writer."""
+    event = record_audit_event(
+        ActorContext(kind=ActorKind.DEVICE, actor_id="dev-1"),
+        action="test.fingerprint",
+        target_type="device_token",
+        target_id="1",
+        request_id="r" * 12,
+        after={"token_fingerprint": "f" * 64, "superseded_token_fingerprint": "e" * 64},
+    )
+    assert AuditEvent.objects.get(pk=event.pk).after == {
+        "token_fingerprint": "f" * 64,
+        "superseded_token_fingerprint": "e" * 64,
+    }
+
+
+@pytest.mark.django_db
+def test_the_token_failure_responses_are_byte_identical_and_carry_no_outcome_class(client, sender):
+    """FR-529 / CON-P6. The existing indistinguishability test compares the code and the message;
+    this compares the whole response, so a class leaking into any other field (an extension, a
+    path, a header) is caught too. It also searches the body for every internal outcome name."""
+    scenarios = build_failure_scenarios(client, sender)
+
+    responses = {
+        name: confirm(client, case.token, case.password)
+        for name, case in scenarios.items()
+        if case.code == "VALIDATION_FAILED"
+    }
+    assert len(responses) == 7, "a token-failure class is missing from the comparison"
+
+    def fingerprint_of(resp):
+        headers = sorted((k, v) for k, v in resp.headers.items() if k.lower() != "date")
+        return resp.status_code, headers, resp.content
+
+    assert len({repr(fingerprint_of(resp)) for resp in responses.values()}) == 1, (
+        "two token-failure classes now answer differently on the wire (FR-529)"
+    )
+    text = next(iter(responses.values())).content.decode()
+    for outcome in OUTCOME:
+        assert outcome.value not in text, f"the internal outcome {outcome.value!r} reached the response"
+    assert "unresolved" not in text and TEST_CLIENT_ADDR not in text
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        lambda: RuntimeError("audit store down"),
+        lambda: OperationalError("database is gone"),
+        lambda: IntegrityError("duplicate key"),
+    ],
+    ids=["RuntimeError", "OperationalError", "IntegrityError"],
+)
+def test_a_failure_to_record_a_failed_confirm_changes_nothing_the_caller_sees(
+    client, sender, settings, monkeypatch, caplog, make_error
+):
+    """The trace is best effort. If the audit store refuses the row, the caller must still get the
+    answer they would have got -- a 500 in its place would turn an audit outage into a changed
+    contract -- and the loss must be reported, once a minute, with a count, without any token
+    material and without a traceback (the traceback's frames hold the raw token and the submitted
+    password as locals). Parametrised over real database errors as well as a plain RuntimeError."""
+    # Out of reach: this test makes 17 more confirms from one address, and the point is the audit
+    # fault, not the budget.
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM = (1000, 3600)
+    scenarios = build_failure_scenarios(client, sender)
+    clock = FakeClock(monkeypatch)
+
+    healthy = {name: confirm(client, c.token, c.password).content for name, c in scenarios.items()}
+    assert len(failed_rows()) == len(scenarios)
+
+    real = services.record_audit_event
+
+    def refuse_only_the_failure_rows(actor, **kwargs):
+        if kwargs.get("action") == FAILED_ACTION:
+            raise make_error()
+        return real(actor, **kwargs)
+
+    monkeypatch.setattr(services, "record_audit_event", refuse_only_the_failure_rows)
+    caplog.clear()
+    faulted = {name: confirm(client, c.token, c.password).content for name, c in scenarios.items()}
+
+    assert faulted == healthy, "an audit write failure changed a response"
+    assert len(failed_rows()) == len(scenarios), "a row was written despite the fault"
+
+    def lost_reports():
+        return [
+            r for r in caplog.records
+            if r.name == services.__name__ and "could not write the audit row" in r.getMessage()
+        ]
+
+    (first,) = lost_reports()
+    message = first.getMessage()
+    assert "1 failed" in message and type(make_error()).__name__ in message and pseudo(TEST_CLIENT_ADDR) in message
+    # (Not `"Traceback" not in caplog.text`: strawberry's own ERROR logging of the masked
+    # resolver errors prints tracebacks of its own; this is about OUR report.)
+    assert first.exc_info is None and "Traceback" not in message, "the report carries a traceback"
+    assert all(r.exc_info is None for r in caplog.records if r.name == services.__name__)
+    for case in scenarios.values():
+        if len(case.token) >= 12:
+            assert case.token not in caplog.text and services._fingerprint(case.token) not in caplog.text
+        if len(case.password) >= 12:
+            assert case.password not in caplog.text
+
+    # The other seven losses were counted, not logged, and arrive with the NEXT report.
+    clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
+    confirm(client, "SC-PRS-one-more", GOOD_PASSWORD)
+    second = lost_reports()[-1].getMessage()
+    assert len(lost_reports()) == 2 and "8 failed" in second, second
+
+
+@pytest.mark.django_db
+def test_a_failure_nobody_classified_is_still_recorded(client, monkeypatch):
+    """Every failed confirm leaves a record even if a future raise site forgets to name its class."""
+
+    def refuse(*args, **kwargs):
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+    monkeypatch.setattr(services, "_consume_reset_token", refuse)
+    assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    assert [row.after["outcome"] for row in failed_rows()] == [OUTCOME.UNCLASSIFIED.value]
+
+
+@pytest.mark.django_db
+def test_a_successful_confirm_keeps_its_audit_row_and_leaves_no_failure_record(client, sender):
+    """AC3, second half. Also the positive control for every "no failure row" assertion here."""
+    reset_token = live_reset_token(client, sender)
+    user = CustomerUser.objects.get(email="pastor@grace.example")
+
+    resp = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert body(resp)["data"]["confirmPasswordReset"]["reset"] is True
+    completed = list(AuditEvent.objects.filter(action="customer_user.password_reset_completed"))
+    assert len(completed) == 1
+    row = completed[0]
+    assert (row.actor_kind, row.actor_id) == (ActorKind.CUSTOMER.value, str(user.id))
+    assert (row.target_type, row.target_id) == ("customer_user", str(user.id))
+    assert (row.source_surface, row.result) == (services.ACCOUNT_AUDIT_SURFACE, AuditResult.SUCCESS)
+    assert failed_rows() == []
+
+
+@pytest.mark.django_db
+def test_an_exhausted_budget_refuses_a_live_token_before_it_is_read_and_writes_no_record(client, sender, settings):
+    """AC1. The budget must be spent BEFORE the token is looked up. Every other throttle test uses
+    a token that does not exist, so none could see the budget move below the consume: a request
+    refused as RATE_LIMITED would already have reset the password. Here the exhausted source
+    offers a LIVE token and a GOOD password; nothing may change, and the refusal itself writes
+    no row (a row per refused request would turn the flood the budget stops into database writes).
+    """
+    reset_token = live_reset_token(client, sender)
+    original_hash = CustomerUser.objects.get(email="pastor@grace.example").password_hash
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM = (2, 3600)
+
+    assert error_code(confirm(client, "SC-PRS-guess-one", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    assert error_code(confirm(client, "SC-PRS-guess-two", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    assert len(failed_rows()) == 2
+
+    refused = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert error_code(refused) == "RATE_LIMITED"
+    assert token_row(reset_token).consumed_at is None, "the throttled call consumed the live token"
+    assert CustomerUser.objects.get(email="pastor@grace.example").password_hash == original_hash, (
+        "the throttled call changed the password"
+    )
+    assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
+    assert len(failed_rows()) == 2, "a throttled request wrote a failure row"
+
+    # CONTROL: the refusal was the BUDGET, not the token -- another source resets with the same link.
+    other = confirm(client, reset_token, GOOD_PASSWORD, REMOTE_ADDR="198.51.100.77")
+    assert body(other)["data"]["confirmPasswordReset"]["reset"] is True
+
+
+def test_the_shipped_confirm_budget_is_pinned_and_its_two_copies_agree(settings):
+    """The confirm budget is the one reset budget `test_password_reset_throttle.py` does not pin.
+    Every behavioural test tightens it to make it trip, so nothing else notices a shipped limit
+    being inflated until it limits nothing. Changing it is a decision: update this literal in
+    the same change and say why. 20 per hour per source is the figure 86akcmfd4 shipped; a person
+    retrying a weak password needs a handful of calls (see the next test). That is per SOURCE:
+    until SELAHCUE_TRUSTED_PROXY_COUNT is set in production (86ak10a13) the whole customer base is
+    ONE source, and the 20 per hour are shared by everyone."""
+    assert settings.SELAHCUE_THROTTLE_RESET_CONFIRM == services.RESET_CONFIRM_IP_BUDGET, (
+        "settings.SELAHCUE_THROTTLE_RESET_CONFIRM and the services.py default have drifted"
+    )
+    assert services.RESET_CONFIRM_IP_BUDGET == (20, 3600)
+
+
+@pytest.mark.django_db
+def test_a_user_who_keeps_choosing_a_weak_password_is_never_blocked_by_the_shipped_budget(client, sender):
+    """AC1, second half, under the SHIPPED budget rather than a tightened one. Ten rejected
+    passwords in a row from one address -- far past any real retry loop -- are each told
+    PASSWORD_INVALID, never RATE_LIMITED, the link stays live throughout, and the eleventh call
+    (a good password) completes the reset. Each weak attempt is traced.
+
+    This is a property of ONE source. In production, until SELAHCUE_TRUSTED_PROXY_COUNT is set
+    (86ak10a13), every caller is the same source and shares the 20 per hour, so it does not hold
+    there: a few people resetting at once, or one person retrying a lot, can exhaust it."""
+    reset_token = live_reset_token(client, sender)
+
+    for attempt in range(10):
+        resp = confirm(client, reset_token, SHORT_PASSWORD)
+        assert error_code(resp) == "PASSWORD_INVALID", f"attempt {attempt + 1} was answered {error_code(resp)!r}"
+        assert token_row(reset_token).consumed_at is None
+
+    done = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+    assert [row.after["outcome"] for row in failed_rows()] == [OUTCOME.PASSWORD_REJECTED.value] * 10
+
+
+class _BrokenStore:
+    """A limiter store standing in for a Redis outage -- every call raises, exactly as
+    `evaluate_budget`'s own `except Exception` branch expects. (Module-local on purpose: see
+    conftest.py on shared helpers.)"""
+
+    def incr_with_expiry(self, key, window_seconds):
+        raise RuntimeError("redis is down")
+
+
+@pytest.mark.django_db
+def test_when_the_limiter_store_is_down_confirm_still_completes_a_reset_and_still_leaves_a_trace(
+    client, sender, settings, monkeypatch
+):
+    """AC2. Fails OPEN: an unavailable Redis must not lock people out of password reset. The
+    existing outage test only offers a token that does not exist, which proves the call reaches
+    the service but not that a real reset still completes; and a trace matters most while the
+    brake is off."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM = (1, 3600)
+    reset_token = live_reset_token(client, sender)
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+
+    for _ in range(3):
+        assert error_code(confirm(client, reset_token, SHORT_PASSWORD)) == "PASSWORD_INVALID"
+    assert error_code(confirm(client, "SC-PRS-does-not-exist", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    done = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+    assert [row.after["outcome"] for row in failed_rows()] == [OUTCOME.PASSWORD_REJECTED.value] * 3 + [
+        OUTCOME.UNKNOWN_TOKEN.value
+    ]
+
+
+@pytest.mark.django_db
+def test_forwarded_for_is_honoured_only_behind_a_trusted_proxy_and_the_record_names_that_client(client, settings):
+    """AC1 / the ticket's scope. At proxy count 0 the header is ignored: the budget AND the record
+    are keyed on the socket peer, whatever the header says. At count 1 the entry the proxy
+    appended is the client, for the budget and for the record, and what a caller put to its left
+    is ignored. `test_password_reset_throttle.py` proves only the count-0 half. (In production
+    this is a property of the code, not of the deployment, until SELAHCUE_TRUSTED_PROXY_COUNT is
+    set -- 86ak10a13: unset, every caller shares ONE budget and every row names the proxy.)"""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM = (1, 3600)
+
+    def call(**extra):
+        return error_code(confirm(client, "SC-PRS-a-guess", GOOD_PASSWORD, **extra))
+
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    assert call(REMOTE_ADDR="198.51.100.20", HTTP_X_FORWARDED_FOR="203.0.113.50") == "VALIDATION_FAILED"
+    assert call(REMOTE_ADDR="198.51.100.20", HTTP_X_FORWARDED_FOR="203.0.113.51") == "RATE_LIMITED", (
+        "a forged header bought a fresh budget while no proxy is trusted"
+    )
+
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 1
+    proxy = {"REMOTE_ADDR": "10.0.0.1"}
+    assert call(HTTP_X_FORWARDED_FOR="1.2.3.4, 203.0.113.50", **proxy) == "VALIDATION_FAILED"
+    assert call(HTTP_X_FORWARDED_FOR="1.2.3.4, 203.0.113.51", **proxy) == "VALIDATION_FAILED", (
+        "two clients behind one trusted proxy shared a budget"
+    )
+    assert call(HTTP_X_FORWARDED_FOR="9.9.9.9, 203.0.113.50", **proxy) == "RATE_LIMITED", (
+        "a forged left-hand entry bought a fresh budget behind a trusted proxy"
+    )
+
+    assert [row.actor_id for row in failed_rows()] == [
+        pseudo("198.51.100.20"),
+        pseudo("203.0.113.50"),
+        pseudo("203.0.113.51"),
+    ]
+
+
+@pytest.mark.django_db
+def test_a_failure_with_no_resolvable_source_is_recorded_under_a_fixed_label(client):
+    """Two different ways to have no address, two fixed labels, neither of them an address.
+    The resolver had no request at all: `unresolved-client-ip`, the identity the budget falls
+    back to, so the record and the budget agree. The request carried no REMOTE_ADDR:
+    `client_ip()` itself answers "unknown", and that is what the budget and the row use."""
+    with pytest.raises(SafeAPIError):
+        services.confirm_password_reset("SC-PRS-whatever", GOOD_PASSWORD, client_ip="")
+    assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="")) == "VALIDATION_FAILED"
+
+    rows = failed_rows()
+    assert [row.actor_id for row in rows] == ["src:unresolved-client-ip", "src:unknown"]
+    assert all(row.actor_id == pseudo(row.actor_id[len("src:"):]) for row in rows), (
+        "a fixed label must be what the pseudonym function returns for those two sources"
+    )
+
+
+@pytest.mark.django_db
+def test_an_oversized_source_cannot_stop_the_record_being_written():
+    """`actor_id` is 128 wide and a value past it fails the INSERT on Postgres, which on a refusal
+    path would silently lose the row (see ACTOR_ID_MAX_LENGTH in graphql/context.py). The actor
+    id is now a fixed-length pseudonym whatever the source, so no source can do that; this keeps
+    it that way if the representation ever changes."""
+    with pytest.raises(SafeAPIError):
+        services.confirm_password_reset("SC-PRS-whatever", GOOD_PASSWORD, client_ip="9" * 140)
+    (row,) = failed_rows()
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", row.actor_id)
+
+
+@pytest.mark.django_db
+def test_the_default_budget_refuses_the_21st_confirm_from_one_source(client):
+    """AC1's first clause under the SHIPPED budget rather than one tightened to make a test short:
+    twenty failed confirms from one source are served and traced, the 21st is refused and writes
+    no row, and another source is untouched."""
+    codes = [error_code(confirm(client, f"SC-PRS-guess-{n}", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.77")) for n in range(21)]
+    other = confirm(client, "SC-PRS-guess-other", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.78")
+
+    assert codes == ["VALIDATION_FAILED"] * 20 + ["RATE_LIMITED"], codes
+    assert error_code(other) == "VALIDATION_FAILED", "a different source must have its own, unspent budget"
+    assert [row.actor_id for row in failed_rows()] == [pseudo("203.0.113.77")] * 20 + [pseudo("203.0.113.78")]
+
+
+# --- who the row says did it: a keyed, daily-rotating pseudonym, never the address ----------
+@pytest.mark.django_db
+def test_the_row_never_holds_the_address_it_was_caused_by(client, caplog):
+    caplog.set_level(logging.DEBUG)
+    addresses = ["203.0.113.99", "2001:db8:abcd:12:aaaa::1"]
+    for address in addresses:
+        assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=address)) == "VALIDATION_FAILED"
+
+    text = failed_rows_as_text()
+    needles = ["203.0.113.99", "2001:db8:abcd:12"]
+    # CONTROL: the rows were searched (they name their pseudonyms), and a row that DID carry an
+    # address would be found.
+    assert pseudo("203.0.113.99") in text and pseudo("2001:db8:abcd:12::") in text
+    planted = record_audit_event(
+        ActorContext(kind=ActorKind.ANONYMOUS, actor_id="203.0.113.99"),
+        action=FAILED_ACTION,
+        target_type="credential_token",
+        target_id="unresolved",
+        request_id="r" * 12,
+    )
+    assert contains_any(failed_rows_as_text(), needles), "the search cannot see an address in a row"
+    planted.delete()
+
+    assert contains_any(failed_rows_as_text(), needles) == [], "an address reached the audit table"
+    assert contains_any(caplog.text, needles) == [], "an address reached a log line"
+
+
+def test_the_pseudonym_is_pinned_keyed_rotating_and_per_source():
+    """The construction is pinned by an INDEPENDENT recomputation, not by calling the function
+    under test: key = SHA-256(key_salt + SECRET_KEY) (Django's salted_hmac), then HMAC-SHA-256 of
+    "<UTC date>|<bucket>" under it, first 32 hex characters, prefixed "src:v1:"."""
+    salt = b"selahcue_api.apps.accounts.audit_source.v1"
+    key = hashlib.sha256(salt + django_settings.SECRET_KEY.encode()).digest()
+    expected = "src:v1:" + hmac.new(key, b"2026-10-26|203.0.113.5", hashlib.sha256).hexdigest()[:32]
+
+    assert services.audit_source_pseudonym("203.0.113.5", date(2026, 10, 26)) == expected
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", expected)
+    # rotating: a new UTC day is a new pseudonym for the same source
+    assert services.audit_source_pseudonym("203.0.113.5", date(2026, 10, 27)) != expected
+    # per source: two sources never share one on the same day
+    assert services.audit_source_pseudonym("203.0.113.6", date(2026, 10, 26)) != expected
+    # keyed: it is not a bare hash of the address
+    assert hashlib.sha256(b"203.0.113.5").hexdigest()[:32] not in expected
+    assert hashlib.sha256(b"2026-10-26|203.0.113.5").hexdigest()[:32] not in expected
+    # structurally unlike a credential fingerprint: the derived key is NOT the one `_fingerprint`
+    # uses (HMAC keyed by SECRET_KEY itself), so no pseudonym can coincide with a fingerprint.
+    old_style_key = hmac.new(django_settings.SECRET_KEY.encode(), b"audit-source-v1", hashlib.sha256).digest()
+    assert key != old_style_key
+    assert services._fingerprint("2026-10-26|203.0.113.5") not in expected
+
+
+@pytest.mark.django_db
+def test_rows_from_the_same_ipv6_64_share_a_pseudonym_and_other_networks_do_not(client):
+    """Record-level, not just in `client_ip()`: the pseudonym is of the /64 bucket, the same string
+    the budget is keyed on."""
+    for address in ("2001:db8:1:2:aaaa::1", "2001:db8:1:2:bbbb::2", "2001:db8:1:3::1"):
+        assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=address)) == "VALIDATION_FAILED"
+
+    assert [row.actor_id for row in failed_rows()] == [
+        pseudo("2001:db8:1:2::"),
+        pseudo("2001:db8:1:2::"),
+        pseudo("2001:db8:1:3::"),
+    ]
+    assert pseudo("2001:db8:1:2::") != pseudo("2001:db8:1:3::")
+
+
+@pytest.mark.django_db
+def test_a_source_has_a_different_pseudonym_on_a_different_day(client, monkeypatch):
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+    monkeypatch.setattr(services, "_audit_source_day", lambda: date(2026, 10, 27))
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+
+    first, second = failed_rows()
+    assert first.actor_id == pseudo("203.0.113.5", date(2026, 10, 26))
+    assert second.actor_id == pseudo("203.0.113.5", date(2026, 10, 27))
+    assert first.actor_id != second.actor_id
+
+
+@pytest.mark.django_db
+def test_an_operator_can_list_the_failed_confirms_from_a_known_address_on_a_day(client):
+    """The way back from an address to its rows: `manage.py failed_reset_confirms`."""
+    for address in ("203.0.113.5", "203.0.113.5", "203.0.113.6", "2001:db8:1:2:aaaa::1"):
+        confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=address)
+
+    def run(**options):
+        out = StringIO()
+        call_command("failed_reset_confirms", stdout=out, **options)
+        return out.getvalue()
+
+    both = run(ip="203.0.113.5", date="2026-10-26")
+    assert f"pseudonym for 2026-10-26: {pseudo('203.0.113.5')}" in both
+    assert "2 failed confirm(s)" in both and "outcome=unknown_token" in both
+    assert "1 failed confirm(s)" in run(ip="203.0.113.6", date="2026-10-26")
+    assert "1 failed confirm(s)" in run(ip="2001:db8:1:2:cccc::9", date="2026-10-26"), "IPv6 is bucketed to its /64"
+    assert "0 failed confirm(s)" in run(ip="203.0.113.5", date="2026-10-27"), "pseudonyms rotate: another day, no rows"
+    assert services.audit_source_pseudonym_for_address("203.0.113.5", date(2026, 10, 26)) == pseudo("203.0.113.5")
+    with pytest.raises(CommandError):
+        run(ip="not-an-address")
+    with pytest.raises(CommandError):
+        run(ip="203.0.113.5", date="yesterday")
+
+
+# --- a live-token holder cannot make a failure leave no row -----------------------------------
+LONE_SURROGATES = "\ud800" * 10
+
+
+@pytest.mark.django_db
+def test_a_password_that_cannot_be_utf8_encoded_is_a_rejected_password_not_a_crash(client, sender):
+    """JSON escapes can put lone surrogates in `newPassword`. They pass the length rule, the token
+    is marked consumed inside the transaction, and the hasher raised UnicodeEncodeError: not a
+    coded refusal, so no row, and the view masked it to VALIDATION_FAILED. Now it is refused where
+    every other bad password is, behind a live token as PASSWORD_INVALID, and traced."""
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+    user = CustomerUser.objects.get(email=email)
+    assert len(LONE_SURROGATES) >= services.MIN_PASSWORD_LENGTH, "the premise: it clears the length rule"
+
+    resp = confirm(client, reset_token, LONE_SURROGATES)
+
+    assert error_code(resp) == "PASSWORD_INVALID"
+    assert token_row(reset_token).consumed_at is None
+    (row,) = failed_rows()
+    assert row.after == {"outcome": OUTCOME.PASSWORD_REJECTED.value}
+    assert (row.target_type, row.target_id) == ("customer_user", str(user.id))
+    # the same string is refused at signup too, with the collapsed code, and creates nothing
+    signup = post_account(client, REGISTER, register_input(idem="signup-surrogate", email="new@grace.example", password=LONE_SURROGATES))
+    assert error_code(signup) == "VALIDATION_FAILED"
+    assert not CustomerUser.objects.filter(email="new@grace.example").exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("where", "make_error"),
+    [
+        ("hasher", lambda: RuntimeError("hasher exploded")),
+        ("hasher", lambda: UnicodeEncodeError("utf-8", "x", 0, 1, "hasher exploded")),
+        ("hasher", lambda: OperationalError("database is gone")),
+        ("hasher", lambda: IntegrityError("duplicate key")),
+        ("token_save", lambda: OperationalError("database is gone")),
+        ("token_save", lambda: IntegrityError("duplicate key")),
+    ],
+    ids=[
+        "hasher-RuntimeError",
+        "hasher-UnicodeEncodeError",
+        "hasher-OperationalError",
+        "hasher-IntegrityError",
+        "token-save-OperationalError",
+        "token-save-IntegrityError",
+    ],
+)
+def test_an_unexpected_failure_inside_the_confirm_still_leaves_one_row_naming_the_user(
+    client, sender, monkeypatch, caplog, where, make_error
+):
+    """A failure that is not a coded refusal -- the hasher blowing up after the token has been
+    consumed, or a real database error while saving it -- is not a gap in the trace, and it names
+    the account whose link was in use. The response is exactly the one a dead token gets, the
+    link is still live (the transaction rolled back), nothing token-shaped reached a log line,
+    and the next real reset completes. Parametrised over real DB errors too, so narrowing the
+    catch to the exceptions one happens to think of fails here."""
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+    user = CustomerUser.objects.get(email=email)
+    original = user.password_hash
+    fingerprint = services._fingerprint(reset_token)
+    dead = confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD).content
+    assert failed_rows()[-1].after == {"outcome": OUTCOME.UNKNOWN_TOKEN.value}
+
+    def explode(*args, **kwargs):
+        raise make_error()
+
+    caplog.clear()
+    with monkeypatch.context() as patch:
+        if where == "hasher":
+            patch.setattr(services, "make_password", explode)
+        else:
+            patch.setattr(CredentialToken, "save", explode)
+        resp = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert resp.content == dead, "an unexpected failure answers differently from a dead token"
+    assert token_row(reset_token).consumed_at is None, "the rolled-back transaction must leave the link live"
+    assert CustomerUser.objects.get(email=email).password_hash == original
+    rows = failed_rows()
+    assert len(rows) == 2
+    assert rows[-1].after == {"outcome": OUTCOME.INTERNAL_ERROR.value}
+    assert (rows[-1].target_type, rows[-1].target_id) == ("customer_user", str(user.id))
+    assert reset_token not in caplog.text and fingerprint not in caplog.text and GOOD_PASSWORD not in caplog.text
+    # and the account is not stuck: the next real attempt completes
+    done = confirm(client, reset_token, GOOD_PASSWORD)
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+
+
+# --- the flood brakes: they skip the ROW, never the response ---------------------------------
+def _fail_from_many_sources(client, count, *, first=1):
+    return [
+        error_code(confirm(client, f"SC-PRS-flood-{n}", GOOD_PASSWORD, REMOTE_ADDR=f"198.51.100.{n}"))
+        for n in range(first, first + count)
+    ]
+
+
+class FakeClock:
+    """Moves the clock `services` reads (its `time` name only; the real module is untouched)."""
+
+    def __init__(self, monkeypatch, start=10_000.0):
+        self.now = start
+        clock = self
+
+        class _Time:
+            def monotonic(self):
+                return clock.now
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        monkeypatch.setattr(services, "time", _Time())
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+@pytest.mark.django_db
+def test_many_sources_cannot_cause_more_trace_rows_than_the_cross_source_brake_allows(client, settings, monkeypatch, caplog):
+    """The per-source budget bounds ONE source; a caller who can pick its own source per request
+    (a trusted-proxy hop count set too high lets it pick its left-hand X-Forwarded-For entry)
+    gets a fresh per-source budget every time. Every response is still the ordinary one; only
+    the rows stop, and the skip is counted and reported once a minute."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (3, 3600)
+    clock = FakeClock(monkeypatch)
+    caplog.set_level(logging.WARNING)
+
+    codes = _fail_from_many_sources(client, 10)
+
+    assert codes == ["VALIDATION_FAILED"] * 10, "the brake changed a response"
+    assert len(failed_rows()) == 3
+    # Nothing was REFUSED, so the shared guard's "refusing requests (RATE_LIMITED)" warning would
+    # be false here; the brake reports its own skips (below) in its own words.
+    assert not [r for r in caplog.records if "is refusing requests" in r.getMessage()]
+    skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
+    assert len(skipped) == 1 and "skipped 1 audit row(s)" in skipped[0]
+    # The first skipped row is reported at once, readable and not cut off, and it names the source
+    # by its pseudonym, never by the address (the 4th source is the first one past the limit of 3).
+    assert "reason=shared brake spent" in skipped[0], skipped[0]
+    assert pseudo("198.51.100.4") in skipped[0] and "198.51.100.4" not in skipped[0].replace(pseudo("198.51.100.4"), "")
+    clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
+    _fail_from_many_sources(client, 1, first=11)
+    skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
+    assert len(skipped) == 2 and "skipped 7 audit row(s)" in skipped[1], skipped
+
+
+@pytest.mark.django_db
+def test_a_reset_still_completes_while_the_trace_brake_is_spent(client, sender, settings):
+    reset_token = live_reset_token(client, sender)
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (1, 3600)
+    _fail_from_many_sources(client, 3)
+    assert len(failed_rows()) == 1
+
+    done = confirm(client, reset_token, GOOD_PASSWORD, REMOTE_ADDR="198.51.100.200")
+
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+
+
+class _CountingBrokenStore(_BrokenStore):
+    def __init__(self):
+        self.calls = 0
+
+    def incr_with_expiry(self, key, window_seconds):
+        self.calls += 1
+        return super().incr_with_expiry(key, window_seconds)
+
+
+@pytest.mark.django_db
+def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows(client, sender, settings, monkeypatch):
+    """With the store down every budget fails open -- right for the response -- and nothing would
+    bound the rows. The ceiling is per worker, charged on every failure, and skips only the row."""
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (3, 3600)
+    reset_token = live_reset_token(client, sender)
+    store = _CountingBrokenStore()
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+
+    codes = _fail_from_many_sources(client, 10)
+    done = confirm(client, reset_token, GOOD_PASSWORD)
+
+    assert codes == ["VALIDATION_FAILED"] * 10
+    # One store round trip per request -- the per-source budget's. Once that has failed open the
+    # cross-source brake is NOT consulted as well: against a stalled Redis that would cost a
+    # second socket timeout on every failed confirm for no extra protection.
+    assert store.calls == 11, store.calls
+    assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
+
+
+@pytest.mark.django_db
+def test_the_trace_brakes_hold_bounded_state_however_many_sources_there_are(client, settings, monkeypatch):
+    """Bounded memory, in a form that bites: 300 distinct sources, and the shared brake still
+    touches ONE limiter key (a per-source key would make it 300), while the report tallies hold
+    only scalars, a capped string and a capped set of account ids (a per-source map or list would
+    not). Keys are recorded where the code spends a budget, not read off the cache: the cache
+    here is LocMemCache, whose `_cache` Redis has no equivalent of, and CI runs Redis."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (5, 3600)
+    touched = _record_limiter_keys(monkeypatch)
+
+    _fail_from_many_sources(client, 250)
+    v6_codes = [
+        error_code(confirm(client, "SC-PRS-flood-v6", GOOD_PASSWORD, REMOTE_ADDR=f"2001:db8:{n:x}::1"))
+        for n in range(50)
+    ]
+
+    assert v6_codes == ["VALIDATION_FAILED"] * 50
+    assert len(failed_rows()) == 5
+    brake_keys = [key for key in touched if services.RESET_CONFIRM_TRACE_SCOPE in key]
+    assert len(brake_keys) == 1, brake_keys
+    # CONTROL: the recorder saw the per-source keys too, i.e. it records what the code touches.
+    assert len([key for key in touched if "password_reset_confirm_ip" in key]) >= 250
+    scalars = (int, float, str, type(threading.Lock()))
+    for tally in (services._trace_lost_tally, services._trace_skipped_tally):
+        assert all(
+            isinstance(value, scalars) or (isinstance(value, set) and all(isinstance(i, int) for i in value))
+            for value in vars(tally).values()
+        ), vars(tally)
+        assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
+        assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
+
+
+def test_the_shipped_trace_brakes_are_pinned(settings):
+    """The module defaults and the shipped settings agree, and the numbers are pinned: a brake
+    inflated to nothing passes every behavioural test, which tighten it to make it trip."""
+    assert services.RESET_CONFIRM_TRACE_BUDGET == (1000, 3600)
+    assert services.RESET_CONFIRM_TRACE_DEGRADED_CEILING == (200, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_BUDGET == (60, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING == (30, 3600)
+    assert services.RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX == 1024
+    assert settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE == services.RESET_CONFIRM_TRACE_BUDGET
+    assert settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING == services.RESET_CONFIRM_TRACE_DEGRADED_CEILING
+    assert settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT == services.RESET_CONFIRM_TRACE_ACCOUNT_BUDGET
+    assert (
+        settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING
+        == services.RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING
+    )
+    assert services._reset_confirm_trace_account_ceilings._max_entries == services.RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX
+
+
+# --- the write itself: a failed INSERT leaves nothing and poisons nothing ---------------------
+@pytest.mark.django_db
+def test_a_failed_trace_write_leaves_no_half_row_and_does_not_poison_the_callers_transaction(client, monkeypatch):
+    """The recorder runs under an enclosing transaction here (pytest-django's, plus an explicit
+    one), where its `atomic()` is a savepoint. The write succeeds and is then followed by a real
+    database IntegrityError. Without the savepoint the half-written row would survive; and a
+    follow-up query, and the next failure's own trace, must still work."""
+    real = services.record_audit_event
+
+    def write_then_violate_a_constraint(actor, **kwargs):
+        row = real(actor, **kwargs)
+        AuditEvent(
+            pk=row.pk, actor_kind="x", actor_id="x", action="x", target_type="x", target_id="x", request_id="x"
+        ).save(force_insert=True)
+
+    monkeypatch.setattr(services, "record_audit_event", write_then_violate_a_constraint)
+    with transaction.atomic():
+        assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+        assert failed_rows() == [], "a half-written row survived the failed write"
+        assert CustomerUser.objects.count() == 0, "the caller's transaction was poisoned"
+
+        monkeypatch.setattr(services, "record_audit_event", real)
+        assert error_code(confirm(client, "SC-PRS-whatever-else", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+        assert len(failed_rows()) == 1
+
+
+@pytest.mark.django_db
+def test_a_spent_verification_token_is_traced_as_the_wrong_kind_of_token(client, sender):
+    """A token that is BOTH consumed and the wrong purpose (the email-verification link every
+    signup spends). The label is a decision and it is pinned here: `wrong_purpose`. The kind of
+    token is the more basic fact -- it could never have reset a password, spent or not -- and
+    `consumed` would hide that someone is offering a verification link to the reset mutation."""
+    signup_and_verify(client, sender)
+    spent_verification = sender.verify_tokens[-1]
+    row = token_row(spent_verification)
+    assert row.purpose == CredentialTokenPurpose.EMAIL_VERIFY and row.consumed_at is not None, (
+        "the premise: a SPENT verification token"
+    )
+
+    assert error_code(confirm(client, spent_verification, GOOD_PASSWORD)) == "VALIDATION_FAILED"
+
+    (traced,) = failed_rows()
+    assert traced.after == {"outcome": OUTCOME.WRONG_PURPOSE.value}
+
+
+@pytest.mark.django_db
+@pytest.mark.filterwarnings("ignore::django.core.cache.backends.base.CacheKeyWarning")
+def test_a_hostile_remote_addr_is_never_stored_raw(client):
+    """`client_ip()` falls back to the raw REMOTE_ADDR text when it does not parse. Only the server
+    sets that value, never a client header, but if it were hostile nothing may store it: the
+    actor id is a hash, `after` holds only the outcome, the attempt id is random."""
+    hostile = "evil\x1b[31m host\n'; DROP TABLE x;--"
+
+    assert error_code(confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR=hostile)) == "VALIDATION_FAILED"
+
+    (row,) = failed_rows()
+    assert re.fullmatch(r"src:v1:[0-9a-f]{32}", row.actor_id)
+    assert row.after == {"outcome": OUTCOME.UNKNOWN_TOKEN.value}
+    text = failed_rows_as_text()
+    assert "evil" not in text and "DROP" not in text
+    for column in (row.actor_id, row.request_id, row.target_type, row.target_id, row.source_surface, row.reason):
+        assert column.isprintable(), repr(column)
+
+
+def _record_limiter_keys(monkeypatch):
+    """Record every limiter key the code touches. Recorded at `evaluate_budget`, the same way
+    tests/test_password_reset_throttle.py does, so an assertion means the same thing on
+    LocMemCache (local) and Redis (CI), where `cache._cache` does not exist."""
+    touched = {}
+    real_evaluate = guards.evaluate_budget
+
+    def recording(store, key, limit, window_seconds):
+        touched[key] = window_seconds
+        return real_evaluate(store, key, limit, window_seconds)
+
+    monkeypatch.setattr(guards, "evaluate_budget", recording)
+    return touched
+
+
+# --- the two allowances: noise cannot blind the trace to a probe of an account's link ----------
+def _fresh_account_with_a_live_link(client, sender, tag):
+    """A verified account with a live reset link; returns (user id, raw token)."""
+    email = f"{tag}@grace.example"
+    token = live_reset_token(client, sender, email=email)
+    return CustomerUser.objects.get(email=email).id, token
+
+
+def _rows_naming(user_id):
+    return [row for row in failed_rows() if (row.target_type, row.target_id) == ("customer_user", str(user_id))]
+
+
+@pytest.mark.django_db
+def test_a_flood_of_unauthenticated_noise_cannot_blind_the_trace_to_a_probe_of_an_account(
+    client, sender, settings
+):
+    """The shared brake is spent only by outcomes that NAME NO ACCOUNT. With it fully spent by 50
+    sources' unknown tokens, a rejected password behind account B's live link and a wrong-purpose
+    token of account C -- the shapes a probe of a skimmed link takes -- still leave their rows."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (3, 3600)
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    verify_c = live_verify_token(client, sender, idem="noise-purpose-0001", email="charlie@grace.example")
+    user_c = token_row(verify_c).customer_user_id
+
+    codes = _fail_from_many_sources(client, 50)
+    assert codes == ["VALIDATION_FAILED"] * 50
+    assert len(failed_rows()) == 3, "the shared brake did not stop at its limit"
+
+    assert error_code(confirm(client, token_b, SHORT_PASSWORD, REMOTE_ADDR="198.51.100.201")) == "PASSWORD_INVALID"
+    assert error_code(confirm(client, verify_c, GOOD_PASSWORD, REMOTE_ADDR="198.51.100.202")) == "VALIDATION_FAILED"
+
+    assert [row.after["outcome"] for row in _rows_naming(user_b)] == [OUTCOME.PASSWORD_REJECTED.value]
+    assert [row.after["outcome"] for row in _rows_naming(user_c)] == [OUTCOME.WRONG_PURPOSE.value]
+
+
+@pytest.mark.django_db
+def test_one_accounts_allowance_is_its_own_and_noise_cannot_spend_it(client, sender, settings):
+    """Account A is probed six times with an allowance of three: exactly three rows for A. A
+    stranger's unknown tokens first, and a flood against A, leave account B's row untouched,
+    and the stranger's noise did not spend A's allowance either."""
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (3, 3600)
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+
+    _fail_from_many_sources(client, 10)  # noise that names no account
+    for n in range(6):
+        confirm(client, token_a, SHORT_PASSWORD, REMOTE_ADDR=f"203.0.113.{n + 10}")
+    confirm(client, token_b, SHORT_PASSWORD, REMOTE_ADDR="203.0.113.99")
+
+    assert len(_rows_naming(user_a)) == 3, "the per-account allowance did not bound the rows"
+    assert len(_rows_naming(user_b)) == 1, "a flood against account A stopped a row for account B"
+    assert len(failed_rows()) == 10 + 3 + 1, "the stranger's noise spent someone's allowance"
+    assert token_row(token_a).consumed_at is None and token_row(token_b).consumed_at is None
+
+
+@pytest.mark.django_db
+def test_while_the_limiter_store_is_down_each_account_has_its_own_process_local_allowance(
+    client, sender, settings, monkeypatch
+):
+    """The same split in the outage ceiling: noise spends the shared per-worker ceiling, a named
+    outcome spends only its account's, and a second account is unaffected by the first."""
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (2, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (2, 3600)
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+
+    noise = _fail_from_many_sources(client, 6)
+    a_codes = [error_code(confirm(client, token_a, SHORT_PASSWORD)) for _ in range(5)]
+    b_codes = [error_code(confirm(client, token_b, SHORT_PASSWORD)) for _ in range(3)]
+
+    assert noise == ["VALIDATION_FAILED"] * 6 and a_codes == ["PASSWORD_INVALID"] * 5 and b_codes == ["PASSWORD_INVALID"] * 3
+    assert len(failed_rows()) - len(_rows_naming(user_a)) - len(_rows_naming(user_b)) == 2, "shared ceiling"
+    assert len(_rows_naming(user_a)) == 2, "account A's process-local allowance did not bound its rows"
+    assert len(_rows_naming(user_b)) == 2, "account B was held to account A's spent allowance"
+
+
+def test_the_per_account_outage_table_is_bounded_and_counts_each_account_separately(monkeypatch):
+    """Bounded memory, in a form that bites: 5000 distinct accounts through a table of 8 never hold
+    more than 8, the limit still applies per account, and a window that has lapsed starts over."""
+    clock = FakeClock(monkeypatch)
+    table = services._AccountCeilings(setting_name="W2_UNSET_SETTING", default=(2, 3600), max_entries=8)
+
+    for account in range(5000):
+        assert table.claim(account) is True
+    assert len(table._windows) <= 8
+
+    table.reset()
+    assert [table.claim(1), table.claim(1), table.claim(1), table.claim(2)] == [True, True, False, True]
+    clock.advance(3601)
+    assert table.claim(1) is True, "a lapsed window must start over"
+
+
+def test_the_tally_caps_the_detail_it_keeps():
+    """The real details are short, so only a direct test shows the cap: a first-event detail of a
+    megabyte is kept as at most `_TRACE_REPORT_DETAIL_MAX` characters."""
+    tally = services._SuppressedTally()
+    _count, first, _accounts = tally.note("x" * 1_000_000)
+    assert len(first) == services._TRACE_REPORT_DETAIL_MAX
+    tally.note("y" * 1_000_000)
+    assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
+
+
+def test_the_skip_report_names_at_most_twenty_distinct_accounts():
+    tally = services._SuppressedTally()
+    assert tally.note("first", 7) is not None  # the first event is released immediately
+    for account in range(100):
+        tally.note("again", account)
+    assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
+    tally._last_report = float("-inf")
+    count, first, accounts = tally.note("last", 3)
+    assert len(accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX and accounts == sorted(accounts)
+    assert count == 101
+
+
+@pytest.mark.django_db
+def test_the_skip_report_lists_the_accounts_whose_rows_were_skipped(client, sender, settings, monkeypatch, caplog):
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (1, 3600)
+    user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
+    user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
+    clock = FakeClock(monkeypatch)
+    caplog.set_level(logging.WARNING)
+
+    for token in (token_a, token_a, token_b, token_b):
+        confirm(client, token, SHORT_PASSWORD)
+    clock.advance(services._TRACE_REPORT_INTERVAL_SECONDS + 1)
+    confirm(client, token_a, SHORT_PASSWORD)
+
+    skipped = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage() and r.name == services.__name__]
+    assert len(skipped) == 2 and "reason=account allowance spent" in skipped[0], skipped[0]
+    assert f"accounts [{min(user_a, user_b)}, {max(user_a, user_b)}]" in skipped[1], skipped[1]
+
+
+# --- the whole trace body is protected, not just the INSERT ------------------------------------
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("setting", "value", "outage", "named"),
+    [
+        ("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE", "garbage", False, False),
+        ("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT", "garbage", False, True),
+        ("SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING", 5, True, False),
+        ("SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING", 5, True, True),
+    ],
+)
+def test_a_malformed_trace_setting_never_changes_the_answer(
+    client, sender, settings, monkeypatch, caplog, setting, value, outage, named
+):
+    """`_trace_failed_confirm` runs while the original failure is being handled; anything it raises
+    would REPLACE that failure (the view then masks it, so a rejected password would be answered
+    as a dead token). A malformed setting here must cost a counted row, never the answer."""
+    reset_token = live_reset_token(client, sender)
+    token, password, code = (reset_token, SHORT_PASSWORD, "PASSWORD_INVALID") if named else ("SC-PRS-nope", GOOD_PASSWORD, "VALIDATION_FAILED")
+    healthy = confirm(client, token, password).content
+    rows_before = len(failed_rows())
+    if outage:
+        monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    setattr(settings, setting, value)
+    services._reset_trace_reporting()
+    caplog.clear()
+
+    resp = confirm(client, token, password)
+
+    assert error_code(resp) == code and resp.content == healthy, "a malformed trace setting changed the answer"
+    assert len(failed_rows()) == rows_before, "a row was written despite the malformed setting"
+    assert [r for r in caplog.records if r.name == services.__name__ and "could not write the audit row" in r.getMessage()]
+
+
+# --- the day seam's real body, which every other test replaces ---------------------------------
+_REAL_AUDIT_SOURCE_DAY = services._audit_source_day
+
+
+def test_the_real_audit_source_day_is_the_utc_date(monkeypatch):
+    before = datetime.now(dt_timezone.utc).date()
+    got = _REAL_AUDIT_SOURCE_DAY()
+    assert got in {before, datetime.now(dt_timezone.utc).date()}
+    # Not the local date, not today's date by another route: an aware time late on the 26th at
+    # UTC-5 is already the 27th in UTC.
+    monkeypatch.setattr(
+        services.djtz, "now", lambda: datetime(2026, 10, 26, 23, 30, tzinfo=dt_timezone(timedelta(hours=-5)))
+    )
+    assert _REAL_AUDIT_SOURCE_DAY() == date(2026, 10, 27)
+
+
+@pytest.mark.django_db
+def test_the_operator_command_defaults_to_today(client, monkeypatch):
+    monkeypatch.setattr(services, "_audit_source_day", _REAL_AUDIT_SOURCE_DAY)
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+
+    out = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out)
+
+    assert "1 failed confirm(s)" in out.getvalue()
+
+
+@pytest.mark.django_db
+def test_an_unencodable_token_is_a_malformed_token_with_the_ordinary_answer(client):
+    """Lone surrogates in `token`: hashing would raise. Same collapsed answer, byte for byte, as
+    an unknown token, and traced as malformed, not as an internal error."""
+    dead = confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD).content
+
+    resp = confirm(client, "\ud800" * 20, GOOD_PASSWORD)
+
+    assert resp.content == dead
+    assert [row.after["outcome"] for row in failed_rows()] == [
+        OUTCOME.UNKNOWN_TOKEN.value,
+        OUTCOME.MALFORMED_TOKEN.value,
+    ]
+
+
+# --- the UTF-8 check must not turn into an ASCII check ---------------------------------------
+NON_ASCII_PASSWORDS = [
+    pytest.param("caf\u00e9-cr\u00e8me-br\u00fbl\u00e9e-1", id="accented"),
+    pytest.param("\u5bc6\u7801\u5f88\u5b89\u5168\u7684\u5bc6\u7801\u5341\u4e2a\u5b57", id="cjk"),
+    pytest.param("horse-\U0001F525-battery-staple", id="emoji"),
+]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("password", NON_ASCII_PASSWORDS)
+def test_non_ascii_passwords_are_still_accepted_at_signup_and_at_reset(client, sender, password):
+    """`_validate_password` now refuses strings that cannot be UTF-8 encoded (lone surrogates). A
+    check written as `.encode("ascii")` would pass every test that uses an ASCII password and
+    reject every legitimate accented, CJK or emoji one. Pinned through both callers."""
+    assert services.MIN_PASSWORD_LENGTH <= len(password) <= services.MAX_PASSWORD_LENGTH, "the premise"
+    email = "unicode@grace.example"
+
+    signup = post_account(client, REGISTER, register_input(idem="signup-unicode-1", email=email, password=password))
+    assert body(signup)["data"]["registerCustomerUser"]["accepted"] is True
+    assert check_password(password, CustomerUser.objects.get(email=email).password_hash)
+
+    post_account(client, VERIFY, {"t": sender.verify_tokens[-1]})
+    post_account(client, REQUEST_RESET, {"e": email})
+    new_password = password + "-2"
+    done = confirm(client, sender.reset_tokens[-1], new_password)
+
+    assert body(done)["data"]["confirmPasswordReset"]["reset"] is True
+    assert check_password(new_password, CustomerUser.objects.get(email=email).password_hash)
+    assert failed_rows() == []
+    login = post_account(client, LOGIN, {"input": {"email": email, "password": new_password}})
+    assert body(login)["data"]["login"]["sessionToken"]
+
+
+# --- the unexpected-failure branch honours the degraded flag too -------------------------------
+@pytest.mark.django_db
+def test_an_unexpected_failure_does_not_ask_the_failed_store_a_second_time(client, sender, settings, monkeypatch):
+    """The wrapper has two failure branches and both must pass the per-source budget's fail-open on
+    to the trace. If the unexpected-failure branch forgot it, every such failure would cost a
+    second round trip to a store already known to be down (a second socket timeout against a
+    stalled Redis). Counted at the store; rows are still bounded by the account's outage allowance."""
+    reset_token = live_reset_token(client, sender)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (2, 3600)
+    store = _CountingBrokenStore()
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+
+    def explode(*args, **kwargs):
+        raise OperationalError("database is gone")
+
+    monkeypatch.setattr(services, "make_password", explode)
+    for _ in range(3):
+        assert error_code(confirm(client, reset_token, GOOD_PASSWORD)) == "VALIDATION_FAILED"
+
+    assert store.calls == 3, f"{store.calls} store round trips for 3 requests"
+    assert [row.after["outcome"] for row in failed_rows()] == [OUTCOME.INTERNAL_ERROR.value] * 2
+
+
+# --- the day basis, pinned near UTC midnight ----------------------------------------------------
+@pytest.mark.django_db
+def test_the_pseudonym_day_is_the_utc_day_across_midnight_and_the_command_agrees(client, monkeypatch):
+    """Frozen at 23:59:30 UTC on the 26th, written at -05:00 (so the wall clock there still says
+    the 26th, 18:59), then at 00:00:30 UTC on the 27th (19:00:30 at -05:00): two rows, two
+    pseudonyms, one per UTC day. The operator command with no --date uses the same day the
+    writer used, at each moment."""
+    monkeypatch.setattr(services, "_audit_source_day", _REAL_AUDIT_SOURCE_DAY)
+    est = dt_timezone(timedelta(hours=-5))
+    late = datetime(2026, 10, 26, 18, 59, 30, tzinfo=est)  # 23:59:30 UTC, the 26th
+    monkeypatch.setattr(services.djtz, "now", lambda: late)
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+    out_26 = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out_26)
+
+    monkeypatch.setattr(services.djtz, "now", lambda: late + timedelta(seconds=60))  # 00:00:30 UTC, the 27th
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+    out_27 = StringIO()
+    call_command("failed_reset_confirms", ip="203.0.113.5", stdout=out_27)
+
+    first, second = failed_rows()
+    assert first.actor_id == pseudo("203.0.113.5", date(2026, 10, 26))
+    assert second.actor_id == pseudo("203.0.113.5", date(2026, 10, 27))
+    assert "pseudonym for 2026-10-26" in out_26.getvalue() and "1 failed confirm(s)" in out_26.getvalue()
+    assert "pseudonym for 2026-10-27" in out_27.getvalue() and "1 failed confirm(s)" in out_27.getvalue()
+
+
+# --- the operator command's own behaviour --------------------------------------------------------
+def _run_command(**options):
+    out = StringIO()
+    call_command("failed_reset_confirms", stdout=out, **options)
+    return out.getvalue()
+
+
+@pytest.mark.django_db
+def test_the_command_caps_its_output_and_says_so(client, monkeypatch):
+    assert reset_confirms_command.MAX_ROWS == 500
+    for _ in range(4):
+        confirm(client, "SC-PRS-whatever", GOOD_PASSWORD)
+    monkeypatch.setattr(reset_confirms_command, "MAX_ROWS", 3)
+
+    text = _run_command(ip=TEST_CLIENT_ADDR, date="2026-10-26")
+
+    assert text.count("outcome=") == 3 and "3 failed confirm(s) (first 3 shown)" in text
+
+
+@pytest.mark.django_db
+def test_the_command_shows_the_account_when_the_token_resolved_and_a_dash_when_not(client, sender):
+    email = "pastor@grace.example"
+    reset_token = live_reset_token(client, sender, email=email)
+    user = CustomerUser.objects.get(email=email)
+    confirm(client, "SC-PRS-nobody-minted-this", GOOD_PASSWORD)
+    confirm(client, reset_token, SHORT_PASSWORD)
+
+    lines = [line for line in _run_command(ip=TEST_CLIENT_ADDR, date="2026-10-26").splitlines() if "outcome=" in line]
+
+    assert [line.split("outcome=")[1] for line in lines] == [
+        "unknown_token  account=-",
+        f"password_rejected  account={user.id}",
+    ]
+
+
+@pytest.mark.django_db
+def test_the_command_accepts_an_address_with_surrounding_whitespace(client):
+    confirm(client, "SC-PRS-whatever", GOOD_PASSWORD, REMOTE_ADDR="203.0.113.5")
+
+    assert "1 failed confirm(s)" in _run_command(ip="  203.0.113.5 \t", date="2026-10-26")
 
 
 # --- AUTH-6: account-based device activation --------------------------------
