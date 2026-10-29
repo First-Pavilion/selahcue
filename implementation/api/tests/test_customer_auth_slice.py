@@ -40,7 +40,7 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
-from selahcue_api.apps.throttling import guards
+from selahcue_api.apps.throttling import circuit, guards
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -1980,18 +1980,28 @@ def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows
     """With the store down every budget fails open -- right for the response -- and nothing would
     bound the rows. The ceiling is per worker, charged on every failure, and skips only the row."""
     settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (3, 3600)
+    settings.CACHE_CIRCUIT_FAILURE_THRESHOLD = 3
+    settings.CACHE_CIRCUIT_COOLDOWN = 5
     reset_token = live_reset_token(client, sender)
+    # Freeze only the account/circuit clock seams. Even a loaded runner cannot
+    # expire the five-second cooldown in the middle of these eleven requests.
+    FakeClock(monkeypatch)
+    monkeypatch.setattr(circuit, "time", services.time)
     store = _CountingBrokenStore()
     monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+    touched = _record_limiter_keys(monkeypatch)
 
     codes = _fail_from_many_sources(client, 10)
     done = confirm(client, reset_token, GOOD_PASSWORD)
 
     assert codes == ["VALIDATION_FAILED"] * 10
-    # One store round trip per request -- the per-source budget's. Once that has failed open the
-    # cross-source brake is NOT consulted as well: against a stalled Redis that would cost a
-    # second socket timeout on every failed confirm for no extra protection.
-    assert store.calls == 11, store.calls
+    # The first three per-source failures open the circuit; the remaining seven
+    # failed confirms and the valid reset bypass the store. No failure consults
+    # the cross-source brake as well: it adds no protection once already degraded.
+    assert store.calls == 3, store.calls
+    assert list(touched) == [
+        f"throttle:password_reset_confirm_ip:198.51.100.{n}" for n in range(1, 11)
+    ] + ["throttle:password_reset_confirm_ip:127.0.0.1"], "a second trace budget was consulted"
     assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
 

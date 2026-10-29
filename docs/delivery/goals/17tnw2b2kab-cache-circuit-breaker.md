@@ -54,8 +54,8 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Threshold, recovery, exactly one concurrent probe and stale responses behave correctly | pytest test_cache_circuit_breaker.py | all pass including mutation control | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-integrated-restored.log | PASS |
-| C-002 | yes | Validated tunables, bounded state, actual stalled Redis bypass in milliseconds | pytest test_cache_circuit_breaker.py | config matrix and actual socket checks pass | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-integrated-restored.log | PASS |
+| C-001 | yes | Threshold, recovery, exactly one concurrent probe and stale responses behave correctly | pytest test_cache_circuit_breaker.py | all pass including mutation control | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-ceiling-restored.log | PASS |
+| C-002 | yes | Validated tunables, bounded state, actual stalled Redis bypass in milliseconds | pytest test_cache_circuit_breaker.py | config matrix and actual socket checks pass | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-ceiling-restored.log | PASS |
 | C-003 | yes | Existing auth, native and throttle behavior preserved after actual dependency merge | full API pytest and Django checks | all pass or owner disposition of baseline failures | /private/tmp/selahcue-batch20-20261029/17tnw2b2kab-report.md | PENDING |
 | C-004 | yes | Four independent reviews, hosted CI and release checks passed | coordinator evidence | all four pass at frozen revision | coordinator review report | PENDING |
 
@@ -108,6 +108,16 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 - New evidence: actual3stalls0.659052s,50cooldown budgets0.000061s,3connections;100dedicated Redis PINGs had zero errors, maximum0.011777s. Full API starts from this frozen clean revision with PID, source fingerprints and atomic result receipts.
 - Decision: iterate
 
+### Iteration 5
+
+- Target criterion: C-003 and Vera V263-1
+- Hypothesis: the old row-ceiling regression must now expect exactly three physical cache calls while preserving eleven logical per-source checks, no extra trace-budget consultation, three rows, unchanged failure responses and a successful legitimate reset.
+- Change or investigation: completed frozen abf5bbcd local full gate and exact hosted CI40885134856 both fail solely at the obsolete11store-call assertion (observed3). Local result retains source_unchanged=true,1690passed/1failed; hosted1690passed/1failed744.28s. This is the intended circuit contract change requiring a precise test correction, not an unrelated baseline failure. Bind threshold3/cooldown5 and freeze only account/circuit clocks to prevent recovery probes under runner load; retain all row/response/success checks and add exact logical-key control against a second trace budget.
+- Verifier executed: whole affected customer-auth module plus circuit/native/throttle/socket/deployment siblings, admission-off mutation with siblings and exact byte restoration, then a new durable full API run on clean descendant.
+- Result: corrected regression passes all assertions; admission-disabled mutation16failed174passed66.46s including the strict11vs3control. Exact service bytes restored (SHA2564d7ace505b6819c59dc7832bad6405b3ff1bfba612f29fe155106f641b4d1afc). Whole customer-auth/circuit/native/throttle/reset/socket/deployment siblings477passed73.23s, no skips; every retained row/response/final-reset/no-extra-budget assertion executed. Both failed full receipts and hosted pr263-failed-ci.log preserved. A new full API run is pending on a clean ordinary descendant; no final green-gate claim.
+- New evidence: Vera V263-1 confirms the precise combined contract gap; production circuit/concurrency probes otherwise passed.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: per-process fail-open capacity during outage persists by design; thresholds are technical operational bounds. Healthy slow responses below socket timeout do not trip circuit.
@@ -122,6 +132,6 @@ Verified origin/main 6ef0e098 includes merged PR186 socket bounds and CACHE_URL 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2kab-cache-circuit-breaker.md
 - Validator result: structural PASS; completion intentionally pending
 - Independent verification result: pending coordinator
-- Terminal state: ACTIVE for merged dependency integration and regression; coordinator review pending
+- Terminal state: ACTIVE for corrected full API regression; final independent review and hosted CI pending
 - Remaining failed or blocked criteria: C-003 combined full API and C-004 independent reviews/CI pending
 - ClickUp final evidence comment: coordinator owned
