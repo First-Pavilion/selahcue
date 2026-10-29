@@ -25,6 +25,7 @@ from selahcue_api.apps.entitlements.services import (
 )
 from selahcue_api.apps.entitlements.signing import SigningKeyUnavailable
 from selahcue_api.apps.throttling.decorators import throttle
+from selahcue_api.apps.throttling.guards import report_native_login_failure
 from selahcue_api.graphql.errors import ErrorCode, SAFE_MESSAGES, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
@@ -252,6 +253,9 @@ def create_session(request):
             LoginData(email=email, password=password), source_surface=NATIVE_AUDIT_SURFACE
         )
     except SafeAPIError as error:
+        # Aggregate only: no request/error data enters observability, and the shared
+        # service/browser GraphQL login behavior stays unchanged (17tnw2b1wqa).
+        report_native_login_failure()
         return _no_store(
             command_error_response(code=error.code, surface="desktop", operation="session_login")
         )

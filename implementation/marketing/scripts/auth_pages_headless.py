@@ -55,12 +55,14 @@ import os
 import re
 import shutil
 import socketserver
-import subprocess
 import sys
 import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2] / "scripts"))
+from headless_chrome import run_headless_chrome  # noqa: E402
+
 MARKETING = HERE.parent
 DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 
@@ -3933,9 +3935,9 @@ def main() -> int:
             url = f"http://127.0.0.1:{port}{path}{joiner}__scenario={scenario}"
             started = reap_baseline()
             try:
-                out = subprocess.run(
+                run = run_headless_chrome(
+                    chrome, None,
                     [
-                        chrome,
                         "--headless=new",
                         "--disable-gpu",
                         "--no-sandbox",
@@ -3947,19 +3949,14 @@ def main() -> int:
                         "--no-first-run",
                         "--disable-extensions",
                         "--virtual-time-budget=8000",
-                        "--dump-dom",
-                        url,
                     ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=90,
-                ).stdout
-            except subprocess.TimeoutExpired:
-                print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
-                server.shutdown()
-                return 2
+                    timeout=90, page_url=url,
+                )
+                if run.timed_out:
+                    print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
+                    server.shutdown()
+                    return 2
+                out = run.stdout
             finally:
                 reaped += reap_own_profiles(started, f"127.0.0.1:{port}".encode())
 

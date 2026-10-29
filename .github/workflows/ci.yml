@@ -340,6 +340,15 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+      # Three additional launchers share the file/PID lifecycle. These are real
+      # caller commands with interpreter-backed fixtures, so no Chrome/Cargo is
+      # required. This always-run job has a full checkout: auth-only and shared
+      # helper/capture edits all exercise the same contract without new runners.
+      - name: Pipe-safe auth and visual-capture launcher contracts
+        run: |
+          # Existing visual-parity dependency; pin matches its documented runtime.
+          python3 -m pip install --quiet --break-system-packages 'Pillow==11.3.0'
+          python3 scripts/test_pipe_safe_launchers.py
       # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
       # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
       # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`
