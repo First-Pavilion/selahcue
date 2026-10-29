@@ -56,7 +56,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Rejected approve/deny/revoke/role actions plus rejected snapshot preserve confirmed list/role and show visible accessible warning | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | All four actual DOM failure cases pass | /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-green.log | PASS |
+| C-001 | yes | Rejected approve/deny/revoke/role actions plus rejected snapshot preserve confirmed list/role and show visible accessible warning | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | All four actual DOM failure cases pass | /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-final-green.log | PASS |
 | C-002 | yes | Successful actions apply host snapshots, confirm the requested postcondition, retain two-step revoke and recover from prior warning | Same full real-DOM gate | Success/recovery controls pass | Same log | PASS |
 | C-003 | yes | Pending work does not announce success or dispatch duplicate actions; warning never exposes raw host error | Same real-DOM gate | Deferred action and hostile error controls pass | Same log | PASS |
 | C-004 | yes | Full operator gate and source syntax/diff checks pass | Same gate; node --check remote.js; Python compilation; git diff --check | Exit 0 and zero failures | Report and logs | PASS |
@@ -110,6 +110,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Verifier executed: full mandatory-Chrome browser gate, JavaScript/Python syntax and diff checks.
 - Result: GREEN2347 checks/0FAIL, exit0. All12 no-op assertions and all prior reject/deferred/success/recovery controls passed. Syntax/diff checks passed.
 - New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-noop-green.log.
+- Decision: handoff
+
+### Iteration 5 — current-target integration refresh
+
+- Target criterion: C-001..C-004
+- Hypothesis: the current target's separately reviewed developer-env Rust change does not overlap this browser behavior, but refresh the integrated browser gate.
+- Change or investigation: merged mainf121aaba5b632ed5d41771f57ae4897dc8b21edd without conflicts into c4deb59a1755b32ea306aa173e2f62e0ca7623c6; only dev_env.rs and its goal arrived. JS/HTML/browser-test inputs unchanged from c8745d15.
+- Verifier executed: fresh full mandatory-Chrome browser gate after integration, source equality, target ancestry/behind count, syntax/diff and structural goal checks.
+- Result: GREEN2347 checks/0FAIL, exit0. Target ancestor and behind0; source tree clean before final evidence-only update. Independent review and hostedCI remain required on the final frozen head.
+- New evidence: /private/tmp/selahcue-batch20-20261029/17tnw2ayna7-final-green.log.
 - Decision: handoff
 
 ## Risks and rollback
