@@ -1468,10 +1468,11 @@ def test_a_retry_after_another_staff_action_does_not_undo_that_action():
     """The stale-duplicate case: the retry must not re-apply over a revoke made in between."""
     key, _ = _seed_key("ext-retry-after-revoke")
     _drive_to(key, S.EXPIRED)
-    first = _extend(key, _later(60), "extend-stale-0001")
+    target = _later(60)
+    first = _extend(key, target, "extend-stale-0001")
     _revoke(key, "revoke-in-between-1")
 
-    replay = _extend(key, _later(60), "extend-stale-0001")
+    replay = _extend(key, target, "extend-stale-0001")
 
     assert replay.changed is False and replay.audit_event.pk == first.audit_event.pk
     assert _fresh(key).status == S.REVOKED, "the replay did not resurrect the licence"
@@ -2769,3 +2770,87 @@ def test_the_writer_itself_refuses_a_transaction_opened_by_hand():
         connection.set_autocommit(True)
     assert _fresh(key).status == S.ISSUED
     assert _writer_call(key).changed is True, "positive control: back in autocommit it runs"
+
+
+# PR233 review regressions: moving clock constraints belong after replay and lock wait.
+def test_successful_extension_replays_after_its_requested_expiry(monkeypatch):
+    key, _ = _seed_key("delayed-replay")
+    target = key.expires_at + timedelta(seconds=1)
+    first = _extend(key, target, "delayed-replay-0001")
+    monkeypatch.setattr(timezone, "now", lambda: target + timedelta(seconds=1))
+    replay = _extend(key, target, "delayed-replay-0001")
+    assert not replay.changed and replay.audit_event.pk == first.audit_event.pk
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+    with pytest.raises(SafeAPIError) as refused:
+        _extend(key, target, "fresh-past-date-0001")
+    assert refused.value.code == ErrorCode.VALIDATION_FAILED
+    with pytest.raises(SafeAPIError) as mismatch:
+        _extend(key, target + timedelta(seconds=2), "delayed-replay-0001")
+    assert mismatch.value.code == ErrorCode.VALIDATION_FAILED
+
+
+def test_extension_expiring_while_waiting_for_lock_is_refused(monkeypatch):
+    now = timezone.now()
+    key, _ = _seed_key("queued-expiry", starts_at=now-timedelta(days=3),
+                       expires_at=now-timedelta(days=1))
+    _drive_to(key, S.EXPIRED)
+    target = now + timedelta(seconds=5)
+    original_lock = license_services.lock_customer_for_key_changes
+    def waited_for_lock(customer_id):
+        customer = original_lock(customer_id)
+        monkeypatch.setattr(timezone, "now", lambda: target + timedelta(seconds=1))
+        return customer
+    monkeypatch.setattr(license_services, "lock_customer_for_key_changes", waited_for_lock)
+    with pytest.raises(SafeAPIError) as refused:
+        _extend(key, target, "queued-expiry-0001")
+    assert refused.value.code == ErrorCode.VALIDATION_FAILED
+    assert _fresh(key).status == S.EXPIRED
+    assert _fresh(key).expires_at == key.expires_at
+    assert not _rows(key, action=EXTEND_ACTION).exists()
+
+
+def test_next_refresh_rotates_a_live_token_and_the_http_caller_adopts_it(client, monkeypatch):
+    key, full_key = _seed_key("refresh-renewal")
+    activated = _activate(client, full_key, fingerprint="refresh-renewal", idem="refresh-renewal-act")
+    old_credential = activated.json()["activation_token"]
+    old = DeviceToken.objects.get(device__license_key=key)
+    old_expiry = old.expires_at
+    target = key.expires_at + timedelta(days=30)
+    _extend(key, target, "refresh-renewal-ext")
+    def refresh(credential):
+        return client.post("/v1/license:refresh", data="{}", content_type="application/json",
+                           HTTP_AUTHORIZATION=f"Bearer {credential}")
+    response = refresh(old_credential)
+    assert response.status_code == 200, response.content
+    body = response.json()
+    assert body["token"]["expires_at"] == target.isoformat()
+    credential = body["activation_token"]
+    assert credential and credential != old_credential
+    old.refresh_from_db()
+    assert old.status == DeviceTokenStatus.REVOKED
+    assert refresh(old_credential).status_code == 401
+    monkeypatch.setattr(timezone, "now", lambda: old_expiry + timedelta(seconds=1))
+    later = refresh(credential)
+    assert later.status_code == 200, later.content
+    assert "activation_token" not in later.json(), "unchanged refresh must not mint again"
+    assert DeviceToken.objects.filter(device=old.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+
+
+@pytest.mark.parametrize("dead", ["expired", "revoked", "device_revoked"])
+def test_extension_never_lets_a_dead_token_rotate_itself(client, monkeypatch, dead):
+    key, full_key = _seed_key("dead-refresh-" + dead)
+    activated = _activate(client, full_key, fingerprint="dead-refresh", idem="dead-refresh-act")
+    credential = activated.json()["activation_token"]
+    old = DeviceToken.objects.get(device__license_key=key)
+    _extend(key, key.expires_at + timedelta(days=30), "dead-refresh-ext")
+    if dead == "expired":
+        monkeypatch.setattr(timezone, "now", lambda: old.expires_at + timedelta(seconds=1))
+    elif dead == "revoked":
+        DeviceToken.objects.filter(pk=old.pk).update(status=DeviceTokenStatus.REVOKED)
+    else:
+        type(old.device).objects.filter(pk=old.device_id).update(status="REVOKED")
+    response = client.post("/v1/license:refresh", data="{}", content_type="application/json",
+                           HTTP_AUTHORIZATION=f"Bearer {credential}")
+    assert response.status_code == 401
+    assert DeviceToken.objects.filter(device=old.device).count() == 1

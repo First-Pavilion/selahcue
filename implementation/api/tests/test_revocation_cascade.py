@@ -379,3 +379,22 @@ def test_every_beat_scheduled_task_is_registered_in_a_worker_process():
     assert missing == [], f"beat schedules tasks no worker registers: {missing}"
     assert "devices.cascade_license_revocations" in scheduled
     assert "accounts.sweep_expired_credentials" in scheduled
+
+
+# More than one bounded batch must converge in the same scheduled run.
+def test_scheduled_cascade_drains_backlog_beyond_one_batch(activated):
+    from selahcue_api.apps.devices.tasks import cascade_license_revocations_task
+    device, credential, key = activated
+    template = DeviceToken.objects.get(device=device)
+    copies = []
+    for i in range(501):
+        copies.append(DeviceToken(device=device, token_prefix=template.token_prefix,
+            token_suffix=template.token_suffix, masked_token=template.masked_token,
+            token_hash=template.token_hash, token_fingerprint=f"backlog-{i:056d}",
+            issued_at=template.issued_at, expires_at=template.expires_at, timezone="UTC"))
+    DeviceToken.objects.bulk_create(copies)
+    AppLicenseKey.objects.filter(pk=key.pk).update(status=LicenseKeyStatus.REVOKED)
+    assert cascade_license_revocations_task() == 502
+    assert not DeviceToken.objects.filter(device=device, status=DeviceTokenStatus.ACTIVE).exists()
+    assert AuditEvent.objects.filter(action="device_token.revoked_by_cascade").count() == 502
+    assert cascade_license_revocations_task() == 0
