@@ -97,6 +97,17 @@
 //! of them documents that leniency as unnecessary *because of this guarantee*, so tidying it away
 //! on the strength of that comment would make the defect live again.
 
+#[cfg(feature = "dev-keys")]
+use std::io::Read;
+
+/// Maximum size of the optional repo-root `.env`, including comments and unused names.
+///
+/// 64KiB leaves generous room for the two developer credentials, model choice and comments.
+/// Larger developer-controlled files are refused whole, never parsed as a truncated prefix.
+/// This is bounded-memory scaffolding hygiene (86akc46rm), not a security boundary.
+#[cfg(any(feature = "dev-keys", test))]
+const MAX_ENV_FILE_BYTES: usize = 64 * 1024;
+
 /// Deepgram's own name for its API key, used unchanged so a developer who already has one
 /// exported for `deepgram`'s CLI or SDK needs no second spelling. Consumed by 86akby4yz.
 #[cfg(any(feature = "dev-keys", test))]
@@ -214,6 +225,8 @@ enum FileState {
     /// developer whose key is already in it and whose file simply could not be parsed
     /// (Quinn, PR #18 D2).
     Unreadable,
+    /// More bytes than the developer-file budget; none of the file may be parsed.
+    TooLarge,
 }
 
 #[cfg(any(feature = "dev-keys", test))]
@@ -428,12 +441,20 @@ fn startup_lines(report: &Report) -> Vec<String> {
                 .to_string(),
         );
     }
+    if report.file == FileState::TooLarge {
+        lines.push(format!(
+            "selahcue dev-keys: the repo-root .env exceeded the {MAX_ENV_FILE_BYTES}-byte limit. \
+             The entire file was ignored, without parsing a truncated prefix. Shorten the file; \
+             exported non-blank variables still take precedence."
+        ));
+    }
     for name in &report.missing {
         // The advice has to match the situation. Telling someone to add a key to a file that
         // already has it, because the file could not be parsed, is the most misleading thing
         // this module could say (Quinn, PR #18 D2).
         let advice = match report.file {
             FileState::Unreadable => "Fix the unreadable .env above rather than re-adding it.",
+            FileState::TooLarge => "Shorten the oversized .env above rather than re-adding keys.",
             _ => "Add it to the repo-root .env (see .env.sample).",
         };
         lines.push(format!(
@@ -445,20 +466,40 @@ fn startup_lines(report: &Report) -> Vec<String> {
     lines
 }
 
+/// Read at most the byte budget plus one, so an exact-budget file is distinguishable
+/// from an oversized one. Check before UTF-8 conversion or parsing: a boundary can
+/// fall inside a credential or Unicode codepoint. No error contains file bytes.
+#[cfg(feature = "dev-keys")]
+fn read_env_file(reader: impl Read) -> Result<String, FileState> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_ENV_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| FileState::Unreadable)?;
+    if bytes.len() > MAX_ENV_FILE_BYTES {
+        return Err(FileState::TooLarge);
+    }
+    String::from_utf8(bytes).map_err(|_| FileState::Unreadable)
+}
+
 /// Read `path` and export the allowlisted names it supplies.
 ///
 /// **Only compiled with `dev-keys`.** The `cfg` split below is the whole control this ticket
-/// exists to install: without the feature there is no `read_to_string` in the artefact.
+/// exists to install: without the feature there is no file read in the artefact.
 #[cfg(feature = "dev-keys")]
 fn load_from(path: &std::path::Path) -> Report {
     // An absent `.env` is a normal state, not an error: the repo ships it empty and a developer
     // who has not filled it in yet should get the named-variable message below, not a failure to
     // start. An UNREADABLE one is different and must not be silently folded into "absent" — see
     // [`FileState::Unreadable`].
-    let (contents, file) = match std::fs::read_to_string(path) {
+    let contents = match std::fs::File::open(path) {
+        Ok(file) => read_env_file(file),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(FileState::Absent),
+        Err(_) => Err(FileState::Unreadable),
+    };
+    let (contents, file) = match contents {
         Ok(contents) => (contents, FileState::Loaded),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), FileState::Absent),
-        Err(_) => (String::new(), FileState::Unreadable),
+        Err(state) => (String::new(), state),
     };
     let planned = plan(&contents, |name| {
         std::env::var_os(name).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
@@ -964,6 +1005,93 @@ mod tests {
     #[cfg(feature = "dev-keys")]
     mod enabled {
         use super::*;
+
+        struct CountedReader {
+            source: std::io::Cursor<Vec<u8>>,
+            consumed: usize,
+        }
+
+        impl Read for CountedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.source.read(buf)?;
+                self.consumed += count;
+                Ok(count)
+            }
+        }
+
+        // A post-read size check still refuses, but consumes the whole file. This
+        // observes bytes actually read by the production reader rather than timing/RSS.
+        #[test]
+        fn the_env_reader_stops_after_the_budget_plus_one_byte() {
+            let mut source = CountedReader {
+                source: std::io::Cursor::new(vec![b'x'; 1024 * 1024]),
+                consumed: 0,
+            };
+            assert_eq!(read_env_file(&mut source), Err(FileState::TooLarge));
+            assert_eq!(source.consumed, 65537);
+        }
+
+        // Rejecting at >=cap instead of >cap breaks a legitimate boundary file.
+        #[test]
+        fn an_exact_budget_env_file_still_exports_complete_assignments() {
+            let _guard = locked();
+            for name in LOADABLE {
+                std::env::remove_var(name);
+            }
+            let assignment = format!("\n{DEEPGRAM_API_KEY}={PROBE}\n");
+            let mut contents = String::from("#");
+            contents.push_str(&"x".repeat(65536 - assignment.len() - 1));
+            contents.push_str(&assignment);
+            assert_eq!(contents.len(), 65536);
+            let path = temp_env_file("exact-budget", &contents);
+            let report = load_from(&path);
+            assert_eq!(report.file, FileState::Loaded);
+            assert_eq!(std::env::var(DEEPGRAM_API_KEY).ok().as_deref(), Some(PROBE));
+            for name in LOADABLE {
+                std::env::remove_var(name);
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+
+        // Removing the file-read limit must export this valid-looking prefix/tail and fail.
+        #[test]
+        fn an_oversized_env_file_never_exports_a_truncated_assignment_or_tail() {
+            let _guard = locked();
+            for name in LOADABLE {
+                std::env::remove_var(name);
+            }
+            // The proposed64KiB boundary lies INSIDE this value. Parsing a cap-sized
+            // prefix would silently export a different credential; reading everything
+            // would export this key and the valid assignment after it.
+            let contents = format!(
+                "{DEEPGRAM_API_KEY}={}\n{OPENAI_API_KEY}={PROBE}\n",
+                "x".repeat(128 * 1024)
+            );
+            let path = temp_env_file("oversized-midline", &contents);
+            let report = load_from(&path);
+            for name in LOADABLE {
+                assert!(
+                    std::env::var_os(name).is_none(),
+                    "an oversized .env must not export any part of the file"
+                );
+            }
+            let lines = startup_lines(&report);
+            assert!(
+                lines.iter().any(|line| {
+                    line.contains(".env") && line.contains("65536") && line.contains("exceed")
+                }),
+                "the developer must be told which file and byte limit refused the read"
+            );
+            assert!(lines.iter().all(|line| !line.contains(PROBE)));
+            assert!(lines.iter().all(|line| !line.contains("Add it to")));
+            // Refusal must not clobber an independently exported real credential.
+            std::env::set_var(DEEPGRAM_API_KEY, PROBE);
+            let report = load_from(&path);
+            assert!(report.resolved.contains(&DEEPGRAM_API_KEY));
+            assert_eq!(std::env::var(DEEPGRAM_API_KEY).ok().as_deref(), Some(PROBE));
+            std::env::remove_var(DEEPGRAM_API_KEY);
+            std::fs::remove_file(path).unwrap();
+        }
 
         #[test]
         fn a_dev_keys_build_makes_every_variable_readable() {
