@@ -8609,6 +8609,9 @@ async fn save_and_describe_generated_notes(
             .then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING),
         "draft": draft_json(&outcome.draft),
         "transcript_id": persist.transcript_id,
+        // 17tnw2b9dq6: generation can succeed while saving/staging failed. The console must
+        // show this text read-only, never borrow the accepted draft's id to edit it.
+        "not_saved": persist.transcript_id.is_none(),
         // FR-129 (86akgqdx8) — see the removed `generate_sermon_notes`'s identical fields.
         "pending_confirmation": persist.pending_confirmation,
         "previous_draft": persist.previous_draft,
@@ -9764,18 +9767,12 @@ mod regenerate_with_retention_tests {
         assert_eq!(saved["ok"], true);
         assert_eq!(saved["transcript_id"], id);
         assert_eq!(saved["pending_confirmation"], false);
-        assert_ne!(
-            saved["not_saved"], true,
-            "a saved draft is not the unsaved case"
-        );
+        assert_eq!(saved["not_saved"], false);
         let staged = save_and_describe_generated_notes(&state, id, &generated, &None).await;
         assert_eq!(staged["ok"], true);
         assert_eq!(staged["transcript_id"], id);
         assert_eq!(staged["pending_confirmation"], true);
-        assert_ne!(
-            staged["not_saved"], true,
-            "a staged draft retains its confirmation identity"
-        );
+        assert_eq!(staged["not_saved"], false);
     }
 
     // ---------------------------------------------------------------------------------------

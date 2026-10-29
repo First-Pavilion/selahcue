@@ -99,6 +99,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: UI-only candidate commit and parent handoff; merge a34b951a8262a7a200445f8fe6bb0538467462c9.
 - Decision: handoff
 
+### Iteration 3
+
+- Target criterion: C-002.
+- Hypothesis: the existing persistence outcome already knows whether save/stage succeeded; exposing that as not_saved preserves the distinction in the actual generation reply without changing repository data or generation policy.
+- Change or investigation: first inspect actual hosted Rust RED on source fd01fe04, then add only `not_saved: persist.transcript_id.is_none()` to the production JSON seam. Positive save/stage controls now require the explicit false flag. Ordinarily merge current main be3bd43576757d2963b6ef1748fe29afa1f1e622 (mobile-only advance, no notes conflict).
+- Verifier executed: read notes-unsaved/rust-red.log from run 40946405217, operator job 123702816555. Goal structural, stdlib AST and full baseline diff checks; no local project runtime.
+- Result: Actual Rust RED compiled and ran 28 regeneration tests: 27 passed, one failed because not_saved was Null instead of true. Numeric save/stage control passed. Corrected UI/Rust GREEN, exact corrected browser count, mutation proof, full CI and all reviews remain pending with root.
+- New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40946405217, notes-unsaved/rust-red.log and the narrow response change.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: making all notes read-only would mask the bug; test accepted numeric-id edit as a positive control. Unsaved notes must remain readable/copyable; accepted/pending data must not be overwritten.
