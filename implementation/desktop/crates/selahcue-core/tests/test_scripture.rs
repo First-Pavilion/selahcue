@@ -330,3 +330,16 @@ fn space_separated_shorthand_resolves_chapter_and_verse() {
     assert!(parse_one("2 2 2").is_err());
     assert!(parse_one("zzz 1 1").is_err());
 }
+
+#[test]
+fn canonical_comparison_requires_the_entire_normalized_book_name() {
+    for input in ["Genesisx 1:1", "Genes 1:1", "Revelatio 1:1", "... 1:1"] {
+        assert_eq!(parse_one(input), Err(ParseError::UnknownBook), "{input}");
+    }
+    // Existing normalization discards non-ASCII characters; it does not fold accents.
+    assert_eq!(
+        parse_one("Ge🕊ne.sis 1:1").unwrap(),
+        r(1, "Genesis", 1, Some((1, 1)))
+    );
+    assert_eq!(parse_one("Génesis 1:1"), Err(ParseError::UnknownBook));
+}

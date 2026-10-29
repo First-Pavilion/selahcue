@@ -393,7 +393,15 @@ fn lookup_book(norm: &str) -> Option<(u8, &'static str)> {
         return None;
     }
     for b in BOOKS {
-        if normalize(b.name) == norm || b.aliases.contains(&norm) {
+        // Compare the same lowercase ASCII-alphanumeric sequence without building
+        // a String for each canonical candidate. eq checks both lengths, too.
+        if b.name
+            .bytes()
+            .filter(u8::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .eq(norm.bytes())
+            || b.aliases.contains(&norm)
+        {
             return Some((b.number, b.name));
         }
     }
@@ -807,12 +815,38 @@ const BOOKS: &[BookDef] = &[
     },
 ];
 
-// Black-box parser tests live in `tests/test_scripture.rs`. The one white-box
-// test below stays inline because it reads the private `BOOKS` table directly —
-// exactly the documented exception for tests that need crate-private internals.
+// Black-box parser tests live in `tests/test_scripture.rs`. Table-wide canonical
+// and alias tests stay inline because they read the private `BOOKS` definitions.
 #[cfg(test)]
 mod tests {
     use super::{parse_one, BOOKS};
+
+    #[test]
+    fn every_declared_alias_preserves_its_canonical_identity() {
+        for book in BOOKS {
+            for alias in book.aliases {
+                let input = format!("{alias} 1:1");
+                let parsed = parse_one(&input).unwrap_or_else(|_| panic!("alias: {alias}"));
+                assert_eq!(
+                    (parsed.book, parsed.book_name),
+                    (book.number, book.name),
+                    "{alias}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_names_still_ignore_case_punctuation_and_spacing() {
+        for book in BOOKS {
+            let decorated = format!(
+                ".{}. 1:1",
+                book.name.to_ascii_uppercase().replace(' ', ". .")
+            );
+            let parsed = parse_one(&decorated).unwrap_or_else(|_| panic!("{decorated}"));
+            assert_eq!((parsed.book, parsed.book_name), (book.number, book.name));
+        }
+    }
 
     #[test]
     fn all_66_books_resolve_by_canonical_name() {
