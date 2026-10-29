@@ -51,6 +51,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vp_core as vp  # noqa: E402
+from headless_chrome import run_command, run_headless_chrome  # noqa: E402
 
 HEADLESS = os.path.join(vp.REPO, "scripts", "operator_headless.py")
 DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
@@ -83,8 +84,8 @@ def find_chrome():
 
 def chrome_version(chrome):
     try:
-        out = subprocess.run([chrome, "--version"], capture_output=True, text=True, timeout=20)
-        return out.stdout.strip() or "unknown"
+        out = run_command([chrome, "--version"], timeout=20)
+        return "unknown" if out.timed_out else (out.stdout.strip() or "unknown")
     except Exception:  # noqa: BLE001 - a version probe must never fail a capture
         return "unknown"
 
@@ -280,12 +281,13 @@ def probe_window_chrome(chrome, w=1200, h=800):
         fh.write(_PROBE_HTML)
         path = fh.name
     try:
-        out = subprocess.run(
-            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
-             "--window-size=%d,%d" % (w, h), "--virtual-time-budget=800", "--dump-dom",
-             "file://" + path],
-            capture_output=True, text=True, timeout=60,
-        ).stdout
+        flags = ["--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
+                 "--window-size=%d,%d" % (w, h), "--virtual-time-budget=800"]
+        url = "file://" + path
+        run = run_headless_chrome(chrome, None, flags, timeout=60, page_url=url)
+        if run.timed_out:
+            raise subprocess.TimeoutExpired([chrome] + flags + ["--dump-dom", url], 60)
+        out = run.stdout
     finally:
         os.unlink(path)
     m = re.search(r"VPPROBE(\d+)x(\d+)ENDPROBE", out)
@@ -296,17 +298,18 @@ def probe_window_chrome(chrome, w=1200, h=800):
 
 def _run_chrome(chrome, page, window, scale, budget, screenshot=None):
     cmd = [
-        chrome, "--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
+        "--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
         "--window-size=%d,%d" % window,
         "--force-device-scale-factor=%d" % scale,
         "--virtual-time-budget=%d" % budget,
     ]
     if screenshot:
         cmd.append("--screenshot=" + screenshot)
-    cmd += ["--dump-dom", "file://" + page]
-    return subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180
-    ).stdout
+    run = run_headless_chrome(chrome, None, cmd, timeout=180, page_url="file://" + page)
+    if run.timed_out:
+        # capture_blink already maps this to its existing timeout error record.
+        raise subprocess.TimeoutExpired([chrome] + cmd + ["--dump-dom", "file://" + page], 180)
+    return run.stdout
 
 
 def capture_blink(chrome, delta, stub, entry, out_dir, scale=1, budget=9000):

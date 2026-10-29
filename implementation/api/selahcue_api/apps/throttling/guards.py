@@ -55,12 +55,22 @@ _DENIAL_LOG_INTERVAL_SECONDS = 60.0
 _denial_log_lock = threading.Lock()
 _last_denial_log: dict[str, float] = {}
 
+# Native routes only extend the existing scope-only suppression map by these five fixed
+# keys. Never register a client identity or arbitrary caller-provided scope (17tnw2b1wqa).
+_NATIVE_DENIAL_SCOPES = frozenset({
+    "activation", "session_login", "activation_with_session", "license_refresh",
+    "entitlement_manifest",
+})
+_last_native_login_failure_log = float("-inf")
+
 
 def _reset_denial_log_suppression() -> None:
     """Test seam: forget every scope's last report, so a test can observe the first one
     deterministically without waiting out the suppression interval."""
+    global _last_native_login_failure_log
     with _denial_log_lock:
         _last_denial_log.clear()
+        _last_native_login_failure_log = float("-inf")
 
 
 def _report_sustained_denial(scope: str) -> None:
@@ -77,6 +87,36 @@ def _report_sustained_denial(scope: str) -> None:
         "attack against this scope's budget — see DEC-013 for the reset-path threat this "
         "guards. Further reports for this scope suppressed for %.0fs.",
         scope,
+        _DENIAL_LOG_INTERVAL_SECONDS,
+    )
+
+
+def report_native_denial(scope: str) -> None:
+    """Report an actual native throttle refusal through the existing shared reporter.
+
+    Only code-defined native scopes may add keys. Generic/test decorators and arbitrary
+    values are ignored; browser budget callers retain their existing reporting behavior.
+    """
+    if scope in _NATIVE_DENIAL_SCOPES:
+        _report_sustained_denial(scope)
+
+
+def report_native_login_failure() -> None:
+    """One aggregate warning per process/minute for native service-refused sign-ins.
+
+    No request, credential, identity, exception or outcome is accepted, including whether
+    an account exists or is locked. One timestamp under the existing reporting lock is all
+    the state: attacker-controlled email/IP cardinality cannot increase it.
+    """
+    global _last_native_login_failure_log
+    now = time.monotonic()
+    with _denial_log_lock:
+        if now - _last_native_login_failure_log < _DENIAL_LOG_INTERVAL_SECONDS:
+            return
+        _last_native_login_failure_log = now
+    logger.warning(
+        "native authentication scope=session_login refused sign-ins. "
+        "Further reports suppressed for %.0fs.",
         _DENIAL_LOG_INTERVAL_SECONDS,
     )
 
