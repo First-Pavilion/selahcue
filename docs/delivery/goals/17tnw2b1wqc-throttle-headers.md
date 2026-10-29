@@ -130,3 +130,14 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Result: full suite1563passed, zero skipped/xfail,429.53seconds, exit0. Final integrated PostgreSQL/Redis focused19passed in4.36seconds, exit0; system checks/migrations/diff/structural validator all passed. Implementation commita7f6ff5007d67f1de6749d1c096d5611d98698c3 clean, behind0 and mainf121aaba ancestor verified.
 - New evidence:17tnw2b1wqc-full-api.log and .exit, scoped target diff and final integrated checks.
 - Decision: hand off for independent reviews when final checks pass; no merge/QA completion claim.
+
+
+### Iteration4 — Q-HEADERS-1 documentation guard remediation
+
+- Target criterion: C-003/C-004; independent finding Q-HEADERS-1.
+- Hypothesis: the ops paragraph added after the earlier full run formats a Redis command like a documented environment variable; removing that formatting fixes the existing guard without changing API behavior or weakening verification.
+- Change or investigation: independently reproduced the exact guard failure (1 failed in0.49seconds, docs-remediation-red.log). Final hosted run40851371213 atd46454eb also failed this one guard with1562passed/1failed; earlier1563green preceded this final ops prose and does not certify that later document. Changed only backticked PTTL to plain Redis-command prose in the ops document; no test/allowlist suppression. Integrated current maind8b296efd2e807393b0b32870464ba33cde54bf6 through8bfda85c, whose entire delta is the reviewed Remote Control UI/headless files and goal, with API/workflows unchanged.
+- Verifier executed: final complete deployment-docs module plus retry-header/native strict regression, followed by structural goal/diff checks; exact commands and observed results are in the external implementation report and remediation log. All tracked prose for this iteration is written before that final targeted verification.
+- Result: exact pre-fix failure reproduced. Final results must be read from17tnw2b1wqc-remediation-green.log before handoff. Runtime full1563 evidence is retained only for unchanged executable API scope; root must rerun full hosted API on the new frozen head.
+- New evidence:17tnw2b1wqc-docs-remediation-red.log,17tnw2b1wqc-remediation-green.log, final diff and target-ancestry proof under the batch evidence directory.
+- Decision: return to all four scoped reviewers and final hosted CI; no merge/QA completion claim or source change during re-review.
