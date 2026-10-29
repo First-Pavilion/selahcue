@@ -25,6 +25,7 @@ from selahcue_api.apps.license_keys.state_machine import apply_license_status_tr
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
+    has_control_characters,
     require_customer_role,
     validate_idempotency_key,
 )
@@ -35,6 +36,10 @@ from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 KEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 TOKEN_BODY_GROUPS = 8
 TOKEN_GROUP_SIZE = 4
+
+# Native activation is the desktop licensing surface. These match DeviceIdentity's
+# documented OS identifiers; mobile controllers authenticate to the paired LAN host.
+ACTIVATION_PLATFORMS = frozenset({"macos", "windows", "linux"})
 
 # License-key statuses under which a device may (re-)activate. Terminal/blocked states deny.
 ACTIVATABLE_KEY_STATUSES = frozenset(
@@ -89,6 +94,34 @@ class ActivateDeviceResult:
 
 def _validation_error() -> SafeAPIError:
     return SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+
+def _activation_text(value: object, *, limit: int, required: bool = False) -> str:
+    # Inspect original input before stripping: a trailing control character is still
+    # invalid input. Model full_clean does not reject NUL before PostgreSQL writes.
+    if not isinstance(value, str) or has_control_characters(value):
+        raise _validation_error()
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _validation_error() from None
+    cleaned = value.strip()
+    if len(cleaned) > limit or (required and not cleaned):
+        raise _validation_error()
+    return cleaned
+
+
+def _activation_metadata(data) -> tuple[str, str, str, str, str]:
+    idempotency = validate_idempotency_key(
+        _activation_text(data.idempotency_key, limit=128, required=True)
+    )
+    fingerprint = _activation_text(data.device_fingerprint, limit=128, required=True)
+    platform = _activation_text(data.platform, limit=32, required=True)
+    app_version = _activation_text(data.app_version, limit=32)
+    display_name = _activation_text(data.display_name, limit=128)
+    if platform not in ACTIVATION_PLATFORMS:
+        raise _validation_error()
+    return idempotency, fingerprint, platform, app_version, display_name
 
 
 def _fingerprint(value: str) -> str:
@@ -560,21 +593,17 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
     """Register (or idempotently return) a device instance for a presented enrollment key and
     issue a show-once device token. The device is its own actor (ActorKind.DEVICE) — activation
     is authenticated by the presented key, not a staff/account session (see DEC-004)."""
-    idempotency_key = validate_idempotency_key(data.idempotency_key)
-    fingerprint = data.device_fingerprint.strip()
-    platform = data.platform.strip()
-    if not fingerprint or not platform:
-        raise _validation_error()
-
-    license_key = _resolve_license_key(data.presented_key)
+    idempotency_key, fingerprint, platform, app_version, display_name = _activation_metadata(data)
+    presented_key = _activation_text(data.presented_key, limit=128, required=True)
+    license_key = _resolve_license_key(presented_key)
     require_commercial_service(license_key)
     return _activate_device_for_key(
         license_key,
         idempotency_key=idempotency_key,
         device_fingerprint=fingerprint,
         platform=platform,
-        app_version=data.app_version,
-        display_name=data.display_name,
+        app_version=app_version,
+        display_name=display_name,
     )
 
 
@@ -621,11 +650,7 @@ def activate_device_with_session(
     POST /v1/activations enrollment path."""
     # Only Administrators manage devices (FR-137).
     checked = require_customer_role(actor, CustomerRole.ADMIN)
-    idempotency_key = validate_idempotency_key(data.idempotency_key)
-    fingerprint = data.device_fingerprint.strip()
-    platform = data.platform.strip()
-    if not fingerprint or not platform:
-        raise _validation_error()
+    idempotency_key, fingerprint, platform, app_version, display_name = _activation_metadata(data)
 
     license_key = _resolve_org_active_license_key(checked.org_id)
     return _activate_device_for_key(
@@ -633,8 +658,8 @@ def activate_device_with_session(
         idempotency_key=idempotency_key,
         device_fingerprint=fingerprint,
         platform=platform,
-        app_version=data.app_version,
-        display_name=data.display_name,
+        app_version=app_version,
+        display_name=display_name,
         activated_by_actor_id=checked.actor_id,
         audit_actor=checked,
         source_surface=source_surface,
