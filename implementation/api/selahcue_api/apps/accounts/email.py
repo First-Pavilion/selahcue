@@ -80,7 +80,10 @@ class CeleryEmailSender(EmailSender):
             # on this request thread. Scope the connection retry choice to email publishing;
             # workers and unrelated task producers retain their own recovery policies.
             with task.app.connection_for_write(transport_options={"max_retries": 0}) as connection:
-                task.apply_async(args=args, connection=connection, retry=False)
+                # These fire-and-forget callers consume no task result. Without this per-send
+                # flag, RedisBackend subscribes synchronously BEFORE the bounded broker send.
+                # Keep global/task defaults and other producers' result policy unchanged.
+                task.apply_async(args=args, connection=connection, retry=False, ignore_result=True)
         except Exception as error:
             _report_publish_failure(task.name, error)
 

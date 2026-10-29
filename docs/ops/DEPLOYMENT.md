@@ -472,8 +472,12 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   Email publishing opens a dedicated connection and sets connection retries to zero and publish
   retries off. This avoids waiting for a pooled producer and bounds a completely silent broker
   to one read timeout after connecting, plus request/database/password work and scheduler jitter.
-  Redis command retries on timeout are disabled. Worker reconnect and unrelated task-publisher
-  retry policies are unchanged.
+  Redis command retries on timeout are disabled. These email callers consume no task results,
+  so each email publish sets `ignore_result=True`. This prevents Celery from subscribing to the
+  independent `CELERY_RESULT_BACKEND` before sending: broker socket limits do not configure that
+  result client's socket limits. Email task defaults, global result settings, worker reconnect
+  and unrelated task-publisher retry/result policies are unchanged. The per-message result flag
+  applies only to emails submitted through this sender.
 - **A socket timeout is per command, not a request deadline.** An answering-but-slow broker can
   perform several bounded reads (authentication, CLIENT SETINFO, SELECT, PING, queue declaration,
   and publish); TLS handshakes use the read timeout. DNS resolution is controlled by the host's

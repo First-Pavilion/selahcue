@@ -53,10 +53,10 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Both broker timeout knobs validate and reach Redis | broker timeout tests | valid bounds accepted; invalid refused | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-final-remediation-focused.log | PASS |
-| C-002 | yes | All three callers bound silent-broker failures and publish healthy tasks | broker timeout integration tests | accepted responses; one connection per failed publish; healthy task payloads correct | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-final-remediation-focused.log | PASS |
-| C-003 | yes | Logs redact secrets and copy promises no delivery | email and copy tests | safe diagnostics and generic accepted copy | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-remediated-auth.log and final-remediation-focused.log | PASS |
-| C-004 | yes | Regression and deployment documentation checks pass | API pytest suite and deployment-env-doc tests | no attributable regression; registry documented | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-report.md | PASS |
+| C-001 | yes | Both broker timeout knobs validate and reach Redis | broker timeout tests | valid bounds accepted; invalid refused | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-result-subscription-final.log | PASS |
+| C-002 | yes | All three callers bound silent-broker failures and publish healthy tasks | broker timeout integration tests | accepted responses; one connection per failed publish; healthy task payloads correct | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-result-subscription-final.log | PASS |
+| C-003 | yes | Logs redact secrets and copy promises no delivery | email and copy tests | safe diagnostics and generic accepted copy | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-remediated-auth.log and result-subscription-final.log | PASS |
+| C-004 | yes | Regression and deployment documentation checks pass | API pytest suite and deployment-env-doc tests | no attributable regression; registry documented | /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-report.md | PENDING |
 | C-005 | yes | All independent reviews and hosted CI pass | root coordinated Cody Quinn Vera Shadow review and CI | all pass | root delivery evidence | PENDING |
 
 ## Verification plan
@@ -118,6 +118,16 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 - New evidence: history-merge-proof.json; main-merge-fingerprints.json; integration-focused.log and integration-static.log under /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-.
 - Decision: handoff
 
+### Iteration 6
+
+- Target criterion: C-002, C-004, C-005
+- Hypothesis: unused email-result subscriptions bypass the broker limits; per-publish ignore_result prevents that synchronous I/O without changing task defaults or unrelated result consumers.
+- Change or investigation: Shadow S260-1 and Vera independently confirmed RedisBackend.on_task_call subscribes before publication. Repository reference search finds no email result consumer: sender methods return None and discard AsyncResult; email tasks return no data. Add actual committed HTTP/shared-task regressions with Redis result backend defaults (read120 seconds, connectNone), separate silent result/broker endpoints, and healthy-broker/silent-result controls; retain explicit memory-backend siblings. Set ignore_result=True only at this sender's apply_async call, leaving all task/global defaults unchanged.
+- Verifier executed: before production correction, four Redis-result HTTP cases fail at the5.5-second BaseException watchdog with on_task_call/subscription in the stack. Final focused broker/email/native-outage/docs checks, regression/mutation receipts and effective configuration evidence are recorded in the handoff.
+- Result: corrected source passes191 focused PostgreSQL checks, including four Redis-result/silent-broker committed HTTP calls, four healthy-broker/silent-result calls and the memory siblings. Requests measured0.642/0.644/0.515/0.524 seconds at the0.5-second broker limit, with zero result connections/subscriptions. Healthy messages retain task names/args/redacted headers and set only their message ignore-result flag. Removing that one flag makes reset hit the5.5-second watchdog again; source restored in finally. An actual production Django/Celery app probe returned0.511 seconds with zero result connections, one broker connection, result defaults120/None, app/email/unrelated-sweep ignore-result defaults False and global publish retry True. Global result timeouts and worker/revocation policy are unchanged. Existing complete API and71/2575 rendered results remain earlier snapshots; Vue/auth sources are unchanged and not rerun for this backend-only correction. C-004 is returned to PENDING for the exact-head full API gate; exact-head hosted CI and all four re-reviews remain mandatory.
+- New evidence: result-subscription-red.log/exit; email-result-consumer-search.log; result-subscription-green.log and result-scope-probe.log under /private/tmp/selahcue-batch20-20261029/17tnw2b2k4x-.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a timed-out publish has unknown delivery outcome; no automatic retry is promised. Healthy Redis round trips and DNS remain operational concerns.
@@ -130,8 +140,8 @@ Verified: main c0b8f84a publishes inline in on-commit callbacks; Redis broker so
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2k4x-broker-timeouts.md
-- Validator result: structural validation PASS; completion validation remains gated on C-005 independent reviews and hosted CI.
+- Validator result: structural validation required after final prose; completion validation remains gated on C-004 exact-head full API and C-005 independent reviews/hosted CI.
 - Independent verification result: pending root
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-005 requires all four fresh independent reviews and the new full hosted PostgreSQL/Redis and marketing CI. Local C-004 PASS is bounded to the supported PostgreSQL/LocMem configuration and explicit skips; previous failed/incomplete runs remain disclosed.
+- Remaining failed or blocked criteria: C-004 requires exact-head full API verification after the result-subscription correction; C-005 requires all four fresh independent reviews and new full hosted PostgreSQL/Redis and marketing CI. Fresh focused checks are separate from the previous full API snapshot; earlier failed/incomplete runs remain disclosed.
 - ClickUp final evidence comment: root owns publication

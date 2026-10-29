@@ -17,6 +17,7 @@ from contextlib import contextmanager
 
 import pytest
 from celery import Celery
+from celery.backends.redis import RedisBackend
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from redis import Redis
@@ -41,9 +42,12 @@ TIMEOUT = 0.2
 
 
 @contextmanager
-def publisher(monkeypatch, url, *, prefix=None):
+def publisher(monkeypatch, url, *, prefix=None, result_backend="cache+memory://"):
     monkeypatch.setenv("CELERY_BROKER_URL", url)
-    app = Celery("broker_test", broker=url, backend="cache+memory://", set_as_current=False)
+    # Celery's environment backend takes precedence over the constructor argument too.
+    # Make the memory siblings explicit, then exercise production-shaped Redis separately.
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", result_backend)
+    app = Celery("broker_test", broker=url, backend=result_backend, set_as_current=False)
     app.conf.update(
         broker_transport_options={
             **getattr(project_settings, "CELERY_BROKER_TRANSPORT_OPTIONS", {}),
@@ -64,6 +68,12 @@ def publisher(monkeypatch, url, *, prefix=None):
         yield app
     finally:
         services.set_email_sender(previous_sender)
+        if isinstance(app.backend, RedisBackend):
+            # PubSub.close and pool.disconnect close owned sockets without unsubscribing or
+            # waiting for a server response, including after the BaseException watchdog fires.
+            app.backend.result_consumer.stop()
+            app.backend.client.close()
+            app.backend.client.connection_pool.disconnect()
         app.close()
 
 
@@ -231,3 +241,91 @@ def test_invalid_broker_timeout_does_not_echo_accidental_secrets(monkeypatch, na
         project_settings._socket_timeout_seconds(name, "0.5")
     assert name in str(error.value)
     assert secret not in str(error.value)
+
+
+
+def _assert_production_result_shape(app):
+    """Keep the unsafe production result defaults in the regression, rather than replacing
+    Redis with memory or shortening the result timeout to mask accidental subscriptions."""
+    assert isinstance(app.backend, RedisBackend)
+    assert app.backend.connparams["socket_timeout"] == 120.0
+    assert app.backend.connparams["socket_connect_timeout"] is None
+    assert app.conf.task_ignore_result is False
+    for name in (
+        "accounts.send_verification_email", "accounts.send_password_reset",
+        "accounts.send_account_exists", "accounts.sweep_expired_credentials",
+    ):
+        assert app.tasks[name].ignore_result is False, "per-publish scope must not alter task policy"
+    assert app.conf.task_publish_retry is True
+
+
+@needs_sigalrm
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("path", ["signup", "signup-existing", "resend", "reset"])
+def test_redis_result_subscription_cannot_bypass_email_broker_bound(
+    client, settings, monkeypatch, caplog, path
+):
+    settings.CACHES = {"default": project_settings._cache_config("", TIMEOUT, TIMEOUT)}
+    broker, results = StalledRedis(), StalledRedis()
+    try:
+        budget = project_settings.CELERY_BROKER_SOCKET_TIMEOUT
+        with publisher(monkeypatch, broker.url, result_backend=results.url) as app:
+            _assert_production_result_shape(app)
+            started = time.monotonic()
+            with caplog.at_level(logging.ERROR), _watchdog(budget + 5):
+                _request(client, path)
+            elapsed = time.monotonic() - started
+            print(f"Redis results + silent broker {path}: {elapsed:.3f}s; read timeout {budget}s")
+            assert elapsed < budget + 3
+            assert results.connections_after_settling(0) == 0, "email must not subscribe for unused results"
+            assert broker.connections_after_settling(1) == 1
+            assert app.backend.result_consumer.subscribed_to == set()
+            _assert_production_result_shape(app)
+        assert "email delivery unconfirmed" in caplog.text
+        assert "example.test" not in caplog.text
+    finally:
+        broker.close()
+        results.close()
+        assert not broker._thread.is_alive() and not results._thread.is_alive()
+
+
+@needs_sigalrm
+@pytest.mark.skipif(not os.getenv("CELERY_BROKER_URL"), reason="needs CI Redis broker")
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("path", ["signup", "signup-existing", "resend", "reset"])
+def test_healthy_email_publish_ignores_only_its_unused_redis_results(
+    client, settings, monkeypatch, path
+):
+    settings.CACHES = {"default": project_settings._cache_config("", TIMEOUT, TIMEOUT)}
+    prefix = f"email-result-probe-{uuid.uuid4().hex}:"
+    url = os.environ["CELERY_BROKER_URL"]
+    redis = Redis.from_url(url, socket_timeout=1, socket_connect_timeout=1)
+    results = StalledRedis()
+    try:
+        with publisher(monkeypatch, url, prefix=prefix, result_backend=results.url) as app:
+            _assert_production_result_shape(app)
+            with _watchdog(project_settings.CELERY_BROKER_SOCKET_TIMEOUT + 5):
+                _request(client, path)
+            assert results.connections_after_settling(0) == 0
+            assert app.backend.result_consumer.subscribed_to == set()
+            _assert_production_result_shape(app)
+        payload = json.loads(redis.lpop(prefix + "email-probe"))
+        expected = {
+            "reset": "accounts.send_password_reset",
+            "signup-existing": "accounts.send_account_exists",
+        }.get(path, "accounts.send_verification_email")
+        assert payload["headers"]["task"] == expected
+        assert payload["headers"]["ignore_result"] is True
+        assert payload["headers"]["argsrepr"] == "(<redacted>)"
+        assert payload["headers"]["kwargsrepr"] == "{}"
+        args, kwargs, _ = json.loads(base64.b64decode(payload["body"]))
+        assert args[0].endswith("@example.test")
+        assert len(args) == (1 if path == "signup-existing" else 2)
+        assert kwargs == {}
+    finally:
+        results.close()
+        assert not results._thread.is_alive()
+        keys = list(redis.scan_iter(match=prefix + "*"))
+        if keys:
+            redis.delete(*keys)
+        redis.close()
