@@ -15,7 +15,11 @@ from django.db import OperationalError, connection, connections, transaction
 from django.utils import timezone
 
 from licensing_test_support import issue_key, seat_plan_code, seed_org
+from selahcue_api.apps.accounts import services as account_services
 from selahcue_api.apps.accounts.models import (
+    CredentialToken,
+    CredentialTokenPurpose,
+    CustomerSessionStatus,
     CustomerOrg,
     CustomerRole,
     CustomerUser,
@@ -1226,3 +1230,200 @@ def test_two_simultaneous_issuances_to_two_orgs_both_succeed():
     assert errors == []
     assert len(results) == 2 and all(r.created for r in results)
     assert {k.customer_id for k in AppLicenseKey.objects.all()} == {o.pk for o in orgs}
+
+
+# --- 86ak5qy3p: password-reset KDF before row locking ------------------------
+def _reset_credential(tag):
+    org = seed_org(tag)
+    user = CustomerUser.objects.create(
+        customer=org,
+        email=f"reset+{tag}@concurrency.example",
+        email_fingerprint=account_services._fingerprint(f"reset+{tag}@concurrency.example"),
+        password_hash=account_services.make_password("old-correct-password"),
+        status=CustomerUserStatus.ACTIVE,
+        role=CustomerRole.ADMIN,
+        email_verified_at=timezone.now(),
+        created_by_actor_id="test",
+        idempotency_key=f"reset-user-{tag}",
+        failed_login_count=2,
+        locked_until=timezone.now() + timedelta(minutes=5),
+    )
+    raw = account_services._mint_credential_token(
+        user, CredentialTokenPurpose.PASSWORD_RESET, timedelta(hours=1)
+    )
+    token = CredentialToken.objects.get(token_fingerprint=account_services._fingerprint(raw))
+    session, _ = account_services._new_session(user, timezone.now())
+    return user, token, raw, session
+
+
+def test_reset_token_and_user_rows_are_free_during_password_kdf(monkeypatch):
+    """Observe actual PostgreSQL locks from another connection while the real KDF runs.
+
+    No elapsed-time claim: NOWAIT proves lock availability, and the service connection's
+    atomic state proves it has not opened its write transaction around PBKDF2.
+    """
+    user, token, raw, session = _reset_credential("hash-observer")
+    hashing = threading.Event()
+    observed = threading.Event()
+    result = {}
+    real_hash = account_services.make_password
+
+    def observe():
+        try:
+            assert hashing.wait(15), "password reset never reached hashing"
+            for label, model, pk in (
+                ("token", CredentialToken, token.pk), ("user", CustomerUser, user.pk),
+            ):
+                try:
+                    with transaction.atomic():
+                        model.objects.select_for_update(nowait=True).get(pk=pk)
+                    result[label] = "free"
+                except OperationalError:
+                    result[label] = "held"
+        except Exception as error:
+            result["observer_error"] = error
+        finally:
+            observed.set()
+            connections.close_all()
+
+    def hash_under_observation(*args, **kwargs):
+        result["hash_in_atomic"] = connection.in_atomic_block
+        hashing.set()
+        assert observed.wait(15), "independent lock observer did not finish"
+        result["real_hashes"] = result.get("real_hashes", 0) + 1
+        return real_hash(*args, **kwargs)
+
+    monkeypatch.setattr(account_services, "make_password", hash_under_observation)
+    observer = threading.Thread(target=observe)
+    observer.start()
+    try:
+        completed = account_services.confirm_password_reset(
+            raw, "new-correct-password", client_ip="203.0.113.91"
+        )
+    finally:
+        observed.set()
+        observer.join(timeout=20)
+    assert not observer.is_alive()
+    assert result.get("observer_error") is None, result
+    assert result["real_hashes"] == 1
+    assert result["hash_in_atomic"] is False, "PBKDF2 still runs inside the write transaction"
+    assert result["token"] == result["user"] == "free", result
+    assert completed.reset is True
+    session.refresh_from_db()
+    assert session.status == CustomerSessionStatus.REVOKED
+
+
+def test_two_simultaneous_password_resets_consume_one_token_once(monkeypatch):
+    """Both requests pass preflight before either locks; only the locked check can refuse replay.
+
+    The barrier is inside the real password hasher, rather than at request start, so both
+    caller preflights have definitely completed before either can reach the write lock.
+    """
+    user, token, raw, session = _reset_credential("single-use-race")
+    ready_to_hash = threading.Barrier(2, timeout=10)
+    real_hash = account_services.make_password
+    results = []
+    errors = []
+    passwords = ["first-concurrent-password", "second-concurrent-password"]
+
+    def overlapping_hash(*args, **kwargs):
+        ready_to_hash.wait()
+        return real_hash(*args, **kwargs)
+
+    def reset(index):
+        try:
+            completed = account_services.confirm_password_reset(
+                raw, passwords[index], client_ip=f"203.0.113.{92 + index}"
+            )
+            results.append((index, completed.reset))
+        except SafeAPIError as error:
+            errors.append((index, error.code))
+        except Exception as error:
+            errors.append((index, error))
+        finally:
+            connections.close_all()
+
+    monkeypatch.setattr(account_services, "make_password", overlapping_hash)
+    workers = [threading.Thread(target=reset, args=(index,)) for index in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=25)
+    assert not any(worker.is_alive() for worker in workers), "reset worker did not complete"
+    assert len(results) == 1 and results[0][1] is True, (results, errors)
+    assert len(errors) == 1 and errors[0][1] is ErrorCode.VALIDATION_FAILED, errors
+    token.refresh_from_db()
+    user.refresh_from_db()
+    session.refresh_from_db()
+    assert token.consumed_at is not None
+    assert user.failed_login_count == 0 and user.locked_until is None
+    assert session.status == CustomerSessionStatus.REVOKED
+    assert account_services.check_password(passwords[results[0][0]], user.password_hash)
+    assert not account_services.check_password(passwords[errors[0][0]], user.password_hash)
+    assert AuditEvent.objects.filter(action="customer_user.password_reset_completed").count() == 1
+
+
+
+def test_password_reset_expiry_is_rechecked_after_waiting_for_its_row_lock(monkeypatch):
+    """A pre-lock clock reading must not authorize a token that expires in the lock queue."""
+    user, token, raw, session = _reset_credential("expiry-in-lock-queue")
+    original_hash = user.password_hash
+    clock = [timezone.now()]
+    monkeypatch.setattr(account_services.djtz, "now", lambda: clock[0])
+    connected = threading.Event()
+    outcome = {}
+
+    def reset():
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                outcome["pid"] = cursor.fetchone()[0]
+            connected.set()
+            outcome["completed"] = account_services.confirm_password_reset(
+                raw, "expired-while-waiting-password", client_ip="203.0.113.94"
+            )
+        except Exception as error:
+            outcome["error"] = error
+        finally:
+            connected.set()
+            connections.close_all()
+
+    worker = threading.Thread(target=reset)
+    waiting = False
+    try:
+        with transaction.atomic():
+            CredentialToken.objects.select_for_update().get(pk=token.pk)
+            worker.start()
+            assert connected.wait(15), "reset worker never connected"
+            assert "pid" in outcome, outcome
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                with connection.cursor() as cursor:
+                    # This observer owns the held-row transaction; refresh statistics
+                    # rather than retaining its first activity snapshot while polling.
+                    cursor.execute("SELECT pg_stat_clear_snapshot()")
+                    cursor.execute(
+                        "SELECT wait_event_type, query FROM pg_stat_activity WHERE pid=%s",
+                        [outcome["pid"]],
+                    )
+                    row = cursor.fetchone()
+                if row and row[0] == "Lock" and CredentialToken._meta.db_table in row[1]:
+                    waiting = True
+                    break
+                time.sleep(0.02)
+            assert waiting, "reset never reached the held row lock; race was not formed"
+            clock[0] = token.expires_at + timedelta(seconds=1)
+    finally:
+        if worker.ident is not None:
+            worker.join(timeout=20)
+    assert not worker.is_alive(), "reset did not finish after lock release"
+    assert "completed" not in outcome, "an expired token changed the password after lock release"
+    assert isinstance(outcome.get("error"), SafeAPIError), outcome
+    assert outcome["error"].code is ErrorCode.VALIDATION_FAILED
+    token.refresh_from_db()
+    user.refresh_from_db()
+    session.refresh_from_db()
+    assert token.consumed_at is None
+    assert user.password_hash == original_hash
+    assert session.status == CustomerSessionStatus.ACTIVE
+    assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
