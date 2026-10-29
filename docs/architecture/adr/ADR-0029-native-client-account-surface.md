@@ -29,7 +29,7 @@ CSRF is a confused-deputy attack that depends on ambient browser authority. A na
 
 ## Decision
 
-Add two routes beside the rest of `/v1`, both `csrf_exempt`:
+The initial decision added two routes beside the rest of `/v1`, both `csrf_exempt` (the later route-only cleanup addition is recorded under consequences/residual risks below):
 
 - `POST /v1/sessions` — `{"email", "password"}` → `{"session_token", "expires_at", "role", "org_id"}`. Calls the same `login` service as the GraphQL mutation.
 - `POST /v1/activations:with-session` — `Authorization: Bearer <session_token>` + the `POST /v1/activations` body minus `license_key` → the `POST /v1/activations` response shape. Calls the same `activate_device_with_session` service as the GraphQL mutation (ADMIN only, same instance limit, same show-once device token and idempotency).
@@ -64,7 +64,7 @@ None of these is a CSRF problem and none is new in kind; they are stated so that
 - **The per-IP budget fails open.** If the limiter store (Redis) is unreachable, `evaluate_budget` (`apps/throttling/services.py`) permits the request and logs one line per minute. During an outage the only brake on guessing is the per-account lockout. The same is true of every throttled `/v1` route; a degraded-ceiling treatment (as the resend and reset budgets have) is tracked separately.
 - **The per-account lockout can be used against a named victim.** Anyone who knows an email address can lock that account for the lockout window (default 15 minutes) with five failed attempts per window, from any single address. This is identical on the browser surface and is the price of a lockout that does not leak whether an account exists.
 - **A distributed guess across many source IPs** is bounded only by the per-account lockout, as on any login. (A hostile page cannot recruit visitors' browsers to do this — see above.)
-- **A 30-day account session the native client cannot revoke.** `POST /v1/sessions` hands the desktop a session that is valid for 30 days (DEC-007) on every session-bound operation of the account surface, and no native route ends it; the desktop uses it once to activate. Revoking it needs an authorised owner decision — a native revoke route and/or an activation-only grant (ClickUp 17tnw2b1wf2). Until then, signing out locally does not invalidate it server-side; only a logout of all sessions (`logout(allSessions: true)`) or a password change does, and a plain web logout of one browser session does not.
+- **A 30-day account session with best-effort native cleanup.** The approved route-only option in17tnw2b1wf2 adds `POST /v1/sessions:revoke`, reusing single-session logout and the bearer-only/no-cookie/JSON/per-IP safety properties. The licensing client attempts cleanup immediately after valid activation and reports an unconfirmed cleanup separately, preserving device credentials/output. A failed or lost acknowledgement may leave a session active until retry or the existing DEC-007 fallback; no activation-only grant or TTL change was selected. This implementation does not change this ADR's Proposed status or claim owner acceptance of its broader wire/residual-risk decision.
 - **No logging of failed native sign-ins or of sustained `429`s on these routes.** Tracked separately.
 
 ## Consequences
@@ -72,7 +72,7 @@ None of these is a CSRF problem and none is new in kind; they are stated so that
 - **The desktop moves to the new routes.** Done in `selahcue-licensing` by ClickUp 17tnw2b1we2 (PR #215); until that landed the primary activation path was blocked (fail-closed; never-blank was unaffected). 86ak5mn11's "both activation paths work" claim was re-verified against a running server on that ticket: the key path worked, the sign-in path did not until the move.
 - **The activation response gains the REST shape** on the primary path: `reminted`, token metadata and the licence block, which the desktop could not see before.
 - **The set of `csrf_exempt` routes is pinned** by `test_the_set_of_csrf_exempt_routes_is_pinned_and_excludes_every_graphql_route`: exempting anything else — in particular a GraphQL route — is a deliberate edit to that set, reviewed as a security decision.
-- **The 30-day account session** (DEC-007) is what the native client holds after sign-in. That is the decided model; a narrower activation-only grant and a native revoke route would shrink it and are recorded as a follow-up (17tnw2b1wf2), not a blocker. There is no native `refreshSession` or `logout` either: those exist only on the CSRF-enforced browser surface.
+- **The 30-day account session** (DEC-007) remains the model.17tnw2b1wf2 adds a native single-session revoke route and immediate library cleanup; a narrower activation-only grant was not selected. There is still no native refresh or all-sessions logout. The additive route's contract and retry/custody limitations are in `ACCOUNT-AUTH-API-HANDOFF.md`; there is no operator licensing host integration on current main.
 - **Integration evidence is now repeatable**: `test_live_server_a_cookieless_client_signs_in_activates_and_refreshes` runs a real server on a real socket with a cookie-less client, so this class of defect (CSRF is invisible to fixtures) is caught without the Docker Compose environment.
 
 ## Reversibility

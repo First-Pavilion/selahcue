@@ -1276,7 +1276,9 @@ def refresh_session(presented_token: str) -> RefreshResult:
     return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
 
 
-def logout_session(presented_token: str, *, all_sessions: bool = False) -> LogoutResult:
+def logout_session(
+    presented_token: str, *, all_sessions: bool = False, source_surface: str = ACCOUNT_AUDIT_SURFACE
+) -> LogoutResult:
     """Revoke the presented session (or every ACTIVE session for the user). Revokes the ACCOUNT
     session ONLY — never a DeviceToken or cached entitlement (never-blank: device stays live)."""
     now = djtz.now()
@@ -1296,7 +1298,7 @@ def logout_session(presented_token: str, *, all_sessions: bool = False) -> Logou
             target_type="customer_user",
             target_id=str(user.id),
             request_id=session.token_fingerprint,
-            source_surface=ACCOUNT_AUDIT_SURFACE,
+            source_surface=source_surface,
             after={"all_sessions": all_sessions},
         )
     return LogoutResult(revoked=True)

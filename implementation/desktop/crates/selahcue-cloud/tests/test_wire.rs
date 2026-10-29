@@ -158,16 +158,20 @@ fn body() -> String {
 }
 
 fn assert_native(wire: &Wire, path: &str) {
+    assert_native_body(wire, path, &body());
+}
+
+fn assert_native_body(wire: &Wire, path: &str, expected_body: &str) {
     assert_eq!(wire.request_line, format!("POST {path} HTTP/1.1"));
     // The server refuses anything else on these routes (it is what makes a cross-site form
     // unable to reach them), so a missing or different value is a total failure.
     assert_eq!(wire.header("content-type"), Some("application/json"));
     assert_eq!(
         wire.header("content-length"),
-        Some(body().len().to_string().as_str()),
+        Some(expected_body.len().to_string().as_str()),
         "content-length counts BYTES (the body has a multi-byte character)"
     );
-    assert_eq!(wire.body, body(), "the body arrives byte for byte");
+    assert_eq!(wire.body, expected_body, "the body arrives byte for byte");
     for forbidden in BROWSER_HEADERS {
         assert!(
             wire.header(forbidden).is_none(),
@@ -273,4 +277,25 @@ fn a_get_sends_no_content_type_and_the_same_absence_of_browser_headers() {
             wire.names()
         );
     }
+}
+
+#[test]
+fn native_session_revoke_sends_only_json_and_the_account_bearer() {
+    let (port, rx) = serve(vec![OK.to_string()]);
+    let response = ReqwestTransport::new()
+        .unwrap()
+        .post_json(
+            &format!("http://127.0.0.1:{port}/v1/sessions:revoke"),
+            "{}",
+            Some("ACCOUNT-SESSION-FOR-CLEANUP"),
+        )
+        .unwrap();
+    assert_eq!(response.status, 200);
+    let wire = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_native_body(&wire, "/v1/sessions:revoke", "{}");
+    assert_eq!(
+        wire.header("authorization"),
+        Some("Bearer ACCOUNT-SESSION-FOR-CLEANUP")
+    );
+    assert_eq!(wire.body, "{}");
 }
