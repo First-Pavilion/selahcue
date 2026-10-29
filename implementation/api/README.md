@@ -34,14 +34,15 @@ Shared `/v1` throttle denials return the existing 429 `RATE_LIMITED` JSON envelo
 ## Native authentication visibility
 
 The application logger `selahcue_api.apps.throttling.guards` warns when a shared native
-throttle actually refuses requests, at most once per60 seconds per scope per worker process.
+throttle actually refuses requests, at most once per 60 seconds per scope per worker process.
 The fixed scopes are `activation`, `session_login`, `activation_with_session`, `license_refresh`
 and `entitlement_manifest`; they reuse the existing scope-only denial suppression. A separate
 aggregate `scope=session_login refused sign-ins` warning reports login-service refusals, including
-wrong credentials, lockouts and account-policy refusals, at most once per60 seconds per worker.
-It does not distinguish these outcomes, count attempts or identify callers. A login throttle denial
-and a service refusal are independent signals; malformed/pre-credential requests and successful
-sign-ins do not emit the service-failure warning.
+wrong credentials, lockouts, account-policy refusals and service validation errors, at most once
+per 60 seconds per worker. It does not distinguish these outcomes, count attempts or identify
+callers. A login throttle denial and a service refusal are independent signals. Requests rejected
+by the native transport/body checks before calling the login service, and successful sign-ins,
+do not emit the service-failure warning.
 
 These warnings contain no IP, email, customer ID, password, token, fingerprint or exception. Native
 reporting adds at most five fixed denial timestamps and one aggregate failure timestamp, protected
