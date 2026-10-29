@@ -7,6 +7,7 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 
 import { useSignOut } from '../src/lib/auth/useSignOut.ts'
 import { SIGN_OUT_FAILED } from '../src/lib/auth/signOutFlow.ts'
+import { isProbablySignedIn, signIn, signOut } from '../src/lib/auth/sessionStore.ts'
 
 const BOUND = { timeout: 5_000 }
 
@@ -202,5 +203,84 @@ test('a request in one router does not block another app/router', BOUND, async (
     await pending
     first.scope.stop()
     second.scope.stop()
+  }
+})
+
+test('settled sign-out failure expires after all consumers leave and a new session signs in', BOUND, async () => {
+  const harness = await appHarness()
+  const failedRevoke = async () => { throw new TypeError('Failed to fetch') }
+  const account = harness.consumer(failedRevoke)
+  const navbar = harness.consumer(failedRevoke)
+  let remounted: ReturnType<typeof harness.consumer> | undefined
+  // Use the real sign-in store and typed account seam, without touching global fetch.
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { query: string }
+    const data = /mutation Login\b/.test(body.query)
+      ? { login: { role: 'ADMIN', orgId: 'new-session', expiresAt: new Date(Date.now() + 86_400_000).toISOString() } }
+      : { logout: { revoked: true } }
+    return new Response(JSON.stringify({ data }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    assert.equal(await account.flow.run(), false)
+    assert.equal(navbar.flow.error.value, SIGN_OUT_FAILED, 'premise: the settled failure is shared')
+    account.scope.stop()
+    assert.equal(navbar.flow.error.value, SIGN_OUT_FAILED, 'surviving chrome must retain feedback')
+    await harness.router.push('/signin')
+    navbar.scope.stop() // App.vue removes all chrome and Account on this bare route.
+    await signIn('owner@example.org', 'a-new-session-passphrase', { fetchImpl })
+    assert.equal(isProbablySignedIn.value, true, 'a genuinely successful new sign-in is established')
+    await harness.router.replace('/account') // SignInView's normal destination on the SAME router.
+    remounted = harness.consumer(async () => {})
+    assert.equal(remounted.flow.error.value, '', 'new session must not inherit the previous sign-out failure')
+    assert.equal(remounted.flow.pending.value, false)
+    assert.equal(harness.router.currentRoute.value.path, '/account')
+  } finally {
+    account.scope.stop()
+    navbar.scope.stop()
+    remounted?.scope.stop()
+    await signOut({ fetchImpl })
+  }
+})
+
+test('all consumers leaving during a request preserves the active operation for a new consumer', BOUND, async () => {
+  const harness = await appHarness()
+  const held = deferred()
+  let requests = 0
+  const revoke = async () => {
+    requests += 1
+    await held.promise
+    throw new TypeError('Failed to fetch')
+  }
+  const account = harness.consumer(revoke)
+  const navbar = harness.consumer(revoke)
+  const first = account.flow.run()
+  let remounted: ReturnType<typeof harness.consumer> | undefined
+  try {
+    await harness.router.push('/signin')
+    account.scope.stop()
+    navbar.scope.stop()
+    await harness.router.replace('/pricing')
+    remounted = harness.consumer(revoke)
+    assert.equal(remounted.flow.pending, account.flow.pending, 'do not replace an active operation')
+    assert.equal(remounted.flow.pending.value, true)
+    const second = remounted.flow.run()
+    try {
+      assert.equal(requests, 1, 'remounting cannot permit a second revocation while the first is active')
+      held.resolve()
+      assert.equal(await first, false)
+      assert.equal(await second, false)
+      assert.equal(remounted.flow.error.value, SIGN_OUT_FAILED, 'a surviving remount still reports late failure')
+      assert.equal(remounted.flow.pending.value, false)
+      assert.equal(harness.router.currentRoute.value.path, '/pricing')
+    } finally {
+      held.resolve()
+      await second
+    }
+  } finally {
+    held.resolve()
+    await first
+    account.scope.stop()
+    navbar.scope.stop()
+    remounted?.scope.stop()
   }
 })

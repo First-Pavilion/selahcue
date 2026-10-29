@@ -108,6 +108,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40941630343 and the saved full failed log. Static gates PASS; no local project runtime.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-003 and Cody finding CODY-KA8-01.
+- Hypothesis: router-lifetime reuse retains a settled failure after all consumers leave for bare `/signin`, so a new successful sign-in on the same router remounts Account with stale feedback.
+- Change or investigation: verified App.vue bare-route unmount, SignInView's real sign-in then router replacement, and useSignOut's unbounded settled error lifetime. Add tests only: real signIn/account seam plus all-consumer disposal/remount reproducer; active-operation remount and surviving feedback control.
+- Verifier executed: Goal Contract structural validation and full baseline diff check. Focused hosted assertion RED requested from root; no local project runtime.
+- Result: Production remains unchanged for this checkpoint. Expected stale-error assertion RED; pending operation retention control must pass.
+- New evidence: tests/sharedSignOut.test.ts and wave2-20261029/reviews/cody-ka8-r1.md.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a global pending flag can stick after unmount; duplicate live regions can announce twice; sharing across SSR routers can leak state. Tests must cover each relevant boundary.
