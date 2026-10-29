@@ -84,9 +84,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 and C-002.
 - Hypothesis: the existing null-id fallback enables a real Edit/Save request after a staged regeneration failed, replacing a hand-edited accepted draft while retaining its old provenance.
 - Change or investigation: source trace and tests-only regression/positive controls against unchanged production.
-- Verifier executed: structural goal validator and static diff/AST checks; request actual hosted RED before implementation.
-- Result: Pending hosted assertion RED. No production edits at this checkpoint.
-- New evidence: committed test-only checkpoint and parent handoff.
+- Verifier executed: hosted run 40946405217, browser job 123702816794, on test-only fd01fe04a49d88f300c6dde7b57f7068c969d3f8.
+- Result: Actual browser assertion RED: 2358 checks, seven named behavioral failures, plus old strict count 2347 mismatch (exit 4). Accepted numeric-id Edit/Save and readable generated-content controls passed. Attempting the incorrectly exposed controls sent an update and overwrote the accepted hand-edited non-AI row. Rust response regression was still running, so no Rust production edit is authorized from this browser evidence.
+- New evidence: wave2-20261029/notes-unsaved/browser-red.log; https://github.com/First-Pavilion/selahcue/actions/runs/40946405217.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 and C-003.
+- Hypothesis: keeping the generated response's null id, deriving unsaved state from that id or the explicit host flag, and consuming one edit predicate for render/click/save prevents the accepted draft from being used as an inferred save target.
+- Change or investigation: remove the openId fallback, add Not saved/read-only visible/live/badge states, keep unsaved content readable and independent copy actions, retain legitimate accepted editing and regeneration. The browser fixture now omits the new flag deliberately to cover the older host's real null-only shape and make restoring the id fallback detectable; the real Rust response test covers explicit not_saved. Merge current main ff7d1313 normally; its marketing advance does not touch notes files. No Rust production response edits yet.
+- Verifier executed: Goal Contract structural validation, stdlib Python AST and full original baseline diff check. No local project runtime.
+- Result: Static gates PASS; hosted UI GREEN and isolated fallback mutation proof pending. Exact count guard remains unchanged until corrected hosted run confirms the measured total. Rust assertion RED remains pending separately.
+- New evidence: UI-only candidate commit and parent handoff; merge a34b951a8262a7a200445f8fe6bb0538467462c9.
 - Decision: handoff
 
 ## Risks and rollback

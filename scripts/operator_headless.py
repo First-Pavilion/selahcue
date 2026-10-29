@@ -3554,12 +3554,13 @@ STUB = r"""
       if (tg === "transport") return Promise.reject("network down");
       if (tg === "regenerate_staging_failure") {
         // 17tnw2b9dq6: generation succeeded but the host could not stage it. The accepted
-        // TR.detail draft is deliberately untouched. Null id is the existing real reply shape;
-        // the explicit not_saved flag makes the generated draft's persistence state unambiguous.
+        // TR.detail draft is deliberately untouched. Deliberately use the existing null-id
+        // reply without the new flag too: an older host must remain conservatively read-only,
+        // and restoring the openId fallback must trip this behavioral control.
         return Promise.resolve({
           ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
           ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null,
-          transcript_id:null, not_saved:true, pending_confirmation:false, previous_draft:null,
+          transcript_id:null, pending_confirmation:false, previous_draft:null,
           draft:{title:"Unsaved replacement from AI", summary:"This draft was never staged.",
             sections:[{heading:"Main points", items:["New unsaved wording"], points:[]}], scriptures:[]},
           quota:null, clamp:null,
