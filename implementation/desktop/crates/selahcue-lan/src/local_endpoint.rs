@@ -477,10 +477,10 @@ fn create_state_dir(dir: &Path, uid: u32) -> Result<(), DirError> {
 #[cfg(unix)]
 fn create_private_dir(dir: &Path) -> Result<(), DirError> {
     use std::os::unix::fs::DirBuilderExt;
-    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => set_exactly_0700(dir),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(_) => Err(DirError::CreateFailed),
+    if judge_dir_creation(std::fs::DirBuilder::new().mode(0o700).create(dir))? {
+        set_exactly_0700(dir)
+    } else {
+        Ok(()) // a concurrent creator won; the caller verifies, never repairs it
     }
 }
 
@@ -542,7 +542,19 @@ fn set_created_dir_without_read_permission(dir: &Path) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn create_private_dir(dir: &Path) -> Result<(), DirError> {
-    std::fs::create_dir(dir).map_err(|_| DirError::CreateFailed)
+    judge_dir_creation(std::fs::create_dir(dir)).map(|_| ())
+}
+
+/// Interpret mkdir once: true only if we created it, false when another creator won.
+/// Existing entries must still pass the caller's directory verification and are never repaired.
+/// Shared by both platform helpers so their cold-start race policy is tested portably.
+#[doc(hidden)]
+pub fn judge_dir_creation(result: std::io::Result<()>) -> Result<bool, DirError> {
+    match result {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(_) => Err(DirError::CreateFailed),
+    }
 }
 
 /// Whether a directory that is a symlink is refused. Unix refuses (a symlink is where a squatter
