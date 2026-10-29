@@ -71,6 +71,9 @@ pub const ACTIVATIONS_PATH: &str = "/v1/activations";
 /// Account sign-in (`platform/urls.py`: `path("sessions", ...)`). No trailing slash.
 pub const SESSIONS_PATH: &str = "/v1/sessions";
 
+/// End only the account session in the bearer header; request body is an empty JSON object.
+pub const SESSION_REVOKE_PATH: &str = "/v1/sessions:revoke";
+
 /// Activation authenticated by an account session (`Authorization: Bearer <session_token>`).
 /// The colon is part of the route, not a typo: `path("activations:with-session", ...)`.
 pub const ACTIVATIONS_WITH_SESSION_PATH: &str = "/v1/activations:with-session";
@@ -337,6 +340,12 @@ pub struct SessionResponse {
     /// `"ADMIN"` | `"MEMBER"`.
     pub role: String,
     pub org_id: String,
+}
+
+/// Acknowledgement from the native single-account-session revoke route.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SessionRevokeResponse {
+    pub revoked: bool,
 }
 
 /// Request body for `POST /v1/activations:with-session`: the [`ActivationRequest`] body

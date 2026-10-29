@@ -12,6 +12,7 @@ from selahcue_api.apps.accounts.services import (
     LoginData,
     actor_from_session_token,
     login as _login_service,
+    logout_session as _logout_session_service,
 )
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
@@ -156,7 +157,7 @@ def _activation_payload(result, *, operation: str) -> dict:
 
 # --- Native-client account sign-in (86ak5t1gw, ADR-0029) -------------------------------------
 #
-# The two views below are `csrf_exempt` and that is SOUND only because of three properties, each
+# The native account views below are `csrf_exempt` and that is SOUND only because of three properties, each
 # pinned by `tests/test_native_account_surface.py`. Break one and the exemption stops being safe:
 #
 #   1. They read the account session from the `Authorization` header ONLY. The browser surface
@@ -273,6 +274,37 @@ def create_session(request):
     }
     # Nothing here is a credential but the token, and `session_token` is not on the denylist;
     # this guards against a future field (a hash, a password echo) being added to the payload.
+    assert_no_restricted_payload_fields(payload)
+    return _no_store(JsonResponse(payload, status=200))
+
+
+@csrf_exempt
+@require_POST
+@_json_content_type_only("session_revoke")
+@throttle("session_revoke", "SELAHCUE_THROTTLE_SESSION_REVOKE", (10, 60))
+def revoke_session(request):
+    """POST /v1/sessions:revoke — end only the presented account bearer session.
+
+    No cookie/body credential and no all-sessions switch. Device tokens and live
+    output are deliberately outside the existing account logout service's scope.
+    """
+    if _json_object(request) != {}:
+        return _no_store(
+            command_error_response(
+                code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="session_revoke"
+            )
+        )
+    try:
+        result = _logout_session_service(
+            _account_session_bearer(request), source_surface=NATIVE_AUDIT_SURFACE
+        )
+    except SafeAPIError as error:
+        return _no_store(
+            command_error_response(
+                code=error.code, surface="desktop", operation="session_revoke"
+            )
+        )
+    payload = {"revoked": result.revoked, "surface": "desktop", "operation": "session_revoke"}
     assert_no_restricted_payload_fields(payload)
     return _no_store(JsonResponse(payload, status=200))
 

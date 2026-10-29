@@ -123,6 +123,7 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_body());
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, r#"{"revoked":true}"#);
 
     let client = LicensingClient::new(transport, BASE);
     let creds = credentials();
@@ -152,7 +153,7 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
     // What actually left the device. The paths are spelled out as literals on purpose: the
     // server's routes are the contract, and a test that read them back from the same
     // constant the client uses could never notice the constant drifting.
-    assert_eq!(client.transport().request_count(), 2);
+    assert_eq!(client.transport().request_count(), 3);
     let login = client.transport().request(0).unwrap();
     assert_eq!(login.method, "POST");
     assert_eq!(login.url, format!("{BASE}/v1/sessions"));
@@ -1200,10 +1201,11 @@ fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn every_request_is_a_v1_post_and_only_the_session_activation_carries_a_bearer() {
+fn every_request_is_a_v1_post_and_only_account_operations_carry_a_bearer() {
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_body());
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, r#"{"revoked":true}"#);
     transport.push_response(200, rest_body(true, false, Some(TOKEN_B)));
     let client = LicensingClient::new(transport, BASE);
 
@@ -1218,7 +1220,7 @@ fn every_request_is_a_v1_post_and_only_the_session_activation_carries_a_bearer()
         .unwrap();
 
     let sent = client.transport().recorded();
-    assert_eq!(sent.len(), 3);
+    assert_eq!(sent.len(), 4);
     for request in &sent {
         assert_eq!(request.method, "POST");
         assert!(
@@ -1238,8 +1240,8 @@ fn every_request_is_a_v1_post_and_only_the_session_activation_carries_a_bearer()
     // `selahcue-cloud/tests/test_wire.rs`.
     assert_eq!(
         sent.iter().map(|r| r.had_bearer).collect::<Vec<_>>(),
-        [false, true, false],
-        "sign-in and the key path carry no Authorization; the session activation carries it"
+        [false, true, true, false],
+        "sign-in and the key path carry no Authorization; activation and cleanup carry it"
     );
 }
 
@@ -1395,6 +1397,7 @@ fn the_right_credential_goes_in_the_right_place_and_nowhere_else() {
     let transport = CapturingTransport::new(vec![
         (200, session_body()),
         (200, session_activation_body(true, false, Some(TOKEN_A))),
+        (200, r#"{"revoked":true}"#.into()),
         (200, rest_body(true, false, Some(TOKEN_B))),
     ]);
     let client = LicensingClient::new(transport, BASE);
@@ -1416,7 +1419,12 @@ fn the_right_credential_goes_in_the_right_place_and_nowhere_else() {
         Some(SESSION),
         "the session activation's bearer is the session token, not anything else"
     );
-    assert_eq!(seen[2].2, None, "the key path carries no bearer");
+    assert_eq!(
+        seen[2].2.as_deref(),
+        Some(SESSION),
+        "cleanup uses the same account bearer"
+    );
+    assert_eq!(seen[3].2, None, "the key path carries no bearer");
     for (i, (url, body, bearer)) in seen.iter().enumerate() {
         assert!(
             !url.contains("pw-for-placement")
@@ -1437,7 +1445,8 @@ fn the_right_credential_goes_in_the_right_place_and_nowhere_else() {
         !seen[1].1.contains(SESSION),
         "the session token is a header, never a body field"
     );
-    assert!(seen[2].1.contains(ENROLLMENT_KEY));
+    assert_eq!(seen[2].1, "{}");
+    assert!(seen[3].1.contains(ENROLLMENT_KEY));
 }
 
 #[test]
@@ -1496,11 +1505,14 @@ fn a_base_url_with_a_trailing_slash_does_not_double_the_slash() {
 
 #[test]
 fn a_retry_sends_the_same_idempotency_key_so_the_server_can_replay() {
-    // The retry contract: after a timeout the caller repeats the call with the SAME key and
+    // Cleanup fails after a valid activation, leaving the account token available.
+    // The caller repeats activation with the SAME key and
     // the server answers the replay. The client must not mint a new key or alter the body.
     let transport = CapturingTransport::new(vec![
         (200, session_activation_body(true, false, Some(TOKEN_A))),
+        (503, String::new()),
         (200, session_activation_body(false, false, None)),
+        (200, r#"{"revoked":true}"#.into()),
     ]);
     let client = LicensingClient::new(transport, BASE);
     let first = client
@@ -1511,7 +1523,7 @@ fn a_retry_sends_the_same_idempotency_key_so_the_server_can_replay() {
         .unwrap();
 
     let seen = client.transport().seen.lock().unwrap().clone();
-    assert_eq!(seen[0].1, seen[1].1, "a retry must be byte-identical");
+    assert_eq!(seen[0].1, seen[2].1, "a retry must be byte-identical");
     assert!(seen[0].1.contains("idem-0123456789ab"));
     assert!(first.token.is_some() && again.token.is_none());
     assert_eq!(first.device_public_id, again.device_public_id);
@@ -1920,7 +1932,7 @@ fn activating_with_a_blank_session_is_refused_locally_without_a_request() {
     client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap();
-    assert_eq!(client.transport().request_count(), 1);
+    assert_eq!(client.transport().request_count(), 2);
 }
 
 #[test]
@@ -2202,4 +2214,419 @@ fn only_status_429_is_a_bare_rate_limit_and_an_oversized_one_still_is() {
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     assert_eq!(neighbour, F::UnexpectedStatus(430));
+}
+
+#[test]
+fn a_valid_account_activation_immediately_attempts_bearer_only_session_cleanup() {
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(
+        200,
+        r#"{"revoked":true,"surface":"desktop","operation":"session_revoke"}"#,
+    );
+    let client = LicensingClient::new(transport, BASE);
+    let activation = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+    assert_eq!(activation.token.unwrap().expose(), TOKEN_A);
+    assert_eq!(
+        client.transport().request_count(),
+        2,
+        "the bootstrap session remains valid after activation"
+    );
+    let cleanup = client.transport().request(1).unwrap();
+    assert_eq!(cleanup.method, "POST");
+    assert_eq!(cleanup.url, format!("{BASE}/v1/sessions:revoke"));
+    assert!(cleanup.had_bearer);
+    assert_eq!(body_of(&cleanup), serde_json::json!({}));
+}
+
+#[test]
+fn remote_cleanup_failure_does_not_turn_valid_activation_into_failure_or_erase_custody() {
+    use selahcue_licensing::SessionCleanup;
+    for status in [401, 429, 503] {
+        let transport = ScriptedTransport::new();
+        transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+        transport.push_response(status, "not trusted response text");
+        let client = LicensingClient::new(transport, BASE);
+        let creds = credentials();
+        creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
+        creds.store_account_session(&Token::new(SESSION)).unwrap();
+        let result = client
+            .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+            .unwrap();
+        assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+        assert_eq!(result.account_session_cleared, Ok(false));
+        assert!(matches!(
+            result.activation.session_cleanup,
+            Some(SessionCleanup::RetryRequired(_))
+        ));
+        assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+        assert_eq!(creds.account_session().unwrap().unwrap().expose(), SESSION);
+        assert!(matches!(
+            result.activation.status(),
+            LicensingStatus::Activated { .. }
+        ));
+        assert_eq!(
+            client.transport().request_count(),
+            2,
+            "cleanup must not spin retries"
+        );
+    }
+}
+
+#[test]
+fn confirmed_cleanup_removes_only_matching_account_session_after_device_persistence() {
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, r#"{"revoked":true}"#);
+    let client = LicensingClient::new(transport, BASE);
+    let creds = credentials();
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+    assert_eq!(result.account_session_cleared, Ok(true));
+    assert!(creds.account_session().unwrap().is_none());
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+}
+
+#[test]
+fn confirmed_cleanup_does_not_remove_a_different_stored_account_session() {
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(false, false, None));
+    transport.push_response(200, r#"{"revoked":true}"#);
+    let client = LicensingClient::new(transport, BASE);
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
+    creds
+        .store_account_session(&Token::new("different-account-session"))
+        .unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::KeptExisting));
+    assert_eq!(result.account_session_cleared, Ok(false));
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_B);
+    assert_eq!(
+        creds.account_session().unwrap().unwrap().expose(),
+        "different-account-session"
+    );
+}
+
+#[test]
+fn cleanup_requires_positive_acknowledgement_and_never_quotes_untrusted_body() {
+    use selahcue_licensing::SessionCleanup;
+    for body in [r#"{"revoked":false}"#, r#"{}"#, "SECRET-RESPONSE"] {
+        let transport = ScriptedTransport::new();
+        transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+        transport.push_response(200, body);
+        let client = LicensingClient::new(transport, BASE);
+        let result = client
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap();
+        assert!(matches!(
+            result.session_cleanup,
+            Some(SessionCleanup::RetryRequired(_))
+        ));
+        assert!(!format!("{:?}", result.session_cleanup).contains("SECRET-RESPONSE"));
+        assert_eq!(result.token.unwrap().expose(), TOKEN_A);
+    }
+}
+
+#[test]
+fn refused_or_ambiguous_activation_retains_session_for_idempotent_retry() {
+    let transport = ScriptedTransport::new();
+    transport.push_failure("connection lost before activation response");
+    let client = LicensingClient::new(transport, BASE);
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    assert!(client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .is_err());
+    assert_eq!(client.transport().request_count(), 1);
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_B);
+    assert_eq!(creds.account_session().unwrap().unwrap().expose(), SESSION);
+}
+
+#[test]
+fn real_transport_activation_and_cleanup_preserve_device_and_send_no_ambient_credentials() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let server = thread::spawn(move || {
+        for body in [
+            session_activation_body(true, false, Some(TOKEN_A)),
+            r#"{"revoked":true}"#.into(),
+        ] {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = socket.read(&mut buf).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buf[..n]);
+                if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..end]);
+                    let len: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(str::trim)
+                                .map(str::to_owned)
+                        })
+                        .unwrap()
+                        .parse()
+                        .unwrap();
+                    if bytes.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+            }
+            tx.send(String::from_utf8(bytes).unwrap()).unwrap();
+            write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nSet-Cookie: ambient=must-not-return\r\n\r\n{}", body.len(), body).unwrap();
+        }
+    });
+    let client = LicensingClient::new(
+        selahcue_cloud::transport::ReqwestTransport::new().unwrap(),
+        format!("http://{addr}"),
+    );
+    let creds = credentials();
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+    assert_eq!(result.account_session_cleared, Ok(true));
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+    assert!(creds.account_session().unwrap().is_none());
+    let activation_wire = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let cleanup_wire = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(activation_wire.starts_with("POST /v1/activations:with-session HTTP/1.1\r\n"));
+    assert!(cleanup_wire.starts_with("POST /v1/sessions:revoke HTTP/1.1\r\n"));
+    for wire in [activation_wire, cleanup_wire.clone()] {
+        let headers = wire.split("\r\n\r\n").next().unwrap().to_ascii_lowercase();
+        assert!(headers.contains(&format!("authorization: bearer {}", SESSION)));
+        assert!(headers.contains("content-type: application/json"));
+        for forbidden in [
+            "\r\ncookie:",
+            "\r\nx-csrftoken:",
+            "\r\norigin:",
+            "\r\nreferer:",
+        ] {
+            assert!(!headers.contains(forbidden));
+        }
+    }
+    assert_eq!(cleanup_wire.split("\r\n\r\n").nth(1), Some("{}"));
+    server.join().unwrap();
+}
+
+#[test]
+fn local_session_cleanup_error_is_separate_from_a_persisted_device_activation() {
+    use selahcue_licensing::{SecretError, SecretStore, ACCOUNT_SESSION_NAME};
+    struct FailingAccountRemoval(InMemorySecretStore);
+    impl SecretStore for FailingAccountRemoval {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            self.0.get(name)
+        }
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            self.0.set(name, token)
+        }
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            if name == ACCOUNT_SESSION_NAME {
+                Err(SecretError("local secret store unavailable".into()))
+            } else {
+                self.0.remove(name)
+            }
+        }
+    }
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, r#"{"revoked":true}"#);
+    let client = LicensingClient::new(transport, BASE);
+    let creds = DeviceCredentials::new(FailingAccountRemoval(InMemorySecretStore::new()));
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+    assert!(result.account_session_cleared.is_err());
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+    assert!(creds.account_session().unwrap().is_some());
+    assert!(matches!(
+        result.activation.status(),
+        LicensingStatus::Activated { .. }
+    ));
+}
+
+#[test]
+fn lost_cleanup_response_keeps_the_new_device_and_account_retry_custody() {
+    use selahcue_licensing::SessionCleanup;
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_failure("cleanup acknowledgement timed out");
+    let client = LicensingClient::new(transport, BASE);
+    let creds = credentials();
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+    assert_eq!(result.account_session_cleared, Ok(false));
+    assert!(matches!(
+        result.activation.session_cleanup,
+        Some(SessionCleanup::RetryRequired(
+            ActivationFailure::Unreachable(_)
+        ))
+    ));
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+    assert_eq!(creds.account_session().unwrap().unwrap().expose(), SESSION);
+    assert_eq!(client.transport().request_count(), 2);
+}
+
+#[test]
+fn device_persistence_failure_keeps_show_once_token_available_for_local_retry() {
+    use selahcue_licensing::{SecretError, SecretStore, DEVICE_TOKEN_NAME};
+    struct RefuseDeviceWrite(InMemorySecretStore);
+    impl SecretStore for RefuseDeviceWrite {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            self.0.get(name)
+        }
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            if name == DEVICE_TOKEN_NAME {
+                Err(SecretError("device store unavailable".into()))
+            } else {
+                self.0.set(name, token)
+            }
+        }
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            self.0.remove(name)
+        }
+    }
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    transport.push_response(200, r#"{"revoked":true}"#);
+    let client = LicensingClient::new(transport, BASE);
+    let creds = DeviceCredentials::new(RefuseDeviceWrite(InMemorySecretStore::new()));
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert!(result.device_persistence.is_err());
+    assert_eq!(result.activation.token.unwrap().expose(), TOKEN_A);
+    assert_eq!(result.account_session_cleared, Ok(true));
+    assert!(creds.device_token().unwrap().is_none());
+}
+
+#[test]
+fn explicit_cleanup_can_be_retried_without_repeating_activation() {
+    let transport = CapturingTransport::new(vec![
+        (503, String::new()),
+        (200, r#"{"revoked":true}"#.into()),
+    ]);
+    let client = LicensingClient::new(transport, BASE);
+    assert!(client.revoke_session(&Token::new(SESSION)).is_err());
+    assert_eq!(client.revoke_session(&Token::new(SESSION)), Ok(()));
+    let seen = client.transport().seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    for (url, body, bearer) in seen.iter() {
+        assert_eq!(url, &format!("{BASE}/v1/sessions:revoke"));
+        assert_eq!(body, "{}");
+        assert_eq!(bearer.as_deref(), Some(SESSION));
+    }
+}
+
+#[test]
+fn revoke_not_found_is_an_unknown_cleanup_refusal_not_a_license_lapse() {
+    let transport = ScriptedTransport::responding(
+        404,
+        coded_error("session_revoke", "NOT_FOUND", "Not found."),
+    );
+    let client = LicensingClient::new(transport, BASE);
+    assert_eq!(
+        client.revoke_session(&Token::new(SESSION)),
+        Err(ActivationFailure::Coded(ErrorCode::NotFound))
+    );
+}
+
+#[test]
+fn device_token_is_persisted_before_the_wrapper_waits_for_remote_cleanup() {
+    use selahcue_cloud::HttpResponse;
+    use selahcue_licensing::{
+        HttpTransport, SecretError, SecretStore, TransportError, DEVICE_TOKEN_NAME,
+    };
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    struct SharedStore(Arc<InMemorySecretStore>);
+    impl SecretStore for SharedStore {
+        fn get(&self, n: &str) -> Result<Option<Token>, SecretError> {
+            self.0.get(n)
+        }
+        fn set(&self, n: &str, t: &Token) -> Result<(), SecretError> {
+            self.0.set(n, t)
+        }
+        fn remove(&self, n: &str) -> Result<(), SecretError> {
+            self.0.remove(n)
+        }
+    }
+    struct OrderedTransport {
+        store: Arc<InMemorySecretStore>,
+        calls: AtomicUsize,
+    }
+    impl HttpTransport for OrderedTransport {
+        fn post_json(
+            &self,
+            url: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            let body = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                session_activation_body(true, false, Some(TOKEN_A))
+            } else {
+                assert!(url.ends_with("/v1/sessions:revoke"));
+                assert_eq!(
+                    self.store
+                        .get(DEVICE_TOKEN_NAME)
+                        .unwrap()
+                        .as_ref()
+                        .map(Token::expose),
+                    Some(TOKEN_A),
+                    "do not wait on cleanup while a show-once device token is unpersisted"
+                );
+                r#"{"revoked":true}"#.into()
+            };
+            Ok(HttpResponse { status: 200, body })
+        }
+        fn get(&self, _: &str, _: Option<&str>) -> Result<HttpResponse, TransportError> {
+            unreachable!()
+        }
+    }
+    let store = Arc::new(InMemorySecretStore::new());
+    let creds = DeviceCredentials::new(SharedStore(Arc::clone(&store)));
+    creds.store_account_session(&Token::new(SESSION)).unwrap();
+    let client = LicensingClient::new(
+        OrderedTransport {
+            store,
+            calls: AtomicUsize::new(0),
+        },
+        BASE,
+    );
+    let result = client
+        .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
+        .unwrap();
+    assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
+    assert_eq!(result.account_session_cleared, Ok(true));
 }

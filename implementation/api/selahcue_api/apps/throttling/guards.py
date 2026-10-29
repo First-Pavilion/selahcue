@@ -55,11 +55,11 @@ _DENIAL_LOG_INTERVAL_SECONDS = 60.0
 _denial_log_lock = threading.Lock()
 _last_denial_log: dict[str, float] = {}
 
-# Native routes only extend the existing scope-only suppression map by these five fixed
+# Native routes only extend the existing scope-only suppression map by these fixed
 # keys. Never register a client identity or arbitrary caller-provided scope (17tnw2b1wqa).
 _NATIVE_DENIAL_SCOPES = frozenset({
     "activation", "session_login", "activation_with_session", "license_refresh",
-    "entitlement_manifest",
+    "entitlement_manifest", "session_revoke",
 })
 _last_native_login_failure_log = float("-inf")
 

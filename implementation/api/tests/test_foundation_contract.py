@@ -128,6 +128,7 @@ def test_route_contracts_keep_admin_account_and_desktop_surfaces_separate():
         # `/graphql/account`, which stays CSRF-enforced for browsers.
         "v1/sessions",
         "v1/activations:with-session",
+        "v1/sessions:revoke",
         "v1/license:refresh",
         "v1/entitlements/manifest",
         "v1/downloads:prepare",
