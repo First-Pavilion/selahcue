@@ -23,6 +23,9 @@ whose author never thought about this cache.
 
 import pytest
 
+from selahcue_api.apps.throttling import services as throttle_services
+from selahcue_api.apps.throttling.circuit import CacheCircuit
+
 
 @pytest.fixture(autouse=True)
 def _cold_catalogue_grant_cache():
@@ -136,3 +139,9 @@ def _restore_catalogue_reference_data(request, _catalogue_reference_snapshot):
         with connection.cursor() as cursor:
             for statement in statements:
                 cursor.execute(statement)
+
+
+@pytest.fixture(autouse=True)
+def _cold_cache_circuit(monkeypatch):
+    """Process circuit survives DB/cache rollback; isolate outage tests globally."""
+    monkeypatch.setattr(throttle_services, "CACHE_CIRCUIT", CacheCircuit())

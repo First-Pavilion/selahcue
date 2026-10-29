@@ -97,7 +97,7 @@ def test_twentyfive_native_outage_requests_hash_zero_passwords_and_return_429(
     client = native_client()
     with broken_cache() as calls:
         responses = [native_login(client) for _ in range(25)]
-    assert len(calls) == 25, "each actual request reached the unavailable cache"
+    assert len(calls) == 3, "default circuit bypasses the cache after three failures"
     assert len(password_hashes) == 0, f"outage performed {len(password_hashes)} real PBKDF2 calls"
     assert [r.status_code for r in responses] == [429] * 25
     for response in responses:

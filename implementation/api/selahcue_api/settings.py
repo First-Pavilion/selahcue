@@ -485,6 +485,27 @@ CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIM
 CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
 
 
+def _cache_circuit_number(name: str, default: str, minimum: float, maximum: float, *, integer=False):
+    raw = (os.getenv(name) or "").strip() or default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        value = None
+    if value is None or not minimum <= value <= maximum:
+        # Even malformed environment input must never be echoed in diagnostics.
+        raise ImproperlyConfigured(
+            f"{name} must be {'an integer' if integer else 'a finite number'} from "
+            f"{minimum:g} to {maximum:g}; see docs/ops/DEPLOYMENT.md §6b."
+        ) from None
+    return value
+
+
+CACHE_CIRCUIT_FAILURE_THRESHOLD = _cache_circuit_number(
+    "CACHE_CIRCUIT_FAILURE_THRESHOLD", "3", 1, 100, integer=True,
+)
+CACHE_CIRCUIT_COOLDOWN = _cache_circuit_number("CACHE_CIRCUIT_COOLDOWN", "5", 0.1, 60)
+
+
 def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> dict:
     """The default cache: Redis (with bounded socket timeouts) when `url` is set, else the
     per-process LocMemCache. LocMem never blocks on I/O, so it needs no timeouts. A function so

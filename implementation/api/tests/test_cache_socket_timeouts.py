@@ -174,9 +174,13 @@ def _point_cache_at(settings, server: StalledRedis, timeout: float = TEST_TIMEOU
 
 
 @pytest.fixture(autouse=True)
-def _quiet_limiter_state(monkeypatch):
+def _quiet_limiter_state(monkeypatch, settings):
     """The outage warning is rate-limited via module state; forget it so each test sees the
     first one. Local-memory cache for everything that runs before a test points at the stall."""
+    # This module measures each socket operation, including repeated stalls. Keep
+    # its circuit closed; default circuit admission is exercised end-to-end in
+    # test_cache_circuit_breaker.py instead.
+    settings.CACHE_CIRCUIT_FAILURE_THRESHOLD = 100
     monkeypatch.setattr(throttle_services, "_last_store_error_log", float("-inf"))
     cache.clear()
 
