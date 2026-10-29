@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import platform
 from pathlib import Path
@@ -2850,12 +2851,219 @@ def _real_reset_publisher(monkeypatch, url):
         app.close()
 
 
+def _classify_reset_timing_interval(interval):
+    """Equivalence, signed outside-band separation and imprecision are different results."""
+    low, high = interval
+    band = 0.003
+    if -band <= low <= high <= band:
+        return "equivalent"
+    if low > band:
+        return "positive_gap"
+    if high < -band:
+        return "negative_gap"
+    return "precision_inconclusive"
+
+
 def _reset_timing_pair_summary(pairs):
+    if len(pairs) != 32:
+        raise ValueError("reset timing protocol requires exactly 32 pairs")
+    if any(not math.isfinite(value) or value < 0 for pair in pairs for value in pair.values()):
+        raise ValueError("reset timing durations must be finite and nonnegative")
     differences = [pair["known"] - pair["unknown"] for pair in pairs]
     mean = statistics.mean(differences)
-    # Student t, 95% two-sided, df=31 for the fixed 32-pair design below.
+    # Retain ALL raw arithmetic-mean evidence. A signed interval wholly outside the
+    # unchanged band vetoes the gate even when a minority of slow calls leaves the median
+    # untouched. A broad interval overlapping the band establishes neither equivalence nor
+    # a signed gap: the former assertion incorrectly called that an account-existence leak.
     radius = 2.040 * statistics.stdev(differences) / len(differences) ** 0.5
-    return {"mean_gap_seconds": mean, "ci95_seconds": [mean - radius, mean + radius]}
+    mean_interval = [mean - radius, mean + radius]
+    ordered = sorted(differences)
+    # Fixed order-statistic interval, using all 32 pairs with no filtering/replacement.
+    # For independent continuous pairs with population median m, the number below m is
+    # Binomial(32, .5). [D_(10), D_(23)] misses m only with <=9 on either side, so its
+    # coverage is 1 - 2*sum(C(32,i), i=0..9)/2**32 = 97.9938393%. The two target/null
+    # intervals jointly cover their medians with >=95.9876786% by the union bound, without
+    # requiring independence BETWEEN the two intervals. Serial correlation can invalidate
+    # the within-sample independence assumption; raw order/nulls remain available to review.
+    median_interval = [ordered[9], ordered[22]]
+    coverage = 1 - 2 * sum(math.comb(32, index) for index in range(10)) / 2 ** 32
+    return {
+        "mean_gap_seconds": mean, "ci95_seconds": mean_interval,
+        "mean_classification": _classify_reset_timing_interval(mean_interval),
+        "median_gap_seconds": statistics.median(differences),
+        "median_interval_seconds": median_interval, "median_interval_coverage": coverage,
+        "median_classification": _classify_reset_timing_interval(median_interval),
+        "median_interval_order_statistics_1_based": [10, 23], "sample_count": len(pairs),
+    }
+
+
+def _reset_timing_verdict(target, null):
+    """Bounded paired-location gate, with an independently retained signed-mean veto.
+
+    This cannot prove equality of arbitrary latency distributions or rare tails. In
+    particular an inconclusive all-sample mean interval does not become a mean-equivalence
+    claim merely because the scoped median/null gate passes.
+    """
+    signed = {"positive_gap", "negative_gap"}
+    if target["mean_classification"] in signed:
+        return {"passed": False, "classification": "signed_mean_gap",
+                "reason": "all-sample signed mean interval lies wholly outside the fixed band"}
+    if target["median_classification"] in signed:
+        return {"passed": False, "classification": "signed_median_gap",
+                "reason": "signed paired-median interval lies wholly outside the fixed band"}
+    if target["median_classification"] != "equivalent":
+        return {"passed": False, "classification": "median_precision_inconclusive",
+                "reason": "insufficient paired-median precision; equivalence and a directional leak are unproven"}
+    if null["mean_classification"] in signed:
+        return {"passed": False, "classification": "null_mean_asymmetry",
+                "reason": "same-path signed mean interval invalidates the instrument control"}
+    if null["median_classification"] in signed:
+        return {"passed": False, "classification": "null_median_asymmetry",
+                "reason": "same-path signed median interval invalidates the instrument control"}
+    if null["median_classification"] != "equivalent":
+        return {"passed": False, "classification": "null_median_inconclusive",
+                "reason": "same-path paired-median control does not establish the fixed-band precision"}
+    return {"passed": True, "classification": "scoped_equivalent",
+            "reason": "paired/null median intervals fit the fixed band and no signed mean veto is established"}
+
+
+@pytest.mark.parametrize(
+    "filename, expected_pass, expected_classification",
+    [
+        ("pr-ci40923541126.json", True, "scoped_equivalent"),
+        ("pad-removal40923575228.json", False, "signed_mean_gap"),
+    ],
+)
+def test_reset_timing_protocol_replays_retained_actual_runs(filename, expected_pass, expected_classification):
+    evidence = Path(__file__).resolve().parents[3] / "docs/delivery/goals/86ak7kka2-evidence" / filename
+    original = evidence.read_bytes()
+    evidence_hash = hashlib.sha256(original).hexdigest()
+    receipt = json.loads(original)
+    pairs = receipt["pairs"]
+    null_pairs = receipt["same_path_null_pairs"]
+    preserved = json.dumps([pairs, null_pairs], sort_keys=True)
+    raw_pair_hash = hashlib.sha256(preserved.encode()).hexdigest()
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") is not None, "paired-median precision must be measured"
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(null_pairs))
+    assert verdict["passed"] is expected_pass
+    assert verdict["classification"] == expected_classification
+    if expected_pass:
+        assert summary["mean_classification"] == "precision_inconclusive", (
+            "the old wide interval containing zero must never be diagnosed as a signed gap"
+        )
+    assert json.dumps([pairs, null_pairs], sort_keys=True) == preserved, "a raw sample was changed or removed"
+    assert hashlib.sha256(json.dumps([pairs, null_pairs], sort_keys=True).encode()).hexdigest() == raw_pair_hash
+    assert hashlib.sha256(evidence.read_bytes()).hexdigest() == evidence_hash, "retained raw evidence was modified"
+
+
+def _reset_replay_pairs(differences):
+    # Positive synthetic wall times with exactly the declared signed pair differences.
+    return [{"known": 1.0 + delta, "unknown": 1.0} for delta in differences]
+
+
+def test_reset_timing_protocol_uses_the_declared_order_statistics_and_coverage():
+    summary = _reset_timing_pair_summary(_reset_replay_pairs([i / 1000 for i in range(-16, 16)]))
+    assert summary["median_interval_seconds"] == pytest.approx([-0.007, 0.006])
+    assert summary["median_gap_seconds"] == pytest.approx(-0.0005)
+    assert summary["median_interval_order_statistics_1_based"] == [10, 23]
+    assert summary["median_interval_coverage"] == pytest.approx(0.9799383929930627)
+    assert summary["sample_count"] == 32
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("position", range(32))
+def test_reset_timing_protocol_preserves_one_isolated_outlier(sign, position):
+    differences = [0.0] * 32
+    differences[position] = sign * 0.35
+    pairs = _reset_replay_pairs(differences)
+    original = json.dumps(pairs, sort_keys=True)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == [0.0, 0.0]
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert verdict["passed"] and verdict["classification"] == "scoped_equivalent"
+    assert summary["mean_classification"] == "precision_inconclusive"
+    assert len(pairs) == 32 and json.dumps(pairs, sort_keys=True) == original
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_rejects_a_repeated_small_gap(sign):
+    pairs = _reset_replay_pairs([sign * (0.0035 + (i % 3) * 0.00001) for i in range(32)])
+    verdict = _reset_timing_verdict(
+        _reset_timing_pair_summary(pairs), _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)),
+    )
+    assert not verdict["passed"] and verdict["classification"] == "signed_mean_gap"
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_rejects_confirmed_tail_mean_even_when_median_fits(sign):
+    # Six delayed responses can leave the median at zero while revealing a signed mean gap.
+    pairs = _reset_replay_pairs([sign * 0.150] * 6 + [0.0] * 26)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == [0.0, 0.0]
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "signed_mean_gap"
+
+
+def test_reset_timing_protocol_rejects_imprecise_median_without_claiming_a_signed_gap():
+    pairs = _reset_replay_pairs([-0.004] * 16 + [0.004] * 16)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == pytest.approx([-0.004, 0.004])
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "median_precision_inconclusive"
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_keeps_the_median_veto_when_the_mean_is_inconclusive(sign):
+    pairs = _reset_replay_pairs([sign * 0.0035] * 31 + [-sign * 0.35])
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary["mean_classification"] == "precision_inconclusive"
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "signed_median_gap"
+
+
+@pytest.mark.parametrize(
+    "null_differences, expected_classification",
+    [
+        ([0.150] * 6 + [0.0] * 26, "null_mean_asymmetry"),
+        ([0.0035] * 31 + [-0.35], "null_median_asymmetry"),
+        ([-0.004] * 16 + [0.004] * 16, "null_median_inconclusive"),
+    ],
+)
+def test_reset_timing_protocol_requires_a_resolvable_same_path_null(null_differences, expected_classification):
+    verdict = _reset_timing_verdict(
+        _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)),
+        _reset_timing_pair_summary(_reset_replay_pairs(null_differences)),
+    )
+    assert not verdict["passed"] and verdict["classification"] == expected_classification
+
+
+@pytest.mark.parametrize(
+    "interval, expected",
+    [
+        ([-0.003, 0.003], "equivalent"),
+        ([0.0031, 0.004], "positive_gap"),
+        ([-0.004, -0.0031], "negative_gap"),
+        ([-0.033, 0.011], "precision_inconclusive"),
+        ([0.002, 0.004], "precision_inconclusive"),
+    ],
+)
+def test_reset_timing_protocol_distinguishes_equivalence_gap_and_precision(interval, expected):
+    assert _classify_reset_timing_interval(interval) == expected
+
+
+@pytest.mark.parametrize("count", [0, 31, 33])
+def test_reset_timing_protocol_refuses_to_change_its_fixed_sample_count(count):
+    with pytest.raises(ValueError, match="exactly 32"):
+        _reset_timing_pair_summary(_reset_replay_pairs([0.0] * count))
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.001])
+def test_reset_timing_protocol_refuses_invalid_duration_data(invalid):
+    pairs = _reset_replay_pairs([0.0] * 32)
+    pairs[0]["known"] = invalid
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        _reset_timing_pair_summary(pairs)
 
 
 def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
@@ -2954,6 +3162,14 @@ def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
         "committed_tokens_checked_on_separate_connection": committed_count,
         "distinct_response_bodies": len(bodies),
     }
+    report["timing_protocol"] = {
+        "version": "paired-median-with-signed-mean-veto-v1", "fixed_pair_count": 32,
+        "fixed_equivalence_band_seconds": 0.003,
+        "scope": "paired location with retained evidenced signed mean gap veto; not arbitrary tail/distribution equality",
+        "all_raw_pairs_retained": True,
+        "within_sample_independence_assumed": True,
+        "verdict": _reset_timing_verdict(report["paired_summary"], report["null_summary"]),
+    }
     print("RESET_TIMING_RECEIPT=" + json.dumps(report, sort_keys=True))
     evidence_dir = os.getenv("RESET_FLOOR_EVIDENCE_DIR")
     if evidence_dir:
@@ -2976,24 +3192,35 @@ def test_reset_request_unpadded_reference_measurement(client, settings, monkeypa
 @pytest.mark.skipif(os.getenv("RESET_FLOOR_MEASUREMENT_MODE") == "baseline", reason="reference sizing run, not a candidate gate")
 @pytest.mark.django_db(transaction=True)
 def test_reset_request_real_publisher_timing_is_uniform(client, settings, monkeypatch):
-    """Removing only reset's pad must fail the paired interval, with sibling tests running.
+    """Removing only reset's pad must fail a signed interval, with sibling tests running.
 
     The 3ms equivalence band was fixed BEFORE the candidate measurement from hosted baseline
     40921509007: the 32 interleaved same-path null pairs had mean 0.111ms, a 95% paired
     interval [-0.131, 0.352]ms and maximum individual difference 2.448ms. 3ms exceeds that
     observed individual noise while remaining below the unpadded existence interval's lower
     endpoint (6.075ms). The candidate reports its own null control but cannot widen its band.
-    This is equivalence within a measured band, not proof of arbitrary-network constant time.
+    QA-265-1: arithmetic-mean equivalence alone was precision-inconclusive after one unknown
+    HTTP request took 450.772ms. Its wide CI included zero, so the former message claiming a
+    demonstrated oracle was false. Match the existing resend median-based pattern with a
+    fixed exact paired-median interval; keep every raw sample and the all-sample mean/tCI.
+    A mean interval wholly outside the band independently vetoes the gate, so repeated tail
+    asymmetry cannot hide behind a zero median. Cross-boundary median precision fails as
+    inconclusive, never as a demonstrated directional leak. There is one fixed study, with
+    no adaptive repeats, data filtering or widening of the original 3ms band.
+
+    Scope is paired-location equivalence with the retained evidenced mean-gap veto. A wide
+    mean interval remains inconclusive even when that scoped gate passes. Finite samples
+    do not establish equality of arbitrary latency distributions, rare tails, correlated
+    scheduling noise or arbitrary networks. Actual raw-run and synthetic replay controls
+    in this module pin both the isolated-outlier case and confirmed repeated/tail-gap refusal.
     """
     report = _measure_real_reset_requests(client, settings, monkeypatch, baseline=False)
-    band = 0.003
-    low, high = report["paired_summary"]["ci95_seconds"]
-    assert -band <= low <= high <= band, (
-        f"paired timing interval [{low:.6f}, {high:.6f}]s escapes the preregistered +/-{band:.3f}s "
-        "noise band; real broker/commit branch timing distinguishes account existence"
+    verdict = report["timing_protocol"]["verdict"]
+    assert verdict["passed"], (
+        f"paired timing interval protocol {verdict['classification']}: {verdict['reason']}; "
+        f"fixed +/-0.003s band, paired summary={report['paired_summary']}, "
+        f"same-path null summary={report['null_summary']}"
     )
-    null_low, null_high = report["null_summary"]["ci95_seconds"]
-    assert -band <= null_low <= null_high <= band, "same-path null control cannot resolve the declared band"
     floor = report["floor_seconds"]
     assert floor > 0
     assert min(pair[kind] for pair in report["pairs"] for kind in ("known", "unknown")) >= floor, (
