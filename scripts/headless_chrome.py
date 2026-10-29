@@ -139,6 +139,12 @@ _SWEEP_MTIME_SLACK_S = 0.05
 ChromeRun = collections.namedtuple("ChromeRun", "stdout stderr_tail returncode timed_out elapsed pid")
 
 
+def environment_error(context, error):
+    """One diagnostic line for local filesystem/process failures, without a Python traceback."""
+    detail = str(error).replace("\r", "\\r").replace("\n", "\\n")
+    return "FAIL: %s (infra, exit 2): %s" % (context, detail)
+
+
 def describe_exit(returncode):
     """A human reading of Chrome's exit status: `7`, `-11 (killed by SIGSEGV)`, `none (never exited)`."""
     if returncode is None:
@@ -677,6 +683,7 @@ def self_test(verdict=None, expected_checks=3):
         return gate
 
     try:
+        problems.extend(_environment_self_test(root))
         # 0. Pure helpers. A negative status used to print bare (`-11`).
         if describe_exit(-11) != "-11 (killed by SIGSEGV)" or describe_exit(7) != "7" \
                 or describe_exit(None) != "none (never exited)":
@@ -1146,12 +1153,107 @@ def self_test(verdict=None, expected_checks=3):
     return problems
 
 
+def _environment_self_test(root):
+    """Exercise the real CLI boundaries, not a copy of their error-selection logic (17tnw2b1x27).
+
+    A child gate skips only its recursive launcher self-test. Its Chrome is a tiny executable
+    with no result block, so a positive selection proves launch and deliberately exits2, never
+    impersonating a passing browser gate. Controlled discovery prevents accidental real Chrome
+    fallback in a broken negative case. Allocation cases run the actual self-test instead.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    gate = os.path.join(here, "operator_headless.py")
+    work = os.path.join(root, "environment")
+    os.makedirs(work)
+    good = os.path.join(work, "configured-chrome")
+    marker = os.path.join(work, "launched")
+    with open(good, "w") as f:
+        f.write("#!%s\nfrom pathlib import Path\nPath(%r).write_text('launched')\n"
+                "print('ENV_FAKE_BROWSER')\n" % (sys.executable, marker))
+    os.chmod(good, 0o700)
+    nonexec = os.path.join(work, "not-executable")
+    shutil.copyfile(good, nonexec)
+    os.chmod(nonexec, 0o600)
+    bad_shebang = os.path.join(work, "bad-shebang")
+    bad_format = os.path.join(work, "bad-format")
+    for path, contents in ((bad_shebang, "#!/no/such/headless-interpreter\n"),
+                           (bad_format, "not an executable image\n")):
+        with open(path, "w") as f:
+            f.write(contents)
+        os.chmod(path, 0o700)
+    directory = os.path.join(work, "directory")
+    os.mkdir(directory)
+    cases = [
+        ("missing required", os.path.join(work, "missing"), "1", 3, False),
+        ("missing optional", os.path.join(work, "missing"), "0", 2, False),
+        ("non-executable", nonexec, "1", 3, False),
+        ("directory", directory, "1", 3, False),
+        ("empty explicit value", "", "1", 3, False),
+        ("bad shebang", bad_shebang, "1", 2, False),
+        ("bad executable format", bad_format, "1", 2, False),
+        ("newline in path", os.path.join(work, "missing\nbrowser"), "1", 3, False),
+        ("valid configured", good, "1", 2, True),
+        ("default discovery", None, "1", 2, True),
+    ]
+    problems = []
+    base = ("import errno, os, runpy, shutil, sys, tempfile\n"
+            "sys.path.insert(0, %r)\nimport headless_chrome as h\n"
+            "shutil.which = lambda name: %r\n" % (here, good))
+    for name, chrome, require, want, launched in cases:
+        if os.path.exists(marker):
+            os.unlink(marker)
+        env = dict(os.environ, SELAHCUE_HEADLESS_REQUIRE=require)
+        if chrome is None:
+            env.pop("CHROME_BIN", None)
+        else:
+            env["CHROME_BIN"] = chrome
+        code = base + "h.self_test = lambda **kwargs: []\nrunpy.run_path(%r, run_name='__main__')\n" % gate
+        run = subprocess.run([sys.executable, "-c", code], env=env,
+                             capture_output=True, text=True, timeout=20)
+        output = run.stdout + run.stderr
+        failure_lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
+        if run.returncode != want or os.path.exists(marker) != launched or "Traceback" in output:
+            problems.append("environment %s: exit%d (want%d), launched%s (want%s), traceback%s" %
+                            (name, run.returncode, want, os.path.exists(marker), launched, "Traceback" in output))
+        if not launched and (len(failure_lines) != 1 or "CHROME_BIN" not in failure_lines[0]
+                             or repr(chrome) not in failure_lines[0]):
+            problems.append("environment %s: expected one diagnostic naming CHROME_BIN=%r, got %r" %
+                            (name, chrome, failure_lines))
+        if launched and "NO RESULTS BLOCK" not in output:
+            problems.append("environment %s: the fake's missing result block was not refused" % name)
+    for entrypoint in ("operator", "helper"):
+        for number, reason in ((28, "No space left on device"), (13, "Permission denied")):
+            if os.path.exists(marker):
+                os.unlink(marker)
+            # Inject only the real self-test root allocation, not the CLI/error-mapping functions.
+            code = base + ("real_mkdtemp = tempfile.mkdtemp\n"
+                           "def refused(*args, **kwargs):\n"
+                           "    if kwargs.get('prefix') == 'selahcue-headless-selftest-':\n"
+                           "        raise OSError(%d, %r)\n"
+                           "    return real_mkdtemp(*args, **kwargs)\n"
+                           "tempfile.mkdtemp = refused\n" % (number, reason))
+            code += ("runpy.run_path(%r, run_name='__main__')\n" % gate if entrypoint == "operator"
+                     else "sys.exit(h.main())\n")
+            run = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, CHROME_BIN=good),
+                                 capture_output=True, text=True, timeout=20)
+            output = run.stdout + run.stderr
+            lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
+            if run.returncode != 2 or "Traceback" in output or len(lines) != 1 or reason not in lines[0] or os.path.exists(marker):
+                problems.append("environment %s allocation errno%d: exit%d, expected2/one reason/no traceback; %r" %
+                                (entrypoint, number, run.returncode, lines))
+    return problems
+
+
 def main():
     if not self_test_supported():
         print("SKIP: headless-launch self-test not run: it needs POSIX process groups and signals "
               "(this gate is supported on macOS and Linux only)")
         return 0
-    problems = self_test()
+    try:
+        problems = self_test()
+    except OSError as error:
+        print(environment_error("headless-launch self-test", error))
+        return 2
     for problem in problems:
         print("FAIL: headless-launch self-test (17tnw2b1f32) - " + problem)
     if problems:

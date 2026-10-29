@@ -1937,7 +1937,9 @@ EXPECTED_MIN_CHECKS = 2347  # measured:2347 checks; result recorded in the goal
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
     env = os.environ.get("CHROME_BIN")
-    if env and os.path.exists(env):
+    if env is not None:
+        if not env or not os.path.isfile(env) or not os.access(env, os.X_OK):
+            raise ValueError("CHROME_BIN=%r must name an executable file" % env)
         return env
     for name in (
         "google-chrome",
@@ -2069,7 +2071,12 @@ def check_headless_launch_contract():
     return True
 
 
-if not check_headless_launch_contract():
+try:
+    launch_contract_ok = check_headless_launch_contract()
+except OSError as error:
+    print(headless_chrome.environment_error("headless-launch self-test", error))
+    sys.exit(2)
+if not launch_contract_ok:
     # Exit 2 (infra), not 1 (a check FAILed): this is the gate's own machinery being broken, and it
     # is reported before Chrome is even looked for.
     print(
@@ -2079,7 +2086,14 @@ if not check_headless_launch_contract():
     sys.exit(2)
 
 
-CHROME = find_chrome()
+try:
+    CHROME = find_chrome()
+except ValueError as error:
+    # An explicit unusable choice is never a developer-machine SKIP or an implicit fallback.
+    # REQUIRE retains its missing-browser exit3; optional-but-misconfigured is an infra exit2.
+    code = 3 if os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1" else 2
+    print("FAIL: %s (exit %d)" % (error, code))
+    sys.exit(code)
 if CHROME is None:
     require = os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1"
     msg = "no Chrome/Chromium found (set CHROME_BIN or install google-chrome)"
@@ -16381,41 +16395,48 @@ html = html.replace("</body>", NOTIF_FRAME_SCRIPT + DRIVER + "</body>", 1)
 # path, including a timeout) and loads it. Chrome's wall-clock timeout, process group and temp
 # cleanup are its business (scripts/headless_chrome.py); this file supplies the flags and judges
 # the result (`gate_verdict`, above).
-run = headless_chrome.run_headless_chrome(
-    CHROME, html,
-    ["--headless=new", "--disable-gpu", "--no-sandbox",
-     # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
-     # driver step that waits on the app's own 1 s view poll spends a full second of it.
-     # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
-     # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
-     # waits on host round-trips at the very end of the run, so a run in which several of
-     # its checks legitimately FAIL (each spending its wait budget) must still have time
-     # left to WRITE the results. Without the headroom a real regression surfaces as
-     # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
-     # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
-     # nature: every edge check must observe TWO successive 1 Hz polls (that is the
-     # whole point of holds/recoveries being counters), so it spends ~1s of virtual
-     # time per assertion pair and cannot be made cheaper without testing something
-     # weaker than the real poll path.
-     # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
-     # runtime-unavailable/restore-to-unknown pair and the console empty-plan
-     # add/restore pair are each two more real 1 Hz-poll round trips, all landing
-     # BEFORE the already wait-heavy Frame G recovery block above — without the extra
-     # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
-     # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
-     # than any named FAIL, exactly the failure mode this comment block already warns
-     # about. Confirmed empirically: a debug build that writes PROGRESS every 25
-     # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
-     # section, not inside anything new.
-     # Raised again to 90000 for the notification bell + panel block: it boots fresh app instances
-     # (1440x900, 1280x720, 900x720) and drives each through ~30 states. Most state changes call the
-     # app's own poll steps directly (view -> render() -> link_status), so the block costs ~12 s of
-     # virtual time rather than ~45: it waits for the REAL 1 Hz timer only where the timer is what is
-     # under test, and for the 1000 ms double-Esc window. The run had used 61.3 s of the old 75 s
-     # (measured by reading performance.now() at the end), ~14 s of headroom, and the block took
-     # it to ~73 s: 90 s leaves the same ~17 s. Keep the budget TIGHT — unused budget is not free:
-     # Chrome fast-forwards the remainder too, and a 150 s budget made the same run take ~38 s of wall
-     # clock instead of ~20 s.
-     "--virtual-time-budget=90000"],
-    timeout=_CHROME_TIMEOUT_S)
+try:
+    run = headless_chrome.run_headless_chrome(
+        CHROME, html,
+        ["--headless=new", "--disable-gpu", "--no-sandbox",
+         # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
+         # driver step that waits on the app's own 1 s view poll spends a full second of it.
+         # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
+         # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
+         # waits on host round-trips at the very end of the run, so a run in which several of
+         # its checks legitimately FAIL (each spending its wait budget) must still have time
+         # left to WRITE the results. Without the headroom a real regression surfaces as
+         # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
+         # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
+         # nature: every edge check must observe TWO successive 1 Hz polls (that is the
+         # whole point of holds/recoveries being counters), so it spends ~1s of virtual
+         # time per assertion pair and cannot be made cheaper without testing something
+         # weaker than the real poll path.
+         # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
+         # runtime-unavailable/restore-to-unknown pair and the console empty-plan
+         # add/restore pair are each two more real 1 Hz-poll round trips, all landing
+         # BEFORE the already wait-heavy Frame G recovery block above — without the extra
+         # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
+         # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
+         # than any named FAIL, exactly the failure mode this comment block already warns
+         # about. Confirmed empirically: a debug build that writes PROGRESS every 25
+         # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
+         # section, not inside anything new.
+         # Raised again to 90000 for the notification bell + panel block: it boots fresh app instances
+         # (1440x900, 1280x720, 900x720) and drives each through ~30 states. Most state changes call the
+         # app's own poll steps directly (view -> render() -> link_status), so the block costs ~12 s of
+         # virtual time rather than ~45: it waits for the REAL 1 Hz timer only where the timer is what is
+         # under test, and for the 1000 ms double-Esc window. The run had used 61.3 s of the old 75 s
+         # (measured by reading performance.now() at the end), ~14 s of headroom, and the block took
+         # it to ~73 s: 90 s leaves the same ~17 s. Keep the budget TIGHT — unused budget is not free:
+         # Chrome fast-forwards the remainder too, and a 150 s budget made the same run take ~38 s of wall
+         # clock instead of ~20 s.
+         "--virtual-time-budget=90000"],
+        timeout=_CHROME_TIMEOUT_S)
+except OSError as error:
+    # Includes executable-image/interpreter errors that isfile/X_OK cannot detect, and local
+    # temp-file failures. The launcher has already unwound its process/workdir cleanup.
+    selection = "CHROME_BIN=%r" % os.environ["CHROME_BIN"] if "CHROME_BIN" in os.environ else repr(CHROME)
+    print(headless_chrome.environment_error("headless Chrome using " + selection, error))
+    sys.exit(2)
 sys.exit(gate_verdict(run, EXPECTED_MIN_CHECKS))
