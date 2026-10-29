@@ -46,6 +46,7 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
 - Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?}` — the `POST /v1/activations` body without `license_key`.
+- All supplied fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd).
 - `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
 - `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `429 RATE_LIMITED`.
 
