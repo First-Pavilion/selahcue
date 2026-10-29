@@ -53,9 +53,42 @@ def not_implemented_response(*, surface: str, operation: str) -> JsonResponse:
     return JsonResponse(not_implemented_payload(surface=surface, operation=operation), status=501)
 
 
+def _json_content_type_only(operation: str, *, allow_bearer_header: bool = False):
+    """Refuse simple browser content types before spending a native route's budget.
+
+    A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
+    `@throttle` on purpose. A cross-site HTML form can send `text/plain` or
+    `application/x-www-form-urlencoded` without a preflight; if the refusal came after the
+    throttle, every such forged POST would spend the victim network's per-IP budget although it
+    can never reach a credential check, and a hostile page could lock real sign-ins out.
+
+    Refresh also supports a bearer header without a JSON body. Only that existing
+    alternative may bypass this check: Authorization needs a cross-origin preflight,
+    and the unchanged service still authenticates its token.
+    """
+
+    def decorator(view):
+        @wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if request.content_type != "application/json" and not (
+                allow_bearer_header and _bearer_from_header(request) is not None
+            ):
+                return _no_store(
+                    command_error_response(
+                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
+                    )
+                )
+            return view(request, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 @csrf_exempt
 @require_POST
-# Below the method decorators on purpose: a 405 must not consume throttle budget.
+# The method and content-type guards run before any budget is spent.
+@_json_content_type_only("activation")
 @throttle("activation", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
 def activate_device(request):
     """POST /v1/activations — register an account-bound device instance for a presented
@@ -142,31 +175,6 @@ def _activation_payload(result, *, operation: str) -> dict:
 NATIVE_AUDIT_SURFACE = "desktop_v1"
 # RFC 5321's mailbox limit; also `EmailField`'s default `max_length`.
 _MAX_EMAIL_LENGTH = 254
-
-
-def _json_content_type_only(operation: str):
-    """Refuse anything not declared `application/json` — property 3 above.
-
-    A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
-    `@throttle` on purpose. A cross-site HTML form can send `text/plain` or
-    `application/x-www-form-urlencoded` without a preflight; if the refusal came after the
-    throttle, every such forged POST would spend the victim network's per-IP budget although it
-    can never reach a credential check, and a hostile page could lock real sign-ins out."""
-
-    def decorator(view):
-        @wraps(view)
-        def wrapper(request, *args, **kwargs):
-            if request.content_type != "application/json":
-                return _no_store(
-                    command_error_response(
-                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
-                    )
-                )
-            return view(request, *args, **kwargs)
-
-        return wrapper
-
-    return decorator
 
 
 def _json_object(request) -> dict | None:
@@ -323,6 +331,7 @@ def _device_bearer_token(request) -> str:
 
 @csrf_exempt
 @require_POST
+@_json_content_type_only("license_refresh", allow_bearer_header=True)
 @throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
