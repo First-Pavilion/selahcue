@@ -435,26 +435,90 @@ def test_settings_allow_public_keys_inside_dev(monkeypatch, secret_key):
     assert module.SECRET_KEY == (secret_key or DEV_SECRET_KEY)
 
 
-def test_an_unset_environment_is_dev_and_runs_on_the_public_dev_key(monkeypatch):
-    """THE HAZARD the deployment docs now warn about, pinned as fact. If an operator sets only
-    the names the old docs listed (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DATABASE_URL`), none of
-    which is read, ENVIRONMENT stays `dev` and nothing refuses to start. When this stops being
-    true (for example a deployed-host check is added) update the docs, not just this test.
+def test_an_unset_environment_refuses_old_doc_variables_with_a_deployed_host(monkeypatch):
+    """Retired aliases still do nothing; a non-local allowed host now makes the omission fatal.
+    This imports settings directly, so the guard must work without manage.py system checks."""
+    with pytest.raises(ImproperlyConfigured, match="ENVIRONMENT"):
+        _fresh_settings(
+            monkeypatch,
+            ENVIRONMENT=None,
+            SECRET_KEY=None,
+            DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+            DJANGO_SECRET_KEY="a-key-the-old-docs-told-you-to-set",
+            DJANGO_DEBUG="false",
+            DATABASE_URL="postgres://user:pass@db/selahcue",
+        )
 
-    Hermetic on purpose: it asserts DEBUG is off and the engine is SQLite, which are only true
-    because `_fresh_settings` cleared whatever the machine running the suite exports."""
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "api.selahcue.example",
+        "localhost api.selahcue.example",
+        "localhost,api.selahcue.example",
+        "*",
+        ".example.com",
+        ".localhost",
+        "127.0.0.2",
+        "[2001:db8::1]",
+    ],
+)
+def test_an_unset_environment_refuses_empty_key_with_any_nonlocal_host(monkeypatch, secret_key, hosts):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=None, SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
+        )
+    message = str(refusal.value)
+    assert "ENVIRONMENT" in message
+    assert "DJANGO_ALLOWED_HOSTS" in message
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        None, "", "localhost", "127.0.0.1", "::1", "[::1]", "testserver",
+        "localhost 127.0.0.1 ::1 [::1] testserver", "localhost,127.0.0.1,testserver",
+    ],
+)
+def test_an_unset_environment_preserves_local_dev_defaults(monkeypatch, secret_key, hosts):
     module = _fresh_settings(
-        monkeypatch,
-        ENVIRONMENT=None,
-        SECRET_KEY=None,
-        DJANGO_SECRET_KEY="a-key-the-old-docs-told-you-to-set",
-        DJANGO_DEBUG="false",
-        DATABASE_URL="postgres://user:pass@db/selahcue",
+        monkeypatch, ENVIRONMENT=None, SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
     )
     assert module.ENVIRONMENT == "dev"
     assert module.SECRET_KEY == DEV_SECRET_KEY
     assert module.DEBUG is False
     assert module.DATABASES["default"]["ENGINE"].endswith("sqlite3")
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize("hosts", ["api.selahcue.example", "*"])
+def test_explicit_dev_preserves_intentional_public_key_behavior(monkeypatch, secret_key, hosts):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT="dev", SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == DEV_SECRET_KEY
+
+
+def test_unset_environment_with_configured_key_keeps_the_narrow_guard_boundary(monkeypatch):
+    key = "a-real-test-key-" + "x" * 40
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=None, SECRET_KEY=key, DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == key
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+def test_empty_environment_keeps_the_existing_deployed_secret_guard(monkeypatch, secret_key):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT="", SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+        )
+    assert "SECRET_KEY" in str(refusal.value)
+    assert "ENVIRONMENT=''" in str(refusal.value)
 
 
 def test_the_inherited_environment_cannot_change_a_case(monkeypatch):
