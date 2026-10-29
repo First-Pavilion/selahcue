@@ -21,6 +21,8 @@ from django.core.cache import cache as default_cache, caches
 from django.core.cache.backends.locmem import LocMemCache
 from django.core.cache.backends.redis import RedisCache
 
+from selahcue_api.apps.throttling.circuit import CACHE_CIRCUIT
+
 logger = logging.getLogger(__name__)
 
 # One report per outage, not one per request. A five-minute Redis outage at 100 rps would
@@ -128,6 +130,10 @@ class BudgetOutcome(str, Enum):
     STORE_UNAVAILABLE = "STORE_UNAVAILABLE"
 
 
+class _CircuitOpen(Exception):
+    """Fixed diagnostic label; no identity, URL or exception details."""
+
+
 def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetOutcome:
     """Spend one unit of `key`'s budget and report what happened.
 
@@ -143,9 +149,18 @@ def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetO
     them off and "fails open" silently shrinks back to "fails open when the store is down".
     """
     global _last_store_error_log
+    token = CACHE_CIRCUIT.admit()
     try:
+        if token is None:
+            # Reuse the same unavailable outcome and existing report suppression.
+            raise _CircuitOpen()
         count = store.incr_with_expiry(key, window_seconds)
     except Exception as error:
+        if token is not None:
+            CACHE_CIRCUIT.finish(
+                token, success=False, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+                cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+            )
         now = time.monotonic()
         if now - _last_store_error_log >= _STORE_ERROR_LOG_INTERVAL_SECONDS:
             _last_store_error_log = now
@@ -159,6 +174,17 @@ def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetO
                 _STORE_ERROR_LOG_INTERVAL_SECONDS,
             )
         return BudgetOutcome.STORE_UNAVAILABLE
+    except BaseException:
+        # Do not strand the half-open slot on cancellation/watchdog termination.
+        CACHE_CIRCUIT.finish(
+            token, success=False, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+            cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+        )
+        raise
+    CACHE_CIRCUIT.finish(
+        token, success=True, threshold=settings.CACHE_CIRCUIT_FAILURE_THRESHOLD,
+        cooldown=settings.CACHE_CIRCUIT_COOLDOWN,
+    )
     return BudgetOutcome.ALLOWED if count <= limit else BudgetOutcome.DENIED
 
 

@@ -85,6 +85,8 @@ Redis db **1** is the cache/throttle store and db **2** is the Celery broker; ke
 | `CACHE_URL` | **prod: yes** | **SECRET** (may carry a password) | `` (empty ⇒ per-process LocMemCache) | Redis cache for the throttle counters, db **1** (never the broker's db 2). Unset is unusable across web workers. |
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | no | no | `0.5` (seconds) | How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. |
 | `CACHE_SOCKET_TIMEOUT` | no | no | `0.5` (seconds) | How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. |
+| `CACHE_CIRCUIT_FAILURE_THRESHOLD` | no | no | `3` | Consecutive cache budget failures before this worker bypasses Redis. Integer `1` to `100`; blank uses default. See ops §6b. |
+| `CACHE_CIRCUIT_COOLDOWN` | no | no | `5` (seconds) | Bypass duration before exactly one recovery probe. Finite `0.1` to `60`; blank uses default. See ops §6b. |
 | `MAIL_HOST` | **prod: yes** | no | `selahcue_mailhog` in `dev`, empty otherwise | SMTP host. |
 | `MAIL_PORT` | no | no | `1025` in `dev`, `587` otherwise | SMTP port (TLS is on outside `dev`). |
 | `MAIL_USERNAME` | prod: yes | no | `` (empty) | SMTP username. |
