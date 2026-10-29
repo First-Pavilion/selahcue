@@ -1934,6 +1934,11 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # 2335 ->2347 (C-REMOTE-1): resolved no-op snapshots for all four actions, a missing
 # role target and a stale Deny whose request was approved elsewhere. Measured by RED.
 EXPECTED_MIN_CHECKS = 2347  # measured:2347 checks; result recorded in the goal
+# 2347 ->2358 (17tnw2b9dq6): real null-id staging-failure UI, accepted Edit/Save
+# controls, no update/accepted-provenance overwrite, truthful Not saved feedback and reopen.
+# Measured on corrected source 1e3b6c2d in hosted diagnostic40947455308: 2358 checks, zero FAIL.
+# Keep the gate exact in both directions; this count is observed, not hand-derived.
+EXPECTED_MIN_CHECKS = 2358
 
 
 def find_chrome():

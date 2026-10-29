@@ -65,7 +65,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | Null-id staging-failure draft is visible, explicitly Not saved/read-only and cannot send update for accepted notes | `SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py` | Named dq6 checks pass, no accepted edit/provenance change, numeric persisted control still editable | Hosted full headless log | PENDING |
-| C-002 | yes | Actual failed-stage response explicitly reports unsaved and preserves accepted data | Operator Rust regenerate_with_retention_tests | Real repository refusal yields ok true, null id, not_saved true; accepted row unchanged, successful save/stage controls pass | Hosted operator test log | PENDING |
+| C-002 | yes | Actual failed-stage response explicitly reports unsaved and preserves accepted data | Operator Rust regenerate_with_retention_tests | Real repository refusal yields ok true, null id, not_saved true; accepted row unchanged, successful save/stage controls pass | Diagnostic40947455308 job123706457514, notes-unsaved/rust-green1.log:28 passed,0 failed | PASS |
 | C-003 | yes | Restoring null-id to openId fallback is detected by behavioral checks | Full headless run on isolated mutated dist via SELAHCUE_OPERATOR_DIST | Mutation produces named dq6 assertion failures and restored source passes | Hosted mutation receipt | PENDING |
 | C-004 | yes | Operator checks and existing browser behavior regressions pass | Normal path-filtered operator CI, Chrome headless and WebKit smoke | Required jobs exit zero on frozen source; strict check count measured, never guessed | Hosted CI links | PENDING |
 | C-005 | yes | All independent reviews approve current revision | Cody, Quinn, Vera and Shadow | No unresolved blocking findings after remediation/re-review | Root consolidated review | PENDING |
@@ -109,6 +109,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40946405217, notes-unsaved/rust-red.log and the narrow response change.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-001, C-002 and C-004.
+- Hypothesis: recording the corrected run's measured total will let the strict browser guard accept the added coverage without changing behavior, bounds or assertions.
+- Change or investigation: read actual corrected browser and Rust logs; update the final exact check-count guard to measured 2358. Fetch latest main immediately before freeze: origin/main remains ordinarily integrated be3bd43576757d2963b6ef1748fe29afa1f1e622; API PR270 is not yet in the fetched main.
+- Verifier executed: hosted diagnostic40947455308 on corrected candidate1e3b6c2d, browserjob123706457683 and Rustjob123706457514; local Goal structural, script stdlib AST and full original baseline diff check only.
+- Result: Browser executed all2358 checks with zero behavioral failures, including every DQ6 assertion and saved numeric-id controls; old2347 guard alone exited4. Rust GREEN:28 passed,0 failed,409 filtered,2.03s, including explicit unsaved response and successful identity controls. C-002 PASS; browser exit-zero rerun after this guard change, isolated fallback mutation proof, full operatorCI and all independent reviews remain pending.
+- New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40947455308; notes-unsaved/browser-green-attempt1.log and notes-unsaved/rust-green1.log.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: making all notes read-only would mask the bug; test accepted numeric-id edit as a positive control. Unsaved notes must remain readable/copyable; accepted/pending data must not be overwritten.
@@ -124,6 +134,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dq6-unsaved-regenerated-notes.md
 - Validator result: PASS structural validation on 2026-10-29; no local project runtime executed.
 - Independent verification result: Pending root review pipeline.
-- Terminal state: ACTIVE, preparing tests-only hosted RED handoff.
-- Remaining failed or blocked criteria: C-001 through C-005 pending.
+- Terminal state: BLOCKED on root-owned mutation proof, exit-zero browser rerun, normal CI and independent reviews; source implementation prepared.
+- Remaining failed or blocked criteria: C-001, C-003, C-004 and C-005 pending; C-002 passed the focused hosted verifier.
 - ClickUp final evidence comment: Root owns task publication and persisted QA readback after merge.
