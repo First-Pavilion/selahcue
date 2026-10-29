@@ -1,0 +1,167 @@
+{
+  "base": "8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e",
+  "scope": "exact source-linked hang controller, actual Case/launcher/PID/temp and real verdict checks; not full16CLI repeated",
+  "baseline_ast": "c8472e0e1f37144c2d84db8b890d2cadb65a61ba7b2f23ee53d59cb1748d9974",
+  "candidate_ast": "cfdd2e3916d02692cea40e8a0cfd18d2efd17740d97fec0b4a5b993ebf1841f5",
+  "mode": "current-source functional controls",
+  "candidate_source_sha256": "a87a44c6975f3d3df74d519dcd0e6b998171914b013568e257d2b6448eae6462",
+  "original_baseline_primitives_match": false,
+  "pairs": [],
+  "controls": [
+    {
+      "label": "forced-startup-delay",
+      "wall_s": 4.3910564999999995,
+      "loadavg": [
+        56.19140625,
+        41.3154296875,
+        33.6865234375
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.288026125,
+          "run_elapsed_s": 1.2824373245239258,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 3,
+          "wall_s": 3.031972625,
+          "run_elapsed_s": 3.024669885635376,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 42171,
+            "helper": 42183
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [],
+      "startup_retries": 1,
+      "terminal_flake": false,
+      "synthetic_delay_s": 1.5,
+      "wrong_timeout_injected": false
+    },
+    {
+      "label": "forced-startup-delay",
+      "wall_s": 24.193462125,
+      "loadavg": [
+        55.87890625,
+        42.3525390625,
+        34.275390625
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.0295201660000002,
+          "run_elapsed_s": 1.0227580070495605,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 3,
+          "wall_s": 3.0451911249999997,
+          "run_elapsed_s": 3.028130054473877,
+          "timed_out": true,
+          "complete_block": false,
+          "pids": {
+            "self": null,
+            "helper": null
+          },
+          "leftovers": [],
+          "alive": {}
+        },
+        {
+          "timeout_s": 20,
+          "wall_s": 20.101527833,
+          "run_elapsed_s": 20.040783882141113,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 42214,
+            "helper": 42290
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [],
+      "startup_retries": 2,
+      "terminal_flake": false,
+      "synthetic_delay_s": 4.0,
+      "wrong_timeout_injected": false
+    },
+    {
+      "label": "incorrect-timeout-verdict",
+      "wall_s": 1.0528832920000006,
+      "loadavg": [
+        55.87890625,
+        42.3525390625,
+        34.275390625
+      ],
+      "schedule_s": [
+        1,
+        3,
+        20
+      ],
+      "attempts": [
+        {
+          "timeout_s": 1,
+          "wall_s": 1.0513944580000008,
+          "run_elapsed_s": 1.0483179092407227,
+          "timed_out": true,
+          "complete_block": true,
+          "pids": {
+            "self": 42723,
+            "helper": 42725
+          },
+          "leftovers": [],
+          "alive": {
+            "self": false,
+            "helper": false
+          }
+        }
+      ],
+      "problems": [
+        "hung browser: a Chrome that never exits was not reported as timed out",
+        "hung browser: the gate would exit 0, expected 2"
+      ],
+      "startup_retries": 0,
+      "terminal_flake": true,
+      "synthetic_delay_s": 0,
+      "wrong_timeout_injected": true
+    }
+  ],
+  "samples_started_at": 1793278764.7600482,
+  "samples_finished_at": 1793278794.732974
+}

@@ -136,11 +136,17 @@ def main():
     def primitives(source):
         return {n.name: ast.dump(n, include_attributes=False) for n in ast.parse(source).body
                 if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in names}
-    assert primitives(baseline_source) == primitives(candidate_source)
+    primitives_match = primitives(baseline_source) == primitives(candidate_source)
+    if not args.controls:
+        assert primitives_match, ('paired comparison requires launcher/fixture/PID primitives '
+                                  'identical to the original baseline; use its frozen study revision')
     baseline, candidate = extract(baseline_source), extract(candidate_source)
     verdict = real_verdict()
     data = {'base': BASE, 'scope': 'exact source-linked hang controller, actual Case/launcher/PID/temp and real verdict checks; not full16CLI repeated',
             'baseline_ast': baseline['ast_sha256'], 'candidate_ast': candidate['ast_sha256'],
+            'mode': 'current-source functional controls' if args.controls else 'paired original-baseline comparison',
+            'candidate_source_sha256': hashlib.sha256(candidate_source.encode()).hexdigest(),
+            'original_baseline_primitives_match': primitives_match,
             'pairs': [], 'controls': [], 'samples_started_at': time.time()}
     try:
         if args.controls:

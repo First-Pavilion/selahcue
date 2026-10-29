@@ -20,7 +20,7 @@ The launcher self-test's ready fast path costs about two seconds less, while del
 
 ## Baseline
 
-Verified main8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e. The hung fake uses3s then20s startup attempts; the browser wall cap is90s and launcher self-test runs on every operator gate invocation. The new16 environment CLI checks fromPR253 are part of the baseline, so older4.1s/full-gate percentages are not current measurements.
+Verified main8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e. The hung fake uses3s then20s startup attempts; the browser wall cap is90s and launcher self-test runs on every operator gate invocation. The new16 environment CLI checks fromPR253 are part of the baseline, so older4.1s/full-gate percentages are not current measurements. Original study revision8ae21ff634a7be7bf194b5c863f6180336c633fa is retained. Refresh merges actual main6ef0e0980a950a179b22c5ea6e960b96e654ddd9, including the WPC lifecycle extraction, without rewriting published history; its functional composition is verified separately.
 
 ## Inputs and evidence sources
 
@@ -58,10 +58,10 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Ready hang fast path saves about2s with bounded1/3/20 startup retries and repeated-run evidence | Scoped20paired AB/BA real-launcher samples | Median paired saving at least1.5s; all samples/readiness/fallback/flakes recorded | /private/tmp/selahcue-batch20-20261029/17tnw2b1wvh-samples.json | PASS |
-| C-002 | yes | Delayed startup uses3s/20s fallbacks; a complete result plus genuine hang remains failing with no surviving process/temp files | Scoped controlled readiness cases, injected wrong timeout verdict and full launcher self-test | Forced fallback controls pass; incorrect timeout verdict isRED | Probe logs/report | PASS |
+| C-001 | yes | Original8ae study demonstrates about2s ready-path saving with bounded1/3/20 startup retries; integrated functional controls remain passing | Scoped20paired AB/BA real-launcher samples | Median paired saving at least1.5s; all samples/readiness/fallback/flakes recorded | /private/tmp/selahcue-batch20-20261029/17tnw2b1wvh-samples.json | PASS |
+| C-002 | yes | Delayed startup uses3s/20s fallbacks; a complete result plus genuine hang remains failing with no surviving process/temp files | Scoped controlled readiness cases, injected wrong timeout verdict and full launcher self-test | Forced fallback controls pass; incorrect timeout verdict isRED | Original and integrated-controls.json; integrated controls log/report | PASS |
 | C-003 | yes | Every-run versusCI-only and90s versus150s decisions record current scope and historical/fresh headroom separately | Committed decision document plus one full timed gate | Decisions explicit; exact current/historical calculations, no old measurements presented as current | docs/ops/HEADLESS-GATE.md and full-gate timing | PASS |
-| C-004 | yes | Full operator gate, launcher siblings and syntax/diff/goal checks pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py plus syntax/diff/validator |2347browser checks0FAIL, complete self-test exit0 | /private/tmp/selahcue-batch20-20261029/17tnw2b1wvh-browser-green.log | PASS |
+| C-004 | yes | Full operator gate, launcher siblings and syntax/diff/goal checks pass | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py plus syntax/diff/validator |2347browser checks0FAIL, complete self-test exit0 | Original browser-green.log; new integrated-operator.log | PASS |
 | C-005 | yes | Parent17tnw2b1f32 description replaces~1MB claim with Vera's historical~59KB measurement and persisted read-back | Root narrow description edit/read-back, no status change | Exact edited phrase saved; other contents/status preserved | Root tracker evidence | BLOCKED |
 | C-006 | yes | Cody/Quinn/Vera/Shadow and final applicableCI pass on final revision | Coordinator independent reviews/CI | All pass | Coordinator evidence | BLOCKED |
 | C-007 | yes | PR merged and linked taskQA persisted | Root GitHub/ClickUp read-back | Verified merged and saved QA | Coordinator evidence | BLOCKED |
@@ -115,6 +115,26 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: final handoff report and committed raw evidence; parent edit payload17tnw2b1wvh-parent-edit.md in batch directory.
 - Decision: handoff
 
+### Iteration 5 — fresh target composition
+
+- Target criterion: C-001,C-002,C-004
+- Hypothesis: integrating the existing file-backed lifecycle extraction preserves the1/3/20 controller and strict timeout/cleanup behavior, but changes the old study's launcher identity.
+- Change or investigation: merge actual main6ef0e098 into published8ae with no conflicts as26cf0044; no rebase/force push. Existing portable controls initially stop at the original whole-launcher primitive-identity guard. Keep that guard mandatory for paired comparisons; current-source controls alone are labeled functional with candidate source SHA and no pairs. Retain all40 original sample bytes and original phase/control/RED JSON unchanged.
+- Verifier executed: current-source --controls; --pairs1 preflight refusal; caller contract suite; byte comparison of4 original raw artifacts with8ae.
+- Result: current-source controls GREEN:1.5s delay takes1/3 attempts,4s delay takes1/3/20, all real PIDs dead/temp roots empty. Wrong timeout flag yields expected2 strict-verdict failures. No new benchmark executed; paired mode refuses changed primitives before any sample. Caller15 cases across5 methods GREEN,19.385s; original raw artifacts byte-identical. Functional controls ambient1m load about56 are not a new performance/flake-rate study.
+- New evidence: docs/delivery/goals/17tnw2b1wvh-evidence/integrated-controls.json and batch integrated-controls.log, integrated-callers.log, integrated-pair-guard.log.
+- Decision: iterate
+
+### Iteration 6 — combined full gate and refreshed handoff
+
+- Target criterion: C-003,C-004
+- Hypothesis: the actual full shared self-test and2347-check operator gate verify the final merged runtime independently of the original study evidence.
+- Change or investigation: run the complete mandatory operator gate on integrated source; document original study scope and current functional controls separately. Root owns parent-description correction and new four-review/CI round.
+- Verifier executed: SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py; static syntax/diff/goal/target checks.
+- Result: GREEN exit0,2347 browser checks/0FAIL and complete launcher self-test including16environment/noexec scenarios, signals, strict verdicts and cleanup. Caller15 contracts PASS. Syntax/diff/structural and target checks PASS. The real operator Chrome phase overlapped broker auth PID39405 on another private branch; this is functional compatibility evidence, not an isolated resource/cleanup-attribution study. No fresh paired measurements, quiescent-host or current headroom claim. Earlier independent reviews/CI on8ae do not certify this new composition.
+- New evidence: batch integrated-operator.log and final refresh report.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: wall-clock scheduling variability and benchmark overlap; record all samples and defer during explicit quiet windows. Startup retry is inconclusive, distinct from a failing terminal verdict.
@@ -128,7 +148,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1wvh-launcher-selftest-cost.md
 - Validator result: structural PASS; completion blocked only C-005,C-006,C-007
-- Independent verification result: pending root
+- Independent verification result: root reports original8ae all4 scopedPass and CI retryPass; refreshed composition all4/CI pending root
 - Terminal state: BLOCKED
 - Remaining failed or blocked criteria: C-005,C-006,C-007
 - ClickUp final evidence comment: root owned

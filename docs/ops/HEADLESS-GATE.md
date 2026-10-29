@@ -23,12 +23,12 @@ The real Chrome wall cap stays **90 seconds**. Raising it to 150 seconds would a
 reporting each genuine hang. Historical PR #153 recorded a 79.8-second passing browser phase at
 load 117: 90 seconds leaves 10.2 seconds, or 12.8% of that runtime; 150 seconds would leave 70.2
 seconds, or 88.0%. Those figures came from the ticket and were not reproduced in this study.
-Current observations below do not establish a maximum latency or high-load guarantee. The browser
+Observations below belong to the original study revision and do not establish a maximum latency or high-load guarantee. The browser
 virtual-time budget and strict timeout-failure mapping remain unchanged.
 
-## Current evidence and scope
+## Original study and source scope
 
-The repeated study runs the exact tracked hang-check AST, actual fixture/launcher, PID/temp
+The original study at `8ae21ff634a7be7bf194b5c863f6180336c633fa` runs the exact tracked hang-check AST, actual fixture/launcher, PID/temp
 cleanup and real gate verdict. It does not repeat the full 16-case CLI group 20 times. Baseline is
 `8f7d610e`; baseline/candidate order alternates AB/BA. Launcher, fixture and PID primitives must be
 AST-identical to that baseline for the runner to proceed. All raw samples are retained in
@@ -54,7 +54,7 @@ expected failures: it was not reported timed out, and a passing partial block wo
 incorrectly map to exit 0 rather than required exit 2. These controls are retained in
 [schedule-controls.json](../delivery/goals/17tnw2b1wvh-evidence/schedule-controls.json).
 
-One complete current gate passed all 2,347 browser checks and the full launcher/environment
+One complete gate on that original study source passed all 2,347 browser checks and the full launcher/environment
 contract. Its self-test took 38.736 seconds, actual Chrome phase 13.763 seconds and total
 55.021 seconds. The 90-second cap leaves 76.237 seconds, or 553.9% of that observed Chrome
 phase. This is one observation, not a paired full-gate study. The two-second saving above applies
@@ -63,18 +63,38 @@ The older 4.1-second/62% overhead and monthly-runner estimates are historical, n
 The phase record and exact script hashes are in
 [gate-timing.json](../delivery/goals/17tnw2b1wvh-evidence/gate-timing.json).
 
-Reproduce the frozen scoped study from this revision (later changes to launcher primitives need
-a new baseline):
+Reproduce the frozen scoped study from `8ae21ff6` in an isolated checkout. Later launcher
+primitive changes require a new comparison baseline; `--pairs` refuses them. Current-source
+`--controls` is functional verification only and records its source hash separately:
 
 ```sh
 python3 docs/delivery/goals/17tnw2b1wvh-evidence/measure_schedule.py --pairs 20 --output /tmp/selahcue-schedule.json
 python3 docs/delivery/goals/17tnw2b1wvh-evidence/measure_schedule.py --controls --output /tmp/selahcue-controls.json
 ```
 
-The checked-in runner changes only workspace/output path binding from the executed one-off
-runner. Its measurement/controller logic is the same. The initial unchanged-schedule comparison
+At the original study revision, the checked-in runner changed only workspace/output path binding
+from the executed one-off runner; function-body equality was verified. After integrating the
+shared lifecycle extraction, only current-source functional controls can bypass the original
+baseline primitive-identity guard. Paired measurement still requires that guard. The original
+40 samples and all their metadata remain unchanged; integrated controls are separate evidence,
+not a fresh measurement of the original two-second saving. The initial unchanged-schedule comparison
 failed the saving predicate, as recorded in
 [red-samples.json](../delivery/goals/17tnw2b1wvh-evidence/red-samples.json).
+
+## Shared-lifecycle integration refresh
+
+After integrating main `6ef0e098`, the same1/3/20 controller runs through the shared
+file-backed lifecycle extracted for auth and visual captures. The original study's
+40 samples, headroom observation and source metadata are unchanged. New functional
+controls are retained in
+[integrated-controls.json](../delivery/goals/17tnw2b1wvh-evidence/integrated-controls.json):
+forced delays take1/3 and1/3/20 attempts, and a deliberately incorrect timeout flag
+still fails the strict verdict. These are current-source functional checks, with
+no paired samples or new claim about the original2.003454-second saving. The full
+integrated operator/caller gate outcomes are recorded in the Goal Contract and
+refresh handoff separately from the original benchmark. The real operator refresh overlapped
+a separate private-branch auth gate; it is functional evidence, not an isolated timing or
+resource-attribution study.
 
 The parent ticket's separate size correction is root-owned: replace only the obsolete `~1 MB`
 claim with `~59 KB (Vera's measurement in PR #153)`, preserve the rest of its description and
