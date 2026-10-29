@@ -133,13 +133,14 @@ class LiveController extends ChangeNotifier {
   RoleChange? _roleChange;
   bool _rejected = false;
   bool _reconnecting = false;
-  bool _refreshing = false;
+  int? _refreshingEpoch;
   bool _acting = false;
   bool _disposed = false;
   bool _revoked = false;
   Timer? _poll;
 
-  /// Monotonic **connection epoch**, bumped every time [_session] is replaced.
+  /// Monotonic **connection epoch**, advanced when a session enters teardown,
+  /// before awaiting its close. The replacement uses that new epoch.
   ///
   /// This is the spine of the stale-go-live fix. While we are away the desktop
   /// stays authoritative and may stage something else entirely, so an intent the
@@ -303,16 +304,18 @@ class LiveController extends ChangeNotifier {
     return true;
   }
 
-  /// Pull the host-authoritative operator view. Skipped while a previous poll is
-  /// still in flight, so a slow link can never build an unbounded command backlog.
+  /// Pull the host-authoritative operator view. Coalesced within one connection,
+  /// so an old pending poll cannot block the replacement's first snapshot.
   Future<void> refresh() async {
-    if (_reconnecting || _disposed || _refreshing || _revoked) return;
-    _refreshing = true;
+    final epoch = _epoch;
+    if (_reconnecting || _disposed || _refreshingEpoch == epoch || _revoked) {
+      return;
+    }
+    _refreshingEpoch = epoch;
     try {
-      final epoch = _epoch;
       final view = await _session.operatorState();
-      // Only stamp if the connection did not change under us mid-fetch.
-      if (_epoch != epoch) return;
+      // Teardown invalidates the answer even while the old close is pending.
+      if (_disposed || _revoked || _epoch != epoch) return;
       _view = view;
       _viewEpoch = epoch;
       // The poll is the app's heartbeat, so it is also where an in-place
@@ -329,9 +332,11 @@ class LiveController extends ChangeNotifier {
       _rejected = false;
       _notify();
     } on SessionException {
+      if (_disposed || _revoked || _epoch != epoch) return;
       await _reconnect();
     } finally {
-      _refreshing = false;
+      // A retired read must not release a newer connection's in-flight claim.
+      if (_refreshingEpoch == epoch) _refreshingEpoch = null;
     }
   }
 
@@ -339,7 +344,7 @@ class LiveController extends ChangeNotifier {
   /// caller's command and carried by the **same** connection.
   ///
   /// Deliberately does not reuse [refresh], for two reasons that are exactly the
-  /// bug: refresh coalesces with the 1s poll (`_refreshing`), and a coalesced
+  /// bug: refresh coalesces with the 1s poll (`_refreshingEpoch`), and a coalesced
   /// result can predate the command; and refresh silently reconnects, whereas a
   /// go-live guard must treat "unknown" as *no*, not as *retry*.
   ///
@@ -357,7 +362,7 @@ class LiveController extends ChangeNotifier {
       final view = await _session.operatorState();
       // The connection must STILL be the one that carried the command; a swap
       // while this was in flight invalidates the answer.
-      if (_disposed || _epoch != epoch) return null;
+      if (_disposed || _revoked || _epoch != epoch) return null;
       _view = view;
       _viewEpoch = epoch;
       _syncRole();
@@ -366,6 +371,7 @@ class LiveController extends ChangeNotifier {
       _notify();
       return view;
     } on SessionException {
+      if (_disposed || _revoked || _epoch != epoch) return null;
       await _reconnect();
       return null;
     }
@@ -474,7 +480,7 @@ class LiveController extends ChangeNotifier {
   Future<CommandOutcome> act(Map<String, dynamic> cmd) async {
     if (_disposed || _revoked) return CommandOutcome.failed;
     // Refuse a second command while one is still in flight, the same shape
-    // [refresh] already guards with `_refreshing`. Without this, a double-tap
+    // [refresh] already guards with `_refreshingEpoch`. Without this, a double-tap
     // (a misfire, or an impatient tap against a slow link) queues a second
     // command behind the first on `SelahSession._turn` instead of being
     // rejected: each queued command then waits up to `commandTimeout` for the
@@ -616,6 +622,8 @@ class LiveController extends ChangeNotifier {
   Future<void> _reconnect() async {
     if (_reconnecting || _disposed) return;
     _reconnecting = true;
+    // Retire every old read/intent before close can yield to a late host frame.
+    _epoch++;
     _statusError = 'Connection lost — reconnecting…';
     _notify();
     // Release the broken session's socket before replacing it (no-leak rule) —
@@ -691,17 +699,14 @@ class LiveController extends ChangeNotifier {
       // the receipt is the only trace of WHY, since otherwise a chip in the
       // app bar would quietly change word and nothing else would say so.
       _syncRole();
-      // A new connection: every snapshot taken and every intent formed against
-      // the old one is now stale by definition.
-      _epoch++;
       _reconnecting = false;
-      _statusError = null;
+      // Preserve the outage notice until this connection's snapshot arrives.
       _notify();
       // Re-read host state promptly. Controls stay disabled until this lands
       // (see [syncing]), so without it the operator would face up to a full
       // poll interval of dead controls after every blip. Scheduled rather than
-      // awaited because we are usually already inside refresh()'s own frame,
-      // where the in-flight guard would swallow a direct call.
+      // awaited so recovery does not hold a failed action's busy claim until
+      // this state read completes. The per-epoch claim excludes retired reads.
       Timer.run(refresh);
       return;
     }

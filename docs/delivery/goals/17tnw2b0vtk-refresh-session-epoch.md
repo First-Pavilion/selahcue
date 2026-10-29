@@ -24,6 +24,8 @@ Freshly fetched origin/main 09168758b8c850958a514d55a41b9fc8cfe52270 (tree 60b76
 
 Full captured task and successful empty comments are in orchestration evidence wave2-20261029/mobile-qualification/17tnw2b0vtk.json. No runtime baseline is claimed from inspection.
 
+Before publication, ordinary merge a498764c integrated freshly fetched main 0d3d3da8658985ad6dbb758933557dbc18df1c59, whose additional API/deployment changes leave mobile production unchanged. Hosted RED was observed on that integrated test-only source.
+
 ## Inputs and evidence sources
 
 - Existing standalone task 17tnw2b0vtk: full description, all acceptance criteria, empty comments, no declared blocking dependency.
@@ -55,7 +57,7 @@ Full captured task and successful empty comments are in orchestration evidence w
 
 - Controlled stream and close completions can exercise the real lockstep queue without a real socket or elapsed-time sleeps.
 - Recovery is verified by causal progress (one connect and one replacement state read while the old read remains pending), not a local timing/performance claim.
-- Hosted RED, corrected GREEN and independent review remain pending.
+- Hosted test-only RED is established; corrected GREEN and independent review remain pending.
 
 ## Dependencies and approvals
 
@@ -71,7 +73,7 @@ Full captured task and successful empty comments are in orchestration evidence w
 | C-002 | yes | Retired refresh and confirmed-view results cannot change current state or notices | Controlled old close/reply success and error races through public controller operations | Old view ignored, rejection/status retained until current snapshot, no second reconnect or go-live | Hosted focused test receipts | PENDING |
 | C-003 | yes | Recovery does not await an old queued read | Hold old read pending through replacement connect and supply one replacement snapshot | One replacement read starts and controls recover before old read is released | Hosted causal-progress regression | PENDING |
 | C-004 | yes | Legitimate same-session reads and compound gestures still work | Positive controls plus existing controller race/sync/reentrancy tests | Current view updates; confirmed stage can go live; gates preserved | Hosted focused/full suite receipts | PENDING |
-| C-005 | yes | New regression detects the baseline bug before production changes | Frozen test-only commit on unchanged production | Behavioral stale-state/reconnect/progress failure; setup and controls work | Hosted RED log | PENDING |
+| C-005 | yes | New regression detects the baseline bug before production changes | Frozen test-only commit on unchanged production | Behavioral stale-state/reconnect/progress failure; setup and controls work | PR 269 CI 40944254684 on a498764c; saved wave2-20261029/mobile-refresh-red.log | PASS |
 | C-006 | yes | Corrected source passes broader mobile gates | Hosted flutter analyze and full flutter test | Analysis exits 0 and suite passes on exact corrected source | Root hosted CI receipt | PENDING |
 | C-007 | yes | Independent review and authorized delivery close | Cody, Quinn, Vera, Shadow and root delivery evidence | All four pass current source, merge verified, exact linked ticket QA reread | Root reviews/merge/ClickUp receipts | PENDING |
 
@@ -90,10 +92,20 @@ Full captured task and successful empty comments are in orchestration evidence w
 - Target criterion: C-001 through C-005
 - Hypothesis: missing error-side epoch checks and epoch retirement after close allow old turns to affect recovery; a global refreshing flag can block the replacement's first read.
 - Change or investigation: inspect fresh main/full task/comments and add focused regression/controls before any production changes.
-- Verifier executed: structural Goal validator and full baseline diff check; hosted test-only RED pending root.
-- Result: pending hosted execution
-- New evidence: real SelahSession.forTest preserves the production turn chain; an outer test wrapper can control close without adding production seams.
-- Decision: freeze test-only source and hand off for actual RED before implementing.
+- Verifier executed: structural Goal validator/full baseline diff check, then root-hosted Flutter analysis/full test suite on integrated test-only commit a498764cd063371b5d7046aa5a4b148b3d12ab97.
+- Result: Flutter analysis passed; actual behavioral RED, 384 passed and 5 failed. Same-session control passed. The old poll published forged-old, its late failure caused two connects, replacement state reads stayed at zero while old poll remained pending, confirming success published forged-confirmation, and confirming failure caused two connects.
+- New evidence: PR 269 CI 40944254684, saved wave2-20261029/mobile-refresh-red.log; inspected all five behavioral assertions before production edits. The real session queue and controlled close reached the intended windows.
+- Decision: iterate with minimal lifecycle fencing; retain all original regressions and control.
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004, C-006 and C-007
+- Hypothesis: retiring epoch before the old close yields, checking that epoch on both result branches, and scoping the refresh claim to its epoch isolates every old read from replacement recovery.
+- Change or investigation: advance epoch once at reconnect entry instead of replacement installation; make the single-flight refresh claim epoch-specific; ignore disposed/revoked/retired read success and failure in refresh and confirmed-view; let only its owning epoch release the refresh claim; preserve outage notice until a current snapshot. Existing real-serialization tests remain, with extra assertions for current resync coalescing after stale finally and warning/rejection lifetime before current reply.
+- Verifier executed: full baseline diff check, structural Goal validator and source inspection. No local project runtime ran while resource admission remained unavailable.
+- Result: corrected source prepared; no corrected-source analysis/test pass is claimed before root executes fresh hosted CI.
+- New evidence: production changes are confined to LiveController lifecycle/read guards, with no transport, protocol, retry budget, storage or platform changes.
+- Decision: hand off frozen corrected source for hosted GREEN and all four independent current-head reviews; remediate valid findings within the remaining budget.
 
 ## Risks and rollback
 
@@ -102,15 +114,15 @@ Full captured task and successful empty comments are in orchestration evidence w
 
 ## Pause and escalation conditions
 
-- Wait for actual hosted behavioral RED before production edits.
+- Actual hosted behavioral RED was observed before production edits; wait for corrected-source CI and independent review before completion.
 - Keep valid failures explicit and remediate within eight iterations; report any missing owner decision or runtime gate to root.
 - Never substitute local heavy execution or a skipped gate for admitted hosted evidence.
 
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b0vtk-refresh-session-epoch.md
-- Validator result: structural validation passed (exit 0); behavior awaits hosted test-only execution
+- Validator result: structural validation passed (exit 0); corrected-source behavior awaits hosted execution
 - Independent verification result: pending root
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-001 through C-007
+- Remaining failed or blocked criteria: C-001 through C-004, C-006 and C-007; C-005 passed on integrated test-only source
 - ClickUp final evidence comment: root owns publication

@@ -242,6 +242,11 @@ void main() {
     expect(f.replacement.closeCount, 0,
         reason: 'a retired read cannot tear down the healthy replacement');
     expect(f.replacement.commands, isEmpty, reason: 'BLACKOUT is never replayed');
+    expect(f.replacement.stateReads, 1);
+    unawaited(f.live.refresh());
+    await pumpEventQueue();
+    expect(f.replacement.stateReads, 1,
+        reason: 'old finally must not release the pending replacement read');
   });
 
   test('replacement resync finishes without waiting for the retired poll',
@@ -255,6 +260,9 @@ void main() {
     expect(f.replacement.stateReads, 1,
         reason: 'old pending refresh must not coalesce replacement recovery');
     expect(f.live.syncing, isTrue, reason: 'replacement has not replied yet');
+    expect(f.live.rejected, isTrue);
+    expect(f.live.error, contains('reconnecting'),
+        reason: 'connecting alone does not prove recovery of audience state');
     f.replacement.readGate.complete();
     await pumpEventQueue();
     expect(f.live.view?.planName, 'replacement');
