@@ -6,7 +6,7 @@
  * hint all survived, and a visitor who pressed it believed they were signed out when they were
  * not. On a shared church-office PC that is the worst lie this UI could tell.
  *
- * Four groups:
+ * Three groups:
  *
  *   1. THE FLOW (`lib/auth/signOutFlow.ts`), with a fake server and a fake router. This is where
  *      the honesty rules live: one request however many presses, "Signing out…" held through the
@@ -17,10 +17,8 @@
  *   3. THE MARKUP the real `AccountView.vue` renders, server-rendered with a real router: a real
  *      <button> (not a link), the shared wording, disabled while pending, a polite announcement
  *      of the pending state, an announced message on failure.
- *   4. PARITY with the navbar, whose copy this page must not drift from. `Navbar.vue` is not
- *      edited by this ticket (shared chrome), so it keeps its own copy of the strings until it
- *      adopts `useSignOut` (17tnw2b2ka8); this group fails if the two ever disagree, and it pins
- *      the one difference that is allowed to exist until then.
+ * The former source-label parity pins were replaced under 17tnw2b2ka8 by real shared-router
+ * composition in sharedSignOut.test.ts and simultaneous real-control presses in the browser.
  *
  * What none of this can see (a real click, a real request, storage, the route guard afterwards,
  * focus) is asserted in a browser by the `account-signout*` scenarios in
@@ -37,7 +35,6 @@
  * check that has never been seen to fail on the fault it names is decoration.
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import test, { after, before, describe } from 'node:test'
 
 import { createApp, effectScope } from 'vue'
@@ -208,13 +205,38 @@ describe('the sign-out flow', () => {
     assert.match(SIGN_OUT_FAILED, /couldn't sign you out/i)
     assert.ok(SIGN_OUT_FAILED.length > 20)
   })
+
+  test('navigation rejection after disposal cannot trigger a late hard navigation', BOUND, async () => {
+    const held = deferred()
+    const started = deferred()
+    const { flow, log } = harness({
+      navigate: async () => {
+        started.resolve()
+        await held.promise
+        throw new Error('lazy chunk failed')
+      },
+    })
+    const run = flow.run()
+    try {
+      await started.promise
+      flow.dispose()
+      held.resolve()
+      assert.equal(await run, true, 'revocation succeeded')
+      assert.deepEqual(log.hard, [], 'a stale caller must not drag the visitor away')
+      assert.equal(flow.error.value, '', 'navigation failure is not revocation failure')
+      assert.equal(flow.pending.value, false)
+    } finally {
+      held.resolve()
+      await run
+    }
+  })
 })
 
 describe('leaving the page while the request is in flight (Shadow LOW-2, Quinn 3)', () => {
   // The visitor pressed Sign out, then clicked Pricing before the reply. The request is NOT
   // cancelled (a logout that may already have landed must not be abandoned), so the session is
   // revoked either way. What the late reply must not do is act for a page that is gone: a
-  // success pulling them off the page they chose, or a failure written to a message nobody sees.
+  // success pulling them off the page they chose, or a failure hidden from the surviving shared chrome.
 
   test('a late success has revoked the session but does not navigate', BOUND, async () => {
     const held = deferred()
@@ -237,7 +259,7 @@ describe('leaving the page while the request is in flight (Shadow LOW-2, Quinn 3
     }
   })
 
-  test('a late failure writes no state and navigates nowhere', BOUND, async () => {
+  test('a late failure settles shared feedback and navigates nowhere', BOUND, async () => {
     const held = deferred()
     const { log, flow } = harness({
       revoke: async () => {
@@ -251,7 +273,8 @@ describe('leaving the page while the request is in flight (Shadow LOW-2, Quinn 3
       flow.dispose()
       held.resolve()
       assert.equal(await run, false, 'they are NOT signed out')
-      assert.equal(flow.error.value, '', 'no message is written to a page that is gone')
+      assert.equal(flow.error.value, SIGN_OUT_FAILED, 'surviving shared chrome can report the failure')
+      assert.equal(flow.pending.value, false, 'the shared operation is not stranded')
       assert.deepEqual(log.navigate, [])
     } finally {
       held.resolve()
@@ -323,7 +346,7 @@ describe('useSignOut, wired to a real router', () => {
     }
   })
 
-  test('and a late failure neither navigates nor writes a message', BOUND, async () => {
+  test('and a late failure settles shared feedback without navigating', BOUND, async () => {
     const held = deferred()
     const { router, scope, flow } = await wired(async () => {
       await held.promise
@@ -335,7 +358,8 @@ describe('useSignOut, wired to a real router', () => {
       scope.stop()
       held.resolve()
       assert.equal(await run, false)
-      assert.equal(flow.error.value, '')
+      assert.equal(flow.error.value, SIGN_OUT_FAILED)
+      assert.equal(flow.pending.value, false)
       assert.equal(router.currentRoute.value.path, '/pricing')
     } finally {
       held.resolve()
@@ -467,79 +491,5 @@ describe('the pending state is announced politely (Quinn 4)', () => {
     const html = await renderView(server, 'AccountView.vue', '/account', { set: { signOutError: SIGN_OUT_FAILED } })
     assert.equal(statusRegion(html)?.text, '', 'two voices for one failure')
     assert.ok(textOf(html).includes(SIGN_OUT_FAILED))
-  })
-})
-
-// --------------------------------------------------------------------------- 4. parity
-
-describe('the Account page and the navbar say the same thing', () => {
-  const navbar = readFileSync(new URL('../src/components/Navbar.vue', import.meta.url), 'utf8')
-
-  /**
-   * Everything wrong with the navbar's Sign out labels. There are TWO label expressions, one on the
-   * desktop bar and one in the mobile sheet, and both must be the shared words. The first draft of
-   * this check used `includes`, which one correct copy satisfied: changing only the mobile label
-   * stayed green (Cody, round 1).
-   */
-  function labelProblems(source: string): string[] {
-    const labels = [...source.matchAll(/signOutPending \? '([^']*)' : '([^']*)'/g)].map((m) => [m[1], m[2]] as const)
-    const out: string[] = []
-    if (labels.length !== 2) {
-      out.push(`expected the navbar's two label expressions (desktop bar and mobile sheet), found ${labels.length}: update this check, do not delete it`)
-    }
-    labels.forEach(([pendingLabel, idleLabel], index) => {
-      const where = index === 0 ? 'the first (desktop)' : index === 1 ? 'the second (mobile sheet)' : `number ${index + 1}`
-      if (pendingLabel !== SIGN_OUT_PENDING_LABEL) out.push(`${where} reads "${pendingLabel}" while pending, not "${SIGN_OUT_PENDING_LABEL}"`)
-      if (idleLabel !== SIGN_OUT_LABEL) out.push(`${where} reads "${idleLabel}" when idle, not "${SIGN_OUT_LABEL}"`)
-    })
-    return out
-  }
-
-  test('the failure message is word for word the navbar\'s', () => {
-    const declared = /const SIGN_OUT_FAILED = "([^"]*)"/.exec(navbar)?.[1]
-    assert.ok(declared, 'Navbar.vue no longer declares SIGN_OUT_FAILED as a double-quoted literal: update this parity check, do not delete it')
-    assert.equal(declared, SIGN_OUT_FAILED)
-  })
-
-  test('BOTH of the navbar\'s labels (desktop and mobile sheet) are the shared ones', () => {
-    assert.deepEqual(labelProblems(navbar), [])
-  })
-
-  test('the label check really sees a drift in only one of the two (positive control)', () => {
-    const both = "{{ signOutPending ? 'Signing out…' : 'Sign out' }} ... {{ signOutPending ? 'Signing out…' : 'Sign out' }}"
-    assert.deepEqual(labelProblems(both), [])
-    const mobileOnly = "{{ signOutPending ? 'Signing out…' : 'Sign out' }} ... {{ signOutPending ? 'Signing out…' : 'Log out' }}"
-    const problems = labelProblems(mobileOnly)
-    assert.equal(problems.length, 1, problems.join('; '))
-    assert.match(problems[0] as string, /second \(mobile sheet\).*"Log out"/)
-    const pendingOnly = "{{ signOutPending ? 'Signing out…' : 'Sign out' }} ... {{ signOutPending ? 'Working…' : 'Sign out' }}"
-    assert.match(labelProblems(pendingOnly).join(';'), /"Working…" while pending/)
-    assert.match(labelProblems('no labels here').join(';'), /found 0/)
-  })
-
-  test('TEMPORARY, pinned: today the Account page lands on /signin and the navbar on /', () => {
-    // THE OWNER'S DECISION (2026-10-05) IS THAT BOTH BUTTONS LAND ON /signin. This ticket
-    // (17tnw2b2cbr) cannot make it so: criterion 2 says /signin, criterion 5 says "identical to the
-    // navbar", and the navbar lands on `/`, which is shared chrome this ticket may not edit. So
-    // criterion 5 is PARTIAL until 17tnw2b2ka8 moves the navbar.
-    //
-    // This test says what is true TODAY, so the difference is something a person changed on
-    // purpose and not something that drifted. Whoever changes the navbar under 17tnw2b2ka8 will
-    // see this fail: delete it then, together with the `/` check in `session-lifecycle`
-    // (`scripts/auth_pages_headless.py`), which pins the navbar's side at runtime.
-    const account = readFileSync(new URL('../src/views/AccountView.vue', import.meta.url), 'utf8')
-    assert.match(account, /useSignOut\('\/signin'\)/, 'the Account page no longer lands on /signin')
-
-    const start = navbar.indexOf('const handleSignOut')
-    assert.ok(start !== -1, 'Navbar.vue no longer has handleSignOut')
-    const handler = navbar
-      .slice(start, navbar.indexOf('/**', start))
-      .replace(/\/\/[^\n]*/g, '')
-    assert.ok(handler.length > 200, 'the handler slice is suspiciously short')
-    assert.ok(
-      handler.includes("await router.push('/')") && handler.includes("window.location.assign('/')"),
-      'the navbar no longer lands on `/`. If 17tnw2b2ka8 moved it to /signin, that is the plan: delete this test ' +
-        'and the `/` check in `session-lifecycle`. If not, the Account page and the navbar now differ for a new reason.',
-    )
   })
 })
