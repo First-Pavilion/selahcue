@@ -130,8 +130,8 @@ def actor_from_request(request) -> ActorContext | None:
         if actor is not None:
             return actor
 
-    # Dev/test bridge ONLY: trusted actor headers (staff/device), gated by settings and never
-    # enabled in production (SELAHCUE_TRUST_ACTOR_HEADERS=false).
+    # Dev/test bridge ONLY: trusted actor headers, gated by settings. Startup refuses
+    # SELAHCUE_TRUST_ACTOR_HEADERS outside exact dev, including staging.
     if not settings.SELAHCUE_TRUST_ACTOR_HEADERS:
         return None
 
@@ -142,6 +142,9 @@ def actor_from_request(request) -> ActorContext | None:
     try:
         kind = ActorKind(kind_value)
     except ValueError:
+        return None
+    # Anonymous identifies internally recorded failed-confirm audit rows, not a caller identity.
+    if kind is ActorKind.ANONYMOUS:
         return None
     return ActorContext(
         kind=kind,

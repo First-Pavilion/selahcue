@@ -21,7 +21,7 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 
 `POST /v1/downloads:prepare`, `POST /v1/downloads/<lease_id>:complete`, `POST /v1/usage-events:batch`, and `/webhooks/billing/<provider>`.
 
-The API does not yet issue download leases, serve licensed Bible text, sync billing providers, or store provider secrets. Header-derived actors remain a local/test bridge for **staff** only — customer identity now goes through real session auth, and `SELAHCUE_TRUST_ACTOR_HEADERS` must be false in production.
+The API does not yet issue download leases, serve licensed Bible text, sync billing providers, or store provider secrets. Header-derived actors remain a local/test bridge; customer identity goes through real session auth. Startup refuses enabled `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` whenever `ENVIRONMENT` is not exactly `dev`, including staging and explicit ingress opt-in. The bridge rejects `anonymous`; internally generated failed-confirm audit actors remain valid. Production staff identity integration remains separate.
 
 ## Activation input
 
