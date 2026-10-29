@@ -81,9 +81,10 @@ if DEBUG and ENVIRONMENT != "dev":
 # `check --deploy`, so a weak key is not caught automatically anywhere today. Adopting that check
 # or its thresholds is a possible follow-up.
 #
-# What this does NOT cover: an environment that never sets ENVIRONMENT IS `dev`, so it starts
-# without complaint, on the dev key. That is why docs/ops/DEPLOYMENT.md and deployments.md list
-# ENVIRONMENT first in "Prod must-set" and say so.
+# A genuinely omitted ENVIRONMENT is still dev for local use, but the import-time guard below
+# refuses an empty raw key with any non-local allowed host (17tnw2b9d9y, accepted option a).
+# Explicit dev and a configured raw key stay outside that narrow guard; deployed environments
+# must still set ENVIRONMENT explicitly, as docs/ops/DEPLOYMENT.md and deployments.md describe.
 _DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
 _PUBLIC_SECRET_KEYS = frozenset({_DEV_SECRET_KEY, "replace-me-with-a-fresh-key"})
 
@@ -101,7 +102,20 @@ def _normalised_secret(value: str) -> str:
     return value.casefold()
 
 
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
+# Check the raw key before dev fallback. This runs on every settings import, including WSGI,
+# rather than relying on manage.py checks. Bracketed ::1 is Django's IPv6 loopback host spelling.
+if (
+    os.getenv("ENVIRONMENT") is None
+    and not SECRET_KEY
+    and any(host not in {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"} for host in ALLOWED_HOSTS)
+):
+    raise ImproperlyConfigured(
+        "ENVIRONMENT must be explicitly set when SECRET_KEY is empty and DJANGO_ALLOWED_HOSTS "
+        "includes a non-local host. Set ENVIRONMENT='staging' or 'prod' and a real SECRET_KEY "
+        "for deployment; use explicit ENVIRONMENT='dev' only for trusted local development."
+    )
 if ENVIRONMENT != "dev":
     _normalised_secret_key = _normalised_secret(SECRET_KEY)
     if not _normalised_secret_key:
@@ -118,8 +132,6 @@ if ENVIRONMENT != "dev":
     del _normalised_secret_key
 elif not SECRET_KEY:
     SECRET_KEY = _DEV_SECRET_KEY
-
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 
 INSTALLED_APPS = [
     "django.contrib.auth",
