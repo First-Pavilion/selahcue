@@ -76,6 +76,103 @@ void main() {
     await tester.pump(const Duration(seconds: 10));
   }
 
+  group('stored-profile read at launch (17tnw2b0wg3)', () {
+    const channel =
+        MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
+
+    for (final missingProfile in [false, true]) {
+      testWidgets(
+          missingProfile
+              ? 'a missing profile reaches Connect without a reconnect attempt'
+              : 'a platform keystore read failure reaches Connect without an '
+                  'unhandled error', (tester) async {
+        var connects = 0;
+        var writes = 0;
+        var deletes = 0;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async {
+          if (call.method == 'write') writes++;
+          if (call.method == 'delete') deletes++;
+          if (call.method == 'read' && !missingProfile) {
+            throw PlatformException(
+                code: 'keystore_unavailable', message: 'test read failure');
+          }
+          return null;
+        });
+        try {
+          await tester.pumpWidget(MaterialApp(
+            home: Launcher(connect: ({
+              required String host,
+              required int port,
+              required String pinHex,
+              required Credentials creds,
+            }) async {
+              connects++;
+              throw const SessionException('unexpected reconnect attempt');
+            }),
+          ));
+          await tester.pump();
+          expect(find.byType(SplashView), findsOneWidget,
+              reason: 'the existing brand delay remains in place');
+
+          await tester.pump(const Duration(seconds: 1));
+          await tester.pump(const Duration(seconds: 1));
+
+          expect(tester.takeException(), isNull,
+              reason: 'an unavailable profile must not escape Launcher._start');
+          expect(find.byType(PairingView), findsOneWidget);
+          expect(find.byType(SplashView), findsNothing);
+          expect(connects, 0,
+              reason: 'no readable profile means there are no credentials to use');
+          expect(writes, 0);
+          expect(deletes, 0,
+              reason: 'a failed read must not erase the stored profile');
+        } finally {
+          await teardown(tester);
+        }
+      });
+    }
+
+    testWidgets('a valid profile is passed unchanged to reconnect',
+        (tester) async {
+      var connects = 0;
+      Map<String, Object>? observed;
+      try {
+        await tester.pumpWidget(MaterialApp(
+          home: Launcher(connect: ({
+            required String host,
+            required int port,
+            required String pinHex,
+            required Credentials creds,
+          }) async {
+            connects++;
+            observed = {
+              'host': host,
+              'port': port,
+              'pin': pinHex,
+              'device_id': creds.deviceId,
+              'token': creds.token,
+            };
+            // A controlled connect failure avoids opening a real session. The
+            // established connect-failure route has its own sibling checks.
+            throw const SessionException('controlled reconnect failure');
+          }),
+        ));
+        await tester.pump();
+        expect(connects, 1);
+        expect(observed, _stored.toJson());
+        expect(find.text('Reconnecting to ${_stored.host}…'), findsOneWidget);
+
+        await tester.pump(const Duration(seconds: 1));
+        await tester.pump(const Duration(seconds: 1));
+        expect(tester.takeException(), isNull);
+        expect(find.byType(PairingView), findsOneWidget);
+      } finally {
+        await teardown(tester);
+      }
+    });
+  });
+
   testWidgets('a FormatException from the launch connect shows Connect, '
       'not a stuck splash', (tester) async {
     await launchFailingWith(tester, const FormatException('not json'));
