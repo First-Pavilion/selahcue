@@ -113,9 +113,19 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Target criterion: C-003 and Cody finding CODY-KA8-01.
 - Hypothesis: router-lifetime reuse retains a settled failure after all consumers leave for bare `/signin`, so a new successful sign-in on the same router remounts Account with stale feedback.
 - Change or investigation: verified App.vue bare-route unmount, SignInView's real sign-in then router replacement, and useSignOut's unbounded settled error lifetime. Add tests only: real signIn/account seam plus all-consumer disposal/remount reproducer; active-operation remount and surviving feedback control.
-- Verifier executed: Goal Contract structural validation and full baseline diff check. Focused hosted assertion RED requested from root; no local project runtime.
-- Result: Production remains unchanged for this checkpoint. Expected stale-error assertion RED; pending operation retention control must pass.
-- New evidence: tests/sharedSignOut.test.ts and wave2-20261029/reviews/cody-ka8-r1.md.
+- Verifier executed: hosted diagnostic 40943085685 on source e302a7a574c7cba4299b235931d2c0fc4b96fc88; `node --test tests/sharedSignOut.test.ts`.
+- Result: Actual assertion RED, expected empty feedback for the new session and actual prior SIGN_OUT_FAILED. Six tests passed and one failed; the all-consumers-leave-active/remount positive control passed. Production was unchanged at this checkpoint.
+- New evidence: tests/sharedSignOut.test.ts, wave2-20261029/reviews/cody-ka8-r1.md and frontend-review-red.log; https://github.com/First-Pavilion/selahcue/actions/runs/40943085685.
+- Decision: iterate
+
+### Iteration 5
+
+- Target criterion: C-003 and Cody finding CODY-KA8-01.
+- Hypothesis: count active consumers per router, retaining an entry only while observed or pending, to expire a settled failure before a later sign-in without clearing a live operation.
+- Change or investigation: useSignOut releases an unused settled entry at the final scope disposal and after an operation settles; keep entries with surviving/remounted consumers and all pending entries. An identity guard prevents an old disposed controller from removing a newer router entry. No sessionStore, authentication policy or ka9 changes.
+- Verifier executed: Goal Contract structural validation, stdlib AST of the changed browser script and full baseline-to-HEAD diff check. No local project runtime.
+- Result: Static checks PASS. Fresh hosted regression GREEN, complete marketing/browser CI and all four current-source reviews remain pending with root.
+- New evidence: narrow useSignOut lifetime change and the observed RED plus positive control from iteration 4.
 - Decision: handoff
 
 ## Risks and rollback

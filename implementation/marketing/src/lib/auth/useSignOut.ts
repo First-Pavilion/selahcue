@@ -4,9 +4,14 @@ import { useRouter, type Router } from 'vue-router'
 import { createSignOutFlow, createSignOutState, SIGN_OUT_LANDING, type SignOutState } from './signOutFlow.ts'
 import { signOut } from './sessionStore.ts'
 
-// One operation for the app's controls, without leaking pending/error state between SSR apps.
-// The router owns the state lifetime; each caller retains its own disposal/navigation lifetime.
-const states = new WeakMap<Router, SignOutState>()
+interface SignOutEntry {
+  state: SignOutState
+  consumers: number
+}
+
+// One operation for the app's controls, without leaking state between SSR apps. Keep an active
+// operation across remounts, but expire settled feedback when no control can display it anymore.
+const states = new WeakMap<Router, SignOutEntry>()
 
 /**
  * The real sign-out, for a component: `sessionStore.signOut` for the revocation, the app's own
@@ -26,17 +31,35 @@ const states = new WeakMap<Router, SignOutState>()
  */
 export function useSignOut(landing = SIGN_OUT_LANDING, revoke: () => Promise<void> = () => signOut()) {
   const router = useRouter()
-  let state = states.get(router)
-  if (!state) {
-    state = createSignOutState()
-    states.set(router, state)
+  const entry = states.get(router) ?? { state: createSignOutState(), consumers: 0 }
+  states.set(router, entry)
+  entry.consumers += 1
+
+  function releaseIfUnused(): void {
+    if (entry.consumers === 0 && !entry.state.pending.value && states.get(router) === entry) {
+      states.delete(router)
+    }
   }
+
   const flow = createSignOutFlow({
     landing,
     revoke,
     navigate: (to) => router.push(to),
     hardNavigate: (to) => window.location.assign(to),
-  }, state)
-  onScopeDispose(() => flow.dispose())
-  return flow
+  }, entry.state)
+  onScopeDispose(() => {
+    flow.dispose()
+    entry.consumers -= 1
+    releaseIfUnused()
+  })
+  async function run(): Promise<boolean> {
+    try {
+      return await flow.run()
+    } finally {
+      // A request may settle after the last scope left. Do not carry its now-invisible
+      // feedback into a later sign-in; an existing/remounted consumer still retains it.
+      releaseIfUnused()
+    }
+  }
+  return { ...flow, run }
 }
