@@ -31,6 +31,27 @@ Enrollment activation requires `Content-Type: application/json` before any throt
 
 Shared `/v1` throttle denials return the existing 429 `RATE_LIMITED` JSON envelope with `Cache-Control: no-store` and `Retry-After` as remaining fixed-window seconds, rounded up to at least one. Expiry is read from the existing counter only after denial (Redis primary PTTL; local-memory expiry under its lock). Redis denials pay one additional command under the existing socket timeout; allowed and fail-open requests do not. If expiry metadata cannot be read or a custom backend has no supported expiry reader, the denial remains 429 with a bounded full-window retry hint. Keys, configured budgets and response bodies are unchanged. These headers do not extend to Django method guards or other framework errors (17tnw2b1wqc).
 
+## Native authentication visibility
+
+The application logger `selahcue_api.apps.throttling.guards` warns when a shared native
+throttle actually refuses requests, at most once per60 seconds per scope per worker process.
+The fixed scopes are `activation`, `session_login`, `activation_with_session`, `license_refresh`
+and `entitlement_manifest`; they reuse the existing scope-only denial suppression. A separate
+aggregate `scope=session_login refused sign-ins` warning reports login-service refusals, including
+wrong credentials, lockouts and account-policy refusals, at most once per60 seconds per worker.
+It does not distinguish these outcomes, count attempts or identify callers. A login throttle denial
+and a service refusal are independent signals; malformed/pre-credential requests and successful
+sign-ins do not emit the service-failure warning.
+
+These warnings contain no IP, email, customer ID, password, token, fingerprint or exception. Native
+reporting adds at most five fixed denial timestamps and one aggregate failure timestamp, protected
+by the shared reporting lock, with no per-identity maps or database writes. State resets on worker
+restart; fleets can emit one warning per scope/event per worker each minute. This application
+warning bound does not change Django's existing request-status logs or broker/cache-outage logs.
+Browser GraphQL login, authentication decisions, budgets, outage behavior, response envelopes,
+remaining-window retry headers and native cookie/content-type guards keep their existing behavior
+(17tnw2b1wqa).
+
 ## `GET /v1/entitlements/manifest`
 
 The signed offline entitlement (DEC-004). Device-token auth via `Authorization: Bearer <device_token>`. Returns an Ed25519 envelope:
