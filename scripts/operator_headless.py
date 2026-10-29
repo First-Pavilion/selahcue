@@ -1927,7 +1927,11 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # measured by the review RED run before the bounded-scalar implementation.
 #2303 ->2315 (17tnw2ayetg): four startup-state combinations, with three DOM,
 # explanation and no-mutation checks each. Count measured by the RED full run.
-EXPECTED_MIN_CHECKS = 2315  # measured:2315 checks; result recorded in the goal
+# 2315 ->2335 (17tnw2ayna7): twenty real-DOM failure, confirmation and recovery
+# checks. Measured by the full test-first RED run (17 behavioral failures).
+# 2335 ->2347 (C-REMOTE-1): resolved no-op snapshots for all four actions, a missing
+# role target and a stale Deny whose request was approved elsewhere. Measured by RED.
+EXPECTED_MIN_CHECKS = 2347  # measured:2347 checks; result recorded in the goal
 
 
 def find_chrome():
@@ -2659,6 +2663,19 @@ STUB = r"""
   window.__sn = SN; // exposed so the driver can inspect persisted state directly
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
+    // 17tnw2ayna7: fail at the IPC boundary, keeping the real Remote Control handlers/DOM.
+    // Persistent snapshot failure also covers an interval tick racing the failure recovery.
+    if (window.__rcRejectCommand === cmd) return Promise.reject("host-secret:<img src=x onerror=alert(1)>");
+    if (cmd === "remote_snapshot" && window.__rcRejectSnapshots) {
+      window.__rcRejectedSnapshotSeen = true;
+      return Promise.reject(new Error("snapshot unavailable"));
+    }
+    if (window.__rcDeferCommand === cmd) return new Promise(function(resolve, reject) {
+      window.__rcDeferred = {resolve:resolve, reject:reject};
+    });
+    // The real host resolves unchanged snapshots for capacity/unknown-target no-ops.
+    if (window.__rcNoopCommand === cmd)
+      return Promise.resolve({devices:window.__remote.devices.slice(),pending:window.__remote.pending.slice()});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
     // The real bundled set (selahcue_scripture::Translation::ALL, mirrored — see main.rs's
@@ -9346,6 +9363,7 @@ DRIVER = r"""
       var rcPend = document.querySelector("#rc-pending .rc-pending-card");
       ok(!!rcPend, "Remote: a pending pair request is shown with a role picker");
       rcPend.querySelector(".rc-approve").click();
+      await waitFor(function(){ return document.querySelectorAll("#rc-pending .rc-pending-card").length === 0; });
       ok(document.querySelectorAll("#rc-pending .rc-pending-card").length === 0 &&
          +el("rc-count-n").textContent === rcN0 + 1,
          "Remote: Approve moves the request into paired devices (" + rcN0 + "→" + el("rc-count-n").textContent + ")");
@@ -9355,8 +9373,107 @@ DRIVER = r"""
       rcRb.click();
       ok(rcRb.classList.contains("armed"), "Remote: first Revoke click arms a two-step confirm (destructive)");
       rcRb.click();
+      await waitFor(function(){ return document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1; });
       ok(document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1,
          "Remote: second Revoke click removes the device");
+
+      // 17tnw2ayna7: reject each real action AND its recovery snapshot. Removing the host-
+      // confirmation boundary or visible error must break these cases, not just fixture wiring.
+      await window.__rcActivationSettleForTest();
+      var rcOriginal = JSON.parse(JSON.stringify(window.__remote));
+      var rcFailureFixture = {
+        devices:[{device_id:"rc-test-device", name:"Confirmed tablet", platform:"iPadOS", role:"viewer", idle_secs:3}],
+        pending:[{device_id:"rc-test-pending", name:"Waiting phone", platform:"iOS"}]
+      };
+      async function rcResetFailureCase() {
+        window.__rcRejectCommand = null; window.__rcRejectSnapshots = false;
+        window.__rcNoopCommand = null;
+        window.__remote = JSON.parse(JSON.stringify(rcFailureFixture));
+        await window.__rcPollForTest(); await window.__rcActivationSettleForTest();
+      }
+      var rcFailureActions = [
+        {cmd:"remote_approve", fire:function(){ document.querySelector("#rc-pending .rc-approve").click(); }},
+        {cmd:"remote_deny", fire:function(){ document.querySelector("#rc-pending .rc-deny").click(); }},
+        {cmd:"remote_revoke", fire:function(){ var b=document.querySelector("#rc-rows .rc-revoke"); b.click(); b.click(); }},
+        {cmd:"remote_set_role", fire:function(){ var s=document.querySelector("#rc-rows select"); s.value="producer"; s.dispatchEvent(new Event("change",{bubbles:true})); }}
+      ];
+      for (var rcCase of rcFailureActions) {
+        await rcResetFailureCase();
+        window.__rcRejectCommand=rcCase.cmd; window.__rcRejectSnapshots=true; window.__rcRejectedSnapshotSeen=false;
+        rcCase.fire();
+        await waitFor(function(){ return window.__rcRejectedSnapshotSeen; });
+        // The rejecting snapshot's catch and the mutation's final control reset are microtasks.
+        await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+        var rcError = el("rc-action-error");
+        ok(!!rcError && !rcError.hidden && getComputedStyle(rcError).display !== "none" && rcError.getAttribute("role") === "alert",
+           "Remote failure " + rcCase.cmd + ": sighted and screen-reader operators receive a visible alert even when resync fails");
+        ok(document.querySelectorAll("#rc-rows .rc-row").length === 1 && document.querySelector("#rc-rows .rc-devname").textContent === "Confirmed tablet" &&
+           document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && document.querySelector("#rc-rows select").value === "viewer",
+           "Remote failure " + rcCase.cmd + ": list and role retain last host-confirmed state");
+        ok(!!rcError && /not confirmed|could not confirm/i.test(rcError.textContent) && !/host-secret|onerror/.test(rcError.textContent) &&
+           !/Approved|Denied|Revoked|is now/.test(el("rc-live").textContent),
+           "Remote failure " + rcCase.cmd + ": no false success announcement or raw host error disclosure");
+        await rcResetFailureCase();
+        ok(!!rcError && rcError.hidden, "Remote recovery " + rcCase.cmd + ": a fresh authoritative snapshot clears the stale warning");
+      }
+      // C-REMOTE-1: a resolved snapshot is not a success receipt. At the real session cap an
+      // approval leaves the request pending; stale deny/revoke/role targets can also be no-ops.
+      for (var rcNoopCase of rcFailureActions) {
+        await rcResetFailureCase(); window.__rcNoopCommand=rcNoopCase.cmd;
+        rcNoopCase.fire();
+        await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+        ok(document.querySelectorAll("#rc-rows .rc-row").length === 1 &&
+           document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && document.querySelector("#rc-rows select").value === "viewer",
+           "Remote no-op " + rcNoopCase.cmd + ": retain the authoritative unchanged list and role");
+        ok(!el("rc-action-error").hidden && getComputedStyle(el("rc-action-error")).display !== "none" &&
+           /not confirmed/i.test(el("rc-live").textContent) && !/Approved|Denied|Revoked|is now/.test(el("rc-live").textContent),
+           "Remote no-op " + rcNoopCase.cmd + ": unfulfilled result is visibly unconfirmed rather than announced as success");
+      }
+      await rcResetFailureCase(); window.__rcNoopCommand="remote_set_role";
+      // The UI saw the device, but it disappeared at the host before the command arrived.
+      window.__remote.devices=[];
+      rcFailureActions[3].fire();
+      await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(document.querySelectorAll("#rc-rows .rc-row").length === 0 && +el("rc-count-n").textContent === 0,
+         "Remote no-op role missing target: display the host's empty device list rather than restore a stale target");
+      ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/is now Producer/.test(el("rc-live").textContent),
+         "Remote no-op role missing target: never announce a role for a device the snapshot does not contain");
+      await rcResetFailureCase();
+      window.__rcNoopCommand="remote_deny";
+      // Another operator approved the request before this stale Deny reached the host.
+      window.__remote.pending=[];
+      window.__remote.devices.push({device_id:"rc-test-pending",name:"Waiting phone",platform:"iOS",role:"producer",idle_secs:0});
+      document.querySelector("#rc-pending .rc-deny").click();
+      await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(document.querySelectorAll("#rc-rows .rc-row").length === 2 && document.querySelectorAll("#rc-pending .rc-pending-card").length === 0,
+         "Remote no-op deny already approved: preserve the paired device from the authoritative snapshot");
+      ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/Denied/.test(el("rc-live").textContent),
+         "Remote no-op deny already approved: absence of a pending request cannot announce denial while its device is paired");
+      await rcResetFailureCase();
+      // A deferred host answer must leave the old confirmed state on screen, with duplicate
+      // submissions disabled. The first-click Revoke confirmation remains covered above.
+      window.__rcDeferCommand="remote_deny";
+      var rcDeferredBefore=window.__calls.filter(function(c){ return c.cmd === "remote_deny"; }).length;
+      document.querySelector("#rc-pending .rc-deny").click();
+      var rcPendingButton=document.querySelector("#rc-pending .rc-deny");
+      ok(!!rcPendingButton && rcPendingButton.disabled && el("surface-remote").getAttribute("aria-busy") === "true" &&
+         document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && !/Denied/.test(el("rc-live").textContent),
+         "Remote pending: keep confirmed request, announce waiting and disable mutation controls until the host answers");
+      if (rcPendingButton) rcPendingButton.click();
+      ok(window.__calls.filter(function(c){ return c.cmd === "remote_deny"; }).length === rcDeferredBefore+1,
+         "Remote pending: repeated click cannot dispatch a duplicate action");
+      window.__rcDeferCommand=null; window.__remote.pending=[];
+      window.__rcDeferred.resolve({devices:window.__remote.devices.slice(),pending:[]});
+      await waitFor(function(){ return document.querySelectorAll("#rc-pending .rc-pending-card").length === 0; });
+      ok(document.querySelectorAll("#rc-pending .rc-pending-card").length === 0 && /Denied/.test(el("rc-live").textContent),
+         "Remote success: denial applies and announces only after host confirmation");
+      await rcResetFailureCase();
+      var rcSuccessRole=document.querySelector("#rc-rows select"); rcSuccessRole.value="producer";
+      rcSuccessRole.dispatchEvent(new Event("change",{bubbles:true}));
+      await waitFor(function(){ return document.querySelector("#rc-rows select").value === "producer" && el("surface-remote").getAttribute("aria-busy") !== "true"; });
+      ok(document.querySelector("#rc-rows select").value === "producer" && /is now Producer/.test(el("rc-live").textContent),
+         "Remote success: role changes apply the host-returned role and announce confirmation");
+      window.__remote=rcOriginal; await window.__rcPollForTest(); await window.__rcActivationSettleForTest();
 
       // === RCD-### closure (17tnw2axptv) — RCD-008 (MISSING) + RCD-009 (A11Y-DEFECT). RCD-004/
       // RCD-006 are deliberately NOT covered here: both are named in the ClickUp ticket itself
