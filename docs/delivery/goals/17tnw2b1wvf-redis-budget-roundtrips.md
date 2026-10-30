@@ -64,7 +64,7 @@ Fresh actual main9d9da7a0f68d43923dcd79e11c6f7970d7dd692f includes reviewed/QA X
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Real current Redis baseline and fixed-window gaps established with positive controls | Hosted real request/wire counting wrapper and expiry/failure tests against unchanged production | Actual cold/hot budget and initialization counts recorded; meaningful behavioral RED, no setup/oracle failure | api-redis-budget-roundtrips red metadata/raw/classification | PENDING |
+| C-001 | yes | Real current Redis baseline and fixed-window gaps established with positive controls | Hosted real request/wire counting wrapper and expiry/failure tests against unchanged production | Actual cold/hot budget and initialization counts recorded; meaningful behavioral RED, no setup/oracle failure | red-ci metadata/raw and red-classification.json:actual3failed73passed3.79s | PASS |
 | C-002 | yes | Accepted three-budget requests use at most three Redis budget round trips | Hosted real wire packet/counting wrapper on accepted reset path with same keys/counts and cold/hot counters | One to three actual budget request/reply packets; setup/control commands reported separately; three real budget spends proven | Focused GREEN and full CI raw logs | PENDING |
 | C-003 | yes | Atomic fixed windows retain counts/expiry through boundary and failure cases | Real Redis first-hit/repeat/expired/persistent/concurrent/lost-reply tests and meaningful mutant/restoration | Window not extended on repeat, missing key starts at1, no persistent key, exact concurrent counts, unavailable outcome preserved | Hosted atomicity/sensitivity/restoration receipts | PENDING |
 | C-004 | yes | Existing limiting/privacy/local-cache/caller semantics preserved | Existing test files byte-identical, full normal throttle/reset/cache/socket/circuit/privacy/response regressions, source comparison and docs review | Existing assertions pass unchanged; resolver/order/budget/admission/HMAC and generic fallback unchanged; accurate command docs | Git component proof, hosted full API raw and reviews | PENDING |
@@ -89,6 +89,26 @@ Fresh actual main9d9da7a0f68d43923dcd79e11c6f7970d7dd692f includes reviewed/QA X
 - Result: scope/baseline established; actual Redis measurement and tests-first runtime evidence pending; no production fix.
 - New evidence: full qualification/fresh dispatch packets, prior X1P completion and this contract.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: current configured Redis exceeds the hot-counter ceiling and can leave valid counters persistent under existing broken state or an after-write lost reply.
+- Change or investigation: actual hosted41128913268 at tests-only035871a1/workflow-onlyec60d036; independently read raw, transport marker, all3failures and positive failure-injection assertions.
+- Verifier executed: real Redis packed-write counting,3real ordered budget counts, fixed-window/expiry/concurrency/error controls and unchanged3limiting sibling modules.
+- Result: actual3failed73passed3.79s, no setup/oracle errors. Cold3SET budget writes plus3separateCLIENT/CLIENT/SELECT initialization; hot9SET/EXISTS/INCRBY budget writes, zero setup. Persistent count8 and positively injected INCRBY lost-reply recreation count1 both retained PTTL=-1. Other73controls passed.
+- New evidence: api-redis-budget-roundtrips/red-ci official raw/metadata/hashes; red-classification.json and exact-source component proof.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 through C-005.
+- Hypothesis: one bounded primary-key script creating with expiry and repairing persistence before increment meets the ceiling and failure/window invariants without altering generic callers.
+- Change or investigation: Redis-positive-timeout branch uses Django's verified timeout/key adapter and one EVAL; new key SET includes expiry atomically, old deadline retained, persistent count repaired before increment. Generic API body, HMAC, resolver, caller order/limits/outage/circuit/native behavior unchanged. Ops command-count/ACL/timeout wording reconciled; historical latency is not claimed current.
+- Verifier executed: official pinned Django6.1.2 Redis source read (get_backend_timeout/key/client contract), stdlib AST/unchanged-body/component checks, whitespace/goal validation. Hosted target GREEN, meaningful mutants/exact restoration and full normal API pending.
+- Result: scoped candidate prepared; no runtime GREEN or review/merge claim yet.
+- New evidence: django-6.1.2-redis-source.json/.py and forthcoming immutable candidate/mutation/full CI receipts.
+- Decision: handoff
 
 ## Risks and rollback
 

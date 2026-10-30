@@ -55,21 +55,34 @@ def _report_store_unavailable(error_type: str) -> None:
     )
 
 
+# One bounded EVAL, one key, no loops or script-cache miss/retry round trip.
+# Create a missing key WITH expiry in the same Redis SET; Lua does not roll
+# back earlier writes when a later command errors. Existing persistent keys
+# get their expiry repaired before increment, retaining their count.
+_REDIS_COUNTER_SCRIPT = """
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl == -2 then
+    redis.call("SET", KEYS[1], 1, "EX", ARGV[1])
+    return 1
+end
+if ttl == -1 then
+    redis.call("EXPIRE", KEYS[1], ARGV[1])
+end
+return redis.call("INCR", KEYS[1])
+"""
+
+
 class CacheStore:
-    """Redis-backed counter using the Django cache API.
+    """Fixed-window counter with an atomic path for the configured Redis backend.
 
-    `cache.incr()` is NOT atomic in Django's Redis backend — `django/core/cache/backends/
-    redis.py` implements it as `EXISTS` then `INCR`, two separate round trips. If the key's
-    TTL lapses **between** those two calls, Redis `INCR` recreates the key at 1 **with no
-    expiry**: `add()` can then never reclaim it (the key exists) and nothing else sets a TTL,
-    so the counter climbs forever and that caller is rate-limited permanently, with no
-    self-heal short of a manual `DEL`.
+    A positive Redis window takes one bounded script on the primary: create with
+    expiry, retain an existing deadline, or repair a persistent key without resetting
+    its count. A lost reply cannot strand a newly created/recreated key without TTL.
+    Prefix/version validation and timeout normalization remain Django's own.
 
-    The invariant this class holds is therefore: **no path leaves the counter key
-    persistent.** Any increment that returns 1 either created the window or was a silent
-    recreation by `INCR`; both are followed by `touch()`, which is Redis `EXPIRE`. LocMemCache
-    evaluates expiry under a lock and never reproduces the race, which is exactly why the
-    original shape passed its tests.
+    Generic/local caches and injected cache wrappers retain their existing add/incr/
+    touch API behavior below, including Django's nonpositive/persistent timeout
+    conventions. Configured production throttle windows are positive integers.
     """
 
     def __init__(self, cache):
@@ -78,6 +91,13 @@ class CacheStore:
         self._cache = caches["default"] if cache is default_cache else cache
 
     def incr_with_expiry(self, key: str, window_seconds: int) -> int:
+        if isinstance(self._cache, RedisCache):
+            timeout = self._cache.get_backend_timeout(window_seconds)
+            if timeout is not None and timeout > 0:
+                cache_key = self._cache.make_and_validate_key(key)
+                client = self._cache._cache.get_client(cache_key, write=True)
+                return int(client.eval(_REDIS_COUNTER_SCRIPT, 1, cache_key, timeout))
+        # Compatibility path: leave generic/local cache semantics unchanged.
         # add() is SET NX EX — atomic, and its success is what starts a window.
         if self._cache.add(key, 1, timeout=window_seconds):
             return 1
@@ -95,9 +115,8 @@ class CacheStore:
             # We only ever store 1 and increment, so a count of 1 out of incr() cannot be a
             # normal increment — it means the TTL lapsed between EXISTS and INCR and Redis
             # recreated the key PERSISTENTLY. touch() is the EXPIRE that add() can no longer
-            # apply. (Residual: a process death between INCR and touch() would still leave the
-            # key persistent. Closing that needs a Lua script or a raw pipeline, i.e. a
-            # Redis-only code path that the no-Redis test suite could not exercise.)
+            # apply. Configured Redis backends use the atomic branch above; this
+            # best-effort repair remains for the existing generic cache contract.
             self._cache.touch(key, window_seconds)
         return count
 
