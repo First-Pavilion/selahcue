@@ -94,6 +94,10 @@ class LoopbackHost {
   final HttpServer _server;
   final List<WebSocket> _sockets = [];
   final List<Map<String, Object>> _socketTerminals = [];
+  final _rawOutputs = Map<Socket, Map<String, Object>>.identity();
+
+  List<Map<String, Object>> get rawTransportDiagnostics =>
+      _rawOutputs.values.toList();
 
   List<Map<String, Object>> get socketDiagnostics => [
         for (var i = 0; i < _sockets.length; i++)
@@ -104,8 +108,10 @@ class LoopbackHost {
           },
       ];
 
-  bool get allSocketTransportsDone => _socketTerminals.every(
-      (value) => value['inputDone'] == true && value['outputDone'] == true);
+  bool get allSocketTransportsDone =>
+      _socketTerminals.every((value) => value['inputDone'] == true) &&
+      _rawOutputs.length >= _sockets.length &&
+      _rawOutputs.values.every((value) => value['done'] == true);
 
   /// Every hello received, in arrival order — one entry per connection attempt.
   /// The length is how many times a client dialled in and spoke.
@@ -183,7 +189,24 @@ class LoopbackHost {
           await req.response.close();
           return;
         }
-        final ws = await WebSocketTransformer.upgrade(req);
+        final ws = await runZoned(() => WebSocketTransformer.upgrade(req),
+            zoneSpecification: ZoneSpecification(
+          runUnary: <R, Value>(self, parent, zone, callback, value) {
+            if (value is Socket) {
+              host._rawOutputs.putIfAbsent(value, () {
+                final output = <String, Object>{'done': false};
+                unawaited(value.done.then<void>((_) {
+                  output['done'] = true;
+                }, onError: (Object error, StackTrace stackTrace) {
+                  output['done'] = true;
+                  output['error'] = error.runtimeType.toString();
+                }));
+                return output;
+              });
+            }
+            return parent.runUnary(zone, callback, value);
+          },
+        ));
         host._sockets.add(ws);
         final terminal = <String, Object>{
           'inputDone': false, 'outputDone': false

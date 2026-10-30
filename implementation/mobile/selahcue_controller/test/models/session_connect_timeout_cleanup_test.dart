@@ -202,7 +202,8 @@ void main() {
     }
     expect(serverCounts, everyElement(0), reason:
         'SDK ${Platform.version}; peer transports done: '
-        '${host.allSocketTransportsDone}; ${host.socketDiagnostics}');
+        '${host.allSocketTransportsDone}; ${host.socketDiagnostics}; '
+        'raw transport outputs: ${host.rawTransportDiagnostics}');
     await _until(() => host.httpConnectionCount == 0);
     expect(host.httpConnectionCount, 0);
     expect(host.hellos, isEmpty);

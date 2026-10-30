@@ -136,6 +136,16 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - New evidence: failed sequence belongs only to server readyState-derived counts, starting at index4; all five positive controls and other three leak cases passed.
 - Decision: obtain actual hosted per-socket transport completion/error evidence before any production or oracle correction. If oracle changes, require old-source sensitivity and all controls as well as full candidate CI.
 
+### Iteration 6
+
+- Target criterion: C-003 and C-006
+- Hypothesis: actual detached Socket.done plus peer input onDone can distinguish fully terminated transport from stale readyState; WebSocket.done alone is not a valid automatic-close oracle.
+- Change or investigation: diagnostic CI41040527404 at6fd05dc4 passed analysis/459 tests; one server counter failure remains. Hosted SDK3.13.7 records inputDone true for all100 sockets, readyState closed for99/open for index5, no input errors. WebSocket.done remains incomplete for all100 including99 closed peers. SDK source shows internal close closes the underlying Socket without closing the WebSocket StreamSink wrapper's done completer. Observe actual Socket values delivered by the real upgrade future via a forwarding zone, and record underlying Socket.done without modifying or closing the socket. Keep all resource zero assertions and100 cycles unchanged.
+- Verifier executed: raw diagnostic log mobile-late-websocket-diagnostic.log; inert SDK _DetachedSocket delegates close/done to underlying Socket. Structural validation/full baseline diffcheck; fresh hosted diagnostics pending.
+- Result: all peer input streams terminated, but write-side transport confirmation remains pending; no assertion that incomplete WebSocket.done is a leak.
+- New evidence: prior write-side diagnostic was invalid for all normal closed peers, not just the one stale readyState peer.
+- Decision: obtain raw transport completion evidence, then if needed use iteration7 for oracle/removal sensitivity and iteration8 for final full candidate. Do not silently extend the limit.
+
 ## Risks and rollback
 
 - Risks: cleanup must not close a timely returned session, publish an expired session, double-close a late socket or expose unhandled late errors. Force-closing HTTP alone cannot discharge a WebSocket already detached from that client.
