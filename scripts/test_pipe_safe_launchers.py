@@ -15,6 +15,7 @@ import io
 import json
 import os
 from pathlib import Path
+import runpy
 import signal
 import subprocess
 import sys
@@ -145,6 +146,28 @@ def worker(kind, root):
             result["exception_cmd"] = exc.cmd
     result.update(elapsed=time.monotonic()-start, output=stdout.getvalue(), requested=requested, leftovers=[p.name for p in work.iterdir()])
     (root / "result.json").write_text(json.dumps(result))
+
+
+class OperatorViewport(unittest.TestCase):
+    def test_operator_passes_an_explicit_viewport_to_the_real_launcher_boundary(self):
+        """An omitted/duplicated viewport must fail even if Chrome's default happens to match."""
+        captured = {}
+
+        class ReachedLauncher(Exception):
+            pass
+
+        def capture(chrome, page_html, flags, timeout, **kwargs):
+            captured.update(chrome=chrome, html=page_html, flags=flags, timeout=timeout)
+            raise ReachedLauncher
+
+        with mock.patch.dict(os.environ, {"CHROME_BIN":sys.executable}), mock.patch.object(h, "self_test", return_value=[]), mock.patch.object(h, "run_headless_chrome", capture), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(ReachedLauncher):
+                runpy.run_path(str(HERE / "operator_headless.py"), run_name="__main__")
+        self.assertEqual([flag for flag in captured["flags"] if flag.startswith("--window-size")], ["--window-size=800,600"])
+        self.assertIn("--headless=new", captured["flags"])
+        self.assertIn("--virtual-time-budget=90000", captured["flags"])
+        self.assertIn("CSSOM-PARSE-03", captured["html"])
+        self.assertEqual(captured["timeout"], 90)
 
 
 class Callers(unittest.TestCase):
