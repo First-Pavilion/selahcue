@@ -57,7 +57,7 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - One real ten-second connection deadline and a gated late server upgrade establish the actual default path; 100 further controlled-deadline cycles avoid a thousand-second test while retaining real sockets.
 - A zone-delayed delivery of an already acquired real WebSocket distinguishes fallback close from HTTP cancellation. A fully forwarding socket observer counts explicit closes while host/client state checks prove actual closure.
 - Counts apply to sockets owned by the loopback fixture/connection attempts, not unrelated process descriptors or a statistical performance claim.
-- Hosted setup, behavioral RED, corrected full GREEN and independent reviews remain pending.
+- Qualified original and strict old-source behavioral RED are recorded below; final strict corrected-source full GREEN and independent reviews remain pending.
 
 ## Dependencies and approvals
 
@@ -73,7 +73,7 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 | C-002 | yes | Already acquired late WebSocket closes exactly once | Real acquired WebSocket completion held past controlled deadline for auth/pair callers | No session/hello; one explicit close; actual client/server closed state | Hosted completion-race tests and timely release control | PENDING |
 | C-003 | yes | 100 consecutive late-upgrade timeouts return owned sockets to baseline | Real loopback upgrades with controlled production timeout callbacks and observed resource counts before fixture teardown | Every cycle zero open owned client/server sockets; aggregate count equals initial baseline | Hosted 100-cycle resource receipt | PENDING |
 | C-004 | yes | Timely success and connection error semantics stay correct | Timely auth/pair, pre-deadline held completion, wrong-pin and late-error controls plus existing session tests | Successful session usable until caller closes; existing typed errors; no uncaught late failure | Hosted controls/full suite | PENDING |
-| C-005 | yes | Regressions detect the missing cleanup before implementation | Frozen tests-only source, draft PR and actual hosted execution | Behavioral retained socket/missing close failures; positive controls pass | Run 41038790584 at 421cd8ae, mobile-late-websocket-red.log | PASS |
+| C-005 | yes | Regressions detect the missing cleanup before implementation | Frozen tests-only source, draft PR and actual hosted execution | Behavioral retained socket/missing close failures; positive controls pass | Original RED41038790584/421cd8ae; strict old-source RED41043237495/767f5100, mobile-late-websocket-strict-old-source.log | PASS |
 | C-006 | yes | Corrected full mobile gates pass | Hosted flutter analyze and full flutter test on exact candidate | Analysis exits 0 and applicable full suite passes | Exact-source GREEN log/run | PENDING |
 | C-007 | yes | Independent reviews and authorized delivery close | Cody, Quinn, Vera, Shadow and root delivery receipts | Four current-source passes, merge verified, exact linked QA status persisted/reread | Root review/merge/QA evidence | PENDING |
 
@@ -152,9 +152,19 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - Hypothesis: actual server input completion plus underlying detached Socket.done is the resource oracle; readyState alone is insufficient on SDK error-close paths. Bounded peer waiting must apply when forced HTTP closure produces no client WebSocket as well as explicit late socket closure.
 - Change or investigation: raw diagnostic CI41041856944 atb939bf31 passed full analysis/460 tests, but detailed completion values appeared only on failure, so success is not claimed as causal attribution. Require both real input onDone and each actual detached Socket.done for every upgraded peer; empty socket observation is never treated as closed. Preserve readyState in always-emitted diagnostics. Retain all100 per-cycle client/server zero assertions, exact-close tests, real10s deadline and all five controls; apply the same five-second peer bound to every client-quiescent cleanup path without manually closing the peer. Remove invalid WebSocket.done observation, retain raw Socket completion/error observations. Temporarily restore exactly unchanged main session.dart on this draft branch for hosted same-old-source sensitivity before final cleanup restoration.
 - Verifier executed: full raw diagnostic log mobile-late-websocket-raw-diagnostic.log preserved; full baseline diffcheck and structural validation. Old-source sensitivity full hosted run pending.
-- Result: no final oracle/resource pass claimed until old source fails meaningfully with all controls and final cleanup passes exact same tests.
+- Result: strict old-source CI41043237495 at767f5100 passed analysis and all five controls;456 tests passed/four leak regressions failed. Actual SDK3.13.7 diagnostics show clientCounts AND serverCounts each1 through100; all100 peer inputs not done and all200 actual raw socket output observations not done, before fixture cleanup. Late auth/pair closeCalls0 instead1 and actual10s retained socket fail too. This qualifies corrected-oracle removal sensitivity; final corrected-source resource pass remains pending.
 - New evidence: actual input termination was already observed even with stale readyState; underlying raw socket terminal is now a mandatory observable rather than failure-only diagnostic.
 - Decision: freeze old-production sensitivity head, inspect behavior/controls and actual resource diagnostics; restore unchanged minimal fix only after meaningful sensitivity is established. Iteration8 reserved for final current-main full CI; otherwise return remaining predicate for root replan.
+
+### Iteration 8
+
+- Target criterion: C-001 through C-004 and C-006
+- Hypothesis: the byte-identical minimal production cleanup already preserved atf38ce412 discharges owned transports under the mandatory strict oracle while retaining all controls.
+- Change or investigation: after actual strict old-source RED qualification, restore session.dart byte-identical to f38ce412, retain tests byte-identical to767f5100, and ordinarily integrate actual API-only main3c44a8e35ce86aab027972094e83879dcf4dacb1. Both source comparisons exit0. No product correction beyond the original minimal fix or assertion weakening.
+- Verifier executed: full current-main baseline whitespace check, structural Goal validation and exact production/test source identity checks. Fresh full hosted Flutter analysis/tests pending candidate publication; raw resource diagnostics and every positive control must be inspected even on success.
+- Result: candidate frozen for hosted verification, not yet GREEN or complete.
+- New evidence: strict oracle actually observes both live directions and detects100/100 original leaked peers without relying on readyState or fixture close.
+- Decision: obtain exact-source full hosted result, then hand immutable evidence to root for allfour current-source independent reviews. This is iteration8 of8; if required implementation or verification work remains, return the remaining predicate for explicit root replan without silently extending.
 
 ## Risks and rollback
 
