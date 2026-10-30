@@ -1957,6 +1957,10 @@ EXPECTED_MIN_CHECKS = 2401
 # Measured twice in hosted41056296534:2406 checks,1 intended behavioral FAIL
 # against the unchanged predicate; corrected full-suite evidence is required.
 EXPECTED_MIN_CHECKS = 2406
+# 2406 ->2464 (17tnw2b0wkg): real none/backdrop/property-boundary clean
+# shapes and condition-blind dropped/adjacent/duplicate dangerous controls.
+# Measured in hosted41060247302 baseline and both41061031053 executions.
+EXPECTED_MIN_CHECKS = 2464
 
 
 def find_chrome():
@@ -2443,14 +2447,15 @@ CSS_SRC = (
   };
   // Sana (security review, PR #79 follow-up, finding 1): __cssFilter reads real CSSOM, but
   // Chrome drops a WHOLE declaration outright when it cannot parse the value (an unsupported or
-  // malformed filter function, or a vendor prefix it does not alias — `-webkit-backdrop-filter`
-  // among them) — verified live: `rule.style.cssText` comes back empty, so __cssFilter reports
+  // malformed filter function, or a filter vendor prefix it does not alias) — verified live:
+  // `rule.style.cssText` comes back empty, so __cssFilter reports
   // null exactly as if the declaration had never been written, and null is the PASSING state
   // for a "carries no filter" guard. No CSSOM read can see a declaration the browser's own
   // parser discarded; only the raw source text still has it. This is the coarse, deliberately
-  // dumb backstop for that: scan window.__CSSTEXT for the rule's own block(s) for the literal,
-  // case-insensitive substring "filter", independent of whether the declared value parses at
-  // all. It does not replace __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
+  // backstop for that: scan window.__CSSTEXT for filter declarations in the rule's own block(s),
+  // independent of whether the value parses. Only exact `none` (with optional priority) is
+  // harmless; backdrop-filter is a different property. It does not replace
+  // __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
   // and vendor-prefix/escape gaps this file was regexing before), it only re-covers the one
   // thing reading real CSSOM cannot: a declaration the parser threw away.
   //
@@ -2459,9 +2464,8 @@ CSS_SRC = (
   // that sits only in an EARLIER duplicate block still applies. A raw text scan has no cascade
   // (no parser, so no way to know which declaration "wins" or whether one even parsed), so the
   // deliberately dumb and deliberately conservative rule is: collect EVERY matching block and
-  // treat the guard as tripped if ANY of them mentions the property. The price is a (safe-
-  // direction) false red when an earlier block mentions `filter` harmlessly and a later one is
-  // filter-free — the same class as the known `filter: none` false red, not a new kind. The
+  // treat the guard as tripped if ANY has a non-none filter declaration. An earlier dangerous
+  // declaration remains disqualifying even if a later rule overrides it with none. The
   // match semantics themselves (a block whose selector text ENDS in `sel`) are unchanged; only
   // the aggregation moved from "last" to "all".
   //
@@ -2471,8 +2475,8 @@ CSS_SRC = (
   // `forced-colors: active` and similar as NOT MATCHING (no dark scheme, no reduced-motion
   // preference, no forced colours), so a hover `filter` hidden inside one of those blocks is
   // dropped from the CSSOM half's candidates by construction, and this blind text scan is the
-  // only thing that still catches it. The false red it costs (a harmless `filter: none` inside a
-  // reduced-motion block) is the price of that.
+  // only thing that still catches it. Harmless exact none is accepted without evaluating any
+  // condition; non-none declarations stay disqualifying even in a currently nonmatching block.
   // Every matching rule's raw declaration text for `sel` (source order) straight out of the
   // source text, comments stripped — independent of whether the browser's parser accepts any of
   // it. The shared primitive `__cssRawHasFilter`/`__cssNoBrightnessFilter` are built on.
@@ -2501,7 +2505,13 @@ CSS_SRC = (
     return bodies;
   };
   window.__cssRawHasFilter = function(sel, src) {
-    return window.__cssRawBlocks(sel, src).some(function(body) { return /filter\s*:/i.test(body); });
+    return window.__cssRawBlocks(sel, src).some(function(body) {
+      var declarations = /(?:^|;)\s*(?:-[a-z0-9]+-)?filter\s*:\s*([^;]*)/gi, match;
+      while ((match = declarations.exec(body)) !== null) {
+        if (!/^\s*none\s*(?:!\s*important\s*)?$/i.test(match[1])) { return true; }
+      }
+      return false;
+    });
   };
   // The filter the browser's cascade gives `sel` — what the CSSOM half of every filter guard
   // reads (17tnw2ayetm: previously `__cssFilter(__cssRule(sel))`, i.e. the last rule only).

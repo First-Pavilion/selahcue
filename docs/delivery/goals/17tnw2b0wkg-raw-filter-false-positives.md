@@ -51,7 +51,7 @@ Actual main e7d478f45c1f527701b6b20c79a5666f928d2d9e includes F30 shared predica
 ### Assumptions and unknowns
 
 - VERIFIED: raw primitive defect remains after F30 helper reuse; approved two-item scope and owner condition correction are actionable.
-- UNKNOWN: actual unchanged-production RED, runtime control/count, corrected mutation/restoration and final normal CI until executed.
+- VERIFIED: baseline41060247302 measured2464/18 intended clean raw/composed failures with all premises/danger/F30/CSSOM positives passing. First witness2454/28 had five missing-background fixture errors and skipped10 contrast checks; retained without waiver. Repaired workflow-only41061031053 on identical source measured2464/18 baseline and2464/23 five-site witness, preserving all backgrounds/positives. Corrected mutation/restoration and final CI remain pending.
 
 ## Dependencies and approvals
 
@@ -84,9 +84,29 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-002.
 - Hypothesis: unchanged raw substring reports legitimate none/backdrop as dangerous, while real computed/CSSOM premises prove no filter effect; composed dangerous positives must remain red under intended hazards.
 - Change or investigation: new isolated actual-main worktree; tests-only browser fixtures and bounded actual-site harmless CSS witness prepared before changing raw primitive.
-- Verifier executed: Goal structural/stdlib AST/full baseline diff checks; hosted behavioral RED to follow frozen tests-only commit.
-- Result: Pending actual hosted execution; production predicate remains unchanged.
-- New evidence: own raw-filter-positives diagnostic receipts/logs to be linked at handoff.
+- Verifier executed: Goal structural/stdlib AST/full baseline diff checks; tests-only6fabb504 hosted41060247302, diagnostic94212bce, full unchanged-production suite and isolated actual-site witness.
+- Result: Qualified baseline2464/18 intended nine-shape raw/composed failures; all browser premises,30 danger checks,5F30 and61CSSOM positives pass. Old2406 count separately exits4. Witness2454/28 also has five background-premise fixture failures and10 contrast checks not executed; not complete valid witness proof.
+- New evidence: raw-filter-positives/red.log/red-status.json/red-receipt.json and preserved red-ci-attempt1.yml.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-002.
+- Hypothesis: preserving each actual hover rule's original body before adding harmless CSS restores all existing background/contrast checks and isolates five actual false REDs.
+- Change or investigation: diagnostic workflow-only fixture repair, no source/helper/assertion/count change; print unique source hover bodies, require existing background premises.
+- Verifier executed: hosted41061031053 diagnosticc18003a4, exact6fabb504 first parent/workflow-only difference proved.
+- Result: Actual baseline2464/18 and witness2464/23; only18 clean raw/composed plus five actual guard failures. All background premises and contrast checks execute; all80 WKG/10F30/122CSSOM positive records across both runs PASS. Old2406 count still visibly exits4.
+- New evidence: raw-filter-positives/red-fixed.log/red-fixed-status.json/red-fixed-receipt.json/red-fixed-object-proof.json; first failed fixture history retained.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: anchoring the optional-vendor filter property at declaration starts and exempting only exact none with optional priority fixes clean false REDs without pruning raw-only hazards.
+- Change or investigation: minimal raw primitive loop over every declaration in every existing matching block; adjacent obsolete comments updated; no condition/parser/production CSS change. Pin2464 from actual executions with tests byte-identical. Fresh main integration before publication.
+- Verifier executed: local stdlib AST/full baseline diff/Goal structural checks; current-source full browser baseline/old primitive/raw-disabled/real condition/complete restoration diagnostic and normal CI prepared.
+- Result: Static checks pass; runtime correction and final normal/review gates pending.
+- New evidence: immutable current-source raw/receipts/object proof to follow candidate freeze.
 - Decision: iterate
 
 ## Risks and rollback
@@ -104,6 +124,6 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b0wkg-raw-filter-false-positives.md
 - Validator result: Initial structural validation PASS; complete production CSS_SRC byte-identical to actual baseline during tests-only preparation, Python AST and full baseline diff checks PASS.
 - Independent verification result: Pending root-owned four reviews.
-- Terminal state: ACTIVE, tests-first preparation.
+- Terminal state: ACTIVE, actual RED qualified; minimal corrected candidate awaiting hosted gates and independent review.
 - Remaining failed or blocked criteria: C-001 through C-005 pending actual execution and review.
 - ClickUp final evidence comment: Root owns tracker evidence and persisted QA readback after verified merge.
