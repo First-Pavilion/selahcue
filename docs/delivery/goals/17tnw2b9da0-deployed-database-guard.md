@@ -6,11 +6,11 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Refuse deployed SQLite and public database password defaults
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9da0
 - Created: 2026-10-29
-- Updated: 2026-10-29
+- Updated: 2026-10-30
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -27,6 +27,8 @@ Freshly fetched main `6a1f414cc3213006b333a071893db394ffd03039` includes PR267 D
 - Complete task/comments/dependencies in wave2-20261029/api-qualification/17tnw2b9da0.json:0comments,0dependencies; linked previous PR225 ticket.
 - Acceptance: outside dev refuse unset/SQLite SQL_ENGINE with named SQL_ENGINE and ENVIRONMENT; refuse unset/default SQL_PASSWORD with named SQL_PASSWORD; positive dev/default and real configured PostgreSQL controls; docs rows and drift green.
 - Existing hermetic fresh-settings/subprocess helpers, deployment matrices, TLS proxy controls and env-doc inventory.
+- Pin-policy source docs/delivery/goals/17tnw2az07j-cryptography-dependabot.md: exact pins, truthful advisory boundaries and an open wider transitive/lockfile follow-up; historical advisory results are not current verification.
+- Saved pr270-green-ci.log from successful API run40945205792 records psycopg3.3.6 and matching psycopg-binary3.3.6 cp314 wheel installed with1976tests passing. This is compatibility derivation, not advisory verification.
 
 ## Scope
 
@@ -35,6 +37,7 @@ Freshly fetched main `6a1f414cc3213006b333a071893db394ffd03039` includes PR267 D
 - Import-time deployed database configuration guards and actionable fixed messages without secret values.
 - Empty/whitespace-only required engine/password values count as missing; password default comparison is exact postgres, with no strength or normalization policy.
 - Meaningful negative and positive tests, configured non-dev inputs in adjacent guard tests, accurate database docs/sample comments and this goal.
+- Parent-authorized exact dev-extra psycopg[binary]==3.3.6, matching successful current CI40945205792 within the unchanged infrastructure bound. Existing exact pins and core runtime dependencies unchanged; mandatory startup controls remain unskipped.
 
 ### Non-goals
 
@@ -69,6 +72,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-004 | yes | Adjacent guard tests preserve their intended assertions with legitimate non-dev configs and docs inventory stays accurate | hosted full deployment/TLS/docs suites and inspection | no masked intended errors; docs tests pass | parent API CI | PENDING |
 | C-005 | yes | API checks/migrations/regression plus Cody Quinn Vera Shadow pass frozen source | hosted full API job and independent review round | CI green and no unresolved findings | parent gate evidence | PENDING |
 | C-006 | yes | PR merged and exact ticket QA persisted | parent delivery readback | merge and QA verified | parent delivery evidence | PENDING |
+| C-007 | yes | Exact dev-driver addition receives independent advisory/binary-wheel review without conflating compatibility and security | Shadow dependency review plus all-four scope | declared psycopg and binary-wheel risks assessed; no unsupported advisory-free claim | parent independent review evidence | PENDING |
 
 ## Verification plan
 
@@ -85,9 +89,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: new settings-import tests demonstrate the deployed fail-open defaults and valid configuration boundaries before implementation.
 - Change or investigation: full task read, fresh main/worktree, existing prod/control paths identified, test-only matrices and hosted live-connection control prepared.
 - Verifier executed: stdlib syntax, diff check and structural goal validation only.
-- Result: test-only candidate prepared; actual hosted RED pending; production unchanged.
-- New evidence: wave2-20261029/api-database-guard/test-only-manifest.json.
-- Decision: handoff
+- Result: actual hosted RED40949314135, source19ecd3bf/diagnostic0fcb451c, produced50behavioral DID NOT RAISE failures and19positivepasses in3.80s. The live hosted SELECT1 control passed; production was unchanged.
+- New evidence: wave2-20261029/api-database-guard/red.log and https://github.com/First-Pavilion/selahcue/actions/runs/40949314135
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-005.
+- Hypothesis: validate database settings at the established DATABASES import boundary; explicit unrelated PG configuration preserves adjacent target-guard evidence.
+- Change or investigation: reject deployed missing/blank/SQLite engine and missing/blank/exact-default password; preserve configured values and dev defaults. Explicit PG inputs added only to unrelated non-dev key/debug/worker/TLS controls; hermetic helpers and database negatives stay unmodified. Both deployment guides/sample comments updated.
+- Verifier executed: stdlib source/test syntax and TOML parsing, diff check, structural goal validation and static source/call-site inspection only. No local project runtime, install or dependency resolution.
+- Result: candidate prepared for hosted GREEN and independent review; all runtime/review/delivery gates remain pending. Parent selected exact psycopg[binary]==3.3.6 from successful CI40945205792 so documented make api-install supplies mandatory deployed-startup tests while preserving the exact-pin convention. No new skips or core dependency changes. CI/Docker commands and services unchanged; stale setup/coverage comments updated. Shadow must include driver and binary-wheel/advisory assessment; successful CI alone does not prove advisory absence.
+- New evidence: wave2-20261029/api-database-guard/candidate-manifest.json and verification.log.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -102,8 +116,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9da0-deployed-database-guard.md
-- Validator result: initial structural validation, stdlib test syntax and diff check PASS.
+- Validator result: structural validation, stdlib source/test syntax and TOML parsing, and diff check PASS.
 - Independent verification result: pending parent orchestration.
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: hosted RED/GREEN and all review/delivery gates pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: hosted GREEN/full API, all four independent reviews, merge and exact QA readback remain pending.
 - ClickUp final evidence comment: parent owns publication.

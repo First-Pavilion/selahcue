@@ -36,14 +36,14 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
-> The API does **not** read a `DATABASE_URL` DSN. `settings.py` reads the discrete `SQL_*` variables (the First Pavilion house convention). With `SQL_ENGINE` unset it falls back to the bundled SQLite for dev/test. In production `SQL_ENGINE` must be Postgres: the DEC-004 device instance-limit guard uses `select_for_update`, which SQLite silently no-ops, so the limit is only enforced on a row-locking backend.
+> The API does **not** read a `DATABASE_URL` DSN. `settings.py` reads the discrete `SQL_*` variables (the First Pavilion house convention). With `SQL_ENGINE` unset it falls back to bundled SQLite only in exact `dev`. Every other `ENVIRONMENT` refuses a missing/blank or SQLite engine and a missing/blank or exact public-default database password at settings import. In production configure Postgres: the DEC-004 device instance-limit guard uses `select_for_update`, which SQLite silently no-ops, so the limit is only enforced on a row-locking backend.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
-| `SQL_ENGINE` | **prod: yes** | no | `django.db.backends.sqlite3` | Django database backend. `django.db.backends.postgresql` in any real deployment. |
+| `SQL_ENGINE` | **prod: yes** | no | `django.db.backends.sqlite3` in dev only | Django database backend. Outside exact `dev`, settings import refuses an unset/blank engine or one ending in `sqlite3`, naming `SQL_ENGINE` and `ENVIRONMENT`. Configure `django.db.backends.postgresql` for deployment. |
 | `SQL_DATABASE` | **prod: yes** | no | SQLite file path / `selahcue` (Postgres) | Database name (the file path for SQLite). |
 | `SQL_USER` | **prod: yes** | no | `postgres` | Postgres user. |
-| `SQL_PASSWORD` | **prod: yes** | **SECRET** | `postgres` | Postgres password. The default is a placeholder, not a safe value: always set it. |
+| `SQL_PASSWORD` | **prod: yes** | **SECRET** | `postgres` in dev only | Outside exact `dev`, settings import refuses an unset/blank password or exact `postgres`, naming `SQL_PASSWORD` and `ENVIRONMENT` without logging the value. Whitespace-only is blank; configured values are preserved verbatim, with no strength or case-normalization policy. Dev retains the default for non-SQLite configurations. |
 | `SQL_HOST` | **prod: yes** | no | `localhost` | Postgres host. |
 | `SQL_PORT` | no | no | `5432` | Postgres port. |
 | `DB_CONN_MAX_AGE` | no | no | `60` | Persistent-connection lifetime (seconds) for non-SQLite engines. |

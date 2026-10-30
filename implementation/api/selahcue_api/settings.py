@@ -27,19 +27,31 @@ def _database_config() -> dict:
     """Discrete ``SQL_*`` variables, matching the First Pavilion house convention (see
     yharah-logistics `core/settings.py`) rather than a `DATABASE_URL` DSN.
 
-    Defaults to bundled SQLite so a bare `pytest` needs no environment. Point `SQL_ENGINE` at
+    Defaults to bundled SQLite only in dev. Outside exact dev, a missing/blank or SQLite engine
+    and a missing/blank or public-default password refuse settings import. Point SQL_ENGINE at
     postgresql in any real deployment: the device instance-limit guard (DEC-004) uses
     ``select_for_update``, which SQLite silently no-ops (`has_select_for_update=False`), so the
     limit is only actually enforced on a row-locking backend.
     """
     engine = os.getenv("SQL_ENGINE", "django.db.backends.sqlite3")
+    if ENVIRONMENT != "dev" and (not engine.strip() or engine.endswith("sqlite3")):
+        raise ImproperlyConfigured(
+            f"SQL_ENGINE must be explicitly configured and must not be SQLite when ENVIRONMENT={ENVIRONMENT!r}."
+        )
     if engine.endswith("sqlite3"):
         return {"ENGINE": engine, "NAME": os.getenv("SQL_DATABASE", str(BASE_DIR / "db.sqlite3"))}
+    password = os.getenv("SQL_PASSWORD", "postgres")
+    if ENVIRONMENT != "dev" and (not password.strip() or password == "postgres"):
+        # Do not echo a password, even a rejected public example, into startup logs.
+        raise ImproperlyConfigured(
+            "SQL_PASSWORD must be explicitly configured and must not be the public default "
+            f"when ENVIRONMENT={ENVIRONMENT!r}."
+        )
     return {
         "ENGINE": engine,
         "NAME": os.getenv("SQL_DATABASE", "selahcue"),
         "USER": os.getenv("SQL_USER", "postgres"),
-        "PASSWORD": os.getenv("SQL_PASSWORD", "postgres"),
+        "PASSWORD": password,
         "HOST": os.getenv("SQL_HOST", "localhost"),
         "PORT": os.getenv("SQL_PORT", "5432"),
         "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
