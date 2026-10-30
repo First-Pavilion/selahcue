@@ -1472,7 +1472,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Run 41038300286 attempts 1/2 passed 2147 tests in 14:14/14:17, but service,
+    # install/check and post-job work exhausted the 15-minute job cap. Keep a bounded
+    # 20-minute cap so the unchanged full suite and cleanup can report their result.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: implementation/api
