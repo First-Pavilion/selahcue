@@ -11254,3 +11254,6 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
 }
+
+#[cfg(all(test, feature = "cloud-live"))]
+mod cloud_url_tests;
