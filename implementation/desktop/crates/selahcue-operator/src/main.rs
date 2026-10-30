@@ -9755,7 +9755,10 @@ mod regenerate_with_retention_tests {
             .await
             .expect("accepted draft loads")
             .expect("accepted draft still exists");
-        assert_eq!(after, accepted, "refused staging cannot change accepted data");
+        assert_eq!(
+            after, accepted,
+            "refused staging cannot change accepted data"
+        );
     }
 
     #[tokio::test]

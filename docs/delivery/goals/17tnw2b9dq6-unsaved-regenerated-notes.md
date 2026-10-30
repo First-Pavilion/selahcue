@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9dq6
 - Created: 2026-10-29
-- Updated: 2026-10-29
+- Updated: 2026-10-30
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -64,9 +64,9 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Null-id staging-failure draft is visible, explicitly Not saved/read-only and cannot send update for accepted notes | `SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py` | Named dq6 checks pass, no accepted edit/provenance change, numeric persisted control still editable | Hosted full headless log | PENDING |
+| C-001 | yes | Null-id staging-failure draft is visible, explicitly Not saved/read-only and cannot send update for accepted notes | `SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py` | Named dq6 checks pass, no accepted edit/provenance change, numeric persisted control still editable | Full CI40948945941 and mutation40949416923 baseline/restored:2358 checks,0 FAIL,exit0 | PASS |
 | C-002 | yes | Actual failed-stage response explicitly reports unsaved and preserves accepted data | Operator Rust regenerate_with_retention_tests | Real repository refusal yields ok true, null id, not_saved true; accepted row unchanged, successful save/stage controls pass | Diagnostic40947455308 job123706457514, notes-unsaved/rust-green1.log:28 passed,0 failed | PASS |
-| C-003 | yes | Restoring null-id to openId fallback is detected by behavioral checks | Full headless run on isolated mutated dist via SELAHCUE_OPERATOR_DIST | Mutation produces named dq6 assertion failures and restored source passes | Hosted mutation receipt | PENDING |
+| C-003 | yes | Restoring null-id to openId fallback is detected by behavioral checks | Full headless run on isolated mutated dist via SELAHCUE_OPERATOR_DIST | Mutation produces named dq6 assertion failures and restored source passes | Hosted mutation40949416923 notes-unsaved/mutation.log:baseline2358/0FAIL,mutant2358/7FAIL,restored2358/0FAIL | PASS |
 | C-004 | yes | Operator checks and existing browser behavior regressions pass | Normal path-filtered operator CI, Chrome headless and WebKit smoke | Required jobs exit zero on frozen source; strict check count measured, never guessed | Hosted CI links | PENDING |
 | C-005 | yes | All independent reviews approve current revision | Cody, Quinn, Vera and Shadow | No unresolved blocking findings after remediation/re-review | Root consolidated review | PENDING |
 
@@ -119,6 +119,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40947455308; notes-unsaved/browser-green-attempt1.log and notes-unsaved/rust-green1.log.
 - Decision: handoff
 
+### Iteration 5
+
+- Target criterion: C-004.
+- Hypothesis: applying the exact rustfmt wrapping from the hosted failure corrects the sole failed formatting gate without changing an assertion or product behavior.
+- Change or investigation: inspect notes-unsaved/full-operator-failed.log lines 1477-1488 and apply that whitespace-only assert_eq wrapping in the real-store refusal test. Record successful independent fallback mutation proof; preserve all source predicates, tests and the measured 2358 count.
+- Verifier executed: hosted full CI40948945941 and mutation40949416923 on frozen38d3be3f; local full original-baseline/current-main diff checks and Goal structural validation only. No local project runtime.
+- Result: The full run was NOT all green: operator Format failed solely on this assertion wrapping. Other configured gates passed, including operator tests, headless2358 and WebKit44. The isolated fallback mutation completed baseline2358/0FAIL/exit0, mutant2358/7FAIL/exit1 and restored2358/0FAIL/exit0, so C-001 and C-003 PASS. The formatting correction still needs a fresh full CI receipt; C-004 and all-review gate C-005 remain pending.
+- New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/40948945941 and https://github.com/First-Pavilion/selahcue/actions/runs/40949416923; notes-unsaved/full-operator-failed.log and notes-unsaved/mutation.log.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: making all notes read-only would mask the bug; test accepted numeric-id edit as a positive control. Unsaved notes must remain readable/copyable; accepted/pending data must not be overwritten.
@@ -132,8 +142,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dq6-unsaved-regenerated-notes.md
-- Validator result: PASS structural validation on 2026-10-29; no local project runtime executed.
+- Validator result: PASS structural validation on 2026-10-30; no local project runtime executed.
 - Independent verification result: Pending root review pipeline.
-- Terminal state: BLOCKED on root-owned mutation proof, exit-zero browser rerun, normal CI and independent reviews; source implementation prepared.
-- Remaining failed or blocked criteria: C-001, C-003, C-004 and C-005 pending; C-002 passed the focused hosted verifier.
+- Terminal state: BLOCKED on root-owned fresh full CI and independent reviews after the exact formatting correction; source implementation prepared.
+- Remaining failed or blocked criteria: C-004 and C-005 pending; C-001, C-002 and C-003 passed their hosted verifiers.
 - ClickUp final evidence comment: Root owns task publication and persisted QA readback after merge.
