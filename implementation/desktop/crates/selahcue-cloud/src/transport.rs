@@ -40,6 +40,42 @@ impl core::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// Refuse an invalid or non-HTTPS hosted endpoint without retaining or quoting its input.
+/// Used at both the operator configuration and licensing construction boundaries.
+pub fn require_https_base_url(base_url: &str) -> Result<(), TransportError> {
+    let valid =
+        url::Url::parse(base_url).is_ok_and(|url| url.scheme() == "https" && url.host().is_some());
+    if valid {
+        Ok(())
+    } else {
+        Err(TransportError(
+            "hosted base URL must be an HTTPS URL".into(),
+        ))
+    }
+}
+
+/// The explicit test seam: HTTPS, or HTTP whose parsed host is loopback only.
+/// This never resolves DNS or treats a loopback-looking domain suffix as an IP address.
+pub fn require_loopback_test_url(base_url: &str) -> Result<(), TransportError> {
+    let valid = url::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https" && url.host().is_some()
+            || url.scheme() == "http"
+                && match url.host() {
+                    Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                    Some(url::Host::Domain(host)) => host == "localhost",
+                    None => false,
+                }
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(TransportError(
+            "test URL must use HTTPS or HTTP on a loopback host".into(),
+        ))
+    }
+}
+
 /// A blocking HTTP transport. Blocking (not async) keeps the seam simple and the core
 /// deterministic; callers run it off any UI/render thread (the operator command is
 /// `async` and offloads it). Implementations must not log request bodies or the bearer.
@@ -110,6 +146,13 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 ///   certificate are each refused before a single request byte is written. Pinned in
 ///   `transport/tls_tests.rs`.
 ///
+/// # First-hop HTTPS (ClickUp 17tnw2b9dnu)
+///
+/// Ordinary requests must use HTTPS before any body or bearer is attached, with a fixed
+/// data-free configuration error. The builder also sets `https_only(true)`. Only the explicit
+/// [`ReqwestTransport::new_for_loopback_tests`] seam admits HTTP, and only to parsed loopback
+/// hosts; normal application wiring never selects it. TLS trust and redirects are unchanged.
+///
 /// # Redirect posture (ClickUp 17tnw2b9aaz)
 ///
 /// **Redirects are never followed.** A 3xx is returned to the caller as an ordinary
@@ -152,6 +195,7 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
+    loopback_http_for_tests: bool,
 }
 
 /// Ceiling on the TCP/TLS connect phase alone.
@@ -274,6 +318,23 @@ impl ReqwestTransport {
         Self::build(&[])
     }
 
+    /// Explicit test transport for local HTTP fixture servers. Every request still validates
+    /// its parsed host: non-loopback HTTP is refused, HTTPS keeps ordinary TLS verification,
+    /// and redirects are never followed. Normal application wiring must use [`Self::new`].
+    pub fn new_for_loopback_tests() -> Result<Self, TransportError> {
+        let mut transport = Self::from_builder(Self::shipped_builder(&[]).https_only(false))?;
+        transport.loopback_http_for_tests = true;
+        Ok(transport)
+    }
+
+    fn require_request_url(&self, url: &str) -> Result<(), TransportError> {
+        if self.loopback_http_for_tests {
+            require_loopback_test_url(url)
+        } else {
+            require_https_base_url(url)
+        }
+    }
+
     /// The one place a production client is built. `extra_roots` is always empty in production;
     /// the TLS tests pass a throwaway CA so that "signed by a root we were given" can be exercised
     /// against the real client. The function is private and its only non-test caller is
@@ -302,6 +363,7 @@ impl ReqwestTransport {
         timeout: std::time::Duration,
     ) -> reqwest::blocking::ClientBuilder {
         let mut builder = reqwest::blocking::Client::builder()
+            .https_only(true)
             .connect_timeout(connect_timeout)
             .timeout(timeout)
             // NEVER follow a redirect: see "Redirect posture" on the type. The default policy
@@ -321,7 +383,10 @@ impl ReqwestTransport {
         let client = builder
             .build()
             .map_err(|e| TransportError(describe_build_error(&e)))?;
-        Ok(ReqwestTransport { client })
+        Ok(ReqwestTransport {
+            client,
+            loopback_http_for_tests: false,
+        })
     }
 }
 
@@ -444,6 +509,7 @@ impl HttpTransport for ReqwestTransport {
         body: &str,
         bearer: Option<&str>,
     ) -> Result<HttpResponse, TransportError> {
+        self.require_request_url(url)?;
         let mut req = self
             .client
             .post(url)
@@ -459,6 +525,7 @@ impl HttpTransport for ReqwestTransport {
     }
 
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+        self.require_request_url(url)?;
         let mut req = self.client.get(url);
         if let Some(t) = bearer {
             req = req.bearer_auth(t);

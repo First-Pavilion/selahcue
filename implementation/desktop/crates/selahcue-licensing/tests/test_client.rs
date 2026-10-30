@@ -125,7 +125,7 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_response(200, r#"{"revoked":true}"#);
 
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
 
     let session = client
@@ -196,7 +196,7 @@ fn a_session_activation_reports_everything_the_enrollment_path_does() {
     // were `None` on this path, and a re-mint could not be told from "not reported").
     let transport =
         ScriptedTransport::responding(200, session_activation_body(false, true, Some(TOKEN_B)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let activation = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -223,7 +223,7 @@ fn a_session_activation_reports_everything_the_enrollment_path_does() {
 #[test]
 fn a_session_activation_replay_keeps_the_token_the_device_already_holds() {
     let transport = ScriptedTransport::responding(200, session_activation_body(false, false, None));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
 
@@ -245,7 +245,7 @@ fn an_activation_reports_a_status_that_still_permits_presentation() {
     // The status type is what the console renders. It is reachable from an activation on
     // both paths, and — like every other state in this crate — it permits presentation.
     let transport = ScriptedTransport::responding(200, rest_body(true, false, Some(TOKEN_A)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let activation = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -269,7 +269,7 @@ fn an_activation_reports_a_status_that_still_permits_presentation() {
 #[test]
 fn the_enrollment_key_path_activates_the_same_machine() {
     let transport = ScriptedTransport::responding(200, rest_body(true, false, Some(TOKEN_A)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
 
     let activation = client
@@ -291,7 +291,7 @@ fn the_enrollment_key_path_activates_the_same_machine() {
 #[test]
 fn the_enrollment_key_travels_in_the_body_and_the_path_has_no_trailing_slash() {
     let transport = ScriptedTransport::responding(200, rest_body(true, false, Some(TOKEN_A)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -326,7 +326,7 @@ fn a_replay_keeps_the_token_the_device_already_holds() {
     // created=false, reminted=false, activation_token=null → show-once replay. The server
     // refuses to re-show a secret it already issued, and that is success, not an error.
     let transport = ScriptedTransport::responding(200, rest_body(false, false, None));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
 
@@ -354,7 +354,7 @@ fn a_remint_overwrites_the_cached_token_because_the_old_one_is_revoked() {
     // been replaced. Keeping the old one would 401 on its next use, so overwriting is
     // mandatory rather than an optimisation.
     let transport = ScriptedTransport::responding(200, rest_body(false, true, Some(TOKEN_B)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
 
@@ -398,7 +398,7 @@ fn a_deactivated_machine_is_refused_by_policy_and_keeps_presenting() {
             "The current policy does not allow this action.",
         ),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -431,7 +431,7 @@ fn a_device_whose_token_was_revoked_is_re_minted_which_is_the_supported_recovery
     creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
 
     let transport = ScriptedTransport::responding(200, rest_body(false, true, Some(TOKEN_B)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let activation = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -452,7 +452,7 @@ fn a_replay_with_no_local_token_is_reported_rather_than_silently_succeeding() {
     // install has none — a deleted keychain entry, or a re-image. Retrying cannot fix it.
     // Reporting it beats a "success" that leaves the install with no credential.
     let transport = ScriptedTransport::responding(200, rest_body(false, false, None));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
 
     let activation = client
@@ -477,7 +477,7 @@ fn an_unknown_enrollment_key_is_classified_as_such() {
         404,
         rest_error("NOT_FOUND", "The requested resource was not found."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new("SC-TRIAL-nope"), &identity(), &idem())
@@ -499,7 +499,7 @@ fn not_found_on_the_session_path_means_no_active_plan_not_a_bad_key() {
         404,
         session_error("NOT_FOUND", "The requested resource was not found."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -536,7 +536,7 @@ fn not_found_on_the_enrollment_key_path_still_means_a_bad_key() {
         404,
         rest_error("NOT_FOUND", "The requested resource was not found."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new("SC-TRIAL-nope"), &identity(), &idem())
@@ -563,7 +563,7 @@ fn a_policy_refusal_is_one_state_because_the_server_does_not_distinguish_them() 
             "The current policy does not allow this action.",
         ),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -584,7 +584,7 @@ fn permission_denied_is_not_collapsed_into_policy_denied() {
             "You do not have permission to perform this action.",
         ),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -600,7 +600,7 @@ fn an_expired_account_session_asks_for_a_new_sign_in() {
         401,
         session_error("UNAUTHENTICATED", "Authentication is required."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -624,7 +624,8 @@ fn a_member_account_is_refused_by_permission_not_by_policy() {
             ),
         ),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let at_limit = LicensingClient::new(
         ScriptedTransport::responding(
             403,
@@ -634,7 +635,8 @@ fn a_member_account_is_refused_by_permission_not_by_policy() {
             ),
         ),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
 
     let member_failure = member
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -663,7 +665,8 @@ fn a_coded_session_refusal_is_classified_by_its_code_whatever_the_status() {
             session_error("VALIDATION_FAILED", "The request is invalid."),
         ),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let failure = invalid
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
@@ -676,7 +679,8 @@ fn a_coded_session_refusal_is_classified_by_its_code_whatever_the_status() {
     let limited = LicensingClient::new(
         ScriptedTransport::responding(429, session_error("RATE_LIMITED", "Too many requests.")),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let failure = limited
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
@@ -688,7 +692,8 @@ fn a_coded_session_refusal_is_classified_by_its_code_whatever_the_status() {
     let odd = LicensingClient::new(
         ScriptedTransport::responding(500, session_error("NOT_FOUND", "x")),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     assert_eq!(
         odd.activate_with_session(&Token::new(SESSION), &identity(), &idem())
             .unwrap_err(),
@@ -701,7 +706,7 @@ fn a_proxy_error_page_on_the_session_path_is_classified_by_status() {
     // Positive control for the fallback: when the body is not a coded error at all — a
     // proxy error page — status classification must still apply.
     let transport = ScriptedTransport::responding(502, "<html>502 Bad Gateway</html>");
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -716,7 +721,8 @@ fn rate_limiting_and_server_errors_are_retryable_but_refusals_are_not() {
     let limited = LicensingClient::new(
         ScriptedTransport::responding(429, rest_error("RATE_LIMITED", "Too many requests.")),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let failure = limited
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
         .unwrap_err();
@@ -726,7 +732,8 @@ fn rate_limiting_and_server_errors_are_retryable_but_refusals_are_not() {
     let refused = LicensingClient::new(
         ScriptedTransport::responding(404, rest_error("NOT_FOUND", "x")),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let failure = refused
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
         .unwrap_err();
@@ -747,7 +754,7 @@ fn a_bare_405_html_body_is_classified_by_status_not_reported_as_contract_drift()
         405,
         "<html><head><title>405 Method Not Allowed</title></head><body></body></html>",
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -769,7 +776,7 @@ fn an_html_403_is_reported_as_an_unexpected_status_not_as_contract_drift() {
         403,
         "<html><body>CSRF verification failed. Request aborted.</body></html>",
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -782,7 +789,7 @@ fn an_html_403_is_reported_as_an_unexpected_status_not_as_contract_drift() {
 fn a_5xx_html_body_is_a_retryable_server_error() {
     // The branch the 405 test used to cover by accident, now covered on purpose.
     let transport = ScriptedTransport::responding(500, "<html><body>Server Error</body></html>");
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -798,7 +805,7 @@ fn an_unknown_error_code_is_kept_rather_than_collapsed() {
         403,
         rest_error("SOME_FUTURE_CODE", "The request is invalid."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
@@ -816,6 +823,7 @@ fn an_unknown_error_code_is_kept_rather_than_collapsed() {
 
 fn sign_in_failure(status: u16, body: String) -> ActivationFailure {
     LicensingClient::new(ScriptedTransport::responding(status, body), BASE)
+        .expect("valid HTTPS test base")
         .sign_in("admin@example.test", &Token::new("correct-horse"))
         .unwrap_err()
 }
@@ -852,6 +860,7 @@ fn a_wrong_password_is_invalid_credentials_not_an_expired_session() {
         ),
         BASE,
     )
+    .expect("valid HTTPS test base")
     .activate_with_session(&Token::new(SESSION), &identity(), &idem())
     .unwrap_err();
     assert_eq!(activation, ActivationFailure::Unauthenticated);
@@ -911,7 +920,8 @@ fn the_other_sign_in_refusals_are_typed_too() {
 
 #[test]
 fn an_unreachable_platform_during_sign_in_is_unreachable() {
-    let client = LicensingClient::new(ScriptedTransport::failing("dns error"), BASE);
+    let client = LicensingClient::new(ScriptedTransport::failing("dns error"), BASE)
+        .expect("valid HTTPS test base");
     let failure = client
         .sign_in("admin@example.test", &Token::new("correct-horse"))
         .unwrap_err();
@@ -1019,7 +1029,8 @@ fn no_failure_quotes_the_response_body_on_any_call() {
     for (label, status, body) in hostile_responses() {
         for call in Call::ALL {
             let client =
-                LicensingClient::new(ScriptedTransport::responding(status, body.clone()), BASE);
+                LicensingClient::new(ScriptedTransport::responding(status, body.clone()), BASE)
+                    .expect("valid HTTPS test base");
             let failure = call.run(&client);
             let rendered = [format!("{failure}"), format!("{failure:?}")];
             for text in &rendered {
@@ -1068,6 +1079,7 @@ fn the_body_quoting_sweep_can_fail() {
 
     // ...and the client, handed that same body, does not forward it.
     let failure = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     match &failure {
@@ -1093,6 +1105,7 @@ fn a_missing_field_is_named_because_the_name_comes_from_this_crate() {
         ),
         BASE,
     )
+    .expect("valid HTTPS test base")
     .sign_in("admin@example.test", &Token::new("correct-horse"))
     .unwrap_err();
 
@@ -1111,6 +1124,7 @@ fn an_unknown_code_from_a_proxy_is_reported_as_unrecognised_not_echoed() {
         ),
         BASE,
     )
+    .expect("valid HTTPS test base")
     .activate_with_session(&Token::new(SESSION), &identity(), &idem())
     .unwrap_err();
 
@@ -1143,11 +1157,13 @@ fn a_success_body_over_the_cap_is_refused_and_one_at_the_cap_is_not() {
     let at_cap = padded(MAX_RESPONSE_BODY_BYTES);
     assert_eq!(at_cap.len(), MAX_RESPONSE_BODY_BYTES);
     LicensingClient::new(ScriptedTransport::responding(200, at_cap), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .expect("a body exactly at the cap is still read: the cap must not truncate");
 
     let over = padded(MAX_RESPONSE_BODY_BYTES + 1);
     let failure = LicensingClient::new(ScriptedTransport::responding(200, over), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     match &failure {
@@ -1174,6 +1190,7 @@ fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
     let over = format!("{at_cap} ");
 
     let read = LicensingClient::new(ScriptedTransport::responding(403, at_cap), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     assert_eq!(
@@ -1183,6 +1200,7 @@ fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
     );
 
     let refused = LicensingClient::new(ScriptedTransport::responding(403, over), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     assert_eq!(refused, ActivationFailure::UnexpectedStatus(403));
@@ -1191,6 +1209,7 @@ fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
         ScriptedTransport::responding(503, "x".repeat(MAX_RESPONSE_BODY_BYTES + 1)),
         BASE,
     )
+    .expect("valid HTTPS test base")
     .sign_in("admin@example.test", &Token::new("correct-horse"))
     .unwrap_err();
     assert_eq!(refused_5xx, ActivationFailure::Server(503));
@@ -1207,7 +1226,7 @@ fn every_request_is_a_v1_post_and_only_account_operations_carry_a_bearer() {
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_response(200, r#"{"revoked":true}"#);
     transport.push_response(200, rest_body(true, false, Some(TOKEN_B)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let session = client
         .sign_in("admin@example.test", &Token::new("correct-horse"))
@@ -1400,7 +1419,7 @@ fn the_right_credential_goes_in_the_right_place_and_nowhere_else() {
         (200, r#"{"revoked":true}"#.into()),
         (200, rest_body(true, false, Some(TOKEN_B))),
     ]);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let session = client
         .sign_in("admin@example.test", &Token::new("pw-for-placement"))
         .unwrap();
@@ -1462,7 +1481,7 @@ fn awkward_credentials_survive_json_encoding_unchanged() {
     let email = format!("{}@example.test", "a".repeat(254 - 13));
     assert_eq!(email.len(), 254);
     let transport = CapturingTransport::new(vec![(200, session_body())]);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     client
         .sign_in(&email, &Token::new(password.clone()))
         .unwrap();
@@ -1481,7 +1500,7 @@ fn empty_credentials_are_sent_as_is_for_the_server_to_refuse() {
         400,
         sign_in_error("VALIDATION_FAILED", "The request is invalid."),
     )]);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let failure = client.sign_in("", &Token::new("")).unwrap_err();
     assert_eq!(failure, ActivationFailure::SignInInvalidInput);
     let sent: serde_json::Value =
@@ -1495,7 +1514,8 @@ fn empty_credentials_are_sent_as_is_for_the_server_to_refuse() {
 #[test]
 fn a_base_url_with_a_trailing_slash_does_not_double_the_slash() {
     let transport = CapturingTransport::new(vec![(200, session_body())]);
-    let client = LicensingClient::new(transport, format!("{BASE}/"));
+    let client =
+        LicensingClient::new(transport, format!("{BASE}/")).expect("valid HTTPS test base");
     client.sign_in("a@b.test", &Token::new("pw")).unwrap();
     assert_eq!(
         client.transport().seen.lock().unwrap()[0].0,
@@ -1514,7 +1534,7 @@ fn a_retry_sends_the_same_idempotency_key_so_the_server_can_replay() {
         (200, session_activation_body(false, false, None)),
         (200, r#"{"revoked":true}"#.into()),
     ]);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let first = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap();
@@ -1536,7 +1556,8 @@ fn already_activated_with_nothing_cached_is_reported_on_the_session_path_too() {
     let client = LicensingClient::new(
         ScriptedTransport::responding(200, session_activation_body(false, false, None)),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let creds = credentials();
     let activation = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
@@ -1559,12 +1580,15 @@ fn connection_failures_and_timeouts_are_unreachable_on_every_call() {
     ] {
         let failures = [
             LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .expect("valid HTTPS test base")
                 .sign_in("a@b.test", &Token::new("pw-LEAK-PASSWORD"))
                 .unwrap_err(),
             LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .expect("valid HTTPS test base")
                 .activate_with_session(&Token::new(SESSION), &identity(), &idem())
                 .unwrap_err(),
             LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .expect("valid HTTPS test base")
                 .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
                 .unwrap_err(),
         ];
@@ -1591,7 +1615,7 @@ fn the_second_call_failing_after_a_good_sign_in_keeps_the_session_usable() {
     transport.push_response(200, session_body());
     transport.push_failure("connection reset");
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
 
     let session = client.sign_in("a@b.test", &Token::new("pw")).unwrap();
     let outage = client
@@ -1611,6 +1635,7 @@ fn the_success_range_is_exactly_200_to_299() {
     let ok_body = session_activation_body(true, false, Some(TOKEN_A));
     for status in [200u16, 201, 299] {
         LicensingClient::new(ScriptedTransport::responding(status, ok_body.clone()), BASE)
+            .expect("valid HTTPS test base")
             .activate_with_session(&Token::new(SESSION), &identity(), &idem())
             .unwrap_or_else(|f| panic!("{status} should be a success, got {f:?}"));
     }
@@ -1633,6 +1658,7 @@ fn the_success_range_is_exactly_200_to_299() {
     ] {
         let failure =
             LicensingClient::new(ScriptedTransport::responding(status, ok_body.clone()), BASE)
+                .expect("valid HTTPS test base")
                 .activate_with_session(&Token::new(SESSION), &identity(), &idem())
                 .unwrap_err();
         assert_eq!(
@@ -1689,6 +1715,7 @@ fn missing_empty_and_null_fields_in_a_success_reply() {
             serde_json::from_str(&session_activation_body(true, false, Some(TOKEN_A))).unwrap();
         mutate(&mut v);
         LicensingClient::new(ScriptedTransport::responding(200, v.to_string()), BASE)
+            .expect("valid HTTPS test base")
             .activate_with_session(&Token::new(SESSION), &identity(), &idem())
     };
 
@@ -1759,6 +1786,7 @@ fn missing_empty_and_null_fields_in_a_success_reply() {
 fn a_sign_in_reply_with_missing_null_or_blank_fields_is_malformed_not_a_blank_session() {
     let attempt = |body: String| {
         LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .expect("valid HTTPS test base")
             .sign_in("a@b.test", &Token::new("pw"))
     };
     let base: serde_json::Value = serde_json::from_str(&session_body()).unwrap();
@@ -1804,6 +1832,7 @@ fn error_codes_are_case_sensitive_and_a_wrong_code_is_never_mistaken_for_a_known
             ScriptedTransport::responding(401, session_error(wrong, "x")),
             BASE,
         )
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
         assert!(
@@ -1821,6 +1850,7 @@ fn error_codes_are_case_sensitive_and_a_wrong_code_is_never_mistaken_for_a_known
             ScriptedTransport::responding(409, session_error(code, "x")),
             BASE,
         )
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
         assert_eq!(failure, ActivationFailure::Coded(expected));
@@ -1867,6 +1897,7 @@ fn sign_in_has_its_own_wording_and_a_rate_limit_is_not_silently_retried() {
         ScriptedTransport::responding(429, session_error("RATE_LIMITED", "Too many requests.")),
         BASE,
     )
+    .expect("valid HTTPS test base")
     .activate_with_session(&Token::new(SESSION), &identity(), &idem())
     .unwrap_err();
     assert_eq!(activation_limited, ActivationFailure::RateLimited);
@@ -1890,6 +1921,7 @@ fn a_session_token_that_cannot_be_a_bearer_is_refused_at_sign_in_without_being_r
         })
         .to_string();
         let failure = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .expect("valid HTTPS test base")
             .sign_in("a@b.test", &Token::new("pw"))
             .unwrap_err();
         match &failure {
@@ -1906,6 +1938,7 @@ fn a_session_token_that_cannot_be_a_bearer_is_refused_at_sign_in_without_being_r
         })
         .to_string();
         LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .expect("valid HTTPS test base")
             .sign_in("a@b.test", &Token::new("pw"))
             .unwrap_or_else(|f| panic!("{fine:?} should be accepted, got {f:?}"));
     }
@@ -1917,7 +1950,8 @@ fn activating_with_a_blank_session_is_refused_locally_without_a_request() {
     // sent at all), so the person is told to sign in again without spending a request or a
     // throttle slot.
     for session in ["", "   ", "\t", "sess\r\nX-Injected: 1", "sess\n"] {
-        let client = LicensingClient::new(ScriptedTransport::new(), BASE);
+        let client =
+            LicensingClient::new(ScriptedTransport::new(), BASE).expect("valid HTTPS test base");
         let failure = client
             .activate_with_session(&Token::new(session), &identity(), &idem())
             .unwrap_err();
@@ -1928,7 +1962,8 @@ fn activating_with_a_blank_session_is_refused_locally_without_a_request() {
     let client = LicensingClient::new(
         ScriptedTransport::responding(200, session_activation_body(true, false, Some(TOKEN_A))),
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap();
@@ -1947,7 +1982,8 @@ fn a_blank_device_token_is_malformed_and_never_overwrites_a_working_one() {
                 v["activation_token"] = blank.into();
                 v.to_string()
             };
-            let client = LicensingClient::new(ScriptedTransport::responding(200, body), BASE);
+            let client = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+                .expect("valid HTTPS test base");
             let result = if route == "session" {
                 client.activate_with_session(&Token::new(SESSION), &identity(), &idem())
             } else {
@@ -1969,6 +2005,7 @@ fn a_blank_device_token_is_malformed_and_never_overwrites_a_working_one() {
     creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
     let body = session_activation_body(true, false, Some(""));
     let result = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem());
     assert!(result.is_err());
     assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
@@ -1987,7 +2024,8 @@ fn the_email_is_sent_exactly_as_typed() {
         "\u{1F600}@\u{4E2D}\u{6587}.test",
     ] {
         let client =
-            LicensingClient::new(CapturingTransport::new(vec![(200, session_body())]), BASE);
+            LicensingClient::new(CapturingTransport::new(vec![(200, session_body())]), BASE)
+                .expect("valid HTTPS test base");
         client.sign_in(email, &Token::new("pw")).unwrap();
         let sent: serde_json::Value =
             serde_json::from_str(&client.transport().seen.lock().unwrap()[0].1).unwrap();
@@ -2131,6 +2169,7 @@ fn failure_shapes_that_used_to_be_unpinned_are_decided_and_pinned() {
 
     for (label, status, body, expect) in rows {
         let failure = LicensingClient::new(ScriptedTransport::responding(status, body), BASE)
+            .expect("valid HTTPS test base")
             .activate_with_session(&Token::new(SESSION), &identity(), &idem())
             .unwrap_err();
         match expect {
@@ -2191,6 +2230,7 @@ fn only_status_429_is_a_bare_rate_limit_and_an_oversized_one_still_is() {
                 ScriptedTransport::responding(status, body.to_string()),
                 BASE,
             )
+            .expect("valid HTTPS test base")
             .activate_with_session(&Token::new(SESSION), &identity(), &idem())
             .unwrap_err();
             assert_eq!(failure, expected, "status {status}, body {body:?}");
@@ -2201,6 +2241,7 @@ fn only_status_429_is_a_bare_rate_limit_and_an_oversized_one_still_is() {
     // limited": on activation (retryable) and on sign-in (the sign-in kind, not retryable).
     let huge = "x".repeat(MAX_RESPONSE_BODY_BYTES + 1);
     let activation = LicensingClient::new(ScriptedTransport::responding(429, huge.clone()), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     assert_eq!(activation, F::RateLimited);
@@ -2211,6 +2252,7 @@ fn only_status_429_is_a_bare_rate_limit_and_an_oversized_one_still_is() {
     assert!(!format!("{activation} {sign_in}").contains("xxxx"));
     // ...and an oversized 430 is the neighbour's answer, not a rate limit.
     let neighbour = LicensingClient::new(ScriptedTransport::responding(430, huge), BASE)
+        .expect("valid HTTPS test base")
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap_err();
     assert_eq!(neighbour, F::UnexpectedStatus(430));
@@ -2224,7 +2266,7 @@ fn a_valid_account_activation_immediately_attempts_bearer_only_session_cleanup()
         200,
         r#"{"revoked":true,"surface":"desktop","operation":"session_revoke"}"#,
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let activation = client
         .activate_with_session(&Token::new(SESSION), &identity(), &idem())
         .unwrap();
@@ -2248,7 +2290,7 @@ fn remote_cleanup_failure_does_not_turn_valid_activation_into_failure_or_erase_c
         let transport = ScriptedTransport::new();
         transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
         transport.push_response(status, "not trusted response text");
-        let client = LicensingClient::new(transport, BASE);
+        let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
         let creds = credentials();
         creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
         creds.store_account_session(&Token::new(SESSION)).unwrap();
@@ -2280,7 +2322,7 @@ fn confirmed_cleanup_removes_only_matching_account_session_after_device_persiste
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_response(200, r#"{"revoked":true}"#);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_account_session(&Token::new(SESSION)).unwrap();
     let result = client
@@ -2297,7 +2339,7 @@ fn confirmed_cleanup_does_not_remove_a_different_stored_account_session() {
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_activation_body(false, false, None));
     transport.push_response(200, r#"{"revoked":true}"#);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
     creds
@@ -2322,7 +2364,7 @@ fn cleanup_requires_positive_acknowledgement_and_never_quotes_untrusted_body() {
         let transport = ScriptedTransport::new();
         transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
         transport.push_response(200, body);
-        let client = LicensingClient::new(transport, BASE);
+        let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
         let result = client
             .activate_with_session(&Token::new(SESSION), &identity(), &idem())
             .unwrap();
@@ -2339,7 +2381,7 @@ fn cleanup_requires_positive_acknowledgement_and_never_quotes_untrusted_body() {
 fn refused_or_ambiguous_activation_retains_session_for_idempotent_retry() {
     let transport = ScriptedTransport::new();
     transport.push_failure("connection lost before activation response");
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_device_token(&Token::new(TOKEN_B)).unwrap();
     creds.store_account_session(&Token::new(SESSION)).unwrap();
@@ -2398,10 +2440,11 @@ fn real_transport_activation_and_cleanup_preserve_device_and_send_no_ambient_cre
             write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nSet-Cookie: ambient=must-not-return\r\n\r\n{}", body.len(), body).unwrap();
         }
     });
-    let client = LicensingClient::new(
-        selahcue_cloud::transport::ReqwestTransport::new().unwrap(),
+    let client = LicensingClient::new_for_loopback_tests(
+        selahcue_cloud::transport::ReqwestTransport::new_for_loopback_tests().unwrap(),
         format!("http://{addr}"),
-    );
+    )
+    .expect("explicit loopback test base");
     let creds = credentials();
     creds.store_account_session(&Token::new(SESSION)).unwrap();
     let result = client
@@ -2454,7 +2497,7 @@ fn local_session_cleanup_error_is_separate_from_a_persisted_device_activation() 
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_response(200, r#"{"revoked":true}"#);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = DeviceCredentials::new(FailingAccountRemoval(InMemorySecretStore::new()));
     creds.store_account_session(&Token::new(SESSION)).unwrap();
     let result = client
@@ -2476,7 +2519,7 @@ fn lost_cleanup_response_keeps_the_new_device_and_account_retry_custody() {
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_failure("cleanup acknowledgement timed out");
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = credentials();
     creds.store_account_session(&Token::new(SESSION)).unwrap();
     let result = client
@@ -2517,7 +2560,7 @@ fn device_persistence_failure_keeps_show_once_token_available_for_local_retry() 
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
     transport.push_response(200, r#"{"revoked":true}"#);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     let creds = DeviceCredentials::new(RefuseDeviceWrite(InMemorySecretStore::new()));
     creds.store_account_session(&Token::new(SESSION)).unwrap();
     let result = client
@@ -2535,7 +2578,7 @@ fn explicit_cleanup_can_be_retried_without_repeating_activation() {
         (503, String::new()),
         (200, r#"{"revoked":true}"#.into()),
     ]);
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     assert!(client.revoke_session(&Token::new(SESSION)).is_err());
     assert_eq!(client.revoke_session(&Token::new(SESSION)), Ok(()));
     let seen = client.transport().seen.lock().unwrap();
@@ -2553,7 +2596,7 @@ fn revoke_not_found_is_an_unknown_cleanup_refusal_not_a_license_lapse() {
         404,
         coded_error("session_revoke", "NOT_FOUND", "Not found."),
     );
-    let client = LicensingClient::new(transport, BASE);
+    let client = LicensingClient::new(transport, BASE).expect("valid HTTPS test base");
     assert_eq!(
         client.revoke_session(&Token::new(SESSION)),
         Err(ActivationFailure::Coded(ErrorCode::NotFound))
@@ -2623,7 +2666,8 @@ fn device_token_is_persisted_before_the_wrapper_waits_for_remote_cleanup() {
             calls: AtomicUsize::new(0),
         },
         BASE,
-    );
+    )
+    .expect("valid HTTPS test base");
     let result = client
         .activate_and_persist_with_session(&Token::new(SESSION), &identity(), &idem(), &creds)
         .unwrap();

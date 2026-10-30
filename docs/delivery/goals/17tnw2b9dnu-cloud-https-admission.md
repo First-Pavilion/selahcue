@@ -59,7 +59,7 @@ Actual main83d9cf81bf5174d0c3cd3858921bf05540ba02fd contains merged reviewed WVF
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Actual insecure credential path reproduced before fix | Hosted unchanged-production operator/licensing refusal regressions with real receiver and positive controls | Behavioral RED, setup failures separated, request capture proves baseline risk | cloud-https-admission/red receipts | PENDING |
+| C-001 | yes | Actual insecure credential path reproduced before fix | Hosted unchanged-production operator/licensing refusal regressions with real receiver and positive controls | Behavioral RED, setup failures separated, request capture proves baseline risk | cloud-https-admission/red-ci and red-classification.json actual8fail3newpass plus21separatecontrols | PASS |
 | C-002 | yes | Operator and licensing refuse insecure bases safely before send | Hosted scheme/error/no-send regressions, actual cloud-live wiring and meaningful mutants/restoration | Non-HTTPS refused with fixed data-free error, receiver untouched; mutants detected and exact source restored | Focused/mutation logs and source proofs | PENDING |
 | C-003 | yes | HTTPS and explicit loopback fixtures preserve transport contracts | Existing TLS/redirect/error/timeout tests plus focused positive controls | Legitimate HTTPS and explicit test loopback work; no redirects, OS roots/ring/deadlines unchanged | Hosted target/full regressions and docs | PENDING |
 | C-004 | yes | Final normal affected desktop and opt-in cloud-live gates pass | Exact-source normal Rust/operator/RELEASE/native/cloud-http plus hosted cloud-live checks/tests/clippy | Required gates pass without assertion weakening or timeout inflation; exclusions explicit | Normal and supplemental CI receipts | PENDING |
@@ -84,6 +84,26 @@ Actual main83d9cf81bf5174d0c3cd3858921bf05540ba02fd contains merged reviewed WVF
 - New evidence: full frozen task/qualification/runbook and this contract.
 - Decision: iterate
 
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: all three boundaries lack first-hop HTTPS admission, independently of redirect refusal.
+- Change or investigation: independently inspected both official hashed raw logs41139551153 and complete test fixtures. Licensing5failed1passed0.09s; transport1failed0passed0.04s; operator2failed2passed0.07s. Four licensing operations and operator/transport each received1complete insecure request. Separate actual TLS10, redirect3+2, wire5, cleanup1controls all passed; no setup/oracle failure.
+- Verifier executed: actual raw/metadata/hash checks, receiver-before-reply/no-proxy/source/component premises.
+- Result: actual behavioral RED established, C-001 PASS.
+- New evidence: cloud-https-admission/red-ci and red-classification.json.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 through C-004.
+- Hypothesis: parsed HTTPS validation at both configuration boundaries plus a guarded HTTPS-only transport blocks the observed first hop without changing TLS/redirect semantics.
+- Change or investigation: shared already-locked URL parser validates scheme/host with fixed data-free errors; fallible licensing new and explicit loopback test constructor; operator rejects bad env without echo; ordinary transport validates each GET/POST and https_only(true), explicit loopback test transport retains parsed-host restriction. Existing86HTTPS test constructors adapted only by expect; one real HTTP licensing fixture and12cloud fixture constructions explicitly opt into loopback. Existing timeout fixture retains exact deadline/assertions with private test setup. No existing assertions removed/relaxed. New constructor-refusal assertion strengthens RED no-send checks to distinguish layered guards.
+- Verifier executed: source/static pinned rustfmt/diff/goal/component checks; hosted focused GREEN, meaningful mutants/restoration and full normal affected gates pending.
+- Result: candidate prepared; no runtime GREEN or independent approval claim yet.
+- New evidence: api-adaptation.json, forthcoming candidate/hosted receipts.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: constructor compatibility, hidden cloud-live branch, test-only escape leaking to ordinary production calls, unsafe URL error text and fixture coverage loss.
@@ -96,7 +116,7 @@ Actual main83d9cf81bf5174d0c3cd3858921bf05540ba02fd contains merged reviewed WVF
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dnu-cloud-https-admission.md
-- Validator result: pending structural verification
+- Validator result: PASS structural verification before substantive tests
 - Independent verification result: pending
 - Terminal state: ACTIVE
 - Remaining failed or blocked criteria: C-001 through C-005 pending
