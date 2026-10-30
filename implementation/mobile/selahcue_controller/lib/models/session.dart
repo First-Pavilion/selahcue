@@ -313,7 +313,12 @@ class SelahSession implements ControllerSession {
 
   @override
   Future<void> close() async {
-    await _close();
+    // Stop retaining frames before the transport's close handshake can wait on
+    // the peer. Await both cleanups, including if either one fails.
+    await Future.wait<void>([
+      _incoming.close(),
+      Future<void>.sync(_close),
+    ]);
   }
 }
 
@@ -368,10 +373,13 @@ class SelahSession implements ControllerSession {
 class StreamQueue {
   final List<dynamic> _buffer = [];
   final List<Completer<dynamic>> _waiters = [];
+  late final StreamSubscription<dynamic> _subscription;
+  Future<void>? _closing;
   bool _done = false;
 
   StreamQueue(Stream<dynamic> frames) {
-    frames.listen((frame) {
+    _subscription = frames.listen((frame) {
+      if (_done) return;
       if (_waiters.isNotEmpty) {
         _waiters.removeAt(0).complete(frame);
       } else {
@@ -394,6 +402,23 @@ class StreamQueue {
     });
   }
 
+  /// Dispose the owning session's queue immediately, independently of whether
+  /// its peer acknowledges transport close. Natural stream completion still
+  /// permits buffered FIFO reads; explicit disposal discards those old frames.
+  Future<void> close() {
+    final closing = _closing;
+    if (closing != null) return closing;
+    _done = true;
+    _buffer.clear();
+    for (final waiter in _waiters) {
+      if (!waiter.isCompleted) {
+        waiter.completeError(const SessionException('connection closed'));
+      }
+    }
+    _waiters.clear();
+    return _closing = Future<void>.sync(_subscription.cancel);
+  }
+
   /// The next frame, parsed as a JSON object.
   Future<Map<String, dynamic>> nextJson(Duration timeout) async {
     dynamic frame;
@@ -406,8 +431,13 @@ class StreamQueue {
       try {
         frame = await waiter.future.timeout(timeout);
       } on TimeoutException {
-        _waiters.remove(waiter);
-        throw const SessionException('timed out waiting for the host');
+        if (_waiters.remove(waiter)) {
+          throw const SessionException('timed out waiting for the host');
+        }
+        // Delivery (or close/error) already removed and completed this waiter,
+        // but its completion lost the race through Future.timeout. Consume its
+        // original result rather than dropping a frame handed over at the edge.
+        frame = await waiter.future;
       }
     }
     // A binary frame arrives as bytes, not a String, and a text frame need not
