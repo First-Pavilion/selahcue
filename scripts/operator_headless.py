@@ -1943,6 +1943,11 @@ EXPECTED_MIN_CHECKS = 2358
 # unchanged-view repaint, superseded return values, unknown/empty/retry controls.
 # Measured on corrected source31e248df in hosted run41036840407:2376 checks,0 FAIL.
 EXPECTED_MIN_CHECKS = 2376
+# 2376 ->2384 (CODY-NAX-01): held real Library refresh -> actual Undo/Restore,
+# late response/returned-data/error fences and latest-reload busy-state ownership.
+# Measured on corrected500bc35f in hosted41040420006:2384 checks; all NAX/PR100
+# pass, one earlier Remote no-op assertion failed (preserved in the goal/evidence).
+EXPECTED_MIN_CHECKS = 2384
 
 
 def find_chrome():
