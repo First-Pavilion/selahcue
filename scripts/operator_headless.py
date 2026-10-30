@@ -1973,6 +1973,10 @@ EXPECTED_MIN_CHECKS = 2552
 # no-fresh-view UI selection and deselection cannot overwrite a confirmed denial.
 # Measured on tests-only90e14dab in hosted41121235813:2556 checks,1 intended FAIL.
 EXPECTED_MIN_CHECKS = 2556
+# 2556 ->2565 (17tnw2ayetd): actual CSSOM03/05 helper-exception cleanup,
+# isolation/viewport controls and the first comment check reached by the second-swap probe.
+# Measured on tests-onlyf85996cc in hosted41134054406:2565 checks,4 intended FAIL.
+EXPECTED_MIN_CHECKS = 2565
 
 
 def find_chrome():
@@ -13583,10 +13587,11 @@ DRIVER = r"""
         document.head.removeChild(rejectProbe);
         function wCheckRejectedRawSource() {
           var wSavedCssText = window.__CSSTEXT;
-          window.__CSSTEXT = wRejectCss;
-          ok(window.__cssRawHasFilter(wRejectSel),
-             "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
-          window.__CSSTEXT = wSavedCssText;
+          try {
+            window.__CSSTEXT = wRejectCss;
+            ok(window.__cssRawHasFilter(wRejectSel),
+               "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
+          } finally { window.__CSSTEXT = wSavedCssText; }
         }
         wCheckRejectedRawSource();
 
@@ -13612,15 +13617,16 @@ DRIVER = r"""
         ok(!!wRejectRule && !wRejectFilter, "CSSOM-PARSE-05 (premise, reuses Gap 3's fixture): the adversarial rule above still carries an unparseable filter: that CSSOM alone cannot see");
         function wCheckCommentRawSource() {
           var wSavedCssText = window.__CSSTEXT;
-          window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
-            " { background: var(--sc-primary-hover); } before the AA fix. */";
-          ok(window.__cssRawHasFilter(wRejectSel),
-             "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
-          var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
-          window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
-          ok(!window.__cssRawHasFilter(wCmtOnlySel),
-             "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
-          window.__CSSTEXT = wSavedCssText;
+          try {
+            window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
+              " { background: var(--sc-primary-hover); } before the AA fix. */";
+            ok(window.__cssRawHasFilter(wRejectSel),
+               "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
+            var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
+            window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
+            ok(!window.__cssRawHasFilter(wCmtOnlySel),
+               "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
+          } finally { window.__CSSTEXT = wSavedCssText; }
         }
         wCheckCommentRawSource();
 
@@ -17250,7 +17256,7 @@ DRIVER = r"""
 # real app.css (and app.js) load and CSS-dependent checks are meaningful.
 html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
 # The notification-panel checks (the "NOTIFICATION BELL + PANEL" block at the end of DRIVER) need a viewport
-# this gate does not have: it runs at Chrome's default ~800x600, narrower than the console's own 900px floor,
+# this gate does not have: its pinned800x600 outer window is narrower than the console's own900px floor,
 # and a dismissed session notice (the Frame G block above) never comes back. So they boot FRESH same-origin
 # srcdoc instances of the real app at 1440x900 / 1280x720 / 900x600. This is that page: the real index.html
 # plus the same mock host, WITHOUT the driver, the CSS probe or the Rust constants (the iframe must not run
@@ -17267,7 +17273,7 @@ html = html.replace("</body>", NOTIF_FRAME_SCRIPT + DRIVER + "</body>", 1)
 try:
     run = headless_chrome.run_headless_chrome(
         CHROME, html,
-        ["--headless=new", "--disable-gpu", "--no-sandbox",
+        ["--headless=new", "--disable-gpu", "--no-sandbox", "--window-size=800,600",
          # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
          # driver step that waits on the app's own 1 s view poll spends a full second of it.
          # Raised from 9000 with the window-semantics checks, which wait on two real polls, and

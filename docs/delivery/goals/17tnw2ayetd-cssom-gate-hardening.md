@@ -85,8 +85,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: two narrow harness changes can close the latent restore and implicit-viewport gaps while preserving existing behavior; already-fixed comment-strip code needs no change.
 - Change or investigation: read full saved task/two comments, runbook and fresh dispatch; create isolated branch from actual826076a6 and validate child contract. Tests-only extraction of existing unsafe CSSOM03/05 bodies into local functions retains original normal semantics and manual restores. Add actual helper-exception probes at all three swapped states, with later-sibling isolation after observing real cleanup. Add real operator-caller argument contract in already-CI-wired test_pipe_safe_launchers.py and actual browser viewport observation. No safe restoration or explicit flag yet.
 - Verifier executed: Goal structural validator, stdlib AST and source/Git preparation; hosted unchanged-safeguard RED/controls next.
-- Result: Tests-only preparation; actual failures/count/positive controls and all completion gates pending.
+- Result: Actual hosted41134054406 on tests-onlyf85996cc ran2565 checks with4 intended behavioral failures: all3 cleanup cases and actual implicit viewport780x580/780x493. Every prior assertion, real throw premise and isolation control PASS; old2556 strict-count mismatch separate. Actual caller test fails once because no window-size reaches the launcher; subsequent caller assertions are unexecuted at this RED, not implied passes.
 - New evidence: cssom-gate-hardening preparation/dispatch receipts in wave3 evidence root.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: finally restoring each actual global-swap function and explicitly passing800x600 removes the observed integrity/implicit-geometry gaps without changing parser/predicate semantics or acceptance bounds.
+- Change or investigation: add two narrow try/finally blocks, one launcher window-size argument, adjacent outdated viewport comment, and pin actual measured2565. Preserve all original/new assertions and CSS_SRC/comment hoist byte-for-byte.
+- Verifier executed: actual RED/raw classification, stdlib AST, full baseline diffcheck, structural Goal validation; exact-source hosted sensitivity/full restoration and normal CI next.
+- Result: Static preparation PASS; current runtime/normal CI/four independent reviews pending, no completion claim.
+- New evidence: cssom-gate-hardening/red-ci metadata/raw/hash archive, red-classification.json and current candidate receipts.
 - Decision: iterate
 
 ## Risks and rollback
