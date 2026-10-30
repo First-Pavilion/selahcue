@@ -21,6 +21,8 @@ import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 
+import '../support/capture_debug_print.dart';
+
 OperatorStateView _view() => const OperatorStateView(
       planName: 'Sunday',
       items: [],
@@ -138,13 +140,19 @@ Future<void> _recoversAfter(Object firstFailure) async {
       reason: 'the command must reach the NEW session');
 }
 
+// Capture the production diagnostics through the real body, restoring the
+// printer before the test framework checks global invariants.
+void _quietTest(String name, Future<void> Function() body) {
+  test(name, () => captureDebugPrintAsync(<String>[], body));
+}
+
 void main() {
-  test('a FormatException from connect is retried and the loop recovers',
+  _quietTest('a FormatException from connect is retried and the loop recovers',
       () async {
     await _recoversAfter(const FormatException('Unexpected character'));
   });
 
-  test('a TypeError from connect is retried and the loop recovers', () async {
+  _quietTest('a TypeError from connect is retried and the loop recovers', () async {
     // What `frame as String` throws when the host answers with a binary frame.
     // Built by a real failing cast so the test throws exactly what production
     // would, not a hand-made look-alike.
@@ -160,7 +168,7 @@ void main() {
     await _recoversAfter(binaryFrameError());
   });
 
-  test('the loop keeps retrying across several consecutive malformed replies',
+  _quietTest('the loop keeps retrying across several consecutive malformed replies',
       () async {
     // One retry is not the same as "never gives up": a host that stays broken
     // for a while must keep being retried, with no attempt wedging the loop.
@@ -190,7 +198,7 @@ void main() {
     expect(live.revoked, isFalse);
   });
 
-  test('SessionRevoked still stops the loop and raises the Access-removed state',
+  _quietTest('SessionRevoked still stops the loop and raises the Access-removed state',
       () async {
     // No regression: widening the catch must not swallow the one failure that
     // retrying can never fix. (`revoked` is what the view renders as "Access
@@ -218,7 +226,7 @@ void main() {
     expect(attempts, 1, reason: 'revoked is terminal: exactly one attempt');
   });
 
-  test('a connect that always fails is retried once per backoff, never in a '
+  _quietTest('a connect that always fails is retried once per backoff, never in a '
       'hot loop, and stops when the controller is disposed', () async {
     // Pins the BACKOFF, which the recovery tests above cannot: they would pass
     // just as well if the 2s delay were 100ms or gone. A hot loop shows up here
@@ -259,7 +267,7 @@ void main() {
     expect(attempts, 1, reason: 'no attempt after dispose');
   });
 
-  test('a connect that completes after dispose has its session closed, not '
+  _quietTest('a connect that completes after dispose has its session closed, not '
       'installed', () async {
     // The in-flight connect outlives the controller. Its session is a pinned-TLS
     // socket: it must be released, not adopted and not leaked.
@@ -294,7 +302,7 @@ void main() {
     expect(attempts, 1, reason: 'no second attempt after dispose');
   });
 
-  test('a failure AFTER a successful connect is not retried and does not '
+  _quietTest('a failure AFTER a successful connect is not retried and does not '
       'orphan the session', () async {
     // Only the connect attempt is "transient". If the post-connect work sat
     // inside the catch-all, this failure would back off and open ANOTHER
