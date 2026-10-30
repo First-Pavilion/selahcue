@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Require a visible minimum for governed audit reasons
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9ah8
 - Created: 2026-10-30
@@ -86,9 +86,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: actual settings-independent validator and writer tests expose invisible-padding acceptance while preserving Unicode positives.
 - Change or investigation: complete requirements/call graph inspected, attached worktrees checked, fresh worktree integrated merged main, tests written first using existing shared seeding patterns.
 - Verifier executed: static syntax,diff and structural goal checks only.
-- Result: test-only candidate prepared for actual hosted behavioral RED; source unchanged.
-- New evidence: wave2-20261029/api-visible-reasons/test-only-manifest.json.
+- Result: actual hosted RED41034797760, source07421f67/diagnostic9b8d6be0, produced32behavioral DID NOT RAISE failures and44passes in34.37s. Setup/checks/migrations succeeded and all positive controls passed; production was unchanged.
+- New evidence: wave2-20261029/api-visible-reasons/red.log and https://github.com/First-Pavilion/selahcue/actions/runs/41034797760
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: exclude exactly Cf,Cc,Zs,Zl,Zp from the minimum while retaining the existing returned text, total-codepoint maximum and control guard.
+- Change or investigation: import stdlib unicodedata and change only the shared length predicate; short-circuit total maximum before classification. All tests from RED unchanged. Source integrated current main before initial PR; hosted normal API gate will verify full regression.
+- Verifier executed: static source/test syntax, unchanged RED-test comparison, diff check and structural goal validation only; no local project runtime.
+- Result: candidate prepared for ordinary branch/draft PR and full hosted CI; runtime/review/delivery gates remain pending.
+- New evidence: wave2-20261029/api-visible-reasons/candidate-manifest.json and normal CI raw log at handoff.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -105,6 +115,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9ah8-visible-mandatory-reasons.md
 - Validator result: structural validation and stdlib test syntax PASS.
 - Independent verification result: pending parent review.
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: actualRED/GREEN/fullAPI/reviews/merge/QA pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: hosted GREEN/full API, all four independent reviews, merge and exact QA readback pending.
 - ClickUp final evidence comment: parent owns publication.
