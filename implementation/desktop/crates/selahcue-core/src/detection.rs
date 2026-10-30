@@ -69,6 +69,61 @@ pub struct DetectedReference {
 /// non-references never survive. A precision floor (≥3 alphabetic characters in the
 /// book portion) suppresses the parser's two-letter typing aliases (`is`, `so`, `am`)
 /// firing on ordinary speech.
+///
+/// **Anti-fabrication guard (86akdc0p7):** [`normalize_tokens`]'s cardinal-grammar fold
+/// deliberately keeps two adjacent spoken numbers separate whenever English would (e.g.
+/// "eight" then "ten" — there is no `AfterOnes`→`Teen` transition, because "eight ten" is
+/// never how anyone speaks one number). That correctness, though, is exactly what lets
+/// [`parse_one`]'s space-shorthand fallback (`<book> <chapter> <verse>`, no punctuation)
+/// weld a real chapter to a completely unrelated following number just because folding
+/// left them adjacent — e.g. "romans eight ten more minutes" reads as `Romans 8:10`, even
+/// though "ten" is the first word of "ten more minutes", not a verse.
+///
+/// Neither the fold nor the shorthand parser has any concept of a clause boundary. The
+/// structural fix is clause-aware windowing, tracked as **86akdc10d**; until then this
+/// guard is a deliberately narrow stop-gap (see [`is_coincidental_weld`], the single
+/// definition of the rule). A purely positional signal is not enough on its own: plenty of
+/// legitimate citations also have ordinary trailing speech after a bare, single-word verse
+/// number (`"as Romans eight twenty-eight reminds us"`, `"john chapter three four oh how i
+/// love it"`). A bare-shorthand candidate is therefore refused only when **none** of these
+/// positive signals is present:
+///
+/// 1. **A "chapter"/"verse" marker immediately before the chapter number or the verse
+///    number** (stripped by [`normalize_tokens`] before folding, but remembered via
+///    [`NormToken::after_marker`]). Only those two positions count: a marker before the
+///    BOOK (`"that verse romans eight ten more minutes"`) is about something else, and a
+///    marker in an earlier citation does not carry over to a later one.
+/// 2. **The verse was not a single bare word** — a multi-word fold (`"twenty eight"` → 28,
+///    a digit-by-digit run), a spoken range (`"ten to twelve"`) or a typed dashed range
+///    (`"10-12"`). Two coincidentally-adjacent numbers never produce one of those.
+/// 3. **A colon anywhere in the candidate** (`"1:2 to 10"`): that is the punctuated
+///    standard path, not the bare-digits shorthand.
+/// 4. **Nothing follows the verse in this piece of text** — nothing left for a bare number
+///    to be mistaken for the start of. This escape is exactly as good as the segment
+///    boundary: a final segment cut mid-sentence (`"and so romans eight ten"`) defeats it.
+///    That is the same accepted segment-cut class **86akdpw83** documents for
+///    [`take_digit_run`]'s Rule 4, and it is fixed the same way (thread `speech_final`
+///    through), not here.
+///
+/// Accepted limits, all tracked on 86akdc10d rather than papered over here:
+///
+/// - **Recall cost.** A deliberate `<book> <chapter> <verse>` with plain words after it and
+///   no marker loses its verse and degrades to the chapter, because it has the same shape
+///   as the bug: `"romans 8 28 is great"` → `Romans 8`, `"john three sixteen for god so
+///   loved the world"` → `John 3`. Punctuation does not help (it is stripped before this
+///   scan). A colon (`"john 3:16"`) is unaffected.
+/// - **A marker on the chapter alone still trusts a bare verse.** `"romans chapter eight
+///   ten more minutes"` still reads `Romans 8:10`, exactly as it did before this guard.
+///   Tightening it to the verse position alone would lose `"john chapter three four oh how
+///   i love it"`, which is a documented legitimate form.
+/// - **Multi-word verses stay trusted** (`"romans eight twenty five more minutes"`).
+///
+/// When the guard refuses, the window shrinks and tries again, so the chapter alone usually
+/// survives (`Romans 8`): a missed verse, not a wrong one, the same direction the
+/// digit-by-digit guards below prefer. The guard narrows what is accepted, but it is not a
+/// strict subset of what `main` accepted: a refused verse digit is re-scanned and can join
+/// the NEXT book as a numbered-book prefix (`"genesis one one john three sixteen"` →
+/// `Genesis 1` then `1 John 3:16`, where it used to be `Genesis 1:1` then `John 3:16`).
 pub fn detect(text: &str) -> Vec<String> {
     let tokens = normalize_tokens(text);
     let mut found: Vec<String> = Vec::new();
@@ -82,13 +137,21 @@ pub fn detect(text: &str) -> Vec<String> {
             let window = &tokens[i..end];
             let alpha: usize = window
                 .iter()
-                .map(|t| t.chars().filter(|c| c.is_ascii_alphabetic()).count())
+                .map(|t| t.text.chars().filter(|c| c.is_ascii_alphabetic()).count())
                 .sum();
             if alpha >= 3 {
-                let candidate = window.join(" ");
+                let candidate = window
+                    .iter()
+                    .map(|t| t.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 if let Ok(r) = parse_one(&candidate) {
-                    matched = Some((r.to_string(), end));
-                    break;
+                    let welded_without_positive_signal =
+                        is_coincidental_weld(window, r.verses.is_some(), end < tokens.len());
+                    if !welded_without_positive_signal {
+                        matched = Some((r.to_string(), end));
+                        break;
+                    }
                 }
             }
             end -= 1;
@@ -106,6 +169,57 @@ pub fn detect(text: &str) -> Vec<String> {
     found
 }
 
+/// `true` when a candidate window that [`parse_one`] accepted should be **refused** because
+/// it is a chapter and a verse that were merely adjacent (86akdc0p7). This is the single
+/// definition of the guard, so a test of it cannot drift onto a copy; every clause is
+/// explained on [`detect`].
+///
+/// - `window` — the candidate's tokens, book first (always 2 or more).
+/// - `is_verse_selection` — the parser read the candidate as a verse or verse range, not a
+///   whole chapter. A whole-chapter reading has no second number to be coincidental.
+/// - `input_follows` — more tokens follow this window in the same piece of text.
+fn is_coincidental_weld(
+    window: &[NormToken],
+    is_verse_selection: bool,
+    input_follows: bool,
+) -> bool {
+    // A colon anywhere proves the punctuated standard path ("1:2", "1:2 to 10" which the
+    // parser merges into a range): the verse is not a bare number.
+    let via_bare_shorthand = is_verse_selection && !window.iter().any(|t| t.text.contains(':'));
+    // Only the chapter and verse positions (the last two tokens) can carry citation
+    // vocabulary for THIS reference. The book token(s) cannot: a marker before the book is
+    // about something else.
+    let marker_on_chapter_or_verse = window.iter().rev().take(2).any(|t| t.after_marker);
+    via_bare_shorthand
+        && !marker_on_chapter_or_verse
+        && window.last().is_some_and(|t| t.atomic)
+        // "Nothing follows" is only as good as the segment boundary: a final segment cut
+        // mid-sentence ("and so romans eight ten") still reads as nothing following. That is
+        // the accepted segment-cut class tracked as 86akdpw83 (see `take_digit_run`'s
+        // Rule 4), not something this predicate can see.
+        && input_follows
+}
+
+/// One normalised token, plus two provenance flags [`is_coincidental_weld`] consults for a
+/// candidate's chapter and verse positions:
+///
+/// - `atomic` — folded from **exactly one** underlying input word that is not a typed
+///   range: a bare typed digit, or a single spoken number word like "ten". Everything
+///   else is `false`: a combined cardinal ("twenty eight"), a digit-by-digit run, a joined
+///   spoken range, a typed dashed range ("10-12", one input word but explicit range
+///   syntax) and the pieces of a split range. Ordinary non-numeric words are `true`; the
+///   flag is only ever read for the last token of a candidate that the parser read as
+///   chapter + verse.
+/// - `after_marker` — an explicit "chapter"/"verse" marker word immediately preceded this
+///   token before [`normalize_tokens`] stripped it (step 3). Set in step 3 for every token;
+///   the value any earlier step gives it is overwritten there.
+#[derive(Debug, Clone)]
+struct NormToken {
+    text: String,
+    atomic: bool,
+    after_marker: bool,
+}
+
 /// Normalise transcript text into parser-ready tokens: lowercase; strip punctuation
 /// (keeping `:` so a typed `"8:28"` still parses, and a hyphen/dash that joins two digit
 /// runs so a typed range `"1:2-10"` stays one range); fold spelled-out numbers ("twenty
@@ -113,7 +227,9 @@ pub fn detect(text: &str) -> Vec<String> {
 /// **digit-by-digit reading** ("one zero three" / "one oh three" → `103` — see
 /// [`take_digit_run`]); drop "chapter"/"verse"/"from" filler (their numbers already
 /// survived the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
-fn normalize_tokens(text: &str) -> Vec<String> {
+/// Each returned token also carries whether it was folded from exactly one input word
+/// ([`NormToken::atomic`]).
+fn normalize_tokens(text: &str) -> Vec<NormToken> {
     // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator), and a
     //    hyphen or en/em dash sitting directly between two digits (a typed verse range —
     //    cloud engines with smart formatting write "Psalm 1:2-10"; flattening it to a space
@@ -154,51 +270,101 @@ fn normalize_tokens(text: &str) -> Vec<String> {
     //    disjoint reading from the cardinal grammar `take_number` implements (see
     //    `take_digit_run`'s doc for why the two never conflict) — before falling back
     //    to the existing cardinal folding.
-    let mut folded: Vec<String> = Vec::new();
+    let mut folded: Vec<NormToken> = Vec::new();
     let mut i = 0;
     while i < raw.len() {
         if let Some((value, consumed)) = take_digit_run(&raw[i..]) {
-            folded.push(value.to_string());
+            // Always 2+ words by construction (`take_digit_run` requires `digits.len() >=
+            // 2`) — computed from `consumed` rather than hardcoded `false` so this stays
+            // correct if that ever changes. `after_marker` is filled in by step 3 below,
+            // which sees the surrounding "chapter"/"verse" words directly; folding never
+            // needs to know about them.
+            folded.push(NormToken {
+                text: value.to_string(),
+                atomic: consumed == 1,
+                after_marker: false,
+            });
             i += consumed;
         } else if let Some((value, consumed)) = take_number(&raw[i..]) {
-            folded.push(value.to_string());
+            folded.push(NormToken {
+                text: value.to_string(),
+                atomic: consumed == 1,
+                after_marker: false,
+            });
             i += consumed;
         } else {
-            folded.push(raw[i].to_string());
+            // Not a number word and not all digits (a bare typed digit takes the `take_number`
+            // branch above, as one atomic word): a non-numeric word, or a typed dashed range
+            // ("1-3", "28-30"). Step 1 keeps a dash only when it sits directly between two
+            // digits, so a `-` here always means the speaker/engine wrote an explicit range.
+            // That is a positive signal, never two coincidentally-adjacent numbers, so a
+            // dashed token is not "atomic" (the guard must leave "gen 1 1-3 and more" alone).
+            // The flag on a non-numeric word is never read: `parse_one` cannot accept one as
+            // the verse of a chapter + verse candidate.
+            folded.push(NormToken {
+                text: raw[i].to_string(),
+                atomic: !raw[i].contains('-'),
+                after_marker: false,
+            });
             i += 1;
         }
     }
 
     // 3. Drop filler connectors now that any numbers straddling them have already been
-    //    folded on their own (step 2's ordering is what makes this safe). "from" introduces a
-    //    verse — "Psalms chapter one FROM verse two to ten" — and left in it sat between the
-    //    chapter and the verse range, so the window failed to parse and the match fell back to
-    //    the bare chapter, dropping the range. It is dropped only in that position (see below).
-    let words: Vec<String> = folded
-        .iter()
-        .enumerate()
-        .filter(|(i, w)| match w.as_str() {
-            "chapter" | "chapters" | "verse" | "verses" => false,
+    //    folded on their own (step 2's ordering is what makes this safe) — but first
+    //    remember, on whichever token immediately follows a dropped marker, that a marker
+    //    was there (86akdc0p7's `after_marker`): once the marker word itself is gone, that
+    //    is the only place left to record that explicit citation vocabulary ("verse", not a
+    //    number that merely happens to sit next to another number) was actually present.
+    //
+    //    "from" introduces a verse — "Psalms chapter one FROM verse two to ten" — and left in
+    //    it sat between the chapter and the verse range, so the window failed to parse and
+    //    the match fell back to the bare chapter, dropping the range. It is dropped only in
+    //    that position. It is NOT itself a marker (it never sets `pending_marker`); the
+    //    "verse" that necessarily follows it is what does.
+    let mut words: Vec<NormToken> = Vec::with_capacity(folded.len());
+    let mut pending_marker = false;
+    for (k, tok) in folded.iter().enumerate() {
+        match tok.text.as_str() {
+            "chapter" | "chapters" | "verse" | "verses" => {
+                pending_marker = true;
+                continue;
+            }
             // ONLY "from verse N": a bare "from" between two numbers is ordinary speech
             // ("John 3 from 5 of us") and must not weld them into a fabricated verse.
-            "from" => !folded
-                .get(i + 1)
-                .is_some_and(|next| next == "verse" || next == "verses"),
-            _ => true,
-        })
-        .map(|(_, w)| w.clone())
-        .collect();
+            "from"
+                if folded
+                    .get(k + 1)
+                    .is_some_and(|next| matches!(next.text.as_str(), "verse" | "verses")) =>
+            {
+                continue;
+            }
+            _ => {}
+        }
+        words.push(NormToken {
+            after_marker: pending_marker,
+            ..tok.clone()
+        });
+        pending_marker = false;
+    }
 
-    // 4. Join spoken ranges: <digits> <range-word> <digits> → "a-b".
-    let mut out: Vec<String> = Vec::new();
+    // 4. Join spoken ranges: <digits> <range-word> <digits> → "a-b". Never atomic: a
+    //    range always consumes (at least) three underlying tokens. `after_marker` carries
+    //    over from the range's first token — the only position a marker could have
+    //    immediately preceded.
+    let mut out: Vec<NormToken> = Vec::new();
     let mut j = 0;
     while j < words.len() {
         if j + 2 < words.len()
-            && is_all_digits(&words[j])
-            && matches!(words[j + 1].as_str(), "to" | "through" | "thru")
-            && is_all_digits(&words[j + 2])
+            && is_all_digits(&words[j].text)
+            && matches!(words[j + 1].text.as_str(), "to" | "through" | "thru")
+            && is_all_digits(&words[j + 2].text)
         {
-            out.push(format!("{}-{}", words[j], words[j + 2]));
+            out.push(NormToken {
+                text: format!("{}-{}", words[j].text, words[j + 2].text),
+                atomic: false,
+                after_marker: words[j].after_marker,
+            });
             j += 3;
         } else {
             out.push(words[j].clone());
@@ -229,11 +395,26 @@ fn is_verse_range_token(tok: &str) -> bool {
 /// kept. The parser cannot express those, and left whole the window would fail and the passage's
 /// STARTING verse (`Matthew 5:1`) would be lost instead of offered to the operator. A dash with no
 /// colon (`Romans 8-9`) is left whole on purpose: a span of chapters must not be read as a verse.
-fn expand_unreadable_ranges(tokens: Vec<String>) -> Vec<String> {
+///
+/// Each piece is marked **not** `atomic` (86akdc0p7): it came out of one explicit, typed
+/// range expression, never out of two coincidentally-adjacent spoken numbers, so
+/// [`detect`]'s anti-fabrication guard must not treat it as a bare number that merely
+/// happens to follow the chapter. That keeps this split behaving exactly as it did before
+/// the guard existed. The pieces inherit the original token's `after_marker`.
+fn expand_unreadable_ranges(tokens: Vec<NormToken>) -> Vec<NormToken> {
     let mut out = Vec::with_capacity(tokens.len());
     for tok in tokens {
-        if tok.contains(':') && tok.contains('-') && !is_verse_range_token(&tok) {
-            out.extend(tok.split('-').filter(|p| !p.is_empty()).map(str::to_string));
+        if tok.text.contains(':') && tok.text.contains('-') && !is_verse_range_token(&tok.text) {
+            out.extend(
+                tok.text
+                    .split('-')
+                    .filter(|p| !p.is_empty())
+                    .map(|p| NormToken {
+                        text: p.to_string(),
+                        atomic: false,
+                        after_marker: tok.after_marker,
+                    }),
+            );
         } else {
             out.push(tok);
         }
