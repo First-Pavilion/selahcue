@@ -110,6 +110,16 @@ Fresh actual main9d9da7a0f68d43923dcd79e11c6f7970d7dd692f includes reviewed/QA X
 - New evidence: django-6.1.2-redis-source.json/.py and forthcoming immutable candidate/mutation/full CI receipts.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-004 and C-005; CODY-WVF-01.
+- Hypothesis: truthful command vocabulary in the rewritten docs can satisfy the existing unchanged scanner contract without changing Redis code, tests or scanner allowlist/logic.
+- Change or investigation: read full Cody review and independently classified actual diagnostic41134553072 candidate baseline1failed128passed6.34s. All7Redis controls passed/coldhot3EVAL; required docs dead-entry test failed, orchestrator correctly stopped before all mutants/restored suite. Docs now explicitly explain removal of the former EXISTS network check and format actual Lua EXPIRE/INCR ACL commands consistently. All55test files/scanner bodies/constants and Redis implementation unchanged.
+- Verifier executed: exact raw failure/phase/transport marker classification, stdlib source/AST/component/diff/goal checks; fresh final normal and actual3mutants/restoration to follow.
+- Result: required doc gate correction prepared; old failed run retained as incomplete mutation proof. CODY-WVF-01 closure and final gates pending actual fresh hosted results/review.
+- New evidence: reviews/17tnw2b1wvf-cody.md; mutant-attempt1 official raw/metadata/hashes; mutant-attempt1-classification.json; forthcoming current-source r2 receipts.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: counting wrapper missing wire writes or including handshake, Redis serializer/versioned-key mismatch, TTL refresh or persistent recreation, partial write/reply failure, proxy-cache double regression or shared-file conflict.

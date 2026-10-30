@@ -470,11 +470,12 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
   budget. The configured Redis backend now spends one positive-window budget with one bounded
   EVAL (17tnw2b1wvf): three budgets on an accepted reset/resend request mean three budget
-  round trips, both for first hits and existing counters. The script accesses one validated,
+  round trips, both for first hits and existing counters. The former separate `EXISTS`
+  network check is replaced by an expiry check inside the script. It accesses one validated,
   versioned cache key, creates new counters with expiry in the same write, retains existing
   fixed deadlines and repairs persistent counters without resetting their count. It uses no
   loops or script-cache loading/retry. Redis ACLs must permit EVAL and its fixed PTTL,
-  SET, EXPIRE and INCR commands; a refused script follows the existing unavailable-store
+  SET, `EXPIRE` and `INCR` commands; a refused script follows the existing unavailable-store
   policy and reporting. Generic/local caches keep their existing cache API path.
 
   Connection setup is separate: the current client sends two `CLIENT SETINFO` commands and
