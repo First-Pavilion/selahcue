@@ -106,6 +106,16 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - New evidence: raw first-attempt log saved as wave2-20261029/mobile-late-websocket-test-attempt1.log.
 - Decision: obtain actual hosted behavioral RED and passing controls before production changes.
 
+### Iteration 3
+
+- Target criterion: C-005
+- Hypothesis: the three timely controls used a stale client readyState after session input cancellation, while server completion and the observer's close count are valid timely-close oracles.
+- Change or investigation: hosted run 41038057506 at 8c71eefc passed analysis and ran tests. Two late acquired sockets reported closeCalls 0 instead of 1; 100-cycle owned counts grew 1, 2, 3 and onward; actual-deadline retained-socket assertion failed. Late-error and wrong-pin controls passed, but all three timely controls failed their post-close readyState wait. SDK inspection shows subscription cancellation stops the onDone path which updates readyState. Replace only those timely post-close checks with actual server onDone/closed state plus explicit close count; keep all late-socket tests unchanged.
+- Verifier executed: raw full log saved at wave2-20261029/pr286-test-ci.log; structural validation and full baseline diff check; fresh hosted tests pending.
+- Result: useful leak observations, but positive controls need their corrected closure oracle before behavioral RED is accepted. No production changes.
+- New evidence: timely auth/pair/held completion reached valid sessions with closeCalls 0 before caller close; no zone type/runtime errors were reported.
+- Decision: freeze the tests-only oracle correction and rerun full hosted CI before implementing cleanup.
+
 ## Risks and rollback
 
 - Risks: cleanup must not close a timely returned session, publish an expired session, double-close a late socket or expose unhandled late errors. Force-closing HTTP alone cannot discharge a WebSocket already detached from that client.

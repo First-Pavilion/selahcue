@@ -54,9 +54,12 @@ void main() {
     expect(host.hellos, hasLength(1));
     expect(host.upgradeErrors, isEmpty);
     await session.close();
-    await _until(() => host.openSocketCount == 0 && trace.openSocketCount == 0);
+    // Session.close cancels its input subscription. Dart's WebSocket.readyState
+    // can then retain its last value even after the peer observes transport
+    // closure, so use the peer's completion as the timely-session oracle.
+    expect(await host.waitClientClosed(1), isTrue);
     expect(observed.closeCalls, 1);
-    expect(trace.openSocketCount, 0);
+    expect(host.openSocketCount, 0);
   });
 
   test('control: timely pairing retains its issued credentials and live session',
@@ -73,8 +76,9 @@ void main() {
     expect(observed.closeCalls, 0);
     expect(host.upgradeErrors, isEmpty);
     await session.close();
-    await _until(() => host.openSocketCount == 0 && trace.openSocketCount == 0);
+    expect(await host.waitClientClosed(1), isTrue);
     expect(observed.closeCalls, 1);
+    expect(host.openSocketCount, 0);
   });
 
   test('control: held acquired-socket delivery before deadline still succeeds',
@@ -91,8 +95,9 @@ void main() {
     expect(trace.deadlineActive, isFalse);
     expect(observed.closeCalls, 0);
     await session.close();
-    await _until(() => host.openSocketCount == 0 && trace.openSocketCount == 0);
+    expect(await host.waitClientClosed(1), isTrue);
     expect(observed.closeCalls, 1);
+    expect(host.openSocketCount, 0);
   });
 
   for (final pairing in [false, true]) {
