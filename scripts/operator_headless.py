@@ -1961,6 +1961,10 @@ EXPECTED_MIN_CHECKS = 2406
 # shapes and condition-blind dropped/adjacent/duplicate dangerous controls.
 # Measured in hosted41060247302 baseline and both41061031053 executions.
 EXPECTED_MIN_CHECKS = 2464
+# 2464 ->2536 (17tnw2axpp3 S4): real rejected/refused note-generation/edit/
+# regeneration IPC privacy channels and existing pending/data/recovery controls.
+# Measured on tests-onlycbd5e4e9 in hosted41089309707:2536 checks,24 intended FAIL.
+EXPECTED_MIN_CHECKS = 2536
 
 
 def find_chrome():
@@ -8683,6 +8687,134 @@ DRIVER = r"""
         await sleep(40);
         el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
         await sleep(80);
+      }
+
+      // 17tnw2axpp3 S4: exercise the shipping Transcripts error consumers, not a copied
+      // sanitizer. The existing generic deferred IPC seam holds each real request pending,
+      // then rejects it or returns an explicit refusal with hostile backend/peer content.
+      var axOriginalDetail = JSON.stringify(window.__TR.detail[1]);
+      var axOriginalMode = window.__trGen, axOriginalDefer = window.__rcDeferCommand;
+      var axOriginalDeferred = window.__rcDeferred;
+      var axOriginalError = console.error, axOriginalWarn = console.warn;
+      var axSecrets = ["AXPP3_TRANSCRIPT_PRIVATE_721", "AXPP3_PARTIAL_PRIVATE_722", "AXPP3_DETECTION_PRIVATE_723"];
+      var axHostile = "OperatorState transcript=" + axSecrets[0] + " partial=" + axSecrets[1] + " detections=" + axSecrets[2];
+      var axObserved = [];
+      var axCapture = function () { axObserved.push(Array.prototype.map.call(arguments, function(v){ return String(v && v.message || v); }).join(" ")); };
+      console.error = function () { axCapture.apply(null, arguments); axOriginalError.apply(console, arguments); };
+      console.warn = function () { axCapture.apply(null, arguments); axOriginalWarn.apply(console, arguments); };
+      var axUnhandled = function(e){ axCapture(e.reason || e.message || ""); };
+      window.addEventListener("unhandledrejection", axUnhandled);
+      window.addEventListener("error", axUnhandled);
+      var axObserver = new MutationObserver(function(records){
+        records.forEach(function(r){
+          if (r.type === "characterData") axObserved.push(r.target.nodeValue || "", r.oldValue || "");
+          if (r.type === "attributes") axObserved.push(r.target.getAttribute(r.attributeName) || "", r.oldValue || "");
+          Array.prototype.forEach.call(r.addedNodes || [], function(n){ axObserved.push(n.textContent || ""); });
+        });
+      });
+      axObserver.observe(el("surface-transcripts"), {subtree:true,childList:true,characterData:true,characterDataOldValue:true,attributes:true,attributeOldValue:true});
+      var axReopen = async function(){
+        el("tr-detail-back").click();
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        return settleMicro(function(){ return !!el("tr-gen-edit") && !el("tr-detail-view").hidden; });
+      };
+      var axPreview = async function(){
+        trEntry().click();
+        return settleMicro(function(){ return !el("tr-gen-preview").hidden; });
+      };
+      var axDomText = function(){
+        // Script source contains the planted fixtures; it is not an application feedback
+        // channel. Inspect every other text/attribute, including hidden nodes/live regions.
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT), n, text = "";
+        while ((n = walker.nextNode())) {
+          var parent = n.nodeType === 1 ? n : n.parentElement;
+          if (parent && parent.closest("script,style")) continue;
+          if (n.nodeType === 3) text += n.nodeValue || "";
+          else Array.prototype.forEach.call(n.attributes || [], function(a){ text += a.value; });
+        }
+        return text;
+      };
+      try {
+        var axPaths = [
+          ["generate", "transcript_generate_notes", "tr-gen-preview-confirm", /generat.*notes|generation/i],
+          ["save", "update_sermon_note_draft", "tr-gen-save", /save|edit/i],
+          ["confirm", "confirm_sermon_note_regeneration", "tr-gen-regen-confirm", /replace|use.*draft|saved notes/i],
+          ["discard", "discard_sermon_note_regeneration", "tr-gen-regen-discard", /discard|keep.*notes/i]
+        ];
+        for (var axPath of axPaths) {
+          for (var axMode of (axPath[0] === "generate" ? ["reject", "refused", "unknown"] : ["reject", "refused"])) {
+            window.__TR.detail[1] = JSON.parse(axOriginalDetail);
+            window.__trGen = "regenerate_pending";
+            await axReopen();
+            if (axPath[0] === "save") {
+              el("tr-gen-edit").click();
+              el("tr-edit-title").value = "AXPP3 retry edit";
+            } else {
+              await axPreview();
+              if (axPath[0] !== "generate") {
+                el("tr-gen-preview-confirm").click();
+                await settleMicro(function(){ return !!el("tr-gen-regen-confirm"); });
+              }
+            }
+            var axSaved = JSON.stringify(window.__TR.detail[1]);
+            var axCalls = trCall(axPath[1]).length;
+            window.__rcDeferred = null;
+            window.__rcDeferCommand = axPath[1];
+            axObserved = [];
+            el(axPath[2]).click();
+            var axPending = window.__rcDeferred;
+            var axBusy = axPath[0] === "generate" ? el("tr-generate") : el(axPath[2]);
+            ok(!!axPending && trCall(axPath[1]).length === axCalls + 1 && axBusy.disabled && axBusy.getAttribute("aria-busy") === "true",
+               "AXPP3 pending/" + axPath[0] + "/" + axMode + ": the real IPC call is held and its control is busy");
+            axBusy.click();
+            ok(trCall(axPath[1]).length === axCalls + 1 && JSON.stringify(window.__TR.detail[1]) === axSaved,
+               "AXPP3 pending control/" + axPath[0] + "/" + axMode + ": repeated activation sends no second request and changes no accepted data");
+            window.__rcDeferCommand = null;
+            if (axMode === "reject") axPending.reject(new Error(axHostile));
+            else axPending.resolve({ok:false,error:axMode === "unknown" ? axHostile : "refused",message:axHostile});
+            await settleMicro(function(){ return !!el("tr-gen-result").querySelector('[role="alert"]') || el("tr-gen-result").getAttribute("role") === "alert"; });
+            // Drain the observed promise chain, including its busy-state cleanup and the
+            // MutationObserver delivery, without giving unrelated app poll timers an oracle.
+            for (var axHop = 0; axHop < 16; axHop++) await Promise.resolve();
+            var axResult = el("tr-gen-result"), axAlert = axResult.querySelector('[role="alert"]') || axResult;
+            ok(axAlert.getAttribute("role") === "alert" && axPath[3].test(axAlert.textContent),
+               "AXPP3 feedback/" + axPath[0] + "/" + axMode + ": a meaningful operation-specific alert is rendered");
+            ok(axSecrets.every(function(secret){ return axDomText().indexOf(secret) === -1; }),
+               "AXPP3 privacy DOM/" + axPath[0] + "/" + axMode + ": no transcript, partial or detection payload reaches visible/hidden text or attributes");
+            ok(axSecrets.every(function(secret){ return axObserved.join("\n").indexOf(secret) === -1; }),
+               "AXPP3 privacy channels/" + axPath[0] + "/" + axMode + ": transient status/alert mutations and diagnostics stay data-free");
+            ok(JSON.stringify(window.__TR.detail[1]) === axSaved,
+               "AXPP3 accepted-data control/" + axPath[0] + "/" + axMode + ": refusal leaves accepted notes, provenance and pending slot unchanged");
+            if (axPath[0] === "confirm" || axPath[0] === "discard") {
+              ok(!!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard") && !el(axPath[2]).disabled && !el(axPath[2]).hasAttribute("aria-busy"),
+                 "AXPP3 retry control/" + axPath[0] + "/" + axMode + ": both pending choices remain reachable after the failure");
+              el(axPath[2]).click();
+              await settleMicro(function(){ return !el("tr-gen-regen-confirm"); });
+              ok(!el("tr-gen-regen-confirm") && !!el("tr-gen-edit") && !window.__TR.detail[1].pending,
+                 "AXPP3 success control/" + axPath[0] + "/" + axMode + ": the same real operation can be retried successfully");
+            } else {
+              // Existing failed-save form clearing is bawx7, NOT fixed or claimed here.
+              // Reopen follows today's recovery flow, then prove editing/saving still works.
+              await axReopen();
+              el("tr-gen-edit").click();
+              ok(document.activeElement === el("tr-edit-title"),
+                 "AXPP3 focus control/" + axPath[0] + "/" + axMode + ": reopening Edit retains its existing initial focus");
+              el("tr-edit-title").value = "AXPP3 retry edit";
+              el("tr-gen-save").click();
+              await settleMicro(function(){ return !!el("tr-gen-edit"); });
+              ok(window.__TR.detail[1].draft.title === "AXPP3 retry edit" && !!el("tr-gen-edit"),
+                 "AXPP3 success control/" + axPath[0] + "/" + axMode + ": existing reopen/edit/save recovery succeeds with operator wording");
+            }
+          }
+        }
+      } finally {
+        axObserver.disconnect();
+        console.error = axOriginalError; console.warn = axOriginalWarn;
+        window.removeEventListener("unhandledrejection", axUnhandled);
+        window.removeEventListener("error", axUnhandled);
+        window.__rcDeferCommand = axOriginalDefer; window.__rcDeferred = axOriginalDeferred;
+        window.__TR.detail[1] = JSON.parse(axOriginalDetail); window.__trGen = axOriginalMode;
+        await axReopen();
       }
 
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
