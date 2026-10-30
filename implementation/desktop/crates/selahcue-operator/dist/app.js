@@ -1159,9 +1159,11 @@
       function renderInspector(view, registry, outByRole, screenThemes, themes) {
         const insp = document.getElementById("screens-inspector");
         if (!insp) return;
+        const healthLive = document.getElementById("screens-output-health-live");
         insp.innerHTML = "";
         const s = registry.find((r) => r.screen === selectedScreen);
         if (!s) {
+          if (healthLive && healthLive.textContent) healthLive.textContent = "";
           const empty = document.createElement("div");
           empty.className = "scr-isection scr-imuted";
           empty.textContent = "Select an output to configure it.";
@@ -1486,6 +1488,10 @@
           sig = "neutral"; txt = "Composed feed · no physical signal yet";
         }
         foot.classList.add("scr-signal-" + sig); foot.textContent = txt;
+        // This channel exists before updates and survives inspector rebuilds. Publish only
+        // changed plain text so unrelated config/poll renders do not repeat the health status.
+        const healthMessage = screenDisplayName(s) + ": " + txt;
+        if (healthLive && healthLive.textContent !== healthMessage) healthLive.textContent = healthMessage;
         dev.appendChild(foot);
         insp.appendChild(dev);
       }

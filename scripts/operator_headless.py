@@ -6511,6 +6511,10 @@ DRIVER = r"""
         renderOutputs(V); selectScreen("jh-host-text");
         ok(!!jhLive && jhText().indexOf(jhUnsafeRole) >= 0 && !jhLive.querySelector("img") && !window.__jhInjected,
            "JH: host-derived output text is announced as plain text without interpreting markup");
+        renderInspector(V, [], {}, {}, V.themes || []);
+        ok(!!jhLive && jhLive.isConnected && jhText() === "" &&
+           /Select an output/.test(document.getElementById("screens-inspector").textContent),
+           "JH control: the real empty-inspector path clears stale health while retaining the live channel");
         selectScreen("main"); renderOutputs(V);
         var jhNdi=document.querySelector("#screens-inspector .scr-signal");
         ok(jhNdi !== jhFoot() && jhNdi.getAttribute("role") === "status" && /NDI off/.test(jhNdi.textContent),
