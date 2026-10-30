@@ -109,6 +109,16 @@ Verified fresh main dd5cc038efe04681e42746edb8d243996badc947, baseline normal CI
 - New evidence: owned diff and forthcoming immutable candidate/CI handoff.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-003.
+- Hypothesis: CODY-ADV-01 is a valid residual because nginx variable names are case-insensitive but the mapped-variable set guard compares exact spelling.
+- Change or investigation: read complete independent Cody receipt and traced guard/token/bypass path; added uppercase and mixed-case genuine override regressions with intended refusal message, retaining all original cases and an unrelated uppercase-variable set positive. Guard comparison unchanged for hosted RED.
+- Verifier executed: stdlib AST/diff and goal checks; bounded own hosted nginx syntax/current-guard RED prepared.
+- Result: existing normal run is superseded for this newly exposed scope; actual new RED/CI results pending, no finding closure claimed.
+- New evidence: reviews/17tnw2b9adv-cody.md; forthcoming cody-case-red workflow/receipt/log under api-origin-nginx-hardening.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: hiding useful diagnostics, inadvertently changing accepted origins, treating quoted directive text as executable configuration, invalid nginx mutants or absent checkout fixture.

@@ -299,14 +299,22 @@ def _bypass_config(original: str, case: str) -> str:
 """, 1)
     if case == "quoted-header":
         return original.replace(HEADER_LINE, f'set $note "; {HEADER_LINE} ";', 1)
-    if case == "map-override":
-        return original.replace("server {", "server {\n    set $selahcue_client_proto $http_x_forwarded_proto;", 1)
+    if case in {"map-override", "uppercase-map-override", "mixed-case-map-override"}:
+        variable = {
+            "map-override": "$selahcue_client_proto",
+            "uppercase-map-override": "$SELAHCUE_CLIENT_PROTO",
+            "mixed-case-map-override": "$SeLaHcUe_ClIeNt_PrOtO",
+        }[case]
+        return original.replace("server {", f"server {{\n    set {variable} $http_x_forwarded_proto;", 1)
     if case == "server-include":
         return original.replace("server {", "server {\n    include /etc/nginx/diagnostic/override.conf;", 1)
     raise AssertionError(f"unknown bypass case: {case}")
 
 
-BYPASS_CASES = ["quoted-hash", "quoted-header", "map-override", "server-include"]
+BYPASS_CASES = [
+    "quoted-hash", "quoted-header", "map-override", "server-include",
+    "uppercase-map-override", "mixed-case-map-override",
+]
 
 
 def _assert_proxy_guard():
@@ -329,6 +337,8 @@ def test_guard_refuses_each_valid_nginx_trust_bypass(case, monkeypatch, tmp_path
         "quoted-hash": "proxies without",
         "quoted-header": "proxies without",
         "map-override": "set must not override",
+        "uppercase-map-override": "set must not override",
+        "mixed-case-map-override": "set must not override",
         "server-include": "server includes",
     }[case]
     with pytest.raises(AssertionError, match=expected):
@@ -338,6 +348,7 @@ def test_guard_refuses_each_valid_nginx_trust_bypass(case, monkeypatch, tmp_path
 @pytest.mark.parametrize("note", [
     'add_header X-Note "#1; {literal}";',
     "add_header X-Note '#1; {literal}';",
+    'set $SELAHCUE_OTHER_PROTO $http_x_forwarded_proto;',
     'set $note "escaped\\"#1; {literal}";',
 ])
 def test_guard_accepts_benign_quoted_values_and_real_header(note, monkeypatch, tmp_path):
