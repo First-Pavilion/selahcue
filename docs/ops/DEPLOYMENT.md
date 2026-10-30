@@ -669,7 +669,10 @@ leave it off and are unchanged.
    does not preserve it, Django sees `http` and the flag cannot fix the 403. Check the hop after
    Cloudflare first: Cloudflare sends the header, but the next hop (for example a Traefik that
    trusts no inbound forwarded headers) may replace it with the scheme of its own plain-HTTP
-   connection. Cloudflare in "Flexible" mode (plain HTTP to the origin) can have the same effect.
+   connection. Configure Traefik `forwardedHeaders.trustedIPs` with Cloudflare's published
+   address ranges. Never use `forwardedHeaders.insecure=true`: it accepts client-supplied
+   forwarded headers whenever the origin can be reached without Cloudflare. Cloudflare in
+   "Flexible" mode (plain HTTP to the origin) can have the same effect.
    That fails closed (you keep the 403), never open. Native clients (`/v1/...`) do not go through
    nginx; their route to Django is the edge directly, and the same two rules hold.
 
@@ -691,8 +694,11 @@ refuse plain HTTP to the host and every subdomain for that long, so roll it out 
    enforcing it until its `max-age` runs out. The in-app way to shorten what browsers hold is to
    deploy `SECURE_HSTS_SECONDS=1` together with `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and
    `SECURE_HSTS_PRELOAD=0`: every returning browser replaces its stored policy with a one-second,
-   host-only one on its next HTTPS response. Leave that in place for as long as the old `max-age`
-   (so returning visitors pick it up), and only then turn the flag off. A true
+   host-only one on its next API response over HTTPS. Django sends this header on API responses;
+   the SPA requests `/graphql/csrf` lazily, so visitors who only browse pages may retain the old
+   policy. Serve the shorter policy at the TLS edge for coverage of those page responses too.
+   Leave it in place for as long as the old `max-age` (so returning visitors pick it up), and
+   only then turn the flag off. A true
    `Strict-Transport-Security: max-age=0` must be served by the edge. Starting small (step 2) is
    what keeps this recoverable; a policy already on the preload list cannot be rolled back this way.
 
