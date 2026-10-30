@@ -143,7 +143,10 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # on d46097bb: 73 scenarios, 2608 checks, zero behavioural failures. Adds real dual-control
 # composition, late-failure recovery after Account leaves, and mobile modal announcements.
 # The first run exited 4 solely on this old exact-count guard; rerun with this measured count.
-EXPECTED_MIN_CHECKS = 2608
+# 2608 -> 2645 in refresh/sign-out ordering (17tnw2b2ka9), measured in hosted
+# diagnostic41032605045 on source7b2f7d51: 75 scenarios, 2645 checks, zero behavioral
+# failures. The old exact count alone exited4; keep equality strict and rerun the gate.
+EXPECTED_MIN_CHECKS = 2645
 
 
 def find_chrome() -> str | None:

@@ -43,7 +43,7 @@ Verified at fetched main6a1f414cc3213006b333a071893db394ffd03039: sessionStore.s
 
 ### Constraints
 
-- New managed worktree and one-ticket branch. Root owns ClickUp, publication, hosted RED/GREEN, reviews, merge and QA.
+- New managed worktree and one-ticket branch. Expanded root delegation authorizes Farah's isolated hosted diagnostics, own branch push/draft PR and normal candidate CI. Root retains ClickUp, all four reviews, merge and QA.
 - No local project runtime, builds or browser runs while host is paging. Actual hosted assertion RED must precede production edits.
 - Do not claim revocation from a hint-only assertion. Model or verify the request cookie and server session after rotation.
 - Preserve truthful retryable logout failure and no-refresh UNAUTHENTICATED handling; no unbounded queues or timers.
@@ -64,9 +64,9 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Sign-out waits for in-flight refresh, sends logout with rotated cookie and ends with no live session or hint | `node --test tests/refreshSignOut.test.ts` | Held-refresh cookie/session assertions pass after observed baseline RED | Hosted focused log | PENDING |
-| C-002 | yes | No stale hint rewrite or new refresh admission during sign-out; duplicate refresh is bounded/shared | Focused scripted-fetch concurrency tests | No late hint resurrection, duplicate rotation or refresh during held logout | Hosted focused log | PENDING |
-| C-003 | yes | Failed refresh/logout and no-refresh UNAUTHENTICATED preserve honest recovery | Focused controls plus existing sign-out tests | Failure remains retryable/signed-in until revoked; already-ended session is handled without false race success | Hosted control logs | PENDING |
+| C-001 | yes | Sign-out waits for in-flight refresh, sends logout with rotated cookie and ends with no live session or hint | `node --test tests/refreshSignOut.test.ts` | Held-refresh cookie/session assertions pass after observed baseline RED | Hosted41032605045 job123985693787, node-green1.log:9 passed,0 failed | PASS |
+| C-002 | yes | No stale hint rewrite or new refresh admission during sign-out; duplicate refresh is bounded/shared | Focused scripted-fetch concurrency tests | No late hint resurrection, duplicate rotation or refresh during held logout | Hosted41032605045 focused9/0 plus actual browser race/failure assertions | PASS |
+| C-003 | yes | Failed refresh/logout and no-refresh UNAUTHENTICATED preserve honest recovery | Focused controls plus existing sign-out tests | Failure remains retryable/signed-in until revoked; already-ended session is handled without false race success | Hosted41032605045 focused9/0 and browser failure/retry controls | PASS |
 | C-004 | yes | Real UI race and marketing regressions pass | `make marketing-check` and required `npm run test:states` | Type/lint/node/build and browser gates exit zero on frozen source | Hosted CI and browser log | PENDING |
 | C-005 | yes | All independent reviews approve current source | Cody, Quinn, Vera and Shadow | No unresolved blocking findings after remediation/re-review | Root consolidated review | PENDING |
 
@@ -94,10 +94,10 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-004.
 - Hypothesis: real Account interactions while the router's refresh response is held reproduce the same request-cookie ordering and hint failures, including honest retry after a failed logout.
 - Change or investigation: add two scripted server/cookie scenarios to the existing real-browser auth harness, keeping production unchanged for the browser RED checkpoint. They exercise router refresh, real shared sign-out controls, rotated-cookie logout, failed logout/retry and protected-route confirmation. The model limits remain explicit; no cookie value is read by application code.
-- Verifier executed: Goal structural, stdlib Python AST and full baseline diff check; hosted browser RED prepared.
-- Result: Static checks PASS; browser behavior/count pending hosted execution. Exact count remains unchanged until measured.
-- New evidence: scripts/auth_pages_headless.py test-only additions and isolated browser diagnostic receipt.
-- Decision: handoff
+- Verifier executed: hosted browser diagnostic41032445588, sourceb12f230c, diagnostic47d66f6d, with production unchanged.
+- Result: Actual browser RED:75 scenarios,2645 checks,11 named race/failure assertions failed; the old2608 count also exited4. Failures include an early old-cookie logout, lost pending state, live rotated session, resurrected hint and failed post-logout viewer check. No driver exception or setup error replaced the behavioral evidence.
+- New evidence: auth-refresh-race/browser-red-receipt.json and browser-red.log; https://github.com/First-Pavilion/selahcue/actions/runs/41032445588.
+- Decision: iterate
 
 ### Iteration 3
 
@@ -108,6 +108,17 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Result: Static checks PASS; current implementation runtime GREEN and exact browser count remain pending hosted evidence. Existing HTTP deadlines bound both operations; no queue or timer was added.
 - New evidence: sessionStore orchestration diff and diagnostic receipts under auth-refresh-race/.
 - Decision: handoff
+
+### Iteration 4
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: pinning the actually measured corrected count will make the strict browser gate accept the added scenarios without weakening coverage or changing behavior.
+- Change or investigation: inspect completed hosted diagnostic41032605045; update count2608 to measured2645. Ordinarily integrate fresh main7f2e35734fcb56fa0616221a6796bccf82c630c8 (notes/mobile advance, no auth overlap) via merge097c4e4e. Retain all checks, bounds, failure assertions and shared sign-out behavior.
+- Verifier executed: actual focused Node9/0, type-check and lint PASS; browser75 scenarios/2645 checks/0 behavioral failures. Old count alone exited4. Local structural validator, script stdlib AST and full baseline diff check only; no local project runtime.
+- Result: C-001 through C-003 PASS. Required complete normal marketing CI and exit-zero browser gate on the count-corrected current candidate remain pending; all four independent reviews remain root-owned.
+- New evidence: https://github.com/First-Pavilion/selahcue/actions/runs/41032605045; auth-refresh-race/green1-receipt.json, node-green1.log and browser-green1.log.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: ignoring only late JS state leaves a valid cookie; waiting without closing refresh admission can race a second rotation; clearing hints on failed logout falsely claims success.
@@ -123,6 +134,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2ka9-refresh-signout-race.md
 - Validator result: PASS structural validation on 2026-10-30; full baseline diff check passed, no local project runtime executed.
 - Independent verification result: Pending root-owned review pipeline.
-- Terminal state: BLOCKED on root-owned actual hosted assertion RED before implementation; tests-only checkpoint prepared.
-- Remaining failed or blocked criteria: C-001 through C-005 pending.
+- Terminal state: ACTIVE, preparing integrated draft PR and normal full CI; root-owned independent review gate remains pending.
+- Remaining failed or blocked criteria: C-004 and C-005 pending; C-001 through C-003 have focused hosted passing evidence.
 - ClickUp final evidence comment: Root owns publication and persisted QA status after passing merge gates.
