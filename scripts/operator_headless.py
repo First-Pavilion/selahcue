@@ -9541,11 +9541,15 @@ DRIVER = r"""
       }
       // C-REMOTE-1: a resolved snapshot is not a success receipt. At the real session cap an
       // approval leaves the request pending; stale deny/revoke/role targets can also be no-ops.
+      // These invokes settle on microtasks. Observe their completed feedback before yielding
+      // to timers: an actual trace showed the real 3s poll hiding the warning 6ms after the
+      // action completed, inside waitFor's 20ms yield. Polling stays active; this asserts the
+      // action's result rather than a later successful snapshot's recovery state.
       for (var rcNoopCase of rcFailureActions) {
         await rcResetFailureCase(); window.__rcNoopCommand=rcNoopCase.cmd;
         rcNoopCase.fire();
-        await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
-        ok(document.querySelectorAll("#rc-rows .rc-row").length === 1 &&
+        var rcNoopSettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+        ok(rcNoopSettled && document.querySelectorAll("#rc-rows .rc-row").length === 1 &&
            document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && document.querySelector("#rc-rows select").value === "viewer",
            "Remote no-op " + rcNoopCase.cmd + ": retain the authoritative unchanged list and role");
         ok(!el("rc-action-error").hidden && getComputedStyle(el("rc-action-error")).display !== "none" &&
@@ -9556,8 +9560,8 @@ DRIVER = r"""
       // The UI saw the device, but it disappeared at the host before the command arrived.
       window.__remote.devices=[];
       rcFailureActions[3].fire();
-      await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
-      ok(document.querySelectorAll("#rc-rows .rc-row").length === 0 && +el("rc-count-n").textContent === 0,
+      var rcMissingRoleSettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(rcMissingRoleSettled && document.querySelectorAll("#rc-rows .rc-row").length === 0 && +el("rc-count-n").textContent === 0,
          "Remote no-op role missing target: display the host's empty device list rather than restore a stale target");
       ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/is now Producer/.test(el("rc-live").textContent),
          "Remote no-op role missing target: never announce a role for a device the snapshot does not contain");
@@ -9567,8 +9571,8 @@ DRIVER = r"""
       window.__remote.pending=[];
       window.__remote.devices.push({device_id:"rc-test-pending",name:"Waiting phone",platform:"iOS",role:"producer",idle_secs:0});
       document.querySelector("#rc-pending .rc-deny").click();
-      await waitFor(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
-      ok(document.querySelectorAll("#rc-rows .rc-row").length === 2 && document.querySelectorAll("#rc-pending .rc-pending-card").length === 0,
+      var rcStaleDenySettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(rcStaleDenySettled && document.querySelectorAll("#rc-rows .rc-row").length === 2 && document.querySelectorAll("#rc-pending .rc-pending-card").length === 0,
          "Remote no-op deny already approved: preserve the paired device from the authoritative snapshot");
       ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/Denied/.test(el("rc-live").textContent),
          "Remote no-op deny already approved: absence of a pending request cannot announce denial while its device is paired");

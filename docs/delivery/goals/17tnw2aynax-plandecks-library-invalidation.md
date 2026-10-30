@@ -134,9 +134,29 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-004 and fresh C-005 review input.
 - Hypothesis: exact measured2384 guard permits a truthful complete suite verdict; both removed snapshot-publication and Library-read fences must produce named assertions with all siblings active, and byte-identical restored source must pass before claiming current mutation proof.
 - Change or investigation: strict count update only plus current-source hosted full normal CI and isolated-copy two-mutant/restored workflow. No retries, ignored assertions, Remote production/test changes or weakened controls.
-- Verifier executed: local structural/stdlib/full baseline checks; hosted current-source mutation and normal CI pending.
-- Result: Pending actual current-source results and all four independent reviews. The preceding Remote failure remains visible for root/Quinn/Vera assessment.
-- New evidence: own hosted current-source receipts to be linked externally after publication; root owns final completion copy.
+- Verifier executed: local structural/stdlib/full baseline checks; actual25f8a347 normal41040926924 and two-mutant41040814878 raw logs inspected.
+- Result: Normal CI FAILED only Chrome2384/1 Remote no-op approve; WebKit44/0 and other selected Linux gates pass with existing ignored boundaries. Two-mutant proof SUCCESS: baseline2384/0, publication mutant2384/15 (14 NAX plus same Remote failure), read-fence mutant2384/4 (3 named review failures plus same Remote), restored16-file identical2384/0. Required positive controls pass. Cody/Quinn close CODY-NAX-01 but block full certification on Remote boundary; no NAX source defect remains in reviewed code.
+- New evidence: plandecks-library/current-full-ci.log/status, current-mutation.log/status/object proof, independent r2 reports. Failed complete CI is retained, never waived by the successful mutation baseline/restoration.
+- Decision: iterate
+
+### Iteration 7
+
+- Target criterion: C-004, evidence-backed immediate-action test observation.
+- Hypothesis: the no-op test yields to a normal periodic poll after its mock-settled action completes, so it observes subsequent snapshot recovery instead of immediate action feedback.
+- Change or investigation: observation-only exact25f8a347 hosted diagnostic; first41042050152 failed checkout parent preflight before runtime, retained separately. Repaired41043082668 reached full2384/1 runtime with434 trace rows; raw ZIP required because formatted log streaming omitted the181KB JSON line. Exact first-approve event order:21267.6ms completion/showUnconfirmed visible flex/finally busyfalse;21273.9ms real poll snapshot hides warning;21287.5ms original20ms wait resumes and assertion fails while live remains not-confirmed. This proves the poll-interleaved oracle for the observed failure, not harmlessness or every prior failure's cause.
+- Verifier executed: actual repaired trace/event state, unchanged assertions/timers in isolated copies; stdlib AST and source comparison for proposed harness correction.
+- Result: Replace only mock-settled no-op waits with existing bounded settleMicro; retain every visibility/live/list/role assertion and strengthen list checks with successful completion. Real polls, sleeps elsewhere and Remote production remain unchanged. No ignore or retry wrapper; current full CI and Remote-feedback sensitivity mutation still required.
+- New evidence: plandecks-library/remote-trace-repaired-raw.zip, remote-trace-repaired-step-raw.log, remote-trace-events.json, remote-first-approve-events.json/.md and remote-trace2-receipt.json. Earlier setup failure and all behavioral failure history retained.
+- Decision: iterate
+
+### Iteration 8
+
+- Target criterion: C-004 and C-005 final corrected candidate gates.
+- Hypothesis: microtask completion observes immediate no-op feedback deterministically while the full suite's normal polls still run; removing the actual no-op unconfirmed branch must make all four contract assertions fail, alongside independently sensitive NAX publication/read-fence controls.
+- Change or investigation: frozen harness-oracle correction plus existing full2384 strict gate; ordinary current-main integration; fresh normal CI and isolated full-sibling baseline/three-mutants/byte-identical-restored proof. No product Remote changes or count/assertion removal.
+- Verifier executed: local structural/AST/full baseline checks, then hosted final source normal CI and three-mutant proof; all four final-source reviews root-owned.
+- Result: Pending actual final-source runtime/CI/mutation/review results. Maximum8 reached for planned implementation iterations; further substantive source work requires root replan, never silent budget extension. No local project runtime.
+- New evidence: final immutable source/receipts and external handoff to root; root owns completion copy once gates actually pass.
 - Decision: handoff
 
 ## Risks and rollback
@@ -154,6 +174,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2aynax-plandecks-library-invalidation.md
 - Validator result: PASS structural validation on 2026-10-30; no local project runtime executed.
 - Independent verification result: Pending root-owned reviews.
-- Terminal state: ACTIVE, all NAX behavior observed passing after review correction; current mutation/full CI and all four reviews pending, with earlier Remote failure retained.
+- Terminal state: ACTIVE, final bounded verification of evidence-backed oracle correction; current mutation/full CI and all four final-source reviews pending, all earlier failures retained.
 - Remaining failed or blocked criteria: C-004 and C-005 pending.
 - ClickUp final evidence comment: Root owns delivery updates and persisted QA readback after passing merge gates.
