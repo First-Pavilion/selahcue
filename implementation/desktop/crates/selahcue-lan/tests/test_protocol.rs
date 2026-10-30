@@ -4,8 +4,8 @@
 
 use selahcue_lan::protocol::{
     from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, LayerVisibility,
-    OutputConfigView, RemoteDeviceView, RemotePendingView, Request, ScaleFit, ScreenView,
-    ServerMessage, ThumbView, VerseView, VERSION,
+    OutputConfigView, PairResponse, RemoteDeviceView, RemotePendingView, Request, ScaleFit,
+    ScreenView, ServerMessage, ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -829,6 +829,80 @@ fn auth_frames_round_trip() {
     };
     let back: AuthResponse = from_json(&to_json(&rejected).unwrap()).unwrap();
     assert_eq!(back, rejected);
+}
+
+/// Host verdicts are literal cross-language fixtures, not only round trips:
+/// changing both serde directions must still fail these byte assertions.
+/// Keep the same bytes in mobile's protocol_test.dart verdict fixture matrix.
+#[test]
+fn auth_verdict_wire_fixtures_are_stable() {
+    let fixtures = [
+        (
+            AuthResponse::Granted {
+                role: Role::Producer,
+            },
+            r#"{"auth":"granted","role":"producer"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::Forbidden,
+            },
+            r#"{"auth":"rejected","reason":"forbidden"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::Unauthenticated,
+            },
+            r#"{"auth":"rejected","reason":"unauthenticated"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::BadRequest,
+            },
+            r#"{"auth":"rejected","reason":"bad_request"}"#,
+        ),
+    ];
+    for (verdict, bytes) in fixtures {
+        assert_eq!(to_json(&verdict).unwrap(), bytes, "auth fixture: {bytes}");
+        assert_eq!(from_json::<AuthResponse>(bytes).unwrap(), verdict);
+    }
+}
+
+#[test]
+fn pair_verdict_wire_fixtures_are_stable() {
+    let fixtures = [
+        (PairResponse::Parked, r#"{"pair":"parked"}"#),
+        (
+            PairResponse::Granted {
+                device_id: "dev-9".into(),
+                token: "t9".into(),
+                role: Role::Producer,
+            },
+            r#"{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::Forbidden,
+            },
+            r#"{"pair":"rejected","reason":"forbidden"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::Unauthenticated,
+            },
+            r#"{"pair":"rejected","reason":"unauthenticated"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::BadRequest,
+            },
+            r#"{"pair":"rejected","reason":"bad_request"}"#,
+        ),
+    ];
+    for (verdict, bytes) in fixtures {
+        assert_eq!(to_json(&verdict).unwrap(), bytes, "pair fixture: {bytes}");
+        assert_eq!(from_json::<PairResponse>(bytes).unwrap(), verdict);
+    }
 }
 
 #[test]

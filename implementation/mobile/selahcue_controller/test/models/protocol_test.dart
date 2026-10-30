@@ -113,7 +113,27 @@ void main() {
     expect(v.detections, isEmpty);
   });
 
-  test('pair granted parses (Rust fixture)', () {
+  // Exact host verdict bytes mirror Rust's auth_verdict_wire_fixtures_are_stable
+  // and pair_verdict_wire_fixtures_are_stable, including all current deny reasons.
+  test('verdict wire fixture: auth granted', () {
+    final r = AuthResult.fromJson(jsonDecode(
+            '{"auth":"granted","role":"producer"}')
+        as Map<String, dynamic>);
+    expect(r, isA<AuthGranted>().having((g) => g.role, 'role', 'producer'));
+  });
+
+  for (final (bytes, reason) in const [
+    ('{"auth":"rejected","reason":"forbidden"}', 'forbidden'),
+    ('{"auth":"rejected","reason":"unauthenticated"}', 'unauthenticated'),
+    ('{"auth":"rejected","reason":"bad_request"}', 'bad_request'),
+  ]) {
+    test('verdict wire fixture: auth rejected $reason', () {
+      final r = AuthResult.fromJson(jsonDecode(bytes) as Map<String, dynamic>);
+      expect(r, isA<AuthRejected>().having((r) => r.reason, 'reason', reason));
+    });
+  }
+
+  test('verdict wire fixture: pair granted', () {
     final r = PairResult.fromJson(jsonDecode(
             '{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}')
         as Map<String, dynamic>);
@@ -124,11 +144,22 @@ void main() {
     expect(g.role, 'producer');
   });
 
-  test('pair parked parses (interim frame, 86ajxhv0q)', () {
+  test('verdict wire fixture: pair parked', () {
     final r = PairResult.fromJson(
         jsonDecode('{"pair":"parked"}') as Map<String, dynamic>);
     expect(r, isA<PairParked>());
   });
+
+  for (final (bytes, reason) in const [
+    ('{"pair":"rejected","reason":"forbidden"}', 'forbidden'),
+    ('{"pair":"rejected","reason":"unauthenticated"}', 'unauthenticated'),
+    ('{"pair":"rejected","reason":"bad_request"}', 'bad_request'),
+  ]) {
+    test('verdict wire fixture: pair rejected $reason', () {
+      final r = PairResult.fromJson(jsonDecode(bytes) as Map<String, dynamic>);
+      expect(r, isA<PairRejected>().having((r) => r.reason, 'reason', reason));
+    });
+  }
 
   test('denied parses (Rust fixture)', () {
     final m = ServerMessage.fromJson(
