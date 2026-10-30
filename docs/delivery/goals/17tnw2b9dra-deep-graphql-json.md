@@ -110,6 +110,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: wave2-20261029/pr288-cancelled-ci.log, pr288-attempt1-cancelled-ci.json, pr288-attempt2-cancelled-ci.log/json; updated candidate manifest/handoff and fresh run receipts.
 - Decision: gate-review
 
+### Iteration 4
+
+- Target criterion: C-004, fresh target integration after actual all-area result.
+- Hypothesis: integrating independently reviewed main bd6f6a53 (NAX harness fix and strict mobile cleanup) removes the obsolete Remote immediate-action oracle failure without editing DRA input-boundary code or CI headroom semantics.
+- Change or investigation: previous normal run41044040719 at aaf787ea completed API2155pass/1intentional study skip in651.62s under20minutes; all other areas passed except operator Chrome2358checks/1Remote no-op remote_approve visible-unconfirmed oracle failure. This is a failed workflow, not GREEN. Ordinary merge of actual bd6f6a531dc3393959c49fa44a70d6c688e4b9c1 brings already reviewed NAX causal-wait harness and strict mobile tests; no waiver/blind retry and no DRA core changes.
+- Verifier executed: previous actual raw/status receipts, static byte-identity/source-scope checks, actionlint/diff/structural goal checks; fresh normal all-area CI next.
+- Result: DRA views/tests and20-minute API workflow semantics unchanged from aaf787ea; target head integrated with no overlap conflict. New source-specific all-area success and allfour updated reviews remain pending. Expected new counts are not executed claims.
+- New evidence: wave2-20261029/pr288-headroom-attempt1-failed-ci.log and api-deep-json/headroom-aaf787ea-failed-status.json; new immutable candidate/run handoff.
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: API job maximum increases by5minutes while actual billed time remains actual runtime; all code areas rerun because ci.yml changed. Catching recursion outside the decoder would hide resolver bugs; fixed safe errors must not echo raw request content. Tests assert the exact safe envelope and source scope remains narrow.
