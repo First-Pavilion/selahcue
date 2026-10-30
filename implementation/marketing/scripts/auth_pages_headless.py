@@ -143,7 +143,10 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # on d46097bb: 73 scenarios, 2608 checks, zero behavioural failures. Adds real dual-control
 # composition, late-failure recovery after Account leaves, and mobile modal announcements.
 # The first run exited 4 solely on this old exact-count guard; rerun with this measured count.
-EXPECTED_MIN_CHECKS = 2608
+# 2608 -> 2645 in refresh/sign-out ordering (17tnw2b2ka9), measured in hosted
+# diagnostic41032605045 on source7b2f7d51: 75 scenarios, 2645 checks, zero behavioral
+# failures. The old exact count alone exited4; keep equality strict and rerun the gate.
+EXPECTED_MIN_CHECKS = 2645
 
 
 def find_chrome() -> str | None:
@@ -316,6 +319,44 @@ DRIVER = r"""
   // Mutable state a couple of scenarios need across calls within one page load.
   var registerAttempts = 0;
   var signedOut = false;
+  // Scripted server/cookie state for ka9. Cookie values stay in the harness, never in app
+  // storage: this models the inspected HttpOnly response ordering, not a real API server.
+  var refreshRace = { cookie: null, oldActive: false, rotatedActive: false, started: false, logoutCookies: [] };
+  function refreshRaceIsLive() {
+    return (refreshRace.cookie === 'old' && refreshRace.oldActive) ||
+           (refreshRace.cookie === 'rotated' && refreshRace.rotatedActive);
+  }
+  function refreshRaceReply(failFirstLogout) {
+    var held = gated(function () {
+      refreshRace.cookie = 'rotated'; // Response Set-Cookie precedes completion of fetch.
+      return json({ data: { refreshSession: {
+        expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() } } });
+    });
+    return function (op) {
+      if (op === 'Login') {
+        refreshRace.cookie = 'old';
+        refreshRace.oldActive = true;
+        return LOGIN_IN(3);
+      }
+      if (op === 'RefreshSession') {
+        if (!refreshRaceIsLive()) return UNAUTHENTICATED();
+        refreshRace.oldActive = false;
+        refreshRace.rotatedActive = true;
+        refreshRace.started = true;
+        return held(op); // Rotation committed, but its response cookie is still held.
+      }
+      if (op === 'Logout') {
+        refreshRace.logoutCookies.push(refreshRace.cookie);
+        if (failFirstLogout && refreshRace.logoutCookies.length === 1) throw new TypeError('Failed to fetch');
+        if (!refreshRaceIsLive()) return UNAUTHENTICATED(); // Resolver never reaches delete_cookie.
+        refreshRace.oldActive = false;
+        refreshRace.rotatedActive = false;
+        refreshRace.cookie = null;
+        return json({ data: { logout: { revoked: true } } });
+      }
+      return refreshRaceIsLive() ? VIEWER_OK() : UNAUTHENTICATED();
+    };
+  }
 
   /**
    * C-008's NAMED CASE, which was never scripted (Quinn).
@@ -620,7 +661,9 @@ DRIVER = r"""
     'session-no-refresh':  function (op) {
       if (op === 'Login') return LOGIN_IN(30);
       return VIEWER_OK();
-    }
+    },
+    'session-refresh-signout-race': refreshRaceReply(false),
+    'session-refresh-signout-failure': refreshRaceReply(true)
   };
 
   window.fetch = function (url, init) {
@@ -1411,6 +1454,57 @@ DRIVER = r"""
   function accountHeaderHeight() {
     var header = document.querySelector('.account-portal .portal-header');
     return header ? header.getBoundingClientRect().height : -1;
+  }
+
+  async function exerciseRefreshSignOut(failFirstLogout) {
+    await wait(400);
+    fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+    await wait(50);
+    submit();
+    var deadline = Date.now() + 3000;
+    while (Date.now() < deadline && (!refreshRace.started || !accountSignOutControl())) await wait(20);
+    check('router refresh has rotated the old session while its response is held',
+          refreshRace.started && !refreshRace.oldActive && refreshRace.rotatedActive && refreshRace.cookie === 'old');
+    check('the guarded Account page still mounts during opportunistic refresh', location.pathname === '/account');
+    var control = accountSignOutControl();
+    check('the real Account sign-out action is available', !!control);
+    var originalHint = window.localStorage.getItem('selahcue.session');
+    if (control) control.click();
+    await wait(100);
+    check('pressing Sign out sends no old-cookie Logout while refresh is held', logoutCount() === 0);
+    var pending = accountSignOutControl();
+    check('the shared action remains pending until the rotated cookie can be revoked',
+          !!pending && pending.disabled && pending.textContent.trim() === 'Signing out…');
+    check('waiting on refresh has not claimed the hint was signed out',
+          window.localStorage.getItem('selahcue.session') === originalHint && originalHint !== null);
+    releaseGate();
+    await wait(1200);
+    check('Logout used the new response cookie after rotation settled',
+          refreshRace.logoutCookies.length === 1 && refreshRace.logoutCookies[0] === 'rotated');
+    if (failFirstLogout) {
+      check('failed revocation keeps the real session live', refreshRaceIsLive());
+      check('failure is reported honestly and does not leave Account',
+            signOutAlert(true) !== '' && location.pathname === '/account');
+      check('finishing refresh after sign-out started did not rewrite the saved hint',
+            window.localStorage.getItem('selahcue.session') === originalHint);
+      var retry = accountSignOutControl();
+      check('the shared control releases pending and offers a retry', !!retry && !retry.disabled);
+      if (retry) retry.click();
+      await wait(1000);
+      check('retry revokes the same rotated session rather than an obsolete cookie',
+            refreshRace.logoutCookies.length === 2 && refreshRace.logoutCookies[1] === 'rotated');
+    }
+    check('sign-out leaves no live modeled cookie-backed session', !refreshRaceIsLive() && !refreshRace.rotatedActive);
+    check('the browser hint cannot be resurrected by the completed refresh',
+          window.localStorage.getItem('selahcue.session') === null);
+    check('successful sign-out lands on the owner-approved signin page', location.pathname === '/signin');
+    check('no extra opportunistic refresh was admitted during logout',
+          calls.filter(function (c) { return c.op === 'RefreshSession'; }).length === 1);
+    check('attempted a real protected-route navigation after sign-out', navigate('/account'));
+    await wait(1000);
+    check('the cookie-backed viewer check confirms the session is ended',
+          location.pathname === '/signin' && has(pageText(), "You've been signed out"));
+    csrfChecks();
   }
 
   // ---------------------------------------------------- Figma fidelity (ClickUp 17tnw2b2cf1) --
@@ -3644,7 +3738,9 @@ DRIVER = r"""
             !calls.some(function (c) { return c.op === 'RefreshSession'; }),
             'ops: ' + calls.map(function (c) { return c.op; }).join(','));
       csrfChecks();
-    }
+    },
+    'session-refresh-signout-race': async function () { await exerciseRefreshSignOut(false); },
+    'session-refresh-signout-failure': async function () { await exerciseRefreshSignOut(true); }
   };
 
   async function run() {
@@ -3791,6 +3887,8 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-allowed", "/account"),
     ("session-refresh", "/signin"),
     ("session-no-refresh", "/signin"),
+    ("session-refresh-signout-race", "/signin"),
+    ("session-refresh-signout-failure", "/signin"),
 ]
 
 

@@ -81,6 +81,12 @@ const hint = ref<SessionHint | null>(readSessionHint())
  */
 const serverConfirmed = ref<boolean | null>(null)
 
+// One cookie rotation at a time. A logout closes refresh admission synchronously, drains
+// this request, then revokes the cookie its response installed. Ignoring only a late hint
+// cannot revoke an HttpOnly cookie. Both waits retain the HTTP seam's existing deadlines.
+let refreshInFlight: Promise<boolean> | null = null
+let signOutsInFlight = 0
+
 /** Read-only for consumers. Only the operations below may change it. */
 export const sessionHint = readonly(hint)
 
@@ -132,19 +138,29 @@ export async function signIn(
  * working credential, which is the most consequential lie this UI could tell. The caller
  * shows the failure and offers a retry.
  *
- * `UNAUTHENTICATED` is the one failure that IS success: the session was already gone.
+ * `UNAUTHENTICATED` is success only after the in-flight refresh has settled: then no
+ * outstanding rotation in this store can install a fresh cookie after that answer.
  */
 export async function signOut(options?: GraphQLRequestOptions): Promise<void> {
+  signOutsInFlight += 1
   try {
-    await logoutMutation(false, options)
-  } catch (error) {
-    if (error instanceof ApiError && error.code === 'UNAUTHENTICATED') {
-      forget()
-      return
+    // Capture after closing admission. A failed refresh still has to settle: its response
+    // headers may have installed a rotated cookie before parsing the body failed.
+    const refresh = refreshInFlight
+    if (refresh !== null) await refresh
+    try {
+      await logoutMutation(false, options)
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'UNAUTHENTICATED') {
+        forget()
+        return
+      }
+      throw error
     }
-    throw error
+    forget()
+  } finally {
+    signOutsInFlight -= 1
   }
-  forget()
 }
 
 export type SessionCheck =
@@ -203,6 +219,8 @@ export async function refreshIfExpiringSoon(
   now: number = Date.now(),
   options?: GraphQLRequestOptions,
 ): Promise<boolean> {
+  if (signOutsInFlight !== 0) return false
+  if (refreshInFlight !== null) return refreshInFlight
   const current = hint.value
   if (current === null) return false
 
@@ -210,16 +228,27 @@ export async function refreshIfExpiringSoon(
   if (Number.isNaN(expiresAt)) return false
   if (expiresAt - now > REFRESH_WHEN_REMAINING_MS) return false
 
+  const refresh = (async () => {
+    try {
+      const rotatedExpiry = await refreshSessionMutation({
+        timeoutMs: SESSION_PROBE_TIMEOUT_MS,
+        ...options,
+      })
+      // The response cookie is already installed. Only remember metadata if this is still
+      // the same hinted session and nobody began sign-out while the rotation was running.
+      // A waiting logout will revoke that cookie before it reports success.
+      if (signOutsInFlight === 0 && hint.value === current) {
+        remember({ ...current, expiresAt: rotatedExpiry })
+      }
+      return true
+    } catch {
+      return false
+    }
+  })()
+  refreshInFlight = refresh
   try {
-    const rotatedExpiry = await refreshSessionMutation({
-      timeoutMs: SESSION_PROBE_TIMEOUT_MS,
-      ...options,
-    })
-    // The new token went into the cookie, which this code cannot read and does not need
-    // to. Only the expiry is ours to remember.
-    remember({ ...current, expiresAt: rotatedExpiry })
-    return true
-  } catch {
-    return false
+    return await refresh
+  } finally {
+    if (refreshInFlight === refresh) refreshInFlight = null
   }
 }
