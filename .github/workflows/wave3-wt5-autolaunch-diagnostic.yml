@@ -1,0 +1,329 @@
+name: diagnostic WT5 dev-keys autolaunch spawn boundary
+on:
+  push:
+    branches: [codex/17tnw2b1wt5-autolaunch-boundary-diagnostic]
+    paths: [.github/workflows/wave3-wt5-autolaunch-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: diagnostic-wt5-autolaunch-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.context.outputs.desktop }}
+      os: ${{ steps.context.outputs.os }}
+      rust: ${{ steps.context.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: context
+        env:
+          CANDIDATE: 5c5529f2ec488b02d4cfd3def1120816b8657c1d
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-wt5-autolaunch-diagnostic.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          echo 'desktop=true' >> "$GITHUB_OUTPUT"
+          echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          channel="$(sh scripts/check_toolchain.sh --print-channel)"
+          echo "rust=$channel" >> "$GITHUB_OUTPUT"
+  operator:
+    name: operator shell (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
+    # not GitHub's 6h default (audit #11 review).
+    #
+    # Lowered from 25 to 15 (86akcmzyq CI-timeout remediation, 2026-09-05) when the RELEASE and
+    # stt,cloud-stt feature-gate pairs moved out to `operator-native` below -- see that job's
+    # own timeout comment for why it moved, not just where. What is LEFT in this job is
+    # Format/Check/Clippy/Test plus three cheap feature-flag pairs and the two Linux webview
+    # smokes, none of them native-toolchain- or release-codegen-heavy -- true when this was
+    # written, no longer true on Windows.
+    #
+    # RAISED 15 -> 30 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` becoming Cargo default features means `Check`/`Clippy`/`Test`
+    # in THIS job now also compile the vendored-OpenSSL build every run, on every OS -- and on
+    # Windows that build is `nmake`, one file at a time, genuinely slow. This job ACTUALLY TIMED
+    # OUT at 15 minutes on a real run of PR #125 (run 36727646787, attempt 2, job 109935685146:
+    # "The job has exceeded the maximum execution time of 15m0s"), with `Check` alone taking
+    # 11m3s against a pre-encryption 2m19s baseline on the same job. Vera measured the
+    # OpenSSL-build portion of that gap directly (`nmake build_libs`) and projected ~19-20
+    # minutes for a fully cold run (no warm `Swatinem/rust-cache` hit) -- which is routine here:
+    # this repo's total Actions cache was already at 10.12 GB against GitHub's 10 GB limit during
+    # that same PR's run, evicting this very job's Windows caches. 30 minutes keeps real headroom
+    # over the cold-run projection without resurrecting the original 25-minute failure mode this
+    # job was split to fix -- see `operator-native` below, whose own timeout got the same
+    # treatment for the same reason.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux always; Windows only when the tier step says so (17tnw2b2nxk). No macOS.
+        os: ${{ fromJSON(needs.changes.outputs.os || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: implementation/desktop/crates/selahcue-operator
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 5c5529f2ec488b02d4cfd3def1120816b8657c1d
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.changes.outputs.rust }}
+          components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so Check/Clippy/
+      # Test below compile the vendored-OpenSSL build here as well — see the `rust` job's
+      # identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libx11-dev libxkbcommon-dev \
+            libasound2-dev
+      - name: Stage Tauri sidecar/resource placeholders (compile-check only)
+        # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
+        # resource dll exist at build time. This job COMPILE-checks the operator (it does not
+        # bundle the app), so empty placeholders satisfy the existence check — the real sidecar is
+        # built in the packaging/release flow. Without this the build script fails on CI
+        # ("resource path `binaries/selahcue-output-<triple>` doesn't exist").
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p binaries
+          # CREATE-ONLY. `: > file` truncates, and these names include the
+          # owner-supplied NDI dll. That is harmless on an ephemeral runner, but this
+          # is the snippet people copy to reproduce CI locally, where truncating a real
+          # dll is silent and git-unrecoverable (binaries/ is gitignored). Never make
+          # this unconditional. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
+          if [[ "$triple" == *windows* ]]; then
+            stage "binaries/selahcue-output-${triple}.exe"
+          else
+            stage "binaries/selahcue-output-${triple}"
+          fi
+          stage "binaries/Processing.NDI.Lib.x64.dll"
+          echo "staged Tauri placeholders for ${triple}"
+      # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
+      # failure aborted before `cargo test` ever ran -- so this job still had exactly
+      # the masking the rest of this change removes, while appearing to be covered.
+      # From the first GATE step onward, `!cancelled()`, and NO setup step after it.
+      # Staging used to sit between Format and Check as a `success()` step, so a
+      # formatting failure skipped it and Check/Clippy/Test then ran WITHOUT the
+      # placeholders — turning one formatting error into four red steps, three failing
+      # for a reason unrelated to the code. In a change about signals that lie, that was
+      # one. Setup steps above keep `success()`: if checkout, the toolchain install or
+      # the pin assertion fails, every downstream result is meaningless.
+      - name: DIAGNOSTIC ONLY original spawn-boundary error probe
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import difflib
+          import hashlib
+          import json
+          import pathlib
+          import platform
+          import subprocess
+          candidate = '5c5529f2ec488b02d4cfd3def1120816b8657c1d'
+          assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == candidate
+          p = pathlib.Path('implementation/desktop/crates/selahcue-operator/src/autolaunch.rs')
+          before = p.read_text()
+          assert hashlib.sha256(before.encode()).hexdigest() == 'a40a60f216f20052883670f0a26540dbf179b03b9b9ab9e4142774ee94f305b1'
+          assert before.count('    if !sidecar.exists() {\n') == before.count('    let child = Command::new(&sidecar).spawn().ok()?;') == 1
+          after = before.replace('    if !sidecar.exists() {\n', '    if !sidecar.exists() {\n        eprintln!(\n            "DIAG_AUTO sidecar_absent thread={:?} path={:?} metadata={:?}",\n            std::thread::current().name(),\n            sidecar,\n            std::fs::symlink_metadata(&sidecar)\n        );\n').replace('    let child = Command::new(&sidecar).spawn().ok()?;', '    let child = Command::new(&sidecar)\n        .spawn()\n        .map_err(|error| {\n            eprintln!(\n                "DIAG_AUTO spawn_error thread={:?} path={:?} kind={:?} raw_os_error={:?} error={} metadata={:?}",\n                std::thread::current().name(),\n                sidecar,\n                error.kind(),\n                error.raw_os_error(),\n                error,\n                std::fs::symlink_metadata(&sidecar)\n            );\n            error\n        })\n        .ok()?;')
+          assert hashlib.sha256(after.encode()).hexdigest() == '31bb8b46ae9118ef0b155afa1574b8015d91b89f300b6ac9c0b4b4006aebc90f'
+          p.write_text(after)
+          print("".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                fromfile="a/" + str(p), tofile="b/" + str(p))), flush=True)
+          manifest = {'candidate': '5c5529f2ec488b02d4cfd3def1120816b8657c1d', 'context_objects': {'.github/workflows/ci.yml': 'eb442c32705ccf67be7151118f70ef93aa438f8f', 'rust-toolchain.toml': 'ce5c05ce58bc7315a053bd714ef7080757b90ad4', 'implementation/desktop/Cargo.toml': 'b4ad3a7549d380cca477a17b40d0c04010396428', 'implementation/desktop/Cargo.lock': 'd7cce7674cd9e026b446bc9e1ef3da7201cd2eae', 'implementation/desktop/crates/selahcue-operator/Cargo.toml': '59ae3b3a6af61a7cd1b0d58ea9fb87191e54c2b5', 'implementation/desktop/crates/selahcue-operator/Cargo.lock': '621e6d374d0cce56f6f890dffd9d590561488892', 'implementation/desktop/crates/selahcue-operator/build.rs': '833b7b79dab39b8dfddde35175d055a4a93e6981', 'implementation/desktop/crates/selahcue-operator/tauri.conf.json': 'f2b9449e0cd0631c84222e1e1f63720c8abff351', 'implementation/desktop/crates/selahcue-operator/src/autolaunch.rs': '788e87139d22ff7110c35c35c86281f765586ecb'}, 'original_source_sha256': 'a40a60f216f20052883670f0a26540dbf179b03b9b9ab9e4142774ee94f305b1', 'instrumented_source_sha256': '31bb8b46ae9118ef0b155afa1574b8015d91b89f300b6ac9c0b4b4006aebc90f', 'original_operator_job_sha256': '03c483d07b93a5c7cc16b72ed9fb2496546a18e825e06dc6dd716ddd551a314e', 'instrumentation_patch_sha256': 'a24b8c131b23b66caed513f6678f75433f10a70d95c33eaf0dd4be6ccffc0a2a', 'job_timeout_minutes': 30, 'repeat_step_cap_minutes': 5, 'full_dev_keys_repeats': 16, 'focused_spawn_repeats': 16, 'normal_gate': False}
+          assert {p: subprocess.check_output(["git", "rev-parse", candidate + ":" + p], text=True).strip()
+                  for p in manifest["context_objects"]} == manifest["context_objects"]
+          manifest["platform"] = platform.platform()
+          manifest["candidate_tree"] = subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip()
+          print("AUTOLAUNCH_CONTEXT_MANIFEST=" + json.dumps(manifest, sort_keys=True), flush=True)
+          PY
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: cargo fmt --check
+      - name: Check
+        if: ${{ !cancelled() }}
+        run: cargo check
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast
+      # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
+      # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
+      # at the WRITE boundary that no name outside the three-entry allowlist reaches the process
+      # environment, which is what stops the loader injecting an arbitrary environment from a
+      # `.env` file. Sana's PR #18 review (F1) found that control missing, and the mutation that
+      # exposed it left the whole suite green -- so this is exactly the kind of gap a gate has to
+      # cover rather than a developer remembering `make ci`. `selahcue-stt` is the standing
+      # example of what happens otherwise: its own lint policy is unenforced because no CI job
+      # compiles it. Runs on every OS this job runs on (Linux, plus Windows when the tier
+      # includes it), like the steps above.
+      - name: Clippy (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys --all-targets -- -D warnings
+      - name: Test (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys --no-fail-fast
+      # The `openai-notes` feature gates the direct-provider construction and the four-state
+      # status derivation (86akby7d8). The default build above compiles NEITHER, so without
+      # this step that code has the same "linted by nothing" problem as selahcue-stt.
+      # TWO steps, not one `run:` block -- for exactly the reason the comment above the
+      # Format/Check/Clippy/Test steps gives: under `bash -e` a clippy failure aborts the
+      # block before `cargo test` ever runs, so one broken gate costs two gates' worth of
+      # information. Splitting them keeps that from being reintroduced here.
+      - name: Clippy (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features openai-notes --all-targets -- -D warnings
+      - name: Test (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo test --features openai-notes --no-fail-fast
+      # `dev-keys` and `openai-notes` compiled and tested TOGETHER. Each is gated alone above;
+      # this is the one build where this PR's shared `ENV_LOCK` actually has two
+      # independently-authored env-mutating test modules (dev_env's and the model-override
+      # tests') running in the same process -- the exact combination the lock exists to keep
+      # safe. A by-hand run during review found it green (97/97); that is a data point, not a
+      # gate. Without this step nothing regresses it automatically, the same "no gate compiles
+      # it" gap this PR's own commit messages cite `selahcue-stt` as the standing example of.
+      - name: Clippy (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys,openai-notes --all-targets -- -D warnings
+      - name: Test (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys,openai-notes --no-fail-fast
+      # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
+      # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
+      # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
+      # portable DOM behaviour; Chrome path/availability varies on macOS/Windows
+      # runners). REQUIRE=1 turns a missing Chrome into a hard fail so the gate can
+      # never silently no-op.
+      # Chrome version (audit #11): this uses the runner's pre-installed google-chrome-stable
+      # (currently 120+; the harness needs `--headless=new`, i.e. Chrome ≥ 112). The gate fails
+      # CLOSED on a Chrome change (spurious RED, never a false green); if a bump ever breaks it,
+      # pin a version here or switch the boot-render wait from a fixed sleep to a poll (#11).
+      - name: Webview behavioural check (Linux, headless Chrome)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/operator_headless.py
+      # Engine-fidelity smoke (audit #10): the Blink gate above covers browser-portable DOM/JS
+      # logic; this boot-smokes the SAME dist/ on WebKit (Playwright's WebKit = the JavaScript
+      # Core/WebCore core Tauri ships on — WebKitGTK/WKWebView), catching an engine-specific JS
+      # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
+      # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
+      - name: Install Playwright WebKit (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
+        # runner ships whatever WebKit that release bundles. `--break-system-packages` keeps the
+        # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
+        # where a plain `pip install --user` would otherwise refuse (audit #11 review).
+        run: |
+          python3 -m pip install --user --break-system-packages playwright==1.60.0
+          python3 -m playwright install --with-deps webkit
+      - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_WEBKIT_REQUIRE: "1"
+        run: python3 scripts/operator_webkit_smoke.py
+      - name: DIAGNOSTIC ONLY bounded16devkeys plus16spawn suites
+        if: ${{ !cancelled() }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          import time
+          trials = []
+          stop = time.monotonic() + 295
+          failed = False
+          commands = [
+              ("full-dev-keys", ["cargo", "test", "--features", "dev-keys", "--no-fail-fast"]),
+              ("focused-spawn", ["cargo", "test", "--features", "dev-keys", "--no-fail-fast",
+                                 "autolaunch::tests::spawn_", "--", "--nocapture"]),
+          ]
+          for kind, command in commands:
+              for iteration in range(1, 17):
+                  label = f"{kind}-{iteration:02d}/16"
+                  remaining = stop - time.monotonic()
+                  if remaining <= 0:
+                      failed = True
+                      trial = {"trial": label, "result": "not-executed-cap", "exit_code": None}
+                      trials.append(trial)
+                      print("AUTOLAUNCH_TRIAL=" + json.dumps(trial), flush=True)
+                      continue
+                  print(f"=== AUTOLAUNCH TRIAL {label} ===", flush=True)
+                  started = time.monotonic()
+                  try:
+                      result = subprocess.run(command, stdout=subprocess.PIPE,
+                                              stderr=subprocess.STDOUT, text=True, timeout=remaining)
+                      output, code = result.stdout, result.returncode
+                      outcome = "success" if code == 0 else "failure"
+                  except subprocess.TimeoutExpired as error:
+                      output = error.stdout or ""
+                      if isinstance(output, bytes):
+                          output = output.decode(errors="replace")
+                      code, outcome = 124, "timeout"
+                  print(output, flush=True)
+                  failed = failed or code != 0
+                  plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+                  trial = {"trial": label, "result": outcome, "exit_code": code,
+                           "elapsed_seconds": round(time.monotonic() - started, 3),
+                           "summaries": re.findall(r"^test result: .*", plain, re.M),
+                           "spawn_error_markers": re.findall(r"^.*DIAG_AUTO spawn_error.*", plain, re.M),
+                           "sidecar_absent_markers": re.findall(r"^.*DIAG_AUTO sidecar_absent.*", plain, re.M)}
+                  trials.append(trial)
+                  print("AUTOLAUNCH_TRIAL=" + json.dumps(trial, sort_keys=True), flush=True)
+          print("AUTOLAUNCH_BOUNDED_RECEIPT=" + json.dumps(
+              {"trials": trials, "sticky_nonzero": failed, "requested": 32,
+               "normal_gate": False, "cap_seconds": 295}, sort_keys=True), flush=True)
+          raise SystemExit(1 if failed else 0)
+          PY
