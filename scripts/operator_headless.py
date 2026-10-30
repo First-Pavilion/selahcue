@@ -1948,6 +1948,10 @@ EXPECTED_MIN_CHECKS = 2376
 # Measured on corrected500bc35f in hosted41040420006:2384 checks; all NAX/PR100
 # pass, one earlier Remote no-op assertion failed (preserved in the goal/evidence).
 EXPECTED_MIN_CHECKS = 2384
+# 2384 ->2401 (17tnw2ay5jh): persistent OutputHealth live metadata/identity,
+# actual connected text mutations, dedup/focus/deferred/selection/clear/safe-text controls.
+# Measured on dc27dc11 in hosted41051898145:2401 checks,0 behavioral FAIL.
+EXPECTED_MIN_CHECKS = 2401
 
 
 def find_chrome():
@@ -6411,6 +6415,122 @@ DRIVER = r"""
       // would otherwise start reporting NDI "ok" instead of "off" purely as a side effect of an
       // earlier, unrelated check.
       V.screens.forEach(function(s){ if (s.config) { s.config.ndi_enabled = false; s.config.ndi_name = ""; } });
+
+      // 17tnw2ay5jh residual: NDI validation already has its own status region.
+      // OutputHealth needs a pre-existing connected announcement channel that survives
+      // inspector rebuilds. Observe actual text mutations, not attributes alone.
+      var jhSavedOutputs = JSON.parse(JSON.stringify(V.outputs));
+      var jhSavedScreens = JSON.parse(JSON.stringify(V.screens));
+      var jhSavedSelected = selectedScreen;
+      var jhSavedScrollX = window.scrollX, jhSavedScrollY = window.scrollY;
+      var jhLive = document.getElementById("screens-output-health-live");
+      var jhObserver = new MutationObserver(function(){});
+      jhObserver.observe(jhLive || document.getElementById("surface-screens"), {childList:true,characterData:true,subtree:true});
+      var jhRecords = function(){ return jhObserver.takeRecords().filter(function(r){ return !!jhLive && (r.target === jhLive || jhLive.contains(r.target)); }); };
+      var jhText = function(){ return jhLive ? jhLive.textContent : ""; };
+      var jhFoot = function(){ var all=document.querySelectorAll("#screens-inspector .scr-signal"); return all[all.length-1]; };
+      try {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        var jhMain = V.screens.find(function(s){ return s.screen === "main"; });
+        jhMain.enabled = true;
+        var jhMainOut = V.outputs.find(function(o){ return o.role === "main"; });
+        if (!jhMainOut) { jhMainOut={role:"main",assigned:true}; V.outputs.push(jhMainOut); }
+        jhMainOut.signal="healthy"; jhMainOut.fps=60; jhMainOut.dropped_frames=0;
+        selectScreen("main"); renderOutputs(V);
+        var jhFocus = document.getElementById("screens-identify");
+        jhFocus.focus({preventScroll:true});
+        jhRecords();
+        ok(!!jhLive && jhLive.isConnected && jhLive.getAttribute("role") === "status" &&
+           jhLive.getAttribute("aria-live") === "polite" && jhLive.getAttribute("aria-atomic") === "true" &&
+           !document.getElementById("screens-inspector").contains(jhLive),
+           "JH: OutputHealth has a pre-existing polite atomic status channel outside the rebuilt inspector");
+        ok(/Audience — Main/.test(jhText()) && /Signal healthy/.test(jhText()) && /Signal healthy/.test(jhFoot().textContent),
+           "JH: the health announcement identifies the selected output and matches its real healthy footer");
+
+        jhMainOut.signal="degraded"; jhMainOut.dropped_frames=3;
+        renderOutputs(V);
+        var jhChanged = jhRecords();
+        ok(/Signal degraded/.test(jhText()) && /3 dropped frames/.test(jhText()) &&
+           jhChanged.length === 1 && jhChanged[0].target.isConnected,
+           "JH: a real degraded health change mutates the already-connected status text once");
+        ok(document.activeElement === jhFocus,
+           "JH control: health publication does not move focus from the current control");
+        ok(document.getElementById("screens-output-health-live") === jhLive &&
+           document.querySelectorAll("#screens-output-health-live").length === 1,
+           "JH: inspector rebuilds retain one identical health announcement node");
+
+        var jhBeforeSame = jhText();
+        renderOutputs(V);
+        ok(jhText() === jhBeforeSame && jhRecords().length === 0,
+           "JH control: an identical telemetry poll performs no duplicate health announcement mutation");
+        jhMain.config = jhMain.config || {};
+        jhMain.config.orientation = (jhMain.config.orientation || 0) === 1 ? 0 : 1;
+        var jhOldFooter = jhFoot();
+        renderOutputs(V);
+        ok(jhFoot() !== jhOldFooter && jhText() === jhBeforeSame && jhRecords().length === 0,
+           "JH: an unrelated real inspector rebuild does not repeat unchanged health text");
+
+        jhMainOut.signal="no_signal";
+        renderOutputs(V);
+        ok(/No signal/.test(jhText()) && !/Signal degraded/.test(jhText()) && jhRecords().length === 1,
+           "JH: reported signal loss replaces the old health message rather than appending stale status");
+        V.outputs = V.outputs.filter(function(o){ return o.role !== "main"; });
+        renderOutputs(V);
+        ok(/awaiting host telemetry/.test(jhText()) && !/No signal/.test(jhText()) &&
+           /awaiting host telemetry/.test(jhFoot().textContent),
+           "JH: missing telemetry returns to unknown and clears the old fault without fabricating no-signal");
+        jhRecords();
+        V.outputs.push(jhMainOut); jhMainOut.signal="healthy"; jhMain.enabled=false;
+        renderOutputs(V);
+        ok(/Output window closed/.test(jhText()) && !/Signal healthy/.test(jhText()) &&
+           /Output window closed/.test(jhFoot().textContent),
+           "JH: a closed output announces its real closed state despite stale healthy telemetry");
+
+        jhMain.enabled=true; renderOutputs(V); jhRecords();
+        var jhPicker=document.querySelector('#screens-inspector select[aria-label="Orientation for main"]');
+        jhPicker.focus({preventScroll:true});
+        var jhBeforeDeferred=jhText();
+        jhMainOut.signal="degraded"; jhMainOut.dropped_frames=8;
+        renderOutputs(V);
+        ok(document.activeElement === jhPicker && document.getElementById("screens-inspector").contains(jhPicker) &&
+           jhText() === jhBeforeDeferred && jhRecords().length === 0,
+           "JH control: focused-picker deferral preserves the picker and the currently displayed health feedback");
+        jhPicker.blur(); renderOutputs(V);
+        ok(/Signal degraded/.test(jhText()) && /8 dropped frames/.test(jhText()) && jhRecords().length === 1,
+           "JH: releasing the picker publishes the accepted deferred health once on the normal render path");
+
+        var jhStageOut=V.outputs.find(function(o){ return o.role === "stage"; });
+        if (!jhStageOut) { jhStageOut={role:"stage",assigned:true}; V.outputs.push(jhStageOut); }
+        jhStageOut.signal="healthy";
+        V.screens.find(function(s){ return s.screen === "stage"; }).enabled=true;
+        renderOutputs(V); jhRecords();
+        rowFor("stage").click();
+        ok(/Stage Display/.test(jhText()) && /Signal healthy/.test(jhText()) && !/Audience — Main/.test(jhText()),
+           "JH: real card selection replaces the prior output context with the newly selected output health");
+        ok(document.querySelectorAll("#screens-output-health-live").length === 1,
+           "JH control: selecting another output creates no second health announcer");
+
+        var jhUnsafeRole='<img src=x onerror="window.__jhInjected=true">';
+        V.screens.push({screen:"jh-host-text",role:jhUnsafeRole,enabled:true,deletable:true});
+        renderOutputs(V); selectScreen("jh-host-text");
+        ok(!!jhLive && jhText().indexOf(jhUnsafeRole) >= 0 && !jhLive.querySelector("img") && !window.__jhInjected,
+           "JH: host-derived output text is announced as plain text without interpreting markup");
+        renderInspector(V, [], {}, {}, V.themes || []);
+        ok(!!jhLive && jhLive.isConnected && jhText() === "" &&
+           /Select an output/.test(document.getElementById("screens-inspector").textContent),
+           "JH control: the real empty-inspector path clears stale health while retaining the live channel");
+        selectScreen("main"); renderOutputs(V);
+        var jhNdi=document.querySelector("#screens-inspector .scr-signal");
+        ok(jhNdi !== jhFoot() && jhNdi.getAttribute("role") === "status" && /NDI off/.test(jhNdi.textContent),
+           "JH control: existing NDI validation retains its own established status semantics and visible wording");
+      } finally {
+        jhObserver.disconnect();
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        V.outputs=jhSavedOutputs; V.screens=jhSavedScreens;
+        outputsKey=""; renderOutputs(V);
+        selectScreen(jhSavedSelected);
+        window.scrollTo(jhSavedScrollX, jhSavedScrollY);
+      }
 
       // === CON-089 (Design 2.0 global chord `F`, Figma 337:174 "Fullscreen selected output"):
       //     an in-console fullscreen of the SELECTED output's already-live preview canvas — never
