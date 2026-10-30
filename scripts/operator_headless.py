@@ -13375,6 +13375,57 @@ DRIVER = r"""
                "F30 control: a clean matching rule still passes both predicates even with an unused brightness variable elsewhere");
           });
 
+        // 17tnw2b0wkg: raw declarations must distinguish harmless exact none and backdrop
+        // properties without weakening the intentionally condition-blind/all-block backstop.
+        [
+          ["none", "@SEL@{filter:none;}", "none"],
+          ["priority", "@SEL@{FiLtEr: /* neutralisation */ NoNe ! IMPORTANT;}", "none"],
+          ["vendor_none", "@SEL@{-webkit-filter:none;}", "none"],
+          ["backdrop", "@SEL@{backdrop-filter:brightness(1.06);}", null],
+          ["vendor_backdrop", "@SEL@{-webkit-backdrop-filter:brightness(1.06);}", null],
+          ["custom", "@SEL@{--custom-filter:brightness(1.06);}", null],
+          ["earlier_none", "@SEL@{filter:none;} @SEL@{background:#5a48d0;}", "none"],
+          ["media_none", "@media(max-width:1px){@SEL@{filter:none;}} @SEL@{background:#5a48d0;}", null],
+          ["supports_none", "@supports(display:nonsense-xyz){@SEL@{filter:none;}} @SEL@{background:#5a48d0;}", null]
+        ].forEach(function(c){
+          var cls = "__cssom_wkg_clean_" + c[0] + "__", selector = "." + cls;
+          _cascadeCase(c[1].replace(/@SEL@/g, selector), cls, function(fx, computed, sel){
+            ok(computed === "none" && window.__cssEffectiveFilter(sel, fx) === c[2],
+               "WKG premise clean/" + c[0] + ": browser filter is none and CSSOM agrees with the harmless shape");
+            if (c[0] === "backdrop") {
+              ok(getComputedStyle(document.querySelector(sel)).backdropFilter === "brightness(1.06)",
+                 "WKG premise backdrop: the browser applies the distinct backdrop property while filter remains none");
+            }
+            ok(!window.__cssRawHasFilter(sel, fx),
+               "WKG clean raw/" + c[0] + ": the declaration backstop accepts this harmless property/value");
+            ok(__cssFilterGuardOk(sel, fx) && __cssNoBrightnessFilter(sel, fx),
+               "WKG clean composed/" + c[0] + ": both real registered guard helpers accept this harmless shape");
+          });
+        });
+        [
+          ["dropped", "@SEL@{filter:brightness(1.06) not-a-real-css-function();}"],
+          ["vendor_dropped", "@SEL@{-webkit-filter:brightness(1.06) not-a-real-css-function();}"],
+          ["other_vendor", "@SEL@{-moz-filter:brightness(1.06);}"],
+          ["media_danger", "@media(max-width:1px){@SEL@{filter:brightness(1.06);}} @SEL@{background:#5a48d0;}"],
+          ["supports_danger", "@supports(display:nonsense-xyz){@SEL@{filter:brightness(1.06);}} @SEL@{background:#5a48d0;}"],
+          ["adjacent_after_none", "@SEL@{filter:none;filter:brightness(1.06) not-a-real-css-function();}"],
+          ["adjacent_before_none", "@SEL@{filter:brightness(1.06) not-a-real-css-function();filter:none;}"],
+          ["compound_none", "@SEL@{filter:none brightness(1.06);}"],
+          ["empty", "@SEL@{filter:;}"],
+          ["middle_dropped", "@SEL@{background:#111;} @SEL@{filter:brightness(1.06) not-a-real-css-function();} @SEL@{filter:none;}"]
+        ].forEach(function(c){
+          var cls = "__cssom_wkg_danger_" + c[0] + "__", selector = "." + cls;
+          _cascadeCase(c[1].replace(/@SEL@/g, selector), cls, function(fx, computed, sel){
+            var effective = window.__cssEffectiveFilter(sel, fx);
+            ok(computed === "none" && (!effective || effective === "none"),
+               "WKG premise danger/" + c[0] + ": browser/CSSOM apply no filter, so only the raw half can reject it");
+            ok(window.__cssRawHasFilter(sel, fx),
+               "WKG danger raw/" + c[0] + ": a non-none declaration is retained despite parsing/conditions/other declarations");
+            ok(!__cssFilterGuardOk(sel, fx) && !__cssNoBrightnessFilter(sel, fx),
+               "WKG danger composed/" + c[0] + ": both real registered guard helpers preserve conservative rejection");
+          });
+        });
+
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
         // predicate (not just one half) rejects it.
