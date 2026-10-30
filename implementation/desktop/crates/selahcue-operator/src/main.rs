@@ -8609,6 +8609,9 @@ async fn save_and_describe_generated_notes(
             .then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING),
         "draft": draft_json(&outcome.draft),
         "transcript_id": persist.transcript_id,
+        // 17tnw2b9dq6: generation can succeed while saving/staging failed. The console must
+        // show this text read-only, never borrow the accepted draft's id to edit it.
+        "not_saved": persist.transcript_id.is_none(),
         // FR-129 (86akgqdx8) — see the removed `generate_sermon_notes`'s identical fields.
         "pending_confirmation": persist.pending_confirmation,
         "previous_draft": persist.previous_draft,
@@ -9726,6 +9729,53 @@ mod regenerate_with_retention_tests {
             slot.pending.is_none(),
             "the refused stage must not have left a pending row"
         );
+    }
+
+    /// 17tnw2b9dq6: the actual generation response must distinguish generated-but-unsaved
+    /// text from notes that can be edited against an accepted transcript id.
+    #[tokio::test]
+    async fn a_refused_stage_reply_explicitly_marks_the_generated_draft_not_saved() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let accepted = seed_edited_accepted_draft(&state, id).await;
+        let mut generated = outcome_with_empties(&[], "Main points");
+        generated.draft.title = "x".repeat(10_000); // real repository stage refusal, no fake provider
+        let reply = save_and_describe_generated_notes(&state, id, &generated, &None).await;
+        assert_eq!(reply["ok"], true, "the generated text remains readable");
+        assert_eq!(reply["transcript_id"], serde_json::Value::Null);
+        assert_eq!(
+            reply["not_saved"], true,
+            "an unstaged generated draft must explicitly report that it is not saved"
+        );
+        assert_eq!(reply["pending_confirmation"], false);
+        assert_eq!(reply["draft"]["title"], generated.draft.title);
+        let after = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("accepted draft loads")
+            .expect("accepted draft still exists");
+        assert_eq!(
+            after, accepted,
+            "refused staging cannot change accepted data"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_generation_replies_keep_numeric_save_and_stage_identity() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let generated = outcome_with_empties(&[], "Main points");
+        let saved = save_and_describe_generated_notes(&state, id, &generated, &None).await;
+        assert_eq!(saved["ok"], true);
+        assert_eq!(saved["transcript_id"], id);
+        assert_eq!(saved["pending_confirmation"], false);
+        assert_eq!(saved["not_saved"], false);
+        let staged = save_and_describe_generated_notes(&state, id, &generated, &None).await;
+        assert_eq!(staged["ok"], true);
+        assert_eq!(staged["transcript_id"], id);
+        assert_eq!(staged["pending_confirmation"], true);
+        assert_eq!(staged["not_saved"], false);
     }
 
     // ---------------------------------------------------------------------------------------
