@@ -1948,6 +1948,10 @@ EXPECTED_MIN_CHECKS = 2376
 # Measured on corrected500bc35f in hosted41040420006:2384 checks; all NAX/PR100
 # pass, one earlier Remote no-op assertion failed (preserved in the goal/evidence).
 EXPECTED_MIN_CHECKS = 2384
+# 2384 ->2401 (17tnw2ay5jh): persistent OutputHealth live metadata/identity,
+# actual connected text mutations, dedup/focus/deferred/selection/clear/safe-text controls.
+# Measured on dc27dc11 in hosted41051898145:2401 checks,0 behavioral FAIL.
+EXPECTED_MIN_CHECKS = 2401
 
 
 def find_chrome():
