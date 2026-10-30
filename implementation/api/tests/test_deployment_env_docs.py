@@ -89,7 +89,7 @@ NOT_ENV_VARIABLES = {
     "SECURE_PROXY_SSL_HEADER": "Django setting the TLS-proxy flag sets in settings.py",
     "SILENCED_SYSTEM_CHECKS": "Django setting an operator may add to silence W002",
     "LOGGING": "Django setting; the docs say the repo configures none",
-    "CELERY_BROKER_TRANSPORT_OPTIONS": "Celery setting; the docs say settings.py sets none",
+    "CELERY_BROKER_TRANSPORT_OPTIONS": "Python Celery setting populated by the explicit broker socket environment variables",
     # Fixed budgets, edited in settings.py itself; the docs say so on purpose.
     "SELAHCUE_THROTTLE_ACTIVATION": "fixed budget in settings.py, not an environment variable",
     "SELAHCUE_THROTTLE_SESSION_LOGIN": "fixed budget in settings.py, not an environment variable",
@@ -466,16 +466,13 @@ def _prod_must_set_line() -> str:
 
 
 def test_prod_must_set_leads_with_environment_and_says_what_unset_means(repo_docs):
-    """The ticket's second criterion. An operator who stops after the first clause must learn
-    that leaving ENVIRONMENT unset is what keeps the public dev key in use, without any error.
-    The ENVIRONMENT clause is checked on its own, up to where SECRET_KEY is named: the SECRET_KEY
-    clause also says 'dev' and 'refuses', so a looser check passes with the ENVIRONMENT
-    explanation deleted."""
+    """The first clause must state the narrow refusal and the explicit dev escape hatch.
+    A generic claim of silent public-key fallback is stale after17tnw2b9d9y."""
     line = _prod_must_set_line()
     assert line.startswith("- **Prod must-set:** `ENVIRONMENT`"), f"ENVIRONMENT must come first: {line}"
     clause = line[: line.index("`SECRET_KEY`")]
-    assert "left unset it is `dev`" in clause, f"the ENVIRONMENT clause lost its explanation: {clause}"
-    assert "public dev signing key" in clause and "without any error" in clause, clause
+    for fact in ("unset", "empty key", "non-local", "refuses", "explicit `dev`"):
+        assert fact in clause, f"the ENVIRONMENT clause lost {fact!r}: {clause}"
     ordered = [n for span in BACKTICKED.findall(line) for n in _token_names(span)]
     assert {"SECRET_KEY", "DEBUG", "DJANGO_ALLOWED_HOSTS", "SQL_ENGINE"} <= set(ordered), line
 

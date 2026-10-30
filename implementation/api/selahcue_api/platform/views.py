@@ -2,6 +2,7 @@ import json
 import logging
 from functools import wraps
 
+from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
@@ -11,6 +12,7 @@ from selahcue_api.apps.accounts.services import (
     LoginData,
     actor_from_session_token,
     login as _login_service,
+    logout_session as _logout_session_service,
 )
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
@@ -24,6 +26,7 @@ from selahcue_api.apps.entitlements.services import (
 )
 from selahcue_api.apps.entitlements.signing import SigningKeyUnavailable
 from selahcue_api.apps.throttling.decorators import throttle
+from selahcue_api.apps.throttling.guards import report_native_login_failure
 from selahcue_api.graphql.errors import ErrorCode, SAFE_MESSAGES, SafeAPIError
 from selahcue_api.graphql.redaction import assert_no_restricted_payload_fields
 
@@ -52,32 +55,60 @@ def not_implemented_response(*, surface: str, operation: str) -> JsonResponse:
     return JsonResponse(not_implemented_payload(surface=surface, operation=operation), status=501)
 
 
+def _json_content_type_only(operation: str, *, allow_bearer_header: bool = False):
+    """Refuse simple browser content types before spending a native route's budget.
+
+    A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
+    `@throttle` on purpose. A cross-site HTML form can send `text/plain` or
+    `application/x-www-form-urlencoded` without a preflight; if the refusal came after the
+    throttle, every such forged POST would spend the victim network's per-IP budget although it
+    can never reach a credential check, and a hostile page could lock real sign-ins out.
+
+    Refresh also supports a bearer header without a JSON body. Only that existing
+    alternative may bypass this check: Authorization needs a cross-origin preflight,
+    and the unchanged service still authenticates its token.
+    """
+
+    def decorator(view):
+        @wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if request.content_type != "application/json" and not (
+                allow_bearer_header and _bearer_from_header(request) is not None
+            ):
+                return _no_store(
+                    command_error_response(
+                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
+                    )
+                )
+            return view(request, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 @csrf_exempt
 @require_POST
-# Below the method decorators on purpose: a 405 must not consume throttle budget.
+# The method and content-type guards run before any budget is spent.
+@_json_content_type_only("activation")
 @throttle("activation", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
 def activate_device(request):
     """POST /v1/activations — register an account-bound device instance for a presented
     enrollment key and return a show-once device token (DEC-004). Authenticated by the
     presented key (`app_key_then_device_token`); the device is its own actor."""
-    try:
-        raw = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
-        return command_error_response(
-            code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
-        )
-    if not isinstance(raw, dict):
+    raw = _json_object(request)
+    if raw is None:
         return command_error_response(
             code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="activation"
         )
 
     data = ActivateDeviceData(
-        idempotency_key=str(raw.get("idempotency_key") or ""),
-        presented_key=str(raw.get("license_key") or ""),
-        device_fingerprint=str(raw.get("device_fingerprint") or ""),
-        platform=str(raw.get("platform") or ""),
-        app_version=str(raw.get("app_version") or ""),
-        display_name=str(raw.get("display_name") or ""),
+        idempotency_key=raw.get("idempotency_key", ""),
+        presented_key=raw.get("license_key", ""),
+        device_fingerprint=raw.get("device_fingerprint", ""),
+        platform=raw.get("platform", ""),
+        app_version=raw.get("app_version", ""),
+        display_name=raw.get("display_name", ""),
     )
     try:
         result = _activate_device_service(data)
@@ -126,7 +157,7 @@ def _activation_payload(result, *, operation: str) -> dict:
 
 # --- Native-client account sign-in (86ak5t1gw, ADR-0029) -------------------------------------
 #
-# The two views below are `csrf_exempt` and that is SOUND only because of three properties, each
+# The native account views below are `csrf_exempt` and that is SOUND only because of three properties, each
 # pinned by `tests/test_native_account_surface.py`. Break one and the exemption stops being safe:
 #
 #   1. They read the account session from the `Authorization` header ONLY. The browser surface
@@ -148,31 +179,6 @@ NATIVE_AUDIT_SURFACE = "desktop_v1"
 _MAX_EMAIL_LENGTH = 254
 
 
-def _json_content_type_only(operation: str):
-    """Refuse anything not declared `application/json` — property 3 above.
-
-    A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
-    `@throttle` on purpose. A cross-site HTML form can send `text/plain` or
-    `application/x-www-form-urlencoded` without a preflight; if the refusal came after the
-    throttle, every such forged POST would spend the victim network's per-IP budget although it
-    can never reach a credential check, and a hostile page could lock real sign-ins out."""
-
-    def decorator(view):
-        @wraps(view)
-        def wrapper(request, *args, **kwargs):
-            if request.content_type != "application/json":
-                return _no_store(
-                    command_error_response(
-                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
-                    )
-                )
-            return view(request, *args, **kwargs)
-
-        return wrapper
-
-    return decorator
-
-
 def _json_object(request) -> dict | None:
     """The body as a JSON object, or None if it is anything else.
 
@@ -181,7 +187,7 @@ def _json_object(request) -> dict | None:
     as a 500 on an unauthenticated route."""
     try:
         raw = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError, RecursionError):
+    except (ValueError, UnicodeDecodeError, RecursionError, RequestDataTooBig):
         return None
     return raw if isinstance(raw, dict) else None
 
@@ -226,7 +232,10 @@ def _account_session_bearer(request) -> str:
 # app-level per-IP limit the browser login mutation does not carry; the durable per-account
 # lockout lives in `login` itself and therefore applies here exactly as it does there.
 @_json_content_type_only("session_login")
-@throttle("session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60))
+@throttle(
+    "session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60),
+    fail_closed_on_store_unavailable=True,
+)
 def create_session(request):
     """POST /v1/sessions — exchange an account email + password for an account session token, for
     a native client that cannot take part in the browser CSRF ceremony (DEC-011 pt 3).
@@ -248,6 +257,9 @@ def create_session(request):
             LoginData(email=email, password=password), source_surface=NATIVE_AUDIT_SURFACE
         )
     except SafeAPIError as error:
+        # Aggregate only: no request/error data enters observability, and the shared
+        # service/browser GraphQL login behavior stays unchanged (17tnw2b1wqa).
+        report_native_login_failure()
         return _no_store(
             command_error_response(code=error.code, surface="desktop", operation="session_login")
         )
@@ -262,6 +274,37 @@ def create_session(request):
     }
     # Nothing here is a credential but the token, and `session_token` is not on the denylist;
     # this guards against a future field (a hash, a password echo) being added to the payload.
+    assert_no_restricted_payload_fields(payload)
+    return _no_store(JsonResponse(payload, status=200))
+
+
+@csrf_exempt
+@require_POST
+@_json_content_type_only("session_revoke")
+@throttle("session_revoke", "SELAHCUE_THROTTLE_SESSION_REVOKE", (10, 60))
+def revoke_session(request):
+    """POST /v1/sessions:revoke — end only the presented account bearer session.
+
+    No cookie/body credential and no all-sessions switch. Device tokens and live
+    output are deliberately outside the existing account logout service's scope.
+    """
+    if _json_object(request) != {}:
+        return _no_store(
+            command_error_response(
+                code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="session_revoke"
+            )
+        )
+    try:
+        result = _logout_session_service(
+            _account_session_bearer(request), source_surface=NATIVE_AUDIT_SURFACE
+        )
+    except SafeAPIError as error:
+        return _no_store(
+            command_error_response(
+                code=error.code, surface="desktop", operation="session_revoke"
+            )
+        )
+    payload = {"revoked": result.revoked, "surface": "desktop", "operation": "session_revoke"}
     assert_no_restricted_payload_fields(payload)
     return _no_store(JsonResponse(payload, status=200))
 
@@ -289,11 +332,11 @@ def activate_device_with_session(request):
         )
     actor = actor_from_session_token(_account_session_bearer(request))
     data = ActivateDeviceWithSessionData(
-        idempotency_key=str(raw.get("idempotency_key") or ""),
-        device_fingerprint=str(raw.get("device_fingerprint") or ""),
-        platform=str(raw.get("platform") or ""),
-        app_version=str(raw.get("app_version") or ""),
-        display_name=str(raw.get("display_name") or ""),
+        idempotency_key=raw.get("idempotency_key", ""),
+        device_fingerprint=raw.get("device_fingerprint", ""),
+        platform=raw.get("platform", ""),
+        app_version=raw.get("app_version", ""),
+        display_name=raw.get("display_name", ""),
         replace_token=raw.get("replace_token", False),
     )
     try:
@@ -328,6 +371,7 @@ def _device_bearer_token(request) -> str:
 
 @csrf_exempt
 @require_POST
+@_json_content_type_only("license_refresh", allow_bearer_header=True)
 @throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement

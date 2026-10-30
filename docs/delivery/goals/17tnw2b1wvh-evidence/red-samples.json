@@ -1,0 +1,88 @@
+{
+  "base": "8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e",
+  "scope": "exact source-linked hang controller, actual Case/launcher/PID/temp and real verdict checks; not full16CLI repeated",
+  "baseline_ast": "c8472e0e1f37144c2d84db8b890d2cadb65a61ba7b2f23ee53d59cb1748d9974",
+  "candidate_ast": "c8472e0e1f37144c2d84db8b890d2cadb65a61ba7b2f23ee53d59cb1748d9974",
+  "pairs": [
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.022381417,
+        "loadavg": [
+          6.9541015625,
+          6.67529296875,
+          8.56884765625
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0194475830000003,
+            "run_elapsed_s": 3.0166430473327637,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 69750,
+              "helper": 69753
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 3.0103569159999997,
+        "loadavg": [
+          7.03759765625,
+          6.697265625,
+          8.5654296875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0082857080000003,
+            "run_elapsed_s": 3.0067756175994873,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 69796,
+              "helper": 69797
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 1,
+      "saving_s": 0.01202450100000041
+    }
+  ],
+  "controls": [],
+  "samples_started_at": 1793272303.0276349,
+  "median_paired_saving_s": 0.01202450100000041,
+  "samples_finished_at": 1793272309.0643892
+}

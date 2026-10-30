@@ -13,7 +13,7 @@ Login/refresh return a **show-once opaque session token** (`sessionToken`). It i
 - Session lifetime: **30 days** absolute (`ACCOUNT_SESSION_TTL_SECONDS`); call `refreshSession` to rotate+extend. A refresh **replaces** the token (old one is revoked) — persist the new one.
 - Password change and `logout` **revoke** the session server-side; treat any `UNAUTHENTICATED` on an authenticated call as "signed out → return to sign-in".
 - **Never-blank:** the account session is entirely separate from device entitlement. Sign-out / session expiry never revokes the device token or blanks live output.
-- **Native clients cannot call `refreshSession` or `logout`.** Both are GraphQL calls on the CSRF-enforced browser surface, so a client with no cookie jar and no CSRF token gets a `403`. There is **no native refresh or revoke route yet** (ClickUp 17tnw2b1wf2). The session minted by `POST /v1/sessions` stays valid for its full 30 days even after the desktop signs out locally; only a web `logout` or a password change revokes it. Sign in again instead of refreshing.
+- **Native account cleanup:** `POST /v1/sessions:revoke` with an account bearer and `{}` returns `{"revoked": true}` and ends only that account session. No cookie/CSRF token is sent or set. The existing desktop licensing client attempts this once immediately after a valid activation; cleanup failure is separate from activation success. Native `refreshSession` and browser `logout` remain unavailable on this transport; the 30-day DEC-007 TTL is unchanged.
 
 ## Mutations
 
@@ -30,11 +30,11 @@ Login/refresh return a **show-once opaque session token** (`sessionToken`). It i
 
 `accountViewer` query (session) → `{surface, actorId, orgId}` confirms the signed-in state.
 
-> The mutations in this table are the **browser** contract (`POST /graphql/account`, CSRF-enforced). A native client uses only the two `/v1` routes in "Native client routes" below; in particular it cannot call `refreshSession`, `logout` or `accountViewer`.
+> The mutations in this table are the **browser** contract (`POST /graphql/account`, CSRF-enforced). A native client uses the `/v1` routes in "Native client routes" below; in particular it cannot call `refreshSession`, `logout` or `accountViewer`.
 
 ## Native client routes (`/v1`) — what the desktop calls
 
-Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-account-surface.md`. Both routes are `csrf_exempt` like the rest of `/v1`, and that is sound because neither reads or sets a cookie: the session travels in `Authorization: Bearer` only. Both require `Content-Type: application/json` (anything else is refused with `400 VALIDATION_FAILED` before the rate limit or any credential check), and the application responses of these two views (200, 400, 401, 403, 404) carry `Cache-Control: no-store`. A `405` (wrong method) and a `429` (rate limited) are produced by Django and the shared throttle and do not carry it. Errors use the `/v1` envelope `{"error": {"code", "message"}, "surface": "desktop", "operation": ...}` with the same codes as above (branch on the **code**, not the status).
+Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-account-surface.md`. Both routes are `csrf_exempt` like the rest of `/v1`, and that is sound because neither reads or sets a cookie: the session travels in `Authorization: Bearer` only. Both require `Content-Type: application/json` (anything else is refused with `400 VALIDATION_FAILED` before the rate limit or any credential check), and the application responses of these two views (200, 400, 401, 403, 404) carry `Cache-Control: no-store`. Shared-throttle `429` responses also carry `Cache-Control: no-store` and `Retry-After` with the remaining fixed-window seconds, rounded up to at least one; unavailable expiry metadata gives a bounded full-window retry hint without changing the denial (17tnw2b1wqc). A `405` (wrong method) is produced by Django and does not carry these headers. Errors use the `/v1` envelope `{"error": {"code", "message"}, "surface": "desktop", "operation": ...}` with the same codes as above (branch on the **code**, not the status).
 
 **`POST /v1/sessions`** — sign in (the `login` mutation's native twin; same service, so the lockout and the no-enumeration rule are identical).
 
@@ -46,6 +46,7 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
 - Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?, "replace_token"?: boolean}` — the `POST /v1/activations` body without `license_key`.
+- All supplied fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd). `replace_token`, when sent, must be a JSON boolean.
 - `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on a successful replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
 - `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `409 CONFLICT` (consumed recovery intent with no live token), `429 RATE_LIMITED`.
 
@@ -60,6 +61,16 @@ intent. The default remains unchanged. See `implementation/api/README.md` for li
 renewal and recovery.
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
+
+Enrollment `POST /v1/activations` also requires `application/json` before spending throttle budget or querying the database. For `POST /v1/license:refresh`, that guard applies when the token comes from the JSON body. Existing bearer-header refresh requests may omit the body and Content-Type: the Authorization header already requires a cross-origin preflight, and its token still passes the existing authentication checks. A header credential continues to take precedence over a body token; no cookie authentication or GET requirement is added (17tnw2b1wqb).
+
+**`POST /v1/sessions:revoke`** — end only the account session in `Authorization: Bearer <session_token>`. Requires `application/json` and an empty object; no body/cookie credentials or all-sessions switch. Success200: `{"revoked":true,"surface":"desktop","operation":"session_revoke"}`. Invalid JSON/body400, absent/invalid/inactive bearer401, per-IP budget exhausted429 with `Retry-After` and `Cache-Control:no-store`. Content type and method are refused before spending budget. Separate fixed budget10/minute/IP; the browser GraphQL contract and devices are unchanged.
+
+The Rust `activate_with_session` method returns a valid `Activation` even if its immediate cleanup request fails. `session_cleanup` is `Revoked` only after a positive acknowledgement; otherwise `RetryRequired` carries the existing bounded failure classification, never the response body. No automatic retry loop runs. `activate_and_persist_with_session` also stores the show-once device token before waiting on remote cleanup and clears only the matching licensing `account_session_token` after confirmed cleanup; device persistence and local-account removal have separate outcomes. Its caller must serialize custody operations. Cleanup failures never call `forget_all`, revoke a device, or gate presentation.
+
+An unsuccessful/ambiguous activation retains the session for an idempotent activation retry. For an abandoned attempt or unconfirmed cleanup, a host may explicitly call `revoke_session` with that same token; only a confirmed acknowledgement permits clearing its local account entry. A lost revoke acknowledgement may leave an already inactive token retained; the client does not pretend it confirmed revocation. The existing DEC-007 expiry/password-change/all-session logout rules remain the server fallback, with no new grant or TTL policy. If device-token persistence fails after server activation, the returned activation still carries its show-once token for retrying persistence; do not repeat activation expecting that secret to be re-shown.
+
+Current `main` has no operator licensing activation UI/command or pending-session orchestration. This ticket implements and tests the actual licensing-library path and secret-store seam, not operator/physical-booth E2E. The operator's separate hosted-provider `account_token` is untouched. ADR-0029 remains Proposed; implementing this task's route-only option does not assert owner acceptance of the broader wire/residual-risk decision.
 
 ## Frontend follow-ups (net-new vs the current A0/A1 design)
 

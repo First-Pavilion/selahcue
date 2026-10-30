@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable
@@ -130,8 +131,8 @@ def actor_from_request(request) -> ActorContext | None:
         if actor is not None:
             return actor
 
-    # Dev/test bridge ONLY: trusted actor headers (staff/device), gated by settings and never
-    # enabled in production (SELAHCUE_TRUST_ACTOR_HEADERS=false).
+    # Dev/test bridge ONLY: trusted actor headers, gated by settings. Startup refuses
+    # SELAHCUE_TRUST_ACTOR_HEADERS outside exact dev, including staging.
     if not settings.SELAHCUE_TRUST_ACTOR_HEADERS:
         return None
 
@@ -142,6 +143,9 @@ def actor_from_request(request) -> ActorContext | None:
     try:
         kind = ActorKind(kind_value)
     except ValueError:
+        return None
+    # Anonymous identifies internally recorded failed-confirm audit rows, not a caller identity.
+    if kind is ActorKind.ANONYMOUS:
         return None
     return ActorContext(
         kind=kind,
@@ -211,7 +215,12 @@ def validate_idempotency_key(value: str) -> str:
 
 def require_reason(value: str, *, min_length: int = 8, max_length: int = 1000) -> str:
     cleaned = " ".join(value.strip().split())
-    if not min_length <= len(cleaned) <= max_length:
+    # Count only the task's visible categories for the minimum, without stripping joining,
+    # bidi or combining text from the stored reason. Keep the existing total-codepoint max
+    # first, so oversized input is refused before doing per-character Unicode classification.
+    if len(cleaned) > max_length or sum(
+        unicodedata.category(char) not in {"Cf", "Cc", "Zs", "Zl", "Zp"} for char in cleaned
+    ) < min_length:
         raise SafeAPIError(
             ErrorCode.VALIDATION_FAILED,
             f"Reason must be between {min_length} and {max_length} characters.",

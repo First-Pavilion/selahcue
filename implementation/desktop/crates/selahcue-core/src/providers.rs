@@ -419,6 +419,9 @@ pub struct ScriptureVerdict {
 /// is deliberate insurance, not a tight fit. This must never be the reason a real list
 /// entry goes unchecked: an entry beyond this cap would render identically to a verified
 /// one, which is precisely Sana's F2 finding on PR #47.
+///
+/// Bounds returned verdicts and oracle lookups, not list length, input bytes or CPU
+/// time: long strings and duplicate entries can still require scanning/normalization.
 pub const MAX_LIST_REFERENCES: usize = 256;
 
 /// Upper bound on scripture references found by scanning section body text (flat items,
@@ -426,6 +429,10 @@ pub const MAX_LIST_REFERENCES: usize = 256;
 /// list (bounded upstream to a small, deliberate count), body text is bounded only by
 /// character count, and a hostile draft could cram many reference-shaped substrings into
 /// it — this is the genuinely adversarial-input-prone half of this function.
+///
+/// Bounds returned verdicts and oracle lookups, NOT total text scanning time or bytes.
+/// `detect` scans a complete body item and materializes its candidates before this
+/// budget is applied; long reference-free text or duplicates may consume no verdicts.
 pub const MAX_EMBEDDED_REFERENCES: usize = 64;
 
 /// Verify every scripture reference in a draft — the extracted `scriptures` list AND
@@ -445,9 +452,10 @@ pub const MAX_EMBEDDED_REFERENCES: usize = 64;
 /// the canonical spelling, not the one actually in the list. Echoing the input back
 /// verbatim makes that match reliable by construction rather than by convention.
 ///
-/// Bounded and total: never panics on adversarial input. The list is capped at
-/// [`MAX_LIST_REFERENCES`], embedded-text scanning separately at
-/// [`MAX_EMBEDDED_REFERENCES`] (see each constant's doc for why they differ). A reference
+/// Verdict-count bounded and total: never panics on adversarial input. Distinct list
+/// verdicts are capped at [`MAX_LIST_REFERENCES`], distinct embedded verdicts separately
+/// at [`MAX_EMBEDDED_REFERENCES`] (see each constant's doc for why they differ). These
+/// cap oracle lookups, not total input bytes, detector work or CPU scanning time. A reference
 /// that cannot be parsed at all is retained as unverified, never silently dropped (unlike
 /// [`crate::scripture::parse`], which is the wrong entry point here for exactly that
 /// reason). Duplicate reference text (by exact string, shared across both phases) is

@@ -1,4 +1,5 @@
 from cross_web.exceptions import HTTPException
+from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET
@@ -46,6 +47,21 @@ def csrf_bootstrap(request):
 
 
 class SafeGraphQLView(GraphQLView):
+    def decode_json(self, data):
+        try:
+            return super().decode_json(data)
+        except RecursionError as error:
+            # Native JSON recursion is input refusal, not a resolver/server exception.
+            raise HTTPException(400, "Unable to parse request body as JSON") from error
+
+    def parse_http_body(self, request):
+        try:
+            return super().parse_http_body(request)
+        except (RequestDataTooBig, UnicodeDecodeError) as error:
+            # Retain Django's existing byte cap and the adapter's UTF8 decoding; only
+            # their input errors become the same safe envelope as malformed JSON.
+            raise HTTPException(400, "Unable to parse request body as JSON") from error
+
     def dispatch(self, request, *args, **kwargs):
         try:
             return self.run(request=request)

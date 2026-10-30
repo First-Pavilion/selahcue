@@ -1,0 +1,39 @@
+{
+  "scope": "one complete actual operator gate; no timing threshold or verdict substitution",
+  "loadavg_start": [
+    20.7373046875,
+    13.68701171875,
+    10.98828125
+  ],
+  "self_test": [
+    {
+      "wall_s": 38.735909833,
+      "problems": []
+    }
+  ],
+  "chrome": [
+    {
+      "browser_phase_s": 13.763046026229858,
+      "launcher_total_wall_s": 13.783528124999997,
+      "timed_out": false,
+      "returncode": 0,
+      "loadavg": [
+        19.35400390625,
+        14.41357421875,
+        11.42236328125
+      ],
+      "timeout_s": 90
+    }
+  ],
+  "source_sha256": {
+    "scripts/headless_chrome.py": "89c8ec114bb1316a61140fdd89fd828fd48fa9c900921fc0b6115bfb6b469b66",
+    "scripts/operator_headless.py": "5201fb34015f143bafdef1cb2e3df35fe2296182c8f5cf82ec45c5f9ff7243cc"
+  },
+  "gate_exitcode": 0,
+  "total_wall_s": 55.020897250000004,
+  "loadavg_end": [
+    19.35400390625,
+    14.41357421875,
+    11.42236328125
+  ]
+}

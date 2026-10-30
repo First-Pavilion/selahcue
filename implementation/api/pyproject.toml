@@ -74,6 +74,11 @@ dev = [
   #   pytest-django==4.14.0 0 advisories exist for this package
   "pytest==9.1.1",
   "pytest-django==4.14.0",
+  # Deployed startup controls now need the driver locally (17tnw2b9da0); dev extra only.
+  # Exact version from successful CI40945205792: psycopg + psycopg-binary 3.3.6,
+  # cp314 wheel, 1976 tests passed. It satisfies the existing CI/Docker >=3.2,<4 bound.
+  # Compatibility evidence is not an advisory-free claim; independent security review applies.
+  "psycopg[binary]==3.3.6",
 ]
 
 [tool.pytest.ini_options]

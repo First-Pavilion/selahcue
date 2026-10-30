@@ -1,0 +1,1552 @@
+{
+  "base": "8f7d610ef81efc4c7359e9b3cb6d9d44fb99c56e",
+  "scope": "exact source-linked hang controller, actual Case/launcher/PID/temp and real verdict checks; not full16CLI repeated",
+  "baseline_ast": "c8472e0e1f37144c2d84db8b890d2cadb65a61ba7b2f23ee53d59cb1748d9974",
+  "candidate_ast": "cfdd2e3916d02692cea40e8a0cfd18d2efd17740d97fec0b4a5b993ebf1841f5",
+  "pairs": [
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.010691458,
+        "loadavg": [
+          7.82275390625,
+          7.4970703125,
+          8.62255859375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.01004375,
+            "run_elapsed_s": 3.008273124694824,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71676,
+              "helper": 71677
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.010126583,
+        "loadavg": [
+          7.82275390625,
+          7.4970703125,
+          8.62255859375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0090400419999996,
+            "run_elapsed_s": 1.0078458786010742,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71686,
+              "helper": 71687
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 1,
+      "saving_s": 2.0005648750000002
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.01000625,
+        "loadavg": [
+          7.82275390625,
+          7.4970703125,
+          8.62255859375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0092205410000004,
+            "run_elapsed_s": 1.007904052734375,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71688,
+              "helper": 71689
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0180635419999993,
+        "loadavg": [
+          7.3564453125,
+          7.40576171875,
+          8.58349609375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0168774580000006,
+            "run_elapsed_s": 3.015197277069092,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71692,
+              "helper": 71693
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 2,
+      "saving_s": 2.0080572919999993
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.010873042,
+        "loadavg": [
+          7.3564453125,
+          7.40576171875,
+          8.58349609375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0099224170000003,
+            "run_elapsed_s": 3.008646249771118,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71701,
+              "helper": 71702
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0060199169999997,
+        "loadavg": [
+          7.3564453125,
+          7.40576171875,
+          8.58349609375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0053535,
+            "run_elapsed_s": 1.004120111465454,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71707,
+              "helper": 71708
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 3,
+      "saving_s": 2.0048531250000003
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.010574415999999,
+        "loadavg": [
+          7.16748046875,
+          7.36572265625,
+          8.56201171875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0087438750000004,
+            "run_elapsed_s": 1.006654977798462,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71709,
+              "helper": 71710
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.008777416000001,
+        "loadavg": [
+          7.16748046875,
+          7.36572265625,
+          8.56201171875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0072334580000017,
+            "run_elapsed_s": 3.0049569606781006,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71711,
+              "helper": 71712
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 4,
+      "saving_s": 1.998203000000002
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0104934169999993,
+        "loadavg": [
+          7.07373046875,
+          7.3427734375,
+          8.546875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0096915420000023,
+            "run_elapsed_s": 3.0075418949127197,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71717,
+              "helper": 71719
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0119754589999985,
+        "loadavg": [
+          7.07373046875,
+          7.3427734375,
+          8.546875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0106295410000001,
+            "run_elapsed_s": 1.0091402530670166,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71730,
+              "helper": 71731
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 5,
+      "saving_s": 1.9985179580000008
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.005833041999999,
+        "loadavg": [
+          7.07373046875,
+          7.3427734375,
+          8.546875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0049156249999989,
+            "run_elapsed_s": 1.0035829544067383,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71733,
+              "helper": 71734
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0095107920000004,
+        "loadavg": [
+          6.6669921875,
+          7.25390625,
+          8.50830078125
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.008708166999998,
+            "run_elapsed_s": 3.0070090293884277,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71736,
+              "helper": 71737
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 6,
+      "saving_s": 2.0036777500000014
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0083895419999998,
+        "loadavg": [
+          6.6669921875,
+          7.25390625,
+          8.50830078125
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.007212082999999,
+            "run_elapsed_s": 3.0056707859039307,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71745,
+              "helper": 71746
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.006865041000001,
+        "loadavg": [
+          6.7734375,
+          7.26611328125,
+          8.5048828125
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.006120541999998,
+            "run_elapsed_s": 1.0043509006500244,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71937,
+              "helper": 71938
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 7,
+      "saving_s": 2.0015245009999987
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0139634999999991,
+        "loadavg": [
+          6.7734375,
+          7.26611328125,
+          8.5048828125
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0126898339999997,
+            "run_elapsed_s": 1.010998249053955,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71942,
+              "helper": 71945
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.018353042000001,
+        "loadavg": [
+          6.7734375,
+          7.26611328125,
+          8.5048828125
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0150660840000008,
+            "run_elapsed_s": 3.010807991027832,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71971,
+              "helper": 71974
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 8,
+      "saving_s": 2.004389542000002
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0109876250000056,
+        "loadavg": [
+          6.87158203125,
+          7.27783203125,
+          8.50146484375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0097632919999953,
+            "run_elapsed_s": 3.0080437660217285,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71977,
+              "helper": 71978
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.007757374999997,
+        "loadavg": [
+          6.87158203125,
+          7.27783203125,
+          8.50146484375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.007126624999998,
+            "run_elapsed_s": 1.006255865097046,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 71993,
+              "helper": 71994
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 9,
+      "saving_s": 2.0032302500000085
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0061857080000038,
+        "loadavg": [
+          6.87158203125,
+          7.27783203125,
+          8.50146484375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0055705000000046,
+            "run_elapsed_s": 1.0036091804504395,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72005,
+              "helper": 72006
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0145646249999984,
+        "loadavg": [
+          6.4814453125,
+          7.18994140625,
+          8.462890625
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0122459159999977,
+            "run_elapsed_s": 3.009536027908325,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72011,
+              "helper": 72012
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 10,
+      "saving_s": 2.0083789169999946
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.012365709000001,
+        "loadavg": [
+          7.40380859375,
+          7.369140625,
+          8.5185546875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0110498330000013,
+            "run_elapsed_s": 3.0088019371032715,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72073,
+              "helper": 72088
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.008532707999997,
+        "loadavg": [
+          7.40380859375,
+          7.369140625,
+          8.5185546875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0074513750000023,
+            "run_elapsed_s": 1.0061707496643066,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72151,
+              "helper": 72153
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 11,
+      "saving_s": 2.003833001000004
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.009450459,
+        "loadavg": [
+          7.40380859375,
+          7.369140625,
+          8.5185546875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0086354590000042,
+            "run_elapsed_s": 1.007262945175171,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72163,
+              "helper": 72164
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.005706499999995,
+        "loadavg": [
+          9.61328125,
+          7.82763671875,
+          8.67333984375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0050707500000016,
+            "run_elapsed_s": 3.0035629272460938,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72180,
+              "helper": 72181
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 12,
+      "saving_s": 1.9962560409999952
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0304896670000048,
+        "loadavg": [
+          9.61328125,
+          7.82763671875,
+          8.67333984375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.028284124999999,
+            "run_elapsed_s": 3.015101909637451,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72222,
+              "helper": 72223
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0397673749999967,
+        "loadavg": [
+          9.61328125,
+          7.82763671875,
+          8.67333984375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.028248000000005,
+            "run_elapsed_s": 1.0241913795471191,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72270,
+              "helper": 72272
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 13,
+      "saving_s": 1.990722292000008
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.018190041000004,
+        "loadavg": [
+          11.08544921875,
+          8.162109375,
+          8.7861328125
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0171417090000006,
+            "run_elapsed_s": 1.0153870582580566,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72289,
+              "helper": 72293
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.011024541999994,
+        "loadavg": [
+          11.08544921875,
+          8.162109375,
+          8.7861328125
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0099121249999996,
+            "run_elapsed_s": 3.006403923034668,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72311,
+              "helper": 72312
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 14,
+      "saving_s": 1.9928345009999902
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.044174208000001,
+        "loadavg": [
+          12.51953125,
+          8.5078125,
+          8.904296875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0382673330000003,
+            "run_elapsed_s": 3.0171167850494385,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72366,
+              "helper": 72367
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.1605987499999983,
+        "loadavg": [
+          12.51953125,
+          8.5078125,
+          8.904296875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.1515337920000022,
+            "run_elapsed_s": 1.104417085647583,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72415,
+              "helper": 72421
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 15,
+      "saving_s": 1.8835754580000028
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0870979999999975,
+        "loadavg": [
+          12.51953125,
+          8.5078125,
+          8.904296875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0671210000000002,
+            "run_elapsed_s": 1.0510530471801758,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72434,
+              "helper": 72439
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0204704580000055,
+        "loadavg": [
+          12.3974609375,
+          8.548828125,
+          8.91650390625
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0144145410000007,
+            "run_elapsed_s": 3.009273052215576,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72444,
+              "helper": 72445
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 16,
+      "saving_s": 1.933372458000008
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.015521167000003,
+        "loadavg": [
+          12.685546875,
+          8.67236328125,
+          8.9580078125
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.014036500000003,
+            "run_elapsed_s": 3.0117640495300293,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72475,
+              "helper": 72478
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0075567920000026,
+        "loadavg": [
+          12.685546875,
+          8.67236328125,
+          8.9580078125
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0066706249999982,
+            "run_elapsed_s": 1.0056209564208984,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72488,
+              "helper": 72489
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 17,
+      "saving_s": 2.0079643750000002
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.011495208999989,
+        "loadavg": [
+          12.685546875,
+          8.67236328125,
+          8.9580078125
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0106817919999997,
+            "run_elapsed_s": 1.008301019668579,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72491,
+              "helper": 72492
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.020212458000003,
+        "loadavg": [
+          15.03271484375,
+          9.2255859375,
+          9.1513671875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0173792500000047,
+            "run_elapsed_s": 3.0106449127197266,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72505,
+              "helper": 72506
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 18,
+      "saving_s": 2.0087172490000142
+    },
+    {
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.018322541999993,
+        "loadavg": [
+          15.03271484375,
+          9.2255859375,
+          9.1513671875
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.015867875000012,
+            "run_elapsed_s": 3.01090407371521,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72684,
+              "helper": 72685
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0140881659999934,
+        "loadavg": [
+          15.03271484375,
+          9.2255859375,
+          9.1513671875
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0124037920000006,
+            "run_elapsed_s": 1.0108251571655273,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72718,
+              "helper": 72719
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 19,
+      "saving_s": 2.0042343759999994
+    },
+    {
+      "candidate": {
+        "label": "candidate",
+        "wall_s": 1.0103514999999987,
+        "loadavg": [
+          15.35009765625,
+          9.3876953125,
+          9.208984375
+        ],
+        "schedule_s": [
+          1,
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 1,
+            "wall_s": 1.0097276249999965,
+            "run_elapsed_s": 1.0086047649383545,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72720,
+              "helper": 72721
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "baseline": {
+        "label": "baseline",
+        "wall_s": 3.0181918749999994,
+        "loadavg": [
+          15.35009765625,
+          9.3876953125,
+          9.208984375
+        ],
+        "schedule_s": [
+          3,
+          20
+        ],
+        "attempts": [
+          {
+            "timeout_s": 3,
+            "wall_s": 3.0166139580000078,
+            "run_elapsed_s": 3.013399124145508,
+            "timed_out": true,
+            "complete_block": true,
+            "pids": {
+              "self": 72724,
+              "helper": 72725
+            },
+            "leftovers": [],
+            "alive": {
+              "self": false,
+              "helper": false
+            }
+          }
+        ],
+        "problems": [],
+        "startup_retries": 0,
+        "terminal_flake": false,
+        "synthetic_delay_s": 0,
+        "wrong_timeout_injected": false
+      },
+      "pair": 20,
+      "saving_s": 2.0078403750000007
+    }
+  ],
+  "controls": [],
+  "samples_started_at": 1793272448.6541471,
+  "median_paired_saving_s": 2.003454000000005,
+  "samples_finished_at": 1793272529.665833
+}

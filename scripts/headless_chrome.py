@@ -139,6 +139,12 @@ _SWEEP_MTIME_SLACK_S = 0.05
 ChromeRun = collections.namedtuple("ChromeRun", "stdout stderr_tail returncode timed_out elapsed pid")
 
 
+def environment_error(context, error):
+    """One diagnostic line for local filesystem/process failures, without a Python traceback."""
+    detail = str(error).replace("\r", "\\r").replace("\n", "\\n")
+    return "FAIL: %s (infra, exit 2): %s" % (context, detail)
+
+
 def describe_exit(returncode):
     """A human reading of Chrome's exit status: `7`, `-11 (killed by SIGSEGV)`, `none (never exited)`."""
     if returncode is None:
@@ -319,13 +325,40 @@ class _SignalGuard(object):
                 pass
 
 
-def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
-    """Load `page_html` in headless Chrome, return a `ChromeRun`. See the module docstring.
+def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None, *, page_url=None):
+    """Load HTML or an already served URL and return a `ChromeRun`.
 
-    `flags` are the caller's own flags (`--headless=new`, budget, ...); the hardening flags, the
-    `--dump-dom` and the page URL are appended here. `tmp_root` is where the private work dir is
-    made and where url-fetcher litter is swept (default: the system temp dir).
+    Existing HTML callers keep their private page file. For an HTTP server or
+    existing file, pass `page_html=None, page_url=url`; the URL is forwarded
+    unchanged, including query/fragment. Flags, hardening and cleanup are shared.
     """
+    if (page_html is None) == (page_url is None):
+        raise ValueError("supply exactly one of page_html or page_url")
+
+    def make_argv(workdir):
+        url = page_url
+        if page_html is not None:
+            page = os.path.join(workdir, "page.html")
+            with open(page, "w", encoding="utf-8") as f:
+                f.write(page_html)
+            url = "file://" + page
+        return [chrome] + list(flags) + list(CHROME_HARDENING_FLAGS) + ["--dump-dom", url]
+
+    return _run_with_files(make_argv, timeout, tmp_root, chrome_cleanup=True)
+
+
+def run_command(command, timeout, env=None, tmp_root=None):
+    """Run a non-browser command with the SAME file/PID/timeout/signal cleanup.
+
+    Return the existing `ChromeRun` shape. No browser flags, page file or Chrome
+    litter sweep is applied. `env` follows Popen's replacement-environment rule.
+    The caller owns interpreting a nonzero exit or `timed_out` as a failure.
+    """
+    return _run_with_files(lambda _workdir: list(command), timeout, tmp_root, env=env)
+
+
+def _run_with_files(make_argv, timeout, tmp_root=None, env=None, chrome_cleanup=False):
+    """The one process lifecycle used by browser and native command callers."""
     tmp_root = tmp_root or tempfile.gettempdir()
     guard = _SignalGuard()
     workdir = None
@@ -334,21 +367,19 @@ def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
     existed_before = None
     try:
         guard.install()
-        existed_before = _list_names(tmp_root)
+        if chrome_cleanup:
+            existed_before = _list_names(tmp_root)
         workdir = tempfile.mkdtemp(prefix="selahcue-headless-", dir=tmp_root)
-        page = os.path.join(workdir, "page.html")
         out_path = os.path.join(workdir, "chrome.stdout")
         err_path = os.path.join(workdir, "chrome.stderr")
-        with open(page, "w", encoding="utf-8") as f:
-            f.write(page_html)
-        argv = [chrome] + list(flags) + list(CHROME_HARDENING_FLAGS) + ["--dump-dom", "file://" + page]
+        argv = make_argv(workdir)
         popen_kwargs = {"start_new_session": True} if os.name == "posix" else {}
         timed_out = False
         returncode = None
         guard.raise_if_pending()  # told to stop before we started: do not start a browser for nothing
         started = time.time()
         with open(out_path, "wb") as out_f, open(err_path, "wb") as err_f:
-            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f, **popen_kwargs)
+            proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=out_f, stderr=err_f, env=env, **popen_kwargs)
             guard.arm()  # `proc` exists from here on, so a signal can safely unwind
             try:
                 returncode = proc.wait(timeout=timeout)
@@ -377,14 +408,16 @@ def run_headless_chrome(chrome, page_html, flags, timeout, tmp_root=None):
             exited_at = time.time()
         if workdir is not None and _best_effort("remove the work dir", _remove_tree, workdir) is False:
             print("WARN: could not remove headless Chrome work dir %s" % workdir, file=sys.stderr)
-        _best_effort("sweep url-fetcher litter", _sweep_chrome_litter, tmp_root, existed_before, exited_at)
+        if chrome_cleanup:
+            _best_effort("sweep url-fetcher litter", _sweep_chrome_litter, tmp_root, existed_before, exited_at)
         guard.restore()
         guard.raise_if_pending()  # a signal that could not interrupt us is honoured, after cleanup
 
 
 # ---------------------------------------------------------------------------------------------
 # Self-test. Runs the REAL `run_headless_chrome` against fake browsers (python scripts), so every
-# behaviour above is checked on the code path the gate uses, in a few seconds and without Chrome.
+# behaviour above is checked on the code path the gate uses, without Chrome. Scheduling/cost
+# decisions and measured scope are recorded in docs/ops/HEADLESS-GATE.md.
 # Each scenario's comment names the defect it guards; every scenario was mutation-checked (the
 # edit that must turn it red is in the PR description and on ClickUp 17tnw2b1f32).
 # The fake is run as `python <script> <flags...>`, never as an executable file of its own: macOS
@@ -677,6 +710,8 @@ def self_test(verdict=None, expected_checks=3):
         return gate
 
     try:
+        problems.extend(_environment_self_test(root))
+        problems.extend(_environment_timeout_self_test(root))
         # 0. Pure helpers. A negative status used to print bare (`-11`).
         if describe_exit(-11) != "-11 (killed by SIGSEGV)" or describe_exit(7) != "7" \
                 or describe_exit(None) != "none (never exited)":
@@ -787,13 +822,14 @@ def self_test(verdict=None, expected_checks=3):
         # 3. AC2: a browser that PRINTS A COMPLETE BLOCK and then never exits is still a timeout:
         #    red, never rescued from its partial output. Browser AND helper must be gone, no temp dirs.
         name = "hung browser"
-        for attempt, timeout in enumerate((3, 20)):
+        for attempt, timeout in enumerate((1, 3, 20)):
             case = _Case(root, "hang", tag="hang%d" % attempt)
             run = case.run(timeout=timeout)
             helpers = pids_of(case, "self", "helper")
             if len(helpers) == 2:
                 break
-            # A loaded machine can start the fake after a 3 s timeout: inconclusive, not a verdict.
+            # Missing readiness is inconclusive, not a verdict. Try1s first to avoid paying3s
+            # on a ready machine; retain3s (not2s) and20s retries for loaded-host startup.
         if len(helpers) != 2:
             problems.append("%s: the fake never started, the scenario proves nothing" % name)
         else:
@@ -1146,12 +1182,159 @@ def self_test(verdict=None, expected_checks=3):
     return problems
 
 
+def _environment_self_test(root):
+    """Exercise the real CLI boundaries, not a copy of their error-selection logic (17tnw2b1x27).
+
+    A child gate skips only its recursive launcher self-test. Its Chrome is an interpreter-backed program
+    with no result block, so a positive selection proves launch and deliberately exits2, never
+    impersonating a passing browser gate. Controlled discovery prevents accidental real Chrome
+    fallback in a broken negative case. Allocation cases run the actual self-test instead.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    gate = os.path.join(here, "operator_headless.py")
+    work = os.path.join(root, "environment")
+    os.makedirs(work)
+    # Match _Case.run(): no newly written executable is needed for a positive control. TMPDIR
+    # can be writable/noexec; the installed interpreter reads this ordinary data file.
+    good = sys.executable
+    script = os.path.join(work, "configured-chrome.py")
+    marker = os.path.join(work, "launched")
+    with open(script, "w") as f:
+        f.write("from pathlib import Path\nPath(%r).write_text('launched')\n"
+                "print('ENV_FAKE_BROWSER')\n" % marker)
+    nonexec = os.path.join(work, "not-executable")
+    shutil.copyfile(script, nonexec)
+    os.chmod(nonexec, 0o600)
+    bad_shebang = os.path.join(work, "bad-shebang")
+    bad_format = os.path.join(work, "bad-format")
+    for path, contents in ((bad_shebang, "#!/no/such/headless-interpreter\n"),
+                           (bad_format, "not an executable image\n")):
+        with open(path, "w") as f:
+            f.write(contents)
+        os.chmod(path, 0o700)
+    directory = os.path.join(work, "directory")
+    os.mkdir(directory)
+    cases = [
+        ("missing required", os.path.join(work, "missing"), "1", 3, False),
+        ("missing optional", os.path.join(work, "missing"), "0", 2, False),
+        ("non-executable", nonexec, "1", 3, False),
+        ("directory", directory, "1", 3, False),
+        ("empty explicit value", "", "1", 3, False),
+        ("bad shebang", bad_shebang, "1", 2, False),
+        ("bad executable format", bad_format, "1", 2, False),
+        ("newline in path", os.path.join(work, "missing\nbrowser"), "1", 3, False),
+        ("valid configured", good, "1", 2, True),
+        ("default discovery", None, "1", 2, True),
+        ("valid configured on noexec", good, "1", 2, True),
+        ("default discovery on noexec", None, "1", 2, True),
+    ]
+    problems = []
+    base = ("import errno, os, runpy, shutil, sys, tempfile\n"
+            "sys.path.insert(0, %r)\nimport headless_chrome as h\n"
+            "shutil.which = lambda name: %r\n"
+            "real_run = h.run_headless_chrome\n"
+            "def interpreter_browser(chrome, html, flags, timeout, tmp_root=None):\n"
+            "    if chrome == %r:\n"
+            "        flags = [%r] + list(flags)\n"
+            "    return real_run(chrome, html, flags, timeout, tmp_root=tmp_root)\n"
+            "h.run_headless_chrome = interpreter_browser\n" % (here, good, good, script))
+    for name, chrome, require, want, launched in cases:
+        if os.path.exists(marker):
+            os.unlink(marker)
+        env = dict(os.environ, SELAHCUE_HEADLESS_REQUIRE=require)
+        if chrome is None:
+            env.pop("CHROME_BIN", None)
+        else:
+            env["CHROME_BIN"] = chrome
+        code = base
+        if name.endswith("on noexec"):
+            # Model only kernel EACCES for a directly executed temporary file. An installed
+            # interpreter reading a script argument must remain usable, as in _Case.run().
+            code += ("real_popen = h.subprocess.Popen\n"
+                     "def noexec(argv, *args, **kwargs):\n"
+                     "    if isinstance(argv, (list, tuple)) and argv and str(argv[0]).startswith(%r):\n"
+                     "        raise PermissionError(13, 'Permission denied (noexec fixture)', argv[0])\n"
+                     "    return real_popen(argv, *args, **kwargs)\n"
+                     "h.subprocess.Popen = noexec\n" % (work + os.sep))
+        code += "h.self_test = lambda **kwargs: []\nrunpy.run_path(%r, run_name='__main__')\n" % gate
+        # The child uses the real90s launcher plus cleanup. Like _Case.gate_subprocess,
+        # its outer bound must leave that work time to finish, including a loaded-host start.
+        try:
+            run = subprocess.run([sys.executable, "-c", code], env=env,
+                                 capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            problems.append("environment %s: CLI did not finish within120s" % name)
+            continue
+        output = run.stdout + run.stderr
+        failure_lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
+        if run.returncode != want or os.path.exists(marker) != launched or "Traceback" in output:
+            problems.append("environment %s: exit%d (want%d), launched%s (want%s), traceback%s" %
+                            (name, run.returncode, want, os.path.exists(marker), launched, "Traceback" in output))
+        if not launched and (len(failure_lines) != 1 or "CHROME_BIN" not in failure_lines[0]
+                             or repr(chrome) not in failure_lines[0]):
+            problems.append("environment %s: expected one diagnostic naming CHROME_BIN=%r, got %r" %
+                            (name, chrome, failure_lines))
+        if launched and "NO RESULTS BLOCK" not in output:
+            problems.append("environment %s: the fake's missing result block was not refused" % name)
+    for entrypoint in ("operator", "helper"):
+        for number, reason in ((28, "No space left on device"), (13, "Permission denied")):
+            if os.path.exists(marker):
+                os.unlink(marker)
+            # Inject only the real self-test root allocation, not the CLI/error-mapping functions.
+            code = base + ("real_mkdtemp = tempfile.mkdtemp\n"
+                           "def refused(*args, **kwargs):\n"
+                           "    if kwargs.get('prefix') == 'selahcue-headless-selftest-':\n"
+                           "        raise OSError(%d, %r)\n"
+                           "    return real_mkdtemp(*args, **kwargs)\n"
+                           "tempfile.mkdtemp = refused\n" % (number, reason))
+            code += ("runpy.run_path(%r, run_name='__main__')\n" % gate if entrypoint == "operator"
+                     else "sys.exit(h.main())\n")
+            try:
+                run = subprocess.run([sys.executable, "-c", code], env=dict(os.environ, CHROME_BIN=good),
+                                     capture_output=True, text=True, timeout=120)
+            except subprocess.TimeoutExpired:
+                problems.append("environment %s allocation errno%d: CLI did not finish within120s" % (entrypoint, number))
+                continue
+            output = run.stdout + run.stderr
+            lines = [line for line in output.splitlines() if line.startswith("FAIL:")]
+            if run.returncode != 2 or "Traceback" in output or len(lines) != 1 or reason not in lines[0] or os.path.exists(marker):
+                problems.append("environment %s allocation errno%d: exit%d, expected2/one reason/no traceback; %r" %
+                                (entrypoint, number, run.returncode, lines))
+    return problems
+
+
+def _environment_timeout_self_test(root):
+    """A timed-out CLI probe must remain a named test failure, never a traceback/false Pass."""
+    work = os.path.join(root, "environment-timeout")
+    os.mkdir(work)
+    real_run = subprocess.run
+
+    def timed_out(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    subprocess.run = timed_out
+    try:
+        failures = _environment_self_test(work)
+    finally:
+        subprocess.run = real_run
+    # Exercise both loop families, including the final scenario: one timeout must not abandon
+    # the remaining cases. Other real-CLI behaviors are checked separately, not mocked here.
+    if not any(p.startswith("environment missing required: CLI did not finish") for p in failures) \
+            or not any(p.startswith("environment helper allocation errno13: CLI did not finish") for p in failures):
+        return ["environment timeout: probe failure was not named and retained through both case families"]
+    return []
+
+
 def main():
     if not self_test_supported():
         print("SKIP: headless-launch self-test not run: it needs POSIX process groups and signals "
               "(this gate is supported on macOS and Linux only)")
         return 0
-    problems = self_test()
+    try:
+        problems = self_test()
+    except OSError as error:
+        print(environment_error("headless-launch self-test", error))
+        return 2
     for problem in problems:
         print("FAIL: headless-launch self-test (17tnw2b1f32) - " + problem)
     if problems:

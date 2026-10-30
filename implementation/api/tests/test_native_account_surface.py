@@ -64,6 +64,7 @@ EMAIL = "pastor@grace.example"
 EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/activations",
     "v1/sessions",
+    "v1/sessions:revoke",
     "v1/activations:with-session",
     "v1/license:refresh",
     "v1/downloads:prepare",
@@ -1079,15 +1080,6 @@ def test_application_errors_are_never_cacheable_either(name):
 
 
 @pytest.mark.django_db
-@pytest.mark.xfail(
-    strict=True,
-    reason="Known, NOT fixed in this PR: the 429 built by the shared `@throttle` decorator "
-    "(apps/throttling/decorators.py) carries neither Cache-Control: no-store nor Retry-After. "
-    "A Retry-After needs the fixed window's remaining TTL, which the store does not expose, and "
-    "any header change in the shared decorator also changes POST /v1/activations and every other "
-    "throttled /v1 route, so it needs its own review (ClickUp 17tnw2b1wqc). strict=True turns "
-    "this into a failure the day the decorator is fixed, so the xfail cannot go stale.",
-)
 def test_a_throttled_response_is_no_store_and_says_when_to_retry(settings):
     settings.SELAHCUE_THROTTLE_SESSION_LOGIN = (1, 60)
     seed_admin_with_license()

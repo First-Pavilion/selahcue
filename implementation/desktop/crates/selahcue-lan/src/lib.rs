@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod link;
+pub mod local_endpoint;
 pub mod protocol;
 pub mod rbac;
 pub mod session;

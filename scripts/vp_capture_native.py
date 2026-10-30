@@ -26,13 +26,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vp_core as vp  # noqa: E402
+from headless_chrome import run_command  # noqa: E402
 
 MANIFEST = os.path.join(vp.REPO, "implementation", "desktop", "Cargo.toml")
+# Cargo may build before rendering. Bound the whole command, with a larger
+# allowance than a browser page; a hung renderer/build is still a failed capture.
+CAPTURE_TIMEOUT_S = 600
 TEST_TARGET = "visual_parity_render"
 TEST_NAME = "export_captures_when_the_harness_asks_for_them"
 
@@ -51,12 +54,15 @@ def main():
         "-p", "selahcue-present", "--test", TEST_TARGET, TEST_NAME, "--", "--nocapture",
     ]
     print("$ " + " ".join(cmd))
-    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    proc = run_command(cmd, timeout=CAPTURE_TIMEOUT_S, env=env)
+    if proc.timed_out:
+        print("FAIL: the native capture target timed out (infra)")
+        return 1
     tail = (proc.stdout or "").strip().splitlines()[-12:]
     for line in tail:
         print("  " + line)
     if proc.returncode != 0:
-        print((proc.stderr or "").strip()[-2000:])
+        print((proc.stderr_tail or "").strip()[-2000:])
         print("FAIL: the native capture target did not pass (exit %d)" % proc.returncode)
         return 1
 

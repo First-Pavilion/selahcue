@@ -166,12 +166,31 @@ class SelahSession implements ControllerSession {
       return sha256.convert(cert.der).toString() == wanted;
     };
     try {
-      return await WebSocket.connect('wss://$host:$port/', customClient: client)
-          .timeout(connectTimeout);
+      final connecting =
+          WebSocket.connect('wss://$host:$port/', customClient: client);
+      return await connecting.timeout(connectTimeout, onTimeout: () {
+        // Future.timeout does not cancel its source. A socket may already have
+        // detached from the HTTP client, so also discharge any late success.
+        unawaited(connecting.then<void>((socket) async {
+          try {
+            await socket.close();
+          } on Object {
+            // The caller has already timed out; cleanup must not emit a second
+            // unhandled failure if the abandoned transport is already broken.
+          }
+        }, onError: (Object error, StackTrace stackTrace) {
+          // Force-closing the pending HTTP connection may fail this future.
+        }));
+        throw TimeoutException('connection timed out');
+      });
     } on TimeoutException {
       throw const SessionException('connection timed out');
     } on Exception catch (e) {
       throw SessionException('could not connect: $e');
+    } finally {
+      // Successful upgrades detach their socket. All remaining HTTP resources
+      // belong to this attempt and must be released on every exit.
+      client.close(force: true);
     }
   }
 
@@ -181,21 +200,69 @@ class SelahSession implements ControllerSession {
   static Future<(SelahSession, Credentials)> pair(
       PairingInvite invite, String deviceName) async {
     final ws = await _establish(invite.host, invite.port, invite.pinHex);
+    return _pairOver(
+      send: ws.add,
+      close: ws.close,
+      incoming: StreamQueue(ws),
+      code: invite.code,
+      deviceName: deviceName,
+    );
+  }
+
+  /// The same pairing handshake over PR132's in-memory transport abstraction.
+  /// Production always establishes the pinned socket in [pair] first.
+  @visibleForTesting
+  static Future<(SelahSession, Credentials)> pairForTest({
+    required void Function(String frame) send,
+    required Future<void> Function() close,
+    required StreamQueue incoming,
+    required String code,
+    required String deviceName,
+    Duration deadline = pairTimeout,
+  }) =>
+      _pairOver(
+        send: send,
+        close: close,
+        incoming: incoming,
+        code: code,
+        deviceName: deviceName,
+        deadline: deadline,
+      );
+
+  static Future<(SelahSession, Credentials)> _pairOver({
+    required void Function(String frame) send,
+    required Future<void> Function() close,
+    required StreamQueue incoming,
+    required String code,
+    required String deviceName,
+    Duration deadline = pairTimeout,
+  }) async {
     try {
-      final incoming = StreamQueue(ws);
-      ws.add(jsonEncode(
-          helloPair(invite.code, deviceName, platform: Platform.operatingSystem)));
+      // One monotonic budget starts at the hello, after socket establishment.
+      // Interim parked frames show liveness but cannot renew operator approval.
+      final clock = Stopwatch()..start();
+      send(jsonEncode(
+          helloPair(code, deviceName, platform: Platform.operatingSystem)));
       // The host may send an interim `parked` frame while it awaits the operator's decision
       // (86ajxhv0q) — keep waiting for the terminal Granted/Rejected.
       pairing:
       while (true) {
-        final reply = await incoming.nextJson(pairTimeout);
+        final remaining = deadline - clock.elapsed;
+        if (remaining <= Duration.zero) {
+          throw const SessionException('timed out waiting for the host');
+        }
+        final reply = await incoming.nextJson(remaining);
+        // Buffered replies and timeout-boundary delivery must not grant a
+        // session whose overall approval budget has already expired.
+        if (clock.elapsed >= deadline) {
+          throw const SessionException('timed out waiting for the host');
+        }
         switch (PairResult.fromJson(reply)) {
           case PairParked():
             continue pairing;
           case PairGranted(:final deviceId, :final token, :final role):
             return (
-              SelahSession._(ws, incoming, role),
+              SelahSession._over(send, close, incoming, role, commandTimeout),
               Credentials(deviceId: deviceId, token: token),
             );
           case PairRejected(:final reason):
@@ -207,7 +274,7 @@ class SelahSession implements ControllerSession {
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
-      await ws.close();
+      await close();
       rethrow;
     }
   }
@@ -313,7 +380,12 @@ class SelahSession implements ControllerSession {
 
   @override
   Future<void> close() async {
-    await _close();
+    // Stop retaining frames before the transport's close handshake can wait on
+    // the peer. Await both cleanups, including if either one fails.
+    await Future.wait<void>([
+      _incoming.close(),
+      Future<void>.sync(_close),
+    ]);
   }
 }
 
@@ -368,10 +440,13 @@ class SelahSession implements ControllerSession {
 class StreamQueue {
   final List<dynamic> _buffer = [];
   final List<Completer<dynamic>> _waiters = [];
+  late final StreamSubscription<dynamic> _subscription;
+  Future<void>? _closing;
   bool _done = false;
 
   StreamQueue(Stream<dynamic> frames) {
-    frames.listen((frame) {
+    _subscription = frames.listen((frame) {
+      if (_done) return;
       if (_waiters.isNotEmpty) {
         _waiters.removeAt(0).complete(frame);
       } else {
@@ -394,6 +469,23 @@ class StreamQueue {
     });
   }
 
+  /// Dispose the owning session's queue immediately, independently of whether
+  /// its peer acknowledges transport close. Natural stream completion still
+  /// permits buffered FIFO reads; explicit disposal discards those old frames.
+  Future<void> close() {
+    final closing = _closing;
+    if (closing != null) return closing;
+    _done = true;
+    _buffer.clear();
+    for (final waiter in _waiters) {
+      if (!waiter.isCompleted) {
+        waiter.completeError(const SessionException('connection closed'));
+      }
+    }
+    _waiters.clear();
+    return _closing = Future<void>.sync(_subscription.cancel);
+  }
+
   /// The next frame, parsed as a JSON object.
   Future<Map<String, dynamic>> nextJson(Duration timeout) async {
     dynamic frame;
@@ -406,8 +498,13 @@ class StreamQueue {
       try {
         frame = await waiter.future.timeout(timeout);
       } on TimeoutException {
-        _waiters.remove(waiter);
-        throw const SessionException('timed out waiting for the host');
+        if (_waiters.remove(waiter)) {
+          throw const SessionException('timed out waiting for the host');
+        }
+        // Delivery (or close/error) already removed and completed this waiter,
+        // but its completion lost the race through Future.timeout. Consume its
+        // original result rather than dropping a frame handed over at the edge.
+        frame = await waiter.future;
       }
     }
     // A binary frame arrives as bytes, not a String, and a text frame need not

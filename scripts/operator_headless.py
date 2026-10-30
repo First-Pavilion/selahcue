@@ -14,9 +14,11 @@ exits 0 with a LOUD SKIP notice so `make ci` on a Chrome-less box still passes �
 UNLESS SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a
 hard failure so the gate can never silently no-op.
 
-Before Chrome is looked for at all, the gate runs a ~4 s self-test of its own Chrome launcher
+Before Chrome is looked for at all, the gate runs the self-test of its own Chrome launcher
 (scripts/headless_chrome.py) against fake browsers. That needs no Chrome, so it also runs on a
 Chrome-less box, and a failure there exits 2 (infra) without ever looking for Chrome (17tnw2b1f32).
+Its current cost/scheduling decisions are recorded in docs/ops/HEADLESS-GATE.md; the older~4s
+measurement predates the environment CLI scenarios and is not a current startup-time claim.
 
 FIDELITY NOTE (known gap): this drives Blink (headless Chrome), NOT the engine Tauri
 actually ships on — WebKitGTK (Linux), WKWebView (macOS), WebView2 (Windows). It is
@@ -1920,13 +1922,53 @@ EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 # 2294 -> 2295 (17tnw2b9arx round 3): +1 check that deleting the last presentation, when the host could not
 # number a blank replacement, tells the operator the editor holds an unsaved copy. The retry check was made
 # non-vacuous (same count). Measured by a clean run.
-EXPECTED_MIN_CHECKS = 2295  # measured: 2295 checks, 0 FAIL
+# 2295 ->2302 (17tnw2ayetf): seven real NDI inspector checks for imported 40-emoji
+# Broadcast OFF, scalar boundaries, truthful refusal copy and no UTF16 truncation.
+# Count measured by the RED full run, followed by the GREEN full run.
+# 2302 ->2303 (V246-1): instrumented iterator bound for an oversized paste;
+# measured by the review RED run before the bounded-scalar implementation.
+#2303 ->2315 (17tnw2ayetg): four startup-state combinations, with three DOM,
+# explanation and no-mutation checks each. Count measured by the RED full run.
+# 2315 ->2335 (17tnw2ayna7): twenty real-DOM failure, confirmation and recovery
+# checks. Measured by the full test-first RED run (17 behavioral failures).
+# 2335 ->2347 (C-REMOTE-1): resolved no-op snapshots for all four actions, a missing
+# role target and a stale Deny whose request was approved elsewhere. Measured by RED.
+EXPECTED_MIN_CHECKS = 2347  # measured:2347 checks; result recorded in the goal
+# 2347 ->2358 (17tnw2b9dq6): real null-id staging-failure UI, accepted Edit/Save
+# controls, no update/accepted-provenance overwrite, truthful Not saved feedback and reopen.
+# Measured on corrected source 1e3b6c2d in hosted diagnostic40947455308: 2358 checks, zero FAIL.
+# Keep the gate exact in both directions; this count is observed, not hand-derived.
+EXPECTED_MIN_CHECKS = 2358
+# 2358 ->2376 (17tnw2aynax): real library mutations, shared plan resolution,
+# unchanged-view repaint, superseded return values, unknown/empty/retry controls.
+# Measured on corrected source31e248df in hosted run41036840407:2376 checks,0 FAIL.
+EXPECTED_MIN_CHECKS = 2376
+# 2376 ->2384 (CODY-NAX-01): held real Library refresh -> actual Undo/Restore,
+# late response/returned-data/error fences and latest-reload busy-state ownership.
+# Measured on corrected500bc35f in hosted41040420006:2384 checks; all NAX/PR100
+# pass, one earlier Remote no-op assertion failed (preserved in the goal/evidence).
+EXPECTED_MIN_CHECKS = 2384
+# 2384 ->2401 (17tnw2ay5jh): persistent OutputHealth live metadata/identity,
+# actual connected text mutations, dedup/focus/deferred/selection/clear/safe-text controls.
+# Measured on dc27dc11 in hosted41051898145:2401 checks,0 behavioral FAIL.
+EXPECTED_MIN_CHECKS = 2401
+# 2401 ->2406 (17tnw2b1f30): browser-resolved var() brightness premise,
+# real PP-GEN predicate rejection, sibling predicate and clean-rule controls.
+# Measured twice in hosted41056296534:2406 checks,1 intended behavioral FAIL
+# against the unchanged predicate; corrected full-suite evidence is required.
+EXPECTED_MIN_CHECKS = 2406
+# 2406 ->2464 (17tnw2b0wkg): real none/backdrop/property-boundary clean
+# shapes and condition-blind dropped/adjacent/duplicate dangerous controls.
+# Measured in hosted41060247302 baseline and both41061031053 executions.
+EXPECTED_MIN_CHECKS = 2464
 
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
     env = os.environ.get("CHROME_BIN")
-    if env and os.path.exists(env):
+    if env is not None:
+        if not env or not os.path.isfile(env) or not os.access(env, os.X_OK):
+            raise ValueError("CHROME_BIN=%r must name an executable file" % env)
         return env
     for name in (
         "google-chrome",
@@ -1959,14 +2001,15 @@ def find_chrome():
 #
 # Before Chrome is even looked for, `check_headless_launch_contract()` runs that real launcher and
 # this real mapping against fake browsers (python scripts), so a regression of the launch or of the
-# mapping fails here in a few seconds instead of surfacing as a flaky red hours later. Its PASS
+# mapping fails in this pre-browser contract instead of surfacing as a flaky red later. Its PASS
 # line is not a counted check (like the filter-guard static check above), so it does not touch
 # EXPECTED_MIN_CHECKS.
 # ---------------------------------------------------------------------------------------------
 
 # Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 90 s
-# virtual-time budget is fast-forwarded, so a healthy run takes ~4-10 s here (the slowest passing
-# browser phase seen was 79.8 s, at a machine load of 117).
+# virtual-time budget is fast-forwarded. Historical PR153 recorded a79.8s passing phase at
+# load117 (10.2s/12.8% runtime headroom); current observations and the decision to keep90s
+# rather than150s are recorded separately in docs/ops/HEADLESS-GATE.md.
 _CHROME_TIMEOUT_S = 90
 
 _RESULTS_RE = re.compile(r"RESULTS\n(.*?)\nDONE\((\d+)\)", re.S)
@@ -2058,7 +2101,12 @@ def check_headless_launch_contract():
     return True
 
 
-if not check_headless_launch_contract():
+try:
+    launch_contract_ok = check_headless_launch_contract()
+except OSError as error:
+    print(headless_chrome.environment_error("headless-launch self-test", error))
+    sys.exit(2)
+if not launch_contract_ok:
     # Exit 2 (infra), not 1 (a check FAILed): this is the gate's own machinery being broken, and it
     # is reported before Chrome is even looked for.
     print(
@@ -2068,7 +2116,14 @@ if not check_headless_launch_contract():
     sys.exit(2)
 
 
-CHROME = find_chrome()
+try:
+    CHROME = find_chrome()
+except ValueError as error:
+    # An explicit unusable choice is never a developer-machine SKIP or an implicit fallback.
+    # REQUIRE retains its missing-browser exit3; optional-but-misconfigured is an infra exit2.
+    code = 3 if os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1" else 2
+    print("FAIL: %s (exit %d)" % (error, code))
+    sys.exit(code)
 if CHROME is None:
     require = os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1"
     msg = "no Chrome/Chromium found (set CHROME_BIN or install google-chrome)"
@@ -2392,14 +2447,15 @@ CSS_SRC = (
   };
   // Sana (security review, PR #79 follow-up, finding 1): __cssFilter reads real CSSOM, but
   // Chrome drops a WHOLE declaration outright when it cannot parse the value (an unsupported or
-  // malformed filter function, or a vendor prefix it does not alias — `-webkit-backdrop-filter`
-  // among them) — verified live: `rule.style.cssText` comes back empty, so __cssFilter reports
+  // malformed filter function, or a filter vendor prefix it does not alias) — verified live:
+  // `rule.style.cssText` comes back empty, so __cssFilter reports
   // null exactly as if the declaration had never been written, and null is the PASSING state
   // for a "carries no filter" guard. No CSSOM read can see a declaration the browser's own
   // parser discarded; only the raw source text still has it. This is the coarse, deliberately
-  // dumb backstop for that: scan window.__CSSTEXT for the rule's own block(s) for the literal,
-  // case-insensitive substring "filter", independent of whether the declared value parses at
-  // all. It does not replace __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
+  // backstop for that: scan window.__CSSTEXT for filter declarations in the rule's own block(s),
+  // independent of whether the value parses. Only exact `none` (with optional priority) is
+  // harmless; backdrop-filter is a different property. It does not replace
+  // __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
   // and vendor-prefix/escape gaps this file was regexing before), it only re-covers the one
   // thing reading real CSSOM cannot: a declaration the parser threw away.
   //
@@ -2408,9 +2464,8 @@ CSS_SRC = (
   // that sits only in an EARLIER duplicate block still applies. A raw text scan has no cascade
   // (no parser, so no way to know which declaration "wins" or whether one even parsed), so the
   // deliberately dumb and deliberately conservative rule is: collect EVERY matching block and
-  // treat the guard as tripped if ANY of them mentions the property. The price is a (safe-
-  // direction) false red when an earlier block mentions `filter` harmlessly and a later one is
-  // filter-free — the same class as the known `filter: none` false red, not a new kind. The
+  // treat the guard as tripped if ANY has a non-none filter declaration. An earlier dangerous
+  // declaration remains disqualifying even if a later rule overrides it with none. The
   // match semantics themselves (a block whose selector text ENDS in `sel`) are unchanged; only
   // the aggregation moved from "last" to "all".
   //
@@ -2420,8 +2475,8 @@ CSS_SRC = (
   // `forced-colors: active` and similar as NOT MATCHING (no dark scheme, no reduced-motion
   // preference, no forced colours), so a hover `filter` hidden inside one of those blocks is
   // dropped from the CSSOM half's candidates by construction, and this blind text scan is the
-  // only thing that still catches it. The false red it costs (a harmless `filter: none` inside a
-  // reduced-motion block) is the price of that.
+  // only thing that still catches it. Harmless exact none is accepted without evaluating any
+  // condition; non-none declarations stay disqualifying even in a currently nonmatching block.
   // Every matching rule's raw declaration text for `sel` (source order) straight out of the
   // source text, comments stripped — independent of whether the browser's parser accepts any of
   // it. The shared primitive `__cssRawHasFilter`/`__cssNoBrightnessFilter` are built on.
@@ -2450,7 +2505,13 @@ CSS_SRC = (
     return bodies;
   };
   window.__cssRawHasFilter = function(sel, src) {
-    return window.__cssRawBlocks(sel, src).some(function(body) { return /filter\s*:/i.test(body); });
+    return window.__cssRawBlocks(sel, src).some(function(body) {
+      var declarations = /(?:^|;)\s*(?:-[a-z0-9]+-)?filter\s*:\s*([^;]*)/gi, match;
+      while ((match = declarations.exec(body)) !== null) {
+        if (!/^\s*none\s*(?:!\s*important\s*)?$/i.test(match[1])) { return true; }
+      }
+      return false;
+    });
   };
   // The filter the browser's cascade gives `sel` — what the CSSOM half of every filter guard
   // reads (17tnw2ayetm: previously `__cssFilter(__cssRule(sel))`, i.e. the last rule only).
@@ -2493,15 +2554,10 @@ CSS_SRC = (
     var filterVal = window.__cssEffectiveFilter(sel, src);
     return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
-  // PP-GEN's own narrower shape (Cody, PR #79 review round 1): only a re-lightening `brightness`
-  // filter is disqualifying, not "any filter at all" — a faithful migration of this site's
-  // pre-existing intent, not something this fix changes.
+  // PP-GEN shares the siblings' conservative predicate: a var() value can deliver brightness
+  // without that word appearing in the matching rule. Keep the registered helper identity.
   window.__cssNoBrightnessFilter = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return false; }  // fail-closed, as above
-    var filterVal = window.__cssEffectiveFilter(sel, src);
-    var rawBlocks = window.__cssRawBlocks(sel, src);
-    return (!filterVal || !/brightness/.test(filterVal)) &&
-      !rawBlocks.some(function(body) { return /brightness/i.test(body); });
+    return window.__cssFilterGuardOk(sel, src);
   };
   // A throw-away, isolated stylesheet for the self-tests: an inline <style> (so .cssRules is
   // readable, same reason as the probe above) built from `cssText`, returned as the {sheet, text}
@@ -2652,6 +2708,19 @@ STUB = r"""
   window.__sn = SN; // exposed so the driver can inspect persisted state directly
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
+    // 17tnw2ayna7: fail at the IPC boundary, keeping the real Remote Control handlers/DOM.
+    // Persistent snapshot failure also covers an interval tick racing the failure recovery.
+    if (window.__rcRejectCommand === cmd) return Promise.reject("host-secret:<img src=x onerror=alert(1)>");
+    if (cmd === "remote_snapshot" && window.__rcRejectSnapshots) {
+      window.__rcRejectedSnapshotSeen = true;
+      return Promise.reject(new Error("snapshot unavailable"));
+    }
+    if (window.__rcDeferCommand === cmd) return new Promise(function(resolve, reject) {
+      window.__rcDeferred = {resolve:resolve, reject:reject};
+    });
+    // The real host resolves unchanged snapshots for capacity/unknown-target no-ops.
+    if (window.__rcNoopCommand === cmd)
+      return Promise.resolve({devices:window.__remote.devices.slice(),pending:window.__remote.pending.slice()});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
     // The real bundled set (selahcue_scripture::Translation::ALL, mirrored — see main.rs's
@@ -3511,6 +3580,20 @@ STUB = r"""
       if (tg === "quota_exceeded")
         return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly note-generation quota exceeded", clamp:null});
       if (tg === "transport") return Promise.reject("network down");
+      if (tg === "regenerate_staging_failure") {
+        // 17tnw2b9dq6: generation succeeded but the host could not stage it. The accepted
+        // TR.detail draft is deliberately untouched. Deliberately use the existing null-id
+        // reply without the new flag too: an older host must remain conservatively read-only,
+        // and restoring the openId fallback must trip this behavioral control.
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null,
+          transcript_id:null, pending_confirmation:false, previous_draft:null,
+          draft:{title:"Unsaved replacement from AI", summary:"This draft was never staged.",
+            sections:[{heading:"Main points", items:["New unsaved wording"], points:[]}], scriptures:[]},
+          quota:null, clamp:null,
+        });
+      }
       if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
         // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
         // branches above — a caller is expected to have already generated a real accepted draft
@@ -6119,6 +6202,84 @@ DRIVER = r"""
       ok(/Broadcasting NDI · Test NDI/.test(insp2.textContent),
          "inspector: stream settles into the confirmed broadcasting state (the mock now really persists it, like set_screen_enabled does)");
 
+      // 17tnw2ayetf: exercise imported host-valid astral names through the REAL inspector.
+      // The host counts Unicode scalars, not UTF16 units; a valid imported name must not
+      // strand Broadcast ON. No fake validator: only the existing host-command seam is mocked.
+      var unicodeNdiConfig = function(){ return V.screens.find(function(s){ return s.screen === "stream"; }).config; };
+      var fortyNdiEmoji = "😀".repeat(40);
+      unicodeNdiConfig().ndi_name = fortyNdiEmoji;
+      await waitFor(function(){
+        var n = document.querySelector('input[aria-label="NDI source name for stream"]');
+        return n && n.value === fortyNdiEmoji;
+      });
+      var unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      ok(unicodeNdiField.maxLength < 0,
+         "NDI Unicode: no UTF16 maxlength can truncate a valid astral scalar or split a surrogate pair");
+      var unicodeOffBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      document.querySelector('input[aria-label="Broadcast stream as an NDI source"]').click();
+      var unicodeOffCalls = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; });
+      ok(unicodeOffCalls.length === unicodeOffBefore + 1 &&
+         unicodeOffCalls[unicodeOffCalls.length - 1].args.name === fortyNdiEmoji &&
+         unicodeOffCalls[unicodeOffCalls.length - 1].args.enabled === false,
+         "NDI Unicode: Broadcast OFF for an imported 40-emoji source reaches the host with unchanged name");
+      await waitFor(function(){ return unicodeNdiConfig().ndi_enabled === false; });
+      ok(unicodeNdiConfig().ndi_enabled === false,
+         "NDI Unicode: the host-confirmed source actually stops broadcasting");
+      //64 astral scalars (128 UTF16 units) are a valid boundary;65 must be refused.
+      unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      unicodeNdiField.value = "😀".repeat(64);
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      await waitFor(function(){ return unicodeNdiConfig().ndi_name === "😀".repeat(64); });
+      ok(unicodeNdiConfig().ndi_name === "😀".repeat(64),
+         "NDI Unicode: exactly 64 astral scalars are accepted unchanged, despite 128 UTF16 units");
+      unicodeNdiField = document.querySelector('input[aria-label="NDI source name for stream"]');
+      var unicodeTooLongBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      unicodeNdiField.value = "😀".repeat(65);
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      ok(window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === unicodeTooLongBefore,
+         "NDI Unicode: 65 scalars are refused before a host round trip");
+      ok(/64 characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent) &&
+         !/control characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: a length refusal explains 64 characters instead of blaming control characters");
+      unicodeNdiField.value = "Bad\u0007Name";
+      unicodeNdiField.dispatchEvent(new Event("change"));
+      ok(window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === unicodeTooLongBefore &&
+         /control characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: control-character refusal remains distinct and never reaches the host");
+      // V246-1: count actual iterator reads in the shipped handler, not elapsed time.
+      // Only the oversized string's iterator is instrumented; restore the intrinsic before
+      // any await or subsequent test. A spread count reads all 1 million scalars; a bounded
+      // scalar decision needs at most 65, regardless of total pasted length.
+      var oversizedNdiName = "x".repeat(1000000);
+      var oversizedNdiVisits = 0;
+      var originalNdiIterator = String.prototype[Symbol.iterator];
+      var oversizedNdiCallsBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+      try {
+        String.prototype[Symbol.iterator] = function(){
+          var iterator = originalNdiIterator.call(this);
+          if (String(this) !== oversizedNdiName) return iterator;
+          return {
+            next: function(){
+              var step = iterator.next();
+              if (!step.done) oversizedNdiVisits++;
+              return step;
+            },
+            [Symbol.iterator]: function(){ return this; }
+          };
+        };
+        unicodeNdiField.value = oversizedNdiName;
+        unicodeNdiField.dispatchEvent(new Event("change"));
+      } finally {
+        String.prototype[Symbol.iterator] = originalNdiIterator;
+      }
+      ok(oversizedNdiVisits <= 65 &&
+         window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === oversizedNdiCallsBefore &&
+         /64 characters/.test(document.getElementById("screens-inspector").querySelector(".scr-signal").textContent),
+         "NDI Unicode: a million-scalar name is refused after at most 65 iterator reads (got " + oversizedNdiVisits + "), with no host call");
+      // Restore the exact broadcasting fixture consumed by the existing duplicate-name checks.
+      unicodeNdiConfig().ndi_name = "Test NDI"; unicodeNdiConfig().ndi_enabled = true;
+      await waitFor(function(){ return /Broadcasting NDI · Test NDI/.test(document.getElementById("screens-inspector").textContent); });
+
       // === CON-156/157/158 (Frame F states 4/5/6, node 462:194) — NDI rejection/unavailable
       // messages. Previously a rejected enable reverted the toggle with NO explanation at all;
       // these assert the exact Figma-spec copy now renders, driven by the SAME rule the host
@@ -6210,6 +6371,52 @@ DRIVER = r"""
       ok(!insp5.querySelector('input[aria-label="Broadcast main as an NDI source"]').disabled,
          "CON-158 (control): ndi_available reverting to unknown (null) re-enables the control — absent must never render as unavailable");
 
+      //17tnw2ayetg: cover four separate host-startup configurations. Switching the
+      // fixture here is test setup, not a promise that NDI capability hot-switches at runtime.
+      var savedNdiState = V.screens.find(function(s){ return s.screen === "main"; }).config;
+      var savedNdiEnabledBefore = savedNdiState.ndi_enabled;
+      var savedNdiNameBefore = savedNdiState.ndi_name;
+      var savedNdiAvailableBefore = V.ndi_available;
+      var ndiStartupCases = [
+        {available:true, enabled:true, label:"available/saved-on"},
+        {available:true, enabled:false, label:"available/saved-off"},
+        {available:false, enabled:true, label:"unavailable/saved-on"},
+        {available:false, enabled:false, label:"unavailable/saved-off"}
+      ];
+      for (var startupCase of ndiStartupCases) {
+        savedNdiState.ndi_enabled = startupCase.enabled;
+        savedNdiState.ndi_name = "Saved Main Feed";
+        V.ndi_available = startupCase.available;
+        var startupNdiCallsBefore = window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length;
+        await waitFor(function(){
+          var toggle = document.querySelector('input[aria-label="Broadcast main as an NDI source"]');
+          var field = document.querySelector('input[aria-label="NDI source name for main"]');
+          return toggle && field && toggle.checked === startupCase.enabled &&
+            toggle.disabled === !startupCase.available && field.value === "Saved Main Feed";
+        });
+        var startupNdiInspector = document.getElementById("screens-inspector");
+        var startupNdiToggle = startupNdiInspector.querySelector('input[aria-label="Broadcast main as an NDI source"]');
+        var startupNdiSignal = startupNdiInspector.querySelector(".scr-signal");
+        var startupNdiText = startupNdiSignal.textContent;
+        ok(startupNdiToggle.checked === startupCase.enabled && startupNdiToggle.disabled === !startupCase.available,
+           "NDI startup " + startupCase.label + ": the checkbox preserves the saved preference and host availability");
+        var startupNdiCopyOk;
+        if (!startupCase.available) {
+          startupNdiCopyOk = /NDI runtime unavailable/.test(startupNdiText) && !/Broadcasting NDI/.test(startupNdiText) &&
+            (startupCase.enabled ? /saved as on/.test(startupNdiText) && /not broadcasting now/.test(startupNdiText) : !/saved as on/.test(startupNdiText));
+        } else {
+          startupNdiCopyOk = startupCase.enabled ? /Broadcasting NDI · Saved Main Feed/.test(startupNdiText) : /NDI off/.test(startupNdiText);
+        }
+        ok(startupNdiCopyOk && startupNdiSignal.getAttribute("role") === "status",
+           "NDI startup " + startupCase.label + ": visible announced copy explains the actual state without a false broadcast claim");
+        ok(savedNdiState.ndi_enabled === startupCase.enabled && savedNdiState.ndi_name === "Saved Main Feed" &&
+           window.__calls.filter(function(c){ return c.cmd === "set_ndi_output"; }).length === startupNdiCallsBefore,
+           "NDI startup " + startupCase.label + ": rendering neither rewrites the preference nor sends a host mutation");
+      }
+      savedNdiState.ndi_enabled = savedNdiEnabledBefore;
+      savedNdiState.ndi_name = savedNdiNameBefore;
+      V.ndi_available = savedNdiAvailableBefore;
+
       // Restore: the set_ndi_output mock above (CON-156/157/158) is a REAL mutation, unlike the
       // rest of this file's earlier no-op stub for it, so "stream" and "main" are genuinely left
       // broadcasting at this point. Reset both, so that state does not leak into a later fixture
@@ -6218,6 +6425,122 @@ DRIVER = r"""
       // would otherwise start reporting NDI "ok" instead of "off" purely as a side effect of an
       // earlier, unrelated check.
       V.screens.forEach(function(s){ if (s.config) { s.config.ndi_enabled = false; s.config.ndi_name = ""; } });
+
+      // 17tnw2ay5jh residual: NDI validation already has its own status region.
+      // OutputHealth needs a pre-existing connected announcement channel that survives
+      // inspector rebuilds. Observe actual text mutations, not attributes alone.
+      var jhSavedOutputs = JSON.parse(JSON.stringify(V.outputs));
+      var jhSavedScreens = JSON.parse(JSON.stringify(V.screens));
+      var jhSavedSelected = selectedScreen;
+      var jhSavedScrollX = window.scrollX, jhSavedScrollY = window.scrollY;
+      var jhLive = document.getElementById("screens-output-health-live");
+      var jhObserver = new MutationObserver(function(){});
+      jhObserver.observe(jhLive || document.getElementById("surface-screens"), {childList:true,characterData:true,subtree:true});
+      var jhRecords = function(){ return jhObserver.takeRecords().filter(function(r){ return !!jhLive && (r.target === jhLive || jhLive.contains(r.target)); }); };
+      var jhText = function(){ return jhLive ? jhLive.textContent : ""; };
+      var jhFoot = function(){ var all=document.querySelectorAll("#screens-inspector .scr-signal"); return all[all.length-1]; };
+      try {
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        var jhMain = V.screens.find(function(s){ return s.screen === "main"; });
+        jhMain.enabled = true;
+        var jhMainOut = V.outputs.find(function(o){ return o.role === "main"; });
+        if (!jhMainOut) { jhMainOut={role:"main",assigned:true}; V.outputs.push(jhMainOut); }
+        jhMainOut.signal="healthy"; jhMainOut.fps=60; jhMainOut.dropped_frames=0;
+        selectScreen("main"); renderOutputs(V);
+        var jhFocus = document.getElementById("screens-identify");
+        jhFocus.focus({preventScroll:true});
+        jhRecords();
+        ok(!!jhLive && jhLive.isConnected && jhLive.getAttribute("role") === "status" &&
+           jhLive.getAttribute("aria-live") === "polite" && jhLive.getAttribute("aria-atomic") === "true" &&
+           !document.getElementById("screens-inspector").contains(jhLive),
+           "JH: OutputHealth has a pre-existing polite atomic status channel outside the rebuilt inspector");
+        ok(/Audience — Main/.test(jhText()) && /Signal healthy/.test(jhText()) && /Signal healthy/.test(jhFoot().textContent),
+           "JH: the health announcement identifies the selected output and matches its real healthy footer");
+
+        jhMainOut.signal="degraded"; jhMainOut.dropped_frames=3;
+        renderOutputs(V);
+        var jhChanged = jhRecords();
+        ok(/Signal degraded/.test(jhText()) && /3 dropped frames/.test(jhText()) &&
+           jhChanged.length === 1 && jhChanged[0].target.isConnected,
+           "JH: a real degraded health change mutates the already-connected status text once");
+        ok(document.activeElement === jhFocus,
+           "JH control: health publication does not move focus from the current control");
+        ok(document.getElementById("screens-output-health-live") === jhLive &&
+           document.querySelectorAll("#screens-output-health-live").length === 1,
+           "JH: inspector rebuilds retain one identical health announcement node");
+
+        var jhBeforeSame = jhText();
+        renderOutputs(V);
+        ok(jhText() === jhBeforeSame && jhRecords().length === 0,
+           "JH control: an identical telemetry poll performs no duplicate health announcement mutation");
+        jhMain.config = jhMain.config || {};
+        jhMain.config.orientation = (jhMain.config.orientation || 0) === 1 ? 0 : 1;
+        var jhOldFooter = jhFoot();
+        renderOutputs(V);
+        ok(jhFoot() !== jhOldFooter && jhText() === jhBeforeSame && jhRecords().length === 0,
+           "JH: an unrelated real inspector rebuild does not repeat unchanged health text");
+
+        jhMainOut.signal="no_signal";
+        renderOutputs(V);
+        ok(/No signal/.test(jhText()) && !/Signal degraded/.test(jhText()) && jhRecords().length === 1,
+           "JH: reported signal loss replaces the old health message rather than appending stale status");
+        V.outputs = V.outputs.filter(function(o){ return o.role !== "main"; });
+        renderOutputs(V);
+        ok(/awaiting host telemetry/.test(jhText()) && !/No signal/.test(jhText()) &&
+           /awaiting host telemetry/.test(jhFoot().textContent),
+           "JH: missing telemetry returns to unknown and clears the old fault without fabricating no-signal");
+        jhRecords();
+        V.outputs.push(jhMainOut); jhMainOut.signal="healthy"; jhMain.enabled=false;
+        renderOutputs(V);
+        ok(/Output window closed/.test(jhText()) && !/Signal healthy/.test(jhText()) &&
+           /Output window closed/.test(jhFoot().textContent),
+           "JH: a closed output announces its real closed state despite stale healthy telemetry");
+
+        jhMain.enabled=true; renderOutputs(V); jhRecords();
+        var jhPicker=document.querySelector('#screens-inspector select[aria-label="Orientation for main"]');
+        jhPicker.focus({preventScroll:true});
+        var jhBeforeDeferred=jhText();
+        jhMainOut.signal="degraded"; jhMainOut.dropped_frames=8;
+        renderOutputs(V);
+        ok(document.activeElement === jhPicker && document.getElementById("screens-inspector").contains(jhPicker) &&
+           jhText() === jhBeforeDeferred && jhRecords().length === 0,
+           "JH control: focused-picker deferral preserves the picker and the currently displayed health feedback");
+        jhPicker.blur(); renderOutputs(V);
+        ok(/Signal degraded/.test(jhText()) && /8 dropped frames/.test(jhText()) && jhRecords().length === 1,
+           "JH: releasing the picker publishes the accepted deferred health once on the normal render path");
+
+        var jhStageOut=V.outputs.find(function(o){ return o.role === "stage"; });
+        if (!jhStageOut) { jhStageOut={role:"stage",assigned:true}; V.outputs.push(jhStageOut); }
+        jhStageOut.signal="healthy";
+        V.screens.find(function(s){ return s.screen === "stage"; }).enabled=true;
+        renderOutputs(V); jhRecords();
+        rowFor("stage").click();
+        ok(/Stage Display/.test(jhText()) && /Signal healthy/.test(jhText()) && !/Audience — Main/.test(jhText()),
+           "JH: real card selection replaces the prior output context with the newly selected output health");
+        ok(document.querySelectorAll("#screens-output-health-live").length === 1,
+           "JH control: selecting another output creates no second health announcer");
+
+        var jhUnsafeRole='<img src=x onerror="window.__jhInjected=true">';
+        V.screens.push({screen:"jh-host-text",role:jhUnsafeRole,enabled:true,deletable:true});
+        renderOutputs(V); selectScreen("jh-host-text");
+        ok(!!jhLive && jhText().indexOf(jhUnsafeRole) >= 0 && !jhLive.querySelector("img") && !window.__jhInjected,
+           "JH: host-derived output text is announced as plain text without interpreting markup");
+        renderInspector(V, [], {}, {}, V.themes || []);
+        ok(!!jhLive && jhLive.isConnected && jhText() === "" &&
+           /Select an output/.test(document.getElementById("screens-inspector").textContent),
+           "JH control: the real empty-inspector path clears stale health while retaining the live channel");
+        selectScreen("main"); renderOutputs(V);
+        var jhNdi=document.querySelector("#screens-inspector .scr-signal");
+        ok(jhNdi !== jhFoot() && jhNdi.getAttribute("role") === "status" && /NDI off/.test(jhNdi.textContent),
+           "JH control: existing NDI validation retains its own established status semantics and visible wording");
+      } finally {
+        jhObserver.disconnect();
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        V.outputs=jhSavedOutputs; V.screens=jhSavedScreens;
+        outputsKey=""; renderOutputs(V);
+        selectScreen(jhSavedSelected);
+        window.scrollTo(jhSavedScrollX, jhSavedScrollY);
+      }
 
       // === CON-089 (Design 2.0 global chord `F`, Figma 337:174 "Fullscreen selected output"):
       //     an in-console fullscreen of the SELECTED output's already-live preview canvas — never
@@ -8284,6 +8607,84 @@ DRIVER = r"""
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
 
+      // 17tnw2b9dq6: a generated but UNSAVED reply must never inherit openId's accepted
+      // draft identity. Exercise the real Edit/Save buttons if the bug exposes them, so
+      // an accidental update is detected as both a command and a changed accepted row.
+      var dq6OriginalDetail = JSON.parse(JSON.stringify(window.__TR.detail[1]));
+      try {
+        var dq6Detail = window.__TR.detail[1];
+        dq6Detail.draft = {title:"Accepted offline outline", summary:"Operator's accepted summary",
+          sections:[{heading:"Outline", items:["Operator's accepted wording"], points:[]}], scriptures:[]};
+        dq6Detail.ai_generated = false;
+        dq6Detail.ai_label = "AI-generated draft";
+        dq6Detail.disclosure = null;
+        dq6Detail.notes_provider = "Local (offline)";
+        dq6Detail.notes_generated = true;
+        dq6Detail.pending = null;
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+        var dq6AcceptedEdit = el("tr-gen-edit");
+        ok(!!dq6AcceptedEdit, "DQ6 control: an actually saved numeric-id draft remains editable");
+        var dq6ControlUpdates = trCall("update_sermon_note_draft").length;
+        if (dq6AcceptedEdit) dq6AcceptedEdit.click();
+        var dq6Title = el("tr-edit-title");
+        if (dq6Title) dq6Title.value = "Hand-edited accepted offline outline";
+        var dq6ControlSave = el("tr-gen-save");
+        if (dq6ControlSave) dq6ControlSave.click();
+        await sleep(60);
+        ok(trCall("update_sermon_note_draft").length === dq6ControlUpdates + 1 &&
+           window.__TR.detail[1].draft.title === "Hand-edited accepted offline outline",
+           "DQ6 control: real accepted Edit/Save sends one update and persists the operator's wording");
+        var dq6Accepted = JSON.stringify(window.__TR.detail[1]);
+        var dq6Updates = trCall("update_sermon_note_draft").length;
+        window.__trGen = "regenerate_staging_failure";
+        trEntry().click();
+        await sleep(40);
+        el("tr-gen-preview-confirm").click();
+        await sleep(80);
+        var dq6Result = el("tr-gen-result");
+        ok(/Unsaved replacement from AI/.test(dq6Result.textContent),
+           "DQ6: the generated unsaved content is still readable");
+        var dq6Notice = dq6Result.querySelector('[role="alert"]');
+        ok(!!dq6Notice && /Not saved/i.test(dq6Notice.textContent) && /read.only/i.test(dq6Notice.textContent) &&
+           getComputedStyle(dq6Notice).display !== "none",
+           "DQ6: failed staging renders a computed-visible Not saved/read-only notice");
+        ok(/Not saved/i.test(el("tr-detail-notes").textContent),
+           "DQ6: the displayed replacement's badge does not claim that these unsaved notes were saved");
+        ok(!el("tr-gen-edit") && !el("tr-gen-save"),
+           "DQ6: an unsaved generated draft exposes neither Edit nor Save for the accepted draft");
+        ok(!el("tr-gen-regen-confirm") && !el("tr-gen-regen-discard") && !window.__TR.detail[1].pending,
+           "DQ6: staging failure cannot masquerade as an accepted or staged replacement");
+        ok(/Not saved/i.test(el("tr-gen-live").textContent) && !/Sermon notes are ready\./.test(el("tr-gen-live").textContent),
+           "DQ6: the live announcement identifies unsaved notes instead of claiming saved readiness");
+        // Do not skip the exploit path on RED: if Edit/Save are incorrectly present, use them.
+        var dq6UnsafeEdit = el("tr-gen-edit");
+        if (dq6UnsafeEdit) dq6UnsafeEdit.click();
+        var dq6UnsafeSave = el("tr-gen-save");
+        if (dq6UnsafeSave) dq6UnsafeSave.click();
+        await sleep(80);
+        ok(trCall("update_sermon_note_draft").length === dq6Updates,
+           "DQ6: attempting the exposed controls sends no update against the accepted transcript");
+        ok(JSON.stringify(window.__TR.detail[1]) === dq6Accepted,
+           "DQ6: accepted hand-edited text and non-AI provenance remain byte-for-byte unchanged");
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+        ok(/Hand-edited accepted offline outline/.test(el("tr-gen-result").textContent) &&
+           !/Unsaved replacement from AI/.test(el("tr-gen-result").textContent) && !!el("tr-gen-edit"),
+           "DQ6 control: reopening reads the accepted draft and restores its legitimate Edit action");
+      } finally {
+        window.__TR.detail[1] = dq6OriginalDetail;
+        window.__trGen = "ok";
+        el("tr-detail-back").click();
+        await sleep(40);
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await sleep(80);
+      }
+
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
       // against the Transcripts page (the one surface that now renders them) ===
       var trGenOnce = async function (mode) {
@@ -9215,6 +9616,7 @@ DRIVER = r"""
       var rcPend = document.querySelector("#rc-pending .rc-pending-card");
       ok(!!rcPend, "Remote: a pending pair request is shown with a role picker");
       rcPend.querySelector(".rc-approve").click();
+      await waitFor(function(){ return document.querySelectorAll("#rc-pending .rc-pending-card").length === 0; });
       ok(document.querySelectorAll("#rc-pending .rc-pending-card").length === 0 &&
          +el("rc-count-n").textContent === rcN0 + 1,
          "Remote: Approve moves the request into paired devices (" + rcN0 + "→" + el("rc-count-n").textContent + ")");
@@ -9224,8 +9626,111 @@ DRIVER = r"""
       rcRb.click();
       ok(rcRb.classList.contains("armed"), "Remote: first Revoke click arms a two-step confirm (destructive)");
       rcRb.click();
+      await waitFor(function(){ return document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1; });
       ok(document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1,
          "Remote: second Revoke click removes the device");
+
+      // 17tnw2ayna7: reject each real action AND its recovery snapshot. Removing the host-
+      // confirmation boundary or visible error must break these cases, not just fixture wiring.
+      await window.__rcActivationSettleForTest();
+      var rcOriginal = JSON.parse(JSON.stringify(window.__remote));
+      var rcFailureFixture = {
+        devices:[{device_id:"rc-test-device", name:"Confirmed tablet", platform:"iPadOS", role:"viewer", idle_secs:3}],
+        pending:[{device_id:"rc-test-pending", name:"Waiting phone", platform:"iOS"}]
+      };
+      async function rcResetFailureCase() {
+        window.__rcRejectCommand = null; window.__rcRejectSnapshots = false;
+        window.__rcNoopCommand = null;
+        window.__remote = JSON.parse(JSON.stringify(rcFailureFixture));
+        await window.__rcPollForTest(); await window.__rcActivationSettleForTest();
+      }
+      var rcFailureActions = [
+        {cmd:"remote_approve", fire:function(){ document.querySelector("#rc-pending .rc-approve").click(); }},
+        {cmd:"remote_deny", fire:function(){ document.querySelector("#rc-pending .rc-deny").click(); }},
+        {cmd:"remote_revoke", fire:function(){ var b=document.querySelector("#rc-rows .rc-revoke"); b.click(); b.click(); }},
+        {cmd:"remote_set_role", fire:function(){ var s=document.querySelector("#rc-rows select"); s.value="producer"; s.dispatchEvent(new Event("change",{bubbles:true})); }}
+      ];
+      for (var rcCase of rcFailureActions) {
+        await rcResetFailureCase();
+        window.__rcRejectCommand=rcCase.cmd; window.__rcRejectSnapshots=true; window.__rcRejectedSnapshotSeen=false;
+        rcCase.fire();
+        await waitFor(function(){ return window.__rcRejectedSnapshotSeen; });
+        // The rejecting snapshot's catch and the mutation's final control reset are microtasks.
+        await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+        var rcError = el("rc-action-error");
+        ok(!!rcError && !rcError.hidden && getComputedStyle(rcError).display !== "none" && rcError.getAttribute("role") === "alert",
+           "Remote failure " + rcCase.cmd + ": sighted and screen-reader operators receive a visible alert even when resync fails");
+        ok(document.querySelectorAll("#rc-rows .rc-row").length === 1 && document.querySelector("#rc-rows .rc-devname").textContent === "Confirmed tablet" &&
+           document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && document.querySelector("#rc-rows select").value === "viewer",
+           "Remote failure " + rcCase.cmd + ": list and role retain last host-confirmed state");
+        ok(!!rcError && /not confirmed|could not confirm/i.test(rcError.textContent) && !/host-secret|onerror/.test(rcError.textContent) &&
+           !/Approved|Denied|Revoked|is now/.test(el("rc-live").textContent),
+           "Remote failure " + rcCase.cmd + ": no false success announcement or raw host error disclosure");
+        await rcResetFailureCase();
+        ok(!!rcError && rcError.hidden, "Remote recovery " + rcCase.cmd + ": a fresh authoritative snapshot clears the stale warning");
+      }
+      // C-REMOTE-1: a resolved snapshot is not a success receipt. At the real session cap an
+      // approval leaves the request pending; stale deny/revoke/role targets can also be no-ops.
+      // These invokes settle on microtasks. Observe their completed feedback before yielding
+      // to timers: an actual trace showed the real 3s poll hiding the warning 6ms after the
+      // action completed, inside waitFor's 20ms yield. Polling stays active; this asserts the
+      // action's result rather than a later successful snapshot's recovery state.
+      for (var rcNoopCase of rcFailureActions) {
+        await rcResetFailureCase(); window.__rcNoopCommand=rcNoopCase.cmd;
+        rcNoopCase.fire();
+        var rcNoopSettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+        ok(rcNoopSettled && document.querySelectorAll("#rc-rows .rc-row").length === 1 &&
+           document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && document.querySelector("#rc-rows select").value === "viewer",
+           "Remote no-op " + rcNoopCase.cmd + ": retain the authoritative unchanged list and role");
+        ok(!el("rc-action-error").hidden && getComputedStyle(el("rc-action-error")).display !== "none" &&
+           /not confirmed/i.test(el("rc-live").textContent) && !/Approved|Denied|Revoked|is now/.test(el("rc-live").textContent),
+           "Remote no-op " + rcNoopCase.cmd + ": unfulfilled result is visibly unconfirmed rather than announced as success");
+      }
+      await rcResetFailureCase(); window.__rcNoopCommand="remote_set_role";
+      // The UI saw the device, but it disappeared at the host before the command arrived.
+      window.__remote.devices=[];
+      rcFailureActions[3].fire();
+      var rcMissingRoleSettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(rcMissingRoleSettled && document.querySelectorAll("#rc-rows .rc-row").length === 0 && +el("rc-count-n").textContent === 0,
+         "Remote no-op role missing target: display the host's empty device list rather than restore a stale target");
+      ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/is now Producer/.test(el("rc-live").textContent),
+         "Remote no-op role missing target: never announce a role for a device the snapshot does not contain");
+      await rcResetFailureCase();
+      window.__rcNoopCommand="remote_deny";
+      // Another operator approved the request before this stale Deny reached the host.
+      window.__remote.pending=[];
+      window.__remote.devices.push({device_id:"rc-test-pending",name:"Waiting phone",platform:"iOS",role:"producer",idle_secs:0});
+      document.querySelector("#rc-pending .rc-deny").click();
+      var rcStaleDenySettled = await settleMicro(function(){ return el("surface-remote").getAttribute("aria-busy") === "false"; });
+      ok(rcStaleDenySettled && document.querySelectorAll("#rc-rows .rc-row").length === 2 && document.querySelectorAll("#rc-pending .rc-pending-card").length === 0,
+         "Remote no-op deny already approved: preserve the paired device from the authoritative snapshot");
+      ok(!el("rc-action-error").hidden && /not confirmed/i.test(el("rc-live").textContent) && !/Denied/.test(el("rc-live").textContent),
+         "Remote no-op deny already approved: absence of a pending request cannot announce denial while its device is paired");
+      await rcResetFailureCase();
+      // A deferred host answer must leave the old confirmed state on screen, with duplicate
+      // submissions disabled. The first-click Revoke confirmation remains covered above.
+      window.__rcDeferCommand="remote_deny";
+      var rcDeferredBefore=window.__calls.filter(function(c){ return c.cmd === "remote_deny"; }).length;
+      document.querySelector("#rc-pending .rc-deny").click();
+      var rcPendingButton=document.querySelector("#rc-pending .rc-deny");
+      ok(!!rcPendingButton && rcPendingButton.disabled && el("surface-remote").getAttribute("aria-busy") === "true" &&
+         document.querySelectorAll("#rc-pending .rc-pending-card").length === 1 && !/Denied/.test(el("rc-live").textContent),
+         "Remote pending: keep confirmed request, announce waiting and disable mutation controls until the host answers");
+      if (rcPendingButton) rcPendingButton.click();
+      ok(window.__calls.filter(function(c){ return c.cmd === "remote_deny"; }).length === rcDeferredBefore+1,
+         "Remote pending: repeated click cannot dispatch a duplicate action");
+      window.__rcDeferCommand=null; window.__remote.pending=[];
+      window.__rcDeferred.resolve({devices:window.__remote.devices.slice(),pending:[]});
+      await waitFor(function(){ return document.querySelectorAll("#rc-pending .rc-pending-card").length === 0; });
+      ok(document.querySelectorAll("#rc-pending .rc-pending-card").length === 0 && /Denied/.test(el("rc-live").textContent),
+         "Remote success: denial applies and announces only after host confirmation");
+      await rcResetFailureCase();
+      var rcSuccessRole=document.querySelector("#rc-rows select"); rcSuccessRole.value="producer";
+      rcSuccessRole.dispatchEvent(new Event("change",{bubbles:true}));
+      await waitFor(function(){ return document.querySelector("#rc-rows select").value === "producer" && el("surface-remote").getAttribute("aria-busy") !== "true"; });
+      ok(document.querySelector("#rc-rows select").value === "producer" && /is now Producer/.test(el("rc-live").textContent),
+         "Remote success: role changes apply the host-returned role and announce confirmation");
+      window.__remote=rcOriginal; await window.__rcPollForTest(); await window.__rcActivationSettleForTest();
 
       // === RCD-### closure (17tnw2axptv) — RCD-008 (MISSING) + RCD-009 (A11Y-DEFECT). RCD-004/
       // RCD-006 are deliberately NOT covered here: both are named in the ClickUp ticket itself
@@ -10629,6 +11134,211 @@ DRIVER = r"""
       ok(planDecks === null,
          "planLoadDecks catch-path guard (other direction): a stale, late-arriving SUCCESS does not clobber a newer failure");
       await planLoadDecks(); // plain, non-overlapping resync — same mutation-safe cleanup discipline as the block above
+      // 17tnw2aynax residual only: PR100's request-ordering controls above already pass.
+      // The library receives the SAME deck list after mutations but must also publish it
+      // to plan resolution and invalidate render keys, without another deck_list/nav.
+      var naxSavedLibrary = JSON.parse(JSON.stringify(window.__LIB));
+      var naxSavedView = JSON.parse(JSON.stringify(V));
+      var naxSavedDeck = JSON.parse(JSON.stringify(D));
+      var naxSavedEditor = pmDv ? JSON.parse(JSON.stringify(pmDv)) : pmDv;
+      var naxSavedEditorName = pmEl("pm-plan-name").textContent;
+      var naxSavedQuery = pmLibQuery;
+      var naxPending = [];
+      try {
+        window.__LIB = { decks:[{id:4901, name:"NAX original", slides:2}], open:4901,
+          persistent:true, nextId:4903, trash:[] };
+        V.plan_name = "NAX library snapshots";
+        V.items = [
+          {id:4911, kind:"slide_group", title:"Existing deck", is_live:false, is_staged:false, link:{kind:"deck", id:4901}},
+          {id:4912, kind:"slide_group", title:"Restorable deck", is_live:false, is_staged:false, link:{kind:"deck", id:4902}}
+        ];
+        V.live_index = null; V.staged_index = null;
+        pmLibQuery = "";
+        await planLoadDecks();
+        pmApplyLibrary(await invoke("deck_list"));
+        planSelectedId = null;
+        planRenderBuilder(V);
+        lastRendered = "";
+        render(JSON.parse(JSON.stringify(V)));
+        ok(planLinkState(V.items[0].link) === "resolved" && planLinkState(V.items[1].link) === "missing" &&
+           sumRowValue("Missing content") === "⚠ 1",
+           "NAX control: a known library resolves its present deck and genuinely marks an absent id missing");
+
+        // A fresh LibraryView can introduce a newly-created/imported/restored id. Applying
+        // that authoritative payload must be enough; do not call planLoadDecks to hide the bug.
+        window.__LIB.decks.push({id:4902, name:"NAX newly available", slides:4});
+        var naxBeforeApply = window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length;
+        pmApplyLibrary(await invoke("deck_list"));
+        planRenderBuilder(V);
+        ok(planLinkState(V.items[1].link) === "resolved" && sumRowValue("Missing content") === "0",
+           "NAX: a fresh library snapshot clears a false missing chip/count without visiting another surface");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length === naxBeforeApply + 1,
+           "NAX control: applying a library payload adds no hidden deck_list round trip");
+
+        // Real rename dialog -> actual deck_rename handler -> pmApplyLibrary.
+        window.__LIB.decks[0].slides = 7;
+        pmLibRename(4901, "NAX original");
+        await sleep(20);
+        var naxInput = el("pm-prompt-input");
+        ok(!!naxInput, "NAX control: the actual library Rename action opens its dialog");
+        if (naxInput) naxInput.value = "NAX renamed";
+        var naxConfirm = document.querySelector(".pm-confirm .pm-btn-primary");
+        if (naxConfirm) naxConfirm.click();
+        await sleep(50);
+        ok(planDeckName(4901) === "NAX renamed",
+           "NAX: actual library rename updates the shared plan deck name immediately");
+        render(JSON.parse(JSON.stringify(V))); // Same host data as before: mirrors the next view poll.
+        var naxConsoleChip = document.querySelector('#plan .item[data-id="4911"] .link-chip');
+        if (!naxConsoleChip) naxConsoleChip = Array.from(document.querySelectorAll("#plan .link-chip")).filter(function(n){ return /NAX/.test(n.textContent); })[0];
+        ok(!!naxConsoleChip && /NAX renamed/.test(naxConsoleChip.textContent),
+           "NAX: unchanged host view repaints the console chip after a library mutation");
+        planSelectedId = 4911;
+        planRenderBuilder(V);
+        var naxCard = document.querySelector("#plan-b-insp .plan-deck-card");
+        ok(!!naxCard && /NAX renamed/.test(naxCard.textContent) && /7 slides/.test(naxCard.textContent),
+           "NAX: the linked-deck inspector uses the same latest name and slide count");
+
+        // Actual delete/restore handlers must agree with the same shared snapshot.
+        await pmLibDelete(4902, "NAX newly available");
+        var naxDelete = document.querySelector(".pm-confirm .pm-btn-danger");
+        ok(!!naxDelete, "NAX control: deleting a linked presentation requires the existing confirmation");
+        if (naxDelete) naxDelete.click();
+        await sleep(50);
+        planSelectedId = null;
+        planRenderBuilder(V);
+        ok(!window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
+           planLinkState(V.items[1].link) === "missing" && sumRowValue("Missing content") === "⚠ 1",
+           "NAX: confirmed library deletion updates the real missing chip/count");
+        // CODY-NAX-01: Library refresh keeps the existing cards/Undo interactive.
+        // Hold its actual deck_list response before the restore, then deliver it late.
+        window.__deckListManualQueue = [];
+        var naxReadCalls = window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length;
+        var naxLibraryOlder = pmLibLoad();
+        naxPending.push(naxLibraryOlder);
+        var naxLibraryReply = window.__deckListManualQueue[0];
+        var naxUndo = document.querySelector("#pm-toast .pm-toast-action");
+        var naxStillEnabled = document.querySelector("#pm-lib-grid .pm-lib-dots");
+        ok(!!naxLibraryReply && !naxLibraryReply.view.decks.some(function(d){ return d.id === 4902; }) &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "true" && !!naxStillEnabled && !naxStillEnabled.disabled &&
+           !!naxUndo && !naxUndo.disabled,
+           "NAX library-read control: a real refresh holds a pre-restore snapshot while cards and Undo remain enabled");
+        var naxPlanDuringLibrary = planLoadDecks();
+        naxPending.push(naxPlanDuringLibrary);
+        var naxPlanDuringReply = window.__deckListManualQueue[1];
+        var naxRestoresBefore = window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length;
+        if (naxUndo) naxUndo.click();
+        await waitFor(function(){ return /Restored/.test(el("pm-toast").textContent); });
+        planRenderBuilder(V);
+        ok(window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
+           planLinkState(V.items[1].link) === "resolved" && sumRowValue("Missing content") === "0",
+           "NAX: restoring a presentation clears the false missing chip/count without a plan reload");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length === naxRestoresBefore + 1,
+           "NAX library-read control: the real Undo button completes one host restore before the older refresh settles");
+        naxLibraryReply.res(naxLibraryReply.view);
+        await naxLibraryOlder;
+        planRenderBuilder(V);
+        ok(planDeckName(4902) === "NAX newly available" && planLinkState(V.items[1].link) === "resolved" &&
+           sumRowValue("Missing content") === "0" && pmLibDecks.some(function(d){ return d.id === 4902; }),
+           "NAX library-read: late pre-restore refresh cannot roll back the completed restore or its plan chips");
+        naxPlanDuringReply.res(naxPlanDuringReply.view);
+        var naxPlanAfterLateLibrary = await naxPlanDuringLibrary;
+        ok(naxPlanAfterLateLibrary.some(function(d){ return d.id === 4902; }) && planLinkState(V.items[1].link) === "resolved",
+           "NAX library-read: obsolete Library reply cannot replace a superseded plan caller's newer returned data");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length === naxReadCalls + 2 &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "false",
+           "NAX library-read control: retiring stale reads adds no request and settles the existing busy state");
+        window.__deckListManualQueue = null;
+        await pmLibLoad(); // Keep later independent controls isolated, even under this mutation.
+
+        window.__deckListManualQueue = [];
+        var naxLibraryFailing = pmLibLoad();
+        naxPending.push(naxLibraryFailing);
+        var naxLibraryFailureReply = window.__deckListManualQueue[0];
+        await pmLibDuplicate(4901); // A real mutation publishes a complete current LibraryView.
+        var naxDuplicatedId = window.__LIB.decks[window.__LIB.decks.length - 1].id;
+        naxLibraryFailureReply.rej("simulated obsolete Library failure");
+        await naxLibraryFailing;
+        ok(el("pm-lib-error").hidden && !!document.querySelector('#pm-lib-grid .pm-lib-card[data-id="' + naxDuplicatedId + '"]') &&
+           planLinkState({kind:"deck",id:naxDuplicatedId}) === "resolved",
+           "NAX library-read: obsolete failed refresh cannot clear the newly confirmed grid or show a stale error");
+        window.__deckListManualQueue = null;
+
+        // Latest issued ordinary Library read still wins; an older completion must
+        // neither repaint its snapshot nor clear the newer read's busy indicator.
+        window.__deckListManualQueue = [];
+        var naxLibraryFirst = pmLibLoad();
+        naxPending.push(naxLibraryFirst);
+        var naxFirstReply = window.__deckListManualQueue[0];
+        window.__LIB.decks[0].name = "NAX newest reload";
+        var naxLibrarySecond = pmLibLoad();
+        naxPending.push(naxLibrarySecond);
+        var naxSecondReply = window.__deckListManualQueue[1];
+        naxFirstReply.res(naxFirstReply.view);
+        await naxLibraryFirst;
+        ok(el("pm-lib-grid").getAttribute("aria-busy") === "true",
+           "NAX library-read control: an older completion cannot end the latest reload's pending state");
+        naxSecondReply.res(naxSecondReply.view);
+        await naxLibrarySecond;
+        ok(planDeckName(4901) === "NAX newest reload" && pmLibDecks[0].name === "NAX newest reload" &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "false",
+           "NAX library-read control: the latest ordinary reload still publishes current data and completes");
+        window.__deckListManualQueue = null;
+
+        window.__deckListManualQueue = [];
+        var naxOlder = planLoadDecks();
+        naxPending.push(naxOlder);
+        var naxOldReply = window.__deckListManualQueue[0];
+        ok(!!naxOldReply, "NAX control: an older plan lookup is genuinely held before mutation");
+        var naxMutationView = await invoke("deck_rename", {id:4901, name:"NAX newer mutation"});
+        pmApplyLibrary(naxMutationView);
+        naxOldReply.res(naxOldReply.view);
+        var naxOldReturn = await naxOlder;
+        ok(planDeckName(4901) === "NAX newer mutation",
+           "NAX: a late older plan response cannot overwrite a newer library mutation snapshot");
+        ok(naxOldReturn.some(function(d){ return d.id === 4901 && d.name === "NAX newer mutation"; }),
+           "NAX: a superseded plan caller receives the mutation's latest data, not its old snapshot");
+        window.__deckListManualQueue = [];
+        var naxFailing = planLoadDecks();
+        naxPending.push(naxFailing);
+        var naxFailureReply = window.__deckListManualQueue[0];
+        var naxLatest = await invoke("deck_rename", {id:4901, name:"NAX after stale failure"});
+        pmApplyLibrary(naxLatest);
+        naxFailureReply.rej("simulated old plan lookup rejection");
+        var naxFailureReturn = await naxFailing;
+        ok(planDeckName(4901) === "NAX after stale failure" &&
+           naxFailureReturn.some(function(d){ return d.id === 4901 && d.name === "NAX after stale failure"; }),
+           "NAX: a stale failed plan lookup cannot clear a fresh library mutation or return empty data");
+        window.__deckListManualQueue = null;
+
+        pmApplyLibrary({decks:null, open:null, persistent:true, restorable:[]});
+        planRenderBuilder(V);
+        ok(planDecks === null && planLinkState(V.items[0].link) === "unknown" && sumRowValue("Missing content") === "0",
+           "NAX: malformed library data stays unknown rather than falsely declaring presentations missing");
+        window.__pmRejectOnce = true;
+        await pmLibLoad();
+        ok(!el("pm-lib-error").hidden && planDecks === null && planLinkState(V.items[0].link) === "unknown",
+           "NAX: a failed library reload remains visible and unresolved, not loaded-empty");
+        pmApplyLibrary({decks:[], open:null, persistent:true, restorable:[]});
+        planRenderBuilder(V);
+        ok(Array.isArray(planDecks) && planDecks.length === 0 && sumRowValue("Missing content") === "⚠ 2",
+           "NAX control: a genuinely empty authoritative library still marks both missing links");
+        await pmLibLoad();
+        ok(el("pm-lib-error").hidden && planDeckName(4901) === "NAX after stale failure",
+           "NAX control: a successful library retry restores known current resolution");
+      } finally {
+        (window.__deckListManualQueue || []).forEach(function(q){ q.res(q.view); });
+        window.__deckListManualQueue = null;
+        await Promise.allSettled(naxPending);
+        window.__LIB = naxSavedLibrary;
+        V = naxSavedView; D = naxSavedDeck; pmLibQuery = naxSavedQuery;
+        pmDv = naxSavedEditor;
+        pmEl("pm-plan-name").textContent = naxSavedEditorName;
+        await pmLibLoad();
+        await planLoadDecks(); // Mutation-safe cleanup even if publication is broken.
+        planSelectedId = null;
+        lastRendered = "";
+        render(JSON.parse(JSON.stringify(V)));
+      }
       planRenderBuilder(missView);
       planRenderBuilder(sumView);
       ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),
@@ -12650,6 +13360,81 @@ DRIVER = r"""
         }
         // The old read, kept ONLY to prove each fixture really is the shape it used to miss.
         function _lastRuleFilter(sel, fx) { return __cssFilter(__cssRule(sel, fx)); }
+
+        // 17tnw2b1f30: CSSOM retains var() rather than the resolved brightness value.
+        // The browser premise prevents a text-only control from passing without a real
+        // re-lightening hazard; call the SAME predicate as the registered PP-GEN site.
+        _cascadeCase(
+          ":root{--__f30-glow:brightness(1.06);} .__cssom_f30_var__{background:#5a48d0;filter:var(--__f30-glow);}",
+          "__cssom_f30_var__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && window.__cssEffectiveFilter(sel, fx) === "var(--__f30-glow)",
+               "F30 premise: the browser applies variable-delivered brightness while the CSSOM guard value still contains var()");
+            ok(!window.__cssRawBlocks(sel, fx).some(function(body){ return /brightness/i.test(body); }),
+               "F30 premise: the matching raw rule contains no literal brightness, so word matching cannot see this hazard");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "F30: the real PP-GEN predicate rejects brightness delivered through var()");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "F30 control: the four siblings' conservative composed predicate already rejects the same real hazard");
+          });
+        _cascadeCase(
+          ":root{--__f30-unused:brightness(1.06);} .__cssom_f30_clean__{background:#5a48d0;}",
+          "__cssom_f30_clean__",
+          function(fx, computed, sel){
+            ok(computed === "none" && __cssNoBrightnessFilter(sel, fx) && __cssFilterGuardOk(sel, fx),
+               "F30 control: a clean matching rule still passes both predicates even with an unused brightness variable elsewhere");
+          });
+
+        // 17tnw2b0wkg: raw declarations must distinguish harmless exact none and backdrop
+        // properties without weakening the intentionally condition-blind/all-block backstop.
+        [
+          ["none", "@SEL@{filter:none;}", "none"],
+          ["priority", "@SEL@{FiLtEr: /* neutralisation */ NoNe ! IMPORTANT;}", "none"],
+          ["vendor_none", "@SEL@{-webkit-filter:none;}", "none"],
+          ["backdrop", "@SEL@{backdrop-filter:brightness(1.06);}", null],
+          ["vendor_backdrop", "@SEL@{-webkit-backdrop-filter:brightness(1.06);}", null],
+          ["custom", "@SEL@{--custom-filter:brightness(1.06);}", null],
+          ["earlier_none", "@SEL@{filter:none;} @SEL@{background:#5a48d0;}", "none"],
+          ["media_none", "@media(max-width:1px){@SEL@{filter:none;}} @SEL@{background:#5a48d0;}", null],
+          ["supports_none", "@supports(display:nonsense-xyz){@SEL@{filter:none;}} @SEL@{background:#5a48d0;}", null]
+        ].forEach(function(c){
+          var cls = "__cssom_wkg_clean_" + c[0] + "__", selector = "." + cls;
+          _cascadeCase(c[1].replace(/@SEL@/g, selector), cls, function(fx, computed, sel){
+            ok(computed === "none" && window.__cssEffectiveFilter(sel, fx) === c[2],
+               "WKG premise clean/" + c[0] + ": browser filter is none and CSSOM agrees with the harmless shape");
+            if (c[0] === "backdrop") {
+              ok(getComputedStyle(document.querySelector(sel)).backdropFilter === "brightness(1.06)",
+                 "WKG premise backdrop: the browser applies the distinct backdrop property while filter remains none");
+            }
+            ok(!window.__cssRawHasFilter(sel, fx),
+               "WKG clean raw/" + c[0] + ": the declaration backstop accepts this harmless property/value");
+            ok(__cssFilterGuardOk(sel, fx) && __cssNoBrightnessFilter(sel, fx),
+               "WKG clean composed/" + c[0] + ": both real registered guard helpers accept this harmless shape");
+          });
+        });
+        [
+          ["dropped", "@SEL@{filter:brightness(1.06) not-a-real-css-function();}"],
+          ["vendor_dropped", "@SEL@{-webkit-filter:brightness(1.06) not-a-real-css-function();}"],
+          ["other_vendor", "@SEL@{-moz-filter:brightness(1.06);}"],
+          ["media_danger", "@media(max-width:1px){@SEL@{filter:brightness(1.06);}} @SEL@{background:#5a48d0;}"],
+          ["supports_danger", "@supports(display:nonsense-xyz){@SEL@{filter:brightness(1.06);}} @SEL@{background:#5a48d0;}"],
+          ["adjacent_after_none", "@SEL@{filter:none;filter:brightness(1.06) not-a-real-css-function();}"],
+          ["adjacent_before_none", "@SEL@{filter:brightness(1.06) not-a-real-css-function();filter:none;}"],
+          ["compound_none", "@SEL@{filter:none brightness(1.06);}"],
+          ["empty", "@SEL@{filter:;}"],
+          ["middle_dropped", "@SEL@{background:#111;} @SEL@{filter:brightness(1.06) not-a-real-css-function();} @SEL@{filter:none;}"]
+        ].forEach(function(c){
+          var cls = "__cssom_wkg_danger_" + c[0] + "__", selector = "." + cls;
+          _cascadeCase(c[1].replace(/@SEL@/g, selector), cls, function(fx, computed, sel){
+            var effective = window.__cssEffectiveFilter(sel, fx);
+            ok(computed === "none" && (!effective || effective === "none"),
+               "WKG premise danger/" + c[0] + ": browser/CSSOM apply no filter, so only the raw half can reject it");
+            ok(window.__cssRawHasFilter(sel, fx),
+               "WKG danger raw/" + c[0] + ": a non-none declaration is retained despite parsing/conditions/other declarations");
+            ok(!__cssFilterGuardOk(sel, fx) && !__cssNoBrightnessFilter(sel, fx),
+               "WKG danger composed/" + c[0] + ": both real registered guard helpers preserve conservative rejection");
+          });
+        });
 
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
@@ -16133,41 +16918,48 @@ html = html.replace("</body>", NOTIF_FRAME_SCRIPT + DRIVER + "</body>", 1)
 # path, including a timeout) and loads it. Chrome's wall-clock timeout, process group and temp
 # cleanup are its business (scripts/headless_chrome.py); this file supplies the flags and judges
 # the result (`gate_verdict`, above).
-run = headless_chrome.run_headless_chrome(
-    CHROME, html,
-    ["--headless=new", "--disable-gpu", "--no-sandbox",
-     # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
-     # driver step that waits on the app's own 1 s view poll spends a full second of it.
-     # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
-     # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
-     # waits on host round-trips at the very end of the run, so a run in which several of
-     # its checks legitimately FAIL (each spending its wait budget) must still have time
-     # left to WRITE the results. Without the headroom a real regression surfaces as
-     # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
-     # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
-     # nature: every edge check must observe TWO successive 1 Hz polls (that is the
-     # whole point of holds/recoveries being counters), so it spends ~1s of virtual
-     # time per assertion pair and cannot be made cheaper without testing something
-     # weaker than the real poll path.
-     # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
-     # runtime-unavailable/restore-to-unknown pair and the console empty-plan
-     # add/restore pair are each two more real 1 Hz-poll round trips, all landing
-     # BEFORE the already wait-heavy Frame G recovery block above — without the extra
-     # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
-     # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
-     # than any named FAIL, exactly the failure mode this comment block already warns
-     # about. Confirmed empirically: a debug build that writes PROGRESS every 25
-     # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
-     # section, not inside anything new.
-     # Raised again to 90000 for the notification bell + panel block: it boots fresh app instances
-     # (1440x900, 1280x720, 900x720) and drives each through ~30 states. Most state changes call the
-     # app's own poll steps directly (view -> render() -> link_status), so the block costs ~12 s of
-     # virtual time rather than ~45: it waits for the REAL 1 Hz timer only where the timer is what is
-     # under test, and for the 1000 ms double-Esc window. The run had used 61.3 s of the old 75 s
-     # (measured by reading performance.now() at the end), ~14 s of headroom, and the block took
-     # it to ~73 s: 90 s leaves the same ~17 s. Keep the budget TIGHT — unused budget is not free:
-     # Chrome fast-forwards the remainder too, and a 150 s budget made the same run take ~38 s of wall
-     # clock instead of ~20 s.
-     "--virtual-time-budget=90000"],
-    timeout=_CHROME_TIMEOUT_S)
+try:
+    run = headless_chrome.run_headless_chrome(
+        CHROME, html,
+        ["--headless=new", "--disable-gpu", "--no-sandbox",
+         # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
+         # driver step that waits on the app's own 1 s view poll spends a full second of it.
+         # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
+         # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
+         # waits on host round-trips at the very end of the run, so a run in which several of
+         # its checks legitimately FAIL (each spending its wait budget) must still have time
+         # left to WRITE the results. Without the headroom a real regression surfaces as
+         # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
+         # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
+         # nature: every edge check must observe TWO successive 1 Hz polls (that is the
+         # whole point of holds/recoveries being counters), so it spends ~1s of virtual
+         # time per assertion pair and cannot be made cheaper without testing something
+         # weaker than the real poll path.
+         # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
+         # runtime-unavailable/restore-to-unknown pair and the console empty-plan
+         # add/restore pair are each two more real 1 Hz-poll round trips, all landing
+         # BEFORE the already wait-heavy Frame G recovery block above — without the extra
+         # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
+         # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
+         # than any named FAIL, exactly the failure mode this comment block already warns
+         # about. Confirmed empirically: a debug build that writes PROGRESS every 25
+         # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
+         # section, not inside anything new.
+         # Raised again to 90000 for the notification bell + panel block: it boots fresh app instances
+         # (1440x900, 1280x720, 900x720) and drives each through ~30 states. Most state changes call the
+         # app's own poll steps directly (view -> render() -> link_status), so the block costs ~12 s of
+         # virtual time rather than ~45: it waits for the REAL 1 Hz timer only where the timer is what is
+         # under test, and for the 1000 ms double-Esc window. The run had used 61.3 s of the old 75 s
+         # (measured by reading performance.now() at the end), ~14 s of headroom, and the block took
+         # it to ~73 s: 90 s leaves the same ~17 s. Keep the budget TIGHT — unused budget is not free:
+         # Chrome fast-forwards the remainder too, and a 150 s budget made the same run take ~38 s of wall
+         # clock instead of ~20 s.
+         "--virtual-time-budget=90000"],
+        timeout=_CHROME_TIMEOUT_S)
+except OSError as error:
+    # Includes executable-image/interpreter errors that isfile/X_OK cannot detect, and local
+    # temp-file failures. The launcher has already unwound its process/workdir cleanup.
+    selection = "CHROME_BIN=%r" % os.environ["CHROME_BIN"] if "CHROME_BIN" in os.environ else repr(CHROME)
+    print(headless_chrome.environment_error("headless Chrome using " + selection, error))
+    sys.exit(2)
 sys.exit(gate_verdict(run, EXPECTED_MIN_CHECKS))

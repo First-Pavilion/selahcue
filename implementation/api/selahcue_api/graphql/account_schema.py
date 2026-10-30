@@ -1,6 +1,8 @@
 import strawberry
 from django.conf import settings
+from graphql import GraphQLError
 from strawberry.extensions import DisableIntrospection
+from strawberry.types import ExecutionContext
 
 from selahcue_api.apps.accounts.services import (
     ACCOUNT_SESSION_TTL,
@@ -28,6 +30,27 @@ from selahcue_api.graphql.context import (
     actor_from_info,
     require_customer_org,
 )
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+
+
+class AccountSchema(strawberry.Schema):
+    def process_errors(
+        self,
+        errors: list[GraphQLError],
+        execution_context: ExecutionContext | None = None,
+    ) -> None:
+        # Budget guards already emit a bounded, scope-only warning. Strawberry's
+        # per-refusal traceback would bypass that suppression under a reset flood.
+        # Only our typed refusal qualifies: an arbitrary exception carrying the
+        # same extension code must still reach the framework's traceback logger.
+        unexpected = [
+            error for error in errors
+            if not (
+                isinstance(error.original_error, SafeAPIError)
+                and error.original_error.code == ErrorCode.RATE_LIMITED
+            )
+        ]
+        super().process_errors(unexpected, execution_context)
 
 
 @strawberry.type
@@ -277,7 +300,7 @@ class AccountMutation:
         )
 
 
-schema = strawberry.Schema(
+schema = AccountSchema(
     query=AccountQuery,
     mutation=AccountMutation,
     extensions=[] if settings.GRAPHQL_INTROSPECTION_ENABLED else [DisableIntrospection],

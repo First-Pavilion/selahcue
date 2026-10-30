@@ -84,6 +84,17 @@ def test_shared_bucket_warning_is_silent_without_a_shared_cache(settings):
 # --- eager Celery in production -------------------------------------------
 API_ROOT = Path(__file__).resolve().parent.parent
 
+# Valid unrelated database configuration for deployed key/debug/proxy/worker controls.
+# Passed explicitly at each call; the fresh-settings helpers still clear every unspecified input.
+CONFIGURED_POSTGRES = {
+    "SQL_ENGINE": "django.db.backends.postgresql",
+    "SQL_DATABASE": "selahcue_test",
+    "SQL_USER": "selahcue",
+    "SQL_PASSWORD": "selahcue",
+    "SQL_HOST": "localhost",
+    "SQL_PORT": "5432",
+}
+
 
 def _environment(env_overrides):
     """The child process environment: ours MINUS every variable settings.py reads, then each
@@ -122,7 +133,7 @@ def test_eager_celery_cannot_be_switched_on_in_production():
     """Eager mode runs every task inline in the web process — SMTP back on the request path,
     which is exactly what the worker was introduced to remove. A subprocess because the guard
     is an import-time settings check, like the SECRET_KEY one it mirrors."""
-    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="x", CELERY_TASK_ALWAYS_EAGER="1")
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="x", CELERY_TASK_ALWAYS_EAGER="1", **CONFIGURED_POSTGRES)
     assert result.returncode != 0, result.stdout
     assert "ImproperlyConfigured" in result.stderr
     assert "CELERY_TASK_ALWAYS_EAGER" in result.stderr
@@ -130,7 +141,7 @@ def test_eager_celery_cannot_be_switched_on_in_production():
 
 def test_production_still_boots_without_eager_celery():
     """The guard must refuse only the dangerous combination, not production itself."""
-    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="x", CELERY_TASK_ALWAYS_EAGER="0")
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY="x", CELERY_TASK_ALWAYS_EAGER="0", **CONFIGURED_POSTGRES)
     assert result.returncode == 0, result.stderr
 
 
@@ -312,9 +323,145 @@ DEPLOYED_ENVIRONMENTS = [
 OTHER_THAN_PROD = DEPLOYED_ENVIRONMENTS[1:]
 
 
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize(
+    "engine",
+    [None, "", " \t", "django.db.backends.sqlite3", "sqlite3", "custom.backend.sqlite3"],
+    ids=["unset", "empty", "blank", "django-sqlite", "short-sqlite", "sqlite-suffix"],
+)
+def test_nondev_refuses_missing_or_sqlite_database_engine(monkeypatch, environment, engine):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+            SQL_ENGINE=engine, SQL_PASSWORD="configured-test-password",
+        )
+    assert "SQL_ENGINE" in str(refusal.value)
+    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("password", [None, "", " \t", "postgres"], ids=["unset", "empty", "blank", "public-default"])
+def test_nondev_refuses_missing_or_default_database_password(monkeypatch, environment, password):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+            SQL_ENGINE="django.db.backends.postgresql", SQL_PASSWORD=password,
+        )
+    message = str(refusal.value)
+    assert "SQL_PASSWORD" in message
+    assert f"ENVIRONMENT={environment!r}" in message
+    if password:
+        assert password not in message
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("password", ["configured-test-password", "postgres-with-a-private-suffix"])
+def test_nondev_accepts_configured_postgres_settings(monkeypatch, environment, password):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-configured-test-key",
+        SQL_ENGINE="django.db.backends.postgresql", SQL_DATABASE="configured-db",
+        SQL_USER="configured-user", SQL_PASSWORD=password, SQL_HOST="db.internal", SQL_PORT="5433",
+    )
+    assert module.DATABASES["default"] == {
+        "ENGINE": "django.db.backends.postgresql", "NAME": "configured-db", "USER": "configured-user",
+        "PASSWORD": password, "HOST": "db.internal", "PORT": "5433", "CONN_MAX_AGE": 60,
+    }
+
+
+@pytest.mark.parametrize("environment", [None, "dev"], ids=["bare-local", "explicit-dev"])
+@pytest.mark.parametrize("engine", [None, "django.db.backends.sqlite3"], ids=["default-engine", "explicit-sqlite"])
+def test_dev_retains_sqlite_database_default(monkeypatch, environment, engine):
+    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SQL_ENGINE=engine)
+    assert module.ENVIRONMENT == "dev"
+    assert module.DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+    assert module.DATABASES["default"]["NAME"] == str(API_ROOT / "db.sqlite3")
+
+
+@pytest.mark.parametrize("environment", [None, "dev"], ids=["bare-local", "explicit-dev"])
+@pytest.mark.parametrize("password", [None, "postgres"], ids=["default-password", "explicit-public-password"])
+def test_dev_retains_postgres_password_default(monkeypatch, environment, password):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SQL_ENGINE="django.db.backends.postgresql", SQL_PASSWORD=password,
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.DATABASES["default"]["PASSWORD"] == "postgres"
+
+
+def test_configured_nondev_postgres_can_connect_in_hosted_environment():
+    """Use the real hosted service and a fresh deployed settings import, without writing data."""
+    if os.environ.get("SQL_ENGINE") != "django.db.backends.postgresql":
+        pytest.skip("Requires the hosted PostgreSQL service")
+    deployed = {name: os.environ.get(name) for name in (
+        "SQL_ENGINE", "SQL_DATABASE", "SQL_USER", "SQL_PASSWORD", "SQL_HOST", "SQL_PORT",
+    )}
+    env = _environment({**deployed, "ENVIRONMENT": "prod", "SECRET_KEY": "a-configured-test-key"})
+    env["DJANGO_SETTINGS_MODULE"] = "selahcue_api.settings"
+    result = subprocess.run(
+        [sys.executable, "-c", """import django
+django.setup()
+from django.db import connection
+with connection.cursor() as cursor:
+    cursor.execute('SELECT 1')
+    assert cursor.fetchone() == (1,)
+connection.close()
+print('configured deployed PostgreSQL connected')
+"""],
+        cwd=API_ROOT, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "configured deployed PostgreSQL connected"
+
+
+# The later owner instruction on 17tnw2b9d9z covers EVERY non-dev environment,
+# superseding the original description's explicit ingress opt-in.
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("flag", ["DEBUG", "SELAHCUE_TRUST_ACTOR_HEADERS"])
+@pytest.mark.parametrize("value", ["1", "true", "yes", " ON "])
+def test_non_dev_refuses_debug_and_actor_header_trust(monkeypatch, environment, flag, value):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=environment, SECRET_KEY="non-public-test-key",
+            **CONFIGURED_POSTGRES, **{flag: value},
+        )
+    assert flag in str(refusal.value)
+    assert f"ENVIRONMENT={environment!r}" in str(refusal.value)
+
+
+@pytest.mark.parametrize("environment", DEPLOYED_ENVIRONMENTS)
+@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "off"])
+def test_non_dev_boots_with_debug_and_actor_header_trust_disabled(monkeypatch, environment, value):
+    module = _fresh_settings(
+        monkeypatch,
+        ENVIRONMENT=environment,
+        SECRET_KEY="non-public-test-key",
+        DEBUG=value,
+        SELAHCUE_TRUST_ACTOR_HEADERS=value,
+        **CONFIGURED_POSTGRES,
+    )
+    assert module.DEBUG is False
+    assert module.SELAHCUE_TRUST_ACTOR_HEADERS is False
+
+
+@pytest.mark.parametrize(
+    "debug,trust,expected",
+    [
+        (None, None, False),
+        ("0", None, False),
+        ("1", None, True),
+        ("1", "0", False),
+        ("0", "1", True),
+        ("yes", "on", True),
+    ],
+)
+def test_dev_keeps_debug_default_and_explicit_actor_header_controls(monkeypatch, debug, trust, expected):
+    module = _fresh_settings(monkeypatch, ENVIRONMENT="dev", DEBUG=debug, SELAHCUE_TRUST_ACTOR_HEADERS=trust)
+    assert module.DEBUG is (debug in {"1", "yes"})
+    assert module.SELAHCUE_TRUST_ACTOR_HEADERS is expected
+
+
 def _assert_refused(monkeypatch, environment, secret_key):
     with pytest.raises(ImproperlyConfigured) as refusal:
-        _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key)
+        _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY=secret_key, **CONFIGURED_POSTGRES)
     message = str(refusal.value)
     assert "SECRET_KEY" in message
     assert f"ENVIRONMENT={environment!r}" in message
@@ -360,7 +507,7 @@ def test_settings_accept_a_real_secret_key_in_prod(monkeypatch, secret_key):
     """The positive control for the matrix above: it stops the public values, not deployment, and
     not short keys (other suites deliberately boot prod with SECRET_KEY='x'). Without this, a
     guard that refused everything outside dev would pass every case there."""
-    module = _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=secret_key)
+    module = _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=secret_key, **CONFIGURED_POSTGRES)
     assert module.SECRET_KEY == secret_key
     # The comparison copy of the key (lower-cased) must not outlive the check as a module global.
     assert not [name for name in vars(module) if "normalised" in name and name != "_normalised_secret"]
@@ -369,7 +516,9 @@ def test_settings_accept_a_real_secret_key_in_prod(monkeypatch, secret_key):
 
 @pytest.mark.parametrize("environment", OTHER_THAN_PROD)
 def test_settings_accept_a_real_secret_key_in_every_deployed_spelling(monkeypatch, environment):
-    module = _fresh_settings(monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-real-key-" + "x" * 40)
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=environment, SECRET_KEY="a-real-key-" + "x" * 40, **CONFIGURED_POSTGRES,
+    )
     assert module.SECRET_KEY == "a-real-key-" + "x" * 40
 
 
@@ -377,7 +526,7 @@ def test_a_generated_key_boots_outside_dev(monkeypatch):
     """The key the docs tell operators to generate (`secrets.token_urlsafe(64)`)."""
     key = secrets.token_urlsafe(64)
     assert len(key) >= 80
-    assert _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=key).SECRET_KEY == key
+    assert _fresh_settings(monkeypatch, ENVIRONMENT="prod", SECRET_KEY=key, **CONFIGURED_POSTGRES).SECRET_KEY == key
 
 
 @pytest.mark.parametrize(
@@ -392,26 +541,91 @@ def test_settings_allow_public_keys_inside_dev(monkeypatch, secret_key):
     assert module.SECRET_KEY == (secret_key or DEV_SECRET_KEY)
 
 
-def test_an_unset_environment_is_dev_and_runs_on_the_public_dev_key(monkeypatch):
-    """THE HAZARD the deployment docs now warn about, pinned as fact. If an operator sets only
-    the names the old docs listed (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DATABASE_URL`), none of
-    which is read, ENVIRONMENT stays `dev` and nothing refuses to start. When this stops being
-    true (for example a deployed-host check is added) update the docs, not just this test.
+def test_an_unset_environment_refuses_old_doc_variables_with_a_deployed_host(monkeypatch):
+    """Retired aliases still do nothing; a non-local allowed host now makes the omission fatal.
+    This imports settings directly, so the guard must work without manage.py system checks."""
+    with pytest.raises(ImproperlyConfigured, match="ENVIRONMENT"):
+        _fresh_settings(
+            monkeypatch,
+            ENVIRONMENT=None,
+            SECRET_KEY=None,
+            DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+            DJANGO_SECRET_KEY="a-key-the-old-docs-told-you-to-set",
+            DJANGO_DEBUG="false",
+            DATABASE_URL="postgres://user:pass@db/selahcue",
+        )
 
-    Hermetic on purpose: it asserts DEBUG is off and the engine is SQLite, which are only true
-    because `_fresh_settings` cleared whatever the machine running the suite exports."""
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        "api.selahcue.example",
+        "localhost api.selahcue.example",
+        "localhost,api.selahcue.example",
+        "*",
+        ".example.com",
+        ".localhost",
+        "127.0.0.2",
+        "[2001:db8::1]",
+    ],
+)
+def test_an_unset_environment_refuses_empty_key_with_any_nonlocal_host(monkeypatch, secret_key, hosts):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT=None, SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
+        )
+    message = str(refusal.value)
+    assert "ENVIRONMENT" in message
+    assert "DJANGO_ALLOWED_HOSTS" in message
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize(
+    "hosts",
+    [
+        None, "", "localhost", "127.0.0.1", "::1", "[::1]", "testserver",
+        "localhost 127.0.0.1 ::1 [::1] testserver", "localhost,127.0.0.1,testserver",
+    ],
+)
+def test_an_unset_environment_preserves_local_dev_defaults(monkeypatch, secret_key, hosts):
     module = _fresh_settings(
-        monkeypatch,
-        ENVIRONMENT=None,
-        SECRET_KEY=None,
-        DJANGO_SECRET_KEY="a-key-the-old-docs-told-you-to-set",
-        DJANGO_DEBUG="false",
-        DATABASE_URL="postgres://user:pass@db/selahcue",
+        monkeypatch, ENVIRONMENT=None, SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
     )
     assert module.ENVIRONMENT == "dev"
     assert module.SECRET_KEY == DEV_SECRET_KEY
     assert module.DEBUG is False
     assert module.DATABASES["default"]["ENGINE"].endswith("sqlite3")
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+@pytest.mark.parametrize("hosts", ["api.selahcue.example", "*"])
+def test_explicit_dev_preserves_intentional_public_key_behavior(monkeypatch, secret_key, hosts):
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT="dev", SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS=hosts,
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == DEV_SECRET_KEY
+
+
+def test_unset_environment_with_configured_key_keeps_the_narrow_guard_boundary(monkeypatch):
+    key = "a-real-test-key-" + "x" * 40
+    module = _fresh_settings(
+        monkeypatch, ENVIRONMENT=None, SECRET_KEY=key, DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+    )
+    assert module.ENVIRONMENT == "dev"
+    assert module.SECRET_KEY == key
+
+
+@pytest.mark.parametrize("secret_key", [None, ""], ids=["unset-key", "empty-key"])
+def test_empty_environment_keeps_the_existing_deployed_secret_guard(monkeypatch, secret_key):
+    with pytest.raises(ImproperlyConfigured) as refusal:
+        _fresh_settings(
+            monkeypatch, ENVIRONMENT="", SECRET_KEY=secret_key, DJANGO_ALLOWED_HOSTS="api.selahcue.example",
+            **CONFIGURED_POSTGRES,
+        )
+    assert "SECRET_KEY" in str(refusal.value)
+    assert "ENVIRONMENT=''" in str(refusal.value)
 
 
 def test_the_inherited_environment_cannot_change_a_case(monkeypatch):
@@ -441,12 +655,12 @@ def test_the_inherited_environment_cannot_change_a_case(monkeypatch):
 )
 def test_manage_py_refuses_to_start_outside_dev_without_a_real_secret_key(secret_key):
     """End to end through the real entry point, for the cases that matter most."""
-    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secret_key)
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secret_key, **CONFIGURED_POSTGRES)
     assert result.returncode != 0, f"started on SECRET_KEY={secret_key!r}: {result.stdout}"
     assert "ImproperlyConfigured" in result.stderr
     assert "SECRET_KEY" in result.stderr
 
 
 def test_manage_py_still_starts_in_prod_with_a_real_secret_key():
-    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secrets.token_urlsafe(64))
+    result = _run_check(ENVIRONMENT="prod", SECRET_KEY=secrets.token_urlsafe(64), **CONFIGURED_POSTGRES)
     assert result.returncode == 0, result.stderr

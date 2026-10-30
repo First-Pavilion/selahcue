@@ -607,3 +607,41 @@ fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-
 incomplete audit. Neither is in `make ci` yet: that is a separate ticket, [CI] Run the visual-parity self-test and the audit checker's self-test in
 `make ci` and CI (ClickUp 17tnw2b2fum, linked to the CI-masking ticket 86ak5rjh7); it was kept out of this change on purpose, so that a change to
 what `make ci` runs is reviewed on its own.
+
+
+### Pipe-safe capture commands (17tnw2b1wpc)
+
+The Blink viewport probe, capture passes and version probe, marketing auth gate,
+and native raster collector use `scripts/headless_chrome.py`'s shared file-backed
+process lifecycle. A completed command returns after its own PID exits, even if a
+background helper still holds stderr. In-group helpers and temporary stdout/stderr
+files are cleaned after success, timeout or interruption. Escaped Chrome shared
+services retain the helper module's documented ownership limits.
+
+HTML callers retain their private page file. Existing local files and the auth
+gate's already running HTTP server use `page_html=None, page_url=url`; flags and
+URLs pass through unchanged. Do not add a temporary Chrome `--user-data-dir` or
+redirect TMPDIR; the helper module documents the macOS failures those cause.
+
+Native capture still runs the exact `cargo test` target shown above with
+`SELAHCUE_VISUAL_OUT` and collects its PNG/index protocol. It gets no Chrome flags
+or Chrome litter sweep. The whole Cargo command now has a600-second wall limit;
+a real timeout prints `FAIL: the native capture target timed out (infra)` and
+returns1 without accepting any partial index. This is a bounded build/render
+allowance, not a measured claim about cold builds. Prebuild the target with the
+same manifest/profile/features when preparing a slow or cold machine; for builds
+that legitimately need longer, finish that build separately before running the
+collector. For the default profile/features, the prebuild command is:
+
+```sh
+cargo test --manifest-path implementation/desktop/Cargo.toml -p selahcue-present --test visual_parity_render --no-run
+```
+
+There is no new operator override or silent unbounded mode.
+
+Run `python3 scripts/test_pipe_safe_launchers.py` to exercise all three actual
+callers with interpreter-backed commands (no executable temporary scripts), held
+descriptors, complete-looking hangs, missing protocol results and nonzero exits.
+The existing always-run Linux workflow gate also runs it using the documented
+Pillow dependency. Real browser/render assertions remain separate gates; these
+fixtures make no claim about raster pixels or a real Cargo build's duration.

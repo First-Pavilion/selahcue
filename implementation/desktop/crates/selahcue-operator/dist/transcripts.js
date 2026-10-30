@@ -1277,6 +1277,18 @@
       deg.setAttribute("role", "note");
       host.appendChild(deg);
     }
+    if (currentDraft.notSaved) {
+      var unsaved = el("p", "pp-gen-degraded",
+        "Not saved. This generated draft is read-only. It could not be saved or staged, " +
+        "so any previously saved notes are unchanged.");
+      unsaved.setAttribute("role", "alert");
+      host.appendChild(unsaved);
+    }
+  }
+
+  function canEditCurrentDraft() {
+    return !!currentDraft && currentDraft.transcriptId != null &&
+      !currentDraft.notSaved && !currentDraft.pendingConfirmation;
   }
 
   function renderDraftView(r) {
@@ -1285,10 +1297,11 @@
     // Figma 1132:2 / 349:124 (Notes ready): a check chip + "Sermon notes ready" header above the
     // draft. A degraded offline outline is not AI notes, so it says "Draft ready" instead.
     var ready = el("div", "tr-ready-head");
-    var readyIco = el("span", "tr-ready-ico", "✓");
+    var readyIco = el("span", "tr-ready-ico", currentDraft.notSaved ? "!" : "✓");
     readyIco.setAttribute("aria-hidden", "true");
     ready.appendChild(readyIco);
-    ready.appendChild(el("h3", "tr-ready-title", currentDraft.degraded ? "Draft ready" : "Sermon notes ready"));
+    ready.appendChild(el("h3", "tr-ready-title", currentDraft.notSaved ? "Not saved" :
+      (currentDraft.degraded ? "Draft ready" : "Sermon notes ready")));
     r.appendChild(ready);
     renderDraftHeader(r);
     renderRegenerationBanner(r);
@@ -1393,14 +1406,14 @@
       explainer.setAttribute("role", "note");
       r.appendChild(explainer);
     }
-    // Editing needs a transcript id to save against — always set here (this panel only ever
-    // shows a draft for the currently OPEN transcript, `openId`). Also hidden while a
-    // regeneration is pending (FR-129, 86akgqdx8) — see settings.js's identical gate for why.
+    // Only a persisted response identity licenses editing. The open transcript can still
+    // have an accepted draft when the new text failed to save/stage; it is never a fallback
+    // identity for that unsaved text. A staged regeneration must be resolved first (FR-129).
     // The copy action (86akgqdw0) needs neither a transcript id nor a host connection, and is
     // unaffected by a pending regeneration (it only reads `d`, whichever draft is on screen) —
     // so it renders independently of the Edit button below.
     var copyBtn = copyChapterMarkersBtn(d);
-    var canEdit = currentDraft.transcriptId != null && !currentDraft.pendingConfirmation;
+    var canEdit = canEditCurrentDraft();
     // "Regenerate" (Figma: secondary) replaces the primary Generate button that used to sit above an
     // existing draft; it goes through the SAME consent preview and the SAME stage/confirm/discard
     // flow. Not offered while a regeneration is pending (resolve that first).
@@ -1421,7 +1434,7 @@
         editBtn.type = "button";
         editBtn.id = "tr-gen-edit";
         editBtn.addEventListener("click", function () {
-          if (generating || (genPreviewBox && !genPreviewBox.hidden)) return; // defense in depth (D8)
+          if (!canEditCurrentDraft() || generating || (genPreviewBox && !genPreviewBox.hidden)) return; // defense in depth (D8)
           editingDraft = true; renderCurrentDraft();
         });
         actions.appendChild(editBtn);
@@ -1580,7 +1593,7 @@
   }
 
   function saveDraftEdit(form) {
-    if (!currentDraft || currentDraft.transcriptId == null) return;
+    if (!canEditCurrentDraft()) return;
     var d = currentDraft.draft || {};
     var titleEl = document.getElementById("tr-edit-title");
     var summaryEl = document.getElementById("tr-edit-summary");
@@ -1797,7 +1810,7 @@
     }
     regenError = null; // a fresh generate/regenerate attempt clears any prior inline refusal
     currentDraft = {
-      transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : openId,
+      transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : null,
       draft: res.draft || {},
       aiGenerated: !!res.ai_generated,
       aiLabel: res.ai_label || "AI-generated draft",
@@ -1812,19 +1825,24 @@
       pendingConfirmation: !!res.pending_confirmation,
       previousDraft: res.previous_draft || null,
     };
+    // Null ids are conservatively read-only even from a host predating the explicit flag.
+    currentDraft.notSaved = res.not_saved === true || currentDraft.transcriptId == null;
+    if (currentDraft.notSaved) currentDraft.pendingConfirmation = false;
     editingDraft = false;
     notesEmptyEl.hidden = true;
     // Quinn D7: a draft now exists for this transcript (saved, or staged over a saved one), so the
     // NEXT consent step must say so — previously this flag was only set when a transcript was opened.
-    generateHasExistingDraft = true;
+    generateHasExistingDraft = generateHasExistingDraft || !currentDraft.notSaved;
     renderCurrentDraft();
-    if (genLiveEl) genLiveEl.textContent = "Sermon notes are ready.";
+    if (genLiveEl) genLiveEl.textContent = currentDraft.notSaved
+      ? "Not saved. This generated draft is read-only."
+      : "Sermon notes are ready.";
     // The backend just persisted (or, with a pending regeneration, STAGED — the saved draft
     // is unaffected either way) against `openId` (`sermon_note_repo` — 86akcffy0/86akgqdx8);
     // reflect that immediately rather than waiting for a future reopen of this same transcript.
     if (openId != null) {
-      notesBadge.textContent = "Notes generated";
-      notesBadge.className = "tr-notes-badge tr-notes-on";
+      notesBadge.textContent = currentDraft.notSaved ? "Not saved" : "Notes generated";
+      notesBadge.className = "tr-notes-badge" + (currentDraft.notSaved ? "" : " tr-notes-on");
     }
   }
 

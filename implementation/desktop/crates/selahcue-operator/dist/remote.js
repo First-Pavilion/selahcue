@@ -5,8 +5,8 @@
 //
 // DATA: live Tauri commands to the host output window's pairing/session/RBAC service (86ajxer8n) —
 // remote_snapshot / remote_approve / remote_deny / remote_revoke / remote_set_role / remote_new_code.
-// A local model mirrors the host so mutations apply OPTIMISTICALLY (instant UI), then reconcile from
-// the fresh snapshot the host returns; a bounded poll picks up new pair attempts. With no host
+// A local model mirrors confirmed host snapshots; mutation controls wait for the host's answer
+// before changing that model. A bounded poll picks up new pair attempts. With no host
 // connected (the stand-alone demo, or an older host) the surface simply shows no devices.
 // Roles are the REAL selahcue-lan RBAC roles; a remotely-paired device is capped at Producer
 // (Operator is refused by the host), so the assignable roles are Producer/Assistant/Viewer.
@@ -44,6 +44,7 @@
 
   // --- local model (mirrors the host snapshot) ---
   var state = { code: null, pending: [], devices: [] };
+  var mutationPending = false;
 
   // ---------- helpers ----------
   function el(tag, cls, txt) {
@@ -103,6 +104,8 @@
       if (prevRole[m.id]) m.role = prevRole[m.id];
       return m;
     });
+    var error = document.getElementById("rc-action-error");
+    if (error) error.hidden = true;
     render();
   }
   function loadSnapshot() {
@@ -110,10 +113,45 @@
       /* no host / demo mode — leave the (empty) model as-is */
     });
   }
-  // After a mutation, pull the host's truth (also undoes an optimistic change the host rejected).
-  function reconcile(err) {
-    if (err) announce("Could not reach the host — " + err.message);
-    loadSnapshot();
+  // A transport error may mean the host applied the action but its reply was lost. Keep the
+  // last confirmed model, visibly label the uncertainty and try one authoritative resync. The
+  // warning survives a second failure; a later successful snapshot clears it. Never expose raw
+  // IPC errors here (Tauri may reject with a string rather than an Error).
+  function showUnconfirmed() {
+    var error = document.getElementById("rc-action-error");
+    if (error) error.hidden = false;
+    announce("Change not confirmed by the host. Showing the last confirmed device state.");
+  }
+  function reconcile() {
+    showUnconfirmed();
+    return loadSnapshot();
+  }
+  // The host deliberately resolves snapshots for no-ops too (for example a full session
+  // registry or a target another operator already removed). A reply alone is not a receipt.
+  function mutationConfirmed(cmd, args, snap) {
+    if (!snap || !Array.isArray(snap.devices) || !Array.isArray(snap.pending)) return false;
+    var device = snap.devices.find(function (d) { return d.device_id === args.deviceId; });
+    var pending = snap.pending.some(function (p) { return p.device_id === args.deviceId; });
+    if (cmd === "remote_approve") return !pending && !!device && device.role === args.role;
+    // A vanished request might have been approved elsewhere. Do not say Denied while paired.
+    if (cmd === "remote_deny") return !pending && !device;
+    if (cmd === "remote_revoke") return !device;
+    if (cmd === "remote_set_role") return !!device && device.role === args.role;
+    return false;
+  }
+  function mutate(cmd, args, success) {
+    if (mutationPending) return;
+    mutationPending = true;
+    announce("Waiting for the host to confirm the change.");
+    render();
+    return invoke(cmd, args).then(function (snap) {
+      applySnapshot(snap);
+      if (mutationConfirmed(cmd, args, snap)) announce(success);
+      else showUnconfirmed();
+    }).catch(reconcile).finally(function () {
+      mutationPending = false;
+      render();
+    });
   }
 
   // Paint the REAL, scannable pairing QR the host minted. `qr` is `{ side, modules }` — a row-major
@@ -282,7 +320,7 @@
 
       var c2 = el("div", "rc-cell rc-c-role"); c2.setAttribute("role", "cell");
       c2.appendChild(roleSelect(d.role, "Role for " + d.name, function (id) {
-        d.role = id; announce(d.name + " is now " + (ROLE_BY[id] ? ROLE_BY[id].label : id)); setRole(d.id, id);
+        setRole(d.id, id, d.name);
       }));
       row.appendChild(c2);
 
@@ -306,39 +344,36 @@
     renderCount();
   }
 
-  function render() { renderPending(); renderRows(); }
+  function render() {
+    renderPending(); renderRows();
+    root.setAttribute("aria-busy", mutationPending ? "true" : "false");
+    root.querySelectorAll("#rc-pending button, #rc-pending select, #rc-rows button, #rc-rows select")
+      .forEach(function (control) { control.disabled = mutationPending; });
+  }
 
-  // ---------- actions (optimistic local update → persist to the host → reconcile) ----------
+  // ---------- actions (keep confirmed state → host snapshot or visible uncertainty) ----------
   function approve(pendingId) {
     var i = state.pending.findIndex(function (p) { return p.id === pendingId; });
     if (i < 0) return;
     var p = state.pending[i];
-    state.devices.push({ id: p.id, name: p.name, meta: (p.platform || "controller") + " · just paired", role: p.role, seen: "just now", status: "online" });
-    state.pending.splice(i, 1);
-    render();
-    announce("Approved " + p.name + " as " + (ROLE_BY[p.role] ? ROLE_BY[p.role].label : p.role));
-    invoke("remote_approve", { deviceId: p.id, role: p.role }).then(applySnapshot).catch(reconcile);
+    mutate("remote_approve", { deviceId: p.id, role: p.role },
+      "Approved " + p.name + " as " + (ROLE_BY[p.role] ? ROLE_BY[p.role].label : p.role));
   }
   function deny(pendingId) {
     var i = state.pending.findIndex(function (p) { return p.id === pendingId; });
     if (i < 0) return;
     var p = state.pending[i];
-    state.pending.splice(i, 1);
-    render();
-    announce("Denied " + p.name);
-    invoke("remote_deny", { deviceId: p.id }).then(applySnapshot).catch(reconcile);
+    mutate("remote_deny", { deviceId: p.id }, "Denied " + p.name);
   }
   function removeDevice(id) {
     var i = state.devices.findIndex(function (d) { return d.id === id; });
     if (i < 0) return;
     var name = state.devices[i].name;
-    state.devices.splice(i, 1);
-    render();
-    announce("Revoked " + name);
-    invoke("remote_revoke", { deviceId: id }).then(applySnapshot).catch(reconcile);
+    mutate("remote_revoke", { deviceId: id }, "Revoked " + name);
   }
-  function setRole(id, role) {
-    invoke("remote_set_role", { deviceId: id, role: role }).then(applySnapshot).catch(reconcile);
+  function setRole(id, role, name) {
+    mutate("remote_set_role", { deviceId: id, role: role },
+      name + " is now " + (ROLE_BY[role] ? ROLE_BY[role].label : role));
   }
 
   // ---------- host-connection banner (RCD-008) ----------

@@ -631,6 +631,7 @@
             aria-label="Show the identify number on every display">Identify</button>
         </div>
       </div>
+      <span id="screens-output-health-live" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
       <div class="scr-body">
         <div class="scr-grid-pane">
           <div class="scr-grid-head">
@@ -2413,6 +2414,14 @@
         <div class="pp-banner-body">
           <p class="pp-banner-title">No output window connected</p>
           <p class="pp-banner-text">Pairing and paired-device data need a live connection to the output window. Nothing has failed, but this won't clear on its own — start the output window, then restart the operator console to reconnect.</p>
+        </div>
+      </div>
+
+      <div id="rc-action-error" class="pp-banner pp-banner-warn" role="alert" hidden>
+        <span class="pp-banner-ico" aria-hidden="true">⚠</span>
+        <div class="pp-banner-body">
+          <p class="pp-banner-title">Change not confirmed</p>
+          <p class="pp-banner-text">The requested change was not confirmed. The list shows the last confirmed device state and may be out of date. Check the device list and output window before trying again.</p>
         </div>
       </div>
 

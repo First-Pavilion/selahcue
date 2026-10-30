@@ -219,15 +219,12 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
 # High-entropy tokens are resolved by fingerprint and confirmed with hmac.compare_digest (the
 # authenticate_device_token latency optimisation).
 #
-# THE NO-ORACLE DISCIPLINE IS NOT UNIFORM ACROSS THESE PATHS. Do not read the rule above as a
-# guarantee that none of them leaks existence. `_pad_to_floor` equalises exactly ONE endpoint,
-# `resend_email_verification`. `request_password_reset` is unpadded and unauthenticated, and
-# since no branch there runs a dummy PBKDF2 any more, nothing equalises its branches at all —
-# the measured residual is ~2x remote. The numbers and the reasoning are in that function's own
-# comment. Padding it is a separate, deliberately deferred decision — but as of 86akcmfd4 it is
-# no longer UNTHROTTLED: both `request_password_reset` and `confirm_password_reset` now spend a
-# per-client-IP budget before any existence-dependent branch runs, which bounds how many timing
-# samples one source can take even though the gap itself is untouched.
+# THE NO-ORACLE DISCIPLINE IS NOT UNIFORM ACROSS THESE PATHS. Allowed resend and
+# request-password-reset calls use `_pad_to_floor` after their own commit and synchronous
+# broker publish (86ak7kka2). This only conceals branch work that fits within the configured
+# floor; an overrun reports the gap through one shared, bounded warning. Both endpoints spend
+# all refusal budgets first, and rate-limited calls do no padding. Login and confirm-reset
+# retain their own controls; neither inherits this timing guarantee.
 # ---------------------------------------------------------------------------
 
 # Config (overridable via settings; documented in deployments.md). Read at import.
@@ -268,6 +265,11 @@ ACCOUNT_AUDIT_SURFACE = "account_graphql"
 # tests switch it off), and a floor that could only change on a restart would be the kind
 # that quietly stays wrong.
 RESEND_MIN_SECONDS_DEFAULT = 0.4
+# Reset's real PostgreSQL COMMIT + Celery/Redis broker path measured at most 29.121ms
+# (including warmup) on the isolated reference runner, with a 7.348ms mean existence gap.
+# 100ms leaves 70.879ms of headroom there. This is an operational floor, not a bound on
+# arbitrary database/network work: overruns reuse the shared warning below (86ak7kka2).
+RESET_REQUEST_MIN_SECONDS_DEFAULT = 0.1
 
 # One overrun report per minute, not one per request — a floor that is outgrown is outgrown
 # for every call, and logging each one is the unbounded logging the repo forbids (the same
@@ -942,7 +944,7 @@ def verify_email(raw_token: str, client_ip: str = "") -> VerifyEmailResult:
             action="customer_user.email_verified",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=token.masked_token,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
             after={"status": user.status},
         )
@@ -957,15 +959,16 @@ class ResendVerificationData:
     client_ip: str = ""
 
 
-def _pad_to_floor(started: float) -> None:
+def _pad_to_floor(
+    started: float, *, floor_setting: str = "ACCOUNT_RESEND_MIN_SECONDS",
+    default: float = RESEND_MIN_SECONDS_DEFAULT,
+) -> None:
     """Hold the response until the floor has elapsed; report it when the floor is outgrown.
 
-    This is the PRIMARY defence against the timing oracle: the caller observes one duration
-    regardless of which branch ran, so latency carries no information about whether the
-    address exists. It is deliberately a floor on the WHOLE call rather than a per-operation
-    equaliser — the branches differ by a PBKDF2 hash, an INSERT, an audit row and a broker
-    publish, and matching those individually would have to be re-done every time either
-    branch gains work.
+    Both allowed resend and reset requests use this after their owned transaction exits.
+    The measured window includes token writes, audit, COMMIT and synchronous broker publish
+    on the deployed HTTP path, which has no outer ATOMIC_REQUESTS transaction. Whole-call
+    padding survives a branch gaining work only while that work still fits inside the floor.
 
     NAMED A FLOOR ON PURPOSE. The previous name (`_pad_to_constant_time`) asserted a property
     this code only conditionally provides: the call is constant-time only while every branch
@@ -978,10 +981,11 @@ def _pad_to_floor(started: float) -> None:
     useful response is to make the operator aware the knob is now wrong. Rate-limited, because
     an outgrown floor is outgrown for every call.
 
-    Cost: one request thread parked for up to the floor. That is affordable precisely because
-    the three budgets above cap how often this endpoint can be reached at all.
+    Cost: one request thread parked for up to the floor. Refused budgets never reach this.
+    During limiter outages budgets fail open: the send ceiling still caps email work, but
+    allowed responses retain padding even when no send is admitted.
     """
-    floor = float(getattr(settings, "ACCOUNT_RESEND_MIN_SECONDS", RESEND_MIN_SECONDS_DEFAULT))
+    floor = float(getattr(settings, floor_setting, default))
     if floor <= 0:
         return
     elapsed = time.monotonic() - started
@@ -989,10 +993,12 @@ def _pad_to_floor(started: float) -> None:
     if remaining > 0:
         time.sleep(remaining)
         return
-    _report_floor_overrun(elapsed=elapsed, floor=floor)
+    _report_floor_overrun(elapsed=elapsed, floor=floor, floor_setting=floor_setting)
 
 
-def _report_floor_overrun(*, elapsed: float, floor: float) -> None:
+def _report_floor_overrun(
+    *, elapsed: float, floor: float, floor_setting: str = "ACCOUNT_RESEND_MIN_SECONDS",
+) -> None:
     """Warn — at most once per interval — that a branch ran past the constant-time floor."""
     global _last_floor_overrun_log
     now = time.monotonic()
@@ -1003,15 +1009,16 @@ def _report_floor_overrun(*, elapsed: float, floor: float) -> None:
     # size is the actionable part — it is how far the oracle is open and how much the floor
     # would have to rise to close it.
     logger.warning(
-        "resend-verification exceeded its constant-time floor: %.0fms elapsed against a "
+        "account request exceeded its constant-time floor: %.0fms elapsed against a "
         "%.0fms floor, overran by %.0fms. While a branch runs past the floor the padding "
         "equalises nothing and response time is again an account-existence oracle. Raise "
-        "ACCOUNT_RESEND_MIN_SECONDS above the slowest branch, or make dispatch cheaper "
+        "%s above the slowest branch, or make dispatch cheaper "
         "(CELERY_TASK_ALWAYS_EAGER puts the SMTP send inline on this path). Further reports "
         "suppressed for %.0fs.",
         elapsed * 1000,
         floor * 1000,
         (elapsed - floor) * 1000,
+        floor_setting,
         _FLOOR_OVERRUN_LOG_INTERVAL_SECONDS,
     )
 
@@ -1129,9 +1136,9 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 action="customer_user.verification_resent",
                 target_type="customer_user",
                 target_id=str(user.id),
-                # The token FINGERPRINT, never the token: enough to correlate the audit row
-                # with the credential, useless as the credential.
-                request_id=_fingerprint(raw_token),
+                # Account audit attempt IDs are independent of credentials, including
+                # live token fingerprints and consumed token masks (17tnw2b9dp2).
+                request_id=uuid.uuid4().hex,
                 source_surface=ACCOUNT_AUDIT_SURFACE,
                 after={},
             )
@@ -1205,9 +1212,9 @@ def login(data: LoginData, *, source_surface: str = ACCOUNT_AUDIT_SURFACE) -> Lo
             action="customer_user.logged_in",
             target_type="customer_session",
             target_id=str(session.id),
-            request_id=session.token_fingerprint,
+            request_id=uuid.uuid4().hex,
             source_surface=source_surface,
-            after={"masked_token": session.masked_token, "expires_at": session.expires_at.isoformat()},
+            after={"expires_at": session.expires_at.isoformat()},
         )
     return LoginResult(
         session_token=raw,
@@ -1269,14 +1276,16 @@ def refresh_session(presented_token: str) -> RefreshResult:
             action="customer_user.session_refreshed",
             target_type="customer_session",
             target_id=str(new_session.id),
-            request_id=new_session.token_fingerprint,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
-            after={"masked_token": new_session.masked_token, "expires_at": new_session.expires_at.isoformat()},
+            after={"expires_at": new_session.expires_at.isoformat()},
         )
     return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
 
 
-def logout_session(presented_token: str, *, all_sessions: bool = False) -> LogoutResult:
+def logout_session(
+    presented_token: str, *, all_sessions: bool = False, source_surface: str = ACCOUNT_AUDIT_SURFACE
+) -> LogoutResult:
     """Revoke the presented session (or every ACTIVE session for the user). Revokes the ACCOUNT
     session ONLY — never a DeviceToken or cached entitlement (never-blank: device stays live)."""
     now = djtz.now()
@@ -1295,8 +1304,8 @@ def logout_session(presented_token: str, *, all_sessions: bool = False) -> Logou
             action="customer_user.logged_out",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=session.token_fingerprint,
-            source_surface=ACCOUNT_AUDIT_SURFACE,
+            request_id=uuid.uuid4().hex,
+            source_surface=source_surface,
             after={"all_sessions": all_sessions},
         )
     return LogoutResult(revoked=True)
@@ -1310,7 +1319,7 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     then per-target-email — mirroring `resend_email_verification`'s shape exactly (86akcn8p4,
     Sana's more-urgent follow-up to 86akcmfd4). The per-IP budget alone (86akcmfd4, DEC-013's
     required follow-up) bounds how many timing samples one source can take against the mint-vs-
-    no-mint branch (see the `else` branch below for why it does not close that gap); it does
+    no-mint branch; the floor below conceals only work that fits within it. The IP budget does
     nothing to bound MAIL VOLUME against one victim, which is a different threat with a different
     key. A distributed attacker sprays distinct source IPs — cheap even before IPv6 (86akcn8ww)
     makes it nearly free — so the address budget is what actually caps how many reset emails one
@@ -1337,6 +1346,7 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     `_claim_degraded_send` shape exactly. `|=` and three separate statements, never `or`: see
     resend's own comment for why short-circuiting would stop spending the later budgets.
     """
+    started = time.monotonic()
     normalized = _require_valid_email(email)
     fingerprint = _email_fingerprint(normalized)
 
@@ -1367,60 +1377,48 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     if limiter_degraded:
         degraded_send_allowed = _claim_degraded_reset_send()
 
-    now = djtz.now()
-    with transaction.atomic():
-        user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
-        if user is not None:
-            # The limiter failed open and this call's claim on the fallback ceiling was
-            # refused: skip the send. The MINT is skipped with it, on purpose — same reasoning
-            # as resend's own docstring: superseding a live link and then not delivering its
-            # replacement would leave this caller worse off than before they asked.
-            if not degraded_send_allowed:
-                _report_reset_degraded_send_skipped()
-                return AcceptedResult(accepted=True)
-            CredentialToken.objects.filter(
-                customer_user=user,
-                purpose=CredentialTokenPurpose.PASSWORD_RESET,
-                consumed_at__isnull=True,
-            ).update(consumed_at=now)
-            raw_token = _mint_credential_token(user, CredentialTokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TTL)
-            record_audit_event(
-                _customer_actor(user),
-                action="customer_user.password_reset_requested",
-                target_type="customer_user",
-                target_id=str(user.id),
-                request_id=_fingerprint(raw_token),
-                source_surface=ACCOUNT_AUDIT_SURFACE,
-                after={},
-            )
-            # on_commit: same reason as signup — a rolled-back reset must not leave a live
-            # email pointing at a token row that was never committed.
-            reset_user, reset_token = user, raw_token
-            transaction.on_commit(
-                lambda: get_email_sender().send_password_reset(reset_user, reset_token)
-            )
-        else:
-            # Deliberately empty: the minting branch no longer runs a PBKDF2 (DEC-013), so a
-            # dummy one here would make the NON-EXISTENT-account branch the expensive one and
-            # invert the oracle.
-            #
-            # NO FLOOR APPLIES ON THIS PATH. `_pad_to_floor` is called only from
-            # `resend_email_verification`; `request_password_reset` is still unpadded, so
-            # nothing here equalises the two branches' DURATION. What used to obscure the gap
-            # was the minting branch's own PBKDF2 noise, never a constant-time guarantee.
-            # Measured, removing that PBKDF2 moved the branch gap from +2.66ms (sd 83ms) to
-            # +0.437ms (sd 0.27ms): absolutely smaller, but far cheaper to sample now that the
-            # noise hiding it shrank with it. Modelled against network jitter that is roughly a
-            # 2x reduction in remote attack cost — a modest regression of a PRE-EXISTING oracle,
-            # not a new one — and it collapses further for a co-located attacker. Signup is
-            # unaffected: its password PBKDF2 runs before the branch.
-            #
-            # Padding this path (closing the gap itself) is a separate, deliberately deferred
-            # decision — it is not what 86akcmfd4 does. What 86akcmfd4 DOES do is spend a
-            # per-client-IP budget before this function is even entered (see the docstring),
-            # which bounds how many times one source can sample this gap rather than closing it.
-            pass
-    return AcceptedResult(accepted=True)
+    try:
+        now = djtz.now()
+        with transaction.atomic():
+            user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
+            if user is not None:
+                # The limiter failed open and this call's claim on the fallback ceiling was
+                # refused: skip the send. The MINT is skipped with it, on purpose — same reasoning
+                # as resend's own docstring: superseding a live link and then not delivering its
+                # replacement would leave this caller worse off than before they asked.
+                if not degraded_send_allowed:
+                    _report_reset_degraded_send_skipped()
+                    return AcceptedResult(accepted=True)
+                CredentialToken.objects.filter(
+                    customer_user=user,
+                    purpose=CredentialTokenPurpose.PASSWORD_RESET,
+                    consumed_at__isnull=True,
+                ).update(consumed_at=now)
+                raw_token = _mint_credential_token(user, CredentialTokenPurpose.PASSWORD_RESET, PASSWORD_RESET_TTL)
+                record_audit_event(
+                    _customer_actor(user),
+                    action="customer_user.password_reset_requested",
+                    target_type="customer_user",
+                    target_id=str(user.id),
+                    request_id=uuid.uuid4().hex,
+                    source_surface=ACCOUNT_AUDIT_SURFACE,
+                    after={},
+                )
+                # on_commit: same reason as signup — a rolled-back reset must not leave a live
+                # email pointing at a token row that was never committed.
+                reset_user, reset_token = user, raw_token
+                transaction.on_commit(
+                    lambda: get_email_sender().send_password_reset(reset_user, reset_token)
+                )
+        return AcceptedResult(accepted=True)
+    finally:
+        # After our atomic exit: on_commit's real broker publish must be inside the floor.
+        # The degraded-send early return also comes through here, preserving the response
+        # timing without minting or superseding an undeliverable replacement token.
+        _pad_to_floor(
+            started, floor_setting="ACCOUNT_RESET_REQUEST_MIN_SECONDS",
+            default=RESET_REQUEST_MIN_SECONDS_DEFAULT,
+        )
 
 
 @dataclass
@@ -1884,12 +1882,52 @@ def confirm_password_reset(
         raise
 
 
+def _live_reset_token(
+    fingerprint: str, trace: _ResetConfirmTrace, *, for_update: bool = False
+) -> CredentialToken:
+    """Read and validate current liveness; the write-phase caller already owns atomic().
+
+    Read the clock AFTER the query returns: hashing or waiting for a row lock can carry
+    a formerly live token past expiry. Both preflight and the locked read use the same
+    collapsed-token checks, while only the latter authorizes the password write.
+    """
+    tokens = CredentialToken.objects
+    if for_update:
+        # Keep the existing joined user lock as well as the token lock. Do not write a
+        # stale preflight user instance after concurrent login/reset work has completed.
+        tokens = tokens.select_for_update().select_related("customer_user")
+    try:
+        token = tokens.get(token_fingerprint=fingerprint)
+    except CredentialToken.DoesNotExist as error:
+        trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
+        raise _validation_error() from error
+    if not hmac.compare_digest(token.token_fingerprint, fingerprint):
+        trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
+        raise _validation_error()
+    now = djtz.now()
+    if (
+        token.purpose != CredentialTokenPurpose.PASSWORD_RESET
+        or token.consumed_at is not None
+        or token.expires_at <= now
+    ):
+        trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
+        raise _validation_error()
+    trace.resolved(token.customer_user_id)
+    return token
+
+
 def _consume_reset_token(
     raw_token: str, new_password: str, trace: _ResetConfirmTrace
 ) -> ConfirmPasswordResetResult:
-    """The work `confirm_password_reset` does once the budget is spent: look the token up, check
-    it, check the password, consume it and set the password, all in one transaction. Every raise
-    sets `trace` first (see `_ResetConfirmTrace`)."""
+    """Preflight a live token, hash off-lock, then revalidate and write atomically.
+
+    86ak5qy3p chooses off-lock PBKDF2 rather than retaining CPU work under the token/user
+    locks. Initial token validation must precede password policy AND hashing (FR-551,
+    FR-529). It is only a preflight: another reset or expiry can invalidate the token while
+    hashing, so a fresh locked liveness check below remains the authority to consume it.
+    This service opens no transaction around hashing; caller-owned outer transactions
+    remain caller-owned (production does not enable ATOMIC_REQUESTS).
+    """
     token_value = (raw_token or "").strip()
     if not token_value:
         trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
@@ -1902,75 +1940,24 @@ def _consume_reset_token(
         trace.refused(ResetConfirmOutcome.MALFORMED_TOKEN)
         raise _validation_error() from None
     fingerprint = _fingerprint(token_value)
-    now = djtz.now()
+    token = _live_reset_token(fingerprint, trace)
+    # A LIVE link may expose PASSWORD_INVALID (DEC-017); a dead link never reaches this.
+    # Rejection happens before any consume, so it cannot burn the caller's reset link.
+    # The write transaction still owns rollback of consume/password/session/audit changes
+    # if a later operation fails; see the existing failed-reset rollback regression.
+    try:
+        _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
+    except SafeAPIError:
+        trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
+        raise
+    password_hash = make_password(new_password)
     with transaction.atomic():
-        try:
-            token = (
-                CredentialToken.objects.select_for_update()
-                .select_related("customer_user")
-                .get(token_fingerprint=fingerprint)
-            )
-        except CredentialToken.DoesNotExist as error:
-            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
-            raise _validation_error() from error
-        if not hmac.compare_digest(token.token_fingerprint, fingerprint):
-            trace.refused(ResetConfirmOutcome.UNKNOWN_TOKEN)
-            raise _validation_error()
-        if (
-            token.purpose != CredentialTokenPurpose.PASSWORD_RESET
-            or token.consumed_at is not None
-            or token.expires_at <= now
-        ):
-            trace.refused(_dead_token_outcome(token, now), customer_user_id=token.customer_user_id)
-            raise _validation_error()
-        trace.resolved(token.customer_user_id)
-        # FR-551 — THE ORDER OF THESE TWO CHECKS IS THE FIX. DO NOT MOVE THIS ABOVE THE
-        # TOKEN LOOKUP.
-        #
-        # The token is now known live, so the caller has proved possession of a working link
-        # and may safely be told that it is their PASSWORD that is wrong. Run before this
-        # block, the password check reached everyone — and, raising the same collapsed
-        # VALIDATION_FAILED as every token failure, told a user with a perfectly good link
-        # that the link was broken. They fetched a fresh one, retyped the same short
-        # password, and looped with no exit and no clue (DEC-012 (a)).
-        #
-        # WHY THIS LEAKS NOTHING is argued ONCE, beside `ErrorCode.PASSWORD_INVALID` in
-        # `selahcue_api/graphql/errors.py`. Do not restate it here: the argument was being
-        # maintained in four places, and by the first review round one copy had drifted.
-        #
-        # ON THE PLACEMENT RELATIVE TO THE CONSUME BELOW — read this before "tidying" it.
-        # A rejected password does not burn the user's link. That guarantee comes from the
-        # enclosing `transaction.atomic()`, which rolls the consume back on the raise; it
-        # does NOT come from this line sitting above `token.consumed_at`. The two are
-        # redundant, and the transaction is the one doing the work.
-        #
-        # Said plainly because an earlier version of this comment claimed the opposite — and
-        # with numbers, because the version after that understated them. Measured over the
-        # whole API suite, at 523 tests:
-        #
-        #   this call moved BELOW the consume, `atomic()` intact   523 passed — nothing notices
-        #   `atomic()` removed, this call left where it is         1 failed
-        #   BOTH                                                   5 failed
-        #
-        # Two reviewers measured the same shape independently on the 520-test tree that went
-        # into review: 520 passed / 1 failed / 4 failed. The counts move as tests are added;
-        # the shape is what matters, and it has now been reproduced three times.
-        #
-        # So the placement is inert while the transaction holds, and removing the transaction
-        # is loud whether or not the placement goes with it. Keep the placement — it is
-        # defence in depth for the day the transaction boundary is refactored away — but do
-        # not believe the link-preservation property is tested by its position. It is tested
-        # through `atomic()`, by `test_a_failed_reset_rolls_back_the_consume_and_the_password`
-        # in the auth slice.
-        try:
-            _validate_password(new_password, code=ErrorCode.PASSWORD_INVALID)
-        except SafeAPIError:
-            trace.refused(ResetConfirmOutcome.PASSWORD_REJECTED, customer_user_id=token.customer_user_id)
-            raise
+        token = _live_reset_token(fingerprint, trace, for_update=True)
+        now = djtz.now()
         token.consumed_at = now
         token.save(update_fields=["consumed_at"])
         user = token.customer_user
-        user.password_hash = make_password(new_password)
+        user.password_hash = password_hash
         user.password_changed_at = now
         user.failed_login_count = 0
         user.locked_until = None
@@ -1991,7 +1978,7 @@ def _consume_reset_token(
             action="customer_user.password_reset_completed",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=token.masked_token,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
             after={},
         )

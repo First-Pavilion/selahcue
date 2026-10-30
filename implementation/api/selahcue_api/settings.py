@@ -1,7 +1,7 @@
 import os
 import unicodedata
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -27,19 +27,31 @@ def _database_config() -> dict:
     """Discrete ``SQL_*`` variables, matching the First Pavilion house convention (see
     yharah-logistics `core/settings.py`) rather than a `DATABASE_URL` DSN.
 
-    Defaults to bundled SQLite so a bare `pytest` needs no environment. Point `SQL_ENGINE` at
+    Defaults to bundled SQLite only in dev. Outside exact dev, a missing/blank or SQLite engine
+    and a missing/blank or public-default password refuse settings import. Point SQL_ENGINE at
     postgresql in any real deployment: the device instance-limit guard (DEC-004) uses
     ``select_for_update``, which SQLite silently no-ops (`has_select_for_update=False`), so the
     limit is only actually enforced on a row-locking backend.
     """
     engine = os.getenv("SQL_ENGINE", "django.db.backends.sqlite3")
+    if ENVIRONMENT != "dev" and (not engine.strip() or engine.endswith("sqlite3")):
+        raise ImproperlyConfigured(
+            f"SQL_ENGINE must be explicitly configured and must not be SQLite when ENVIRONMENT={ENVIRONMENT!r}."
+        )
     if engine.endswith("sqlite3"):
         return {"ENGINE": engine, "NAME": os.getenv("SQL_DATABASE", str(BASE_DIR / "db.sqlite3"))}
+    password = os.getenv("SQL_PASSWORD", "postgres")
+    if ENVIRONMENT != "dev" and (not password.strip() or password == "postgres"):
+        # Do not echo a password, even a rejected public example, into startup logs.
+        raise ImproperlyConfigured(
+            "SQL_PASSWORD must be explicitly configured and must not be the public default "
+            f"when ENVIRONMENT={ENVIRONMENT!r}."
+        )
     return {
         "ENGINE": engine,
         "NAME": os.getenv("SQL_DATABASE", "selahcue"),
         "USER": os.getenv("SQL_USER", "postgres"),
-        "PASSWORD": os.getenv("SQL_PASSWORD", "postgres"),
+        "PASSWORD": password,
         "HOST": os.getenv("SQL_HOST", "localhost"),
         "PORT": os.getenv("SQL_PORT", "5432"),
         "CONN_MAX_AGE": int(os.getenv("DB_CONN_MAX_AGE", "60")),
@@ -48,12 +60,16 @@ def _database_config() -> dict:
 
 # dev | staging | prod. Anything but exactly `dev` counts as deployed: it switches on the SECRET_KEY
 # requirement below, the real-SMTP mail defaults, the TLS-proxy warning (selahcue_accounts.W002) and
-# the refusal of eager Celery in prod. It does not touch DEBUG, and it gates no error monitoring:
-# nothing in this repo consumes SENTRY_DSN (see the end of this file).
+# the refusal of eager Celery in prod. DEBUG and the actor-header bridge are refused outside dev.
+# It gates no error monitoring: nothing here consumes SENTRY_DSN (see the end of this file).
 ENVIRONMENT = os.getenv("ENVIRONMENT", "dev")
 
 # `DEBUG=1` / `DEBUG=0`, the house convention. env_bool also accepts true/yes/on.
 DEBUG = env_bool("DEBUG", False)
+if DEBUG and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured(
+        f"DEBUG must not be enabled when ENVIRONMENT={ENVIRONMENT!r}: debug mode is only available in dev."
+    )
 
 # Required outside dev. yharah raises unconditionally, but SelahCue's tests run bare (no
 # container env), so the hard requirement is scoped to non-dev — still stricter than the
@@ -77,9 +93,10 @@ DEBUG = env_bool("DEBUG", False)
 # `check --deploy`, so a weak key is not caught automatically anywhere today. Adopting that check
 # or its thresholds is a possible follow-up.
 #
-# What this does NOT cover: an environment that never sets ENVIRONMENT IS `dev`, so it starts
-# without complaint, on the dev key. That is why docs/ops/DEPLOYMENT.md and deployments.md list
-# ENVIRONMENT first in "Prod must-set" and say so.
+# A genuinely omitted ENVIRONMENT is still dev for local use, but the import-time guard below
+# refuses an empty raw key with any non-local allowed host (17tnw2b9d9y, accepted option a).
+# Explicit dev and a configured raw key stay outside that narrow guard; deployed environments
+# must still set ENVIRONMENT explicitly, as docs/ops/DEPLOYMENT.md and deployments.md describe.
 _DEV_SECRET_KEY = "selahcue-dev-only-insecure-key"
 _PUBLIC_SECRET_KEYS = frozenset({_DEV_SECRET_KEY, "replace-me-with-a-fresh-key"})
 
@@ -97,7 +114,20 @@ def _normalised_secret(value: str) -> str:
     return value.casefold()
 
 
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 SECRET_KEY = os.getenv("SECRET_KEY", "")
+# Check the raw key before dev fallback. This runs on every settings import, including WSGI,
+# rather than relying on manage.py checks. Bracketed ::1 is Django's IPv6 loopback host spelling.
+if (
+    os.getenv("ENVIRONMENT") is None
+    and not SECRET_KEY
+    and any(host not in {"localhost", "127.0.0.1", "::1", "[::1]", "testserver"} for host in ALLOWED_HOSTS)
+):
+    raise ImproperlyConfigured(
+        "ENVIRONMENT must be explicitly set when SECRET_KEY is empty and DJANGO_ALLOWED_HOSTS "
+        "includes a non-local host. Set ENVIRONMENT='staging' or 'prod' and a real SECRET_KEY "
+        "for deployment; use explicit ENVIRONMENT='dev' only for trusted local development."
+    )
 if ENVIRONMENT != "dev":
     _normalised_secret_key = _normalised_secret(SECRET_KEY)
     if not _normalised_secret_key:
@@ -114,8 +144,6 @@ if ENVIRONMENT != "dev":
     del _normalised_secret_key
 elif not SECRET_KEY:
     SECRET_KEY = _DEV_SECRET_KEY
-
-ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -339,7 +367,16 @@ GRAPHQL_ALLOW_QUERIES_VIA_GET = False
 GRAPHQL_MULTIPART_UPLOADS_ENABLED = False
 GRAPHQL_IDE = "graphiql" if DEBUG else None
 GRAPHQL_INTROSPECTION_ENABLED = DEBUG
-SELAHCUE_TRUST_ACTOR_HEADERS = env_bool("SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG)
+# Caller-chosen identities are a local dev bridge, never a deployed authenticator.
+# Explicit opt-in is refused too: ingress stripping cannot enable this bridge outside dev.
+SELAHCUE_TRUST_ACTOR_HEADERS = env_bool(
+    "SELAHCUE_TRUST_ACTOR_HEADERS", DEBUG if ENVIRONMENT == "dev" else False
+)
+if SELAHCUE_TRUST_ACTOR_HEADERS and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured(
+        f"SELAHCUE_TRUST_ACTOR_HEADERS must not be enabled when ENVIRONMENT={ENVIRONMENT!r}: "
+        "caller-supplied actor identity is only available in dev."
+    )
 
 # --- Celery / Redis (house convention: yharah-logistics core/settings.py) -------------------
 # `redis` is the compose service name; db 2 is the broker, matching the sibling project so the
@@ -435,7 +472,7 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
     if value is None or not (_SOCKET_TIMEOUT_MIN_SECONDS <= value <= _SOCKET_TIMEOUT_MAX_SECONDS):
         raise ImproperlyConfigured(
             f"{name} must be a number of seconds from {_SOCKET_TIMEOUT_MIN_SECONDS:g} to "
-            f"{_SOCKET_TIMEOUT_MAX_SECONDS:g} (got {raw!r}). It bounds how long a stalled cache "
+            f"{_SOCKET_TIMEOUT_MAX_SECONDS:g}. It bounds how long a stalled Redis "
             "store can hold a request; see docs/ops/DEPLOYMENT.md §6b."
         )
     return value
@@ -471,8 +508,40 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
 # silently multiplying the stall.
 # Raising these buys tolerance of a slow-but-working Redis at the cost of every figure above:
 # keep timeout x commands-per-request below any request timeout in front of this service.
+# The same validated bounds also cover the Redis task broker, independently of CACHE_URL.
+CELERY_BROKER_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds(
+    "CELERY_BROKER_SOCKET_CONNECT_TIMEOUT", "0.5"
+)
+CELERY_BROKER_SOCKET_TIMEOUT = _socket_timeout_seconds("CELERY_BROKER_SOCKET_TIMEOUT", "0.5")
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "socket_connect_timeout": CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+    "socket_timeout": CELERY_BROKER_SOCKET_TIMEOUT,
+    "retry_on_timeout": False,
+}
+
 CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIMEOUT", "0.5")
 CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
+
+
+def _cache_circuit_number(name: str, default: str, minimum: float, maximum: float, *, integer=False):
+    raw = (os.getenv(name) or "").strip() or default
+    try:
+        value = int(raw) if integer else float(raw)
+    except ValueError:
+        value = None
+    if value is None or not minimum <= value <= maximum:
+        # Even malformed environment input must never be echoed in diagnostics.
+        raise ImproperlyConfigured(
+            f"{name} must be {'an integer' if integer else 'a finite number'} from "
+            f"{minimum:g} to {maximum:g}; see docs/ops/DEPLOYMENT.md §6b."
+        ) from None
+    return value
+
+
+CACHE_CIRCUIT_FAILURE_THRESHOLD = _cache_circuit_number(
+    "CACHE_CIRCUIT_FAILURE_THRESHOLD", "3", 1, 100, integer=True,
+)
+CACHE_CIRCUIT_COOLDOWN = _cache_circuit_number("CACHE_CIRCUIT_COOLDOWN", "5", 0.1, 60)
 
 
 def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> dict:
@@ -481,6 +550,26 @@ def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> di
     tests can aim the identical configuration at a stalled stub."""
     if not url:
         return {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
+    # redis-py parses URL query names once with urlparse/parse_qs and gives their values
+    # precedence over OPTIONS. Refuse both timeout names, even blank or in range, so the
+    # validated environment variables remain authoritative. Keep all other URL options intact.
+    try:
+        query_options = parse_qs(urlparse(url).query, keep_blank_values=True)
+    except ValueError:
+        # urllib's malformed-netloc errors can include userinfo. Do not expose the
+        # parser's exception text or chain, even when there is no timeout query option.
+        raise ImproperlyConfigured(
+            "CACHE_URL could not be parsed. Check its URL syntax; see "
+            "docs/ops/DEPLOYMENT.md §6b."
+        ) from None
+    for name in ("socket_connect_timeout", "socket_timeout"):
+        if name in query_options:
+            # Only fixed option/variable names: the URL, its credentials and values are secrets.
+            raise ImproperlyConfigured(
+                f"CACHE_URL query option {name} is not supported. Remove it and configure "
+                "CACHE_SOCKET_CONNECT_TIMEOUT and CACHE_SOCKET_TIMEOUT instead; see "
+                "docs/ops/DEPLOYMENT.md §6b."
+            ) from None
     return {
         "BACKEND": "django.core.cache.backends.redis.RedisCache",
         "LOCATION": url,
@@ -509,6 +598,8 @@ SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 # limit the browser login mutation does not have (that one relies on the edge); the durable
 # per-account lockout in `login` applies to both.
 SELAHCUE_THROTTLE_SESSION_LOGIN = (10, 60)
+# Native single-session cleanup has a separate per-IP bucket; it cannot spend sign-in/activation budgets.
+SELAHCUE_THROTTLE_SESSION_REVOKE = (10, 60)
 
 # Resend-verification is unauthenticated AND sends email on demand, so it is both a spam
 # vector (flooding an arbitrary victim's mailbox) and a cost vector. Three budgets, because
@@ -691,6 +782,13 @@ ACCOUNT_MIN_PASSWORD_LENGTH = int(os.getenv("ACCOUNT_MIN_PASSWORD_LENGTH", "10")
 # overrun — an outgrown floor must surface, not degrade quietly. 0 disables padding entirely
 # and should only ever be done in tests.
 ACCOUNT_RESEND_MIN_SECONDS = float(os.getenv("ACCOUNT_RESEND_MIN_SECONDS", "0.4"))
+
+# Allowed reset-request timing floor (86ak7kka2), including the real transaction commit and
+# synchronous Celery/Redis publish. The reference study's slowest branch was 29.121ms; 100ms
+# retains >70ms headroom under those healthy conditions. Slower deployments must measure
+# and tune this knob; overruns share resend's bounded warning. Refused budgets never pad.
+# Keep in sync with RESET_REQUEST_MIN_SECONDS_DEFAULT in accounts/services.py. 0 is for tests.
+ACCOUNT_RESET_REQUEST_MIN_SECONDS = float(os.getenv("ACCOUNT_RESET_REQUEST_MIN_SECONDS", "0.1"))
 
 # Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
 # the emails minted here link to live token-landing pages.

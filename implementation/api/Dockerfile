@@ -18,7 +18,8 @@ RUN apt-get update \
 # this layer is meant to cache is the slow dependency resolve/build, so that
 # editing application code does not re-run it. The install is completed below,
 # once the package actually exists.
-# Postgres driver is only needed inside the container; local dev stays on SQLite.
+# The dev extra also supplies the Postgres driver for mandatory deployed-mode test controls.
+# Keep the existing explicit driver bound below aligned with that extra and hosted CI.
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip \
  && pip install --no-cache-dir -e ".[dev]" "psycopg[binary]>=3.2,<4"

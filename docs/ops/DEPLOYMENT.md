@@ -212,18 +212,23 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 
 | Variable | Default | Production |
 |----------|---------|-----------|
-| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Unset means `dev`, and `dev` is the only mode in which the API starts on the public dev signing key (`selahcue-dev-only-insecure-key`, which is in this repository), with no error and whatever else you set. It also gates the mail backend and the `SECRET_KEY` check below |
+| `ENVIRONMENT` | `dev` | **Required: `staging` / `prod`.** Genuinely unset with an absent/empty raw `SECRET_KEY` and any non-local `DJANGO_ALLOWED_HOSTS` entry refuses settings import. Local-only defaults still select dev; explicit `dev` and a configured raw key remain outside that narrow guard. See the precise boundary below. It also gates the mail backend, the `SECRET_KEY` check below, and refusal of enabled `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` outside exact `dev` |
 | `SECRET_KEY` | dev-only fallback | **Required, and not a public value. The app refuses to boot when `ENVIRONMENT != dev` and this is empty, equals the dev key, or equals the `replace-me-with-a-fresh-key` placeholder that earlier copies of `.env.sample` carried (letter case, whitespace, matched ASCII quotes and invisible format characters such as a BOM, zero-width space or joiner, or soft hyphen are ignored when comparing).** It is also the HMAC pepper for licence-key, device-token and account-session fingerprints: rotating it invalidates them all |
-| `DEBUG` | `0` | Leave `0` — see the warning below |
-| `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated) |
-| `SQL_ENGINE` | `…backends.sqlite3` | `django.db.backends.postgresql` — row-locking is required, see below |
-| `SQL_DATABASE` / `SQL_USER` / `SQL_PASSWORD` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `postgres` / `localhost` / `5432` | **Required** for Postgres |
+| `DEBUG` | `0` | **Startup refuses true outside exact `dev`, including staging.** Leave `0` or unset; see below |
+| `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated). Non-local entries trigger the omitted-environment/empty-key guard described below |
+| `SQL_ENGINE` | `…backends.sqlite3` in dev only | **Startup refuses unset/blank or SQLite outside exact `dev`**, naming `SQL_ENGINE` and `ENVIRONMENT`. Configure `django.db.backends.postgresql`; row-locking is required, see below |
+| `SQL_DATABASE` / `SQL_USER` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `localhost` / `5432` | **Required** for Postgres |
+| `SQL_PASSWORD` | `postgres` in dev only | **Startup refuses unset/blank or exact `postgres` outside exact `dev`**, naming `SQL_PASSWORD` and `ENVIRONMENT` without echoing the value |
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
+| `CELERY_BROKER_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Redis broker TCP connect timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
+| `CELERY_BROKER_SOCKET_TIMEOUT` | `0.5` (seconds) | Redis broker per-command timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
+| `CACHE_CIRCUIT_FAILURE_THRESHOLD` | `3` | Integer `1` to `100`; consecutive cache errors before this worker bypasses the store. See §6b |
+| `CACHE_CIRCUIT_COOLDOWN` | `5` (seconds) | Finite `0.1` to `60`; bypass duration before a single recovery probe. See §6b |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | `0` (off) | Set `1` (or `true`/`yes`/`on`) behind a TLS-terminating proxy that overwrites `X-Forwarded-Proto`, else browser CSRF fails and HSTS is never sent. Opt-in because the header is forgeable, and it makes HSTS live. See §6c |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Exact `https://host[:port]` origins (no `*`, no path), only if the browser `Origin` differs from the forwarded `Host`. A bad entry refuses to boot. See §6c |
@@ -231,7 +236,7 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
 | `SENTRY_DSN` | empty | Read into settings, but nothing consumes it yet (no Sentry SDK is wired), so setting it changes nothing today. Intended for staging/prod only, never locally |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Leave empty. It is read but **not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set |
-| `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` | **Must be false.** See below |
+| `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` in dev; false elsewhere | **Startup refuses true outside exact `dev`, including staging and explicit opt-in.** See below |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
@@ -247,17 +252,42 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 > `active_devices = 0` and exceed `device_limit`. The guard is not wrong — it simply has no
 > effect without a row-locking backend.
 
+Database validation runs at settings import, including under gunicorn/uwsgi without system
+checks. Any `ENVIRONMENT` other than exact `dev` refuses missing/whitespace-only `SQL_ENGINE`
+or an engine ending in `sqlite3`; it also refuses missing/whitespace-only `SQL_PASSWORD` or the
+exact public default `postgres`. The guard does not restrict all other backends to an allowlist
+or impose a password-strength policy. Password values are not normalized or logged. Exact dev
+retains SQLite fallback and the existing non-SQLite password default; no database data is changed
+by these checks. Configure Postgres and a real password before starting a deployed API.
+
+The omitted-environment guard runs when settings are imported, including under gunicorn or
+uwsgi; it does not rely on `manage.py check`. It refuses only the conjunction of genuinely
+unset `ENVIRONMENT`, absent/empty raw `SECRET_KEY`, and at least one non-local
+`DJANGO_ALLOWED_HOSTS` entry. The local set is exactly `localhost`, `127.0.0.1`, `::1`
+(including Django's bracketed `[::1]` spelling), and `testserver`. Wildcards, suffix patterns,
+and other addresses are non-local. A mixed local/non-local list is refused too.
+
+This uses option (a) from [17tnw2b9d9y](https://app.clickup.com/t/17tnw2b9d9y): it works for every settings entry point without
+assuming Coolify uses a particular Dockerfile, while keeping bare local development available.
+It is a narrow omission guard, not a universal deployment detector: explicit `dev` and a
+configured nonempty raw key retain their existing behavior. Set `ENVIRONMENT=staging` or
+`ENVIRONMENT=prod` and a real key in deployed environments; those modes also select the real
+SMTP defaults and enable the TLS-proxy warning.
+
 Generate a secret key:
 
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 ```
 
-> **`DEBUG` controls more than error pages.** `SELAHCUE_TRUST_ACTOR_HEADERS` defaults to the
-> value of `DEBUG`, and when true the API accepts caller-supplied identity headers — turning on
-> debug in production would let a client assert any actor. Debug also enables the GraphQL IDE and
-> introspection, and zeroes HSTS. Set `DEBUG=0` explicitly rather than relying on the
-> default.
+> **`DEBUG` and the actor-header bridge are dev-only.** Startup raises an actionable error
+> naming the flag and environment if either `DEBUG` or `SELAHCUE_TRUST_ACTOR_HEADERS` is true
+> when `ENVIRONMENT` is anything other than exact `dev`. This includes staging: an explicit
+> bridge opt-in is refused even behind an ingress that strips identity headers. In dev the
+> bridge follows `DEBUG` unless explicitly overridden; debug also enables the GraphQL IDE and
+> introspection and zeroes HSTS. The bridge rejects `anonymous`, which remains available only
+> for internally generated failed-confirm audit actors. Keep both flags false/unset outside dev;
+> production staff identity integration remains a separate prerequisite.
 
 ---
 
@@ -297,23 +327,21 @@ expires (DEC-005), regardless of key changes.
 
 ## 6b. Ops requirements — ingress, throttling and Redis
 
-Three properties the *deployment* must hold. None of them can be fixed in application code:
-each is a promise the edge makes that the app then relies on. Deploying without them does not
-fail loudly — it just quietly removes a control the app assumes is there.
+The deployment remains responsible for stripping identity headers, edge flood protection and
+shared Redis. The startup guards in §6 refuse the dev identity bridge outside dev; those guards
+do not replace the edge and Redis controls below.
 
 ### The ingress must strip inbound `X-SelahCue-*` headers
 
-Do this **before** `SELAHCUE_TRUST_ACTOR_HEADERS` is ever set true anywhere, including staging.
+Strip inbound identity headers at the edge and verify a forged header does not survive to
+Django. Keep `SELAHCUE_TRUST_ACTOR_HEADERS` false/unset in every shared deployment, including
+staging. **Stripping does not permit enabling the bridge outside dev:** startup refuses it.
 
-When that flag is on, the API reads the actor's identity — who they are and what they may do —
-from request headers. It has no way to distinguish a header your load balancer set from one the
-client typed: by the time Django sees them they are the same bytes. So if the flag is on and the
-ingress passes client headers through, any caller can assert any actor, including staff
-permissions. That is total authentication bypass, not privilege escalation at the margins.
-
-The safe order is: strip at the edge first, verify a forged header does not survive to the app,
-*then* enable the flag. The default is off and follows `DEBUG` (§6) — keep it that way until the
-strip rule is deployed and tested.
+The dev bridge cannot distinguish a caller's identity headers from headers an ingress added.
+When enabled locally it trusts caller-selected identities and staff permissions, so use it only
+in a trusted local development environment. It rejects the `anonymous` kind; internal
+failed-confirm audit rows still use that kind. Real customer session authentication takes
+precedence over the bridge. Production staff identity integration remains separate.
 
 ### Per-IP flood protection belongs at the edge
 
@@ -377,11 +405,32 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | `0.05` to `10` | Opening the TCP connection to Redis, and nothing after it |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` | `0.05` to `10` | Waiting on Redis for anything once the TCP connection is open: each command, and on a new connection the handshake too |
 
+- **Per-process cache circuit (17tnw2b2kab).** After `CACHE_CIRCUIT_FAILURE_THRESHOLD`
+  consecutive budget-store errors (default `3`), that worker skips store access for
+  `CACHE_CIRCUIT_COOLDOWN` seconds (default `5`). A successful counter operation, including a
+  real denial, resets the consecutive error count. The threshold accepts integers `1` to `100`;
+  cooldown accepts finite seconds `0.1` to `60`. Blank uses the default; invalid values refuse
+  startup with a diagnostic naming only the setting. These operational limits prevent a typo
+  from making every transient error open the circuit indefinitely or allowing an excessive
+  run of failing requests before protection starts. Tune against measured traffic and recovery.
+  After cooldown exactly one request probes Redis; concurrent requests continue to receive
+  the existing unavailable outcome. Success closes the circuit; failure starts a fresh cooldown.
+  Calls already in flight may still finish; their older results cannot close or extend a newer
+  outage. No circuit lock is held during Redis I/O. State is a few counters, a timestamp and a
+  lock per worker, shared across identities; restart clears it. Workers recover independently.
+  Bypassed checks retain the unavailable outcome, caller-specific admission and degraded mail
+  ceilings, plus the existing once-per-minute outage report. They do not consume a Redis budget.
+  The first three sequential stalls still pay the socket timeout; cooldown traffic does not.
+  This circuit does not detect a slow store that keeps answering within its socket timeout.
+  Celery broker publication is a separate connection and ticket; it has no cache circuit.
 - **Healthy Redis: nothing changes.** A healthy Redis answered one command in a few milliseconds
   (26 ms at worst in this change's performance review), so the default is at least 19 times the
   worst healthy sample.
 - **A stalled Redis is treated exactly like a down one.** The call raises, the throttle **permits
-  the request**, the degraded send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
+  the request** except native `POST /v1/sessions`: bootstrap login returns429 before password
+  work when its budget cannot be checked (17tnw2b1wq9; see the API README). Already activated
+  devices and other native routes retain their existing fail-open availability. The degraded
+  send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
   `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
@@ -404,6 +453,12 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
     budgets (a reset or resend), and 1.69 s for the **first** call on a fresh connection (it also
     paid the three handshake commands).
 
+  A shared `/v1` throttle **denial** also reads the existing counter's PTTL on the primary
+  to provide `Retry-After` (17tnw2b1wqc). That is one extra command under the same socket timeout:
+  up to about 0.5 s more at the defaults if Redis becomes slow after the counter decision.
+  Allowed and fail-open requests do not pay it. If this metadata read fails, the response remains
+  429 with a full-window retry hint; no new key, counter write or retry is introduced.
+
   It is a ceiling, not a retry: a timed-out call is not repeated.
 - **Allowed range.** Each variable must be from `0.05` to `10` seconds, inclusive; a blank value
   means the default. Anything else makes the API refuse to start, with an error naming the
@@ -417,13 +472,23 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
     wait and `500` (milliseconds typed as seconds) holds a request for minutes. The ceiling is
     ten seconds because a three-budget route can spend nine commands, which at 10 s each is
     90 s for one request.
+- **Supported timeout channels.** Set timeouts only through `CACHE_SOCKET_CONNECT_TIMEOUT`
+  and `CACHE_SOCKET_TIMEOUT` above. The API refuses to start if `CACHE_URL` contains the query
+  option `socket_connect_timeout` or `socket_timeout`, including percent-encoded option names,
+  blank values and values inside the allowed range. Redis URL query options otherwise override
+  the backend's validated settings, so even an in-range URL timeout is refused to keep one
+  authoritative channel. Remove the option from the URL and set the corresponding environment
+  variable instead. The error names the option and supported variables without echoing the URL,
+  credentials or query value. A malformed URL that the parser cannot read also refuses startup
+  with a fixed syntax diagnostic, suppressing the parser exception that can contain credentials.
+  Other query options and well-formed URLs without timeout options retain their existing behavior;
+  an unset `CACHE_URL` still selects the local memory cache.
 - **Tuning.** Keep the defaults unless you have measured a reason not to. Raise a timeout only when
   the slowest healthy round trips you can measure on your own Redis (including, on `rediss://`, the
   TLS and handshake round trips of a reconnect, which all count against `CACHE_SOCKET_TIMEOUT`)
   come within a few times of 0.5 s; a managed or TLS Redis that needs it is likely to be well served
-  by a value between `0.2` and `5`. Raising a timeout multiplies every figure above, and nothing in
-  the app yet stops later requests each paying the full stall during a long outage (a per-process
-  circuit breaker would; it is not built), so stay as low as the measurements allow and keep the
+  by a value between `0.2` and `5`. Raising a timeout multiplies every figure above, so stay as low
+  as the measurements allow, even with the circuit bypass, and keep the
   timeout times the commands a route spends (up to 9, rarely a few more, on a three-budget route;
   12 on a fresh connection) below any request timeout your host or proxy enforces. Size threads or
   workers for arrival rate times the added latency.
@@ -440,16 +505,37 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   whatever collects your process output: page on them there. It is also visible from outside:
   while it lasts, every throttled response is slower by the figures above and `RATE_LIMITED`
   (429) answers stop appearing, so a flood is no longer refused.
-- **Scope: the Celery broker is not covered.** These settings cover `CACHE_URL` — the throttle
-  counters in db 1 — only. kombu 5.6.2's Redis transport defaults both of its socket timeouts to
-  `None` and `settings.py` sets no `CELERY_BROKER_TRANSPORT_OPTIONS`, so a stalled broker still
-  holds a request that publishes a task. That has a consequence while one Redis serves both the
-  cache and the broker (db 1 and db 2 of the same server, as in the compose file): if that Redis
-  wedges, `requestPasswordReset` for an address that **has an account** still blocks, because it
-  mints a token and publishes the email task to the stalled broker (still blocked at 12 s and at
-  30 s in two separate test runs), while an unknown address is answered after the cache timeouts
-  (about 1.5 s at the defaults). Response time then shows whether an account exists. Tracked in
-  17tnw2b2k4x.
+- **The task broker has its own socket limits (17tnw2b2k4x).** The two broker timeout
+  variables in the API environment table use the same inclusive 0.05–10 second validation as
+  the cache, with 0.5 second defaults. They configure Kombu's Redis transport through the Python setting
+  `CELERY_BROKER_TRANSPORT_OPTIONS` (not another environment variable);
+  cache settings do not configure the broker. Set them using the explicit environment variables.
+  Kombu does not accept socket-timeout or retry options in the Redis broker URL query; these
+  unsupported query options cannot override the transport settings and publishing fails safely.
+  Email publishing opens a dedicated connection and sets connection retries to zero and publish
+  retries off. This avoids waiting for a pooled producer and bounds a completely silent broker
+  to one read timeout after connecting, plus request/database/password work and scheduler jitter.
+  Redis command retries on timeout are disabled. These email callers consume no task results,
+  so each email publish sets `ignore_result=True`. This prevents Celery from subscribing to the
+  independent `CELERY_RESULT_BACKEND` before sending: broker socket limits do not configure that
+  result client's socket limits. Email task defaults, global result settings, worker reconnect
+  and unrelated task-publisher retry/result policies are unchanged. The per-message result flag
+  applies only to emails submitted through this sender.
+- **A socket timeout is per command, not a request deadline.** An answering-but-slow broker can
+  perform several bounded reads (authentication, CLIENT SETINFO, SELECT, PING, queue declaration,
+  and publish); TLS handshakes use the read timeout. DNS resolution is controlled by the host's
+  resolver, not these socket limits. Keep those cumulative costs below the host/proxy request
+  budget. There is still no application-server request deadline in this repository.
+- **A failed publish has an unknown delivery outcome.** A lost response can follow a successful
+  enqueue. The sender does not automatically retry, does not return broker errors or account
+  existence to callers, and logs only the fixed task name and exception type, at most once per
+  process per minute. Alert on `email delivery unconfirmed`. The existing accepted response
+  confirms processing, not email delivery; the request acknowledgements explain checking the
+  inbox and requesting another link if nothing arrives. Account and token commits remain intact,
+  so a user can use the existing resend/reset flows. Do not infer guaranteed delivery from an
+  accepted request or silently replay uncertain publishes. The reset timing-floor follow-up
+  remains separate: finite broker waits alone do not equalise registered/unknown response times.
+
 
 ### The failed password-reset confirm trace (86ak5r2pt)
 

@@ -55,12 +55,14 @@ import os
 import re
 import shutil
 import socketserver
-import subprocess
 import sys
 import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[2] / "scripts"))
+from headless_chrome import run_headless_chrome  # noqa: E402
+
 MARKETING = HERE.parent
 DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 
@@ -132,7 +134,19 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # clicks away while Logout is held: not pulled back to /signin, request not repeated, hint still cleared; 12 checks) and the
 # polite "Signing out…" status region (before the press, while pending, and cleared after a failure) with a check that
 # announcing it moves nothing (4 checks across the pending and failure scenarios).
-EXPECTED_MIN_CHECKS = 2570
+# 2570 -> 2575 in the broker-publishing ticket (17tnw2b2k4x): the same 71 scenarios,
+# with five added request-acknowledgement checks. The four existing conditional-copy checks
+# remain and follow the approved wording; no scenario or privacy/TTL check was removed.
+# The complete real rendered gate must confirm this exact count; its receipt is retained
+# with the ticket's delivery evidence. Equality below remains strict in both directions.
+# 2575 -> 2608 in shared sign-out (17tnw2b2ka8), measured in hosted CI 40941630343
+# on d46097bb: 73 scenarios, 2608 checks, zero behavioural failures. Adds real dual-control
+# composition, late-failure recovery after Account leaves, and mobile modal announcements.
+# The first run exited 4 solely on this old exact-count guard; rerun with this measured count.
+# 2608 -> 2645 in refresh/sign-out ordering (17tnw2b2ka9), measured in hosted
+# diagnostic41032605045 on source7b2f7d51: 75 scenarios, 2645 checks, zero behavioral
+# failures. The old exact count alone exited4; keep equality strict and rerun the gate.
+EXPECTED_MIN_CHECKS = 2645
 
 
 def find_chrome() -> str | None:
@@ -305,6 +319,44 @@ DRIVER = r"""
   // Mutable state a couple of scenarios need across calls within one page load.
   var registerAttempts = 0;
   var signedOut = false;
+  // Scripted server/cookie state for ka9. Cookie values stay in the harness, never in app
+  // storage: this models the inspected HttpOnly response ordering, not a real API server.
+  var refreshRace = { cookie: null, oldActive: false, rotatedActive: false, started: false, logoutCookies: [] };
+  function refreshRaceIsLive() {
+    return (refreshRace.cookie === 'old' && refreshRace.oldActive) ||
+           (refreshRace.cookie === 'rotated' && refreshRace.rotatedActive);
+  }
+  function refreshRaceReply(failFirstLogout) {
+    var held = gated(function () {
+      refreshRace.cookie = 'rotated'; // Response Set-Cookie precedes completion of fetch.
+      return json({ data: { refreshSession: {
+        expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString() } } });
+    });
+    return function (op) {
+      if (op === 'Login') {
+        refreshRace.cookie = 'old';
+        refreshRace.oldActive = true;
+        return LOGIN_IN(3);
+      }
+      if (op === 'RefreshSession') {
+        if (!refreshRaceIsLive()) return UNAUTHENTICATED();
+        refreshRace.oldActive = false;
+        refreshRace.rotatedActive = true;
+        refreshRace.started = true;
+        return held(op); // Rotation committed, but its response cookie is still held.
+      }
+      if (op === 'Logout') {
+        refreshRace.logoutCookies.push(refreshRace.cookie);
+        if (failFirstLogout && refreshRace.logoutCookies.length === 1) throw new TypeError('Failed to fetch');
+        if (!refreshRaceIsLive()) return UNAUTHENTICATED(); // Resolver never reaches delete_cookie.
+        refreshRace.oldActive = false;
+        refreshRace.rotatedActive = false;
+        refreshRace.cookie = null;
+        return json({ data: { logout: { revoked: true } } });
+      }
+      return refreshRaceIsLive() ? VIEWER_OK() : UNAUTHENTICATED();
+    };
+  }
 
   /**
    * C-008's NAMED CASE, which was never scripted (Quinn).
@@ -504,6 +556,29 @@ DRIVER = r"""
         return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
       };
     })(),
+    'account-signout-leave-failure': (function () {
+      var attempts = 0;
+      var heldLogout = gated(function () { return Promise.reject(new TypeError('Failed to fetch')); });
+      return function (op) {
+        if (op === 'Logout') {
+          attempts += 1;
+          if (attempts === 1) return heldLogout(op);
+          signedOut = true;
+          return json({ data: { logout: { revoked: true } } });
+        }
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
+    'account-signout-mobile-pending': (function () {
+      var heldLogout = gated(function () {
+        signedOut = true;
+        return json({ data: { logout: { revoked: true } } });
+      });
+      return function (op) {
+        if (op === 'Logout') return heldLogout(op);
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
 
     // ------------------------------------------------------------- create account --
     // Both return the identical envelope, because `register_customer_user` does: it
@@ -586,7 +661,9 @@ DRIVER = r"""
     'session-no-refresh':  function (op) {
       if (op === 'Login') return LOGIN_IN(30);
       return VIEWER_OK();
-    }
+    },
+    'session-refresh-signout-race': refreshRaceReply(false),
+    'session-refresh-signout-failure': refreshRaceReply(true)
   };
 
   window.fetch = function (url, init) {
@@ -1379,6 +1456,57 @@ DRIVER = r"""
     return header ? header.getBoundingClientRect().height : -1;
   }
 
+  async function exerciseRefreshSignOut(failFirstLogout) {
+    await wait(400);
+    fillSignIn('pastor@yourchurch.org', 'a-good-passphrase');
+    await wait(50);
+    submit();
+    var deadline = Date.now() + 3000;
+    while (Date.now() < deadline && (!refreshRace.started || !accountSignOutControl())) await wait(20);
+    check('router refresh has rotated the old session while its response is held',
+          refreshRace.started && !refreshRace.oldActive && refreshRace.rotatedActive && refreshRace.cookie === 'old');
+    check('the guarded Account page still mounts during opportunistic refresh', location.pathname === '/account');
+    var control = accountSignOutControl();
+    check('the real Account sign-out action is available', !!control);
+    var originalHint = window.localStorage.getItem('selahcue.session');
+    if (control) control.click();
+    await wait(100);
+    check('pressing Sign out sends no old-cookie Logout while refresh is held', logoutCount() === 0);
+    var pending = accountSignOutControl();
+    check('the shared action remains pending until the rotated cookie can be revoked',
+          !!pending && pending.disabled && pending.textContent.trim() === 'Signing out…');
+    check('waiting on refresh has not claimed the hint was signed out',
+          window.localStorage.getItem('selahcue.session') === originalHint && originalHint !== null);
+    releaseGate();
+    await wait(1200);
+    check('Logout used the new response cookie after rotation settled',
+          refreshRace.logoutCookies.length === 1 && refreshRace.logoutCookies[0] === 'rotated');
+    if (failFirstLogout) {
+      check('failed revocation keeps the real session live', refreshRaceIsLive());
+      check('failure is reported honestly and does not leave Account',
+            signOutAlert(true) !== '' && location.pathname === '/account');
+      check('finishing refresh after sign-out started did not rewrite the saved hint',
+            window.localStorage.getItem('selahcue.session') === originalHint);
+      var retry = accountSignOutControl();
+      check('the shared control releases pending and offers a retry', !!retry && !retry.disabled);
+      if (retry) retry.click();
+      await wait(1000);
+      check('retry revokes the same rotated session rather than an obsolete cookie',
+            refreshRace.logoutCookies.length === 2 && refreshRace.logoutCookies[1] === 'rotated');
+    }
+    check('sign-out leaves no live modeled cookie-backed session', !refreshRaceIsLive() && !refreshRace.rotatedActive);
+    check('the browser hint cannot be resurrected by the completed refresh',
+          window.localStorage.getItem('selahcue.session') === null);
+    check('successful sign-out lands on the owner-approved signin page', location.pathname === '/signin');
+    check('no extra opportunistic refresh was admitted during logout',
+          calls.filter(function (c) { return c.op === 'RefreshSession'; }).length === 1);
+    check('attempted a real protected-route navigation after sign-out', navigate('/account'));
+    await wait(1000);
+    check('the cookie-backed viewer check confirms the session is ended',
+          location.pathname === '/signin' && has(pageText(), "You've been signed out"));
+    csrfChecks();
+  }
+
   // ---------------------------------------------------- Figma fidelity (ClickUp 17tnw2b2cf1) --
   /*
    * COMPUTED values, read from the cascade the visitor gets, in real Chrome.
@@ -1787,9 +1915,10 @@ DRIVER = r"""
       var text = cardText();
       check('V5 title', has(text, 'Check your inbox'));
       // Load-bearing for no-enumeration: conditional, never a direct claim.
-      check('V5 phrasing is conditional ("If ... has a SelahCue account")',
-            has(text, 'If pastor@yourchurch.org has a SelahCue account'));
+      check('V5 phrasing remains conditional on needing verification',
+            has(text, 'If this account needs verification,'));
       check('V5 states the 24 hour TTL', has(text, 'expires in 24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('V5 explains only the newest link works', has(text, 'Only the newest link works'));
       alignmentChecks('V5', false, true);
       // verify-v5-01: the helper note is 12.5px on a 17px line in the secondary ink, 4.5:1 or better.
@@ -2303,8 +2432,9 @@ DRIVER = r"""
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
       check('sent state phrasing is conditional',
-            has(text, 'If pastor@yourchurch.org has a SelahCue account'));
+            has(text, 'If this address has a SelahCue account,'));
       check('sent state states the 1 hour TTL, not 24', has(text, 'expires in 1 hour'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('called requestPasswordReset (a mutation that really exists)',
             calls.some(function (c) { return c.op === 'RequestPasswordReset'; }));
       universalChecks();
@@ -2546,8 +2676,9 @@ DRIVER = r"""
       // one awaiting verification, and this state is also reachable when the cause was
       // deactivation — in which case nothing was sent.
       check('phrasing stays conditional',
-            has(text, 'has a SelahCue account waiting to be verified'));
+            has(text, 'If this account needs verification,') && !has(text, 'on its way'));
       check('states the 24 hour TTL', has(text, 'expires in 24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       var resend = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
       check('dispatched the real resend mutation', !!resend);
       check('asked for the real field name',
@@ -2665,10 +2796,8 @@ DRIVER = r"""
       check('the local hint was cleared',
             window.localStorage.getItem('selahcue.session') === null,
             'still held: ' + window.localStorage.getItem('selahcue.session'));
-      // TEMPORARY. The navbar lands on `/`; the owner's decision (2026-10-05) is that BOTH Sign out
-      // buttons land on /signin, and 17tnw2b2ka8 moves this one. That ticket changes this check to
-      // '/signin' and deletes the pin in `tests/accountSignOut.test.ts` that points here.
-      check('left the account route', location.pathname === '/');
+      check('the navbar lands on the same owner-approved /signin destination', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
 
       // AND THE PART THAT MATTERS: the protected route is unreachable afterwards.
       check('drove a real client-side navigation', navigate('/account'));
@@ -2769,7 +2898,11 @@ DRIVER = r"""
             idleRegion.textContent.trim() === '',
             'region: ' + (idleRegion && idleRegion.outerHTML));
       var idleHeight = accountHeaderHeight();
+      var navbarBefore = navbarSignOutControl();
       if (control) control.click();
+      // Same browser turn, before Vue has painted disabled controls: the flow guard, rather
+      // than the button's disabled attribute, must prevent the second component's request.
+      if (navbarBefore) navbarBefore.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 
       // The request is out and the reply is held. Poll for it rather than sleeping, so the
       // check below reads the in-flight state and not a guess about timing.
@@ -2783,6 +2916,9 @@ DRIVER = r"""
       check('it reads "Signing out…"', !!pending && pending.textContent.trim() === 'Signing out…',
             'read: ' + (pending && pending.textContent.trim()));
       check('and is disabled', !!pending && pending.disabled === true);
+      var navbarPending = navbarSignOutControl();
+      check('the real navbar observes the same pending label and disabled state',
+            !!navbarPending && navbarPending.disabled && navbarPending.textContent.trim() === 'Signing out…');
       var pendingRegion = accountStatusRegion();
       check('the pending state is announced to a screen reader through the polite status region',
             !!pendingRegion && pendingRegion.textContent.trim() === 'Signing out…',
@@ -2790,6 +2926,10 @@ DRIVER = r"""
       check('and announcing it moved nothing: the header is exactly as tall as when idle',
             idleHeight > 0 && Math.abs(accountHeaderHeight() - idleHeight) < 0.5,
             'idle ' + idleHeight + 'px, pending ' + accountHeaderHeight() + 'px');
+      check('one active status region announces shared pending, rather than two voices',
+            Array.prototype.filter.call(document.querySelectorAll('[role="status"]'), function (el) {
+              return !el.closest('[inert]') && el.textContent.trim() === 'Signing out…';
+            }).length === 1);
       check('nothing has been cleared yet: the server has not answered',
             window.localStorage.getItem('selahcue.session') !== null);
       check('and the visitor is still on /account', location.pathname === '/account',
@@ -2851,15 +2991,16 @@ DRIVER = r"""
       check('pressing it again retries', logoutCount() === 2, 'logouts: ' + logoutCount());
       check('and the failure is still reported', signOutAlert(true) !== '');
 
-      // PARITY with the navbar's control, in the same failing state: the same words.
+      // Both controls drive the same failure. Account owns its route's announcement;
+      // duplicate navbar and Account alerts would speak the same action twice.
       var navbarControl = navbarSignOutControl();
       if (navbarControl) navbarControl.click();
       await wait(800);
-      var navbarMessage = signOutAlert(false);
-      check('the navbar reports the failure too', navbarMessage !== '');
-      check('in word for word the same message as the Account page',
-            navbarMessage !== '' && navbarMessage === message,
-            '"' + navbarMessage + '" vs "' + message + '"');
+      check('a navbar retry reports the same shared failure through Account', signOutAlert(true) === message);
+      check('only one alert announces the shared failure on Account',
+            Array.prototype.filter.call(document.querySelectorAll('[role="alert"]'), function (el) {
+              return has(el.textContent, "couldn't sign you out");
+            }).length === 1);
       csrfChecks();
     },
 
@@ -2892,6 +3033,77 @@ DRIVER = r"""
             'still held: ' + window.localStorage.getItem('selahcue.session'));
       check('and the navbar now offers Sign in, not Sign out',
             !navbarSignOutControl() && !!document.querySelector('header a[href="/signin"]'));
+      csrfChecks();
+    },
+
+    'account-signout-leave-failure': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('Account is mounted with a sign-out control', !!control);
+      if (control) control.click();
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      check('the request is out before leaving', logoutCount() === 1);
+      check('drove navigation away from Account', navigate('/pricing'));
+      await wait(1000);
+      check('Account has unmounted', !document.querySelector('.account-portal'));
+      var region = document.querySelector('.navbar-header [role="status"]');
+      check('surviving chrome announces the operation while still pending',
+            !!region && region.textContent.trim() === 'Signing out…' && region.getAttribute('aria-live') === 'polite');
+      releaseGate();
+      await wait(1000);
+      check('a failed late request leaves the visitor on Pricing', location.pathname === '/pricing');
+      check('the surviving navbar reports the failure in an alert', signOutAlert(false) !== '');
+      check('the server failure keeps the signed-in hint', window.localStorage.getItem('selahcue.session') !== null);
+      var retry = navbarSignOutControl();
+      check('the shared pending state releases and navbar can retry', !!retry && !retry.disabled && retry.textContent.trim() === 'Sign out');
+      check('the pending announcement clears when the alert takes over', !!region && region.textContent.trim() === '');
+      if (retry) retry.click();
+      await wait(1500);
+      check('retry through surviving navbar sends exactly a second request', logoutCount() === 2);
+      check('successful retry clears the hint', window.localStorage.getItem('selahcue.session') === null);
+      check('successful navbar retry lands on /signin', location.pathname === '/signin');
+      csrfChecks();
+    },
+
+    'account-signout-mobile-pending': async function () {
+      await wait(800);
+      check('this scenario uses the phone viewport', window.innerWidth < 768);
+      var toggle = document.querySelector('.mobile-toggle');
+      if (toggle) toggle.click();
+      await wait(300);
+      var sheet = document.querySelector('#mobile-nav-sheet');
+      var control = sheet && sheet.querySelector('.signout-row');
+      var region = sheet && sheet.querySelector('[role="status"]');
+      check('the real modal and mobile sign-out control are visible',
+            !!sheet && sheet.getBoundingClientRect().width > 0 && !!control);
+      check('the modal status region exists empty before the press',
+            !!region && region.getAttribute('aria-live') === 'polite' && region.textContent.trim() === '');
+      var idleHeight = sheet ? sheet.getBoundingClientRect().height : -1;
+      if (control) control.click();
+      var account = accountSignOutControl();
+      if (account) account.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      await wait(100);
+      check('mobile and Account presses send one real Logout', logoutCount() === 1);
+      check('the mobile control shares disabled pending state',
+            !!control && control.disabled && control.textContent.trim() === 'Signing out…');
+      check('pending is announced inside the active modal', !!region && region.textContent.trim() === 'Signing out…');
+      check('the page behind the modal is inert', !!document.querySelector('#app[inert]'));
+      check('exactly one non-inert status region speaks pending',
+            Array.prototype.filter.call(document.querySelectorAll('[role="status"]'), function (el) {
+              return !el.closest('[inert]') && el.textContent.trim() === 'Signing out…';
+            }).length === 1);
+      check('the pending announcement does not change sheet geometry',
+            idleHeight > 0 && Math.abs(sheet.getBoundingClientRect().height - idleHeight) < 0.5);
+      releaseGate();
+      await wait(1500);
+      check('mobile sign-out lands on /signin', location.pathname === '/signin');
+      check('the modal closes and releases inert after success',
+            !document.querySelector('#mobile-nav-sheet') && !document.querySelector('#app[inert]'));
+      check('mobile sign-out clears the hint and sends no duplicate request',
+            window.localStorage.getItem('selahcue.session') === null && logoutCount() === 1);
       csrfChecks();
     },
 
@@ -3010,6 +3222,7 @@ DRIVER = r"""
       var text = cardText();
       check('accepted state title', has(text, 'Check your email to finish setting up'));
       check('states the 24 hour TTL', has(text, '24 hours'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('FR-552: offers a resend', has(text, 'Resend verification email'));
       var register = calls.filter(function (c) { return c.op === 'RegisterCustomerUser'; })[0];
       check('dispatched registerCustomerUser', !!register);
@@ -3135,7 +3348,7 @@ DRIVER = r"""
       await wait(800);
       var text = cardText();
       check('sent state title', has(text, 'Check your inbox'));
-      check('phrasing stays conditional', has(text, 'has a SelahCue account waiting to be verified'));
+      check('phrasing stays conditional', has(text, 'If this account needs verification,') && !has(text, 'on its way'));
       check('dispatched the resend mutation',
             calls.some(function (c) { return c.op === 'ResendVerification'; }));
       universalChecks();
@@ -3322,6 +3535,7 @@ DRIVER = r"""
       check('sent state title', has(text, 'Check your inbox'));
       check('phrasing is conditional', has(text, 'has a SelahCue account'));
       check('states the 1 hour TTL, not 24', has(text, 'expires in 1 hour'));
+      check('acknowledges the request without promising delivery', has(text, 'was accepted') && !has(text, 'on its way'));
       check('dispatched requestPasswordReset',
             calls.some(function (c) { return c.op === 'RequestPasswordReset'; }));
       recordBranch('forgot-registered');
@@ -3524,7 +3738,9 @@ DRIVER = r"""
             !calls.some(function (c) { return c.op === 'RefreshSession'; }),
             'ops: ' + calls.map(function (c) { return c.op; }).join(','));
       csrfChecks();
-    }
+    },
+    'session-refresh-signout-race': async function () { await exerciseRefreshSignOut(false); },
+    'session-refresh-signout-failure': async function () { await exerciseRefreshSignOut(true); }
   };
 
   async function run() {
@@ -3638,6 +3854,8 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-signout-pending", "/account"),
     ("account-signout-failure", "/account"),
     ("account-signout-leave", "/account"),
+    ("account-signout-leave-failure", "/account"),
+    ("account-signout-mobile-pending", "/account"),
     # ------------------------------------------------------------ create account --
     ("signup-form", "/signup"),
     ("signup-short-password", "/signup"),
@@ -3669,6 +3887,8 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-allowed", "/account"),
     ("session-refresh", "/signin"),
     ("session-no-refresh", "/signin"),
+    ("session-refresh-signout-race", "/signin"),
+    ("session-refresh-signout-failure", "/signin"),
 ]
 
 
@@ -3933,9 +4153,9 @@ def main() -> int:
             url = f"http://127.0.0.1:{port}{path}{joiner}__scenario={scenario}"
             started = reap_baseline()
             try:
-                out = subprocess.run(
+                run = run_headless_chrome(
+                    chrome, None,
                     [
-                        chrome,
                         "--headless=new",
                         "--disable-gpu",
                         "--no-sandbox",
@@ -3943,23 +4163,18 @@ def main() -> int:
                         # Chrome's 800x600 default the navbar's desktop group is below its
                         # breakpoint and `display:none`, so any assertion about the
                         # signed-in controls would be measuring the window, not the app.
-                        "--window-size=1440,900",
+                        "--window-size=390,844" if scenario == "account-signout-mobile-pending" else "--window-size=1440,900",
                         "--no-first-run",
                         "--disable-extensions",
                         "--virtual-time-budget=8000",
-                        "--dump-dom",
-                        url,
                     ],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=90,
-                ).stdout
-            except subprocess.TimeoutExpired:
-                print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
-                server.shutdown()
-                return 2
+                    timeout=90, page_url=url,
+                )
+                if run.timed_out:
+                    print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
+                    server.shutdown()
+                    return 2
+                out = run.stdout
             finally:
                 reaped += reap_own_profiles(started, f"127.0.0.1:{port}".encode())
 

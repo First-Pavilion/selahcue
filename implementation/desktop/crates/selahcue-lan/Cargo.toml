@@ -44,10 +44,20 @@ futures-util = { version = "0.3", optional = true }
 # Server-side credential generation at pairing time (already in-tree via rustls/ring).
 ring = { version = "0.17", optional = true }
 
+# `local_endpoint` (17tnw2b9agb): safe wrappers for the effective uid, the open flags a hardened
+# reader needs (`O_NOFOLLOW`, `O_NONBLOCK`) and `kill(pid, 0)`, so this crate keeps
+# `#![forbid(unsafe_code)]`. Not a new package: rustix 1.1.4 is already in both lock files (it
+# arrives through `tempfile`); this only adds an edge from this crate.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+
 [dev-dependencies]
 # For the end-to-end `demo` example (persistence). Dev-only — not part of the
 # normal build or of downstream consumers.
 selahcue-data = { path = "../selahcue-data" }
+# Private scratch directories for `tests/test_local_endpoint.rs` (already a dev-dependency of
+# `selahcue-app` and `selahcue-data`, so not a new package).
+tempfile = "3"
 
 # Runnable foundation demo:
 #   cargo run -p selahcue-lan --example demo --features server

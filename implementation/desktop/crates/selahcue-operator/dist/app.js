@@ -1159,9 +1159,11 @@
       function renderInspector(view, registry, outByRole, screenThemes, themes) {
         const insp = document.getElementById("screens-inspector");
         if (!insp) return;
+        const healthLive = document.getElementById("screens-output-health-live");
         insp.innerHTML = "";
         const s = registry.find((r) => r.screen === selectedScreen);
         if (!s) {
+          if (healthLive && healthLive.textContent) healthLive.textContent = "";
           const empty = document.createElement("div");
           empty.className = "scr-isection scr-imuted";
           empty.textContent = "Select an output to configure it.";
@@ -1358,7 +1360,8 @@
           const nameInput = document.createElement("input");
           nameInput.type = "text"; nameInput.className = "scr-input";
           nameInput.value = cfg.ndi_name;
-          nameInput.maxLength = 64;
+          // HTML maxlength counts UTF16 units and can split astral scalars. Validate the
+          // host's 64-scalar limit on commit instead, including names loaded from config.
           nameInput.placeholder = "e.g. SelahCue Program";
           nameInput.setAttribute("aria-label", "NDI source name for " + s.screen);
           nameInput.disabled = ndiUnavailable;
@@ -1377,13 +1380,17 @@
             st.textContent = text;
           };
 
-          // Mirrors `ndi_name_valid` (selahcue-app/src/controller.rs) exactly: a bounded,
-          // control-character-free name. `nameInput.maxLength = 64` above stops most of this at
-          // the keyboard, but does not stop a PASTE from carrying a control character — Cody's
-          // PR #85 review found this was the one host refusal rule commitNdi did not mirror, so
-          // a pasted name with a stray control character still hit the silent-revert path this
-          // whole change exists to close.
-          const ndiNameValid = (name) => name.length <= 64 && !/[\x00-\x1f\x7f-\x9f]/.test(name);
+          // Mirrors ndi_name_valid's Unicode scalar count and Cc control refusal in the
+          // host. String.length counts UTF16 units, so 40 emoji would incorrectly exceed 64.
+          // Stop at the first excess scalar; an oversized paste needs no full-name array.
+          const ndiNameTooLong = (name) => {
+            let scalars = 0;
+            for (const scalar of name) {
+              if (++scalars > 64) return true;
+            }
+            return false;
+          };
+          const ndiNameHasControl = (name) => /[\x00-\x1f\x7f-\x9f]/.test(name);
 
           // Commit the name + a target enabled state atomically to the host — but first,
           // CON-156/157: check the SAME rules the host itself enforces
@@ -1397,7 +1404,11 @@
           const commitNdi = (enabled) => {
             nameInput.classList.remove("mismatch");
             const name = nameInput.value.trim();
-            if (!ndiNameValid(name)) {
+            if (ndiNameTooLong(name)) {
+              setSignal("warn", "⚠ That source name is too long — use at most 64 characters");
+              return;
+            }
+            if (ndiNameHasControl(name)) {
               setSignal("warn", "⚠ That source name isn't valid — remove any control characters");
               return;
             }
@@ -1431,7 +1442,8 @@
           ));
           // Honest status: runtime unavailable, broadcasting (with the source name), or off.
           if (ndiUnavailable) {
-            setSignal("warn", "⚠ NDI runtime unavailable — build with the ndi feature to broadcast");
+            setSignal("warn", "⚠ NDI runtime unavailable — build with the ndi feature to broadcast" +
+              (cfg.ndi_enabled ? ". Broadcast is saved as on; it is not broadcasting now." : ""));
           } else if (cfg.ndi_enabled && cfg.ndi_name) {
             setSignal("ok", "● Broadcasting NDI · " + cfg.ndi_name);
           } else {
@@ -1476,6 +1488,10 @@
           sig = "neutral"; txt = "Composed feed · no physical signal yet";
         }
         foot.classList.add("scr-signal-" + sig); foot.textContent = txt;
+        // This channel exists before updates and survives inspector rebuilds. Publish only
+        // changed plain text so unrelated config/poll renders do not repeat the health status.
+        const healthMessage = screenDisplayName(s) + ": " + txt;
+        if (healthLive && healthLive.textContent !== healthMessage) healthLive.textContent = healthMessage;
         dev.appendChild(foot);
         insp.appendChild(dev);
       }
@@ -10527,6 +10543,7 @@
       // Undo is offered from THIS list — never from "the last delete", which is how you ship an
       // Undo button that fails.
       let pmLibRestorable = [];
+      let pmLibLoadGen = 0; // Only the latest Library read owns its reply/error and busy state.
       const pmLibBody = () => document.querySelector("#surface-presentation .pm-body");
       // Presentation surface has three modes (Design 2.0 browse/present/edit): the Library list, the
       // slide GRID, and the authoring EDITOR (.pm-body). pmSetMode toggles which one is visible.
@@ -10557,19 +10574,32 @@
         if (wasOpen) { const ds = pmEl("pm-deckswitch"); if (ds) ds.focus(); }
       }
       async function pmLibLoad() {
+        const gen = ++pmLibLoadGen;
+        const planGen = planDecksGen;
         const grid = pmEl("pm-lib-grid");
         grid.setAttribute("aria-busy", "true");
         pmEl("pm-lib-error").hidden = true;
         try {
-          pmApplyLibrary(await invoke("deck_list"));
+          const view = await invoke("deck_list");
+          // A newer read or shared snapshot (including a completed mutation) retires this reply.
+          if (gen !== pmLibLoadGen || planGen !== planDecksGen) return;
+          pmApplyLibrary(view);
         } catch (e) {
+          if (gen !== pmLibLoadGen || planGen !== planDecksGen) return;
           console.error("[SelahCue] deck_list failed", e);
           grid.innerHTML = ""; pmEl("pm-lib-empty").hidden = true; pmEl("pm-lib-error").hidden = false;
         } finally {
-          grid.setAttribute("aria-busy", "false");
+          if (gen === pmLibLoadGen) grid.setAttribute("aria-busy", "false");
         }
       }
       function pmApplyLibrary(view) {
+        // Library replies carry the same authoritative deck snapshot as planLoadDecks.
+        // Supersede older plan reads, including their callers' returned data, without
+        // another host request. A malformed snapshot stays unknown, not loaded-empty.
+        planDecksGen += 1;
+        planDecks = view && Array.isArray(view.decks) ? view.decks : null;
+        planDecksLatest = Promise.resolve(planDecks || []);
+        lastRendered = ""; // The next view poll must repaint links even if host items did not change.
         pmLibDecks = (view && view.decks) || [];
         pmLibOpenId = view ? view.open : null;
         pmLibPersistent = view ? view.persistent : true;

@@ -4,29 +4,45 @@ Covers self-serve signup, email verification, login/session/logout/refresh, and 
 with the no-enumeration + session-invalidation invariants.
 """
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import math
+import os
+import platform
+from pathlib import Path
 import re
+import statistics
 import threading
 import time
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from io import StringIO
 
+import celery
+import django
 import pytest
+from celery import Celery
+from celery.backends.redis import RedisBackend
 from django.conf import settings as django_settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import IntegrityError, OperationalError, transaction
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from redis import Redis
 
+from selahcue_api import settings as project_settings
+from selahcue_api.apps.accounts import email as email_module
 from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts.email import CeleryEmailSender
 from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as reset_confirms_command
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
@@ -40,7 +56,7 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
-from selahcue_api.apps.throttling import guards
+from selahcue_api.apps.throttling import circuit, guards
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -60,6 +76,13 @@ def _fresh_reset_throttle_budget():
     """
     cache.clear()
     services._reset_trace_reporting()
+
+
+@pytest.fixture(autouse=True)
+def _no_reset_request_floor(settings):
+    # Ordinary auth regressions need not park a thread per reset. The floor's own
+    # mechanism and real-publisher tests explicitly enable it below.
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.0
 
 
 # --- helpers ---------------------------------------------------------------
@@ -1552,6 +1575,7 @@ def test_an_exhausted_budget_refuses_a_live_token_before_it_is_read_and_writes_n
         "the throttled call changed the password"
     )
     assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
+
     assert len(failed_rows()) == 2, "a throttled request wrote a failure row"
 
     # CONTROL: the refusal was the BUDGET, not the token -- another source resets with the same link.
@@ -1980,18 +2004,28 @@ def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows
     """With the store down every budget fails open -- right for the response -- and nothing would
     bound the rows. The ceiling is per worker, charged on every failure, and skips only the row."""
     settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (3, 3600)
+    settings.CACHE_CIRCUIT_FAILURE_THRESHOLD = 3
+    settings.CACHE_CIRCUIT_COOLDOWN = 5
     reset_token = live_reset_token(client, sender)
+    # Freeze only the account/circuit clock seams. Even a loaded runner cannot
+    # expire the five-second cooldown in the middle of these eleven requests.
+    FakeClock(monkeypatch)
+    monkeypatch.setattr(circuit, "time", services.time)
     store = _CountingBrokenStore()
     monkeypatch.setattr(guards, "CacheStore", lambda _cache: store)
+    touched = _record_limiter_keys(monkeypatch)
 
     codes = _fail_from_many_sources(client, 10)
     done = confirm(client, reset_token, GOOD_PASSWORD)
 
     assert codes == ["VALIDATION_FAILED"] * 10
-    # One store round trip per request -- the per-source budget's. Once that has failed open the
-    # cross-source brake is NOT consulted as well: against a stalled Redis that would cost a
-    # second socket timeout on every failed confirm for no extra protection.
-    assert store.calls == 11, store.calls
+    # The first three per-source failures open the circuit; the remaining seven
+    # failed confirms and the valid reset bypass the store. No failure consults
+    # the cross-source brake as well: it adds no protection once already degraded.
+    assert store.calls == 3, store.calls
+    assert list(touched) == [
+        f"throttle:password_reset_confirm_ip:198.51.100.{n}" for n in range(1, 11)
+    ] + ["throttle:password_reset_confirm_ip:127.0.0.1"], "a second trace budget was consulted"
     assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
 
@@ -2556,3 +2590,639 @@ def test_account_activation_is_idempotent(client, sender):
     assert body(second)["data"]["activateDeviceWithSession"]["fullToken"] is None
     from selahcue_api.apps.devices.models import Device, DeviceToken
     assert Device.objects.count() == 1 and DeviceToken.objects.count() == 1
+
+
+# --- 86ak5qy3p: preflight, off-lock KDF and current locked revalidation -------
+@pytest.mark.django_db
+@pytest.mark.parametrize("state", ["unknown", "empty", "consumed", "expired", "wrong-purpose"])
+def test_reset_kdf_never_runs_for_an_initially_invalid_token(client, sender, monkeypatch, state):
+    raw = live_reset_token(client, sender)
+    row = token_row(raw)
+    if state == "unknown":
+        raw = "SC-PRS-not-a-real-reset-token"
+    elif state == "empty":
+        raw = ""
+    elif state == "consumed":
+        CredentialToken.objects.filter(pk=row.pk).update(consumed_at=timezone.now())
+    elif state == "expired":
+        CredentialToken.objects.filter(pk=row.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
+    else:
+        CredentialToken.objects.filter(pk=row.pk).update(purpose=CredentialTokenPurpose.EMAIL_VERIFY)
+    hashes = []
+
+    def unexpected_hash(*args, **kwargs):
+        hashes.append(True)
+        raise AssertionError("a refused reset token must not cause password hashing")
+
+    monkeypatch.setattr(services, "make_password", unexpected_hash)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, GOOD_PASSWORD, client_ip="203.0.113.90")
+    assert refused.value.code is ErrorCode.VALIDATION_FAILED
+    assert hashes == []
+
+
+@pytest.mark.django_db
+def test_reset_kdf_preserves_live_token_password_error_without_hashing(client, sender, monkeypatch):
+    raw = live_reset_token(client, sender)
+    hashes = []
+
+    def unexpected_hash(*args, **kwargs):
+        hashes.append(True)
+        raise AssertionError("a policy-rejected password must not reach PBKDF2")
+
+    monkeypatch.setattr(services, "make_password", unexpected_hash)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, SHORT_PASSWORD, client_ip="203.0.113.90")
+    assert refused.value.code is ErrorCode.PASSWORD_INVALID
+    assert token_row(raw).consumed_at is None
+    assert hashes == []
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("change", ["consumed", "expired", "wrong-purpose", "fingerprint", "time-passed"])
+def test_reset_kdf_rechecks_token_state_and_time_after_hashing(client, sender, monkeypatch, change):
+    raw = live_reset_token(client, sender)
+    row = token_row(raw)
+    user = row.customer_user
+    original_hash = user.password_hash
+    session, _ = services._new_session(user, timezone.now())
+    real_hash = services.make_password
+    current_time = [timezone.now()]
+    monkeypatch.setattr(services.djtz, "now", lambda: current_time[0])
+    hashed = []
+
+    def hash_then_change(*args, **kwargs):
+        encoded = real_hash(*args, **kwargs)
+        hashed.append(True)
+        if change == "consumed":
+            CredentialToken.objects.filter(pk=row.pk).update(consumed_at=current_time[0])
+        elif change == "expired":
+            CredentialToken.objects.filter(pk=row.pk).update(expires_at=current_time[0] - timedelta(seconds=1))
+        elif change == "wrong-purpose":
+            CredentialToken.objects.filter(pk=row.pk).update(purpose=CredentialTokenPurpose.EMAIL_VERIFY)
+        elif change == "fingerprint":
+            CredentialToken.objects.filter(pk=row.pk).update(token_fingerprint=services._fingerprint("replacement"))
+        else:
+            # No row edit: real time can pass while hashing or waiting for a lock. A
+            # pre-hash timestamp must not authorize an already-expired token afterward.
+            current_time[0] = row.expires_at + timedelta(seconds=1)
+        return encoded
+
+    monkeypatch.setattr(services, "make_password", hash_then_change)
+    with pytest.raises(SafeAPIError) as refused:
+        services.confirm_password_reset(raw, GOOD_PASSWORD, client_ip="203.0.113.90")
+    assert hashed == [True], "the token must have passed the initial liveness check"
+    assert refused.value.code is ErrorCode.VALIDATION_FAILED
+    user.refresh_from_db()
+    session.refresh_from_db()
+    assert user.password_hash == original_hash
+    assert session.status == "ACTIVE", "a refused reset must not revoke an existing session"
+    assert not AuditEvent.objects.filter(action="customer_user.password_reset_completed").exists()
+
+
+# --- Allowed reset-request timing floor (86ak7kka2) -------------------------
+class ResetFloorClock:
+    """A deterministic sleep/transaction observer, confined to the service's clock."""
+
+    def __init__(self, monkeypatch):
+        self.now = 10_000.0
+        self.sleeps = []
+        monkeypatch.setattr(services, "time", self)
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append((seconds, connection.in_atomic_block))
+        self.now += seconds
+
+
+def _reset_floor_user(tag):
+    email = f"reset-floor-{tag}@example.test"
+    org = CustomerOrg.objects.create(
+        name="Reset timing fixture", slug=f"reset-floor-{tag}",
+        primary_contact_email=email, country="NG", created_by_actor_id="test",
+        idempotency_key=f"reset-floor-org-{tag}",
+    )
+    return CustomerUser.objects.create(
+        customer=org, email=email, email_fingerprint=services._email_fingerprint(email),
+        password_hash="!", status=CustomerUserStatus.ACTIVE, role=CustomerRole.ADMIN,
+        email_verified_at=timezone.now(), created_by_actor_id="test",
+        idempotency_key=f"reset-floor-user-{tag}",
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("case", ["unknown", "known", "degraded-send-refused"])
+def test_allowed_reset_request_pads_after_its_commit(client, settings, monkeypatch, case):
+    """Removing reset's finally-pad, or sleeping inside atomic, breaks this control."""
+    user = _reset_floor_user(uuid.uuid4().hex)
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    sent = []
+
+    class CommitObservingSender(services.EmailSender):
+        def send_password_reset(self, target, raw_token):
+            sent.append((target.id, connection.in_atomic_block))
+
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(CommitObservingSender())
+    if case == "degraded-send-refused":
+        monkeypatch.setattr(services, "enforce_budget_reporting_outage", lambda *a, **kw: True)
+        monkeypatch.setattr(services, "_claim_degraded_reset_send", lambda: False)
+    clock = ResetFloorClock(monkeypatch)
+    email = "unknown-floor@example.test" if case == "unknown" else user.email
+    try:
+        response = client.post(
+            "/graphql/account", data=json.dumps({"query": REQUEST_RESET, "variables": {"e": email}}),
+            content_type="application/json",
+        )
+    finally:
+        services.set_email_sender(previous_sender)
+    assert response.json() == {"data": {"requestPasswordReset": {"accepted": True}}}
+    assert clock.sleeps == [(0.25, False)], "allowed reset did not pad outside its own transaction"
+    assert sent == ([(user.id, False)] if case == "known" else [])
+    assert CredentialToken.objects.filter(purpose=CredentialTokenPurpose.PASSWORD_RESET).count() == (
+        1 if case == "known" else 0
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("case", ["invalid-email", "budget-refused"])
+def test_reset_request_refusal_does_no_query_or_padding(settings, monkeypatch, django_assert_num_queries, case):
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (0, 3600)
+    clock = ResetFloorClock(monkeypatch)
+    email = "invalid" if case == "invalid-email" else "valid-floor@example.test"
+    with django_assert_num_queries(0), pytest.raises(SafeAPIError):
+        services.request_password_reset(email, client_ip="192.0.2.71")
+    assert clock.sleeps == [], "a refusal must not occupy a padded request thread"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reset_floor_overruns_reuse_resends_bounded_report(settings, monkeypatch, caplog):
+    """Per-request reports, independent reset suppression, or silent overruns break this."""
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    settings.ACCOUNT_RESEND_MIN_SECONDS = 0.25
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (100, 3600)
+    user = _reset_floor_user(uuid.uuid4().hex)
+    clock = ResetFloorClock(monkeypatch)
+
+    class OverrunningSender(services.EmailSender):
+        def send_password_reset(self, target, raw_token):
+            clock.now += 1.0
+
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(OverrunningSender())
+    services._reset_floor_overrun_reporting()
+    caplog.set_level(logging.WARNING, logger=services.__name__)
+    try:
+        for _ in range(3):
+            assert services.request_password_reset(user.email, client_ip="192.0.2.72").accepted
+        services._pad_to_floor(clock.monotonic() - 1.0)
+        reports = [r for r in caplog.records if "constant-time floor" in r.getMessage()]
+        assert len(reports) == 1, "reset/resend must share the existing report suppression window"
+        message = reports[0].getMessage()
+        assert "ACCOUNT_RESET_REQUEST_MIN_SECONDS" in message
+        assert "overran by 750ms" in message and "1000ms elapsed" in message
+        assert reports[0].exc_info is None and user.email not in message
+        clock.now += 61.0
+        services.request_password_reset(user.email, client_ip="192.0.2.72")
+        assert len([r for r in caplog.records if "constant-time floor" in r.getMessage()]) == 2
+        assert clock.sleeps == [], "an overrun must not add another floor after work has finished"
+    finally:
+        services.set_email_sender(previous_sender)
+        services._reset_floor_overrun_reporting()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_reset_floor_waits_after_rollback_without_publishing(settings, monkeypatch, sender):
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = 0.25
+    user = _reset_floor_user(uuid.uuid4().hex)
+    clock = ResetFloorClock(monkeypatch)
+
+    def mint_fails(*args, **kwargs):
+        raise RuntimeError("synthetic mint refusal")
+
+    monkeypatch.setattr(services, "_mint_credential_token", mint_fails)
+    with pytest.raises(RuntimeError, match="synthetic mint refusal"):
+        services.request_password_reset(user.email, client_ip="192.0.2.73")
+    assert clock.sleeps == [(0.25, False)]
+    assert not CredentialToken.objects.filter(purpose=CredentialTokenPurpose.PASSWORD_RESET).exists()
+    assert sender.reset_tokens == []
+
+
+@contextmanager
+def _real_reset_publisher(monkeypatch, url):
+    """Actual shared task and production sender; only the owned broker namespace changes.
+
+    Kept here because importing test_broker_socket_timeouts would import this module back.
+    No worker consumes this queue and no SMTP operation runs.
+    """
+    prefix = f"reset-timing-{uuid.uuid4().hex}:"
+    queue = "reset-timing"
+    monkeypatch.setenv("CELERY_BROKER_URL", url)
+    monkeypatch.setenv("CELERY_RESULT_BACKEND", url)
+    app = Celery("reset_timing", broker=url, backend=url, set_as_current=False)
+    app.conf.update(
+        broker_transport_options={
+            **project_settings.CELERY_BROKER_TRANSPORT_OPTIONS, "global_keyprefix": prefix,
+        },
+        task_default_queue=queue, task_always_eager=False,
+    )
+    original = email_module.send_password_reset_task
+    monkeypatch.setattr(email_module, "send_password_reset_task", app.tasks[original.name])
+    previous_sender = services.get_email_sender()
+    services.set_email_sender(CeleryEmailSender())
+    redis = Redis.from_url(url, socket_timeout=1, socket_connect_timeout=1)
+    try:
+        redis.ping()
+        yield redis, prefix + queue
+    finally:
+        services.set_email_sender(previous_sender)
+        # Delete only this test's random Kombu namespace, never a shared database.
+        keys = list(redis.scan_iter(match=prefix + "*"))
+        if keys:
+            redis.delete(*keys)
+        redis.close()
+        if isinstance(app.backend, RedisBackend):
+            app.backend.result_consumer.stop()
+            app.backend.client.close()
+            app.backend.client.connection_pool.disconnect()
+        app.close()
+
+
+def _classify_reset_timing_interval(interval):
+    """Equivalence, signed outside-band separation and imprecision are different results."""
+    low, high = interval
+    band = 0.003
+    if -band <= low <= high <= band:
+        return "equivalent"
+    if low > band:
+        return "positive_gap"
+    if high < -band:
+        return "negative_gap"
+    return "precision_inconclusive"
+
+
+def _reset_timing_pair_summary(pairs):
+    if len(pairs) != 32:
+        raise ValueError("reset timing protocol requires exactly 32 pairs")
+    if any(not math.isfinite(value) or value < 0 for pair in pairs for value in pair.values()):
+        raise ValueError("reset timing durations must be finite and nonnegative")
+    differences = [pair["known"] - pair["unknown"] for pair in pairs]
+    mean = statistics.mean(differences)
+    # Retain ALL raw arithmetic-mean evidence. A signed interval wholly outside the
+    # unchanged band vetoes the gate even when a minority of slow calls leaves the median
+    # untouched. A broad interval overlapping the band establishes neither equivalence nor
+    # a signed gap: the former assertion incorrectly called that an account-existence leak.
+    radius = 2.040 * statistics.stdev(differences) / len(differences) ** 0.5
+    mean_interval = [mean - radius, mean + radius]
+    ordered = sorted(differences)
+    # Fixed order-statistic interval, using all 32 pairs with no filtering/replacement.
+    # For independent continuous pairs with population median m, the number below m is
+    # Binomial(32, .5). [D_(10), D_(23)] misses m only with <=9 on either side, so its
+    # coverage is 1 - 2*sum(C(32,i), i=0..9)/2**32 = 97.9938393%. The two target/null
+    # intervals jointly cover their medians with >=95.9876786% by the union bound, without
+    # requiring independence BETWEEN the two intervals. Serial correlation can invalidate
+    # the within-sample independence assumption; raw order/nulls remain available to review.
+    median_interval = [ordered[9], ordered[22]]
+    coverage = 1 - 2 * sum(math.comb(32, index) for index in range(10)) / 2 ** 32
+    return {
+        "mean_gap_seconds": mean, "ci95_seconds": mean_interval,
+        "mean_classification": _classify_reset_timing_interval(mean_interval),
+        "median_gap_seconds": statistics.median(differences),
+        "median_interval_seconds": median_interval, "median_interval_coverage": coverage,
+        "median_classification": _classify_reset_timing_interval(median_interval),
+        "median_interval_order_statistics_1_based": [10, 23], "sample_count": len(pairs),
+    }
+
+
+def _reset_timing_verdict(target, null):
+    """Bounded paired-location gate, with an independently retained signed-mean veto.
+
+    This cannot prove equality of arbitrary latency distributions or rare tails. In
+    particular an inconclusive all-sample mean interval does not become a mean-equivalence
+    claim merely because the scoped median/null gate passes.
+    """
+    signed = {"positive_gap", "negative_gap"}
+    if target["mean_classification"] in signed:
+        return {"passed": False, "classification": "signed_mean_gap",
+                "reason": "all-sample signed mean interval lies wholly outside the fixed band"}
+    if target["median_classification"] in signed:
+        return {"passed": False, "classification": "signed_median_gap",
+                "reason": "signed paired-median interval lies wholly outside the fixed band"}
+    if target["median_classification"] != "equivalent":
+        return {"passed": False, "classification": "median_precision_inconclusive",
+                "reason": "insufficient paired-median precision; equivalence and a directional leak are unproven"}
+    if null["mean_classification"] in signed:
+        return {"passed": False, "classification": "null_mean_asymmetry",
+                "reason": "same-path signed mean interval invalidates the instrument control"}
+    if null["median_classification"] in signed:
+        return {"passed": False, "classification": "null_median_asymmetry",
+                "reason": "same-path signed median interval invalidates the instrument control"}
+    if null["median_classification"] != "equivalent":
+        return {"passed": False, "classification": "null_median_inconclusive",
+                "reason": "same-path paired-median control does not establish the fixed-band precision"}
+    return {"passed": True, "classification": "scoped_equivalent",
+            "reason": "paired/null median intervals fit the fixed band and no signed mean veto is established"}
+
+
+@pytest.mark.parametrize(
+    "filename, expected_pass, expected_classification",
+    [
+        ("pr-ci40923541126.json", True, "scoped_equivalent"),
+        ("pad-removal40923575228.json", False, "signed_mean_gap"),
+    ],
+)
+def test_reset_timing_protocol_replays_retained_actual_runs(filename, expected_pass, expected_classification):
+    evidence = Path(__file__).resolve().parent / "fixtures/reset_timing" / filename
+    original = evidence.read_bytes()
+    evidence_hash = hashlib.sha256(original).hexdigest()
+    receipt = json.loads(original)
+    pairs = receipt["pairs"]
+    null_pairs = receipt["same_path_null_pairs"]
+    preserved = json.dumps([pairs, null_pairs], sort_keys=True)
+    raw_pair_hash = hashlib.sha256(preserved.encode()).hexdigest()
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") is not None, "paired-median precision must be measured"
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(null_pairs))
+    assert verdict["passed"] is expected_pass
+    assert verdict["classification"] == expected_classification
+    if expected_pass:
+        assert summary["mean_classification"] == "precision_inconclusive", (
+            "the old wide interval containing zero must never be diagnosed as a signed gap"
+        )
+    assert json.dumps([pairs, null_pairs], sort_keys=True) == preserved, "a raw sample was changed or removed"
+    assert hashlib.sha256(json.dumps([pairs, null_pairs], sort_keys=True).encode()).hexdigest() == raw_pair_hash
+    assert hashlib.sha256(evidence.read_bytes()).hexdigest() == evidence_hash, "retained raw evidence was modified"
+
+
+def _reset_replay_pairs(differences):
+    # Positive synthetic wall times with exactly the declared signed pair differences.
+    return [{"known": 1.0 + delta, "unknown": 1.0} for delta in differences]
+
+
+def test_reset_timing_protocol_uses_the_declared_order_statistics_and_coverage():
+    summary = _reset_timing_pair_summary(_reset_replay_pairs([i / 1000 for i in range(-16, 16)]))
+    assert summary["median_interval_seconds"] == pytest.approx([-0.007, 0.006])
+    assert summary["median_gap_seconds"] == pytest.approx(-0.0005)
+    assert summary["median_interval_order_statistics_1_based"] == [10, 23]
+    assert summary["median_interval_coverage"] == pytest.approx(0.9799383929930627)
+    assert summary["sample_count"] == 32
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("position", range(32))
+def test_reset_timing_protocol_preserves_one_isolated_outlier(sign, position):
+    differences = [0.0] * 32
+    differences[position] = sign * 0.35
+    pairs = _reset_replay_pairs(differences)
+    original = json.dumps(pairs, sort_keys=True)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == [0.0, 0.0]
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert verdict["passed"] and verdict["classification"] == "scoped_equivalent"
+    assert summary["mean_classification"] == "precision_inconclusive"
+    assert len(pairs) == 32 and json.dumps(pairs, sort_keys=True) == original
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_rejects_a_repeated_small_gap(sign):
+    pairs = _reset_replay_pairs([sign * (0.0035 + (i % 3) * 0.00001) for i in range(32)])
+    verdict = _reset_timing_verdict(
+        _reset_timing_pair_summary(pairs), _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)),
+    )
+    assert not verdict["passed"] and verdict["classification"] == "signed_mean_gap"
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_rejects_confirmed_tail_mean_even_when_median_fits(sign):
+    # Six delayed responses can leave the median at zero while revealing a signed mean gap.
+    pairs = _reset_replay_pairs([sign * 0.150] * 6 + [0.0] * 26)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == [0.0, 0.0]
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "signed_mean_gap"
+
+
+def test_reset_timing_protocol_rejects_imprecise_median_without_claiming_a_signed_gap():
+    pairs = _reset_replay_pairs([-0.004] * 16 + [0.004] * 16)
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary.get("median_interval_seconds") == pytest.approx([-0.004, 0.004])
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "median_precision_inconclusive"
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_reset_timing_protocol_keeps_the_median_veto_when_the_mean_is_inconclusive(sign):
+    pairs = _reset_replay_pairs([sign * 0.0035] * 31 + [-sign * 0.35])
+    summary = _reset_timing_pair_summary(pairs)
+    assert summary["mean_classification"] == "precision_inconclusive"
+    verdict = _reset_timing_verdict(summary, _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)))
+    assert not verdict["passed"] and verdict["classification"] == "signed_median_gap"
+
+
+@pytest.mark.parametrize(
+    "null_differences, expected_classification",
+    [
+        ([0.150] * 6 + [0.0] * 26, "null_mean_asymmetry"),
+        ([0.0035] * 31 + [-0.35], "null_median_asymmetry"),
+        ([-0.004] * 16 + [0.004] * 16, "null_median_inconclusive"),
+    ],
+)
+def test_reset_timing_protocol_requires_a_resolvable_same_path_null(null_differences, expected_classification):
+    verdict = _reset_timing_verdict(
+        _reset_timing_pair_summary(_reset_replay_pairs([0.0] * 32)),
+        _reset_timing_pair_summary(_reset_replay_pairs(null_differences)),
+    )
+    assert not verdict["passed"] and verdict["classification"] == expected_classification
+
+
+@pytest.mark.parametrize(
+    "interval, expected",
+    [
+        ([-0.003, 0.003], "equivalent"),
+        ([0.0031, 0.004], "positive_gap"),
+        ([-0.004, -0.0031], "negative_gap"),
+        ([-0.033, 0.011], "precision_inconclusive"),
+        ([0.002, 0.004], "precision_inconclusive"),
+    ],
+)
+def test_reset_timing_protocol_distinguishes_equivalence_gap_and_precision(interval, expected):
+    assert _classify_reset_timing_interval(interval) == expected
+
+
+@pytest.mark.parametrize("count", [0, 31, 33])
+def test_reset_timing_protocol_refuses_to_change_its_fixed_sample_count(count):
+    with pytest.raises(ValueError, match="exactly 32"):
+        _reset_timing_pair_summary(_reset_replay_pairs([0.0] * count))
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -0.001])
+def test_reset_timing_protocol_refuses_invalid_duration_data(invalid):
+    pairs = _reset_replay_pairs([0.0] * 32)
+    pairs[0]["known"] = invalid
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        _reset_timing_pair_summary(pairs)
+
+
+def _measure_real_reset_requests(client, settings, monkeypatch, *, baseline):
+    """Paired HTTP samples include real commits and a synchronous Redis publish.
+
+    Every eligible response is followed by inspection of the already-queued task and
+    a second DB connection observing its committed token. Neither inspection is timed.
+    Raw output contains durations/config only; no address, token or broker URL is printed.
+    """
+    assert connection.vendor == "postgresql", "the reference study requires production-shaped PostgreSQL"
+    assert not connection.in_atomic_block, "captured callbacks would miss the real commit/publish"
+    user = _reset_floor_user(uuid.uuid4().hex)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (100_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (100_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (100_000, 3600)
+    floor = 0.0 if baseline else getattr(project_settings, "ACCOUNT_RESET_REQUEST_MIN_SECONDS", 0.0)
+    settings.ACCOUNT_RESET_REQUEST_MIN_SECONDS = floor
+    observer = connection.copy(alias="reset_timing_observer")
+    bodies = set()
+    known_count = 0
+    committed_count = 0
+    queue_count = 0
+    redis_version = None
+    sample_number = 0
+    orders = []
+    pairs = []
+    null_pairs = []
+    warmup = []
+    url = os.environ["CELERY_BROKER_URL"]
+    try:
+        with _real_reset_publisher(monkeypatch, url) as (redis, queue):
+            redis_version = redis.info("server")["redis_version"]
+            def sample(kind):
+                nonlocal known_count, committed_count, queue_count, sample_number
+                sample_number += 1
+                email = user.email if kind == "known" else f"unknown-{sample_number}@reset-timing.example"
+                before_queue = redis.llen(queue)
+                started = time.perf_counter()
+                response = client.post(
+                    "/graphql/account", data=json.dumps({"query": REQUEST_RESET, "variables": {"e": email}}),
+                    content_type="application/json",
+                )
+                elapsed = time.perf_counter() - started
+                assert response.status_code == 200
+                assert response.json() == {"data": {"requestPasswordReset": {"accepted": True}}}
+                bodies.add(response.content)
+                assert not connection.in_atomic_block
+                if kind == "known":
+                    known_count += 1
+                    assert redis.llen(queue) == before_queue + 1, "HTTP returned before the actual task was queued"
+                    payload = json.loads(redis.lpop(queue))
+                    assert payload["headers"]["task"] == "accounts.send_password_reset"
+                    assert payload["headers"]["argsrepr"] == "(<redacted>)"
+                    args, kwargs, _ = json.loads(base64.b64decode(payload["body"]))
+                    assert args[0] == user.email and kwargs == {}
+                    queue_count += 1
+                    with observer.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT count(*) FROM selahcue_accounts_credentialtoken WHERE token_fingerprint = %s",
+                            [services._fingerprint(args[1])],
+                        )
+                        assert cursor.fetchone()[0] == 1, "queued token was not committed before HTTP returned"
+                    committed_count += 1
+                else:
+                    assert redis.llen(queue) == before_queue, "unknown account unexpectedly published email"
+                return elapsed
+
+            # Four per-branch warmups, then alternate AB/BA to avoid monotonic drift bias.
+            for _ in range(4):
+                warmup.append({"known": sample("known"), "unknown": sample("unknown")})
+            for index in range(32):
+                order = ["known", "unknown"] if index % 2 == 0 else ["unknown", "known"]
+                orders.append(order)
+                pairs.append({kind: sample(kind) for kind in order})
+                # Same-path null pair, sampled throughout the study, estimates runner noise
+                # without pretending the old no-op sender measured broker latency.
+                null_pairs.append({"known": sample("unknown"), "unknown": sample("unknown")})
+    finally:
+        observer.close()
+    report = {
+        "mode": "baseline" if baseline else "candidate", "python": platform.python_version(),
+        "platform": platform.platform(), "database": connection.vendor,
+        "postgres_version": connection.pg_version, "redis_version": redis_version,
+        "django": django.get_version(), "celery": celery.__version__,
+        "source_commit": os.getenv("GITHUB_SHA", "local"),
+        "github_run_id": os.getenv("GITHUB_RUN_ID", "local"),
+        "broker": "real Redis; production CeleryEmailSender; actual shared reset task; no worker",
+        "broker_socket_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_TIMEOUT,
+        "broker_connect_timeout_seconds": project_settings.CELERY_BROKER_SOCKET_CONNECT_TIMEOUT,
+        "floor_seconds": floor, "equivalence_band_seconds": None if baseline else 0.003,
+        "warmup_pairs": warmup, "pair_orders": orders,
+        "pairs": pairs, "same_path_null_pairs": null_pairs,
+        "paired_summary": _reset_timing_pair_summary(pairs),
+        "null_summary": _reset_timing_pair_summary(null_pairs),
+        "known_requests": known_count, "actual_queued_messages_checked": queue_count,
+        "committed_tokens_checked_on_separate_connection": committed_count,
+        "distinct_response_bodies": len(bodies),
+    }
+    report["timing_protocol"] = {
+        "version": "paired-median-with-signed-mean-veto-v1", "fixed_pair_count": 32,
+        "fixed_equivalence_band_seconds": 0.003,
+        "scope": "paired location with retained evidenced signed mean gap veto; not arbitrary tail/distribution equality",
+        "all_raw_pairs_retained": True,
+        "within_sample_independence_assumed": True,
+        "verdict": _reset_timing_verdict(report["paired_summary"], report["null_summary"]),
+    }
+    print("RESET_TIMING_RECEIPT=" + json.dumps(report, sort_keys=True))
+    evidence_dir = os.getenv("RESET_FLOOR_EVIDENCE_DIR")
+    if evidence_dir:
+        evidence_path = Path(evidence_dir)
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        (evidence_path / (report["mode"] + "-timing.json")).write_text(json.dumps(report, indent=2, sort_keys=True))
+    assert len(bodies) == 1
+    assert known_count == queue_count == committed_count == 36
+    return report
+
+
+@pytest.mark.skipif(os.getenv("RESET_FLOOR_MEASUREMENT_MODE") != "baseline", reason="explicit unpadded reference measurement only")
+@pytest.mark.django_db(transaction=True)
+def test_reset_request_unpadded_reference_measurement(client, settings, monkeypatch):
+    """Opt-in sizing study, not an assertion that an unpadded endpoint is safe."""
+    _measure_real_reset_requests(client, settings, monkeypatch, baseline=True)
+
+
+@pytest.mark.skipif(not os.getenv("CELERY_BROKER_URL"), reason="real Redis broker required for reset timing")
+@pytest.mark.skipif(os.getenv("RESET_FLOOR_MEASUREMENT_MODE") == "baseline", reason="reference sizing run, not a candidate gate")
+@pytest.mark.django_db(transaction=True)
+def test_reset_request_real_publisher_timing_is_uniform(client, settings, monkeypatch):
+    """Removing only reset's pad must fail a signed interval, with sibling tests running.
+
+    The 3ms equivalence band was fixed BEFORE the candidate measurement from hosted baseline
+    40921509007: the 32 interleaved same-path null pairs had mean 0.111ms, a 95% paired
+    interval [-0.131, 0.352]ms and maximum individual difference 2.448ms. 3ms exceeds that
+    observed individual noise while remaining below the unpadded existence interval's lower
+    endpoint (6.075ms). The candidate reports its own null control but cannot widen its band.
+    QA-265-1: arithmetic-mean equivalence alone was precision-inconclusive after one unknown
+    HTTP request took 450.772ms. Its wide CI included zero, so the former message claiming a
+    demonstrated oracle was false. Match the existing resend median-based pattern with a
+    fixed exact paired-median interval; keep every raw sample and the all-sample mean/tCI.
+    A mean interval wholly outside the band independently vetoes the gate, so repeated tail
+    asymmetry cannot hide behind a zero median. Cross-boundary median precision fails as
+    inconclusive, never as a demonstrated directional leak. There is one fixed study, with
+    no adaptive repeats, data filtering or widening of the original 3ms band.
+
+    Scope is paired-location equivalence with the retained evidenced mean-gap veto. A wide
+    mean interval remains inconclusive even when that scoped gate passes. Finite samples
+    do not establish equality of arbitrary latency distributions, rare tails, correlated
+    scheduling noise or arbitrary networks. Actual raw-run and synthetic replay controls
+    in this module pin both the isolated-outlier case and confirmed repeated/tail-gap refusal.
+    """
+    report = _measure_real_reset_requests(client, settings, monkeypatch, baseline=False)
+    verdict = report["timing_protocol"]["verdict"]
+    assert verdict["passed"], (
+        f"paired timing interval protocol {verdict['classification']}: {verdict['reason']}; "
+        f"fixed +/-0.003s band, paired summary={report['paired_summary']}, "
+        f"same-path null summary={report['null_summary']}"
+    )
+    floor = report["floor_seconds"]
+    assert floor > 0
+    assert min(pair[kind] for pair in report["pairs"] for kind in ("known", "unknown")) >= floor, (
+        "positive control: benign known and unknown requests must actually reach the enabled floor"
+    )
