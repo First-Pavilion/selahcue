@@ -6,6 +6,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/models/pair_uri.dart';
 import 'package:selahcue_controller/models/session.dart';
@@ -184,7 +185,11 @@ void main() {
       await trace.connectionSettled.future.timeout(_bound);
       await _until(() => host.upgradeAttemptsCompleted == i + 1);
       await trace.awaitProductionCloses();
-      if (trace.sockets.values.any((socket) => socket.closeCalls > 0)) {
+      // Force-closed pending HTTP may produce no client WebSocket at all. It
+      // still requires bounded peer completion, just like explicit late close.
+      // A broken client which retains a socket continues all100 cycles so the
+      // subsequent zero-count assertions expose accumulation before teardown.
+      if (trace.openSocketCount == 0) {
         await _until(() => trace.openSocketCount == 0 && host.openSocketCount == 0);
       }
       clientCounts.add(traces.fold(0, (sum, item) => sum + item.openSocketCount));
@@ -195,11 +200,11 @@ void main() {
 
     // Counts are observed BEFORE any fixture teardown can mask a leak. On the
     // broken baseline all 100 cycles finish, retaining up to 100 real sockets.
+    debugPrint('F1W SDK ${Platform.version}; clientCounts=$clientCounts; '
+        'serverCounts=$serverCounts; peers=${host.socketDiagnostics}; '
+        'rawOutputs=${host.rawTransportDiagnostics}');
     expect(clientCounts, everyElement(0));
-    final terminalBound = Stopwatch()..start();
-    while (!host.allSocketTransportsDone && terminalBound.elapsed < _bound) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
-    }
+    expect(host.allSocketTransportsDone, isTrue);
     expect(serverCounts, everyElement(0), reason:
         'SDK ${Platform.version}; peer transports done: '
         '${host.allSocketTransportsDone}; ${host.socketDiagnostics}; '

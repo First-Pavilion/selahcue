@@ -146,6 +146,16 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - New evidence: prior write-side diagnostic was invalid for all normal closed peers, not just the one stale readyState peer.
 - Decision: obtain raw transport completion evidence, then if needed use iteration7 for oracle/removal sensitivity and iteration8 for final full candidate. Do not silently extend the limit.
 
+### Iteration 7
+
+- Target criterion: C-003, C-005 and C-006
+- Hypothesis: actual server input completion plus underlying detached Socket.done is the resource oracle; readyState alone is insufficient on SDK error-close paths. Bounded peer waiting must apply when forced HTTP closure produces no client WebSocket as well as explicit late socket closure.
+- Change or investigation: raw diagnostic CI41041856944 atb939bf31 passed full analysis/460 tests, but detailed completion values appeared only on failure, so success is not claimed as causal attribution. Require both real input onDone and each actual detached Socket.done for every upgraded peer; empty socket observation is never treated as closed. Preserve readyState in always-emitted diagnostics. Retain all100 per-cycle client/server zero assertions, exact-close tests, real10s deadline and all five controls; apply the same five-second peer bound to every client-quiescent cleanup path without manually closing the peer. Remove invalid WebSocket.done observation, retain raw Socket completion/error observations. Temporarily restore exactly unchanged main session.dart on this draft branch for hosted same-old-source sensitivity before final cleanup restoration.
+- Verifier executed: full raw diagnostic log mobile-late-websocket-raw-diagnostic.log preserved; full baseline diffcheck and structural validation. Old-source sensitivity full hosted run pending.
+- Result: no final oracle/resource pass claimed until old source fails meaningfully with all controls and final cleanup passes exact same tests.
+- New evidence: actual input termination was already observed even with stale readyState; underlying raw socket terminal is now a mandatory observable rather than failure-only diagnostic.
+- Decision: freeze old-production sensitivity head, inspect behavior/controls and actual resource diagnostics; restore unchanged minimal fix only after meaningful sensitivity is established. Iteration8 reserved for final current-main full CI; otherwise return remaining predicate for root replan.
+
 ## Risks and rollback
 
 - Risks: cleanup must not close a timely returned session, publish an expired session, double-close a late socket or expose unhandled late errors. Force-closing HTTP alone cannot discharge a WebSocket already detached from that client.

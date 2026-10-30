@@ -94,6 +94,7 @@ class LoopbackHost {
   final HttpServer _server;
   final List<WebSocket> _sockets = [];
   final List<Map<String, Object>> _socketTerminals = [];
+  final List<List<Map<String, Object>>> _socketOutputs = [];
   final _rawOutputs = Map<Socket, Map<String, Object>>.identity();
 
   List<Map<String, Object>> get rawTransportDiagnostics =>
@@ -104,14 +105,12 @@ class LoopbackHost {
           {
             'index': i,
             'readyState': _sockets[i].readyState,
-            ..._socketTerminals[i]
+            ..._socketTerminals[i],
+            'rawOutputs': _socketOutputs[i],
           },
       ];
 
-  bool get allSocketTransportsDone =>
-      _socketTerminals.every((value) => value['inputDone'] == true) &&
-      _rawOutputs.length >= _sockets.length &&
-      _rawOutputs.values.every((value) => value['done'] == true);
+  bool get allSocketTransportsDone => openSocketCount == 0;
 
   /// Every hello received, in arrival order — one entry per connection attempt.
   /// The length is how many times a client dialled in and spoke.
@@ -121,9 +120,20 @@ class LoopbackHost {
   int upgradeAttemptsCompleted = 0;
   final List<Object> upgradeErrors = [];
 
-  /// Actual owned WebSocket state, before fixture teardown closes anything.
-  int get openSocketCount =>
-      _sockets.where((socket) => socket.readyState != WebSocket.closed).length;
+  /// Both actual transport directions must terminate before ownership clears.
+  /// SDK error-close paths can leave WebSocket.readyState stale. Observing done
+  /// never invokes close/destroy or substitutes fixture teardown for cleanup.
+  int get openSocketCount {
+    var count = 0;
+    for (var i = 0; i < _sockets.length; i++) {
+      if (_socketTerminals[i]['inputDone'] != true ||
+          _socketOutputs[i].isEmpty ||
+          _socketOutputs[i].any((value) => value['done'] != true)) {
+        count++;
+      }
+    }
+    return count;
+  }
 
   /// HTTP connections which have not detached into WebSockets yet.
   int get httpConnectionCount => _server.connectionsInfo().total;
@@ -189,11 +199,12 @@ class LoopbackHost {
           await req.response.close();
           return;
         }
+        final outputs = <Map<String, Object>>[];
         final ws = await runZoned(() => WebSocketTransformer.upgrade(req),
             zoneSpecification: ZoneSpecification(
           runUnary: <R, Value>(self, parent, zone, callback, value) {
             if (value is Socket) {
-              host._rawOutputs.putIfAbsent(value, () {
+              final output = host._rawOutputs.putIfAbsent(value, () {
                 final output = <String, Object>{'done': false};
                 unawaited(value.done.then<void>((_) {
                   output['done'] = true;
@@ -203,20 +214,15 @@ class LoopbackHost {
                 }));
                 return output;
               });
+              if (!outputs.contains(output)) outputs.add(output);
             }
             return parent.runUnary(zone, callback, value);
           },
         ));
         host._sockets.add(ws);
-        final terminal = <String, Object>{
-          'inputDone': false, 'outputDone': false
-        };
+        host._socketOutputs.add(outputs);
+        final terminal = <String, Object>{'inputDone': false};
         host._socketTerminals.add(terminal);
-        unawaited(ws.done.then<void>((_) {
-          terminal['outputDone'] = true;
-        }, onError: (Object error, StackTrace stackTrace) {
-          terminal['outputError'] = error.runtimeType.toString();
-        }));
         var answered = false;
         ws.listen((frame) {
           if (answered) return;
