@@ -128,7 +128,8 @@ router.beforeEach((to) => {
       // Opportunistic and unawaited: extending a session that still has weeks left on it
       // must not hold up the navigation the visitor actually asked for. It is a no-op
       // unless the session is inside its last week — see the threshold's comment for why
-      // rotation is done rarely rather than often.
+      // rotation is done rarely rather than often. The store shares concurrent rotations
+      // and drains an in-flight refresh before logout; navigation need not wait for it.
       void refreshIfExpiringSoon()
       return true
     }
