@@ -63,7 +63,7 @@ Verified fresh main dd5cc038efe04681e42746edb8d243996badc947, baseline normal CI
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Actual settings RED demonstrates pasted secret leaks and nginx RED demonstrates all four missed bypasses | Hosted unchanged-production focused pytest plus real nginx syntax validation | Behavioral failures identify each gap; positive controls and setup succeed | api-origin-nginx-hardening/red.log and manifest | PENDING |
+| C-001 | yes | Actual settings RED demonstrates pasted secret leaks and nginx RED demonstrates all four missed bypasses | Hosted unchanged-production focused pytest plus real nginx syntax validation | Behavioral failures identify each gap; positive controls and setup succeed | api-origin-nginx-hardening/red-job.log and red-classification.json:19failed/75passed,8valid nginx fixtures | PASS |
 | C-002 | yes | Origin errors are secret-free without changing accepted-origin and proxy/security semantics | Hosted test_tls_proxy.py including new redaction negatives/legitimate controls | No password fragments/query secrets; raw @ shows scheme plus mask only; all cases pass | Focused/full API raw logs | PENDING |
 | C-003 | yes | Guard rejects all four valid bypasses and preserves legitimate quoted configuration | Hosted test_nginx_forwarded_proto.py and fixture syntax checks; sensitivity/restoration receipts | Four refusals, genuine directives/quoted benign controls pass; shipped config unchanged | Focused logs and Git fixture blob proof | PENDING |
 | C-004 | yes | Operations and test docs describe the precise boundaries | Diff/readback against task AC and independent reviews | Next API response, edge coverage, trustedIPs/no insecure flag and full-checkout/no-skip guidance present | Current diff and four review reports | PENDING |
@@ -88,6 +88,26 @@ Verified fresh main dd5cc038efe04681e42746edb8d243996badc947, baseline normal CI
 - Result: baseline and scope verified; runtime results pending; no production source edited.
 - New evidence: api-qualification/17tnw2b9adv.json and qualifications.md; this contract.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: the specified valid bypasses evade the unchanged guard and origin refusal diagnostics leak secret fragments or exceed the mandated raw-@ mask boundary.
+- Change or investigation: committed test-only source78e452e4, published workflow-only child0aa9027a; real nginx syntax checks precede focused tests on current API service setup.
+- Verifier executed: hosted diagnostic41089126195, exact raw red-job.log independently classified against selectors and assertions.
+- Result: actual19failed75passed4.87s, zero setup/oracle errors. Four valid bypasses DID NOT RAISE; one quoted-comment loss; seven settings diagnostic failures and seven actual manage.py stderr failures. Eight nginx syntax successes (shipped, four bypasses, three quoted positives); preserved original counts and failures.
+- New evidence: api-origin-nginx-hardening/red-classification.json, red-job.log, red-immutable-proof.json and red-receipt.json.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 through C-005.
+- Hypothesis: using raw unsplit diagnostic context and quote-aware directive tokens eliminates those gaps while preserving origin admission and real proxy behavior.
+- Change or investigation: raw-@ errors expose only a safe scheme and mask; other query/fragment payloads masked. Guard reads real quoted/escaped tokens, own-location directives, forbids map overrides/server includes. Existing credential expectations aligned with stricter explicit task boundary; four new bypass assertions strengthened to require the intended refusal message. Updated HSTS/Traefik/full-checkout docs. Production nginx fixture unchanged.
+- Verifier executed: local AST, whitespace and goal structural checks; current-main integration and hosted normal full API gates to follow.
+- Result: scoped candidate prepared; no hosted GREEN or independent review claimed yet.
+- New evidence: owned diff and forthcoming immutable candidate/CI handoff.
+- Decision: handoff
 
 ## Risks and rollback
 

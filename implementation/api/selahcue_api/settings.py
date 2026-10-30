@@ -241,18 +241,28 @@ else:
     SECURE_PROXY_SSL_HEADER = None
 
 
-def _without_credentials(entry: str) -> str:
-    """`entry` safe to print: anything before the last `@` (the userinfo of a pasted
-    `https://user:secret@host`) is replaced with `***`, keeping a leading `scheme://`. A refusal
-    message ends up in logs and terminals, so it must never echo a password."""
-    head, at, tail = entry.rpartition("@")
-    if not at:
-        return entry
-    scheme, sep, _ = head.partition("://")
-    return f"{scheme}://***@{tail}" if sep else f"***@{tail}"
+def _without_credentials(entry: str, raw: str) -> str:
+    """A diagnostic label, never the source of origin-admission decisions.
+
+    Delimiter splitting can detach a password fragment from its @. If the raw
+    variable contains @, identify no part of the failing entry except a URL
+    scheme. Query/fragment values can also hold secrets, even without userinfo.
+    """
+    if "@" in raw:
+        scheme, separator, _ = entry.partition("://")
+        valid_scheme = (
+            scheme.isascii() and scheme[:1].isalpha()
+            and all(char.isalnum() or char in "+-." for char in scheme)
+        )
+        return f"{scheme}://***" if separator and valid_scheme else "***"
+    # Keep useful ordinary malformed-origin diagnostics, but never their query
+    # or fragment payloads. These are refused below, not silently accepted.
+    without_fragment, fragment, _ = entry.partition("#")
+    without_query, query, _ = without_fragment.partition("?")
+    return without_query + ("?***" if query else "") + ("#***" if fragment else "")
 
 
-def _exact_origin(name: str, entry: str, debug: bool) -> str:
+def _exact_origin(name: str, entry: str, debug: bool, *, raw: str) -> str:
     """One `scheme://host[:port]` origin from the environment, or a refusal to boot.
 
     A trusted origin is a cross-origin trust grant on the CSRF-enforced surfaces, and the only
@@ -275,7 +285,7 @@ def _exact_origin(name: str, entry: str, debug: bool) -> str:
       a browser sends): URL parsers disagree about both;
     - credentials, path, query and fragment.
     The refusal message never echoes credentials (`_without_credentials`)."""
-    shown = _without_credentials(entry)
+    shown = _without_credentials(entry, raw)
 
     def refuse(reason: str):
         raise ImproperlyConfigured(
@@ -325,8 +335,9 @@ def _csrf_trusted_origins(name: str, debug: bool) -> list[str]:
     """Validated, de-duplicated origins from the space- or comma-separated variable `name`,
     in the order given. Empty entries (a stray comma, a trailing space) are dropped."""
     origins: list[str] = []
+    raw = os.getenv(name, "")
     for entry in env_list(name):
-        origin = _exact_origin(name, entry, debug)
+        origin = _exact_origin(name, entry, debug, raw=raw)
         if origin not in origins:
             origins.append(origin)
     return origins

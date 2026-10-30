@@ -738,7 +738,7 @@ def test_csrf_trusted_origins_are_parsed_normalised_and_validated(env, expected)
 
 
 # A pasted `https://user:secret@host` is refused, and the message (which lands in logs and
-# terminals) must not echo the secret: everything before the last `@` becomes `***`.
+# terminals) must not echo the secret: raw userinfo makes the entire entry scheme-and-mask only.
 SECRET = "hunter2"
 CREDENTIAL_ENTRIES = [
     f"https://user:{SECRET}@a.example.com",
@@ -763,8 +763,9 @@ def test_a_refused_entry_never_echoes_a_password(env):
     assert error.startswith("ImproperlyConfigured"), error
     assert "DJANGO_CSRF_TRUSTED_ORIGINS" in error
     assert SECRET not in error
-    assert "***@" in error
-    assert "a.example.com" in error or ".example.com" in error  # still identifies the entry
+    shown = "https://***" if env["DJANGO_CSRF_TRUSTED_ORIGINS"].startswith("https://") else "***"
+    assert f"entry {shown!r} is not accepted" in error
+    assert "example.com" not in error
 
 
 def test_a_refused_credential_entry_leaks_nothing_through_manage_py_either():
