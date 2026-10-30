@@ -35,6 +35,7 @@ Fresh actual main dcdb4f64433a5631465de7ad62ff2e1235349c05 contains SafeGraphQLV
 - Reuse existing Django body-size admission rather than changing its configured maximum or adding a knob.
 - Map native decoder recursion only at decode_json; map body-size/UTF8 decode exceptions only within HTTP body parsing, before resolver execution.
 - Real route tests for200000-level raw bodies below the configured cap on both surfaces, size boundary, malformed JSON/UTF8, ordinary authenticated/unauthenticated behavior and preserved CSRF/GET contracts.
+- Necessary CI prerequisite: measured full API runs exhaust the15-minute job cap after all tests pass; raise only API job cap to bounded20minutes and retain every assertion/job/service/pin/OS scope. Workflow edits intentionally trigger all areas.
 
 ### Non-goals
 
@@ -66,14 +67,14 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-001 | yes | Actual unauthenticated200000-level raw JSON below body cap is safely refused on both surfaces | real Django route tests, raw array/object bodies | meaningful RED then400safeVALIDATION_FAILED with no details | wave2-20261029/api-deep-json/red.log and GREEN evidence | PENDING |
 | C-002 | yes | Existing body-size boundary preserved and oversize/UTF8/malformed decoding mapped safely | under/at/overcap and malformed tests | valid boundary retains200auth outcome; invalid inputs400safeJSON | hosted test logs | PENDING |
 | C-003 | yes | Normal auth, CSRF, GET and GraphQL validation behavior preserved; resolver faults not broadly swallowed | positive browser/bridge/GET/query tests and narrow source inspection | expected200/403/GET400-or-405 contracts unchanged | focused/full hosted logs and review | PENDING |
-| C-004 | yes | Current-main-integrated candidate passes full API checks/migrations/regressions with existing skips retained | normal hosted API CI | CI green, raw logs inspected | PR/run snapshot and raw log | PENDING |
+| C-004 | yes | Current-main-integrated candidate passes full API checks/migrations/regressions and every other workflow-triggered gate with existing skips retained | normal hosted all-area CI after workflow edit | actual workflow success, raw logs inspected; cancelled does not pass | PR/run snapshot and raw logs | PENDING |
 | C-005 | yes | Frozen source passes Cody,Quinn,Vera,Shadow and valid findings are remediated/reviewed | root independent review round | no unresolved findings | root review evidence | PENDING |
 | C-006 | yes | PR merged and exact ticket QA persisted | root delivery readback | merge/QA verified | root delivery evidence | PENDING |
 
 ## Verification plan
 
 - Focused: test_graphql_raw_json.py through real Django URL/middleware/view without auth credentials; seed CSRF only where reaching decoding is intended.
-- Broader: normal hosted PostgreSQL16/Redis7/Python3.14 API job, checks/migrations/all tests, existing foundation/auth/CSRF and previous config guards.
+- Broader: normal hosted PostgreSQL16/Redis7/Python3.14 API job, checks/migrations/all tests, existing foundation/auth/CSRF and previous config guards. The CI timeout prerequisite edits ci.yml, triggering all existing code areas and their required Linux gates; no API-only claim.
 - Independent verifier: Cody,Quinn,Vera,Shadow through root.
 - Required environment: hosted services; no local project runtime or large-body construction/execution.
 
@@ -99,9 +100,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: wave2-20261029/api-deep-json/candidate-manifest.json and CI raw log at handoff.
 - Decision: gate-review
 
+### Iteration 3
+
+- Target criterion: C-004, necessary CI prerequisite approved by parent.
+- Hypothesis: the unchanged full suite needs bounded job headroom for service/install/check/post-job overhead;15minutes expires at the completed test summary, so rerunning unchanged cannot establish a successful required gate.
+- Change or investigation: independently inspected both raw logs/step timestamps and workflow/minute contracts. Run41038300286 exact85385b9d attempt1 ran2147pass/1intentional study skip in854.46s (14:14), API job10:06:49–10:21:52; attempt2 repeated2147pass/1skip in857.22s (14:17), API job10:28:16–10:43:20, with42seconds before tests and cancellation immediately after100percent. Attempt1 Tests step succeeded but job cancelled; attempt2 Tests cancelled. Both workflow conclusions remain CANCELLED, never GREEN.
+- Verifier executed: raw receipts and step timestamps; minute rules and workflow/API gate source read; actionlint, exact semantic-diff/static checks, goal validation. Fresh target integration and normal all-area hosted CI follow.
+- Result: only API job cap15→20minutes with measured comment; no test bounds, checks, jobs, OS/tier scope, services, dependency pins, security or skip changes. This is hosted job overhead headroom, not a local resource override or production performance waiver. Allfour reviewers must re-review this semantic CI change; fresh actual workflow success remains mandatory.
+- New evidence: wave2-20261029/pr288-cancelled-ci.log, pr288-attempt1-cancelled-ci.json, pr288-attempt2-cancelled-ci.log/json; updated candidate manifest/handoff and fresh run receipts.
+- Decision: gate-review
+
 ## Risks and rollback
 
-- Risks: catching recursion outside the decoder would hide resolver bugs; fixed safe errors must not echo raw request content. Tests assert the exact safe envelope and source scope remains narrow.
+- Risks: API job maximum increases by5minutes while actual billed time remains actual runtime; all code areas rerun because ci.yml changed. Catching recursion outside the decoder would hide resolver bugs; fixed safe errors must not echo raw request content. Tests assert the exact safe envelope and source scope remains narrow.
 - Rollback or recovery: revert this isolated input-boundary change; no schema,migration,data rewrite or operator configuration is changed.
 
 ## Pause and escalation conditions
