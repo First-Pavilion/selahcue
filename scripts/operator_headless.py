@@ -1969,6 +1969,10 @@ EXPECTED_MIN_CHECKS = 2536
 # real Remote failed-open, poll demotion and held autosave lookup lifetimes.
 # Measured on tests-only40c494b9 in hosted41119095716:2552 checks,8 intended FAIL.
 EXPECTED_MIN_CHECKS = 2552
+# 2552 ->2556 (CODY-AYZVG-01): real Remove modal/false poll/Cancel,
+# no-fresh-view UI selection and deselection cannot overwrite a confirmed denial.
+# Measured on tests-only90e14dab in hosted41121235813:2556 checks,1 intended FAIL.
+EXPECTED_MIN_CHECKS = 2556
 
 
 def find_chrome():

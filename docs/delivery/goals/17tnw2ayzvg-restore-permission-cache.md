@@ -98,17 +98,27 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: restore-permission current candidate/object receipts and hosted raw logs.
 - Decision: iterate
 
-## Risks and rollback
-
 ### Iteration 3 — CODY-AYZVG-01 review regression
 
 - Target criterion: C-002, latest genuine host confirmation survives cached UI rendering.
 - Hypothesis: a false poll during a Remove dialog updates the hint but intentionally leaves planLastView true; Cancel and selection/deselection replay that snapshot through planRenderBuilder and incorrectly publish a new true hint.
 - Change or investigation: add the real selected-row Remove dialog, actual false poll, Cancel, selection and blank-list deselect regression plus modal/stale-snapshot/no-new-view premises. Existing AYZVG fixture views now feed the normal successful full-view consumer before the Plan renderer, distinguishing a confirmed view fixture from UI-only replay; all existing assertions retained. Shipping implementation unchanged from cc02f357 while this new RED runs.
 - Verifier executed: tests-only stdlib AST, production-tree identity and baseline diff check; bounded hosted actual regression RED.
-- Result: Pending actual hosted observation; prior source CI/mutations do not close this review finding.
+- Result: Actual hosted41121235813 on tests-only90e14dab executed2556 checks with one intended cached-UI-replay failure and no sibling behavioral failure; old2552 count mismatch separate. All16 original records and three new premises PASS, so the false poll/modal/stale snapshot/no-fresh-view path is observed.
 - New evidence: restore-permission/review-red receipt, object proof and actual raw log.
 - Decision: iterate
+
+### Iteration 4 — genuine host observations
+
+- Target criterion: C-002 through C-004 and scoped CODY-AYZVG-01 correction.
+- Hypothesis: recording permission at fulfilled host reply consumers, while rendering cached snapshots without observation, prevents UI selection/deselection from overriding the latest host verdict.
+- Change or investigation: remove observation from reusable planRenderBuilder; add a narrow planRenderHostView adapter at fulfilled Plan-only replies (Restore, both activation views, add, planMutate, lifecycle, Reload, Local Undo). Global render already observes every fresh full view, including poll and set-item-content; poll repaint, row selection and deselection remain pure UI rendering. Pin measured2556 with all DRIVER/STUB/CSS_SRC source bytes unchanged from actual review RED.
+- Verifier executed: actual review-RED/raw classification, caller inventory, stdlib AST, baseline diffcheck and Goal structural validator; current normal CI and original-plus-replay sensitivity/restoration run to follow.
+- Result: Static preparation PASS; runtime and all four independent current-source review gates pending. Historical cc02 CI/mutation results remain separate and cannot close the finding.
+- New evidence: restore-permission/review-red-classification.json, fresh-host-ingress.md, current-source receipts/raw and object proofs.
+- Decision: iterate
+
+## Risks and rollback
 
 - Risks: treating absent/malformed permission as false/true, cache not updated by actual polls, stale async lookups reintroducing controls, unrelated Undo/Local change. Both-direction/ordering controls and unchanged siblings address these boundaries.
 - Rollback or recovery: revert this scoped UI/test PR, no data/protocol/schema changes.
