@@ -405,14 +405,35 @@ class ChapterResult extends ServerMessage {
   String get heading => '$bookName $chapter ($translation)';
 }
 
-/// A rejection's `reason` is display text, so a rejection that omits it is
+const int _maxIssuedCredentialLength = 1024;
+const int _maxRejectionReasonLength = 1024;
+
+/// Issued secrets are opaque: validate without trimming or imposing the host's
+/// current hex grammar. Bound work before inspecting printable ASCII bytes.
+bool _validIssuedCredential(String value) {
+  if (value.isEmpty || value.length > _maxIssuedCredentialLength) return false;
+  var nonBlank = false;
+  for (final unit in value.codeUnits) {
+    if (unit < 0x20 || unit > 0x7e) return false;
+    if (unit != 0x20) nonBlank = true;
+  }
+  return nonBlank;
+}
+
+/// A rejection's `reason` is bounded display text, so a rejection that omits it is
 /// still a rejection (reads as `''`). A reason that is PRESENT but not a string
 /// is a wrong-typed field: `null` here means "malformed", so the caller must not
 /// treat the frame as a verdict.
 String? _reasonOf(Map<String, dynamic> j) {
   if (!j.containsKey('reason')) return '';
   final reason = j['reason'];
-  return reason is String ? reason : null;
+  if (reason is! String) return null;
+  if (reason.length <= _maxRejectionReasonLength) return reason;
+  var end = _maxRejectionReasonLength;
+  // A UTF-16 cut must not leave a leading surrogate without its trailing half.
+  final last = reason.codeUnitAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end--;
+  return reason.substring(0, end);
 }
 
 /// The reply to a `pair` hello (`{'pair': 'granted'|'rejected'|'parked'}` tagged).
@@ -426,16 +447,16 @@ sealed class PairResult {
   static PairResult fromJson(Map<String, dynamic> j) {
     switch (j['pair']) {
       case 'granted':
-        // All three are required: an empty id/token would be saved as the
-        // "issued credentials" and could never authenticate. An unknown role
+        // Credentials reach the keystore and every later auth hello, so reject
+        // malformed issued values before they can be saved. An unknown role
         // STRING is still fine — `MobileRole.parse` fails it closed.
         final deviceId = j['device_id'];
         final token = j['token'];
         final role = j['role'];
         if (deviceId is String &&
-            deviceId.isNotEmpty &&
+            _validIssuedCredential(deviceId) &&
             token is String &&
-            token.isNotEmpty &&
+            _validIssuedCredential(token) &&
             role is String) {
           return PairGranted(deviceId: deviceId, token: token, role: role);
         }
