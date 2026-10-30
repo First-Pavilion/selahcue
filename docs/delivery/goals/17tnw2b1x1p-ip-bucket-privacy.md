@@ -64,7 +64,7 @@ Fresh actual main e5a1611b728901811b6427f7cff2ded0ccfa4dcd includes reviewed/QA 
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | All actual IP cache-key paths inventoried and privacy gap observed in meaningful hosted RED | Source consumer inventory plus hosted request/service key capture with positive controls | Every native/browser IP consumer covered; actual raw-key privacy failures distinct from setup errors | api-ip-bucket-privacy inventory/red manifest/raw | PENDING |
+| C-001 | yes | All actual IP cache-key paths inventoried and privacy gap observed in meaningful hosted RED | Source consumer inventory plus hosted request/service key capture with positive controls | Every native/browser IP consumer covered; actual raw-key privacy failures distinct from setup errors | consumer-inventory.json and red-classification.json; actual22failed47passed3.32s | PASS |
 | C-002 | yes | IP cache keys use a dedicated-purpose keyed hash with no raw address in any observed key | Hosted real consumer/cache-key capture, stable-secret/different-IP/rotation and domain-separation controls | No IPv4/full IPv6/prefix leaks; distinct IPs differ, same bucket shares, stable secret stable, changed secret changes affected identities | Focused GREEN and full API raw logs | PENDING |
 | C-003 | yes | Existing admission/sharing/state/outage semantics remain intact | Existing full throttle/reset/cache/circuit/response suite plus meaningful new controls and raw-key mutation/restoration | Proxy/mapped IPv4/IPv6/64, global-first cardinality, limits/count/TTL/outage/degraded/native policies preserved; mutant fails and restored source passes | Hosted sensitivity/regression receipts | PENDING |
 | C-004 | yes | Operations docs accurately describe degradation and rotation | Source-derived docs cross-check and independent review | Formula/knobs apply to send claims per worker; browser/native distinction explicit; only affected secret-derived budgets reset once | DEPLOYMENT.md diff and review reports | PENDING |
@@ -89,6 +89,26 @@ Fresh actual main e5a1611b728901811b6427f7cff2ded0ccfa4dcd includes reviewed/QA 
 - Result: baseline/scope established; actual key-capture tests and hosted RED pending; no production fix.
 - New evidence: full dispatch-live packet, qualifications.md and this contract.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: both existing IP-key interpolation boundaries disclose raw resolved buckets and do not rotate with the root secret.
+- Change or investigation: tests-only1d827bef and workflow-only0ee114eb; captured logical/versioned keys and real backend increments across all10native/browser consumers with grouping/proxy/TTL/count controls.
+- Verifier executed: actual hosted41120748681 metadata/raw/hash index independently classified.
+- Result:22failed47passed3.32s, no setup/oracle failure.20actual consumer raw-key absence failures and2unchanged-key rotation failures.4new grouping/proxy controls plus43existing counters/expiry/outage/log/header cases passed; later HMAC/fixed-global assertions remain GREEN obligations, not claimed RED passes.
+- New evidence: api-ip-bucket-privacy/red-ci metadata/raw/log receipts, red-classification.json and immutable/component proof.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 through C-005.
+- Hypothesis: purpose-derived HMAC at the native and existing four browser IP key boundaries preserves grouping/admission while removing raw keys and giving explicit root-key rotation semantics.
+- Change or investigation: added shared salted_hmac SHA256 purpose-derived identity; native decorator and four registered browser IP scopes use it. Other identity schemes untouched. Exactly two adjacent raw-spelling expectations now compute private keys while retaining same ordered call/count/remaining-TTL assertions. Ops docs distinguish per-worker SEND CLAIMS, formula/settings/native outage policy and affected versus fixed counters on rotation/initial rollout. No source-level counter, resolver, ordering, limit or outage policy change.
+- Verifier executed: stdlib AST, unchanged critical-function AST comparisons, whitespace and goal validation; hosted mutation/restoration/full normal API pending.
+- Result: candidate prepared; no GREEN, independent finding closure or merge claim.
+- New evidence: owned source diff and forthcoming exact-source hosted mutation/restoration and normal CI receipts.
+- Decision: handoff
 
 ## Risks and rollback
 

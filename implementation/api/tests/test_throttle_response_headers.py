@@ -150,7 +150,7 @@ def test_only_a_denial_queries_retry_metadata(monkeypatch, local_clock, settings
     assert view(request).status_code == 200
     assert calls == []
     assert view(request).status_code == 429
-    assert calls == ["throttle:header_probe:203.0.113.2"]
+    assert calls == [f"throttle:header_probe:{services.ip_bucket_identity('203.0.113.2')}"]
 
 
 @pytest.mark.skipif(not os.getenv("CACHE_URL"), reason="real Redis requires CACHE_URL")

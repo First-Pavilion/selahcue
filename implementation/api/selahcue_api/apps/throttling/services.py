@@ -21,6 +21,7 @@ from django.conf import settings
 from django.core.cache import cache as default_cache, caches
 from django.core.cache.backends.locmem import LocMemCache
 from django.core.cache.backends.redis import RedisCache
+from django.utils.crypto import salted_hmac
 
 from selahcue_api.apps.throttling.circuit import CACHE_CIRCUIT
 
@@ -194,6 +195,25 @@ def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
     fail-open apart from a real allow use `evaluate_budget` directly.
     """
     return evaluate_budget(store, key, limit, window_seconds) is not BudgetOutcome.DENIED
+
+
+# Derive dedicated IP-cache key material from the existing configured root.
+# Django salted_hmac(SHA256) derives SHA256(purpose + SECRET_KEY), then HMACs
+# the bucket under that key. This purpose is distinct from credential, email
+# and audit-source fingerprints; no new deployment secret is provisioned.
+_IP_BUCKET_KEY_PURPOSE = "selahcue_api.apps.throttling.ip_bucket.v1"
+
+
+def ip_bucket_identity(bucket: str) -> str:
+    """Opaque cache identity for an already-resolved throttle bucket.
+
+    Do not resolve/truncate here: client_ip retains proxy trust, mapped IPv4
+    normalization and IPv6/64 sharing for all consumers, including audit code.
+    Read the current SECRET_KEY each call so rotation changes affected budgets
+    once; SECRET_KEY_FALLBACKS does not preserve the old identity.
+    """
+    digest = salted_hmac(_IP_BUCKET_KEY_PURPOSE, bucket, algorithm="sha256").hexdigest()
+    return f"ip:v1:{digest}"
 
 
 # IPv6 bucket size for throttle-identity purposes (86akcn8ww). A single attacker on a

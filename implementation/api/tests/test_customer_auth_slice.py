@@ -57,6 +57,7 @@ from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.throttling import circuit, guards
+from selahcue_api.apps.throttling.services import ip_bucket_identity
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -2024,8 +2025,8 @@ def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows
     # the cross-source brake as well: it adds no protection once already degraded.
     assert store.calls == 3, store.calls
     assert list(touched) == [
-        f"throttle:password_reset_confirm_ip:198.51.100.{n}" for n in range(1, 11)
-    ] + ["throttle:password_reset_confirm_ip:127.0.0.1"], "a second trace budget was consulted"
+        f"throttle:password_reset_confirm_ip:{ip_bucket_identity(f'198.51.100.{n}')}" for n in range(1, 11)
+    ] + [f"throttle:password_reset_confirm_ip:{ip_bucket_identity('127.0.0.1')}"], "a second trace budget was consulted"
     assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
 
