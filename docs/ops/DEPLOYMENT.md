@@ -216,8 +216,9 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `SECRET_KEY` | dev-only fallback | **Required, and not a public value. The app refuses to boot when `ENVIRONMENT != dev` and this is empty, equals the dev key, or equals the `replace-me-with-a-fresh-key` placeholder that earlier copies of `.env.sample` carried (letter case, whitespace, matched ASCII quotes and invisible format characters such as a BOM, zero-width space or joiner, or soft hyphen are ignored when comparing).** It is also the HMAC pepper for licence-key, device-token and account-session fingerprints: rotating it invalidates them all |
 | `DEBUG` | `0` | **Startup refuses true outside exact `dev`, including staging.** Leave `0` or unset; see below |
 | `DJANGO_ALLOWED_HOSTS` | `localhost 127.0.0.1 testserver` | **Required. Space-separated** (commas tolerated). Non-local entries trigger the omitted-environment/empty-key guard described below |
-| `SQL_ENGINE` | `…backends.sqlite3` | `django.db.backends.postgresql` — row-locking is required, see below |
-| `SQL_DATABASE` / `SQL_USER` / `SQL_PASSWORD` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `postgres` / `localhost` / `5432` | **Required** for Postgres |
+| `SQL_ENGINE` | `…backends.sqlite3` in dev only | **Startup refuses unset/blank or SQLite outside exact `dev`**, naming `SQL_ENGINE` and `ENVIRONMENT`. Configure `django.db.backends.postgresql`; row-locking is required, see below |
+| `SQL_DATABASE` / `SQL_USER` / `SQL_HOST` / `SQL_PORT` | SQLite path / `postgres` / `localhost` / `5432` | **Required** for Postgres |
+| `SQL_PASSWORD` | `postgres` in dev only | **Startup refuses unset/blank or exact `postgres` outside exact `dev`**, naming `SQL_PASSWORD` and `ENVIRONMENT` without echoing the value |
 | `DB_CONN_MAX_AGE` | `60` | Tune to your pooling |
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
 | `CELERY_BROKER_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Redis broker TCP connect timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
@@ -250,6 +251,14 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 > (`has_select_for_update = False`). On SQLite two concurrent activations can both observe
 > `active_devices = 0` and exceed `device_limit`. The guard is not wrong — it simply has no
 > effect without a row-locking backend.
+
+Database validation runs at settings import, including under gunicorn/uwsgi without system
+checks. Any `ENVIRONMENT` other than exact `dev` refuses missing/whitespace-only `SQL_ENGINE`
+or an engine ending in `sqlite3`; it also refuses missing/whitespace-only `SQL_PASSWORD` or the
+exact public default `postgres`. The guard does not restrict all other backends to an allowlist
+or impose a password-strength policy. Password values are not normalized or logged. Exact dev
+retains SQLite fallback and the existing non-SQLite password default; no database data is changed
+by these checks. Configure Postgres and a real password before starting a deployed API.
 
 The omitted-environment guard runs when settings are imported, including under gunicorn or
 uwsgi; it does not rely on `manage.py check`. It refuses only the conjunction of genuinely

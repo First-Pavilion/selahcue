@@ -611,8 +611,19 @@ FLAG_OFF_CASES = [
     pytest.param(_case(SELAHCUE_TRUST_FORWARDED_PROTO=raw), id=_flag_id(raw)) for raw in FLAG_OFF
 ]
 DEFAULT_CASE = _case()
-PROD_DEFAULT_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x")
-PROD_OPT_IN_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x", SELAHCUE_TRUST_FORWARDED_PROTO="1")
+# These controls target TLS/proxy behavior, so supply legitimate unrelated deployed DB fields.
+CONFIGURED_POSTGRES = {
+    "SQL_ENGINE": "django.db.backends.postgresql",
+    "SQL_DATABASE": "selahcue_test",
+    "SQL_USER": "selahcue",
+    "SQL_PASSWORD": "selahcue",
+    "SQL_HOST": "localhost",
+    "SQL_PORT": "5432",
+}
+PROD_DEFAULT_CASE = _case(ENVIRONMENT="prod", SECRET_KEY="x", **CONFIGURED_POSTGRES)
+PROD_OPT_IN_CASE = _case(
+    ENVIRONMENT="prod", SECRET_KEY="x", SELAHCUE_TRUST_FORWARDED_PROTO="1", **CONFIGURED_POSTGRES,
+)
 
 
 @pytest.mark.parametrize("env", FLAG_ON_CASES)
@@ -807,7 +818,7 @@ def test_allowed_hosts_parsing_is_unchanged_by_the_shared_list_helper(env, expec
 
 # --- the deploy-time warning (selahcue_accounts.W002) through the real manage.py -------------
 def test_manage_py_check_warns_in_a_deployed_environment_that_has_not_opted_in():
-    result = _run_manage_check(ENVIRONMENT="prod", SECRET_KEY="x")
+    result = _run_manage_check(ENVIRONMENT="prod", SECRET_KEY="x", **CONFIGURED_POSTGRES)
     output = result.stdout + result.stderr
 
     assert result.returncode == 0, result.stderr  # a Warning, never an Error
@@ -819,7 +830,7 @@ def test_manage_py_check_warns_in_a_deployed_environment_that_has_not_opted_in()
 
 def test_manage_py_check_is_quiet_once_opted_in_and_in_dev():
     opted_in = _run_manage_check(
-        ENVIRONMENT="prod", SECRET_KEY="x", SELAHCUE_TRUST_FORWARDED_PROTO="1"
+        ENVIRONMENT="prod", SECRET_KEY="x", SELAHCUE_TRUST_FORWARDED_PROTO="1", **CONFIGURED_POSTGRES,
     )
     assert opted_in.returncode == 0, opted_in.stderr
     assert W002 not in opted_in.stdout + opted_in.stderr
