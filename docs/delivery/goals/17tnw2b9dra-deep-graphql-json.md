@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Return safe validation responses for raw GraphQL JSON decode failures
 - Role: backend-engineer
-- Status: IN_PROGRESS
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9dra
 - Created: 2026-10-30
@@ -65,7 +65,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 |---|---|---|---|---|---|---|
 | C-001 | yes | Actual unauthenticated200000-level raw JSON below body cap is safely refused on both surfaces | real Django route tests, raw array/object bodies | meaningful RED then400safeVALIDATION_FAILED with no details | wave2-20261029/api-deep-json/red.log and GREEN evidence | PENDING |
 | C-002 | yes | Existing body-size boundary preserved and oversize/UTF8/malformed decoding mapped safely | under/at/overcap and malformed tests | valid boundary retains200auth outcome; invalid inputs400safeJSON | hosted test logs | PENDING |
-| C-003 | yes | Normal auth, CSRF, GET and GraphQL validation behavior preserved; resolver faults not broadly swallowed | positive browser/bridge/GET/query tests and narrow source inspection | expected200/403/405 contracts unchanged | focused/full hosted logs and review | PENDING |
+| C-003 | yes | Normal auth, CSRF, GET and GraphQL validation behavior preserved; resolver faults not broadly swallowed | positive browser/bridge/GET/query tests and narrow source inspection | expected200/403/GET400-or-405 contracts unchanged | focused/full hosted logs and review | PENDING |
 | C-004 | yes | Current-main-integrated candidate passes full API checks/migrations/regressions with existing skips retained | normal hosted API CI | CI green, raw logs inspected | PR/run snapshot and raw log | PENDING |
 | C-005 | yes | Frozen source passes Cody,Quinn,Vera,Shadow and valid findings are remediated/reviewed | root independent review round | no unresolved findings | root review evidence | PENDING |
 | C-006 | yes | PR merged and exact ticket QA persisted | root delivery readback | merge/QA verified | root delivery evidence | PENDING |
@@ -85,9 +85,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: real route tests expose native JSON recursion/body-cap/UTF8 exception contract gaps while existing positive contracts already pass.
 - Change or investigation: full requirements/source/dependency decode boundaries inspected, worktrees checked, new isolated current-main branch, tests first.
 - Verifier executed: static syntax,diff and structural goal validation only.
-- Result: unchanged-product candidate prepared for actual hosted RED.
-- New evidence: wave2-20261029/api-deep-json/test-only-manifest.json.
+- Result: actual hosted RED41037528327/source d41d798b/diagnostic37e0ad17 produced10failed16passed in1.70s:8intended product failures (4raw-recursion500,2body-cap400HTML,2UTF8decode500) plus2GET test-oracle failures. No setup failures. The existing foundation contract accepts GET400or405; actual baseline returns400, so the test oracle is corrected without changing GET production behavior.
+- New evidence: wave2-20261029/api-deep-json/red.log and https://github.com/First-Pavilion/selahcue/actions/runs/41037528327
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: map native JSON recursion only in decode_json and body-size/UTF8 input errors only in parse_http_body; existing dispatch supplies the safe400envelope.
+- Change or investigation: add two narrow overrides, preserving configured body cap, parser, authentication/CSRF/GET/operation handling and resolver error behavior. Correct only the GET positive assertion to existing400/405 contract; negative tests stay unchanged. Integrate actual AH8 main before initial PR and inspect overlap.
+- Verifier executed: static source/test syntax, negative-test preservation, diff and structural goal checks; no local runtime.
+- Result: minimal candidate prepared for draft PR/full hosted API; actual GREEN and all independent reviews remain pending.
+- New evidence: wave2-20261029/api-deep-json/candidate-manifest.json and CI raw log at handoff.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -102,8 +112,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dra-deep-graphql-json.md
-- Validator result: structural validation and stdlib test syntax PASS.
+- Validator result: structural validation, stdlib source/test syntax and diff check PASS.
 - Independent verification result: pending root review.
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: actualRED/GREEN/fullAPI/reviews/merge/QA pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: actual GREEN/full API, all four independent reviews, merge and exact QA readback pending.
 - ClickUp final evidence comment: root owns publication.

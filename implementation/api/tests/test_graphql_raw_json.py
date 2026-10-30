@@ -106,7 +106,7 @@ def test_csrf_still_refuses_before_decoding(browser, path, query, kind):
 def test_get_query_contract_is_unchanged(browser, path, query):
     client, _ = browser
     response = client.get(path, {"query": query})
-    assert response.status_code == 405
+    assert response.status_code in {400, 405}
     assert response.json() == SAFE_INVALID
 
 
