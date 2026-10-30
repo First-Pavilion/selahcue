@@ -468,24 +468,32 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   TTLs. This change does not erase historical cache logs. The credential/session invalidation
   effects of root-key rotation described in section6 remain unchanged.
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
-  budget. Spending one budget takes one to three commands (`SET NX`, and once the counter exists
-  also `EXISTS` and `INCR`; in the rare race where a counter's window lapses between those two,
-  one `EXPIRE` and sometimes a second `SET NX` more), and opening a new connection adds three
-  more (two `CLIENT SETINFO` and a `SELECT`). Those handshake commands, and with a `rediss://`
-  URL the TLS handshake itself, run under `CACHE_SOCKET_TIMEOUT`, not the connect timeout: redis-py
-  applies the read timeout as soon as the TCP connect returns (checked against redis-py 6.4.0, with
-  a listener that accepts and never speaks TLS: it gave up at the read timeout, not the connect
-  timeout).
-  - **Stalled** (accepts, never answers): the first command of a budget times out and the rest of
-    that budget is skipped, so a request costs about one timeout per budget: about 0.5 s on a
-    one-budget route and about 1.5 s on a three-budget route. Measured on a frozen Redis.
-  - **Slow but answering** (every reply just under the timeout): nothing times out and nothing
-    fails open, and each command costs nearly the full timeout: up to about 1.5 s on a one-budget
-    route and 4.5 s on a three-budget route, plus about 1.5 s when the connection has to be
-    reopened. Measured with a proxy that answered every command 0.4 s late, so each figure sits at
-    about 0.8 of the maximum just given: 1.21 s for a steady one-budget call, 3.64 s for three
-    budgets (a reset or resend), and 1.69 s for the **first** call on a fresh connection (it also
-    paid the three handshake commands).
+  budget. The configured Redis backend now spends one positive-window budget with one bounded
+  EVAL (17tnw2b1wvf): three budgets on an accepted reset/resend request mean three budget
+  round trips, both for first hits and existing counters. The former separate `EXISTS`
+  network check is replaced by an expiry check inside the script. It accesses one validated,
+  versioned cache key, creates new counters with expiry in the same write, retains existing
+  fixed deadlines and repairs persistent counters without resetting their count. It uses no
+  loops or script-cache loading/retry. Redis ACLs must permit EVAL and its fixed PTTL,
+  SET, `EXPIRE` and `INCR` commands; a refused script follows the existing unavailable-store
+  policy and reporting. Generic/local caches keep their existing cache API path.
+
+  Connection setup is separate: the current client sends two `CLIENT SETINFO` commands and
+  a `SELECT` on a fresh connection (three additional observed control round trips). Those
+  handshake commands, and with a `rediss://` URL the TLS handshake itself, run under
+  `CACHE_SOCKET_TIMEOUT`, not the connect timeout: redis-py applies the read timeout as soon
+  as the TCP connect returns (checked against redis-py 6.4.0 with a listener that accepts and
+  never speaks TLS: it gave up at the read timeout, not the connect timeout).
+  - **Stalled** (accepts, never answers): the first network operation times out, preserving
+    the existing unavailable-store/circuit and caller policies. At the default timeout this
+    costs about 0.5 s per attempted budget before circuit suppression; a three-budget request
+    may pay about 1.5 s while that worker's circuit is still closed. It may fail during setup
+    before the budget script reaches Redis. No timed-out command is retried.
+  - **Slow but answering** (every reply just under the timeout): the command-count bound
+    implies up to about 0.5 s per budget or 1.5 s for three budgets, plus about 1.5 s if a new
+    connection pays all three handshake replies. These are bounds from command counts and
+    the configured timeout, not new latency measurements. The earlier pre-optimization
+    multi-command latency samples do not describe this single-script path.
 
   A shared `/v1` throttle **denial** also reads the existing counter's PTTL on the primary
   to provide `Retry-After` (17tnw2b1wqc). That is one extra command under the same socket timeout:
