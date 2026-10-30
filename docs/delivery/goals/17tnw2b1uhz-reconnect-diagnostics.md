@@ -68,7 +68,7 @@ Preparation-only checkout from actual main5d041a102d0fb01e53719e99a55107b4efb696
 |2 Per-outage and8frame properties|Exercise two actual outage/recovery cycles; deep supplied stack proves exact first8frame behavior; both required mutants fail named assertions.|
 |3 Interval measurement|Subtract observed100ms connect duration or record actual failure timestamp so minimum wait2s cannot pass with1.9s; preserve F1Y growing/capped semantics.|
 |4 Release intent|Document current intentionally enabled safe type/stack reporting in release; no new gating/policy.|
-|5 Throwing debugPrint override|Plan minimal helper try/onObject containment only after actual hosted failing override control, preserving retry/launcher recovery; or explicitly decline with reason if fresh scope requires.|
+|5 Throwing debugPrint override|Implement minimal helper try/onObject containment after actual hosted failing override controls; preserve retry/launcher recovery. No decline.|
 |6 Throttling comment|Correct the claim that every debugPrint schedules aTimer; describe buffered throttling without relying on private Flutter thresholds.|
 |7 Quiet sibling tests|Reuse shared capture helper in malformed-reply and launcher tests, restoring debugPrint before test invariants; full raw test log has no stray label/stack dumps.|
 
@@ -112,6 +112,16 @@ Preparation-only checkout from actual main5d041a102d0fb01e53719e99a55107b4efb696
 - Result: tests/docs preparation; no production helper fix or runtime pass yet. Coverage-only existing properties may correctly pass the baseline.
 - Decision: freeze tests-only candidate, obtain actual hosted printer failure and positive coverage/sibling outcomes; then minimal helper containment/docs, bounded mutants and full normal gates. No local runtime.
 
+### Iteration 3
+
+- Target criterion: C-001 through C-006
+- Hypothesis: protecting only the shared diagnostic helper body preserves type/eight-frame/release reporting while preventing a printer override from defeating reconnect or Launcher recovery.
+- Change or investigation: independently qualified actual normal41136342278 RED at unchanged productionddffc76a. Analyze/setup/workflowPASS;488passed/3failed: helper leaks StateError printer unavailable, reconnect remains1attempt instead2, Launcher raises printer StateError then never reaches PairingView. New actualtwooutage, deep20frame->8frame, explicit expected-error exclusion, corrected1000failure interval and other coverage siblings pass. Ordinary current-main integration includes mobile-disjoint AYETD script/Goal. Minimal helper try/onObject containment only; document intentionally enabled release reporting, unchanged type/eightframe content. Allseven items addressed; no deliberate decline. Preserve every strengthened test/F1Y policy. Root parent artifact audit shows100entry cap/PR304 absent despite author attach return payload; exact author receipt saved separately and parent association unverified, no retry/removal.
+- Verifier executed: actual selected raw488/3 plus metadata/hash/classification, structuralGoal/fullbaseline diffcheck/source identity; candidate normalfullFlutter and required meaningful mutants/restoration pending.
+- Result: actual behavioral RED precedes production edit; no candidate runtime pass yet. No local project runtime or dependency change.
+- New evidence: diagnostics is a shared failure boundary for both connect callers; helper containment fixes allthree reproduced failures without changing their transport/auth control flow.
+- Decision: freeze candidate and run full normalFlutter/analyze/quiet-output check, plus separate exact-first-parent bounded per-outage-set/framecap/interval/containment mutations with positive siblings and exact locked/no-pub restoration. Yield immutable hosted wait.
+
 ## Risks and rollback
 
 - Risks: capture helper leaks a global override, test reads duplicate policy, default stack filter hides missing cap, or optional containment changes logging policy instead of preserving recovery.
@@ -126,8 +136,8 @@ Preparation-only checkout from actual main5d041a102d0fb01e53719e99a55107b4efb696
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1uhz-reconnect-diagnostics.md
-- Validator result: preparation structural validation PASS; no source/test implementation
+- Validator result: structural validation PASS before tests and after actual RED/minimal helper candidate; current runtime pending
 - Independent verification result: pending root
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-001 through C-007; hosted baseline/optional printer RED pending
+- Remaining failed or blocked criteria: C-001 through C-007; actualRED qualified, candidate normal/mutations/reviews pending
 - ClickUp final evidence comment: root owns publication
