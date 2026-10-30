@@ -1939,6 +1939,10 @@ EXPECTED_MIN_CHECKS = 2347  # measured:2347 checks; result recorded in the goal
 # Measured on corrected source 1e3b6c2d in hosted diagnostic40947455308: 2358 checks, zero FAIL.
 # Keep the gate exact in both directions; this count is observed, not hand-derived.
 EXPECTED_MIN_CHECKS = 2358
+# 2358 ->2376 (17tnw2aynax): real library mutations, shared plan resolution,
+# unchanged-view repaint, superseded return values, unknown/empty/retry controls.
+# Measured on corrected source31e248df in hosted run41036840407:2376 checks,0 FAIL.
+EXPECTED_MIN_CHECKS = 2376
 
 
 def find_chrome():

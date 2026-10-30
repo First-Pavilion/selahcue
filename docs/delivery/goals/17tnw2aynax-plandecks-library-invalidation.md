@@ -64,9 +64,9 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Library snapshots update plan-deck names, counts and missing/resolved chips without an extra deck-list request or plan-surface visit | Full required operator_headless.py | Real mutation/application and DOM assertions pass after baseline RED | Hosted browser log | PENDING |
-| C-002 | yes | A library snapshot supersedes an older in-flight plan load, including returned values and stale failures | Full operator headless existing/new concurrency controls | Latest snapshot remains authoritative; old caller receives latest data; PR100 controls retain passing behavior | Hosted concurrency log | PENDING |
-| C-003 | yes | Unknown/malformed library data does not become a false missing snapshot; a genuinely empty known library still marks missing | Full operator headless positive/negative controls | Unknown stays unresolved, empty remains missing; legitimate mutation data remains usable | Hosted controls log | PENDING |
+| C-001 | yes | Library snapshots update plan-deck names, counts and missing/resolved chips without an extra deck-list request or plan-surface visit | Full required operator_headless.py | Real mutation/application and DOM assertions pass after baseline RED | Hosted41036840407, plandecks-library/green-attempt1.log | PASS |
+| C-002 | yes | A library snapshot supersedes an older in-flight plan load, including returned values and stale failures | Full operator headless existing/new concurrency controls | Latest snapshot remains authoritative; old caller receives latest data; PR100 controls retain passing behavior | Hosted41036840407 concurrency assertions | PASS |
+| C-003 | yes | Unknown/malformed library data does not become a false missing snapshot; a genuinely empty known library still marks missing | Full operator headless positive/negative controls | Unknown stays unresolved, empty remains missing; legitimate mutation data remains usable | Hosted41036840407 controls | PASS |
 | C-004 | yes | Applicable full CI and isolated publication-hook mutation proof pass | Normal operator CI plus baseline/mutant/restored full headless runs | Required gates green; exact hook mutant causes named assertions; restored source passes measured strict count | Hosted CI/mutation receipts | PENDING |
 | C-005 | yes | All independent reviewers approve frozen source | Cody, Quinn, Vera and Shadow | No unresolved blocking findings after remediation/re-review | Root consolidated review | PENDING |
 
@@ -94,9 +94,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-003.
 - Hypothesis: publishing LibraryView data through the existing generation/latest pair supersedes old reads; clearing the console render signature repaints unchanged host views on their normal poll.
 - Change or investigation: narrow pmApplyLibrary publication with unknown-versus-empty preserved, no network calls; preserve PR100 planLoadDecks unchanged. Restore the existing editor-name fixture changed by the real Rename action in test cleanup.
-- Verifier executed: stdlib Python AST, structural validator and full baseline diff check; hosted full DOM GREEN pending.
-- Result: Pending actual corrected hosted run; exact count remains unchanged until measured on corrected source.
-- New evidence: candidate source/hosted receipt to be linked after freeze.
+- Verifier executed: stdlib Python AST, structural validator and full baseline diff check; hosted full DOM run41036840407 on31e248df/d02e4ec7.
+- Result: All2376 behavioral checks pass, including18 NAX assertions/controls and all existing PR100/siblings. Run failed only the old exact2358 count (exit4); count updated to measured2376 without test removal or bound changes.
+- New evidence: plandecks-library/green1-receipt.json, green1-status.json and green-attempt1.log. Main dcdb4f64433a5631465de7ad62ff2e1235349c05 ordinary-integrated conflict-free at f022d28545c0afd9f80271f7d7cd6cc1e8d03956; zero behind, scoped operator source unchanged by integration.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-004.
+- Hypothesis: the strict measured count now exits0; an isolated copy with the publication hook removed reproduces named NAX failures while existing PR100 and no-extra-request controls remain active.
+- Change or investigation: exact measured2376 count only; own hosted baseline/mutant/restored full-suite workflow prepared with unique real production anchor.
+- Verifier executed: hosted mutation/restored proof and normal applicable CI pending.
+- Result: Pending actual hosted results; no local project runtime.
+- New evidence: own plandecks-library mutation workflow/receipt and later full CI receipt.
 - Decision: iterate
 
 ## Risks and rollback
@@ -114,6 +124,6 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2aynax-plandecks-library-invalidation.md
 - Validator result: PASS structural validation on 2026-10-30; no local project runtime executed.
 - Independent verification result: Pending root-owned reviews.
-- Terminal state: ACTIVE, preparing tests-only RED.
-- Remaining failed or blocked criteria: C-001 through C-005 pending.
+- Terminal state: ACTIVE, behavioral correction observed; strict rerun, mutation, full CI and independent reviews pending.
+- Remaining failed or blocked criteria: C-004 and C-005 pending.
 - ClickUp final evidence comment: Root owns delivery updates and persisted QA readback after passing merge gates.
