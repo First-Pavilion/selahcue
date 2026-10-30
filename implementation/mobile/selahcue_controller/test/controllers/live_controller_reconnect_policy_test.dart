@@ -3,6 +3,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -18,9 +19,10 @@ const _stored =
     StoredSession(host: 'h', port: 1, pinHex: 'ab', deviceId: 'd', token: 't');
 
 class _Session implements ControllerSession {
-  _Session({this.dead = false});
+  _Session({this.dead = false, this.failCommands = false});
 
   bool dead;
+  bool failCommands;
   int closes = 0;
   int reads = 0;
 
@@ -28,7 +30,10 @@ class _Session implements ControllerSession {
   MobileRole get grantedRole => MobileRole.producer;
 
   @override
-  Future<ServerMessage> command(Map<String, dynamic> cmd) async => const Ack(1);
+  Future<ServerMessage> command(Map<String, dynamic> cmd) async {
+    if (failCommands) throw const SessionException('command lost');
+    return const Ack(1);
+  }
 
   @override
   Future<OperatorStateView> operatorState() async {
@@ -50,7 +55,68 @@ class _Session implements ControllerSession {
   }
 }
 
+/// Script only the entropy source; the production controller still computes
+/// the delay, schedules the real Timer and decides when to attempt again.
+class _SequenceRandom implements math.Random {
+  _SequenceRandom(this.values);
+  final List<double> values;
+  int draws = 0;
+
+  @override
+  double nextDouble() => values[draws++ % values.length];
+
+  @override
+  bool nextBool() => throw UnsupportedError('unused');
+
+  @override
+  int nextInt(int max) => throw UnsupportedError('unused');
+}
+
 void main() {
+  test('injected jitter moves real attempt starts within each window and cap',
+      () {
+    fakeAsync((clock) {
+      final random = _SequenceRandom([0, 0.5, 0.999999999999]);
+      final starts = <Duration>[];
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) async {
+        starts.add(clock.elapsed);
+        throw const SessionException('offline');
+      }
+
+      final live = LiveController(
+        session: _Session(dead: true),
+        stored: _stored,
+        connect: connect,
+        reconnectRandom: random,
+      );
+      try {
+        clock.flushMicrotasks();
+        while (starts.length < 9 && clock.elapsed < const Duration(minutes: 5)) {
+          clock.elapse(const Duration(milliseconds: 100));
+        }
+        expect(starts, hasLength(9));
+        final waits = [
+          for (var i = 1; i < starts.length; i++)
+            (starts[i] - starts[i - 1]).inMicroseconds,
+        ];
+        expect(waits, [
+          2000000, 4500000, 10000000, 16000000,
+          27000000, 30000000, 24000000, 27000000,
+        ]);
+        expect(random.draws, 9, reason: 'one fresh entropy draw per failed try');
+      } finally {
+        live.dispose();
+        clock.flushMicrotasks();
+      }
+      expect(clock.pendingTimers, isEmpty);
+    });
+  });
+
   test('failed attempts grow into the capped retry window without overlap', () {
     fakeAsync((clock) {
       final starts = <Duration>[];
@@ -248,6 +314,81 @@ void main() {
           reason: 'a stopped controller must not create a fresh retry timer');
       clock.elapse(const Duration(minutes: 2));
       expect(attempts, 1);
+    });
+  });
+
+  for (final unpair in [false, true]) {
+    test('cancelled backoff releases the waiting command on '
+        '${unpair ? 'unpair' : 'dispose'}', () {
+      if (unpair) FakeKeystore().install();
+      fakeAsync((clock) {
+        var attempts = 0;
+        Future<ControllerSession> connect({
+          required String host,
+          required int port,
+          required String pinHex,
+          required Credentials creds,
+        }) async {
+          attempts++;
+          throw const SessionException('offline');
+        }
+
+        final live = LiveController(
+          session: _Session(failCommands: true),
+          stored: _stored,
+          connect: connect,
+        );
+        clock.flushMicrotasks();
+        expect(live.syncing, isFalse, reason: 'command can really be sent');
+        CommandOutcome? outcome;
+        unawaited(live.act(cmdGoLive()).then((value) => outcome = value));
+        clock.flushMicrotasks();
+        expect(attempts, 1);
+        expect(live.busy, isTrue);
+        expect(outcome, isNull, reason: 'command is waiting on reconnect');
+        if (unpair) {
+          unawaited(live.unpair());
+        } else {
+          live.dispose();
+        }
+        expect(clock.pendingTimers, isEmpty);
+        clock.flushMicrotasks();
+        expect(outcome, CommandOutcome.failed,
+            reason: 'cancellation releases the async waiter without time elapsing');
+        expect(live.busy, isFalse);
+        if (unpair) live.dispose();
+        expect(clock.pendingTimers, isEmpty);
+      });
+    });
+  }
+
+  test('a connect failure after unpair cannot schedule a new backoff', () {
+    FakeKeystore().install();
+    fakeAsync((clock) {
+      final pending = Completer<ControllerSession>();
+      var attempts = 0;
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) {
+        attempts++;
+        return pending.future;
+      }
+
+      final live = LiveController(
+          session: _Session(dead: true), stored: _stored, connect: connect);
+      clock.flushMicrotasks();
+      expect(attempts, 1);
+      unawaited(live.unpair());
+      clock.flushMicrotasks();
+      pending.completeError(const SessionException('late offline'));
+      clock.flushMicrotasks();
+      expect(clock.pendingTimers, isEmpty);
+      clock.elapse(const Duration(minutes: 2));
+      expect(attempts, 1);
+      live.dispose();
     });
   });
 

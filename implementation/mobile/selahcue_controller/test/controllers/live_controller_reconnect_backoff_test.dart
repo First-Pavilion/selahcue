@@ -184,7 +184,8 @@ void main() {
       final live = LiveController(
           session: _DeadSession(), stored: _stored, connect: connect);
       async.flushMicrotasks();
-      async.elapse(const Duration(seconds: 30));
+      // Four waits now total at most 2.5+5+10+20=37.5 virtual seconds.
+      async.elapse(const Duration(seconds: 40));
       expect(live.reconnecting, isFalse, reason: 'baseline: it recovered');
       expect(attempts, failures.length + 1);
       live.dispose();

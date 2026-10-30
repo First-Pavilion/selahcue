@@ -89,6 +89,16 @@ Actual main e5a1611b728901811b6427f7cff2ded0ccfa4dcd. LiveController._reconnect 
 - New evidence: type/stack-only diagnostics are already shipped and are preserved, not reimplemented.
 - Decision: add meaningful tests-only regressions and publish hosted baseline RED; only after actual behavioral qualification implement minimal delay/cancellation change.
 
+### Iteration 2
+
+- Target criterion: C-001 through C-005
+- Hypothesis: a single owned Timer/Completer and per-outage bounded jitter ceiling correct the four reproduced timing/lifecycle defects while retaining existing transport and diagnostic policy.
+- Change or investigation: independently read actual unchanged-production RED41122366136 at e0922894. Analysis/setup/workflow gates passed; full Flutter471passed/4failed: second wait2s instead4–5s, dispose/unpair pendingFakeTimer, and late failure after dispose schedules timer. Reset, late-success cleanup,1000failure serialization and type/stack payload-safe diagnostics controls passed; no other failed tests. Archived classification.json records actual raw SHA256. Ordinarily integrated actual main ab214dc923847355609809452212a9cbbc191796, preserving WT5 fixtures. Add per-outage ceiling2500ms doubling/capped30000ms, injected Random and80–100percent jitter. Own one Timer/Completer, synchronously cancel/complete on dispose/unpair, guard late failures before scheduling. Existing late-success close, safe diagnostic helper, auth/epochs/deadlines unchanged. Add deterministic entropy/actual-start oracle and waiting-command completion plus symmetric unpair-late-failure controls. Existing diagnostic fake-clock horizon changes30to40s because its four waits now total up to37.5s; no real/global timeout inflation or policy change.
+- Verifier executed: actual hosted RED metadata/raw471/4 with allnamed sibling controls, source diff/staticchecks/structural Goal; candidate full normal Flutter and mutation/restoration gates pending.
+- Result: actual behavioral RED qualified before production edits. Candidate source prepared; no candidate runtime pass claimed. No local project runtime.
+- New evidence: cancellation must complete the suspended async waiter as well as remove its Timer; waiting command outcome observes this without private state.
+- Decision: freeze candidate, run fresh normal full Flutter CI and a separate workflow-only exact-first-parent sensitivity diagnostic for interval/cap/jitter/reset/dispose/unpair/late-completion/waiter mutations, preserve controls and restore identical source. Yield immutable wait.
+
 ## Risks and rollback
 
 - Risks: resetting too soon defeats backoff; cap overflow, timer leak, post-dispose scheduling, stale session adoption, or payload-bearing diagnostics.
@@ -103,7 +113,7 @@ Actual main e5a1611b728901811b6427f7cff2ded0ccfa4dcd. LiveController._reconnect 
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1f1y-reconnect-backoff.md
-- Validator result: structural validation PASS before and after tests-only preparation; actual hosted RED pending
+- Validator result: structural validation PASS before and after tests-only preparation; actual hosted RED qualified41122366136; candidate runtime pending
 - Independent verification result: pending root
 - Terminal state: pending
 - Remaining failed or blocked criteria: C-001 through C-006
