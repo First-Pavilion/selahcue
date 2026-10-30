@@ -11070,11 +11070,80 @@ DRIVER = r"""
         ok(!window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
            planLinkState(V.items[1].link) === "missing" && sumRowValue("Missing content") === "⚠ 1",
            "NAX: confirmed library deletion updates the real missing chip/count");
-        await pmLibRestore(4902);
+        // CODY-NAX-01: Library refresh keeps the existing cards/Undo interactive.
+        // Hold its actual deck_list response before the restore, then deliver it late.
+        window.__deckListManualQueue = [];
+        var naxReadCalls = window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length;
+        var naxLibraryOlder = pmLibLoad();
+        naxPending.push(naxLibraryOlder);
+        var naxLibraryReply = window.__deckListManualQueue[0];
+        var naxUndo = document.querySelector("#pm-toast .pm-toast-action");
+        var naxStillEnabled = document.querySelector("#pm-lib-grid .pm-lib-dots");
+        ok(!!naxLibraryReply && !naxLibraryReply.view.decks.some(function(d){ return d.id === 4902; }) &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "true" && !!naxStillEnabled && !naxStillEnabled.disabled &&
+           !!naxUndo && !naxUndo.disabled,
+           "NAX library-read control: a real refresh holds a pre-restore snapshot while cards and Undo remain enabled");
+        var naxPlanDuringLibrary = planLoadDecks();
+        naxPending.push(naxPlanDuringLibrary);
+        var naxPlanDuringReply = window.__deckListManualQueue[1];
+        var naxRestoresBefore = window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length;
+        if (naxUndo) naxUndo.click();
+        await waitFor(function(){ return /Restored/.test(el("pm-toast").textContent); });
         planRenderBuilder(V);
         ok(window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
            planLinkState(V.items[1].link) === "resolved" && sumRowValue("Missing content") === "0",
            "NAX: restoring a presentation clears the false missing chip/count without a plan reload");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_restore"; }).length === naxRestoresBefore + 1,
+           "NAX library-read control: the real Undo button completes one host restore before the older refresh settles");
+        naxLibraryReply.res(naxLibraryReply.view);
+        await naxLibraryOlder;
+        planRenderBuilder(V);
+        ok(planDeckName(4902) === "NAX newly available" && planLinkState(V.items[1].link) === "resolved" &&
+           sumRowValue("Missing content") === "0" && pmLibDecks.some(function(d){ return d.id === 4902; }),
+           "NAX library-read: late pre-restore refresh cannot roll back the completed restore or its plan chips");
+        naxPlanDuringReply.res(naxPlanDuringReply.view);
+        var naxPlanAfterLateLibrary = await naxPlanDuringLibrary;
+        ok(naxPlanAfterLateLibrary.some(function(d){ return d.id === 4902; }) && planLinkState(V.items[1].link) === "resolved",
+           "NAX library-read: obsolete Library reply cannot replace a superseded plan caller's newer returned data");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length === naxReadCalls + 2 &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "false",
+           "NAX library-read control: retiring stale reads adds no request and settles the existing busy state");
+        window.__deckListManualQueue = null;
+        await pmLibLoad(); // Keep later independent controls isolated, even under this mutation.
+
+        window.__deckListManualQueue = [];
+        var naxLibraryFailing = pmLibLoad();
+        naxPending.push(naxLibraryFailing);
+        var naxLibraryFailureReply = window.__deckListManualQueue[0];
+        await pmLibDuplicate(4901); // A real mutation publishes a complete current LibraryView.
+        var naxDuplicatedId = window.__LIB.decks[window.__LIB.decks.length - 1].id;
+        naxLibraryFailureReply.rej("simulated obsolete Library failure");
+        await naxLibraryFailing;
+        ok(el("pm-lib-error").hidden && !!document.querySelector('#pm-lib-grid .pm-lib-card[data-id="' + naxDuplicatedId + '"]') &&
+           planLinkState({kind:"deck",id:naxDuplicatedId}) === "resolved",
+           "NAX library-read: obsolete failed refresh cannot clear the newly confirmed grid or show a stale error");
+        window.__deckListManualQueue = null;
+
+        // Latest issued ordinary Library read still wins; an older completion must
+        // neither repaint its snapshot nor clear the newer read's busy indicator.
+        window.__deckListManualQueue = [];
+        var naxLibraryFirst = pmLibLoad();
+        naxPending.push(naxLibraryFirst);
+        var naxFirstReply = window.__deckListManualQueue[0];
+        window.__LIB.decks[0].name = "NAX newest reload";
+        var naxLibrarySecond = pmLibLoad();
+        naxPending.push(naxLibrarySecond);
+        var naxSecondReply = window.__deckListManualQueue[1];
+        naxFirstReply.res(naxFirstReply.view);
+        await naxLibraryFirst;
+        ok(el("pm-lib-grid").getAttribute("aria-busy") === "true",
+           "NAX library-read control: an older completion cannot end the latest reload's pending state");
+        naxSecondReply.res(naxSecondReply.view);
+        await naxLibrarySecond;
+        ok(planDeckName(4901) === "NAX newest reload" && pmLibDecks[0].name === "NAX newest reload" &&
+           el("pm-lib-grid").getAttribute("aria-busy") === "false",
+           "NAX library-read control: the latest ordinary reload still publishes current data and completes");
+        window.__deckListManualQueue = null;
 
         window.__deckListManualQueue = [];
         var naxOlder = planLoadDecks();
