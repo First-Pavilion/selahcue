@@ -99,6 +99,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: api-token-free-audit/candidate-checkpoint.json and author candidate checkpoint.
 - Decision: gate-review
 
+### Iteration 3
+
+- Target criterion: C-004, fresh target integration and publication.
+- Hypothesis: ordinary integration of actual main d88c093b supplies the independently reviewed DRA 20-minute API job prerequisite and WVE logging behavior without changing the token-free audit patch.
+- Change or investigation: fetched and merged d88c093ba00596d51d670a5e083adff0ae5c8629 before first publication. Account services/tests are byte-identical to prepared186abb19; context/account_schema/views/workflow match current main exactly. No overlapping account service edits or conflicts. Historical cancelled/failed DRA CI was resolved by its reviewed merged work, not waived here.
+- Verifier executed: stdlib AST and byte-identity checks, diff, structural goal and target ancestry0behind. Normal hosted API CI follows draft publication.
+- Result: publication prerequisite fulfilled; actual current-source full API GREEN, allfour reviews and delivery remain pending. No local project runtime and no claimed expected counts as executed evidence.
+- New evidence: api-token-free-audit final candidate manifest, PR snapshot and normal CI run at handoff.
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: operators lose direct account-token fingerprint correlation by design; actor,target,expiry,outcome remain. Avoid touching explicit device renewal correlation or historical evidence.
@@ -115,5 +125,5 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator result: structural validation, stdlib AST/test-preservation and diff checks PASS.
 - Independent verification result: pending.
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: actual hosted GREEN/full CI, allfour reviews, mergeQA pending. Initial meaningful RED observed; first publication waits for DRA CI headroom on actual main.
+- Remaining failed or blocked criteria: actual hosted GREEN/full CI, allfour reviews, mergeQA pending. Initial meaningful RED observed; DRA CI headroom is now integrated from actual main; first current-source full CI and reviews remain pending.
 - ClickUp final evidence comment: parent owns publication.
