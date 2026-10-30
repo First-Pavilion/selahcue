@@ -6508,7 +6508,7 @@ DRIVER = r"""
         var jhUnsafeRole='<img src=x onerror="window.__jhInjected=true">';
         V.screens.push({screen:"jh-host-text",role:jhUnsafeRole,enabled:true,deletable:true});
         renderOutputs(V); selectScreen("jh-host-text");
-        ok(jhText().indexOf(jhUnsafeRole) >= 0 && !jhLive.querySelector("img") && !window.__jhInjected,
+        ok(!!jhLive && jhText().indexOf(jhUnsafeRole) >= 0 && !jhLive.querySelector("img") && !window.__jhInjected,
            "JH: host-derived output text is announced as plain text without interpreting markup");
         selectScreen("main"); renderOutputs(V);
         var jhNdi=document.querySelector("#screens-inspector .scr-signal");
