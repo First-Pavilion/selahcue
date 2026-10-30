@@ -85,8 +85,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: reading only the last rule loses an earlier background, while a browser-backed per-property read can retain background shorthands/longhands/variables/priority without altering filters.
 - Change or investigation: read full task/zero comments, qualification/runbook and matching-rule/background consumers; create isolated worktree from actual6843a68f, validate bounded child before code. Add literal real-browser fifteen-case shorthand/longhand/local-var/priority/color-image matrix through existing __cssEffective and contrast outcomes, plus absent/missing controls. Prepare actual eleven-site CSS witness appending only an unrelated custom declaration to preserve browser backgrounds while exposing last-rule reads. No helper/site/filter/shipping changes before actual RED.
 - Verifier executed: Goal structural and source/Git preparation; hosted tests-only RED to follow.
-- Result: Preparation only, runtime and review gates pending.
+- Result: Actual corrected hosted41138510265 baseline2612 checks/18 new behavior failures, eleven-site witness2593 checks/29 failures (same18 plus11 real missing-background checks). All15 literal browser premises and prior non-background siblings pass both runs. The old last-rule witness skips19 guarded assertions;2593 is not a complete-suite count. Old2565 count mismatch separate. Initial wrong-DLM diagnostic41138446276 cancelled, not RED proof.
 - New evidence: background-cascade qualification/objects and forthcoming hosted raw receipts.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: browser-native composition of the exact matching CSSOM declarations retains per-longhand priority, shorthand resets and local variable substitution; all consumers must use that property read rather than the last rule.
+- Change or investigation: add a background-only branch to existing __cssEffective. Compose matching declaration text in source order on one temporary style, require an actual fill declaration, resolve the full background with the live browser and always remove the probe. Migrate all11 real guard sites plus2 CSSOM background controls. Allow the existing color resolver to accept a full background declaration; keep every contrast bound/assertion/filter/raw/parser path unchanged. Pin actual complete baseline2612; the partial2593 witness count is explicitly rejected as the guard baseline.
+- Verifier executed: actual raw classification, source/filter identity checks, Python AST, full baseline diffcheck, Goal structural validation; targeted complete baseline/eleven-site GREEN next.
+- Result: Static preparation PASS; runtime candidate/full normal CI and four independent reviews pending.
+- New evidence: background-cascade/red-classification.json, candidate source/object and upcoming hosted raw receipts.
 - Decision: iterate
 
 ## Risks and rollback
