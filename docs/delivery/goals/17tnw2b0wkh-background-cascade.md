@@ -95,8 +95,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: browser-native composition of the exact matching CSSOM declarations retains per-longhand priority, shorthand resets and local variable substitution; all consumers must use that property read rather than the last rule.
 - Change or investigation: add a background-only branch to existing __cssEffective. Compose matching declaration text in source order on one temporary style, require an actual fill declaration, resolve the full background with the live browser and always remove the probe. Migrate all11 real guard sites plus2 CSSOM background controls. Allow the existing color resolver to accept a full background declaration; keep every contrast bound/assertion/filter/raw/parser path unchanged. Pin actual complete baseline2612; the partial2593 witness count is explicitly rejected as the guard baseline.
 - Verifier executed: actual raw classification, source/filter identity checks, Python AST, full baseline diffcheck, Goal structural validation; targeted complete baseline/eleven-site GREEN next.
-- Result: Static preparation PASS; runtime candidate/full normal CI and four independent reviews pending.
+- Result: Actual focused41139752755 on638420cf SUCCESS: both baseline and actual eleven-site earlier-only witness execute full2612checks/0FAIL. All47 new records and all original sibling assertions PASS in both. Source/dist/harness unchanged component markers inspected. Full normal CI/current mutants and four independent reviews remain pending.
 - New evidence: background-cascade/red-classification.json, candidate source/object and upcoming hosted raw receipts.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-003 through C-005 delivery readiness.
+- Hypothesis: reverting real consumers to last-rule reads must recreate all11 missing-background failures while the corrected helper matrix stays green; dropping priority or longhand participation must fail the corresponding literal matrix cases.
+- Change or investigation: preserve actual focused GREEN/raw, ordinarily integrate latest disjoint approved main before final publication, then prepare current-source consumer-reversion/priority/longhand mutants with exact restoration and normal affected CI. No product/helper/assertion change after the observed GREEN except target integration and this evidence ledger.
+- Verifier executed: exact component/filter identity, static AST/full baseline/Goal checks; hosted current-source mutation/full normal receipts to follow.
+- Result: Current runtime sensitivity/full normal CI and independent review gates pending; no task completion claim.
+- New evidence: background-cascade/green-ci official raw/hash and current candidate receipts/normal/mutation archives.
 - Decision: iterate
 
 ## Risks and rollback
