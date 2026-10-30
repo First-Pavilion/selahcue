@@ -62,8 +62,8 @@ Verified actual main dd5cc038efe04681e42746edb8d243996badc947. Rust auth_frames_
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Rust pins all nine existing verdict byte shapes | Real to_json plus literal from_json assertions in test_protocol.rs | Authgranted/3rejected and pairparked/granted/3rejected match exact literals | Hosted Rust fixture/full suite log | PENDING |
-| C-002 | yes | Dart decodes the same nine literals correctly | AuthResult/PairResult parsing tests in protocol_test.dart | Exact variants, reason strings, credentials and role | Hosted Dart fixture/full suite log | PENDING |
+| C-001 | yes | Rust pins all nine existing verdict byte shapes | Real to_json plus literal from_json assertions in test_protocol.rs | Authgranted/3rejected and pairparked/granted/3rejected match exact literals | Focused37testsPASS in diagnostic41089108351 on exact8b49eeff; broad normal gate is C004 | PASS |
+| C-002 | yes | Dart decodes the same nine literals correctly | AuthResult/PairResult parsing tests in protocol_test.dart | Exact variants, reason strings, credentials and role | Focused33casesPASS/all9namedfixtures success in41089108351; broad normal gate is C004 | PASS |
 | C-003 | yes | New fixtures detect meaningful contract drift | Hosted isolated Rust tag/reason-casing and Dart tag-match mutants with controls/siblings retained | Each mutation actually fails new named fixtures; restored candidate passes; setup failures do not qualify | Mutation raw logs, patch/object hashes and restore receipt | PENDING |
 | C-004 | yes | Normal full affected Rust and Flutter gates pass | Exact final-source normalCI Rust suites and flutter analyze/fulltest | Applicable normal jobs/steps succeed; skipped areas explicitly unexecuted | Run/job/head/tree/raw evidence | PENDING |
 | C-005 | yes | Production contract/source remains unchanged | Full baseline diff and object/source identity checks after diagnostic restoration | Final diff only two fixture files/Goal; no workflow or product/dependency changes | Git diffcheck/tree/path proof | PENDING |
@@ -88,6 +88,16 @@ Verified actual main dd5cc038efe04681e42746edb8d243996badc947. Rust auth_frames_
 - Result: preparation only; no runtime or sensitivity claim yet.
 - New evidence: current serializer supports all required frames; no missing production behavior needs a fix.
 - Decision: add fixtures, freeze clean source and obtain normal hosted GREEN plus meaningful hosted mutation results.
+
+### Iteration 2
+
+- Target criterion: C-003 through C-005
+- Hypothesis: filtering machine output to JSON objects fixes the diagnostic parser while retaining all nine required fixture completions; a separate exact-first-parent workflow ref keeps product normal CI independent.
+- Change or investigation: candidate8b49eeff has only two fixtures/Goal. Temporary child e29f2c76 added one workflow. Diagnostic41089108351 actually ran Rust37/37 and Dart33/33 cases including allnine newfixtures, then failed before any mutant because a valid JSON list reached event.get. Normaltemphead41089119925 also failed actionlint SC1083 for unquoted HEAD^{tree}; originalnormal41088751822 cancelled. These are diagnostic/setup failures, not killed mutants or normal GREEN. Corrected parser type-gate was checked against actual saved machine output, allnine fixture successes recovered; installed static actionlint and embedded Python syntax validation passed after quotingrefs. Corrected workflow-only child a71ff51a on separate diagnosticref has exact firstparent8b49eeff and identical product/tests/Goal; fresh hosted diagnostic41090718753 pending. Ordinarily remove the temporary workflow from product PR and preserve the unchanged fixtures; fresh actualmain remainsdd5cc038.
+- Verifier executed: original raw17tnw2b1wt5-mutant-job.log and17tnw2b1wt5-diagnostic-lint-job.log, actual event parser/staticworkflow validation, source/object comparison, structuralGoal/fullbaseline diffcheck; final normalCI and corrected hosted mutants pending.
+- Result: C001/C002 focusedPASS; C003 sensitivity stillPENDING with zero prior mutants executed. Cody/Quinn candidate source inspections found no fixture defect and block final acceptance only on actual sensitivity/restoration and finalsource/fullnormal gates.
+- New evidence: valid Flutter machine output includes non-object JSON; event-type handling must not assume every decoded value is an event. Loader success is not counted as a test case.
+- Decision: freeze clean three-file product candidate and obtain fresh full normalCI independently of bounded diagnosticref; inspect allfive actual mutation failures, surviving controls and restoredGREEN/hashes before finalhandoff. No production protocol correction.
 
 ## Risks and rollback
 
