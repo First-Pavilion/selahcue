@@ -122,6 +122,13 @@ By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run
 .venv-api-check/bin/python -m pytest tests -q
 ```
 
+`tests/test_nginx_forwarded_proto.py` requires the full repository checkout: it reads
+`implementation/marketing/nginx.conf` as the deployment fixture. The compose `api` container
+mounts only `./api`, so running the suite there without the sibling marketing directory fails
+with `FileNotFoundError`. Run the host checkout commands above, or mount the full checkout
+with that relative layout preserved. The guard is required and is not skipped when its fixture
+is missing.
+
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.
 
 ### Native single-session cleanup (17tnw2b1wf2)
