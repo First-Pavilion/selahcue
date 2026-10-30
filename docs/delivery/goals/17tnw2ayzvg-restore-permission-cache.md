@@ -100,6 +100,16 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 
 ## Risks and rollback
 
+### Iteration 3 — CODY-AYZVG-01 review regression
+
+- Target criterion: C-002, latest genuine host confirmation survives cached UI rendering.
+- Hypothesis: a false poll during a Remove dialog updates the hint but intentionally leaves planLastView true; Cancel and selection/deselection replay that snapshot through planRenderBuilder and incorrectly publish a new true hint.
+- Change or investigation: add the real selected-row Remove dialog, actual false poll, Cancel, selection and blank-list deselect regression plus modal/stale-snapshot/no-new-view premises. Existing AYZVG fixture views now feed the normal successful full-view consumer before the Plan renderer, distinguishing a confirmed view fixture from UI-only replay; all existing assertions retained. Shipping implementation unchanged from cc02f357 while this new RED runs.
+- Verifier executed: tests-only stdlib AST, production-tree identity and baseline diff check; bounded hosted actual regression RED.
+- Result: Pending actual hosted observation; prior source CI/mutations do not close this review finding.
+- New evidence: restore-permission/review-red receipt, object proof and actual raw log.
+- Decision: iterate
+
 - Risks: treating absent/malformed permission as false/true, cache not updated by actual polls, stale async lookups reintroducing controls, unrelated Undo/Local change. Both-direction/ordering controls and unchanged siblings address these boundaries.
 - Rollback or recovery: revert this scoped UI/test PR, no data/protocol/schema changes.
 
