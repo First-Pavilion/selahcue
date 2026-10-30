@@ -51,7 +51,7 @@ Fresh actual main dd5cc038efe04681e42746edb8d243996badc947. Original Rust reply-
 ### Assumptions and unknowns
 
 - VERIFIED: newest ticket explicitly authorizes UI alert-boundary residual; original Rust formatting fixed, selected as one genuine existing unit.
-- UNKNOWN: exact existing safe-message abstraction footprint and runtime RED/positive/final CI until inspected/executed. Any needed different-module helper footprint must be declared first.
+- VERIFIED: existing safe-code/literal presentation is local showGenError/showGenErrorInner; reuse needs no other module. Hosted41089309707 on unchanged production measured2536/24 intended failures: nine privacy DOM/channel pairs and six operation-feedback failures. All pending/data/recovery controls and other siblings passed. Final correction/mutation/CI remain unknown until executed.
 
 ## Dependencies and approvals
 
@@ -84,9 +84,19 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-002.
 - Hypothesis: hostile rejected IPC strings/structured refusal messages reach current Transcripts alerts; same actual UI paths can expose this while preserving operation semantics in controls.
 - Change or investigation: inspect existing shared safe-message pattern, prepare tests-only meaningful hostile-payload controls in fresh isolated main, production unchanged.
-- Verifier executed: Goal structural/stdlib preparation checks; hosted actual RED follows frozen tests-only checkpoint.
-- Result: Pending actual execution; no production correction before observed behavioral RED.
-- New evidence: own wave3/transcript-errors receipts/raw/source proof to be saved at checkpoints.
+- Verifier executed: Goal structural/stdlib preparation checks; tests-onlycbd5e4e9 hosted41089309707, diagnostic0f92eccc, complete sibling browser suite with real deferred IPC failure/refusal paths.
+- Result: Actual2536 checks,24 intended FAIL:18 privacy DOM/transient-channel failures across nine operation/kind cases plus six operation-specific feedback failures on Save/Confirm/Discard.51 AXPP3 positive records, original degraded AI-label reason/F30/WKG and every other behavior assertion PASS. Old2464 strict-count mismatch separately exits4.
+- New evidence: transcript-errors/red-job.log and red-object-proof.json/red-receipt.json; exact unchanged production/first parent/workflow-only proved.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: extending the existing fixed-copy code/literal boundary to all four UI consumers removes raw IPC/refusal echo while preserving original lifecycle and useful operation feedback.
+- Change or investigation: one local shared noteErrorText selector for existing codes/exact AI-label refusal literal and fixed fallback; no text scrubber/new policy enum/module. Show/save announcement names actual operation; regenerate uses same selector. No form-retention, Rust/backend/protocol/state behavior change. Pin measured2536 with every test assertion unchanged; fresh main integration before publication.
+- Verifier executed: stdlib AST/full baseline diff/structural checks; hosted current-source full baseline/raw-rendering mutants/restoration and normal applicable CI prepared.
+- Result: Static checks pass; current runtime correction/sensitivity/normal CI and independent reviews remain pending.
+- New evidence: exact immutable candidate and current-source raw receipts will follow freeze.
 - Decision: iterate
 
 ## Risks and rollback
@@ -104,6 +114,6 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2axpp3-data-free-transcript-errors.md
 - Validator result: Initial structural validation PASS. Root's privacy-only scope clarification recorded before tests; separate preexisting bawx7 retention bug excluded. Tests use unchanged existing IPC seam; production/STUB/CSS_SRC unchanged in tests-only checkpoint.
 - Independent verification result: Pending four root-owned roles.
-- Terminal state: ACTIVE, tests-first preparation.
+- Terminal state: ACTIVE, actual defect RED inspected; minimal privacy candidate awaiting hosted certification/review.
 - Remaining failed or blocked criteria: C-001 through C-005 pending.
 - ClickUp final evidence comment: Root owns status/evidence and verified QA readback.

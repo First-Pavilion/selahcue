@@ -1067,12 +1067,25 @@
 
   // Announce the outcome in the polite live region, then re-sync which generate control is shown
   // (an error replaces the result region, so the primary Generate must come back).
-  function showGenError(code, message) {
-    showGenErrorInner(code, message);
-    if (genLiveEl) genLiveEl.textContent = code === "consent_required" || code === "not_configured" ? "" : "Couldn’t generate notes.";
+  // The existing fixed quota/consent/build copy is the trust boundary for note errors too.
+  // IPC rejection text and backend messages may quote transcript/peer content (FR-082).
+  // Select known codes or an EXACT existing safe literal; never scrub/echo arbitrary text.
+  function noteErrorText(code, message, fallback) {
+    if (code === "quota_exceeded") return "You have no generations left right now. Try again later.";
+    if (code === "no_transcript") return "This transcript has no text, so nothing was sent.";
+    if (code === "transcript_too_short") return "This transcript is too short to generate sermon notes from, so nothing was sent.";
+    if (code === "not_found") return "No saved draft exists for this transcript.";
+    if (code === "too_large") return "The edit exceeds the allowed size. Shorten it and try again.";
+    var labelRefusal = "Accepting this would remove the AI-generated label from an already AI-generated draft.";
+    if (code === "refused" && message === labelRefusal) return labelRefusal;
+    return fallback;
+  }
+  function showGenError(code, message, operationLabel) {
+    showGenErrorInner(code, message, operationLabel);
+    if (genLiveEl) genLiveEl.textContent = code === "consent_required" || code === "not_configured" ? "" : (operationLabel || "Couldn’t generate notes") + ".";
     syncGenerateControls();
   }
-  function showGenErrorInner(code, message) {
+  function showGenErrorInner(code, message, operationLabel) {
     var r = genResultEl();
     if (!r) return;
     if (code === "not_configured") {
@@ -1099,23 +1112,19 @@
       r.appendChild(toSettings);
       return;
     }
-    // quota_exceeded / transport / malformed / no_transcript / transcript_too_short → surface the
-    // message. The latter two never reach here from a network response — onGenerate refuses
+    // The two local validation codes never reach here from a network response — onGenerate refuses
     // before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
     var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"
       : code === "transcript_too_short" ? "Transcript too short"
-      : "Couldn’t generate notes";
+      : (operationLabel || "Couldn’t generate notes");
     r.appendChild(el("span", "pp-gen-err-t", label + " — "));
     // The backend's own quota text names a period ("monthly …") while the allowance is weekly
     // (D7) — the UI must not state either, so a quota refusal shows a fixed, period-neutral
     // sentence instead of echoing the backend string.
-    r.appendChild(el("span", null,
-      code === "quota_exceeded"
-        ? "You have no generations left right now. Try again later."
-        : (message || "")));
+    r.appendChild(el("span", null, noteErrorText(code, message, "Please try again. If this continues, reopen this transcript.")));
   }
 
   // ---------- Saved sermon-note draft: view + edit (86akgqdxr) ------------------------------
@@ -1618,7 +1627,7 @@
     }).then(function (res) {
       if (!res || res.ok !== true) {
         var err = res || {};
-        showGenError(err.error || "malformed", err.message || "The edit could not be saved.");
+        showGenError(err.error || "malformed", err.message, "Couldn’t save edits");
         return;
       }
       // Re-read the label/disclosure/provider FROM the backend response — the guarantee that
@@ -1640,8 +1649,8 @@
       };
       editingDraft = false;
       renderCurrentDraft();
-    }).catch(function (e) {
-      showGenError("transport", String(e && e.message ? e.message : e));
+    }).catch(function () {
+      showGenError("transport", null, "Couldn’t save edits");
     }).then(function () {
       var b = document.getElementById("tr-gen-save");
       if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
@@ -1715,14 +1724,14 @@
       .then(function (res) {
         if (!res || res.ok !== true) {
           var err = res || {};
-          regenError = err.message || "This draft could not be used to replace your saved notes.";
+          regenError = noteErrorText(err.error, err.message, "This draft could not be used to replace your saved notes. Try again.");
           renderCurrentDraft();
           return;
         }
         applyResolvedRegeneration(res);
       })
-      .catch(function (e) {
-        regenError = String(e && e.message ? e.message : e);
+      .catch(function () {
+        regenError = noteErrorText("transport", null, "This draft could not be used to replace your saved notes. Try again.");
         renderCurrentDraft();
       })
       .then(function () {
@@ -1741,14 +1750,14 @@
       .then(function (res) {
         if (!res || res.ok !== true) {
           var err = res || {};
-          regenError = err.message || "This draft could not be discarded.";
+          regenError = noteErrorText(err.error, err.message, "This draft could not be discarded. Try again.");
           renderCurrentDraft();
           return;
         }
         applyResolvedRegeneration(res);
       })
-      .catch(function (e) {
-        regenError = String(e && e.message ? e.message : e);
+      .catch(function () {
+        regenError = noteErrorText("transport", null, "This draft could not be discarded. Try again.");
         renderCurrentDraft();
       })
       .then(function () {
@@ -1900,9 +1909,9 @@
         if (openId !== id) return;
         showGenResult(res);
       })
-      .catch(function (e) {
+      .catch(function () {
         if (openId !== id) return;
-        showGenError("transport", String(e && e.message ? e.message : e));
+        showGenError("transport", null);
       })
       .then(function () {
         generating = false;

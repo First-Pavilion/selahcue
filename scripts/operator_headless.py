@@ -1961,6 +1961,10 @@ EXPECTED_MIN_CHECKS = 2406
 # shapes and condition-blind dropped/adjacent/duplicate dangerous controls.
 # Measured in hosted41060247302 baseline and both41061031053 executions.
 EXPECTED_MIN_CHECKS = 2464
+# 2464 ->2536 (17tnw2axpp3 S4): real rejected/refused note-generation/edit/
+# regeneration IPC privacy channels and existing pending/data/recovery controls.
+# Measured on tests-onlycbd5e4e9 in hosted41089309707:2536 checks,24 intended FAIL.
+EXPECTED_MIN_CHECKS = 2536
 
 
 def find_chrome():
