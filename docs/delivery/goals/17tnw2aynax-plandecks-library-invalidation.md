@@ -84,10 +84,20 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-003.
 - Hypothesis: pmApplyLibrary receives fresh deck data but leaves shared plan resolution and cached rendering unchanged; an earlier held planLoadDecks can also overwrite a newer library mutation unless publication joins the existing generation mechanism.
 - Change or investigation: read complete original task/comment and current main; confirm PR100 portion already complete. Prepare tests-only real DOM/ordering regressions and controls against unchanged production.
-- Verifier executed: Goal structural validator and static baseline/AST checks; actual hosted RED will precede implementation.
-- Result: Pending hosted behavioral evidence. Production unchanged.
-- New evidence: frozen tests-only checkpoint and own hosted diagnostic receipt.
-- Decision: handoff
+- Verifier executed: hosted full DOM run41035953241 on tests-only2123e0727ee7391166d986b2f601725db849e7a6; inspect raw plandecks-library/red.log.
+- Result: Actual2376 checks,10 named NAX failures. Existing PR100 ordering/catch/returned-value controls and all other sibling assertions passed; known-present, no-extra-request, actual rename/delete dialog controls passed. Exact old2358 count additionally exited4. No setup/runtime exception.
+- New evidence: diagnostic4b2838a400210a5c07956d8743123883437497a6; red-receipt.json/red-status.json/red.log retained outside source.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-003.
+- Hypothesis: publishing LibraryView data through the existing generation/latest pair supersedes old reads; clearing the console render signature repaints unchanged host views on their normal poll.
+- Change or investigation: narrow pmApplyLibrary publication with unknown-versus-empty preserved, no network calls; preserve PR100 planLoadDecks unchanged. Restore the existing editor-name fixture changed by the real Rename action in test cleanup.
+- Verifier executed: stdlib Python AST, structural validator and full baseline diff check; hosted full DOM GREEN pending.
+- Result: Pending actual corrected hosted run; exact count remains unchanged until measured on corrected source.
+- New evidence: candidate source/hosted receipt to be linked after freeze.
+- Decision: iterate
 
 ## Risks and rollback
 

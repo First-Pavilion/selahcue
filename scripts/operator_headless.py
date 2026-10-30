@@ -10997,6 +10997,8 @@ DRIVER = r"""
       var naxSavedLibrary = JSON.parse(JSON.stringify(window.__LIB));
       var naxSavedView = JSON.parse(JSON.stringify(V));
       var naxSavedDeck = JSON.parse(JSON.stringify(D));
+      var naxSavedEditor = pmDv ? JSON.parse(JSON.stringify(pmDv)) : pmDv;
+      var naxSavedEditorName = pmEl("pm-plan-name").textContent;
       var naxSavedQuery = pmLibQuery;
       var naxPending = [];
       try {
@@ -11117,6 +11119,8 @@ DRIVER = r"""
         await Promise.allSettled(naxPending);
         window.__LIB = naxSavedLibrary;
         V = naxSavedView; D = naxSavedDeck; pmLibQuery = naxSavedQuery;
+        pmDv = naxSavedEditor;
+        pmEl("pm-plan-name").textContent = naxSavedEditorName;
         await pmLibLoad();
         await planLoadDecks(); // Mutation-safe cleanup even if publication is broken.
         planSelectedId = null;

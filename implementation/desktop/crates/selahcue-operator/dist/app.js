@@ -10580,6 +10580,13 @@
         }
       }
       function pmApplyLibrary(view) {
+        // Library replies carry the same authoritative deck snapshot as planLoadDecks.
+        // Supersede older plan reads, including their callers' returned data, without
+        // another host request. A malformed snapshot stays unknown, not loaded-empty.
+        planDecksGen += 1;
+        planDecks = view && Array.isArray(view.decks) ? view.decks : null;
+        planDecksLatest = Promise.resolve(planDecks || []);
+        lastRendered = ""; // The next view poll must repaint links even if host items did not change.
         pmLibDecks = (view && view.decks) || [];
         pmLibOpenId = view ? view.open : null;
         pmLibPersistent = view ? view.persistent : true;
