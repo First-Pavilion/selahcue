@@ -10991,6 +10991,138 @@ DRIVER = r"""
       ok(planDecks === null,
          "planLoadDecks catch-path guard (other direction): a stale, late-arriving SUCCESS does not clobber a newer failure");
       await planLoadDecks(); // plain, non-overlapping resync — same mutation-safe cleanup discipline as the block above
+      // 17tnw2aynax residual only: PR100's request-ordering controls above already pass.
+      // The library receives the SAME deck list after mutations but must also publish it
+      // to plan resolution and invalidate render keys, without another deck_list/nav.
+      var naxSavedLibrary = JSON.parse(JSON.stringify(window.__LIB));
+      var naxSavedView = JSON.parse(JSON.stringify(V));
+      var naxSavedDeck = JSON.parse(JSON.stringify(D));
+      var naxSavedQuery = pmLibQuery;
+      var naxPending = [];
+      try {
+        window.__LIB = { decks:[{id:4901, name:"NAX original", slides:2}], open:4901,
+          persistent:true, nextId:4903, trash:[] };
+        V.plan_name = "NAX library snapshots";
+        V.items = [
+          {id:4911, kind:"slide_group", title:"Existing deck", is_live:false, is_staged:false, link:{kind:"deck", id:4901}},
+          {id:4912, kind:"slide_group", title:"Restorable deck", is_live:false, is_staged:false, link:{kind:"deck", id:4902}}
+        ];
+        V.live_index = null; V.staged_index = null;
+        pmLibQuery = "";
+        await planLoadDecks();
+        pmApplyLibrary(await invoke("deck_list"));
+        planSelectedId = null;
+        planRenderBuilder(V);
+        lastRendered = "";
+        render(JSON.parse(JSON.stringify(V)));
+        ok(planLinkState(V.items[0].link) === "resolved" && planLinkState(V.items[1].link) === "missing" &&
+           sumRowValue("Missing content") === "⚠ 1",
+           "NAX control: a known library resolves its present deck and genuinely marks an absent id missing");
+
+        // A fresh LibraryView can introduce a newly-created/imported/restored id. Applying
+        // that authoritative payload must be enough; do not call planLoadDecks to hide the bug.
+        window.__LIB.decks.push({id:4902, name:"NAX newly available", slides:4});
+        var naxBeforeApply = window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length;
+        pmApplyLibrary(await invoke("deck_list"));
+        planRenderBuilder(V);
+        ok(planLinkState(V.items[1].link) === "resolved" && sumRowValue("Missing content") === "0",
+           "NAX: a fresh library snapshot clears a false missing chip/count without visiting another surface");
+        ok(window.__calls.filter(function(c){ return c.cmd === "deck_list"; }).length === naxBeforeApply + 1,
+           "NAX control: applying a library payload adds no hidden deck_list round trip");
+
+        // Real rename dialog -> actual deck_rename handler -> pmApplyLibrary.
+        window.__LIB.decks[0].slides = 7;
+        pmLibRename(4901, "NAX original");
+        await sleep(20);
+        var naxInput = el("pm-prompt-input");
+        ok(!!naxInput, "NAX control: the actual library Rename action opens its dialog");
+        if (naxInput) naxInput.value = "NAX renamed";
+        var naxConfirm = document.querySelector(".pm-confirm .pm-btn-primary");
+        if (naxConfirm) naxConfirm.click();
+        await sleep(50);
+        ok(planDeckName(4901) === "NAX renamed",
+           "NAX: actual library rename updates the shared plan deck name immediately");
+        render(JSON.parse(JSON.stringify(V))); // Same host data as before: mirrors the next view poll.
+        var naxConsoleChip = document.querySelector('#plan .item[data-id="4911"] .link-chip');
+        if (!naxConsoleChip) naxConsoleChip = Array.from(document.querySelectorAll("#plan .link-chip")).filter(function(n){ return /NAX/.test(n.textContent); })[0];
+        ok(!!naxConsoleChip && /NAX renamed/.test(naxConsoleChip.textContent),
+           "NAX: unchanged host view repaints the console chip after a library mutation");
+        planSelectedId = 4911;
+        planRenderBuilder(V);
+        var naxCard = document.querySelector("#plan-b-insp .plan-deck-card");
+        ok(!!naxCard && /NAX renamed/.test(naxCard.textContent) && /7 slides/.test(naxCard.textContent),
+           "NAX: the linked-deck inspector uses the same latest name and slide count");
+
+        // Actual delete/restore handlers must agree with the same shared snapshot.
+        await pmLibDelete(4902, "NAX newly available");
+        var naxDelete = document.querySelector(".pm-confirm .pm-btn-danger");
+        ok(!!naxDelete, "NAX control: deleting a linked presentation requires the existing confirmation");
+        if (naxDelete) naxDelete.click();
+        await sleep(50);
+        planSelectedId = null;
+        planRenderBuilder(V);
+        ok(!window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
+           planLinkState(V.items[1].link) === "missing" && sumRowValue("Missing content") === "⚠ 1",
+           "NAX: confirmed library deletion updates the real missing chip/count");
+        await pmLibRestore(4902);
+        planRenderBuilder(V);
+        ok(window.__LIB.decks.some(function(d){ return d.id === 4902; }) &&
+           planLinkState(V.items[1].link) === "resolved" && sumRowValue("Missing content") === "0",
+           "NAX: restoring a presentation clears the false missing chip/count without a plan reload");
+
+        window.__deckListManualQueue = [];
+        var naxOlder = planLoadDecks();
+        naxPending.push(naxOlder);
+        var naxOldReply = window.__deckListManualQueue[0];
+        ok(!!naxOldReply, "NAX control: an older plan lookup is genuinely held before mutation");
+        var naxMutationView = await invoke("deck_rename", {id:4901, name:"NAX newer mutation"});
+        pmApplyLibrary(naxMutationView);
+        naxOldReply.res(naxOldReply.view);
+        var naxOldReturn = await naxOlder;
+        ok(planDeckName(4901) === "NAX newer mutation",
+           "NAX: a late older plan response cannot overwrite a newer library mutation snapshot");
+        ok(naxOldReturn.some(function(d){ return d.id === 4901 && d.name === "NAX newer mutation"; }),
+           "NAX: a superseded plan caller receives the mutation's latest data, not its old snapshot");
+        window.__deckListManualQueue = [];
+        var naxFailing = planLoadDecks();
+        naxPending.push(naxFailing);
+        var naxFailureReply = window.__deckListManualQueue[0];
+        var naxLatest = await invoke("deck_rename", {id:4901, name:"NAX after stale failure"});
+        pmApplyLibrary(naxLatest);
+        naxFailureReply.rej("simulated old plan lookup rejection");
+        var naxFailureReturn = await naxFailing;
+        ok(planDeckName(4901) === "NAX after stale failure" &&
+           naxFailureReturn.some(function(d){ return d.id === 4901 && d.name === "NAX after stale failure"; }),
+           "NAX: a stale failed plan lookup cannot clear a fresh library mutation or return empty data");
+        window.__deckListManualQueue = null;
+
+        pmApplyLibrary({decks:null, open:null, persistent:true, restorable:[]});
+        planRenderBuilder(V);
+        ok(planDecks === null && planLinkState(V.items[0].link) === "unknown" && sumRowValue("Missing content") === "0",
+           "NAX: malformed library data stays unknown rather than falsely declaring presentations missing");
+        window.__pmRejectOnce = true;
+        await pmLibLoad();
+        ok(!el("pm-lib-error").hidden && planDecks === null && planLinkState(V.items[0].link) === "unknown",
+           "NAX: a failed library reload remains visible and unresolved, not loaded-empty");
+        pmApplyLibrary({decks:[], open:null, persistent:true, restorable:[]});
+        planRenderBuilder(V);
+        ok(Array.isArray(planDecks) && planDecks.length === 0 && sumRowValue("Missing content") === "⚠ 2",
+           "NAX control: a genuinely empty authoritative library still marks both missing links");
+        await pmLibLoad();
+        ok(el("pm-lib-error").hidden && planDeckName(4901) === "NAX after stale failure",
+           "NAX control: a successful library retry restores known current resolution");
+      } finally {
+        (window.__deckListManualQueue || []).forEach(function(q){ q.res(q.view); });
+        window.__deckListManualQueue = null;
+        await Promise.allSettled(naxPending);
+        window.__LIB = naxSavedLibrary;
+        V = naxSavedView; D = naxSavedDeck; pmLibQuery = naxSavedQuery;
+        await pmLibLoad();
+        await planLoadDecks(); // Mutation-safe cleanup even if publication is broken.
+        planSelectedId = null;
+        lastRendered = "";
+        render(JSON.parse(JSON.stringify(V)));
+      }
       planRenderBuilder(missView);
       planRenderBuilder(sumView);
       ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),
