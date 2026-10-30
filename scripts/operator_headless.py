@@ -1965,6 +1965,14 @@ EXPECTED_MIN_CHECKS = 2464
 # regeneration IPC privacy channels and existing pending/data/recovery controls.
 # Measured on tests-onlycbd5e4e9 in hosted41089309707:2536 checks,24 intended FAIL.
 EXPECTED_MIN_CHECKS = 2536
+# 2536 ->2552 (17tnw2ayzvg): last confirmed Boolean Restore permission,
+# real Remote failed-open, poll demotion and held autosave lookup lifetimes.
+# Measured on tests-only40c494b9 in hosted41119095716:2552 checks,8 intended FAIL.
+EXPECTED_MIN_CHECKS = 2552
+# 2552 ->2556 (CODY-AYZVG-01): real Remove modal/false poll/Cancel,
+# no-fresh-view UI selection and deselection cannot overwrite a confirmed denial.
+# Measured on tests-only90e14dab in hosted41121235813:2556 checks,1 intended FAIL.
+EXPECTED_MIN_CHECKS = 2556
 
 
 def find_chrome():
@@ -11920,6 +11928,173 @@ DRIVER = r"""
         { id: "sunday-morning", name: "Sunday Morning",    items: 5 },
         { id: "midweek",        name: "Midweek Gathering", items: 4 }
       ];
+
+      // 17tnw2ayzvg: the first explicit Boolean viewer fixtures in this driver come BELOW
+      // this block. Thus the initial absent-viewer case exercises a genuinely never-known
+      // module, not a test-only cache reset. Use the actual render/failure/poll consumers.
+      var zvgHost = hostRemote, zvgSlots = window.__autosaveSlots;
+      var zvgDefer = window.__rcDeferCommand, zvgDeferred = window.__rcDeferred;
+      var zvgHadViewer = Object.prototype.hasOwnProperty.call(V, "viewer"), zvgViewer = V.viewer;
+      var zvgCtrlBefore = window.__calls.filter(isLiveCtrl).length;
+      var zvgBanner = function(){ return document.querySelector(".plan-restore-banner"); };
+      var zvgDrain = async function(){ for (var i = 0; i < 16; i++) await Promise.resolve(); };
+      // These fixtures represent new host views, not a UI-only replay of planLastView.
+      // Feed the existing full-view consumer as well as the Plan surface renderer.
+      var zvgFreshView = function(view){
+        var confirmed = Object.assign({}, V, view);
+        if (!Object.prototype.hasOwnProperty.call(view, "viewer")) delete confirmed.viewer;
+        render(confirmed);
+        openPlan(view);
+      };
+      var zvgFailedOpen = async function(){
+        planRenderLoading();
+        window.__viewRejectOnce = true;
+        await invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+        await zvgDrain();
+      };
+      var zvgHoldSlots = async function(){
+        window.__rcDeferred = null;
+        window.__rcDeferCommand = "list_autosave_slots";
+        await zvgFailedOpen();
+        var pending = window.__rcDeferred;
+        window.__rcDeferCommand = null;
+        return pending;
+      };
+      try {
+        hostRemote = true; // actual Remote UI branch, not the cheaper Local-only skip
+        window.__autosaveSlots = [{slot:19,saved_at_ms:1900,label:"AYZVG saved plan"}];
+        zvgFreshView(lifeView());
+        await zvgFailedOpen();
+        ok(hostRemote === true && !!zvgBanner(),
+           "AYZVG unknown control: a never-confirmed Remote viewer still receives the explicitly permitted Restore offer");
+        var zvgRestoreCalls = plCalls("restore_autosave").length;
+        var zvgUnknownButton = zvgBanner() && zvgBanner().querySelector("button");
+        if (zvgUnknownButton) zvgUnknownButton.click();
+        await zvgDrain();
+        ok(plCalls("restore_autosave").length === zvgRestoreCalls + 1 && !zvgBanner(),
+           "AYZVG unknown action control: the real Restore command works and successful render clears the offer");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:false}}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG false: the last confirmed false verdict suppresses Restore after a real Remote failed-open reply");
+        ok(!el("plan-viewonly") && getComputedStyle(palette()).display === "none" && !!document.querySelector(".plan-load-failed"),
+           "AYZVG failure chrome control: cache does not fabricate a current viewer badge or revive the unusable edit palette");
+
+        zvgFreshView(lifeView({viewer:null}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG absent after false: a later unreported view cannot overwrite the last confirmed Boolean");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:"true"}}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG malformed after false: a truthy string is not a confirmed permission grant");
+
+        zvgFreshView(lifeView({viewer:{role:"viewer",can_edit:true}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(),
+           "AYZVG true control: a confirmed promotion restores the offer even when the role label says viewer");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:"false"}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(),
+           "AYZVG malformed after true control: a false-looking string cannot fabricate a restriction");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        var zvgPending = await zvgHoldSlots();
+        ok(!!zvgPending && !zvgBanner(),
+           "AYZVG held lookup premise: the actual slot request is unresolved before the confirmed demotion");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:false}}));
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG late after demotion: a held allowed-viewer lookup cannot publish after a newer false render");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        V.viewer = {role:"viewer",can_edit:false};
+        await pollOnce(); // actual successful view -> render -> publish/viewer sync wiring
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG poll demotion: the latest successful poll verdict suppresses even a previously pending lookup");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(), "AYZVG visible-before-poll premise: an allowed failed-open offer really exists");
+        V.viewer = {role:"viewer",can_edit:false};
+        await pollOnce();
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG visible demotion: a newly confirmed false poll removes an already offered Restore control");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        zvgFreshView(lifeView({viewer:{role:"viewer",can_edit:true}}));
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner() && !document.querySelector(".plan-load-failed"),
+           "AYZVG superseded failure: an old lookup cannot add a recovery offer to a newer successful plan view");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        window.__autosaveSlots = []; // the newer failed open reports nothing to restore
+        await zvgFailedOpen();
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner() && !!document.querySelector(".plan-load-failed"),
+           "AYZVG newer failure: a stale old slot list cannot override a newer empty lookup for another failed open");
+        ok(window.__calls.filter(isLiveCtrl).length === zvgCtrlBefore,
+           "AYZVG live-output control: permission/failure/recovery-offer checks send no live-control command");
+
+        // CODY-AYZVG-01: a confirmed poll can arrive while a modal intentionally keeps the
+        // old editable Plan snapshot on screen. Cancel and UI-only selection/deselection
+        // must never promote that cached snapshot into a fresh host permission verdict.
+        var zvgOriginalItems = V.items;
+        try {
+          V.items = JSON.parse(JSON.stringify(PL_ITEMS));
+          V.viewer = {role:"operator",can_edit:true};
+          var zvgHostView = await invoke("view");
+          render(zvgHostView);
+          openPlan(zvgHostView);
+          var zvgRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]');
+          if (zvgRow) zvgRow.click();
+          var zvgRemove = document.querySelector(".plan-insp-danger .pm-btn-danger");
+          if (zvgRemove) zvgRemove.click();
+          ok(!!document.querySelector(".pm-confirm-back") && planSelectedId === 301,
+             "AYZVG replay modal premise: the real selected-row Remove confirmation is open");
+          V.viewer = {role:"viewer",can_edit:false};
+          await pollOnce();
+          ok(!!document.querySelector(".pm-confirm-back") && planLastView.viewer.can_edit === true,
+             "AYZVG replay stale-view premise: the actual false poll leaves the prior true UI snapshot behind the modal");
+          var zvgViewCalls = plCalls("view").length;
+          var zvgCancel = document.querySelector(".pm-confirm .pm-btn-ghost");
+          if (zvgCancel) zvgCancel.click();
+          zvgRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="302"]');
+          if (zvgRow) zvgRow.click(); // closure-captured old snapshot
+          el("plan-b-list").click(); // real blank-space deselect replays planLastView
+          await zvgDrain();
+          ok(!document.querySelector(".pm-confirm-back") && planSelectedId === null && plCalls("view").length === zvgViewCalls,
+             "AYZVG replay no-confirmation control: Cancel selection and deselection issue no new host view or promotion");
+          window.__autosaveSlots = [{slot:19,saved_at_ms:1900,label:null}];
+          await zvgFailedOpen();
+          ok(!zvgBanner() && !!document.querySelector(".plan-load-failed"),
+             "AYZVG cached UI replay: the last actual false host verdict still suppresses Restore after Cancel and deselect");
+        } finally {
+          V.items = zvgOriginalItems;
+          var zvgLeftDialog = document.querySelector(".pm-confirm .pm-btn-ghost");
+          if (zvgLeftDialog) zvgLeftDialog.click();
+        }
+      } finally {
+        window.__viewRejectOnce = false;
+        window.__rcDeferCommand = zvgDefer; window.__rcDeferred = zvgDeferred;
+        window.__autosaveSlots = zvgSlots;
+        if (zvgHadViewer) V.viewer = zvgViewer; else delete V.viewer;
+        hostRemote = zvgHost;
+        // End with a confirmed allowed hint, then an unreported normal view; permission
+        // chrome still consumes the current view and no test-only cache/reset API exists.
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgFreshView(lifeView());
+      }
 
       // --- viewer: three states, and the absent one is NOT view-only --------------------------
       openPlan(lifeView());
