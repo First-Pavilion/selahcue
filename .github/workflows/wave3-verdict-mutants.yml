@@ -1,0 +1,163 @@
+name: wave3 verdict fixture sensitivity
+on:
+  push:
+    branches: [codex/17tnw2b1wt5-verdict-wire-fixtures]
+    paths: [.github/workflows/wave3-verdict-mutants.yml]
+permissions:
+  contents: read
+jobs:
+  verdict-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: 8b49eeff68da6937d4d8289970b27585565ebb64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only first-parent and check out exact candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-verdict-mutants.yml"
+          git rev-parse HEAD HEAD^{tree} HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD HEAD^{tree}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.98.0"
+      - name: Verify pinned compiler
+        run: sh scripts/check_toolchain.sh
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Resolve locked Flutter dependencies
+        working-directory: implementation/mobile/selahcue_controller
+        run: flutter pub get --enforce-lockfile
+      - name: Real baseline, five mutants and identical restoration
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          rust = root / "implementation/desktop/crates/selahcue-lan/src/protocol.rs"
+          dart = root / "implementation/mobile/selahcue_controller/lib/models/protocol.dart"
+          rust_tests = root / "implementation/desktop/crates/selahcue-lan/tests/test_protocol.rs"
+          dart_tests = root / "implementation/mobile/selahcue_controller/test/models/protocol_test.dart"
+          saved = {p: p.read_bytes() for p in (rust, dart, rust_tests, dart_tests)}
+          receipts = []
+
+          def run(kind, name):
+              if kind == "rust":
+                  cmd = ["cargo", "test", "--locked", "-p", "selahcue-lan",
+                         "--test", "test_protocol", "--", "--test-threads=1"]
+                  cwd = root / "implementation/desktop"
+              else:
+                  cmd = ["flutter", "test", "test/models/protocol_test.dart", "--machine"]
+                  cwd = root / "implementation/mobile/selahcue_controller"
+              p = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True, timeout=300)
+              print(f"\n=== {name} exit={p.returncode} ===\n{p.stdout}", flush=True)
+              return p.returncode, p.stdout
+
+          def rust_results(output):
+              return {m.group(1): m.group(2) for m in re.finditer(
+                  r"^test (\S+) \.\.\. (ok|FAILED)$", output, re.M)}
+
+          def dart_results(output):
+              names = {}
+              results = {}
+              for line in output.splitlines():
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if event.get("type") == "testStart":
+                      names[event["test"]["id"]] = event["test"]["name"]
+                  if event.get("type") == "testDone":
+                      results[event["testID"]] = event["result"]
+              return {names[k]: value for k, value in results.items() if k in names}
+
+          auth_name = "auth_verdict_wire_fixtures_are_stable"
+          pair_name = "pair_verdict_wire_fixtures_are_stable"
+          try:
+              code, output = run("rust", "baseline-rust")
+              results = rust_results(output)
+              assert code == 0 and results[auth_name] == results[pair_name] == "ok"
+              assert results["command_tag_encoding_is_stable"] == "ok"
+              receipts.append({"case": "baseline-rust", "results": results})
+              code, output = run("dart", "baseline-dart")
+              results = dart_results(output)
+              fixtures = {k: v for k, v in results.items() if k.startswith("verdict wire fixture:")}
+              assert code == 0 and len(fixtures) == 9 and set(fixtures.values()) == {"success"}, results
+              assert results["hello auth matches the Rust wire fixture"] == "success"
+              receipts.append({"case": "baseline-dart", "results": results})
+
+              rust_cases = [
+                  ("rust-auth-tag", '#[serde(tag = "auth", rename_all = "snake_case")]',
+                   '#[serde(tag = "AUTH", rename_all = "snake_case")]',
+                   {auth_name}, {pair_name}),
+                  ("rust-pair-tag", '#[serde(tag = "pair", rename_all = "snake_case")]',
+                   '#[serde(tag = "PAIR", rename_all = "snake_case")]',
+                   {pair_name}, {auth_name}),
+                  ("rust-reason-casing", '#[serde(rename_all = "snake_case")]\npub enum DenyReason',
+                   '#[serde(rename_all = "SCREAMING_SNAKE_CASE")]\npub enum DenyReason',
+                   {auth_name, pair_name}, set()),
+              ]
+              for name, old, new, failed, passed in rust_cases:
+                  text = saved[rust].decode()
+                  assert text.count(old) == 1, name
+                  try:
+                      rust.write_text(text.replace(old, new))
+                      code, output = run("rust", name)
+                      results = rust_results(output)
+                      assert code != 0 and all(results.get(k) == "FAILED" for k in failed), results
+                      assert all(results.get(k) == "ok" for k in passed), results
+                      assert results["command_tag_encoding_is_stable"] == "ok"
+                      receipts.append({"case": name, "failed": sorted(failed), "results": results})
+                  finally:
+                      rust.write_bytes(saved[rust])
+
+              for kind, old, new in [
+                  ("auth", "switch (j['auth'])", "switch (j['AUTH'])"),
+                  ("pair", "switch (j['pair'])", "switch (j['PAIR'])"),
+              ]:
+                  text = saved[dart].decode()
+                  assert text.count(old) == 1, kind
+                  try:
+                      dart.write_text(text.replace(old, new))
+                      code, output = run("dart", "dart-" + kind + "-tag")
+                      results = dart_results(output)
+                      fixtures = {k: v for k, v in results.items() if k.startswith("verdict wire fixture:")}
+                      failed = {k: v for k, v in fixtures.items() if k.startswith("verdict wire fixture: " + kind)}
+                      passed = {k: v for k, v in fixtures.items() if k not in failed}
+                      assert code != 0 and len(fixtures) == 9, results
+                      assert len(failed) == (4 if kind == "auth" else 5), results
+                      assert set(failed.values()) == {"error"} and set(passed.values()) == {"success"}, results
+                      assert results["hello auth matches the Rust wire fixture"] == "success"
+                      receipts.append({"case": "dart-" + kind + "-tag", "results": results})
+                  finally:
+                      dart.write_bytes(saved[dart])
+
+              for kind in ("rust", "dart"):
+                  code, _ = run(kind, "restored-" + kind)
+                  assert code == 0
+          finally:
+              for path, value in saved.items():
+                  path.write_bytes(value)
+              hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in saved}
+              assert all(p.read_bytes() == value for p, value in saved.items())
+              subprocess.run(["git", "diff", "--exit-code", os.environ["CANDIDATE"], "--",
+                              *[str(p.relative_to(root)) for p in saved]], check=True)
+              print("VERDICT_SENSITIVITY_RECEIPT=" + json.dumps(
+                  {"candidate": os.environ["CANDIDATE"], "receipts": receipts,
+                   "restored_sha256": hashes}, sort_keys=True), flush=True)
+          assert len(receipts) == 7
+          PY
