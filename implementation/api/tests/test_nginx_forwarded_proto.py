@@ -179,3 +179,67 @@ def test_the_map_is_declared_at_http_level_not_inside_a_server_block():
     for block in maps:
         assert block["parent"] is None, f"{block['header']!r} is nested inside another block"
     assert any(block["header"] == "server" for block in blocks)
+
+
+# 17tnw2b9adv: these are valid nginx configurations, not arbitrary corrupt
+# text. The bounded hosted diagnostic additionally runs nginx -t on every
+# fixture before interpreting a guard failure as meaningful sensitivity.
+def _bypass_config(original: str, case: str) -> str:
+    assert original.count("server {") == 1
+    assert original.count(HEADER_LINE) == 1
+    if case == "quoted-hash":
+        return original.replace("server {", """server {
+    location /unguarded/ {
+        add_header X-Note "#1"; proxy_pass http://api:8000;
+    }
+""", 1)
+    if case == "quoted-header":
+        return original.replace(HEADER_LINE, f'set $note "; {HEADER_LINE} ";', 1)
+    if case == "map-override":
+        return original.replace("server {", "server {\n    set $selahcue_client_proto $http_x_forwarded_proto;", 1)
+    if case == "server-include":
+        return original.replace("server {", "server {\n    include /etc/nginx/diagnostic/override.conf;", 1)
+    raise AssertionError(f"unknown bypass case: {case}")
+
+
+BYPASS_CASES = ["quoted-hash", "quoted-header", "map-override", "server-include"]
+
+
+def _assert_proxy_guard():
+    # Invoke the same checks the real fixture gets, rather than asserting on
+    # a copied parser or inventing a test-only acceptance oracle.
+    test_the_map_has_a_scheme_default_and_exactly_one_literal_exception()
+    test_every_location_that_proxies_sends_the_mapped_value()
+    test_the_graphql_proxy_is_one_of_them_and_nothing_else_sets_the_header()
+    test_the_map_is_declared_at_http_level_not_inside_a_server_block()
+
+
+@pytest.mark.parametrize("case", BYPASS_CASES)
+def test_guard_refuses_each_valid_nginx_trust_bypass(case, monkeypatch, tmp_path):
+    original = NGINX_CONF.read_text(encoding="utf-8")
+    fixture = tmp_path / "nginx.conf"
+    fixture.write_text(_bypass_config(original, case), encoding="utf-8")
+    monkeypatch.setitem(globals(), "NGINX_CONF", fixture)
+    with pytest.raises(AssertionError):
+        _assert_proxy_guard()
+
+
+@pytest.mark.parametrize("note", [
+    'add_header X-Note "#1; {literal}";',
+    "add_header X-Note '#1; {literal}';",
+    'set $note "escaped\\"#1; {literal}";',
+])
+def test_guard_accepts_benign_quoted_values_and_real_header(note, monkeypatch, tmp_path):
+    original = NGINX_CONF.read_text(encoding="utf-8")
+    fixture = tmp_path / "nginx.conf"
+    fixture.write_text(original.replace("server {", f"server {{\n    {note}", 1), encoding="utf-8")
+    monkeypatch.setitem(globals(), "NGINX_CONF", fixture)
+    _assert_proxy_guard()
+
+
+def test_guard_strips_only_unquoted_comments(monkeypatch, tmp_path):
+    fixture = tmp_path / "nginx.conf"
+    fixture.write_text('add_header X-Note "#kept"; #removed\n', encoding="utf-8")
+    monkeypatch.setitem(globals(), "NGINX_CONF", fixture)
+    assert '#kept' in _config()
+    assert '#removed' not in _config()
