@@ -84,8 +84,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: failed-open Restore currently ignores most recent confirmed false and late slot replies can publish obsolete offers; real successful-render/failure controls can expose this without inventing permission data.
 - Change or investigation: trace existing permission/render/poll/failure hooks in fresh actual-main worktree; prepare tests-only controls, no production cache/gate edits before actual RED.
 - Verifier executed: Goal structural and stdlib/static preparation checks, followed by frozen tests-only hosted RED.
-- Result: Pending runtime execution.
-- New evidence: own restore-permission receipts/logs at immutable checkpoint.
+- Result: Actual hosted41119095716 on tests-only40c494b9 ran2552 checks with8 intended behavioral failures; old2536 count mismatch is separate. The16 new actual DRIVER records contain8 PASS and8 FAIL, with no other behavioral failure.
+- New evidence: restore-permission/red-job.log, red-receipt.json, red-object-proof.json and red-classification.json. Unknown offer/action, true/malformed-true, failure chrome, held lookup premise, visible-offer premise and no-live-command controls PASS.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: remembering only actual Boolean viewer verdicts from successful host views, removing offers on false, and checking the exact failed-open node before async publication prevents the observed forbidden and superseded offers without fabricating permissions.
+- Change or investigation: add one bounded module-level null/Boolean hint using the existing planViewer reader; feed the normal view render and Plan builder paths, suppress/remove false offers and reject replies whose originating failure node has been replaced. Preserve server RBAC and existing current-view chrome. Pin the actual measured2552 count; DRIVER/STUB/CSS_SRC assertions remain byte-identical to the observed RED.
+- Verifier executed: stdlib AST, baseline diff check, structural Goal validator; current-source hosted full sibling/mutation and normal configured CI receipts to follow.
+- Result: Static preparation PASS; runtime and independent review gates pending, no green claim yet.
+- New evidence: restore-permission current candidate/object receipts and hosted raw logs.
 - Decision: iterate
 
 ## Risks and rollback

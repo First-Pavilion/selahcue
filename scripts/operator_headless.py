@@ -1965,6 +1965,10 @@ EXPECTED_MIN_CHECKS = 2464
 # regeneration IPC privacy channels and existing pending/data/recovery controls.
 # Measured on tests-onlycbd5e4e9 in hosted41089309707:2536 checks,24 intended FAIL.
 EXPECTED_MIN_CHECKS = 2536
+# 2536 ->2552 (17tnw2ayzvg): last confirmed Boolean Restore permission,
+# real Remote failed-open, poll demotion and held autosave lookup lifetimes.
+# Measured on tests-only40c494b9 in hosted41119095716:2552 checks,8 intended FAIL.
+EXPECTED_MIN_CHECKS = 2552
 
 
 def find_chrome():
