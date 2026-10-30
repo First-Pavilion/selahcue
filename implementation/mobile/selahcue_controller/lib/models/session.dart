@@ -166,12 +166,31 @@ class SelahSession implements ControllerSession {
       return sha256.convert(cert.der).toString() == wanted;
     };
     try {
-      return await WebSocket.connect('wss://$host:$port/', customClient: client)
-          .timeout(connectTimeout);
+      final connecting =
+          WebSocket.connect('wss://$host:$port/', customClient: client);
+      return await connecting.timeout(connectTimeout, onTimeout: () {
+        // Future.timeout does not cancel its source. A socket may already have
+        // detached from the HTTP client, so also discharge any late success.
+        unawaited(connecting.then<void>((socket) async {
+          try {
+            await socket.close();
+          } on Object {
+            // The caller has already timed out; cleanup must not emit a second
+            // unhandled failure if the abandoned transport is already broken.
+          }
+        }, onError: (Object error, StackTrace stackTrace) {
+          // Force-closing the pending HTTP connection may fail this future.
+        }));
+        throw TimeoutException('connection timed out');
+      });
     } on TimeoutException {
       throw const SessionException('connection timed out');
     } on Exception catch (e) {
       throw SessionException('could not connect: $e');
+    } finally {
+      // Successful upgrades detach their socket. All remaining HTTP resources
+      // belong to this attempt and must be released on every exit.
+      client.close(force: true);
     }
   }
 

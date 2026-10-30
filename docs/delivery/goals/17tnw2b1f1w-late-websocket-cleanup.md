@@ -73,7 +73,7 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 | C-002 | yes | Already acquired late WebSocket closes exactly once | Real acquired WebSocket completion held past controlled deadline for auth/pair callers | No session/hello; one explicit close; actual client/server closed state | Hosted completion-race tests and timely release control | PENDING |
 | C-003 | yes | 100 consecutive late-upgrade timeouts return owned sockets to baseline | Real loopback upgrades with controlled production timeout callbacks and observed resource counts before fixture teardown | Every cycle zero open owned client/server sockets; aggregate count equals initial baseline | Hosted 100-cycle resource receipt | PENDING |
 | C-004 | yes | Timely success and connection error semantics stay correct | Timely auth/pair, pre-deadline held completion, wrong-pin and late-error controls plus existing session tests | Successful session usable until caller closes; existing typed errors; no uncaught late failure | Hosted controls/full suite | PENDING |
-| C-005 | yes | Regressions detect the missing cleanup before implementation | Frozen tests-only source, draft PR and actual hosted execution | Behavioral retained socket/missing close failures; positive controls pass | Exact-source RED log/run | PENDING |
+| C-005 | yes | Regressions detect the missing cleanup before implementation | Frozen tests-only source, draft PR and actual hosted execution | Behavioral retained socket/missing close failures; positive controls pass | Run 41038790584 at 421cd8ae, mobile-late-websocket-red.log | PASS |
 | C-006 | yes | Corrected full mobile gates pass | Hosted flutter analyze and full flutter test on exact candidate | Analysis exits 0 and applicable full suite passes | Exact-source GREEN log/run | PENDING |
 | C-007 | yes | Independent reviews and authorized delivery close | Cody, Quinn, Vera, Shadow and root delivery receipts | Four current-source passes, merge verified, exact linked QA status persisted/reread | Root review/merge/QA evidence | PENDING |
 
@@ -115,6 +115,16 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - Result: useful leak observations, but positive controls need their corrected closure oracle before behavioral RED is accepted. No production changes.
 - New evidence: timely auth/pair/held completion reached valid sessions with closeCalls 0 before caller close; no zone type/runtime errors were reported.
 - Decision: freeze the tests-only oracle correction and rerun full hosted CI before implementing cleanup.
+
+### Iteration 4
+
+- Target criterion: C-001 through C-004 and C-006
+- Hypothesis: force-closing the per-attempt HTTP client on exit stops pending upgrades; consuming the original connection future after timeout closes an already-detached late socket without returning an expired session.
+- Change or investigation: actual hosted behavioral RED run 41038790584 at 421cd8ae passed analysis and all five positive controls; 456 tests passed, four leak regressions failed. Auth/pair late sockets had closeCalls 0 instead of 1; real ten-second timeout retained sockets; 100-cycle counts grew each cycle. Only after this result, retain connecting future, close late successful socket with source/cleanup error handlers, and force-close HTTP client in finally. Integrate API-only main b01ce4e6860be99db2f82a71aef10c4ae229db8a ordinarily, preserving test-only commits and unchanged tests.
+- Verifier executed: raw behavioral RED saved at wave2-20261029/mobile-late-websocket-red.log; structural validation/full baseline diff check. Fresh full hosted candidate CI pending publication.
+- Result: C-005 PASS; candidate behavior not yet verified.
+- New evidence: real acquired-socket harness controls pass without zone type/runtime errors; source failure handling does not hide unhandled zone errors.
+- Decision: freeze minimal candidate and obtain fresh full hosted Flutter analysis/tests before root independent reviews.
 
 ## Risks and rollback
 
