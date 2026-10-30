@@ -433,6 +433,40 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
   `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
+- **Degraded mail is a per-worker send-claim ceiling (17tnw2b1x1p).**
+  `SELAHCUE_RESEND_DEGRADED_SEND_CEILING` and `SELAHCUE_RESET_SEND_DEGRADED_CEILING`
+  are separate `(limit, window_seconds)` code settings in `settings.py`, both defaulting to
+  `(20, 3600)`; they are not environment variables. If the cache budget is unavailable,
+  each worker claims from its own in-process fixed window. The effective fleet ceiling is
+  **limit × number of workers**, for each endpoint's configured window: with four workers,
+  the default permits up to80 claims per hour for resend and separately80 for reset requests.
+  This is not a coordinated rolling-hour fleet cap: windows start independently, and a
+  worker restart clears its in-process state. Every valid call claims a unit, including an
+  unknown address, so actual emails may be fewer than claims. When the ceiling is spent,
+  no token is minted and no email sent; browser callers still receive the normal
+  `accepted:true`, and existing links remain usable. Raising either setting increases
+  outage-time exposure. Restore the shared store to restore shared budgets. Native bootstrap
+  `POST /v1/sessions` retains its distinct429-before-password-work outage refusal; activated
+  devices and the other native routes retain their existing fail-open policy.
+- **IP cache-key privacy and root-key rotation (17tnw2b1x1p).** Native route IP budgets and
+  the four browser IP scopes (verify email, resend verification, request reset and confirm
+  reset) store `ip:v1:` plus an HMAC-SHA256 digest of the already-resolved source bucket.
+  Django's `salted_hmac` derives dedicated key material as SHA256 of the purpose
+  `selahcue_api.apps.throttling.ip_bucket.v1` followed by the configured `SECRET_KEY`.
+  This separates IP-cache identities from credential, email and audit HMAC purposes without
+  adding a separately provisioned secret. The underlying identity still unwraps mapped IPv4,
+  shares each IPv6/64 and trusts forwarded headers only under `SELAHCUE_TRUSTED_PROXY_COUNT`.
+  Hashing does not change those groups or fix an incorrect proxy count.
+
+  Rotating `SECRET_KEY` changes all these IP keys at once, so their budgets reset once;
+  the existing secret-keyed per-address mail budgets reset too. `SECRET_KEY_FALLBACKS`
+  is not consulted for these identities. Fixed global counters, actor-digest counters and
+  fixed/account failed-confirm trace allowances keep their existing keys and counts: they
+  do not reset merely because the root key changed. Old counter entries retain their original
+  expiry and are not migrated or cleared. The initial move from raw IP keys to this versioned
+  format likewise starts fresh IP budgets once; legacy raw-IP keys expire on their existing
+  TTLs. This change does not erase historical cache logs. The credential/session invalidation
+  effects of root-key rotation described in section6 remain unchanged.
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
   budget. Spending one budget takes one to three commands (`SET NX`, and once the counter exists
   also `EXISTS` and `INCR`; in the rare race where a counter's window lapses between those two,
