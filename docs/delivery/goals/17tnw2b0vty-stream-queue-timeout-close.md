@@ -58,7 +58,7 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b0vty.json
 - A controlled Timer zone can deliver synchronous data and fire its read timeout before delivery microtasks run, making the reported boundary deterministic without thousands of trials.
 - Buffer disposal is checked through existing nextJson behavior: pre-close buffered and post-close frames cannot be read after session close. Subscription cancellation is observed at the controlled stream boundary.
 - These tests establish queue ownership and logical disposal, not native socket-close latency, RSS measurements or throughput.
-- Hosted RED, corrected GREEN and independent reviews remain pending.
+- Actual hosted test-only RED is established; corrected GREEN and independent reviews remain pending.
 
 ## Dependencies and approvals
 
@@ -74,7 +74,7 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b0vty.json
 | C-002 | yes | Session close releases retained and future inbound data | Buffer frames, close real in-memory SelahSession, then emit more frames and read queue | Subscription cancelled; no readable pre/post-close frame; closed SessionException | Hosted lifecycle regression receipts | PENDING |
 | C-003 | yes | Close releases pending readers and awaits cancellation consistently | Multiple pending reads plus controlled asynchronous stream cancellation | Readers fail closed promptly; close remains pending until cancellation completes; repeat close safe | Hosted lifecycle regression receipts | PENDING |
 | C-004 | yes | Existing queue/session behavior remains intact | Normal delivery, genuine timeout/late frame, FIFO/natural completion controls and full suite | Controls pass; existing parser, handshake, deadline and controller tests pass | Hosted analysis/full Flutter tests | PENDING |
-| C-005 | yes | Regressions detect the baseline gaps before implementation | Frozen test-only commit, draft PR and actual hosted execution | Behavioral boundary/lifecycle failures with positive controls passing | Exact-source hosted RED log/run | PENDING |
+| C-005 | yes | Regressions detect the baseline gaps before implementation | Frozen test-only commit, draft PR and actual hosted execution | Behavioral boundary/lifecycle failures with positive controls passing | PR 274 run 41032689523 on 87e19f3f: analysis passed, 446 tests passed and 5 behavioral failures; saved mobile-stream-queue-red.log | PASS |
 | C-006 | yes | Corrected candidate passes broader hosted gates | Fresh hosted flutter analyze and full flutter test | Analysis exits 0; full applicable suite passes on exact candidate | Exact-source hosted GREEN log/run | PENDING |
 | C-007 | yes | Required independent review and delivery close | Cody, Quinn, Vera, Shadow and root merge/QA receipts | Four current-source passes, actual merge verified, exact linked QA status persisted/reread | Root review/delivery evidence | PENDING |
 
@@ -92,10 +92,20 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b0vty.json
 - Target criterion: C-001 through C-005
 - Hypothesis: a waiter removed for delivery can lose to timeout propagation, while missing queue disposal leaves dead-session frames/subscription alive.
 - Change or investigation: inspect task/current main and write deterministic scheduler plus public session-close regressions before production changes.
-- Verifier executed: structural Goal validation and full baseline diff check; hosted RED pending publication/execution.
-- Result: pending hosted execution
-- New evidence: existing public session seam permits lifecycle regressions without a production test-only API; scheduler control keeps actual stream and future behavior real.
-- Decision: freeze tests only, publish draft PR, and require actual behavioral RED before implementation.
+- Verifier executed: structural Goal validation/full baseline diff check; published tests-only draft PR 274 and inspected full hosted Flutter log from run 41032689523, job 123986046411, on commit 87e19f3fddfcabc26879d6d7e6b017c5b397e318.
+- Result: actual behavioral RED. Analysis passed, 446 tests passed and 5 failed: the boundary read timed out despite delivery, close had zero cancels, buffered frame 1 remained readable, pending-reader results stayed empty, and asynchronous cancellation was never started. Normal delivery/cancelled timeout, genuine timeout/late frame and natural FIFO completion controls passed.
+- New evidence: raw log saved at wave2-20261029/mobile-stream-queue-red.log and inspected before any production edit. Existing public session seam exercises ownership without a new production test-only API.
+- Decision: iterate with timeout-result rescue and explicit queue/session disposal; retain all observed tests unchanged.
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004, C-006 and C-007
+- Hypothesis: a timeout should throw only if its waiter is still queued; otherwise consuming the original delivered result prevents loss. Queue disposal must synchronously stop retention before waiting on transport cleanup.
+- Change or investigation: retain/cancel the subscription, discard explicit-close buffers and finish pending waiters as closed, ignore terminal-stream callbacks, and make queue cancellation idempotent. Session close starts queue disposal before the transport handshake and awaits both cleanup futures even if either fails. Timeout handling consumes the original waiter result when delivery/terminal completion already removed it.
+- Verifier executed: source inspection, full baseline diff check, structural Goal validation and unchanged-test diff. No local project runtime ran under resource restrictions.
+- Result: corrected candidate prepared for fresh hosted analysis/full Flutter tests; no corrected-source pass is claimed yet.
+- New evidence: production edits are confined to session.dart queue/session ownership and timeout handling, with active-session caps, connection establishment and pairing deadlines unchanged.
+- Decision: publish corrected candidate and inspect fresh hosted full-suite results; yield the exact CI checkpoint during long waits, then hand immutable source to root for independent reviews.
 
 ## Risks and rollback
 
@@ -104,15 +114,15 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b0vty.json
 
 ## Pause and escalation conditions
 
-- Wait for actual behavioral RED before production edits; fix harness/setup failures first.
+- Actual behavioral RED was observed before production edits; corrected-source hosted gates and independent reviews remain required.
 - Yield a checkpoint with PR/head/run ID during long CI waits; root can supply completion evidence and resume work.
 - Hand back an immutable clean corrected candidate after hosted gates; root owns independent review, merge and QA. Do not start another ticket.
 
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b0vty-stream-queue-timeout-close.md
-- Validator result: structural validation passed (exit 0); behavior awaits hosted test-only execution
+- Validator result: structural validation passed (exit 0); corrected-source behavior awaits fresh hosted execution
 - Independent verification result: pending root
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-001 through C-007
+- Remaining failed or blocked criteria: C-001 through C-004, C-006 and C-007; C-005 passed on frozen test-only source
 - ClickUp final evidence comment: root owns publication
