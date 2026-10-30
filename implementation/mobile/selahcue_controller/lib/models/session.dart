@@ -238,13 +238,25 @@ class SelahSession implements ControllerSession {
     Duration deadline = pairTimeout,
   }) async {
     try {
+      // One monotonic budget starts at the hello, after socket establishment.
+      // Interim parked frames show liveness but cannot renew operator approval.
+      final clock = Stopwatch()..start();
       send(jsonEncode(
           helloPair(code, deviceName, platform: Platform.operatingSystem)));
       // The host may send an interim `parked` frame while it awaits the operator's decision
       // (86ajxhv0q) — keep waiting for the terminal Granted/Rejected.
       pairing:
       while (true) {
-        final reply = await incoming.nextJson(deadline);
+        final remaining = deadline - clock.elapsed;
+        if (remaining <= Duration.zero) {
+          throw const SessionException('timed out waiting for the host');
+        }
+        final reply = await incoming.nextJson(remaining);
+        // Buffered replies and timeout-boundary delivery must not grant a
+        // session whose overall approval budget has already expired.
+        if (clock.elapsed >= deadline) {
+          throw const SessionException('timed out waiting for the host');
+        }
         switch (PairResult.fromJson(reply)) {
           case PairParked():
             continue pairing;

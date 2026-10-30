@@ -69,7 +69,7 @@ Fresh actual main bd6f6a531dc3393959c49fa44a70d6c688e4b9c1 contains approved que
 | C-002 | yes | Expired pairing cannot accept an already buffered grant | Zero-budget in-memory grant fixture | Typed timeout, exactlyone close, no issued session | Hosted expired-budget guard test | PENDING |
 | C-003 | yes | Honest parked host grants within its allowed window | In-memory80percent grant control, production150s constant guard, existing real pinnedTLS parked/granted tests | Credentials/role preserved, session stays live until callerclose, one hello | Hosted positive controls/fullsuite | PENDING |
 | C-004 | yes | Rejection/malformed/cancellation/silent failures preserve cleanup and meaning | In-memory terminal/error controls and current realTLS/session suites | Original typed messages; close once, no successful session after failure | Hosted controls/fullsuite | PENDING |
-| C-005 | yes | Regression detects the original overall-bound defect | Frozen behavior-preserving seam and tests, no deadline correction | Parked/clamped/expired tests fail behaviorally while controls pass | Actual exact-source hostedRED log | PENDING |
+| C-005 | yes | Regression detects the original overall-bound defect | Frozen behavior-preserving seam and tests, no deadline correction | Parked/clamped/expired tests fail behaviorally while controls pass | CI41049489136 at4f481116, mobile-pairing-deadline-red.log | PASS |
 | C-006 | yes | Full corrected mobile checks pass | Fresh exact-source hosted flutter analyze and full flutter test | Both exit0; all new controls and regressions pass | GREEN run/rawlog/head/tree | PENDING |
 | C-007 | yes | Independent review and authorized delivery complete | Root Cody/Quinn/Vera/Shadow reviews, merge and exactlinkedQA receipts | Four current-source Pass verdicts, verified merge and persistedQA readback | Root delivery evidence | PENDING |
 
@@ -88,10 +88,20 @@ Fresh actual main bd6f6a531dc3393959c49fa44a70d6c688e4b9c1 contains approved que
 - Target criterion: C-001 through C-005
 - Hypothesis: per-frame pairTimeout renews on every parked frame; a shared unchanged handshake seam will expose the defect with bounded real-time parked drips and positive controls.
 - Change or investigation: full task/current main inspected, new isolated managed worktree/branch, prepare behavior-preserving shared handshake extraction and meaningful tests.
-- Verifier executed: structural Goal validation before source work; hostedRED pending publication.
-- Result: pending tests-only/seam publication and actual hosted behavior.
+- Verifier executed: structural Goal validation before source work; exact baseline hostedCI41049489136 at4f481116.
+- Result: analysisPASS;466 tests passed/three intended overall-bound failures. Foreverparked only ends at external3s TimeoutException, lateparkedsilent elapsed1.853407s exceeds1.5s bound, expiredbufferedgrant returns a successful session. Allsix new positive controls and existing fullsuite tests pass. C005PASS; raw mobile-pairing-deadline-red.log saved.
 - New evidence: existing publicpair and in-memoryforTest do not yet share a pairing entry; narrow helper extraction is necessary for the ticket's explicit in-memory regression criterion.
 - Decision: obtain actual hosted behavioralRED before adding the monotonic overall budget.
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004 and C-006
+- Hypothesis: starting one Stopwatch at the hello, passing only remaining budget to every read and guarding expiry before/after a read prevents parked renewal and expired buffered grants without disrupting timely terminal results.
+- Change or investigation: after qualified hostedRED, add one clock/remaining read budget/expiry guards to the shared production handshake only. Retain original timeout message/exception cleanup; publicpair150s, honesthost120s margin, certificate/credential/queue/lateconnect semantics remain unchanged. All tests remain byte-identical to qualified baseline.
+- Verifier executed: structural Goal validation/full current-main baseline whitespace check and exact unchanged-test comparison; fresh corrected full hostedCI pending publication.
+- Result: source candidate prepared; corrected runtime behavior not yet verified.
+- New evidence: actual baseline proves shared seam executes the defect while every terminal/control path passes, so no setup/seam failure is being treated asRED.
+- Decision: freeze/publish corrected candidate after fresh main integration; inspect full hosted analysis/tests and controls, then hand exactsource to rootallfour independent reviews.
 
 ## Risks and rollback
 
