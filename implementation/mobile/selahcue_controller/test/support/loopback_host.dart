@@ -20,6 +20,7 @@
 /// removing the key: it is deliberate and worthless.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -92,12 +93,50 @@ String _testPinHex() {
 class LoopbackHost {
   final HttpServer _server;
   final List<WebSocket> _sockets = [];
+  final List<Map<String, Object>> _socketTerminals = [];
+  final List<List<Map<String, Object>>> _socketOutputs = [];
+  final _rawOutputs = Map<Socket, Map<String, Object>>.identity();
+
+  List<Map<String, Object>> get rawTransportDiagnostics =>
+      _rawOutputs.values.toList();
+
+  List<Map<String, Object>> get socketDiagnostics => [
+        for (var i = 0; i < _sockets.length; i++)
+          {
+            'index': i,
+            'readyState': _sockets[i].readyState,
+            ..._socketTerminals[i],
+            'rawOutputs': _socketOutputs[i],
+          },
+      ];
+
+  bool get allSocketTransportsDone => openSocketCount == 0;
 
   /// Every hello received, in arrival order — one entry per connection attempt.
   /// The length is how many times a client dialled in and spoke.
   final List<Map<String, dynamic>> hellos = [];
 
   int _clientClosed = 0;
+  int upgradeAttemptsCompleted = 0;
+  final List<Object> upgradeErrors = [];
+
+  /// Both actual transport directions must terminate before ownership clears.
+  /// SDK error-close paths can leave WebSocket.readyState stale. Observing done
+  /// never invokes close/destroy or substitutes fixture teardown for cleanup.
+  int get openSocketCount {
+    var count = 0;
+    for (var i = 0; i < _sockets.length; i++) {
+      if (_socketTerminals[i]['inputDone'] != true ||
+          _socketOutputs[i].isEmpty ||
+          _socketOutputs[i].any((value) => value['done'] != true)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /// HTTP connections which have not detached into WebSockets yet.
+  int get httpConnectionCount => _server.connectionsInfo().total;
 
   /// How many connections the CLIENT has closed (this host never closes one
   /// itself before the test ends, so a socket that ends is the client's doing).
@@ -127,7 +166,11 @@ class LoopbackHost {
   /// well-formed JSON, wrong-typed JSON, or not JSON at all.
   ///
   /// The server and every socket are closed when the test ends.
-  static Future<LoopbackHost> start({required List<String> replies}) async {
+  static Future<LoopbackHost> start({
+    required List<String> replies,
+    Future<void> Function()? beforeUpgrade,
+    bool rejectUpgrade = false,
+  }) async {
     // Once a test has initialised the Flutter test binding (anything that mocks
     // a platform channel does), `HttpClient` is replaced by a stub that answers
     // every request with a 400, so the production `WebSocket.connect` could
@@ -149,19 +192,59 @@ class LoopbackHost {
     addTearDown(host._close);
 
     server.listen((req) async {
-      final ws = await WebSocketTransformer.upgrade(req);
-      host._sockets.add(ws);
-      var answered = false;
-      ws.listen((frame) {
-        if (answered) return;
-        answered = true;
-        host.hellos.add(jsonDecode(frame as String) as Map<String, dynamic>);
-        for (final reply in replies) {
-          ws.add(reply);
+      try {
+        await beforeUpgrade?.call();
+        if (rejectUpgrade) {
+          req.response.statusCode = HttpStatus.badRequest;
+          await req.response.close();
+          return;
         }
-      }, onDone: () => host._clientClosed++,
-          onError: (Object _) {},
-          cancelOnError: true);
+        final outputs = <Map<String, Object>>[];
+        final ws = await runZoned(() => WebSocketTransformer.upgrade(req),
+            zoneSpecification: ZoneSpecification(
+          runUnary: <R, Value>(self, parent, zone, callback, value) {
+            if (value is Socket) {
+              final output = host._rawOutputs.putIfAbsent(value, () {
+                final output = <String, Object>{'done': false};
+                unawaited(value.done.then<void>((_) {
+                  output['done'] = true;
+                }, onError: (Object error, StackTrace stackTrace) {
+                  output['done'] = true;
+                  output['error'] = error.runtimeType.toString();
+                }));
+                return output;
+              });
+              if (!outputs.contains(output)) outputs.add(output);
+            }
+            return parent.runUnary(zone, callback, value);
+          },
+        ));
+        host._sockets.add(ws);
+        host._socketOutputs.add(outputs);
+        final terminal = <String, Object>{'inputDone': false};
+        host._socketTerminals.add(terminal);
+        var answered = false;
+        ws.listen((frame) {
+          if (answered) return;
+          answered = true;
+          host.hellos.add(jsonDecode(frame as String) as Map<String, dynamic>);
+          for (final reply in replies) {
+            ws.add(reply);
+          }
+        }, onDone: () {
+          terminal['inputDone'] = true;
+          host._clientClosed++;
+        }, onError: (Object error) {
+          terminal['inputError'] = error.runtimeType.toString();
+        });
+      } on Object catch (error) {
+        // A client may force-close its pending HTTP request before the gated
+        // upgrade is released. Record that outcome instead of leaking an
+        // unhandled error from this asynchronous server listener.
+        host.upgradeErrors.add(error);
+      } finally {
+        host.upgradeAttemptsCompleted++;
+      }
     }, onError: (Object _) {});
     return host;
   }
