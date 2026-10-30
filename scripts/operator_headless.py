@@ -1952,6 +1952,11 @@ EXPECTED_MIN_CHECKS = 2384
 # actual connected text mutations, dedup/focus/deferred/selection/clear/safe-text controls.
 # Measured on dc27dc11 in hosted41051898145:2401 checks,0 behavioral FAIL.
 EXPECTED_MIN_CHECKS = 2401
+# 2401 ->2406 (17tnw2b1f30): browser-resolved var() brightness premise,
+# real PP-GEN predicate rejection, sibling predicate and clean-rule controls.
+# Measured twice in hosted41056296534:2406 checks,1 intended behavioral FAIL
+# against the unchanged predicate; corrected full-suite evidence is required.
+EXPECTED_MIN_CHECKS = 2406
 
 
 def find_chrome():
@@ -2539,15 +2544,10 @@ CSS_SRC = (
     var filterVal = window.__cssEffectiveFilter(sel, src);
     return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
-  // PP-GEN's own narrower shape (Cody, PR #79 review round 1): only a re-lightening `brightness`
-  // filter is disqualifying, not "any filter at all" — a faithful migration of this site's
-  // pre-existing intent, not something this fix changes.
+  // PP-GEN shares the siblings' conservative predicate: a var() value can deliver brightness
+  // without that word appearing in the matching rule. Keep the registered helper identity.
   window.__cssNoBrightnessFilter = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return false; }  // fail-closed, as above
-    var filterVal = window.__cssEffectiveFilter(sel, src);
-    var rawBlocks = window.__cssRawBlocks(sel, src);
-    return (!filterVal || !/brightness/.test(filterVal)) &&
-      !rawBlocks.some(function(body) { return /brightness/i.test(body); });
+    return window.__cssFilterGuardOk(sel, src);
   };
   // A throw-away, isolated stylesheet for the self-tests: an inline <style> (so .cssRules is
   // readable, same reason as the probe above) built from `cssText`, returned as the {sheet, text}
@@ -13350,6 +13350,30 @@ DRIVER = r"""
         }
         // The old read, kept ONLY to prove each fixture really is the shape it used to miss.
         function _lastRuleFilter(sel, fx) { return __cssFilter(__cssRule(sel, fx)); }
+
+        // 17tnw2b1f30: CSSOM retains var() rather than the resolved brightness value.
+        // The browser premise prevents a text-only control from passing without a real
+        // re-lightening hazard; call the SAME predicate as the registered PP-GEN site.
+        _cascadeCase(
+          ":root{--__f30-glow:brightness(1.06);} .__cssom_f30_var__{background:#5a48d0;filter:var(--__f30-glow);}",
+          "__cssom_f30_var__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && window.__cssEffectiveFilter(sel, fx) === "var(--__f30-glow)",
+               "F30 premise: the browser applies variable-delivered brightness while the CSSOM guard value still contains var()");
+            ok(!window.__cssRawBlocks(sel, fx).some(function(body){ return /brightness/i.test(body); }),
+               "F30 premise: the matching raw rule contains no literal brightness, so word matching cannot see this hazard");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "F30: the real PP-GEN predicate rejects brightness delivered through var()");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "F30 control: the four siblings' conservative composed predicate already rejects the same real hazard");
+          });
+        _cascadeCase(
+          ":root{--__f30-unused:brightness(1.06);} .__cssom_f30_clean__{background:#5a48d0;}",
+          "__cssom_f30_clean__",
+          function(fx, computed, sel){
+            ok(computed === "none" && __cssNoBrightnessFilter(sel, fx) && __cssFilterGuardOk(sel, fx),
+               "F30 control: a clean matching rule still passes both predicates even with an unused brightness variable elsewhere");
+          });
 
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
