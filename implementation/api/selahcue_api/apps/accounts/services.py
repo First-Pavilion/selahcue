@@ -944,7 +944,7 @@ def verify_email(raw_token: str, client_ip: str = "") -> VerifyEmailResult:
             action="customer_user.email_verified",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=token.masked_token,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
             after={"status": user.status},
         )
@@ -1136,9 +1136,9 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
                 action="customer_user.verification_resent",
                 target_type="customer_user",
                 target_id=str(user.id),
-                # The token FINGERPRINT, never the token: enough to correlate the audit row
-                # with the credential, useless as the credential.
-                request_id=_fingerprint(raw_token),
+                # Account audit attempt IDs are independent of credentials, including
+                # live token fingerprints and consumed token masks (17tnw2b9dp2).
+                request_id=uuid.uuid4().hex,
                 source_surface=ACCOUNT_AUDIT_SURFACE,
                 after={},
             )
@@ -1212,9 +1212,9 @@ def login(data: LoginData, *, source_surface: str = ACCOUNT_AUDIT_SURFACE) -> Lo
             action="customer_user.logged_in",
             target_type="customer_session",
             target_id=str(session.id),
-            request_id=session.token_fingerprint,
+            request_id=uuid.uuid4().hex,
             source_surface=source_surface,
-            after={"masked_token": session.masked_token, "expires_at": session.expires_at.isoformat()},
+            after={"expires_at": session.expires_at.isoformat()},
         )
     return LoginResult(
         session_token=raw,
@@ -1276,9 +1276,9 @@ def refresh_session(presented_token: str) -> RefreshResult:
             action="customer_user.session_refreshed",
             target_type="customer_session",
             target_id=str(new_session.id),
-            request_id=new_session.token_fingerprint,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
-            after={"masked_token": new_session.masked_token, "expires_at": new_session.expires_at.isoformat()},
+            after={"expires_at": new_session.expires_at.isoformat()},
         )
     return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
 
@@ -1304,7 +1304,7 @@ def logout_session(
             action="customer_user.logged_out",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=session.token_fingerprint,
+            request_id=uuid.uuid4().hex,
             source_surface=source_surface,
             after={"all_sessions": all_sessions},
         )
@@ -1400,7 +1400,7 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
                     action="customer_user.password_reset_requested",
                     target_type="customer_user",
                     target_id=str(user.id),
-                    request_id=_fingerprint(raw_token),
+                    request_id=uuid.uuid4().hex,
                     source_surface=ACCOUNT_AUDIT_SURFACE,
                     after={},
                 )
@@ -1978,7 +1978,7 @@ def _consume_reset_token(
             action="customer_user.password_reset_completed",
             target_type="customer_user",
             target_id=str(user.id),
-            request_id=token.masked_token,
+            request_id=uuid.uuid4().hex,
             source_surface=ACCOUNT_AUDIT_SURFACE,
             after={},
         )
