@@ -1,0 +1,187 @@
+name: wave3 reconnect sensitivity
+on:
+  push:
+    branches: [codex/17tnw2b1f1y-reconnect-sensitivity]
+    paths: [.github/workflows/wave3-reconnect-mutants.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wave3-f1y-reconnect-sensitivity
+  cancel-in-progress: false
+jobs:
+  reconnect-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: 9298337501d208687124672b96f461f93738fbd9
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only first-parent and exact candidate checkout
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-reconnect-mutants.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Resolve exact locked dependencies
+        working-directory: implementation/mobile/selahcue_controller
+        run: flutter pub get --enforce-lockfile
+      - name: Actual bounded policy cases, nine mutants, safe controls and restoration
+        run: |
+          python3 - <<'PYRUN'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          mobile = root / "implementation/mobile/selahcue_controller"
+          source = mobile / "lib/controllers/live_controller.dart"
+          paths = [source, mobile / "lib/models/session.dart",
+                   mobile / "test/controllers/live_controller_reconnect_policy_test.dart",
+                   mobile / "test/controllers/live_controller_reconnect_backoff_test.dart",
+                   mobile / "pubspec.yaml", mobile / "pubspec.lock"]
+          saved = {p: p.read_bytes() for p in paths}
+          hashes = {str(p.relative_to(root)): hashlib.sha256(b).hexdigest() for p, b in saved.items()}
+          original = source.read_text()
+          receipts = []
+          errors = []
+
+          jitter = "injected jitter moves real attempt starts within each window and cap"
+          growth = "failed attempts grow into the capped retry window without overlap"
+          reset = "successful recovery resets the next outage to its first retry window"
+          dispose = "dispose synchronously cancels the pending retry timer"
+          unpair = "unpair synchronously cancels the pending retry timer"
+          late_fail = "a connect failure after dispose cannot schedule a new backoff"
+          late_unpair_fail = "a connect failure after unpair cannot schedule a new backoff"
+          late_success = "a connect success after unpair is closed without adoption"
+          wait_dispose = "cancelled backoff releases the waiting command on dispose"
+          wait_unpair = "cancelled backoff releases the waiting command on unpair"
+          diagnostics = ("an unexpected connect failure is recorded by TYPE and stack only, once "
+                         "per type, and never with host-sent text")
+          required = {jitter, growth, reset, dispose, unpair, late_fail, late_unpair_fail,
+                      late_success, wait_dispose, wait_unpair, diagnostics}
+
+          # The legacy 1000-attempt test has an unbounded virtual-clock while loop if the
+          # cap is deliberately removed. Normal full CI still runs it. This focused
+          # mutation suite keeps all ten new bounded policy cases and the existing safe
+          # diagnostics control together for baseline, every mutant and restoration.
+          command = ["flutter", "test", "test/controllers/live_controller_reconnect_policy_test.dart",
+                     "test/controllers/live_controller_reconnect_backoff_test.dart", "--machine",
+                     "--name", "^(?!1000 consecutive failures:)"]
+
+          def run(name):
+              proc = subprocess.run(command, cwd=mobile, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, timeout=90)
+              print(f"\n=== {name} exit={proc.returncode} ===\n{proc.stdout}", flush=True)
+              names = {}
+              results = {}
+              failures = {}
+              for line in proc.stdout.splitlines():
+                  try:
+                      event = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if not isinstance(event, dict):
+                      continue
+                  if event.get("type") == "testStart":
+                      names[event["test"]["id"]] = event["test"]["name"]
+                  if event.get("type") == "testDone":
+                      results[event["testID"]] = event["result"]
+                  if event.get("type") == "error":
+                      failures.setdefault(event["testID"], []).append(event.get("error", ""))
+              named = {names[k]: v for k, v in results.items() if k in names and names[k] in required}
+              messages = {names[k]: v for k, v in failures.items() if k in names and names[k] in required}
+              assert set(named) == required, ("missing named cases / compilation or setup error", named)
+              receipt = {"case": name, "exit_code": proc.returncode, "results": named,
+                         "assertions": messages,
+                         "output_sha256": hashlib.sha256(proc.stdout.encode()).hexdigest()}
+              receipts.append(receipt)
+              return proc.returncode, named, messages
+
+          def replace_once(text, old, new):
+              assert text.count(old) == 1, (old, text.count(old))
+              return text.replace(old, new)
+
+          def restore():
+              for p, b in saved.items():
+                  p.write_bytes(b)
+              assert all(p.read_bytes() == b for p, b in saved.items())
+
+          mutants = []
+          mutants.append(("no-growth", replace_once(original,
+              "retryCeilingMs = math.min(retryCeilingMs * 2, 30000);", "retryCeilingMs = 2500;"),
+              {growth, jitter}, {dispose, unpair, reset, late_success, diagnostics}))
+          mutants.append(("no-cap", replace_once(original,
+              "retryCeilingMs = math.min(retryCeilingMs * 2, 30000);", "retryCeilingMs = retryCeilingMs * 2;"),
+              {growth, jitter}, {dispose, unpair, reset, late_success, diagnostics}))
+          mutants.append(("constant-jitter", replace_once(original,
+              "(0.8 + 0.2 * _reconnectRandom.nextDouble())", "(0.8 + 0.2 * 0.5)"),
+              {jitter}, {growth, dispose, unpair, reset, late_success, diagnostics}))
+          persistent = replace_once(original, "  final math.Random _reconnectRandom;",
+              "  final math.Random _reconnectRandom;\n  int retryCeilingMs = 2500;")
+          persistent = replace_once(persistent, "    var retryCeilingMs = 2500;", "    // mutant: retain previous outage ceiling.")
+          mutants.append(("no-success-reset", persistent, {reset},
+                          {growth, jitter, dispose, unpair, late_success, diagnostics}))
+          mutants.append(("dispose-skips-cancel", replace_once(original,
+              "  void dispose() {\n    _disposed = true;\n    _cancelReconnectWait();",
+              "  void dispose() {\n    _disposed = true;"),
+              {dispose, wait_dispose}, {unpair, reset, late_success, diagnostics}))
+          # Exact location after the unpair signature, not the dispose call site.
+          prefix, body = original.split("  Future<void> unpair() async {", 1)
+          body = replace_once(body, "    _disposed = true;\n    _cancelReconnectWait();\n    _poll?.cancel();\n    await StoredSession.clear();",
+              "    _disposed = true;\n    _poll?.cancel();\n    await StoredSession.clear();")
+          mutants.append(("unpair-skips-cancel", prefix + "  Future<void> unpair() async {" + body,
+              {unpair, wait_unpair}, {dispose, jitter, reset, late_success, diagnostics}))
+          mutants.append(("late-failure-schedules-wait", replace_once(original,
+              "        if (_disposed) return;\n        final wait = Duration(",
+              "        final wait = Duration("), {late_fail, late_unpair_fail},
+              {dispose, unpair, jitter, reset, late_success, diagnostics}))
+          mutants.append(("late-success-adopted", replace_once(original,
+              "      if (_disposed) {\n        await fresh.close();\n        return;\n      }\n      _session = fresh;",
+              "      _session = fresh;"), {late_success},
+              {dispose, unpair, jitter, reset, late_fail, diagnostics}))
+          mutants.append(("cancel-retains-waiter", replace_once(original,
+              "    _reconnectResume?.complete();", "    // mutant: cancelled timer leaves waiter suspended."),
+              {wait_dispose, wait_unpair}, {dispose, unpair, jitter, reset, late_success, diagnostics}))
+
+          print("F1Y_SOURCE_HASHES=" + json.dumps(hashes, sort_keys=True), flush=True)
+          try:
+              code, results, _ = run("baseline")
+              assert code == 0 and set(results.values()) == {"success"}, results
+              for name, mutated, expected, controls in mutants:
+                  restore()
+                  source.write_text(mutated)
+                  patch = subprocess.check_output(["git", "diff", "--", str(source.relative_to(root))], cwd=root).decode()
+                  print("\nMUTANT_PATCH " + name + "\n" + patch, flush=True)
+                  try:
+                      code, results, assertions = run(name)
+                      assert code != 0, (name, "survived")
+                      assert all(results[n] == "failure" for n in expected), (name, results)
+                      assert all(any("Expected:" in m for m in assertions.get(n, [])) for n in expected), (name, assertions)
+                      assert all(results[n] == "success" for n in controls), (name, results)
+                      receipts[-1]["verified"] = True
+                      receipts[-1]["required_failures"] = sorted(expected)
+                      receipts[-1]["required_controls"] = sorted(controls)
+                  except Exception as error:
+                      errors.append({"case": name, "diagnostic_error": repr(error)})
+                      print("MUTANT_ORACLE_FAILURE=" + json.dumps(errors[-1]), flush=True)
+          finally:
+              restore()
+              code, results, _ = run("restored")
+              assert code == 0 and set(results.values()) == {"success"}, results
+              restored = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+              assert restored == hashes
+              print("F1Y_RESTORED_HASHES=" + json.dumps(restored, sort_keys=True), flush=True)
+              print("F1Y_MUTATION_RECEIPT=" + json.dumps({"cases": receipts, "errors": errors,
+                    "restore_identical": True, "normal_gate": False}, sort_keys=True), flush=True)
+          assert not errors, errors
+          assert sum(1 for r in receipts if r.get("verified")) == 9
+          PYRUN
