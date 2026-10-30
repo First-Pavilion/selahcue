@@ -98,6 +98,15 @@ class LoopbackHost {
   final List<Map<String, dynamic>> hellos = [];
 
   int _clientClosed = 0;
+  int upgradeAttemptsCompleted = 0;
+  final List<Object> upgradeErrors = [];
+
+  /// Actual owned WebSocket state, before fixture teardown closes anything.
+  int get openSocketCount =>
+      _sockets.where((socket) => socket.readyState != WebSocket.closed).length;
+
+  /// HTTP connections which have not detached into WebSockets yet.
+  int get httpConnectionCount => _server.connectionsInfo().total;
 
   /// How many connections the CLIENT has closed (this host never closes one
   /// itself before the test ends, so a socket that ends is the client's doing).
@@ -127,7 +136,11 @@ class LoopbackHost {
   /// well-formed JSON, wrong-typed JSON, or not JSON at all.
   ///
   /// The server and every socket are closed when the test ends.
-  static Future<LoopbackHost> start({required List<String> replies}) async {
+  static Future<LoopbackHost> start({
+    required List<String> replies,
+    Future<void> Function()? beforeUpgrade,
+    bool rejectUpgrade = false,
+  }) async {
     // Once a test has initialised the Flutter test binding (anything that mocks
     // a platform channel does), `HttpClient` is replaced by a stub that answers
     // every request with a 400, so the production `WebSocket.connect` could
@@ -149,19 +162,34 @@ class LoopbackHost {
     addTearDown(host._close);
 
     server.listen((req) async {
-      final ws = await WebSocketTransformer.upgrade(req);
-      host._sockets.add(ws);
-      var answered = false;
-      ws.listen((frame) {
-        if (answered) return;
-        answered = true;
-        host.hellos.add(jsonDecode(frame as String) as Map<String, dynamic>);
-        for (final reply in replies) {
-          ws.add(reply);
+      try {
+        await beforeUpgrade?.call();
+        if (rejectUpgrade) {
+          req.response.statusCode = HttpStatus.badRequest;
+          await req.response.close();
+          return;
         }
-      }, onDone: () => host._clientClosed++,
-          onError: (Object _) {},
-          cancelOnError: true);
+        final ws = await WebSocketTransformer.upgrade(req);
+        host._sockets.add(ws);
+        var answered = false;
+        ws.listen((frame) {
+          if (answered) return;
+          answered = true;
+          host.hellos.add(jsonDecode(frame as String) as Map<String, dynamic>);
+          for (final reply in replies) {
+            ws.add(reply);
+          }
+        }, onDone: () => host._clientClosed++,
+            onError: (Object _) {},
+            cancelOnError: true);
+      } on Object catch (error) {
+        // A client may force-close its pending HTTP request before the gated
+        // upgrade is released. Record that outcome instead of leaking an
+        // unhandled error from this asynchronous server listener.
+        host.upgradeErrors.add(error);
+      } finally {
+        host.upgradeAttemptsCompleted++;
+      }
     }, onError: (Object _) {});
     return host;
   }
