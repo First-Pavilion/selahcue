@@ -7,7 +7,6 @@ library;
 
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show DebugPrintCallback;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,6 +14,8 @@ import 'package:selahcue_controller/main.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/pairing_view.dart';
+
+import '../support/capture_debug_print.dart';
 
 const _stored = StoredSession(
     host: 'host.local', port: 4000, pinHex: 'ab', deviceId: 'd', token: 't');
@@ -42,6 +43,12 @@ Future<ControllerSession> Function({
       required Credentials creds,
     }) async =>
         throw error;
+
+void _quietWidgetTest(
+    String name, Future<void> Function(WidgetTester) body) {
+  testWidgets(name, (tester) =>
+      captureDebugPrintAsync(<String>[], () => body(tester)));
+}
 
 void main() {
   setUp(() {
@@ -81,7 +88,7 @@ void main() {
         MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
 
     for (final missingProfile in [false, true]) {
-      testWidgets(
+      _quietWidgetTest(
           missingProfile
               ? 'a missing profile reaches Connect without a reconnect attempt'
               : 'a platform keystore read failure reaches Connect without an '
@@ -133,7 +140,7 @@ void main() {
       });
     }
 
-    testWidgets('a valid profile is passed unchanged to reconnect',
+    _quietWidgetTest('a valid profile is passed unchanged to reconnect',
         (tester) async {
       var connects = 0;
       Map<String, Object>? observed;
@@ -173,7 +180,7 @@ void main() {
     });
   });
 
-  testWidgets('a FormatException from the launch connect shows Connect, '
+  _quietWidgetTest('a FormatException from the launch connect shows Connect, '
       'not a stuck splash', (tester) async {
     await launchFailingWith(tester, const FormatException('not json'));
 
@@ -182,7 +189,7 @@ void main() {
     await teardown(tester);
   });
 
-  testWidgets('a TypeError from the launch connect shows Connect, '
+  _quietWidgetTest('a TypeError from the launch connect shows Connect, '
       'not a stuck splash', (tester) async {
     await launchFailingWith(tester, _binaryFrameTypeError());
 
@@ -191,7 +198,7 @@ void main() {
     await teardown(tester);
   });
 
-  testWidgets('a SessionException (including a revoked device) still shows '
+  _quietWidgetTest('a SessionException (including a revoked device) still shows '
       'Connect', (tester) async {
     // No regression: the case the old catch DID handle must keep working.
     await launchFailingWith(
@@ -202,31 +209,37 @@ void main() {
     await teardown(tester);
   });
 
-  group('recording what the catch-all swallowed', () {
-    /// Run [body] with `debugPrint` captured into [sink]. Restored BEFORE the
-    /// test body returns, not in tearDown: flutter_test's invariant check runs
-    /// ahead of tearDown and fails a test that leaves a foundation debug
-    /// variable changed.
-    Future<void> capturing(
-        List<String> sink, Future<void> Function() body) async {
-      final DebugPrintCallback original = debugPrint;
-      debugPrint = (String? message, {int? wrapWidth}) {
-        if (message != null) sink.add(message);
-      };
+  _quietWidgetTest('a throwing diagnostic printer still reaches Connect',
+      (tester) async {
+    final original = debugPrint;
+    try {
       try {
-        await body();
+        debugPrint = (String? message, {int? wrapWidth}) {
+          if (message?.startsWith('connect failed with an unexpected') == true) {
+            throw StateError('printer unavailable');
+          }
+          original(message, wrapWidth: wrapWidth);
+        };
+        await launchFailingWith(tester, const FormatException('HOST-PAYLOAD'));
       } finally {
         debugPrint = original;
       }
+      expect(tester.takeException(), isNull);
+      expect(find.byType(PairingView), findsOneWidget);
+      expect(find.byType(SplashView), findsNothing);
+    } finally {
+      await teardown(tester);
     }
+  });
 
-    testWidgets('an unexpected launch failure is recorded by TYPE and stack '
+  group('recording what the catch-all swallowed', () {
+    _quietWidgetTest('an unexpected launch failure is recorded by TYPE and stack '
         'only, never with host-sent text', (tester) async {
       // Falling through to Connect is right, but it must not make a parsing bug
       // invisible. A FormatException's toString() embeds the offending source —
       // text the peer chose — so only the runtime type and a stack are written.
       final printed = <String>[];
-      await capturing(printed, () async {
+      await captureDebugPrintAsync(printed, () async {
         await launchFailingWith(
             tester, const FormatException('HOST-SENT-PAYLOAD'));
         expect(find.byType(PairingView), findsOneWidget);
@@ -238,9 +251,9 @@ void main() {
       expect(log, isNot(contains('HOST-SENT-PAYLOAD')));
     });
 
-    testWidgets('an expected failure (revoked) records nothing', (tester) async {
+    _quietWidgetTest('an expected failure (revoked) records nothing', (tester) async {
       final printed = <String>[];
-      await capturing(printed, () async {
+      await captureDebugPrintAsync(printed, () async {
         await launchFailingWith(
             tester, const SessionRevoked('authentication rejected: revoked'));
         expect(find.byType(PairingView), findsOneWidget);

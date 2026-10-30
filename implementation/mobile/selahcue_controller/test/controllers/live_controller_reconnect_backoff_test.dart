@@ -9,6 +9,7 @@
 /// where a thousand failures cost no real time.
 library;
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:fake_async/fake_async.dart';
@@ -19,6 +20,8 @@ import 'package:selahcue_controller/models/protocol.dart';
 import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
+
+import '../support/capture_debug_print.dart';
 
 /// A session whose every call fails, forcing the controller into `_reconnect`.
 class _DeadSession implements ControllerSession {
@@ -48,34 +51,18 @@ Object _binaryFrameTypeError() {
   }
 }
 
-/// Run [body] with `debugPrint` captured into [sink], restoring it afterwards.
-///
-/// Needed in BOTH tests below: the production `debugPrint` is throttled and
-/// schedules a Timer, which on the virtual clock would show up as a pending
-/// timer that has nothing to do with the loop under test.
-T _capturingDebugPrint<T>(List<String> sink, T Function() body) {
-  final original = debugPrint;
-  debugPrint = (String? message, {int? wrapWidth}) {
-    if (message != null) sink.add(message);
-  };
-  try {
-    return body();
-  } finally {
-    debugPrint = original;
-  }
-}
-
 void main() {
   test('1000 consecutive failures: a real backoff between attempts, one at a '
       'time, nothing grows, and dispose leaves no timers behind', () {
     // Every unexpected failure type is recorded once per outage; captured here
     // so that is not mistaken for the loop's own state.
     final recorded = <String>[];
-    _capturingDebugPrint(recorded, () => fakeAsync((async) {
+    captureDebugPrint(recorded, () => fakeAsync((async) {
       var attempts = 0;
       var inFlight = 0;
       var maxInFlight = 0;
       final starts = <Duration>[]; // when each attempt began, on the fake clock
+      final failures = <Duration>[]; // when the transport actually failed
 
       Future<ControllerSession> connect({
         required String host,
@@ -91,6 +78,7 @@ void main() {
           // A slow failing connect, so an attempt is genuinely in flight for a
           // while and a second, overlapping loop would show up in maxInFlight.
           await Future<void>.delayed(const Duration(milliseconds: 100));
+          failures.add(async.elapsed);
           // Rotate the failure kinds the loop must absorb.
           switch (attempts % 4) {
             case 0:
@@ -125,10 +113,10 @@ void main() {
         maxTimers = math.max(maxTimers, async.pendingTimers.length);
       }
 
-      // A real backoff: no two attempts closer than the 2 s the loop declares.
-      // (A 100 ms backoff, or none, would fail here — and only here.)
+      // Measure the wait after failure, excluding the 100ms transport duration.
+      // A 1.9s wait must not pass by borrowing that time from the connection.
       for (var i = 1; i < starts.length; i++) {
-        expect(starts[i] - starts[i - 1], greaterThanOrEqualTo(
+        expect(starts[i] - failures[i - 1], greaterThanOrEqualTo(
             const Duration(seconds: 2)),
             reason: 'attempt ${i + 1} began too soon after attempt $i');
       }
@@ -161,7 +149,7 @@ void main() {
     // source, i.e. text the peer chose, so only the runtime TYPE and a stack
     // (which carries no payload) may be written.
     final printed = <String>[];
-    _capturingDebugPrint(printed, () => fakeAsync((async) {
+    captureDebugPrint(printed, () => fakeAsync((async) {
       final failures = <Object>[
         const FormatException('HOST-SENT-PAYLOAD-1'),
         const FormatException('HOST-SENT-PAYLOAD-2'), // same type: not repeated
@@ -195,6 +183,8 @@ void main() {
     final log = printed.join('\n');
     expect(log, isNot(contains('HOST-SENT-PAYLOAD')),
         reason: 'never the message/toString() of a host-influenced error');
+    expect(log, isNot(contains('SessionException')),
+        reason: 'expected failures must not even acquire a diagnostic label');
     expect(log, isNot(contains('network down')),
         reason: 'an expected SessionException is not an unexpected failure');
     expect(
@@ -205,16 +195,110 @@ void main() {
     expect(log, contains('live_controller_reconnect_backoff_test.dart'),
         reason: 'a stack is recorded, so the failure can be located');
   });
+
+  test('the same unexpected type is reported again in a second real outage', () {
+    final printed = <String>[];
+    captureDebugPrint(printed, () => fakeAsync((clock) {
+      final first = _HealthySession();
+      final second = _HealthySession();
+      var attempts = 0;
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) async {
+        attempts++;
+        if (attempts == 3) return first;
+        if (attempts == 6) return second;
+        throw const FormatException('HOST-PAYLOAD');
+      }
+
+      final live = LiveController(
+          session: _DeadSession(), stored: _stored, connect: connect);
+      try {
+        clock.flushMicrotasks();
+        clock.elapse(const Duration(seconds: 8));
+        expect(attempts, 3);
+        expect(live.syncing, isFalse);
+        expect(first.reads, greaterThan(0));
+        expect(printed.where((m) => m.contains('unexpected FormatException')),
+            hasLength(1), reason: 'two same-type failures in the first outage');
+        first.failReads = true;
+        unawaited(live.refresh());
+        clock.flushMicrotasks();
+        clock.elapse(const Duration(seconds: 8));
+        expect(attempts, 6);
+        expect(live.syncing, isFalse);
+        expect(second.reads, greaterThan(0));
+        expect(printed.where((m) => m.contains('unexpected FormatException')),
+            hasLength(2), reason: 'a new outage must be diagnosable again');
+      } finally {
+        live.dispose();
+        clock.flushMicrotasks();
+      }
+      expect(clock.pendingTimers, isEmpty);
+    }));
+    expect(printed.join('\n'), isNot(contains('HOST-PAYLOAD')));
+  });
+
+  test('a throwing diagnostic printer does not strand the reconnect loop', () {
+    final original = debugPrint;
+    final escapedTypes = <Type>[];
+    var attemptsSeen = -1;
+    var recovered = false;
+    try {
+      debugPrint = (String? message, {int? wrapWidth}) {
+        throw StateError('printer unavailable');
+      };
+      runZonedGuarded(() => fakeAsync((clock) {
+        var attempts = 0;
+        Future<ControllerSession> connect({
+          required String host,
+          required int port,
+          required String pinHex,
+          required Credentials creds,
+        }) async {
+          attempts++;
+          if (attempts == 1) throw const FormatException('HOST-PAYLOAD');
+          return _HealthySession();
+        }
+        final live = LiveController(
+            session: _DeadSession(), stored: _stored, connect: connect);
+        try {
+          clock.flushMicrotasks();
+          clock.elapse(const Duration(seconds: 3));
+          attemptsSeen = attempts;
+          recovered = !live.syncing;
+        } finally {
+          live.dispose();
+          clock.flushMicrotasks();
+        }
+      }), (error, stack) => escapedTypes.add(error.runtimeType));
+    } finally {
+      debugPrint = original;
+    }
+    // Outside the guarded zone so assertion failures cannot be swallowed.
+    expect(attemptsSeen, 2, reason: 'the malformed reply still gets retried');
+    expect(recovered, isTrue, reason: 'replacement state really synchronized');
+    expect(escapedTypes, isEmpty);
+  });
 }
 
 /// A healthy replacement session for the recovery step of a reconnect.
 class _HealthySession implements ControllerSession {
+  bool failReads = false;
+  int reads = 0;
+
   @override
   MobileRole get grantedRole => MobileRole.producer;
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async => const Ack(1);
   @override
-  Future<OperatorStateView> operatorState() async => const OperatorStateView(
+  Future<OperatorStateView> operatorState() async {
+    reads++;
+    if (failReads) throw const SessionException('offline');
+    return const OperatorStateView(
         planName: 'Sunday',
         items: [],
         liveIndex: null,
@@ -222,6 +306,7 @@ class _HealthySession implements ControllerSession {
         blackout: false,
         timer: null,
       );
+  }
   @override
   Future<void> close() async {}
 }
