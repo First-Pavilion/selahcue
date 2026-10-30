@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Keep account token derivatives out of new audit rows
 - Role: backend-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b9dp2
 - Created: 2026-10-30
@@ -85,9 +85,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: successful account writers still persist token fingerprints/masks in request_id/after; replacing with already-used independent attempt IDs removes these derivatives without weakening auth or useful audit outcomes.
 - Change or investigation: complete task/comments/deps and current seven writer calls read; meaningful test-only real-flow regressions next.
 - Verifier executed: structural goal validation; hosted diagnostic pending.
-- Result: no production changes; actual runtime RED pending.
-- New evidence: api-token-free-audit test-only receipt.
+- Result: actual hosted RED41042778437 sourceb1a3cad7/diagnostic0f56617d produced8behavioral failures and14passes in12.92s. All7successful flows found token derivatives in actual audit columns; repeated login IDs were session fingerprints rather than independent UUIDs. All11real audit-column scanner controls, log capture control and2existing intentional device correlation controls passed. Setup/checks/migrations succeeded.
+- New evidence: api-token-free-audit/red.log; https://github.com/First-Pavilion/selahcue/actions/runs/41042778437
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: replacing only the7account audit request IDs with existing uuid.uuid4().hex and dropping2masked session after fields removes token derivatives while retaining credential/session lifecycle and useful audit outcomes.
+- Change or investigation:7writer calls updated; existing failure attempt pattern reused. Actor/target/result/expiry/status/provenance and transaction boundaries unchanged. All20new tests byte-identical to actual RED; intentional device writers, global redaction, historical rows and optional inline query logging untouched.
+- Verifier executed: local stdlib AST/diff/source-scope/test-preservation and structural goal checks only.
+- Result: candidate prepared locally; no runtime GREEN or completion claim. Parent requires holding first PR/fullCI until DRA's measured20-minute API job headroom is actually merged; then ordinary integrate fresh main and run the complete gate once. WVE account_schema and DRA views are separate from these account service edits; confirm overlap at integration.
+- New evidence: api-token-free-audit/candidate-checkpoint.json and author candidate checkpoint.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -102,8 +112,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dp2-token-free-audit.md
-- Validator result: pending first execution.
+- Validator result: structural validation, stdlib AST/test-preservation and diff checks PASS.
 - Independent verification result: pending.
-- Terminal state: ACTIVE
-- Remaining failed or blocked criteria: actual hosted RED/GREEN, full CI, four reviews, mergeQA pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: actual hosted GREEN/full CI, allfour reviews, mergeQA pending. Initial meaningful RED observed; first publication waits for DRA CI headroom on actual main.
 - ClickUp final evidence comment: parent owns publication.
