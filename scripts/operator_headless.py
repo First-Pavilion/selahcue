@@ -13351,6 +13351,30 @@ DRIVER = r"""
         // The old read, kept ONLY to prove each fixture really is the shape it used to miss.
         function _lastRuleFilter(sel, fx) { return __cssFilter(__cssRule(sel, fx)); }
 
+        // 17tnw2b1f30: CSSOM retains var() rather than the resolved brightness value.
+        // The browser premise prevents a text-only control from passing without a real
+        // re-lightening hazard; call the SAME predicate as the registered PP-GEN site.
+        _cascadeCase(
+          ":root{--__f30-glow:brightness(1.06);} .__cssom_f30_var__{background:#5a48d0;filter:var(--__f30-glow);}",
+          "__cssom_f30_var__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && window.__cssEffectiveFilter(sel, fx) === "var(--__f30-glow)",
+               "F30 premise: the browser applies variable-delivered brightness while the CSSOM guard value still contains var()");
+            ok(!window.__cssRawBlocks(sel, fx).some(function(body){ return /brightness/i.test(body); }),
+               "F30 premise: the matching raw rule contains no literal brightness, so word matching cannot see this hazard");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "F30: the real PP-GEN predicate rejects brightness delivered through var()");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "F30 control: the four siblings' conservative composed predicate already rejects the same real hazard");
+          });
+        _cascadeCase(
+          ":root{--__f30-unused:brightness(1.06);} .__cssom_f30_clean__{background:#5a48d0;}",
+          "__cssom_f30_clean__",
+          function(fx, computed, sel){
+            ok(computed === "none" && __cssNoBrightnessFilter(sel, fx) && __cssFilterGuardOk(sel, fx),
+               "F30 control: a clean matching rule still passes both predicates even with an unused brightness variable elsewhere");
+          });
+
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
         // predicate (not just one half) rejects it.
