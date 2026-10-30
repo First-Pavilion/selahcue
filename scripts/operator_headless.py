@@ -1952,6 +1952,11 @@ EXPECTED_MIN_CHECKS = 2384
 # actual connected text mutations, dedup/focus/deferred/selection/clear/safe-text controls.
 # Measured on dc27dc11 in hosted41051898145:2401 checks,0 behavioral FAIL.
 EXPECTED_MIN_CHECKS = 2401
+# 2401 ->2406 (17tnw2b1f30): browser-resolved var() brightness premise,
+# real PP-GEN predicate rejection, sibling predicate and clean-rule controls.
+# Measured twice in hosted41056296534:2406 checks,1 intended behavioral FAIL
+# against the unchanged predicate; corrected full-suite evidence is required.
+EXPECTED_MIN_CHECKS = 2406
 
 
 def find_chrome():
@@ -2539,15 +2544,10 @@ CSS_SRC = (
     var filterVal = window.__cssEffectiveFilter(sel, src);
     return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
-  // PP-GEN's own narrower shape (Cody, PR #79 review round 1): only a re-lightening `brightness`
-  // filter is disqualifying, not "any filter at all" — a faithful migration of this site's
-  // pre-existing intent, not something this fix changes.
+  // PP-GEN shares the siblings' conservative predicate: a var() value can deliver brightness
+  // without that word appearing in the matching rule. Keep the registered helper identity.
   window.__cssNoBrightnessFilter = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return false; }  // fail-closed, as above
-    var filterVal = window.__cssEffectiveFilter(sel, src);
-    var rawBlocks = window.__cssRawBlocks(sel, src);
-    return (!filterVal || !/brightness/.test(filterVal)) &&
-      !rawBlocks.some(function(body) { return /brightness/i.test(body); });
+    return window.__cssFilterGuardOk(sel, src);
   };
   // A throw-away, isolated stylesheet for the self-tests: an inline <style> (so .cssRules is
   // readable, same reason as the probe above) built from `cssText`, returned as the {sheet, text}

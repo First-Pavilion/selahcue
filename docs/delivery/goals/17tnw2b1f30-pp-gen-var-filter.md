@@ -52,7 +52,7 @@ Fresh actual main31c2e754ab268838f7c5a17c7a56d61de8b87a42 includes merged JH and
 ### Assumptions and unknowns
 
 - VERIFIED: current helper and actual call-site gap remain; original task is actionable with no further owner decision.
-- UNKNOWN: actual browser RED/count/candidate-CSS/mutation/normal CI results until executed.
+- VERIFIED: actual hosted RED and candidate-CSS witness41056296534 each measured2406 checks with the one intended F30 predicate failure; old2401 strict-count guard additionally exited4. Browser var/raw premises, clean and sibling controls, existing CSSOM-PARSE and other full-suite assertions passed. Mutation/restoration and normal final CI remain pending.
 
 ## Dependencies and approvals
 
@@ -85,9 +85,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-003.
 - Hypothesis: current PP-GEN accepts var() because neither its effective CSSOM value nor matching raw block literally contains brightness, although getComputedStyle resolves brightness.
 - Change or investigation: full original task/comments/current main inspected; prepare tests-only actual browser premise, predicate rejection and clean/sibling controls, without changing CSS_SRC helper or production CSS.
-- Verifier executed: structural validator and stdlib/static baseline checks; hosted actual behavioral RED pending.
-- Result: Pending hosted evidence; predicate unchanged.
-- New evidence: immutable tests-only checkpoint/own diagnostic receipt to be linked at freeze.
+- Verifier executed: structural validator and stdlib/static baseline checks; hosted41056296534 on tests-only1eded83cb336a58290d7a08f429fd6c003ec3bf3, diagnosticffda38b9b7b2d1c5b3bda67d5393f65e6626394e.
+- Result: Actual baseline2406 checks,1 intended F30 failure; clean/sibling/browser premises and all other behavioral assertions pass. Old2401 strict-count guard additionally exits4. Isolated actual-site adversarial var CSS also has2406/1, while the old actual PP-GEN site incorrectly passes; this is a site-level false-green witness, not a whole-suite pass.
+- New evidence: ppgen-var/red.log, red-status.json and red-receipt.json retain raw evidence, including122 existing CSSOM-PARSE pass records across both runs.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: delegating the registered PP-GEN helper to the existing sibling composed predicate rejects variable-delivered brightness while preserving all shared conservative protections and clean CSS.
+- Change or investigation: replace only the weak helper body and its obsolete comment, retain every assertion/raw scanner/registered site, pin2406 from the actual two RED measurements, ordinary-integrate fresh main1cf675c4 (DP2 API-only).
+- Verifier executed: stdlib AST, full baseline diff check and structural validator; hosted clean/old-helper mutation/actual-site CSS mutation/restoration and normal CI prepared for this frozen source.
+- Result: Source checks pass; hosted corrected behavior and full CI pending.
+- New evidence: own current-source receipt/raw logs will be attached at immutable handoff; neither pending runtime gates nor independent review are claimed green.
 - Decision: iterate
 
 ## Risks and rollback
@@ -103,8 +113,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1f30-pp-gen-var-filter.md
-- Validator result: Pending initial structural validation.
+- Validator result: Initial structural validation PASS; revalidated with each source checkpoint.
 - Independent verification result: Pending root-owned reviews.
-- Terminal state: ACTIVE, preparing test-first evidence.
+- Terminal state: ACTIVE, observed test-first defect; corrected candidate awaiting hosted verification and independent review.
 - Remaining failed or blocked criteria: C-001 through C-005 pending.
 - ClickUp final evidence comment: Root owns delivery updates and persisted QA readback after passing merge gates.
