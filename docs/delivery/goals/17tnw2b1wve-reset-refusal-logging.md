@@ -6,7 +6,7 @@
 - Parent goal ID: WAVE2-SELAHCUE-20
 - Title: Bound framework logging of expected reset throttle refusals
 - Role: backend-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b1wve
 - Created: 2026-10-30
@@ -84,9 +84,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: typed expected throttle exceptions escape the bounded guard reporter into Strawberry default process_errors and produce one traceback per refusal.
 - Change or investigation: full task and existing reset/guard/schema source read; test-only regression and positive controls will target real requests before production edits.
 - Verifier executed: structural goal validation; hosted diagnostic next.
-- Result: runtime RED pending; no production changes authorized until observed behavioral failure.
-- New evidence: wave2-20261029/api-reset-refusal-logging test-only receipt.
+- Result: Actual hosted RED41039546303, source345418df/diagnosticbbfeed81:4behavioral failures,4positive passes in4.15s. Each budget produced100Strawberry ERROR records despite one bounded application warning. Setup/checks/migrations passed; raw red.log preserved.
+- New evidence: wave2-20261029/api-reset-refusal-logging/red.log; https://github.com/First-Pavilion/selahcue/actions/runs/41039546303
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: account schema can omit only original typed SafeAPIError(RATE_LIMITED) from default framework error logging, relying on existing bounded scope warning without altering result errors or other exceptions.
+- Change or investigation: confirmed pinned Strawberry0.336.2 BaseSchema.process_errors logs every error. Added account-only override; default logger receives all other errors, including arbitrary exceptions with spoofed RATE_LIMITED extension. Tests unchanged from actual RED.
+- Verifier executed: stdlib AST syntax, unchanged test comparison, diff and goal validation; full hosted API next.
+- Result: candidate prepared; no local project runtime. Runtime final counts and boundary controls pending corrected full API gate; independent review/delivery pending.
+- New evidence: api-reset-refusal-logging candidate/PR/raw normal CI evidence at handoff.
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -101,8 +111,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1wve-reset-refusal-logging.md
-- Validator result: pending first execution.
+- Validator result: structural validation, stdlib AST syntax and diff checks PASS.
 - Independent verification result: pending.
-- Terminal state: ACTIVE
-- Remaining failed or blocked criteria: meaningful hosted RED/GREEN, full CI, four reviews, merge and QA pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: hosted GREEN/full API, four reviews, merge and QA pending; meaningful RED observed.
 - ClickUp final evidence comment: parent owns publication.
