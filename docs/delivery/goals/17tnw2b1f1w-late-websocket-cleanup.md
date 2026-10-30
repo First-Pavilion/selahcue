@@ -126,6 +126,16 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - New evidence: real acquired-socket harness controls pass without zone type/runtime errors; source failure handling does not hide unhandled zone errors.
 - Decision: freeze minimal candidate and obtain fresh full hosted Flutter analysis/tests before root independent reviews.
 
+### Iteration 5
+
+- Target criterion: C-003 and C-006
+- Hypothesis: a forced pending-HTTP close can reach the server's upgrade/error-close path, whose readyState stays open; current cancelOnError hides subsequent input completion. Actual transport ownership versus stale observation needs runtime attribution.
+- Change or investigation: candidate CI 41039446284 passed analysis and 459 tests, failing only serverCounts at test line199; preceding clientCounts passed. Cody, Shadow and Vera correctly block the unresolved mandatory gate. Add test-only server input/output completion and error-type diagnostics, allow the fixture input to report done after error without closing the peer, and retain existing readyState counts/zero assertions/100 cycles. Bound diagnostic terminal observation by the same five-second completion bound. Production unchanged from f38ce412.
+- Verifier executed: static SDK inspection of WebSocket error/onDone/cancel paths and sink close future; raw candidate log pr286-candidate-attempt1.log retained. Structural validation/full baseline diff check; hosted diagnostic run pending.
+- Result: attribution unknown; no timing waiver or production/client leak assertion.
+- New evidence: failed sequence belongs only to server readyState-derived counts, starting at index4; all five positive controls and other three leak cases passed.
+- Decision: obtain actual hosted per-socket transport completion/error evidence before any production or oracle correction. If oracle changes, require old-source sensitivity and all controls as well as full candidate CI.
+
 ## Risks and rollback
 
 - Risks: cleanup must not close a timely returned session, publish an expired session, double-close a late socket or expose unhandled late errors. Force-closing HTTP alone cannot discharge a WebSocket already detached from that client.

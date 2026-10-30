@@ -20,6 +20,7 @@
 /// removing the key: it is deliberate and worthless.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -92,6 +93,19 @@ String _testPinHex() {
 class LoopbackHost {
   final HttpServer _server;
   final List<WebSocket> _sockets = [];
+  final List<Map<String, Object>> _socketTerminals = [];
+
+  List<Map<String, Object>> get socketDiagnostics => [
+        for (var i = 0; i < _sockets.length; i++)
+          {
+            'index': i,
+            'readyState': _sockets[i].readyState,
+            ..._socketTerminals[i]
+          },
+      ];
+
+  bool get allSocketTransportsDone => _socketTerminals.every(
+      (value) => value['inputDone'] == true && value['outputDone'] == true);
 
   /// Every hello received, in arrival order — one entry per connection attempt.
   /// The length is how many times a client dialled in and spoke.
@@ -171,6 +185,15 @@ class LoopbackHost {
         }
         final ws = await WebSocketTransformer.upgrade(req);
         host._sockets.add(ws);
+        final terminal = <String, Object>{
+          'inputDone': false, 'outputDone': false
+        };
+        host._socketTerminals.add(terminal);
+        unawaited(ws.done.then<void>((_) {
+          terminal['outputDone'] = true;
+        }, onError: (Object error, StackTrace stackTrace) {
+          terminal['outputError'] = error.runtimeType.toString();
+        }));
         var answered = false;
         ws.listen((frame) {
           if (answered) return;
@@ -179,9 +202,12 @@ class LoopbackHost {
           for (final reply in replies) {
             ws.add(reply);
           }
-        }, onDone: () => host._clientClosed++,
-            onError: (Object _) {},
-            cancelOnError: true);
+        }, onDone: () {
+          terminal['inputDone'] = true;
+          host._clientClosed++;
+        }, onError: (Object error) {
+          terminal['inputError'] = error.runtimeType.toString();
+        });
       } on Object catch (error) {
         // A client may force-close its pending HTTP request before the gated
         // upgrade is released. Record that outcome instead of leaking an

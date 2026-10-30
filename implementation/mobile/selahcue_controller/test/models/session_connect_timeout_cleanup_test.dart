@@ -196,7 +196,13 @@ void main() {
     // Counts are observed BEFORE any fixture teardown can mask a leak. On the
     // broken baseline all 100 cycles finish, retaining up to 100 real sockets.
     expect(clientCounts, everyElement(0));
-    expect(serverCounts, everyElement(0));
+    final terminalBound = Stopwatch()..start();
+    while (!host.allSocketTransportsDone && terminalBound.elapsed < _bound) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(serverCounts, everyElement(0), reason:
+        'SDK ${Platform.version}; peer transports done: '
+        '${host.allSocketTransportsDone}; ${host.socketDiagnostics}');
     await _until(() => host.httpConnectionCount == 0);
     expect(host.httpConnectionCount, 0);
     expect(host.hellos, isEmpty);
