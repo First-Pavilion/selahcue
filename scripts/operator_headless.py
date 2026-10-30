@@ -13581,11 +13581,14 @@ DRIVER = r"""
            "CSSOM-PARSE-03 (premise): Chrome's own parser drops a filter: declaration whose value it does not recognise, so __cssFilter alone reports it as carrying NO filter (\"" +
            (wRejectFilter || "none") + "\") — the exact blind spot the raw-text backstop below exists for");
         document.head.removeChild(rejectProbe);
-        var wSavedCssText = window.__CSSTEXT;
-        window.__CSSTEXT = wRejectCss;
-        ok(window.__cssRawHasFilter(wRejectSel),
-           "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
-        window.__CSSTEXT = wSavedCssText;
+        function wCheckRejectedRawSource() {
+          var wSavedCssText = window.__CSSTEXT;
+          window.__CSSTEXT = wRejectCss;
+          ok(window.__cssRawHasFilter(wRejectSel),
+             "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
+          window.__CSSTEXT = wSavedCssText;
+        }
+        wCheckRejectedRawSource();
 
         // Gap 4 (Sana, PR #79 follow-up, finding 2): source order alone is not the cascade's
         // tie-break — a duplicate sitting inside an @media block that does NOT currently match
@@ -13607,15 +13610,51 @@ DRIVER = r"""
         // on shapes this file's own comments already carry (e.g. app.css documents old rules in
         // prose that reads exactly like a selector block).
         ok(!!wRejectRule && !wRejectFilter, "CSSOM-PARSE-05 (premise, reuses Gap 3's fixture): the adversarial rule above still carries an unparseable filter: that CSSOM alone cannot see");
-        window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
-          " { background: var(--sc-primary-hover); } before the AA fix. */";
-        ok(window.__cssRawHasFilter(wRejectSel),
-           "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
-        var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
-        window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
-        ok(!window.__cssRawHasFilter(wCmtOnlySel),
-           "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
-        window.__CSSTEXT = wSavedCssText;
+        function wCheckCommentRawSource() {
+          var wSavedCssText = window.__CSSTEXT;
+          window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
+            " { background: var(--sc-primary-hover); } before the AA fix. */";
+          ok(window.__cssRawHasFilter(wRejectSel),
+             "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
+          var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
+          window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
+          ok(!window.__cssRawHasFilter(wCmtOnlySel),
+             "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
+          window.__CSSTEXT = wSavedCssText;
+        }
+        wCheckCommentRawSource();
+
+        // AYETD: throw through the REAL checks at each global swap state. Each case observes
+        // cleanup before this test's finally isolates later siblings; cleanup here cannot
+        // falsely satisfy the assertion about the function under test.
+        var wRealRawHasFilter = window.__cssRawHasFilter;
+        var wOriginalCssText = window.__CSSTEXT;
+        [
+          {name:"CSSOM-PARSE-03", run:wCheckRejectedRawSource, at:1},
+          {name:"CSSOM-PARSE-05 first swap", run:wCheckCommentRawSource, at:1},
+          {name:"CSSOM-PARSE-05 second swap", run:wCheckCommentRawSource, at:2}
+        ].forEach(function(test){
+          var sentinel = new Error("AYETD deliberate raw-helper exception"), caught = null, calls = 0;
+          try {
+            window.__cssRawHasFilter = function(sel, src){
+              calls++;
+              if (calls === test.at) throw sentinel;
+              return wRealRawHasFilter(sel, src);
+            };
+            try { test.run(); } catch(error) { caught = error; }
+            ok(caught === sentinel && calls === test.at,
+               "AYETD exception premise: " + test.name + " really reaches and propagates the injected helper exception");
+            ok(window.__CSSTEXT === wOriginalCssText,
+               "AYETD exception cleanup: " + test.name + " restores the exact original stylesheet before the caller recovers");
+          } finally {
+            window.__cssRawHasFilter = wRealRawHasFilter;
+            window.__CSSTEXT = wOriginalCssText;
+          }
+        });
+        ok(window.__CSSTEXT === wOriginalCssText && window.__cssRawHasFilter === wRealRawHasFilter,
+           "AYETD isolation control: exception probes leave the real stylesheet and raw guard available to every later sibling");
+        ok(window.outerWidth === 800 && window.outerHeight === 600 && window.innerWidth === 800 && matchMedia("(width:800px)").matches,
+           "AYETD viewport control: the actual browser uses the pinned800x600 outer window and800px CSS viewport (observed " + window.outerWidth + "x" + window.outerHeight + "/" + window.innerWidth + "x" + window.innerHeight + ")");
 
         // Gap 6 (Sana, PR #79 follow-up round 2, finding NEW-3): CSSOM-PARSE-03 above pins the
         // __cssRawHasFilter PRIMITIVE, not the WIRING — proven live that deleting the
