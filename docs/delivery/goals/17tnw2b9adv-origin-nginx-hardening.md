@@ -119,6 +119,16 @@ Verified fresh main dd5cc038efe04681e42746edb8d243996badc947, baseline normal CI
 - New evidence: reviews/17tnw2b9adv-cody.md; forthcoming cody-case-red workflow/receipt/log under api-origin-nginx-hardening.
 - Decision: handoff
 
+### Iteration 5
+
+- Target criterion: C-003 and C-005.
+- Hypothesis: normalizing the ASCII map-variable name comparison closes CODY-ADV-01 without refusing unrelated set directives or altering any production code.
+- Change or investigation: independently classified actual hosted41091760647 raw; all11nginx syntax fixtures accepted, exactly2DID NOT RAISE failures (uppercase/mixed-case map overrides),26controls passed in1.68s, no setup/oracle failure. Added lower() only to the mapped-variable comparison, with explanatory nginx semantic comment. All regression/positive fixtures unchanged since their RED.
+- Verifier executed: raw selector/count/syntax classification, stdlib AST/diff/structural goal checks; final current-main integration/full normal hosted API CI pending.
+- Result: actual review regression confirmed and minimal fix prepared; finding closure remains subject to full hosted GREEN and all four final reviews. No production nginx/settings/policy/dependency/workflow changes in remediation.
+- New evidence: api-origin-nginx-hardening/cody-case-red-job.log and cody-case-red-classification.json; final immutable source/full CI receipts to follow.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: hiding useful diagnostics, inadvertently changing accepted origins, treating quoted directive text as executable configuration, invalid nginx mutants or absent checkout fixture.

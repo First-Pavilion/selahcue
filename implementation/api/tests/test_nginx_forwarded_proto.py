@@ -276,7 +276,8 @@ def test_no_set_override_or_uninspected_server_include_can_bypass_the_map():
     config = _config()
     servers = [block for block in _blocks() if block["header"] == "server"]
     for words, offset, _ in _directives(config):
-        assert not (words[0] == "set" and len(words) > 1 and words[1] == MAP_VARIABLE), (
+        # nginx registers/indexes these variable names case-insensitively.
+        assert not (words[0] == "set" and len(words) > 1 and words[1].lower() == MAP_VARIABLE), (
             "set must not override the trusted client-proto map"
         )
         if words[0] == "include":
