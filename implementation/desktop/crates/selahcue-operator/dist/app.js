@@ -10537,6 +10537,7 @@
       // Undo is offered from THIS list — never from "the last delete", which is how you ship an
       // Undo button that fails.
       let pmLibRestorable = [];
+      let pmLibLoadGen = 0; // Only the latest Library read owns its reply/error and busy state.
       const pmLibBody = () => document.querySelector("#surface-presentation .pm-body");
       // Presentation surface has three modes (Design 2.0 browse/present/edit): the Library list, the
       // slide GRID, and the authoring EDITOR (.pm-body). pmSetMode toggles which one is visible.
@@ -10567,16 +10568,22 @@
         if (wasOpen) { const ds = pmEl("pm-deckswitch"); if (ds) ds.focus(); }
       }
       async function pmLibLoad() {
+        const gen = ++pmLibLoadGen;
+        const planGen = planDecksGen;
         const grid = pmEl("pm-lib-grid");
         grid.setAttribute("aria-busy", "true");
         pmEl("pm-lib-error").hidden = true;
         try {
-          pmApplyLibrary(await invoke("deck_list"));
+          const view = await invoke("deck_list");
+          // A newer read or shared snapshot (including a completed mutation) retires this reply.
+          if (gen !== pmLibLoadGen || planGen !== planDecksGen) return;
+          pmApplyLibrary(view);
         } catch (e) {
+          if (gen !== pmLibLoadGen || planGen !== planDecksGen) return;
           console.error("[SelahCue] deck_list failed", e);
           grid.innerHTML = ""; pmEl("pm-lib-empty").hidden = true; pmEl("pm-lib-error").hidden = false;
         } finally {
-          grid.setAttribute("aria-busy", "false");
+          if (gen === pmLibLoadGen) grid.setAttribute("aria-busy", "false");
         }
       }
       function pmApplyLibrary(view) {
