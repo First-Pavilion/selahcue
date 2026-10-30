@@ -91,10 +91,20 @@ Full saved task/comments at wave2-20261029/mobile-qualification/17tnw2b1f1w.json
 - Target criterion: C-001 through C-005
 - Hypothesis: Future.timeout abandons an uncancelled connection future, so owned HTTP resources and late WebSockets persist unless ownership is explicitly discharged.
 - Change or investigation: inspect full task/current main/SDK source, extend real loopback fixture with bounded upgrade gates, and add unchanged-production regression/controls.
-- Verifier executed: structural Goal validation and full baseline diff check; actual hosted setup/RED pending publication.
-- Result: pending hosted execution
+- Verifier executed: structural Goal validation and full baseline diff check; hosted run 41037238920 at 59c6f387.
+- Result: hosted analysis failed on two lint diagnostics for the inner runUnary type parameter T shadowing run<T>; tests were skipped. This is not behavioral RED.
 - New evidence: public connect/pair paths share establishment; test-only scheduling can expose both pending-upgrade and already-acquired completion ownership without production API additions.
 - Decision: freeze tests only, publish draft PR, inspect actual behavioral RED, then implement minimal cleanup.
+
+### Iteration 2
+
+- Target criterion: C-005
+- Hypothesis: renaming the zone callback's inner generic parameter removes both reported analysis diagnostics without changing scheduling or production behavior.
+- Change or investigation: rename inner T to Value only; preserve unchanged production and every regression/control.
+- Verifier executed: full baseline diff check and structural Goal validation; fresh hosted analysis/tests pending ordinary push.
+- Result: pending hosted execution; SDK zone runtime remains unverified.
+- New evidence: raw first-attempt log saved as wave2-20261029/mobile-late-websocket-test-attempt1.log.
+- Decision: obtain actual hosted behavioral RED and passing controls before production changes.
 
 ## Risks and rollback
 

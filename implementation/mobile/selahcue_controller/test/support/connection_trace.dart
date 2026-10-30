@@ -122,7 +122,7 @@ class ConnectionTrace {
           }
           return parent.createTimer(zone, duration, callback);
         },
-        runUnary: <R, T>(self, parent, zone, callback, value) {
+        runUnary: <R, Value>(self, parent, zone, callback, value) {
           if (value is WebSocket && value is! ObservedWebSocket) {
             final observed =
                 sockets.putIfAbsent(value, () => ObservedWebSocket(value));
@@ -133,10 +133,11 @@ class ConnectionTrace {
               // source future. Defer that delivery after a real socket has been
               // detached/acquired, rather than faking a WebSocket or connect.
               _heldOnce = true;
-              _heldCompletion = () => parent.runUnary(zone, callback, observed as T);
+              _heldCompletion =
+                  () => parent.runUnary(zone, callback, observed as Value);
               return null as R;
             }
-            return parent.runUnary(zone, callback, observed as T);
+            return parent.runUnary(zone, callback, observed as Value);
           }
           return parent.runUnary(zone, callback, value);
         },
