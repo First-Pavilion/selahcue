@@ -1,0 +1,203 @@
+name: wave3 reconnect diagnostics sensitivity
+on:
+  push:
+    branches: [codex/17tnw2b1uhz-diagnostics-sensitivity]
+    paths: [.github/workflows/wave3-diagnostics-mutants.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wave3-uhz-diagnostics-sensitivity
+  cancel-in-progress: false
+jobs:
+  diagnostics-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: 7434de3283f45187ddbee3c31fb36009e22e224d
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only first parent and check out exact candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-diagnostics-mutants.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install exact locked dependencies
+        working-directory: implementation/mobile/selahcue_controller
+        run: flutter pub get --enforce-lockfile
+      - name: Actual scoped suites, four meaningful mutants and identical restoration
+        run: |
+          python3 - <<'PYRUN'
+          import difflib
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          mobile = root / "implementation/mobile/selahcue_controller"
+          controller = mobile / "lib/controllers/live_controller.dart"
+          session = mobile / "lib/models/session.dart"
+          tests = ["test/controllers/live_controller_reconnect_backoff_test.dart",
+                   "test/controllers/live_controller_reconnect_malformed_test.dart",
+                   "test/models/connect_diagnostics_test.dart",
+                   "test/views/launcher_connect_failure_test.dart"]
+          paths = [controller, session, *(mobile / p for p in tests),
+                   mobile / "test/support/capture_debug_print.dart",
+                   mobile / "pubspec.yaml", mobile / "pubspec.lock"]
+          saved = {p: p.read_bytes() for p in paths}
+          for p, b in saved.items():
+              assert b == subprocess.check_output(["git", "show", "7434de3283f45187ddbee3c31fb36009e22e224d:" + str(p.relative_to(root))], cwd=root)
+          hashes = {str(p.relative_to(root)): hashlib.sha256(b).hexdigest() for p, b in saved.items()}
+          original_controller = controller.read_text()
+          original_session = session.read_text()
+          receipts = []
+          errors = []
+
+          outage = "the same unexpected type is reported again in a second real outage"
+          frames = "unexpected failure stack contains only its first eight frames"
+          helper = "a throwing diagnostic printer does not escape the helper"
+          reconnect = "a throwing diagnostic printer does not strand the reconnect loop"
+          launcher = "a throwing diagnostic printer still reaches Connect"
+          interval = ("1000 consecutive failures: a real backoff between attempts, one at a "
+                      "time, nothing grows, and dispose leaves no timers behind")
+          safe = ("an unexpected connect failure is recorded by TYPE and stack only, once "
+                  "per type, and never with host-sent text")
+          revoked = "SessionRevoked still stops the loop and raises the Access-removed state"
+          late = "a connect that completes after dispose has its session closed, not installed"
+          launch_safe = ("recording what the catch-all swallowed an unexpected launch failure is "
+                         "recorded by TYPE and stack only, never with host-sent text")
+          critical = {outage, frames, helper, reconnect, launcher, interval, safe, revoked, late, launch_safe}
+          command = ["flutter", "test", "--no-pub", *tests, "--machine"]
+
+          # Keep all four test files and every sibling in every baseline/mutant/restored
+          # invocation. No cap-removal mutation is applied to the retry loop here; the
+          # legacy 1000-attempt test remains bounded and is not excluded.
+          def audit(stage, before):
+              report = {}
+              for p, expected in before.items():
+                  actual = p.read_bytes()
+                  report[str(p.relative_to(root))] = {
+                      "before_sha256": hashlib.sha256(expected).hexdigest(),
+                      "after_sha256": hashlib.sha256(actual).hexdigest(),
+                      "changed": actual != expected,
+                      "diff": "".join(difflib.unified_diff(expected.decode().splitlines(keepends=True),
+                               actual.decode().splitlines(keepends=True), fromfile=str(p)+":before", tofile=str(p)+":after"))}
+              print("UHZ_FILE_AUDIT=" + json.dumps({"stage": stage, "files": report}, sort_keys=True), flush=True)
+              return {p for p, b in before.items() if p.read_bytes() != b}
+
+          def run(name):
+              before = {p: p.read_bytes() for p in paths}
+              proc = subprocess.run(command, cwd=mobile, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, text=True, timeout=180)
+              print(f"\n=== {name} exit={proc.returncode} ===\n{proc.stdout}", flush=True)
+              names = {}
+              done = {}
+              assertions = {}
+              for line in proc.stdout.splitlines():
+                  try:
+                      e = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if not isinstance(e, dict):
+                      continue
+                  if e.get("type") == "testStart":
+                      names[e["test"]["id"]] = e["test"]["name"]
+                  if e.get("type") == "testDone" and not e.get("hidden", False):
+                      done[e["testID"]] = e["result"]
+                  if e.get("type") == "error":
+                      assertions.setdefault(e["testID"], []).append(e.get("error", ""))
+              results = {names[k]: v for k, v in done.items() if k in names and not names[k].startswith("loading ")}
+              messages = {names[k]: v for k, v in assertions.items() if k in names}
+              assert len(results) == 22 and critical <= set(results), ("setup/missing cases", results)
+              receipts.append({"case": name, "exit_code": proc.returncode, "results": results,
+                               "assertions": messages, "output_sha256": hashlib.sha256(proc.stdout.encode()).hexdigest()})
+              assert not audit("after-"+name, before), "test invocation changed tracked source/dependencies"
+              return proc.returncode, results, messages
+
+          def once(text, old, new):
+              assert text.count(old) == 1, (old, text.count(old))
+              return text.replace(old, new)
+
+          def restore():
+              for p, b in saved.items():
+                  p.write_bytes(b)
+              assert not audit("restored-before-next-invocation", saved)
+
+          persistent = once(original_controller, "  ControllerSession _session;",
+                            "  ControllerSession _session;\n  final _reportedTypes = <Type>{};")
+          persistent = once(persistent, "    final reportedTypes = <Type>{};",
+                            "    final reportedTypes = _reportedTypes;")
+          no_cap = once(original_session, "      maxFrames: 8,\n", "")
+          short_wait = once(original_controller,
+              """        final wait = Duration(
+                    microseconds: (retryCeilingMs * 1000 *
+                            (0.8 + 0.2 * _reconnectRandom.nextDouble()))
+                        .round(),
+                  );""", "        const wait = Duration(milliseconds: 1900);")
+          protected = """  try {
+              debugPrintStack(
+                stackTrace: stack,
+                label: 'connect failed with an unexpected ${error.runtimeType}',
+                maxFrames: 8,
+              );
+            } on Object {
+              // Diagnostics must not interrupt reconnect or the launcher's fallback.
+            }"""
+          unprotected = """  debugPrintStack(
+              stackTrace: stack,
+              label: 'connect failed with an unexpected ${error.runtimeType}',
+              maxFrames: 8,
+            );"""
+          no_protection = once(original_session, protected, unprotected)
+          mutants = [
+              ("controller-lifetime-reports", controller, persistent, {outage}, {frames, helper, reconnect, launcher, interval, safe, revoked}),
+              ("no-stack-frame-cap", session, no_cap, {frames}, {outage, helper, reconnect, launcher, interval, safe, revoked}),
+              ("1900ms-wait", controller, short_wait, {interval}, {outage, frames, helper, reconnect, launcher, safe, revoked}),
+              ("printer-failure-escapes", session, no_protection, {helper, reconnect}, {outage, frames, interval, safe, revoked, late, launch_safe}),
+          ]
+
+          print("UHZ_SOURCE_HASHES=" + json.dumps(hashes, sort_keys=True), flush=True)
+          try:
+              code, results, _ = run("baseline")
+              assert code == 0 and set(results.values()) == {"success"}, results
+              for name, path, text, expected, controls in mutants:
+                  restore()
+                  path.write_text(text)
+                  print("MUTANT_PATCH " + name + "\n" + subprocess.check_output(
+                        ["git", "diff", "--", str(path.relative_to(root))], cwd=root).decode(), flush=True)
+                  try:
+                      code, results, messages = run(name)
+                      assert code != 0, (name, "survived")
+                      assert all(results[n] == "failure" and any("Expected:" in m for m in messages.get(n, [])) for n in expected), (name, results, messages)
+                      assert all(results[n] == "success" for n in controls), (name, results)
+                      if name == "printer-failure-escapes":
+                          assert results[launcher] in {"failure", "error"}, results
+                          assert any("printer unavailable" in m for m in messages.get(launcher, [])), messages
+                      receipts[-1]["verified"] = True
+                      receipts[-1]["required_failures"] = sorted(expected)
+                      receipts[-1]["required_controls"] = sorted(controls)
+                  except Exception as error:
+                      errors.append({"case": name, "oracle_error": repr(error)})
+                      print("UHZ_MUTANT_ORACLE_FAILURE=" + json.dumps(errors[-1]), flush=True)
+          finally:
+              restore()
+              code, results, _ = run("restored")
+              assert code == 0 and set(results.values()) == {"success"}, results
+              restored = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+              print("UHZ_RESTORED_HASHES=" + json.dumps(restored, sort_keys=True), flush=True)
+              audit("final-restored-vs-candidate", saved)
+              assert restored == hashes
+              print("UHZ_MUTATION_RECEIPT=" + json.dumps({"cases": receipts, "errors": errors,
+                    "restore_identical": True, "normal_gate": False}, sort_keys=True), flush=True)
+          assert not errors, errors
+          assert sum(r.get("verified", False) for r in receipts) == 4
+          PYRUN
