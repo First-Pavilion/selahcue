@@ -4,6 +4,7 @@
 library;
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -117,6 +118,12 @@ class LiveController extends ChangeNotifier {
     required Credentials creds,
   }) _connect;
 
+  // Jitter is not a security primitive. Injection keeps retry timing
+  // deterministic in fake-clock tests without changing the transport deadline.
+  final math.Random _reconnectRandom;
+  Timer? _reconnectTimer;
+  Completer<void>? _reconnectResume;
+
   OperatorStateView? _view;
   // Two independent notices with different lifetimes: a transient connection
   // status (set/cleared by reconnect+refresh) and a *sticky* command denial that
@@ -175,7 +182,9 @@ class LiveController extends ChangeNotifier {
       required String pinHex,
       required Credentials creds,
     })? connect,
-  }) : _connect = connect ?? SelahSession.connect {
+    math.Random? reconnectRandom,
+  })  : _connect = connect ?? SelahSession.connect,
+        _reconnectRandom = reconnectRandom ?? math.Random() {
     _knownRole = _session.grantedRole;
     _poll = Timer.periodic(const Duration(seconds: 1), (_) => refresh());
     refresh();
@@ -637,6 +646,9 @@ class LiveController extends ChangeNotifier {
     // below). Bounded by the number of distinct exception types, never by the
     // number of attempts.
     final reportedTypes = <Type>{};
+    // The first wait is 2–2.5s, then 4–5s, 8–10s, 16–20s and 24–30s.
+    // Keep jitter at the cap, and reset on the next outage after a success.
+    var retryCeilingMs = 2500;
     while (!_disposed) {
       // ONLY the connect attempt is guarded below, not what follows a success:
       // a failure after a connect has succeeded is not a reason to open a second
@@ -681,11 +693,24 @@ class LiveController extends ChangeNotifier {
         if (e is! SessionException && reportedTypes.add(e.runtimeType)) {
           debugReportUnexpectedConnectFailure(e, stack);
         }
-        // MEMORY is bounded: one attempt in flight, and nothing accumulates
-        // between attempts. The attempt COUNT is not: a host that never recovers
-        // is retried every 2 s for as long as the app stays open (no cap, no
-        // jitter — a separate decision). [unpair] stays reachable throughout.
-        await Future<void>.delayed(const Duration(seconds: 2));
+        // A connect already in flight may finish after teardown. It must not
+        // create another timer, just as a late success must not be adopted.
+        if (_disposed) return;
+        final wait = Duration(
+          microseconds: (retryCeilingMs * 1000 *
+                  (0.8 + 0.2 * _reconnectRandom.nextDouble()))
+              .round(),
+        );
+        final resume = Completer<void>();
+        _reconnectResume = resume;
+        _reconnectTimer = Timer(wait, () {
+          _reconnectTimer = null;
+          _reconnectResume = null;
+          resume.complete();
+        });
+        // One attempt and one owned wait, with no per-attempt accumulation.
+        await resume.future;
+        retryCeilingMs = math.min(retryCeilingMs * 2, 30000);
         continue;
       }
       if (_disposed) {
@@ -712,6 +737,15 @@ class LiveController extends ChangeNotifier {
     }
   }
 
+  /// Cancel synchronously, and release the loop waiting on this timer. Merely
+  /// cancelling the Timer would leave the suspended async operation retained.
+  void _cancelReconnectWait() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _reconnectResume?.complete();
+    _reconnectResume = null;
+  }
+
   /// Forget this device's credentials and close the connection.
   Future<void> unpair() async {
     // Stop polling and mark stopped BEFORE closing the socket, so no in-flight or next 1s refresh
@@ -719,6 +753,7 @@ class LiveController extends ChangeNotifier {
     // credentials the link the user just disconnected. (The same _disposed guard act()/refresh()/
     // _reconnect() already honour.)
     _disposed = true;
+    _cancelReconnectWait();
     _poll?.cancel();
     await StoredSession.clear();
     await _session.close();
@@ -727,6 +762,7 @@ class LiveController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _cancelReconnectWait();
     _poll?.cancel();
     _session.close();
     super.dispose();

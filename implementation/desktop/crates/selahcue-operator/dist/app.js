@@ -16,6 +16,7 @@
       let lastStagedScripture = null;
 
       function render(view) {
+        planRememberCanEdit(view);
         // Chrome (emergency footer, LIVE chip, timer, blackout) syncs on EVERY
         // view — the blackout toggle must read true state even while an editor
         // is open.
@@ -8914,6 +8915,18 @@
       ];
       let planSelectedId = null;
       let planLastView = null; // last view rendered, for UI-only re-renders
+      // A failed open has no current viewer. Keep only the host's last explicit Boolean
+      // for its Restore offer; silence is neither a new grant nor a new restriction.
+      let planLastConfirmedCanEdit = null;
+      function planRememberCanEdit(view) {
+        const canEdit = planViewer(view).canEdit;
+        if (canEdit === null) return;
+        planLastConfirmedCanEdit = canEdit;
+        if (canEdit === false) {
+          const banner = document.querySelector(".plan-restore-banner");
+          if (banner) banner.remove();
+        }
+      }
       // After planRenderBuilder blanks + rebuilds the run sheet, keyboard focus would fall to
       // <body>; this records what the last user action should re-focus (the selected row, or a
       // moved row's ↑/↓ button) so focus survives the rebuild (WCAG 2.4.3). Null on a background
@@ -9003,8 +9016,12 @@
         // Restore last autosave (FR-005 last-3; 86ajy0hxg wire, wired here). A host that does not
         // implement the command (older build, or nothing to restore) answers with an empty list or
         // a rejected promise — either way this silently offers nothing rather than a dead button.
+        if (planLastConfirmedCanEdit === false) return;
         invoke("list_autosave_slots").then((slots) => {
           if (!Array.isArray(slots) || !slots.length) return;
+          // This exact failure must still own the surface. Loading, a successful render,
+          // or another failed open replaces p; a late lookup must not resurrect its offer.
+          if (planLastConfirmedCanEdit === false || !list.contains(p)) return;
           if (!document.body.contains(list) || document.querySelector(".plan-restore-banner")) return;
           const latest = slots[0]; // ServerMessage::AutosaveSlots is documented newest-first
           const banner = document.createElement("div");
@@ -9019,10 +9036,11 @@
           btn.className = "pm-btn-primary";
           btn.textContent = "Restore last autosave";
           btn.onclick = () => {
+            if (planLastConfirmedCanEdit === false || !list.contains(p)) return;
             btn.disabled = true;
             invoke("restore_autosave", { slot: latest.slot }).then((v) => {
               planSetSavedIndicator(null);
-              planRenderBuilder(v);
+              planRenderHostView(v);
               // Deliberately NOT "Restored" — `RestoreAutosave` always Acks even when nothing was
               // found to restore (an unknown slot, a failed integrity check, or a content-mismatch
               // refusal are all silent no-ops on the wire), so this message describes what was
@@ -9083,9 +9101,9 @@
         planRenderLoading();
         // Deck names/missing-status for link chips; then render with resolved names.
         planLoadDecks().then(() => {
-          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderHostView).catch(planRenderLoadFailed);
         });
-        invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+        invoke("view").then(planRenderHostView).catch(planRenderLoadFailed);
       }
       function buildPlanPalette() {
         const box = document.getElementById("plan-palette-btns");
@@ -9107,7 +9125,7 @@
             planSelectedId = v.items[v.items.length - 1].id;
             planFocusAfterRender = { kind: "row", id: planSelectedId }; // focus the new row
           }
-          planRenderBuilder(v);
+          planRenderHostView(v);
         } catch (e) {
           console.error(e);
         }
@@ -9120,7 +9138,7 @@
           // Any plan EDIT invalidates a lifecycle outcome message: "Plan published" is true of
           // the run sheet that was published, not of the one now on screen.
           planNotice("");
-          planRenderBuilder(await fn());
+          planRenderHostView(await fn());
           return true;
         } catch (e) {
           console.error(e);
@@ -9356,6 +9374,12 @@
         if (sig === planViewerSig) return;
         planViewerSig = sig;
         planLastView = view;
+        planRenderBuilder(view);
+      }
+      // Only fulfilled host replies enter here. UI selection/deselection and poll-driven
+      // repainting use the renderer below without re-confirming an older held snapshot.
+      function planRenderHostView(view) {
+        planRememberCanEdit(view);
         planRenderBuilder(view);
       }
       function planRenderBuilder(view) {
@@ -9775,7 +9799,7 @@
             planSelectedId = null;
             planFocusAfterRender = null;
           }
-          planRenderBuilder(v);
+          planRenderHostView(v);
           return true;
         } catch (e) {
           console.error(e);
@@ -10185,7 +10209,7 @@
                   // which would have left a failed attempt free to re-arm (or leave stranded)
                   // a dismissal it never actually reloaded past.
                   planReviewDismissedSig = null;
-                  planRenderBuilder(v);
+                  planRenderHostView(v);
                 }).catch((err) => {
                   console.error(err);
                   reloadBtn.disabled = false;
@@ -10513,7 +10537,7 @@
                   if (hostRemote === false) {
                     planNotice("status", "Removed “" + title + "”.", "Undo", () => {
                       invoke("plan_undo").then((v) => {
-                        planRenderBuilder(v);
+                        planRenderHostView(v);
                         planNotice("status", "Restored “" + title + "”.");
                       }).catch((err) => {
                         console.error(err);
