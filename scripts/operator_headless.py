@@ -14161,6 +14161,53 @@ DRIVER = r"""
       ok(!!wTdBtn && getComputedStyle(wTdBtn).flexGrow === "1",
          "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
 
+      // WKH: literal browser premises and the actual shared per-property background read.
+      // A later unrelated rule must not erase an earlier fill; longhands, variables and
+      // !important must compose as they do on the real matching element, not by rule count.
+      [
+        ["earlier-shorthand", "background:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["earlier-longhand", "background-color:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-longhand-unsafe", "background:#112233", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["later-shorthand", "background-color:#fff", "background:#112233", "rgb(17, 34, 51)", "none", true],
+        ["important-longhand", "background-color:#112233!important", "background:#fff", "rgb(17, 34, 51)", "none", true],
+        ["important-shorthand", "background:#112233!important", "background-color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-important-longhand", "background:#fff", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-longhand", "background:#fff!important", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-shorthand", "background-color:#fff!important", "background:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["local-var-shorthand", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["local-var-longhand", "--__wkh-tone:#112233;background-color:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["var-later-longhand-unsafe", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["gradient-later-color", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-color:#fff", "rgb(255, 255, 255)", "linear-gradient(rgb(1, 2, 3), rgb(4, 5, 6))", false],
+        ["later-image-reset", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-image:none", "rgb(17, 34, 51)", "none", true],
+        ["priority-longhand-chain", "background-color:#fff", "background-color:#112233!important} .__WKH__ {background:#fff", "rgb(17, 34, 51)", "none", true]
+      ].forEach(function(c, i){
+        var cls = "__wkh_bg_" + i, sel = "." + cls;
+        var css = sel + "{" + c[1] + "}" + sel + "{" + c[2].replace(".__WKH__", sel) + "}";
+        var fx = window.__cssFixture(css), actual = document.createElement("div"), measured = document.createElement("div");
+        actual.className = cls;
+        try {
+          document.body.appendChild(actual);
+          var actualStyle = getComputedStyle(actual);
+          ok(actualStyle.backgroundColor === c[3] && actualStyle.backgroundImage === c[4],
+             "WKH browser premise/" + c[0] + ": the real cascade paints the literal expected color and image");
+          var value = window.__cssEffective(sel, "background", fx);
+          measured.style.background = value || "";
+          document.body.appendChild(measured);
+          var measuredStyle = getComputedStyle(measured);
+          ok(!!value && measuredStyle.backgroundColor === c[3] && measuredStyle.backgroundImage === c[4],
+             "WKH background cascade/" + c[0] + ": the shared read preserves actual color and image across every matching declaration");
+          ok((_cr([255,255,255,1], _rgba(measuredStyle.backgroundColor)) >= 4.5) === c[5],
+             "WKH contrast control/" + c[0] + ": an actual unsafe light fill is rejected and a dark earlier fill is accepted");
+        } finally { actual.remove(); measured.remove(); fx.dispose(); }
+      });
+      var wkhAbsent = window.__cssFixture(".__wkh_no_fill__{color:red}.__wkh_no_fill__{font-weight:bold}");
+      try {
+        ok(window.__cssEffective(".__wkh_no_fill__", "background", wkhAbsent) === null,
+           "WKH absent control: unrelated declarations do not fabricate a declared background");
+        ok(window.__cssEffective(".__wkh_missing__", "background", wkhAbsent) === null,
+           "WKH missing control: an unmatched selector has no background");
+      } finally { wkhAbsent.dispose(); }
+
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
       var wHoverRule = __cssRule(".pm-btn-primary:hover");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
