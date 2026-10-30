@@ -200,21 +200,57 @@ class SelahSession implements ControllerSession {
   static Future<(SelahSession, Credentials)> pair(
       PairingInvite invite, String deviceName) async {
     final ws = await _establish(invite.host, invite.port, invite.pinHex);
+    return _pairOver(
+      send: ws.add,
+      close: ws.close,
+      incoming: StreamQueue(ws),
+      code: invite.code,
+      deviceName: deviceName,
+    );
+  }
+
+  /// The same pairing handshake over PR132's in-memory transport abstraction.
+  /// Production always establishes the pinned socket in [pair] first.
+  @visibleForTesting
+  static Future<(SelahSession, Credentials)> pairForTest({
+    required void Function(String frame) send,
+    required Future<void> Function() close,
+    required StreamQueue incoming,
+    required String code,
+    required String deviceName,
+    Duration deadline = pairTimeout,
+  }) =>
+      _pairOver(
+        send: send,
+        close: close,
+        incoming: incoming,
+        code: code,
+        deviceName: deviceName,
+        deadline: deadline,
+      );
+
+  static Future<(SelahSession, Credentials)> _pairOver({
+    required void Function(String frame) send,
+    required Future<void> Function() close,
+    required StreamQueue incoming,
+    required String code,
+    required String deviceName,
+    Duration deadline = pairTimeout,
+  }) async {
     try {
-      final incoming = StreamQueue(ws);
-      ws.add(jsonEncode(
-          helloPair(invite.code, deviceName, platform: Platform.operatingSystem)));
+      send(jsonEncode(
+          helloPair(code, deviceName, platform: Platform.operatingSystem)));
       // The host may send an interim `parked` frame while it awaits the operator's decision
       // (86ajxhv0q) — keep waiting for the terminal Granted/Rejected.
       pairing:
       while (true) {
-        final reply = await incoming.nextJson(pairTimeout);
+        final reply = await incoming.nextJson(deadline);
         switch (PairResult.fromJson(reply)) {
           case PairParked():
             continue pairing;
           case PairGranted(:final deviceId, :final token, :final role):
             return (
-              SelahSession._(ws, incoming, role),
+              SelahSession._over(send, close, incoming, role, commandTimeout),
               Credentials(deviceId: deviceId, token: token),
             );
           case PairRejected(:final reason):
@@ -226,7 +262,7 @@ class SelahSession implements ControllerSession {
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
-      await ws.close();
+      await close();
       rethrow;
     }
   }
