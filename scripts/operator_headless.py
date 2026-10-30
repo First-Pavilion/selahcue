@@ -6418,6 +6418,7 @@ DRIVER = r"""
       var jhSavedOutputs = JSON.parse(JSON.stringify(V.outputs));
       var jhSavedScreens = JSON.parse(JSON.stringify(V.screens));
       var jhSavedSelected = selectedScreen;
+      var jhSavedScrollX = window.scrollX, jhSavedScrollY = window.scrollY;
       var jhLive = document.getElementById("screens-output-health-live");
       var jhObserver = new MutationObserver(function(){});
       jhObserver.observe(jhLive || document.getElementById("surface-screens"), {childList:true,characterData:true,subtree:true});
@@ -6433,7 +6434,7 @@ DRIVER = r"""
         jhMainOut.signal="healthy"; jhMainOut.fps=60; jhMainOut.dropped_frames=0;
         selectScreen("main"); renderOutputs(V);
         var jhFocus = document.getElementById("screens-identify");
-        jhFocus.focus();
+        jhFocus.focus({preventScroll:true});
         jhRecords();
         ok(!!jhLive && jhLive.isConnected && jhLive.getAttribute("role") === "status" &&
            jhLive.getAttribute("aria-live") === "polite" && jhLive.getAttribute("aria-atomic") === "true" &&
@@ -6483,7 +6484,7 @@ DRIVER = r"""
 
         jhMain.enabled=true; renderOutputs(V); jhRecords();
         var jhPicker=document.querySelector('#screens-inspector select[aria-label="Orientation for main"]');
-        jhPicker.focus();
+        jhPicker.focus({preventScroll:true});
         var jhBeforeDeferred=jhText();
         jhMainOut.signal="degraded"; jhMainOut.dropped_frames=8;
         renderOutputs(V);
@@ -6520,6 +6521,7 @@ DRIVER = r"""
         V.outputs=jhSavedOutputs; V.screens=jhSavedScreens;
         outputsKey=""; renderOutputs(V);
         selectScreen(jhSavedSelected);
+        window.scrollTo(jhSavedScrollX, jhSavedScrollY);
       }
 
       // === CON-089 (Design 2.0 global chord `F`, Figma 337:174 "Fullscreen selected output"):
