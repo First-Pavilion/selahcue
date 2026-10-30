@@ -99,6 +99,15 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: scripts/auth_pages_headless.py test-only additions and isolated browser diagnostic receipt.
 - Decision: handoff
 
+### Iteration 3
+
+- Target criterion: C-001 through C-003.
+- Hypothesis: a single tracked refresh, synchronous logout admission barrier and post-await hint identity check serialize the real cookie rotation/revocation while preserving retryable failures.
+- Change or investigation: after observed Node RED, track one refresh promise and a fixed-size logout counter; close new refresh admission before awaiting the existing request, then call logout with the installed cookie. Suppress metadata writes once logout began or the hint changed. Failed refresh still drains before logout, and failed logout retains truthful signed-in state. Router refresh stays opportunistic; no API policy or cookie access change.
+- Verifier executed: Goal structural, full baseline diff check and script stdlib AST locally; isolated hosted focused GREEN prepared. Browser RED executes separately against unchanged production sourceb12f230c.
+- Result: Static checks PASS; current implementation runtime GREEN and exact browser count remain pending hosted evidence. Existing HTTP deadlines bound both operations; no queue or timer was added.
+- New evidence: sessionStore orchestration diff and diagnostic receipts under auth-refresh-race/.
+- Decision: handoff
 ## Risks and rollback
 
 - Risks: ignoring only late JS state leaves a valid cookie; waiting without closing refresh admission can race a second rotation; clearing hints on failed logout falsely claims success.
