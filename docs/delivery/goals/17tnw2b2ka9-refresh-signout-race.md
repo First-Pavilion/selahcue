@@ -84,9 +84,19 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Target criterion: C-001 through C-003.
 - Hypothesis: while refresh has revoked the old session but held back its response cookie, immediate logout uses the old token and reports already signed out; releasing refresh then leaves a live replacement cookie and resurrected hint.
 - Change or investigation: inspect actual server transaction/cookie order and prepare meaningful tests-only RED with authenticated-cookie, hint, ordering and failure/concurrency controls against unchanged production.
-- Verifier executed: structural Goal Contract validator and full baseline diff check; hosted assertion RED requested before implementation.
-- Result: Pending actual hosted reproduction; production unchanged.
-- New evidence: tests/refreshSignOut.test.ts and frozen checkpoint reported to root.
+- Verifier executed: isolated hosted diagnostic41031973619, source478cd79e, diagnosticb89d1f66; actual `node --test tests/refreshSignOut.test.ts` after clean npm ci.
+- Result: Actual assertion RED: seven failures and two passing controls. Primary assertion expected no live rotated cookie but actual true; logout dispatched early, duplicate refresh, new refresh admission and late hint rewrite also failed. Long-session threshold and no-refresh UNAUTHENTICATED controls passed. Production was unchanged before this evidence.
+- New evidence: auth-refresh-race/red-receipt.json and auth-refresh-race/node-red.log; https://github.com/First-Pavilion/selahcue/actions/runs/41031973619.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-004.
+- Hypothesis: real Account interactions while the router's refresh response is held reproduce the same request-cookie ordering and hint failures, including honest retry after a failed logout.
+- Change or investigation: add two scripted server/cookie scenarios to the existing real-browser auth harness, keeping production unchanged for the browser RED checkpoint. They exercise router refresh, real shared sign-out controls, rotated-cookie logout, failed logout/retry and protected-route confirmation. The model limits remain explicit; no cookie value is read by application code.
+- Verifier executed: Goal structural, stdlib Python AST and full baseline diff check; hosted browser RED prepared.
+- Result: Static checks PASS; browser behavior/count pending hosted execution. Exact count remains unchanged until measured.
+- New evidence: scripts/auth_pages_headless.py test-only additions and isolated browser diagnostic receipt.
 - Decision: handoff
 
 ## Risks and rollback
