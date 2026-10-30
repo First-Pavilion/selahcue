@@ -14,7 +14,7 @@
 # 84.1.0 closes it: both databases list 0 advisories for 84.1.0. 84.1.0's release notes also name
 # GHSA-grgh-hr87-3jpw (archive_util member paths on Windows); neither database has a record of it.
 # Dependabot (pip, this directory) may propose a bump of this pin; take it as an ordinary reviewed PR.
-requires = ["setuptools==84.1.0"]
+requires = ["setuptools==84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
