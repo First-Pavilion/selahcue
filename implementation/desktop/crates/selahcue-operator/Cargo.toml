@@ -140,6 +140,13 @@ openai-notes = ["selahcue-cloud/openai", "selahcue-cloud/http"]
 # RELEASE_UNSAFE_FEATURES comment for the full argument.
 cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]
 
+# Restricted pilot package credentials; separate source, never developer environment.
+# Off by default. Real embedding remains gated by P01 provider proof and P04 policy.
+# LAUNCH_REACHABILITY: OPT-IN — manual approved pilot package only.
+# RELEASE: SAFE — native generated config, fixed cohort and actual provider expiries;
+# does not enable dev-keys, openai-notes, cloud-stt or entitlement bypasses.
+pilot-credentials = ["stt", "selahcue-cloud/openai", "selahcue-cloud/http", "selahcue-stt-cloud/deepgram"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 # Native OS file picker for the Add-Image flow (86ajq6j4p/86ajq6j49) — the official

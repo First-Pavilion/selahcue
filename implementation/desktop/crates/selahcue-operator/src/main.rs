@@ -30,6 +30,7 @@ use tauri::{Emitter, Manager, State};
 /// Bring-up of the bundled native output window that sits beside the operator in a packaged
 /// install (ADR-0002/0003: the audience compositor is a separate process, never the WebView).
 mod autolaunch;
+mod provider_source;
 
 /// On-device STT capture worker driving the live transcript (feature `stt`; OFF by default).
 #[cfg(feature = "stt")]
@@ -6283,7 +6284,7 @@ fn transcription_status_from(
 /// (`not_in_build`) even when `cloud-stt` is off, exactly the way `stt_ready()` reports
 /// `not_in_build` for on-device when `stt` is off.
 fn transcription_status() -> (bool, Option<TranscriptionProviderView>) {
-    transcription_status_from(selahcue_stt_cloud::readiness::readiness().status())
+    transcription_status_from(provider_source::transcription_status())
 }
 
 /// The full Providers & Privacy panel state (node 338:124). `quota` is `None` until a live cloud
@@ -6383,9 +6384,9 @@ fn cloud_base_url() -> Option<String> {
 }
 
 /// Whether a direct third-party note provider is compiled into this build at all.
-#[cfg(feature = "openai-notes")]
+#[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
 const DIRECT_NOTES_COMPILED: bool = true;
-#[cfg(not(feature = "openai-notes"))]
+#[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
 const DIRECT_NOTES_COMPILED: bool = false;
 
 /// The direct-provider descriptor, or `None` when no usable developer key is present.
@@ -6402,41 +6403,24 @@ const DIRECT_NOTES_COMPILED: bool = false;
 ///
 /// Absent and blank are treated identically, so it does not matter whether the `.env` loader
 /// unsets an empty value or exports it empty.
-#[cfg(feature = "openai-notes")]
+#[cfg(all(test, feature = "openai-notes"))]
 fn direct_provider_from_key(key: Option<&str>, model: &str) -> Direct {
-    let present = key.is_some_and(|k| !k.trim().is_empty());
-    Direct(present.then(|| NotesProviderView {
-        kind: selahcue_cloud::openai::PROVIDER_KIND.to_string(),
-        name: selahcue_cloud::openai::PROVIDER_LABEL.to_string(),
-        // The model ACTUALLY in use, not the compiled default. QA switches model via `.env` and
-        // reads this off the panel to confirm the switch took — so if it reported the constant, an
-        // operator who set luna would see terra and be unable to tell a failed override from a
-        // stale display. That makes the feature unfalsifiable from outside, which is worse than
-        // not having it.
-        model: model.to_string(),
-        developer_key: true,
+    direct_provider_from_model(provider_source::notes_model_from_key(key, model))
+}
+
+fn direct_provider_from_model(selected: Option<(String, bool)>) -> Direct {
+    Direct(selected.map(|(model, developer_key)| NotesProviderView {
+        kind: "openai".to_string(),
+        name: "OpenAI".to_string(),
+        model,
+        developer_key,
     }))
 }
 
-/// **Also refuses in a release profile**, via `selahcue_cloud::openai::direct_key_permitted` —
-/// the same predicate that gates `OpenAiNoteProvider::from_env`, the function that actually
-/// performs generation (86akcmzyq, Cody's High finding on PR #24). Before this, this status
-/// function had no profile check at all: a release build could report `"direct_provider"` from
-/// whatever `OPENAI_API_KEY` happened to be exported, even once `from_env` itself refused to use
-/// it — a panel claiming a working provider that generation would then fail to produce. The key
-/// is not read at all when the profile refuses, matching `from_env`'s own behaviour so the panel
-/// and the actual generation path never disagree.
-#[cfg(feature = "openai-notes")]
+/// Readiness and generation resolve the same selected native source. Pilot mode never
+/// consults developer environment, including when its package config is unavailable.
 fn direct_notes_provider() -> Direct {
-    let key = selahcue_cloud::openai::direct_key_permitted(cfg!(debug_assertions))
-        .then(|| std::env::var(selahcue_cloud::openai::API_KEY_ENV).ok())
-        .flatten();
-    direct_provider_from_key(key.as_deref(), &selahcue_cloud::openai::model_from_env())
-}
-
-#[cfg(not(feature = "openai-notes"))]
-fn direct_notes_provider() -> Direct {
-    Direct(None)
+    direct_provider_from_model(provider_source::notes_model())
 }
 
 /// The hosted-service descriptor, or `None` when it is not configured.
@@ -7057,7 +7041,7 @@ mod providers_view_tests {
 
     /// A stock build — no direct-provider path compiled in — must report notes as genuinely
     /// unavailable. The fix for the trust bug must not invert into OVER-reporting.
-    #[cfg(not(feature = "openai-notes"))]
+    #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
     #[test]
     fn a_default_build_reports_notes_unavailable_and_names_no_provider() {
         let v = view();
@@ -7071,7 +7055,7 @@ mod providers_view_tests {
     /// Which of the two feature-on states applies depends on whether a key happens to be exported
     /// in the test environment, so both are accepted; what is asserted is that the two builds are
     /// distinguishable at all.
-    #[cfg(feature = "openai-notes")]
+    #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
     #[test]
     fn a_build_with_the_direct_path_never_reports_the_stock_not_configured_state() {
         let (status, provider) = notes_status(false);
@@ -8095,13 +8079,13 @@ async fn run_note_generation(
                 // compiled in — this mirrors `notes_status`, where hosted wins and direct is the
                 // stand-in for its absence, so what the panel reports and what actually runs are
                 // decided by the same precedence.
-                #[cfg(feature = "openai-notes")]
+                #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
                 {
                     let transport =
                         selahcue_cloud::transport::ReqwestTransport::new().map_err(|e| {
                             selahcue_core::providers::NoteError::Transport(e.to_string())
                         })?;
-                    if let Some(client) = selahcue_cloud::OpenAiNoteProvider::from_env(transport) {
+                    if let Some(client) = provider_source::openai(transport) {
                         return selahcue_cloud::generate_sermon_notes(
                             &cfg,
                             &transcript,
@@ -8133,7 +8117,7 @@ async fn run_note_generation(
 /// The consent gate is untouched. The generation path (`run_note_generation`) calls
 /// `build_note_request` first, so nothing is sent without cloud-notes consent and an explicit,
 /// confirmed Generate, and the request carries the completed transcript only.
-#[cfg(feature = "openai-notes")]
+#[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
 async fn run_openai_note_generation(
     cfg: selahcue_core::providers::ProvidersConfig,
     transcript: String,
@@ -8144,7 +8128,7 @@ async fn run_openai_note_generation(
         let local = selahcue_cloud::LocalNoteProvider::new();
         let transport = selahcue_cloud::transport::ReqwestTransport::new()
             .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
-        match selahcue_cloud::OpenAiNoteProvider::from_env(transport) {
+        match provider_source::openai(transport) {
             Some(client) => {
                 selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
             }
@@ -8162,7 +8146,10 @@ async fn run_openai_note_generation(
     })?
 }
 
-#[cfg(all(not(feature = "cloud-live"), feature = "openai-notes"))]
+#[cfg(all(
+    not(feature = "cloud-live"),
+    any(feature = "openai-notes", feature = "pilot-credentials")
+))]
 async fn run_note_generation(
     cfg: selahcue_core::providers::ProvidersConfig,
     transcript: String,
@@ -8171,7 +8158,10 @@ async fn run_note_generation(
     run_openai_note_generation(cfg, transcript).await
 }
 
-#[cfg(all(not(feature = "cloud-live"), not(feature = "openai-notes")))]
+#[cfg(all(
+    not(feature = "cloud-live"),
+    not(any(feature = "openai-notes", feature = "pilot-credentials"))
+))]
 async fn run_note_generation(
     cfg: selahcue_core::providers::ProvidersConfig,
     transcript: String,

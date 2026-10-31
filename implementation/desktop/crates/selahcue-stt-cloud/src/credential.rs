@@ -43,7 +43,7 @@ const _: () = assert!(
 /// Which `Authorization` spelling a credential uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CredentialScheme {
-    /// A raw Deepgram API key — `Authorization: Token <key>`. The Phase 1 developer path.
+    /// A raw Deepgram API key — `Authorization: Token <key>`. Developer or restricted pilot source.
     Token,
     /// A short-lived, server-minted grant token — `Authorization: Bearer <jwt>`. Phase 2.
     Bearer,
@@ -73,6 +73,11 @@ impl Credential {
     /// A raw Deepgram API key (Phase 1, developer path — see the crate documentation for why
     /// this is temporary).
     pub fn developer_key(secret: impl Into<String>) -> Result<Self, DeepgramError> {
+        Credential::new(CredentialScheme::Token, secret)
+    }
+
+    /// An explicitly injected, restricted pilot package key. Does not read the environment.
+    pub fn pilot_key(secret: impl Into<String>) -> Result<Self, DeepgramError> {
         Credential::new(CredentialScheme::Token, secret)
     }
 
