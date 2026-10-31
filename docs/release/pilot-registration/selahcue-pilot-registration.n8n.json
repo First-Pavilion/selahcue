@@ -1,5 +1,5 @@
 {
-  "name": "SelahCue pilot registration \u2014 fixed-row durable handoff (inactive)",
+  "name": "SelahCue pilot registration \u2014 fixed package private grant (inactive)",
   "nodes": [
     {
       "id": "pilot-registration",
@@ -13,7 +13,7 @@
       "parameters": {
         "authentication": "none",
         "formTitle": "SelahCue field-test registration",
-        "formDescription": "DRAFT \u2014 configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.",
+        "formDescription": "<p><strong>Package: REPLACE_WITH_PLATFORM / REPLACE_WITH_VERSION ()</strong></p><p>DRAFT \u2014 configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.</p>",
         "formFields": {
           "values": [
             {
@@ -81,7 +81,7 @@
         "responseMode": "lastNode",
         "options": {
           "path": "selahcue-pilot-registration",
-          "buttonLabel": "Register for the pilot",
+          "buttonLabel": "Register and request this download",
           "ignoreBots": true
         }
       },
@@ -97,7 +97,7 @@
         0
       ],
       "parameters": {
-        "jsCode": "const raw = $input.first().json;\n// Deployment configuration; replace only after notice/policy approval. No secrets here.\nconst apiOrigin = 'https://REPLACE_WITH_API_HOST.invalid';\nconst noticeVersion = 'REPLACE_WITH_APPROVED_NOTICE';\nconst errors = [];\nconst read = (label, max = 200, optional = false) => {\n  const value = raw[label] === undefined && optional ? '' : raw[label];\n  if (typeof value !== 'string' || value.length > max || /[\\x00-\\x1f\\x7f]/.test(value)) {\n    errors.push('Check the form field values and try again.');\n    return '';\n  }\n  if (!optional && !value.trim()) errors.push('Complete all required fields.');\n  return value.trim();\n};\nconst payload = {\n  schema_version: 1,\n  registration_id: read('registration_id', 36),\n  platform: read('platform', 20),\n  full_name: read('Full name'), email: read('Email', 254).toLowerCase(),\n  phone: read('Phone (optional)', 50, true), church_name: read('Church name'),\n  church_role: read('Role at church'), church_city: read('Church city'),\n  church_country: read('Church country'), notice_version: noticeVersion,\n};\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(payload.registration_id))\n  errors.push('Return to the marketing page to start or resume this registration.');\nif (!['Windows', 'Ubuntu', 'macOS'].includes(payload.platform))\n  errors.push('Return to the marketing page and select your platform.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(payload.email)) errors.push('Enter a valid email address.');\nif (!/^https:\\/\\/[^/?#\\s]+$/.test(apiOrigin) || apiOrigin.includes('REPLACE') ||\n    noticeVersion.includes('REPLACE') || /draft/i.test(noticeVersion))\n  errors.push('Pilot registration has not been configured for collection yet.');\nreturn [{ json: { valid: errors.length === 0, errors: [...new Set(errors)].join(' '),\n  api_origin: apiOrigin, payload } }];\n"
+        "jsCode": "const deployment = {\"schema_version\":1,\"api_origin\":\"https://REPLACE_WITH_API_HOST.invalid\",\"notice_version\":\"REPLACE_WITH_APPROVED_NOTICE\",\"form_path\":\"selahcue-pilot-registration\",\"artifact_id\":\"REPLACE_WITH_ARTIFACT\",\"release_id\":\"REPLACE_WITH_RELEASE\",\"version\":\"REPLACE_WITH_VERSION\",\"platform\":\"REPLACE_WITH_PLATFORM\",\"architectures\":[],\"sha256\":\"REPLACE_WITH_SHA256\",\"size_bytes\":0,\"object_key\":\"REPLACE_WITH_IMMUTABLE_OBJECT_KEY\",\"download_origin\":\"https://REPLACE_WITH_DOWNLOAD_HOST.invalid\",\"signed_query_keys\":[],\"max_ttl_seconds\":300};\nconst raw = $input.first().json;\n// The generator prefixes the single reviewed, nonsecret deployment configuration.\n// Browser query/form fields can never replace it.\nconst apiOrigin = deployment.api_origin;\nconst noticeVersion = deployment.notice_version;\nconst errors = [];\nconst identifier = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(value) && !/replace|draft/i.test(value);\nconst origin = value => typeof value === 'string' && /^https:\\/\\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(value) && !/replace/i.test(value);\nconst platforms = {Windows:['x86_64'], Ubuntu:['x86_64'], macOS:['x86_64','aarch64']};\nconst keys = ['schema_version','api_origin','notice_version','form_path','artifact_id','release_id','version','platform','architectures','sha256','size_bytes','object_key','download_origin','signed_query_keys','max_ttl_seconds'];\nconst forbidden = new Set(['receipt','registration_id','email','name','full_name','phone','church_name','openai_api_key','deepgram_api_key','redirect','url','response-content-disposition']);\nconst configValid = deployment && typeof deployment === 'object' && Object.keys(deployment).length === keys.length &&\n  keys.every(key => Object.hasOwn(deployment,key)) && deployment.schema_version === 1 &&\n  origin(apiOrigin) && origin(deployment.download_origin) &&\n  ['notice_version','form_path','artifact_id','release_id','version'].every(key => identifier(deployment[key])) &&\n  Object.hasOwn(platforms,deployment.platform) && Array.isArray(deployment.architectures) &&\n  JSON.stringify(deployment.architectures) === JSON.stringify(platforms[deployment.platform]) &&\n  typeof deployment.sha256 === 'string' && /^[a-f0-9]{64}$/.test(deployment.sha256) &&\n  Number.isSafeInteger(deployment.size_bytes) && deployment.size_bytes > 0 && deployment.size_bytes <= 20*1024**3 &&\n  typeof deployment.object_key === 'string' && deployment.object_key.startsWith('pilot/'+deployment.release_id+'/'+deployment.sha256+'/') &&\n  /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(deployment.object_key.slice(('pilot/'+deployment.release_id+'/'+deployment.sha256+'/').length)) &&\n  Number.isSafeInteger(deployment.max_ttl_seconds) && deployment.max_ttl_seconds >= 1 && deployment.max_ttl_seconds <= 300 &&\n  Array.isArray(deployment.signed_query_keys) && deployment.signed_query_keys.length >= 1 && deployment.signed_query_keys.length <= 20 &&\n  new Set(deployment.signed_query_keys).size === deployment.signed_query_keys.length &&\n  deployment.signed_query_keys.every(key => typeof key === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(key) && !forbidden.has(key.toLowerCase()));\nif (!configValid) errors.push('Pilot registration and download delivery have not been configured yet.');\nconst read = (label, max = 200, optional = false) => {\n  const value = raw[label] === undefined && optional ? '' : raw[label];\n  if (typeof value !== 'string' || value.length > max || /[\\x00-\\x1f\\x7f]/.test(value)) {\n    errors.push('Check the form field values and try again.');\n    return '';\n  }\n  if (!optional && !value.trim()) errors.push('Complete all required fields.');\n  return value.trim();\n};\nconst payload = {\n  schema_version: 1,\n  registration_id: read('registration_id', 36),\n  platform: read('platform', 20),\n  full_name: read('Full name'), email: read('Email', 254).toLowerCase(),\n  phone: read('Phone (optional)', 50, true), church_name: read('Church name'),\n  church_role: read('Role at church'), church_city: read('Church city'),\n  church_country: read('Church country'), notice_version: noticeVersion,\n};\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(payload.registration_id))\n  errors.push('Return to the marketing page to start or resume this registration.');\nif (!['Windows', 'Ubuntu', 'macOS'].includes(payload.platform))\n  errors.push('Return to the marketing page and select your platform.');\nelse if (payload.platform !== deployment.platform)\n  errors.push('This form is for the package shown above. Return to the marketing page and choose the matching platform.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(payload.email)) errors.push('Enter a valid email address.');\nreturn [{ json: { valid: errors.length === 0, errors: [...new Set(errors)].join(' '),\n  api_origin: apiOrigin, deployment, payload } }];\n"
       }
     },
     {
@@ -281,19 +281,62 @@
       "onError": "continueErrorOutput"
     },
     {
-      "id": "registration-saved",
-      "name": "Registration saved",
-      "type": "n8n-nodes-base.form",
-      "typeVersion": 1,
+      "id": "request-private-download",
+      "name": "Request private download",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         2000,
         -100
       ],
       "parameters": {
+        "method": "POST",
+        "url": "={{ $('Validate registration').first().json.api_origin + '/v1/pilot/downloads:grant' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({schema_version:1,receipt:$json.receipt,artifact_id:$('Validate registration').first().json.deployment.artifact_id}) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "validate-private-download",
+      "name": "Validate private download",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "const value = $input.first().json;\nconst selected = $('Validate registration').first().json;\nconst saved = $('Validate saved receipt').first().json;\nconst fixed = selected.deployment;\nconst now = Date.now()/1000;\nconst deny = () => {throw new Error('The selected download could not be confirmed. Return through the same marketing choice to retry. No download is authorized.');};\nconst keys = ['schema_version','artifact_id','release_id','platform','architectures','sha256','size_bytes','download_url','expires_at'];\nif (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== keys.length ||\n    !keys.every(key => Object.hasOwn(value,key)) || value.schema_version !== 1 ||\n    value.artifact_id !== fixed.artifact_id || value.release_id !== fixed.release_id ||\n    value.platform !== fixed.platform || selected.payload.platform !== fixed.platform ||\n    JSON.stringify(value.architectures) !== JSON.stringify(fixed.architectures) ||\n    value.sha256 !== fixed.sha256 || value.size_bytes !== fixed.size_bytes ||\n    !Number.isSafeInteger(value.expires_at) || value.expires_at <= now ||\n    value.expires_at > Math.min(saved.expires_at,1809129599,Math.floor(now)+fixed.max_ttl_seconds) ||\n    typeof value.download_url !== 'string' || value.download_url.length > 8192 || /[^\\x21-\\x7e]/.test(value.download_url)) deny();\n// Exact reviewed HTTPS origin and immutable object path; no URL parser ambiguity,\n// userinfo, fragment, alternate path encoding or response redirect is accepted.\nconst prefix = fixed.download_origin+'/'+fixed.object_key+'?';\nif (!value.download_url.startsWith(prefix) || value.download_url.includes('#')) deny();\nconst query = value.download_url.slice(prefix.length).split('&');\nif (!query.length || query.length > 20) deny();\nconst seen = new Set();\nfor (const pair of query) {\n  const pieces = pair.split('=');\n  if (pieces.length !== 2) deny();\n  let key, content;\n  try {key=decodeURIComponent(pieces[0].replace(/\\+/g,' ')); content=decodeURIComponent(pieces[1].replace(/\\+/g,' '));}\n  catch {deny();}\n  if (!fixed.signed_query_keys.includes(key) || seen.has(key) || !content || content.length > 2048 ||\n      /[^\\x20-\\x7e]/.test(content) || content.includes(saved.receipt) || content.includes(selected.payload.registration_id)) deny();\n  seen.add(key);\n}\nconst escape = text => String(text).replace(/[&<>\"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[char]));\n// Project only approved metadata and the bounded read URL. Receipt, identity and\n// contact/church fields never become Form completion input or hidden fields.\nconst label = 'SelahCue '+fixed.version+' \u2014 '+value.platform+' ('+value.architectures.join(', ')+')';\nconst message = '<p>Your registration has been recorded.</p><p><a href=\"'+escape(value.download_url)+'\" rel=\"noreferrer noopener\">Download '+escape(label)+'</a></p>'+\n  '<p>Size: '+value.size_bytes+' bytes<br>SHA-256: '+escape(value.sha256)+'<br>Link expires: '+escape(new Date(value.expires_at*1000).toISOString())+'</p>'+\n  '<p>If the link expires, return through the same marketing download choice. Retries do not extend pilot access.</p>';\nreturn [{json:{completion_html:message}}];\n"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "download-ready",
+      "name": "Download ready",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        -100
+      ],
+      "parameters": {
         "operation": "completion",
         "respondWith": "text",
-        "completionTitle": "Registration saved",
-        "completionMessage": "Your pilot registration has been recorded. Download delivery is not connected in this inactive handoff; complete the separate private download-grant integration before publishing.",
+        "completionTitle": "Your selected download is ready",
+        "completionMessage": "={{ $json.completion_html }}",
         "options": {}
       }
     },
@@ -341,7 +384,7 @@
         -340
       ],
       "parameters": {
-        "content": "## INACTIVE \u2014 do not publish until configured\nSee README.md. Configure approved notice/API origin and select server Header Auth + scoped Google Sheets OAuth credentials. Dedicated protected A:M tab; no inserts/sorts/deletes. Stable UUIDv4 comes from marketing production form query, never execution ID. Fixed RAW update, never append. P12 download grant is a separate unconnected step.",
+        "content": "## INACTIVE \u2014 do not publish until configured\nSee README.md. Derive this form and validator from one reviewed deployment-config.json matching the promoted package and marketing entry. Approve notice/privacy copy. Configure separate grant Header Auth, registration Header Auth and scoped Google Sheets OAuth. Dedicated protected A:M tab; no inserts/sorts/deletes. Stable UUIDv4 comes from marketing production form query, never execution ID. Fixed RAW update, never append. Real private read and all deployment gates remain required.",
         "width": 800,
         "height": 240
       }
@@ -482,7 +525,43 @@
       "main": [
         [
           {
-            "node": "Registration saved",
+            "node": "Request private download",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Request private download": {
+      "main": [
+        [
+          {
+            "node": "Validate private download",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate private download": {
+      "main": [
+        [
+          {
+            "node": "Download ready",
             "type": "main",
             "index": 0
           }

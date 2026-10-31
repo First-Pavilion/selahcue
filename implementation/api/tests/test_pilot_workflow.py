@@ -41,8 +41,15 @@ def form(**changes):
     return value
 
 
-def configured_code():
-    return (ROOT / "validate-registration.js").read_text().replace("https://REPLACE_WITH_API_HOST.invalid", "https://sandbox.example.invalid").replace("REPLACE_WITH_APPROVED_NOTICE", "test-notice-v1")
+def configured_code(platform="Ubuntu"):
+    deployment = json.loads((ROOT / "deployment-config.json").read_text())
+    deployment.update(api_origin="https://sandbox.example.invalid", notice_version="test-notice-v1",
+                      artifact_id="fixture-package", release_id="fixture-release", version="1.0.0",
+                      platform=platform, architectures=["x86_64", "aarch64"] if platform == "macOS" else ["x86_64"],
+                      sha256="a" * 64, size_bytes=123,
+                      object_key="pilot/fixture-release/" + "a" * 64 + "/SelahCue-package",
+                      download_origin="https://downloads.example.invalid", signed_query_keys=["signature"])
+    return "const deployment = " + json.dumps(deployment) + ";\n" + (ROOT / "validate-registration.js").read_text()
 
 
 def test_export_is_deterministic_inactive_and_contains_no_credentials():
@@ -93,7 +100,7 @@ def test_validation_requires_stable_identity_and_explicit_deployment_configurati
     assert result["payload"]["email"] == "test@example.invalid"
     assert result["payload"]["registration_id"] == form()["registration_id"]
     for platform in ("Windows", "Ubuntu", "macOS"):
-        selected = run_code(configured_code(), form(platform=platform))["result"][0]["json"]
+        selected = run_code(configured_code(platform), form(platform=platform))["result"][0]["json"]
         assert selected["valid"] is True
         assert selected["payload"]["platform"] == platform
         assert selected["payload"]["registration_id"] == form()["registration_id"]
