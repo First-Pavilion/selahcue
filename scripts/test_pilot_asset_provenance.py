@@ -1,5 +1,6 @@
 """Synthetic file controls, not actual Tauri build/package proof."""
 import json
+import os
 import logging
 import traceback
 from unittest.mock import patch
@@ -118,5 +119,45 @@ class AssetTests(unittest.TestCase):
     with patch.object(Path,'open',counted): call(values)
     counts.append(len(opened))
    self.assertEqual(counts[0],counts[1])
+
+ def assert_private_refusal(self,call,private):
+  output = io.StringIO(); logger = logging.Logger('p04-final-boundary')
+  logger.addHandler(logging.StreamHandler(output))
+  try: call()
+  except Exception as error:
+   self.assertIsInstance(error,assets.PolicyError)
+   output.write(''.join(traceback.format_exception(type(error),error,error.__traceback__)))
+   logger.exception('public filesystem refusal')
+  else: self.fail('expected fixed policy refusal')
+  for index in range(len(private)-7): self.assertNotIn(private[index:index+8],output.getvalue())
+ def test_metadata_and_source_resolution_boundaries_redact_full_diagnostics(self):
+  target = self.root / 'target'; target.write_bytes(bytes(1000000))
+  private = 'private-fs-canary-742db986'
+  for method, call in [('is_symlink',lambda: core.scan_component(target)),
+                       ('is_file',lambda: core.scan_component(target)),
+                       ('is_symlink',lambda: core.verify_inventory(self.root,self.inventory)),
+                       ('is_dir',lambda: core.verify_inventory(self.root,self.inventory))]:
+   with self.subTest(method=method):
+    with patch.object(Path,method,side_effect=PermissionError(private)):
+     self.assert_private_refusal(call,private)
+  for error in (PermissionError(private),RuntimeError(private)):
+   for call in (lambda: core.scan_component(target),lambda: assets.scan_asset(target)):
+    with patch.object(Path,'resolve',side_effect=error): self.assert_private_refusal(call,private)
+ def test_actual_own_locked_directory_refuses_without_private_context(self):
+  if hasattr(os,'geteuid') and os.geteuid()==0: self.skipTest('root bypasses permission fixture')
+  private = 'private-locked-dir-canary-7ab9'
+  locked = self.root / private; locked.mkdir(); target = locked / 'target'
+  target.write_bytes(bytes(1000000)); locked.chmod(0)
+  try: self.assert_private_refusal(lambda:core.scan_component(target),private)
+  finally: locked.chmod(0o700)
+
+ def test_actual_source_resolve_symlink_loop_has_fixed_diagnostics(self):
+  private = 'private-resolve-loop-canary-6ed2'
+  loop = self.root / private; loop.symlink_to(loop.name)
+  self.assert_private_refusal(lambda:core.source_root(str(loop / 'module.py')),private)
+ def test_boundary_does_not_hide_programming_runtime_errors(self):
+  target = self.root / 'regular'; target.write_bytes(bytes(1000000))
+  with patch.object(Path,'is_file',side_effect=RuntimeError('programming-error-control')):
+   with self.assertRaisesRegex(RuntimeError,'programming-error-control'): core.scan_component(target)
 
 if __name__ == '__main__': unittest.main()

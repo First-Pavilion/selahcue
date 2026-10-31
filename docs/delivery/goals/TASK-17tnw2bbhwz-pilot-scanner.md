@@ -118,6 +118,17 @@ Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. E
 - New evidence: root disposition, four phase reports at ac8798b9, traceback/logger and read-count regressions
 - Decision: bounded remediation; no silent further extension
 
+### Iteration 5 — reserved verified re-review correction
+
+- Authorization: root invokes reserved5only for P04-QUINN-02; no6 or native work allowed
+- Target criterion: C003 finite filesystem metadata/source-resolution refusal boundary
+- Hypothesis: a narrow OSError boundary at public/shared filesystem helpers plus a resolve-only RuntimeError conversion closes uncaught preflight failures without hiding programming errors
+- Change or investigation: RED full traceback/logger metadata and source-resolution controls; portable own chmod000 case with finally cleanup
+- Verifier executed:15asset diagnostics/read-count tests,31core tests,45legacy selftests
+- Result: RED6preflight failures reproduced; GREEN15asset/31core/45legacy including actual chmod000 and resolve-loop cases, no skips; whole native/extraction/P01/currentCI gates unchanged
+- New evidence: round2 Quinn/Shadow/root diagnostics; prior findings independently closed
+- Decision: final bounded correction frozen for final snapshot refresh; max5consumed, no6 or native continuation
+
 ## Risks and rollback
 
 - Risks: compiler pooling, unsafe extraction, stale provenance and diagnostics; fail closed

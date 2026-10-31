@@ -10,7 +10,7 @@ from pathlib import Path
 import re
 
 from pilot_installer_scan import (MAGIC, PolicyError, development_inventory, file_digest,
-                                  occurrences, verify_inventory, _positive_control, known_secret_probes)
+                                  occurrences, verify_inventory, _positive_control, known_secret_probes, filesystem_boundary, source_root)
 
 
 @dataclass(frozen=True)
@@ -32,10 +32,11 @@ class AssetChain:
     actual_extraction_verified: bool = False
 
 
+@filesystem_boundary
 def scan_asset(path: Path, known_secrets: tuple[bytes, ...] = ()) -> None:
     if len(known_secrets) > 256:
         raise PolicyError('asset-secret-inventory') from None
-    inventory = known_secrets + development_inventory(Path(__file__).resolve().parents[1])
+    inventory = known_secrets + development_inventory(source_root(__file__))
     before = file_digest(path)
     if next(occurrences(path, (MAGIC, MAGIC.decode('ascii').encode('utf-16-le'))), None) is not None:
         raise PolicyError('asset-pilot-envelope') from None
@@ -47,6 +48,7 @@ def scan_asset(path: Path, known_secrets: tuple[bytes, ...] = ()) -> None:
         raise PolicyError('asset-changed') from None
 
 
+@filesystem_boundary
 def capture_assets(root: Path, expected: dict[str, str], *, known_secrets: tuple[bytes, ...] = ()) -> AssetSnapshot:
     verify_inventory(root, expected)
     for name in sorted(expected):
@@ -55,10 +57,12 @@ def capture_assets(root: Path, expected: dict[str, str], *, known_secrets: tuple
     return AssetSnapshot(root, tuple(sorted(expected.items())))
 
 
+@filesystem_boundary
 def verify_unchanged(snapshot: AssetSnapshot) -> None:
     verify_inventory(snapshot.root, dict(snapshot.inventory))
 
 
+@filesystem_boundary
 def begin_codegen(output: Path) -> FreshOutput:
     """Observe an empty task-owned directory. Caller must actually control the build."""
     try:
@@ -70,6 +74,7 @@ def begin_codegen(output: Path) -> FreshOutput:
     return FreshOutput(output, (metadata.st_dev, metadata.st_ino))
 
 
+@filesystem_boundary
 def verify_build_contract(root: Path, pinned: dict[str, str], *, config_path: str,
                           frontend_dist: str, codegen_features: tuple[str, ...]) -> AssetSnapshot:
     """Verify explicit reviewed config/toolchain/codegen input hashes, not self-approval.
@@ -92,6 +97,7 @@ def verify_build_contract(root: Path, pinned: dict[str, str], *, config_path: st
     return snapshot
 
 
+@filesystem_boundary
 def verify_cargo_output(messages: Path, operator: Path, expected_sha256: str) -> None:
     """Bind a selected release executable to supplied Cargo output; not log authenticity."""
     found = []
@@ -113,6 +119,7 @@ def verify_cargo_output(messages: Path, operator: Path, expected_sha256: str) ->
         raise PolicyError('asset-cargo-binding') from None
 
 
+@filesystem_boundary
 def finish_codegen(inputs: AssetSnapshot, output: FreshOutput, generated: dict[str, str], *,
                    emitted_operator: Path, emitted_sha256: str, packaged_sha256: str) -> AssetChain:
     verify_unchanged(inputs)

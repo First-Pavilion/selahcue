@@ -9,6 +9,8 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass, field
 import hashlib
+import functools
+import inspect
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -31,6 +33,33 @@ MAX_MATCHES = 10_000
 
 class PolicyError(Exception):
     """Fixed public reason only: no parser input, credential, path or context."""
+
+
+def filesystem_boundary(function):
+    """Sanitize filesystem refusals only; programming errors remain visible."""
+    if inspect.isgeneratorfunction(function):
+        @functools.wraps(function)
+        def guarded_iterator(*args, **kwargs):
+            try:
+                yield from function(*args, **kwargs)
+            except OSError:
+                raise PolicyError('filesystem-refused') from None
+        return guarded_iterator
+    @functools.wraps(function)
+    def guarded(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except OSError:
+            raise PolicyError('filesystem-refused') from None
+    return guarded
+
+
+def source_root(module_file: str) -> Path:
+    """Path.resolve's documented loop RuntimeError is confined to this operation."""
+    try:
+        return Path(module_file).resolve().parents[1]
+    except (OSError, RuntimeError):
+        raise PolicyError('source-root-refused') from None
 
 
 @dataclass(frozen=True)
@@ -126,6 +155,7 @@ def frame_payload(raw: bytes) -> bytes:
     return MAGIC + struct.pack('<I', len(raw)) + raw + TRAILER
 
 
+@filesystem_boundary
 def file_digest(path: Path) -> tuple[int, str]:
     size = 0
     digest = hashlib.sha256()
@@ -139,6 +169,7 @@ def file_digest(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+@filesystem_boundary
 def occurrences(path: Path, needles: tuple[bytes, ...], *, chunk_size: int = CHUNK) -> Iterator[tuple[int, int]]:
     """Every overlapping occurrence, once, including chunk boundaries; bounded memory."""
     if not needles or any(not isinstance(n, bytes) or not n for n in needles) or type(chunk_size) is not int or not 1 <= chunk_size <= CHUNK:
@@ -176,6 +207,7 @@ def occurrences(path: Path, needles: tuple[bytes, ...], *, chunk_size: int = CHU
         _fail('component-unreadable')
 
 
+@filesystem_boundary
 def _read(path: Path, offset: int, size: int, limit: int) -> bytes:
     if offset < 0 or size < 0 or offset + size > limit or size > MAX_PAYLOAD * 8:
         _fail('native-bounds')
@@ -261,6 +293,7 @@ def _thin_image(path: Path, start: int, size: int, file_size: int) -> str:
     _fail('native-format')
 
 
+@filesystem_boundary
 def native_images(path: Path, expected_architectures: tuple[str, ...]) -> tuple[tuple[int, int, str], ...]:
     size = file_digest(path)[0]
     head = _read(path, 0, min(size, 8), size)
@@ -291,6 +324,7 @@ def native_images(path: Path, expected_architectures: tuple[str, ...]) -> tuple[
     return tuple(images)
 
 
+@filesystem_boundary
 def _envelopes(path: Path, images, expected: ExpectedPayload):
     size = file_digest(path)[0]
     spans = []
@@ -327,6 +361,7 @@ def _representations(value: bytes) -> tuple[bytes, ...]:
                                base64.b64encode(value), value.hex().encode('ascii'))))
 
 
+@filesystem_boundary
 def _scan_component(path: Path, *, minimum: int, profile: str = 'ordinary', operator: bool = False,
                    expected: ExpectedPayload | None = None, evidence: BuildEvidence | None = None,
                    expected_source_sha: str | None = None, known_secrets: tuple[bytes, ...] = ()) -> ComponentResult:
@@ -363,7 +398,7 @@ def _scan_component(path: Path, *, minimum: int, profile: str = 'ordinary', oper
                 if not (encoding == 0 and any(owner == index and left == offset and right == offset + len(credential)
                                                for owner, left, right in allowed)):
                     _fail('credential-outside-designation')
-    inventory = development_inventory(Path(__file__).resolve().parents[1])
+    inventory = development_inventory(source_root(__file__))
     if len(known_secrets) > 256:
         _fail('known-secret-inventory')
     probes = known_secret_probes(known_secrets + inventory)
@@ -375,6 +410,7 @@ def _scan_component(path: Path, *, minimum: int, profile: str = 'ordinary', oper
     return ComponentResult(profile, before[0], before[1], count)
 
 
+@filesystem_boundary
 def verify_inventory(root: Path, expected: dict[str, str], *, max_files: int = 1024,
                      max_bytes: int = 2 * 1024**3, max_depth: int = 16,
                      timeout: float = 30) -> tuple[str, ...]:
@@ -433,6 +469,7 @@ def verify_inventory(root: Path, expected: dict[str, str], *, max_files: int = 1
     return tuple(sorted(files))
 
 
+@filesystem_boundary
 def development_inventory(root: Path) -> tuple[bytes, ...]:
     """Read only two exact committed, explicitly public development fixtures.
 
@@ -468,6 +505,7 @@ def development_inventory(root: Path) -> tuple[bytes, ...]:
     return seed, public
 
 
+@filesystem_boundary
 def _positive_control(path: Path, expected: ExpectedPayload | None,
                       inventory: tuple[bytes, ...]) -> None:
     """Seed a private COPY from this artifact; no control bytes reach diagnostics."""
@@ -498,6 +536,7 @@ def _positive_control(path: Path, expected: ExpectedPayload | None,
         _fail('positive-control-unreadable')
 
 
+@filesystem_boundary
 def scan_component(path: Path, *, profile: str = 'ordinary', operator: bool = False,
                    expected: ExpectedPayload | None = None, evidence: BuildEvidence | None = None,
                    expected_source_sha: str | None = None, known_secrets: tuple[bytes, ...] = ()) -> ComponentResult:
@@ -507,6 +546,7 @@ def scan_component(path: Path, *, profile: str = 'ordinary', operator: bool = Fa
                            known_secrets=known_secrets)
 
 
+@filesystem_boundary
 def scan_resource(path: Path, *, profile: str = 'ordinary', expected: ExpectedPayload | None = None,
                   known_secrets: tuple[bytes, ...] = ()) -> ComponentResult:
     """Deny-only scan for every closed-inventory resource; never grants a native exception.
