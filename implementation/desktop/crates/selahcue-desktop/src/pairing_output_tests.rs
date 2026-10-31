@@ -251,7 +251,7 @@ fn child_real_host_pairing_lifecycle() {
         let replay = ControlClient::pair(addr, "localhost", pin, &code, "replay", "test").await;
         assert!(matches!(replay, Err(selahcue_lan::TransportError::Protocol(ref message)) if message.contains("Unauthenticated")), "the consumed code cannot be replayed");
         assert!(matches!(operator.command(Command::ApprovePairing { device_id: device, role: Role::Producer }).await.expect("operator approves"), ServerMessage::RemoteDevices { .. }));
-        let (mut phone, credentials) = tokio::time::timeout(Duration::from_secs(10), phone)
+        let (phone, credentials) = tokio::time::timeout(Duration::from_secs(10), phone)
             .await.expect("approval reaches parked phone").expect("phone task").expect("pair approved");
         assert_eq!(phone.role(), Role::Producer);
         assert!(!credentials.token.is_empty());

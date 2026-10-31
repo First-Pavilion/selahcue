@@ -109,6 +109,16 @@ Actual main93bf472f65a1846117eecf09b1972c4118dc0cd4. The GUI App toggle offers a
 - New evidence: forthcoming immutable candidate/component/profile/mutation receipts.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C-004.
+- Hypothesis: removing the unnecessary mutable test binding resolves the only strict normal-Clippy failure without changing any assertion or runtime behavior.
+- Change or investigation: official normal41187057458 fails -D unused-mut at new test line254; close consumes its client, so mutable binding is unnecessary. Actual source8d7 supplemental41187236206 independently passed both full actual profiles138/0, five specific mutants, twelve identical nine-component audits and both full restored profiles138/0. These remain historical source8d7 evidence, not a green normal waiver. Ordinarily integrated current mainc093f29fc805db4a1da540806eb1d4c0952248cb (DQ0 public error boundary), disjoint from this three-file patch; removed only that mut in the test.
+- Verifier executed: official raw normal failure/classification, all nine actual supplemental phase receipts and component hashes, Git ordinary integration, pinned formatter/diff/structural checks.
+- Result: minimal test-lint remediation prepared; fresh exact-source normal and profile/mutation refresh required before final review. No assertions, policies, lifecycle or budgets weakened.
+- New evidence: normal-attempt1-classification.json, supplemental-attempt1-classification.json and preserved historical-8d7 proofs.
+- Decision: handoff
+
 ## Risks and rollback
 
 - Risks: a formatter-only oracle, synthetic profile boolean, leaked fixture code in test logs, widened trust seams or omitted actual toggle/auth side effects.
