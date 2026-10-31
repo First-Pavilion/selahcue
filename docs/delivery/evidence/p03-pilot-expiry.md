@@ -43,7 +43,7 @@ cargo test --release --features pilot-credentials,cloud-live --test test_pilot_s
 cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
 ```
 
-Each phase asserts a nonzero passing count and exact required control names in Cargo output, so a feature/filter typo cannot silently pass. Existing CI already reaches core/LAN/app, cloud HTTP and Deepgram library tests; no duplicate suite is added. Workflow inventory **6 workflows/19 jobs**, minute rules and actionlint pass. Workspace and operator rustfmt checks and `git diff --check` pass. Final local exact-step result: PENDING.
+Each phase asserts a nonzero passing count and exact required control names in Cargo output, so a feature/filter typo cannot silently pass. Existing CI already reaches core/LAN/app, cloud HTTP and Deepgram library tests; no duplicate suite is added. Workflow inventory **6 workflows/19 jobs**, minute rules and actionlint pass. Workspace and operator rustfmt checks and `git diff --check` pass. Final local exact-step result: **PASS**, `/private/tmp/p03-exact-ci.log`: required-name/nonzero counts **5 before-bin +9 before-source/rejection +1 mixed-hosted at equality +5 source at equality +5 source after =25 passing test executions**. Equality/after use the same committed fixture and source executable; after-cutoff phase reports a1.24s cached finish. A disjoint main rebase during the run refreshed source mtimes and caused one intermediate rebuild; source bytes did not change. Operator strict release clippy and affected-library strict release clippy both pass.
 
 ## UI/runtime provenance
 
@@ -54,3 +54,9 @@ Root CUA used the actual UI module bytes with explicitly mocked native IPC: avai
 ## Remaining gates
 
 P03 still requires four independent reviews at the frozen whole-unit head, current CI, root acceptance of the combined runtime evidence and root merge. P01 actual provider account/scope/expiry/revoke-owner proof and P04 uniquely bounded scanner payload designation/all-occurrence policy remain mandatory before real credential embedding/packaging. No real keys, .env, provider calls, installer, publication or deployment are part of this evidence.
+
+## Revision attribution
+
+Initial native/source checkpoint `95ddd90eb71a1a9045d1601f1043c367639094a4` is based on main `4e2ce4374713956a498978fdf6383c74c2c548cb`. Main delta from a2ed7f96 is API/deployments/docs/mobile only; audited zero desktop/Cargo/UI/shared-workflow changes. Rebased UI commit `fe01ac8e87e5a4bbca86198a419b3fb4e0b72e6d` retains the exact original7533f9e UI bytes. Whole `implementation/desktop` tree fingerprint: `80243a513cc91021f09e33023b30f813b308462f`. Subsequent evidence-only updates do not alter that source fingerprint.
+
+Root authorized a separate short-expiry native macOS smoke build from these exact frozen bytes, without cloud-live/dev-keys, real providers or production test-clock hooks. Build-only Tauri identifier/window-title overrides and synthetic provider expiries keep the cohort ceiling unchanged. Root's launcher sandbox deny probes pass; native launch/CUA is still pending. C004 is not satisfied by mock IPC alone. No installer/package is produced.
