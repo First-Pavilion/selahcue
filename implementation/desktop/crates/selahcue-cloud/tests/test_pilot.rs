@@ -100,3 +100,15 @@ fn required_fields_unknown_fields_and_bounds_fail_closed() {
     );
     assert!(PilotConfig::parse(Some(&oversized), 1).is_none());
 }
+
+#[test]
+fn inspection_retains_only_safe_expiry_metadata_after_expiry_without_admitting_credentials() {
+    let text = fixture().to_string();
+    let c = PilotConfig::inspect(Some(&text)).expect("synthetic config metadata");
+    assert_eq!(c.effective_expiry(), APPROVED_CUTOFF - 100);
+    assert!(c.deepgram_key(APPROVED_CUTOFF).is_none());
+    assert!(c
+        .openai(selahcue_cloud::MockTransport::failing(), APPROVED_CUTOFF)
+        .is_none());
+    assert!(PilotConfig::parse(Some(&text), APPROVED_CUTOFF).is_none());
+}

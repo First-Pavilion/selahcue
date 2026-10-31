@@ -1601,6 +1601,7 @@
         // Transcripts (86akcffvt) reloads the list every time the surface is opened — a fresh read
         // from the shared store each visit, never a stale in-memory cache from a prior visit.
         if (name === "transcripts" && typeof trActivate === "function") trActivate();
+        if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
       }
       // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
       // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
@@ -1646,6 +1647,7 @@
           if (page === "outputs" && typeof settingsOutputsActivate === "function") settingsOutputsActivate();
           if (page === "security" && typeof settingsSecurityActivate === "function") settingsSecurityActivate();
           if (page === "storage" && typeof settingsStorageActivate === "function") settingsStorageActivate();
+          if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";

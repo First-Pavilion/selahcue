@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::rbac::Role;
 use crate::tls::{client_config, TransportError};
-use crate::wire::{recv_json, send_json};
+use crate::wire::{recv_json, send_json, send_json_admitted};
 use rustls::pki_types::ServerName;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -228,6 +228,21 @@ impl ControlClient {
     /// next failure), so refusing to reuse a connection whose reply stream may be desynchronized
     /// costs one extra dial, never a wrong answer.
     pub async fn command(&mut self, command: Command) -> Result<ServerMessage, TransportError> {
+        self.command_with_admission(command, None).await
+    }
+    /// Only generated notes use this optional admission; ordinary commands are unchanged.
+    pub async fn command_if_admitted(
+        &mut self,
+        command: Command,
+        admit: impl Fn() -> bool + Send + Sync,
+    ) -> Result<ServerMessage, TransportError> {
+        self.command_with_admission(command, Some(&admit)).await
+    }
+    async fn command_with_admission(
+        &mut self,
+        command: Command,
+        admit: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    ) -> Result<ServerMessage, TransportError> {
         if self.poisoned {
             return Err(TransportError::Protocol(
                 "connection desynchronized after a previous command timed out — reconnect required"
@@ -237,7 +252,12 @@ impl ControlClient {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let exchange = async {
-            send_json(&mut self.ws, &Request::new(id, command)).await?;
+            let request = Request::new(id, command);
+            if let Some(admit) = admit {
+                send_json_admitted(&mut self.ws, &request, admit).await?;
+            } else {
+                send_json(&mut self.ws, &request).await?;
+            }
             recv_json(&mut self.ws).await
         };
         match tokio::time::timeout(Self::COMMAND_TIMEOUT, exchange).await {

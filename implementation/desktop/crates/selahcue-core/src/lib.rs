@@ -28,6 +28,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod audio_capacity;
+pub mod deadline;
 pub mod deck_ref;
 pub mod detection;
 pub mod detector;
