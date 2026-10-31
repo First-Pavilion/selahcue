@@ -1266,6 +1266,9 @@ fn uniquify_excluding(base: &str, taken: &std::collections::HashSet<String>, kee
 #[cfg(test)]
 mod identity_tests;
 
+#[cfg(test)]
+mod row_key_tests;
+
 // Deck-number reuse across restarts (17tnw2b9arx): its own file for the same reason, and because
 // every test in it needs a real database file and a simulated restart.
 #[cfg(test)]

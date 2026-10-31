@@ -3439,16 +3439,19 @@ fn deck_new_in(
 /// `DeckView`. A no-op (returns the current deck) if `id` is unknown.
 #[tauri::command]
 async fn deck_open(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    with_deck_and_library(&state, |ws, lib| {
-        if ws.open_deck().id() == DeckId(id) {
-            return ws.view(lib); // already open — don't reset the editing session (undo/selection)
-        }
-        lib.store(ws.open_deck()); // persist the deck we are leaving
-        if let Some(deck) = lib.get(DeckId(id)) {
-            ws.load_deck(deck);
-        }
-        ws.view(lib)
-    })
+    with_deck_and_library(&state, |ws, lib| deck_open_in(ws, lib, id))
+}
+
+/// The exact ordinary leave/open body shared by the command and real storage regressions.
+fn deck_open_in(ws: &mut DeckWorkspace, lib: &mut DeckLibrary, id: u64) -> serde_json::Value {
+    if ws.open_deck().id() == DeckId(id) {
+        return ws.view(lib); // already open — don't reset the editing session (undo/selection)
+    }
+    lib.store(ws.open_deck()); // persist the deck we are leaving
+    if let Some(deck) = lib.get(DeckId(id)) {
+        ws.load_deck(deck);
+    }
+    ws.view(lib)
 }
 
 /// Rename a presentation (unique-enforced) → returns the `LibraryView`. If the renamed deck is the
