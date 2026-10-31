@@ -59,7 +59,7 @@ onUnmounted(() => { disposed = true; request?.abort(); clearInterval(timer) })
         <ToneChip kind="row" tone="brand">FIELD TEST PILOT</ToneChip>
         <h2 id="pilot-heading" tabindex="-1">Try SelahCue at your church</h2>
         <p>Choose your desktop platform. Before downloading, complete the hosted registration form with your details and your church details. Confirm your platform on the form.</p>
-        <p>Core live controls work offline. Pilot Deepgram transcription and OpenAI assistance require internet access and consent. Pilot provider access ends at the configured expiry; core offline controls remain available.</p>
+        <p>Core live controls work offline. Pilot Deepgram transcription and OpenAI assistance require internet access and consent. Pilot provider access ends at the pilot end date; core offline controls remain available.</p>
         <div class="pilot-selectors">
           <div><label for="pilot-platform">Operating system</label><select id="pilot-platform" v-model="platform"><option v-for="item in platforms" :key="item">{{ item }}</option></select></div>
           <div><label for="pilot-architecture">Processor architecture</label><select id="pilot-architecture" v-model="architecture"><option v-for="item in architectures" :key="item" :value="item">{{ item === 'x64' ? 'x64 (Intel / AMD 64-bit)' : 'ARM64 (including Apple silicon)' }}</option></select></div>
@@ -71,7 +71,7 @@ onUnmounted(() => { disposed = true; request?.abort(); clearInterval(timer) })
           <template v-else>
             <p v-if="state.status === 'expired'">This pilot package has expired. Registration for this package is closed.</p>
             <p v-else-if="state.status === 'unavailable'">No pilot package is available for this platform and architecture yet.</p>
-            <p v-else>Available for pilot registration. Registration must be recorded before a download can be authorized.</p>
+            <p v-else>Available for pilot registration. Complete the form before downloading.</p>
             <dl v-if="state.entry" class="pilot-metadata">
               <div><dt>Version</dt><dd>{{ state.entry.version }}</dd></div>
               <div><dt>Pilot expires (UTC)</dt><dd><time :datetime="state.entry.expires_at">{{ state.entry.expires_at.replace('T', ' ').replace('Z', ' UTC') }}</time></dd></div>
@@ -88,7 +88,7 @@ onUnmounted(() => { disposed = true; request?.abort(); clearInterval(timer) })
           <p id="pilot-reset-note">Returning after a failed submission? Continue to registration reuses your attempt. Start a new registration only when you intend to replace it; this may create another registration record.</p>
           <UiButton variant="ghost" aria-describedby="pilot-reset-note" @click="prepareRegistration(true)">Start a new registration</UiButton>
         </div>
-        <p id="pilot-form-note" class="pilot-note">The form opens on our registration service. If registration or download authorization fails there, use its retry instructions. This page does not confirm registration or issue installer links.</p>
+        <p id="pilot-form-note" class="pilot-note">The registration form opens in this tab. If it cannot save your details or start your download, follow its retry instructions.</p>
         <p v-if="config.enabled && config.notice" class="pilot-note">Registration data owner: {{ config.notice.data_owner }}. Registration retention: {{ config.notice.retention_days }} days. <a :href="config.notice.url" referrerpolicy="no-referrer">Read the pilot data notice</a> ({{ config.notice.version }}).</p>
       </div>
     </div>
