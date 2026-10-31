@@ -40,5 +40,7 @@
 
 - Native iOS resource graph now includes the existing privacy manifest; declarations are unchanged. Final archive, bundled-plugin required-reason report, signing and physical-device evidence remain pending.
 - Android `release` still uses the debug signing configuration. Replace it through the approved signing handoff before any store release; do not treat a debug-signed artifact as store-ready.
-- Android launcher label is still `selahcue_controller`; reconcile with the approved SelahCue Controller display name before release.
+- Android/iOS native display labels now match `SelahCue Controller`; iOS short fallback name is `SelahCue`. Compiled Android debug APK, actual Android release merged manifest and unsigned iOS release app metadata were verified in the app-identity continuation. See [dated evidence](2026-10-31-app-identity-evidence.md); unsigned/debug outputs are not store-ready.
 - No store upload, account provisioning, signing secret handling or deployment was performed by this increment.
+
+App-identity continuation: `make mobile-test` passed (499 tests, analysis clean), Android debug APK and unsigned iOS release app compiled locally. Release signing, Android AAB/16KB native validation, final distribution archive/privacy report and real-device QA remain open. No IDs, version/build numbers, permission declarations or signing configuration changed in this continuation.
