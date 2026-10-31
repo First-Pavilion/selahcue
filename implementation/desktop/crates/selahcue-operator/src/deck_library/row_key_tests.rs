@@ -420,3 +420,86 @@ fn awr_copy_and_import_get_fresh_numbers_without_borrowing_loaded_row_ownership(
     assert_saved(&file, &copy.name, copy.id().0, 2);
     assert_saved(&file, "Imported", imported.id().0, 2);
 }
+
+#[test]
+fn awr_failed_matching_rename_reserves_original_key_until_a_successful_move() {
+    let file = FileDb::new(&[
+        ("Alpha", deck(1, "Alpha", 1, true)),
+        ("Zed", deck(2, "Zed", 3, true)),
+    ]);
+    let before = file.rows();
+    let mut library = DeckLibrary::load(Some(file.open()));
+    file.clear_trace();
+    file.open().conn().execute_batch("CREATE TRIGGER awr_refuse_rename BEFORE INSERT ON deck WHEN NEW.name = 'Renamed' BEGIN SELECT RAISE(ABORT, 'fixture refuses rename'); END;").unwrap();
+    library.rename(DeckId(1), "Renamed");
+    assert_eq!(file.rows(), before);
+    assert!(file.trace().is_empty());
+    file.open()
+        .conn()
+        .execute_batch("DROP TRIGGER awr_refuse_rename;")
+        .unwrap();
+    let mut incoming = library.get(DeckId(1)).unwrap();
+    incoming.name = "Alpha".into();
+    let imported = library.try_adopt(incoming).unwrap();
+    assert_ne!(imported.id(), DeckId(1));
+    assert_ne!(
+        imported.name, "Alpha",
+        "an uncommitted old key stays reserved"
+    );
+    let mut editing = library.get(DeckId(1)).unwrap();
+    editing.add_slide();
+    library.store(&editing);
+    assert_saved(&file, "Alpha", 1, 2);
+    assert_saved(&file, &imported.name, imported.id().0, 1);
+    assert_untouched(&file, &before, &["Zed"]);
+    library.rename(DeckId(1), "Final");
+    assert!(!file.rows().contains_key("Alpha"));
+    let new_alpha = library.try_create("Alpha").unwrap();
+    assert_eq!(
+        new_alpha.name, "Alpha",
+        "successful move releases the old key"
+    );
+    let mut editing = library.get(DeckId(1)).unwrap();
+    editing.add_slide();
+    library.store(&editing);
+    assert_saved(&file, "Final", 1, 3);
+    assert_saved(&file, "Alpha", new_alpha.id().0, 1);
+    drop(library);
+    let again = DeckLibrary::load(Some(file.open()));
+    assert_eq!(again.get(DeckId(1)).unwrap().name, "Final");
+    assert_eq!(again.get(new_alpha.id()).unwrap().name, "Alpha");
+    assert_untouched(&file, &before, &["Zed"]);
+}
+#[test]
+fn awr_failed_matching_delete_reserves_its_row_for_undo_not_a_new_deck() {
+    let file = FileDb::new(&[
+        ("Alpha", deck(1, "Alpha", 1, true)),
+        ("Zed", deck(2, "Zed", 3, true)),
+    ]);
+    let before = file.rows();
+    let mut library = DeckLibrary::load(Some(file.open()));
+    file.clear_trace();
+    file.open().conn().execute_batch("CREATE TRIGGER awr_refuse_delete BEFORE DELETE ON deck WHEN OLD.name = 'Alpha' BEGIN SELECT RAISE(ABORT, 'fixture refuses delete'); END;").unwrap();
+    assert!(library.delete(DeckId(1)));
+    assert_eq!(file.rows(), before);
+    assert!(file.trace().is_empty());
+    file.open()
+        .conn()
+        .execute_batch("DROP TRIGGER awr_refuse_delete;")
+        .unwrap();
+    let added = library.try_create("Alpha").unwrap();
+    assert_ne!(added.name, "Alpha");
+    assert!(library.restore(DeckId(1)).is_some());
+    let mut editing = library.get(DeckId(1)).unwrap();
+    editing.add_slide();
+    library.store(&editing);
+    assert_eq!(file.rows().len(), 3);
+    assert_saved(&file, "Alpha", 1, 2);
+    assert_saved(&file, &added.name, added.id().0, 1);
+    assert_untouched(&file, &before, &["Zed"]);
+    drop(library);
+    let again = DeckLibrary::load(Some(file.open()));
+    assert_eq!(again.get(DeckId(1)).unwrap().len(), 2);
+    assert_eq!(again.get(added.id()).unwrap().len(), 1);
+    assert_untouched(&file, &before, &["Zed"]);
+}

@@ -52,7 +52,7 @@ Actual main3bbdd4b5970958e11b56db2206630afb6cf69776 includes reviewed DNV. Libra
 
 ### Assumptions and unknowns
 
-- UNKNOWN actual shared leave route RED until hosted real database tests; direct store-only inference is insufficient.
+- VERIFIED actual shared leave RED41177395023: 127passed/9newbehaviorfailures, all4new and123old controls passed; shared outgoing1/incoming2 wrote Zed update and destroyed its raw content.
 - SQLite permits blank/exact case/space keys. Existing display-name/held-back heal may still change a key-derived name; safe own-row binding must handle these without inventing new naming policy or disabling saves.
 
 ## Dependencies and approvals
@@ -64,7 +64,7 @@ Actual main3bbdd4b5970958e11b56db2206630afb6cf69776 includes reviewed DNV. Libra
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Actual shared ordinary leave reproduces own-row overwrite before fix | Hosted SQLite load/startup/shared deck_open_in/store/relaunch with independent snapshots/triggers | Alpha1/Zed3 defect genuinely RED with actual leave witness and healthy controls, no setup/oracle substitution | deck-own-row-storage/red metadata/raw/classification and extraction identity proof | PENDING |
+| C-001 | yes | Actual shared ordinary leave reproduces own-row overwrite before fix | Hosted SQLite load/startup/shared deck_open_in/store/relaunch with independent snapshots/triggers | Alpha1/Zed3 defect genuinely RED with actual leave witness and healthy controls, no setup/oracle substitution | deck-own-row-storage/red-classification.json, red-job.log, extraction-plan.json, exact17d6/f611 | PASS |
 | C-002 | yes | Every later write stays on its own row after name/key mismatch | Real ordinary leave/edit/store/relaunch and blank/case/space rename/delete/restore cases with byte/SQL-write evidence | Both presentations/content survive, distinct rows/names/ids/UIDs retained, no untouched-row update | Hosted focused GREEN and meaningful mutants/exact restoration | PENDING |
 | C-003 | yes | Existing storage/heal/number/live/permission invariants and ADR remain accurate | Existing identity/number/readonly/corrupt/healthy tests, source/component comparison and ADR5/6/limit7 review | Existing legitimate assertions pass or precisely task-superseded own-row repair expectations preserve stronger content/no-collateral checks; Proposed status/unrelated limits unchanged | Full operator/identity/number raw and static review evidence | PENDING |
 | C-004 | yes | Final normal affected gates pass at exact source | Normal pinned Linux Rust/operator/default/devkeys/openainotes/RELEASE/native/audit gates plus scoped sensitivity/restoration | All required current-source gates pass; skips/ignores/other platforms explicit, no waiver | Current normal/supplemental metadata/raw receipts | PENDING |
@@ -89,6 +89,16 @@ Actual main3bbdd4b5970958e11b56db2206630afb6cf69776 includes reviewed DNV. Libra
 - New evidence: authoritative frozen task/qualification/ADR/runbook and this contract.
 - Decision: iterate
 
+### Iteration 2
+
+- Target criterion: C-001 through C-003.
+- Hypothesis: exact row-key authority plus a private repaired-local-number destination binding preserves ordinary writes, including blank display healing and failed atomic rename/delete, without importing external ownership.
+- Change or investigation: actual hosted RED41177395023 compiled/runs all storage tests:127pass/9fail/0ignore, all9 new expected defects, all4 new and123 unchanged controls passed. Real shared leave wrote Zed update. Added canonical key names after number/held-back healing; exact binding only for divergent display names or failed rename/delete, reservation against new writes, clear on successful rename/delete. Existing six mismatch-backfill tests now compare whole content/id plus only intended own name/uid repairs and stable second-launch bytes; unreadable siblings raw-identical. Original13tests unchanged; two extra matching-name failure/reservation cleanup controls added, not misreported as original RED.
+- Verifier executed: official raw/metadata classification, static Git/source/formatter/diff checks; no local project runtime. Hosted focused GREEN/mutants/full normal still pending.
+- Result: C-001 PASS; implementation candidate unverified at runtime; all final gates pending.
+- New evidence: deck-own-row-storage/red-{final.json,job.log,classification.json}, extraction-plan.json, source diff.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: load repair writes sibling rows, corrupted/unreadable rows shift bindings, healed ids mismatch keys, names/UIDs/numbers/history rewritten, failed rename drops destination binding, vacuous no-op save and inferred helper-only route.
@@ -104,5 +114,5 @@ Actual main3bbdd4b5970958e11b56db2206630afb6cf69776 includes reviewed DNV. Libra
 - Validator result: PASS structural verification before substantive tests
 - Independent verification result: pending
 - Terminal state: ACTIVE
-- Remaining failed or blocked criteria: C-001 through C-005 pending
+- Remaining failed or blocked criteria: C-002 through C-005 pending
 - ClickUp final evidence comment: root-owned pending access
