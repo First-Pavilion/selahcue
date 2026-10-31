@@ -10599,6 +10599,15 @@ DRIVER = r"""
       window.__chapterFixturesOnly = true;
       window.__chapterFixtureHits = [];
       var hostCases = window.__chapterHostFixtures;
+      // The older synthetic host view deliberately advertises only KJV. Populate
+      // the real selector through the real render path using recorded installed
+      // translations, so WEB is genuinely selectable rather than assigning an
+      // unavailable option (which the DOM silently converts to an empty value).
+      var hostPriorTranslations = V.translations;
+      V.translations = hostCases.find(function(c) { return c.id === "translation-gap"; }).result.Ok.translations.slice();
+      render(V);
+      ok(Array.from(el("translation").options).some(function(o) { return o.value === "WEB"; }),
+         "Y0 host fixture: recorded installed translations offer WEB through actual host render");
       var hostCaseById = function(id) { return hostCases.find(function(c) { return c.id === id; }); };
       var hostLinkCalls = function() { return window.__calls.filter(function(c) { return c.cmd === "set_item_content"; }); };
       var hostPressLink = async function(m) {
@@ -10612,6 +10621,8 @@ DRIVER = r"""
         m.querySelector('input[aria-label="Scripture reference"]').value = c.request.reference;
         var trans = m.querySelector('select[aria-label="Translation"]');
         trans.value = c.request.translation || "KJV";
+        ok(trans.value === (c.request.translation || "KJV"),
+           "Y0 host fixture: actual modal selector offers requested translation " + c.id);
         if (browse) {
           Array.prototype.find.call(m.querySelectorAll("button"), function(b) { return b.textContent === "Browse"; }).click();
           await sleep(40);
@@ -10651,6 +10662,11 @@ DRIVER = r"""
         if (hc.id === "past-chapter-end") {
           ok(/^Note:/.test(hm.querySelector(".pm-link-hint").textContent) && /cut back to 2-6/.test(hm.querySelector(".pm-link-hint").textContent),
              "Y0 host fixture: Browse visibly explains the real six-verse clamp");
+        }
+        if (hc.id === "translation-gap") {
+          var gapNumbers = rows.map(function(r) { return +r.dataset.vnum; });
+          ok(gapNumbers.includes(35) && gapNumbers.includes(37) && !gapNumbers.includes(36),
+             "Y0 host fixture: real WEB gap has neighboring35/37 and no invented36");
         }
         await closeModal();
       }
@@ -10713,6 +10729,8 @@ DRIVER = r"""
       await sleep(40);
       ok(hostLinkCalls().length === deferredBefore, "Y0 host fixture: closing during recorded reply refuses late commit");
       window.__chapterFixturesOnly = false;
+      V.translations = hostPriorTranslations;
+      render(V);
 
       var lmR = await browseOnce("Psalms 119");
       var rRows = lmR.querySelectorAll(".pm-verse");
