@@ -90,6 +90,16 @@ Actual main e730b475de71a6f27751fdedaee659851159d020 after verified UHZ merge. E
 - New evidence: null row callbacks do not themselves dim SelahListRow; test must observe actual disabled presentation as well as the controller backstop.
 - Decision: add tests-only widget regressions/positive controls, freeze one draft and obtain actual behavioral RED before minimal view change. No local project runtime.
 
+### Iteration 2
+
+- Target criterion: C-001 through C-005
+- Hypothesis: separate local arm from send gating, and thread the shared disabled state through Scripture callbacks and visible presentation.
+- Verifier executed: actual baseline normal CI41140876844 at252363f9; analysis clean,493 passed/6 failed. Each failure is an intended semantic/callback assertion, not setup. Three busy-arm failures found disabled/missing confirm labels; Scripture row retained a callback, syncing caption was absent, fallback lacked reconnect reason. Row opacity assertions follow the callback assertion and require independent mutant proof.
+- Positive evidence: existing first/second tap, absolute intent, one-tap ready recovery, syncing/role restrictions, busy Scripture rows/fallback, paused remaining-window and expiry controls passed. Full raw/hash archive: mobile-qualification/17tnw2ay5jm/red-ci.
+- Change: only EmergencyStrip guarded arm/send distinction with tap-time safety recheck, and Scripture disabled/reason/row-caption opacity treatment. Controller/auth/timers/dependencies unchanged; all baseline test assertions retained.
+- Result: actual behavioral RED qualified; candidate runtime and meaningful mutants pending. Root start/status still pending unlock.
+- Decision: publish one minimal candidate for full normal Flutter and separate exact-parent mutation diagnostics; no local runtime.
+
 ## Risks and rollback
 
 - Risks: arm accidentally sends while busy, confirmed intent flips after poll, pausing grants fresh window, syncing looks usable, or visual gating prevents safe browsing/permissions.
@@ -103,7 +113,7 @@ Actual main e730b475de71a6f27751fdedaee659851159d020 after verified UHZ merge. E
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2ay5jm-emergency-scripture-sync.md
-- Validator result: structural PASS before and after tests-only regressions; hosted behavioral RED pending
+- Validator result: structural PASS; actual behavioral RED qualified (493 passed/6 failed), candidate gates pending
 - Independent verification result: pending root
 - Terminal state: pending
 - Remaining failed or blocked criteria: C-001 through C-006
