@@ -27,6 +27,7 @@ render/dedup/cap/wiring), not for engine-specific CSS/canvas quirks. A WebKit/WK
 driven smoke would be a stronger fidelity check; tracked as an audit follow-up. The real
 Tauri webview stays owner-run / dev-time.
 """
+import hashlib
 import json
 import shutil
 import os, re, sys
@@ -2794,7 +2795,29 @@ CSS_SRC = (
 </script>"""
 )
 
-STUB = r"""
+# 17tnw2b13y0: these are exact hosted Rust get_chapter serializations, also
+# consumed by chapter_reply_contract_tests.rs. Never rebuild them from JS parsing
+# or chapter lengths. Provenance records the immutable recording source/run/hash.
+_CHAPTER_FIXTURE_DIR = os.path.join(
+    _REPO, "implementation", "desktop", "crates", "selahcue-operator", "fixtures", "get_chapter"
+)
+_CHAPTER_CASES = []
+for _fixture_name, _provenance_name in (
+    ("host-replies.json", "provenance.json"),
+    ("modal-companion.json", "modal-companion-provenance.json"),
+):
+    with open(os.path.join(_CHAPTER_FIXTURE_DIR, _fixture_name), "rb") as _fixture_file:
+        _fixture_bytes = _fixture_file.read()
+    with open(os.path.join(_CHAPTER_FIXTURE_DIR, _provenance_name), encoding="utf-8") as _provenance_file:
+        _provenance = json.load(_provenance_file)
+    if (hashlib.sha256(_fixture_bytes).hexdigest() != _provenance["fixture_sha256"]
+            or len(_fixture_bytes) != _provenance["fixture_bytes"]):
+        raise ValueError("get_chapter fixture differs from its actual hosted recording: " + _fixture_name)
+    _CHAPTER_CASES.extend(json.loads(_fixture_bytes)["cases"])
+# Escape script terminators even though the current public-domain corpus has none.
+_CHAPTER_FIXTURE_SCRIPT = "<script>window.__chapterHostFixtures = " + json.dumps(_CHAPTER_CASES).replace("</", "<\\/") + ";</script>"
+
+STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
 <script>
   window.__calls = [];
   window.__ev = {};          // event name -> [handlers] (Tauri event stub)
@@ -3145,6 +3168,30 @@ STUB = r"""
     // containing "N-M" after the colon (e.g. "John 3:16-18") now gets a genuine range response,
     // so a test can actually exercise that branch instead of it being permanently dead code as
     // far as this suite can see.
+    // Recorded cases always win over the older synthetic parser below. None/KJV
+    // equivalence for the seven default cases is proved by actual Rust commands;
+    // WEB and any other explicit translation must match exactly. Ok/Err is only
+    // the fixture transport envelope: Tauri callers receive the value/rejection.
+    if (cmd === "get_chapter" && window.__gcRealistic) {
+      var hostCase = window.__chapterHostFixtures.find(function(c) {
+        return c.request.reference === (args && args.reference) &&
+          (c.request.translation === ((args && args.translation) || null) ||
+           (c.request.translation === null && args && args.translation === "KJV"));
+      });
+      if (hostCase) {
+        window.__chapterFixtureHits = window.__chapterFixtureHits || [];
+        window.__chapterFixtureHits.push({id:hostCase.id, reference:args.reference,
+          translation:args.translation || null, result:JSON.parse(JSON.stringify(hostCase.result))});
+        if (Object.prototype.hasOwnProperty.call(hostCase.result, "Err")) return Promise.reject(hostCase.result.Err);
+        var hostReply = JSON.parse(JSON.stringify(hostCase.result.Ok));
+        if (window.__getChapterDeferOnce) {
+          window.__getChapterDeferOnce = false;
+          return new Promise(function(res) { window.__getChapterDeferredResolve = function() { res(hostReply); }; });
+        }
+        return Promise.resolve(hostReply);
+      }
+      if (window.__chapterFixturesOnly) return Promise.reject("unrecorded get_chapter request in fixture replay");
+    }
     // Opt-in REALISTIC get_chapter (window.__gcRealistic), used by the Service Plan link-modal checks.
     // The default mock below hard-codes verse_start 5 and a two-verse chapter, which is fine for the
     // checks that lean on those quirks but cannot answer "what does the host say about THIS typed
@@ -10545,6 +10592,127 @@ DRIVER = r"""
         await sleep(10);
       };
       var previewOf = function (m) { return m.querySelector(".pm-verse-preview").textContent; };
+
+      // 17tnw2b13y0: drive the REAL modal with the exact same immutable replies
+      // Rust compares against. Strict mode refuses any unrecorded follow-up;
+      // none of these cases can silently fall through to the legacy JS parser.
+      window.__chapterFixturesOnly = true;
+      window.__chapterFixtureHits = [];
+      var hostCases = window.__chapterHostFixtures;
+      var hostCaseById = function(id) { return hostCases.find(function(c) { return c.id === id; }); };
+      var hostLinkCalls = function() { return window.__calls.filter(function(c) { return c.cmd === "set_item_content"; }); };
+      var hostPressLink = async function(m) {
+        Array.prototype.find.call(m.querySelectorAll("button"), function(b) { return b.textContent === "Link"; }).click();
+        await sleep(40);
+      };
+      var hostOpen = async function(c, browse) {
+        openLinkModal({id:14, kind:"scripture", title:"Recorded host reply"});
+        await sleep(20);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        m.querySelector('input[aria-label="Scripture reference"]').value = c.request.reference;
+        var trans = m.querySelector('select[aria-label="Translation"]');
+        trans.value = c.request.translation || "KJV";
+        if (browse) {
+          Array.prototype.find.call(m.querySelectorAll("button"), function(b) { return b.textContent === "Browse"; }).click();
+          await sleep(40);
+        }
+        return m;
+      };
+      var hostHit = function(c, start) {
+        var hits = window.__chapterFixtureHits.slice(start);
+        return hits.length === 1 && hits[0].id === c.id && hits[0].reference === c.request.reference &&
+          hits[0].translation === (c.request.translation || "KJV") &&
+          JSON.stringify(hits[0].result) === JSON.stringify(c.result);
+      };
+      // Full real verse numbers AND text, reference/translation, selection and
+      // first/last navigation boundaries, including WEB's real missing verse36.
+      for (var hc of hostCases.filter(function(c) { return c.result.Ok && c.id !== "confirmed-past-chapter-end"; })) {
+        var hitStart = window.__chapterFixtureHits.length;
+        var hm = await hostOpen(hc, true), reply = hc.result.Ok;
+        var rows = Array.from(hm.querySelectorAll(".pm-verse"));
+        ok(hostHit(hc, hitStart), "Y0 host fixture: Browse consumes exact recorded request/reply " + hc.id);
+        ok(!hm.querySelector(".pm-verse-picker").hidden &&
+           hm.querySelector(".pm-verse-ref").textContent === reply.reference + " (" + reply.translation + ")",
+           "Y0 host fixture: real canonical chapter/translation shown " + hc.id);
+        ok(JSON.stringify(rows.map(function(r) { return [+r.dataset.vnum, r.querySelector(".pm-verse-t").textContent]; })) === JSON.stringify(reply.verses),
+           "Y0 host fixture: every real verse number/text rendered without synthetic chapter length " + hc.id);
+        ok(hm.querySelector('[aria-label="Previous chapter"]').disabled === !reply.prev,
+           "Y0 host fixture: previous navigation consumes actual nullable prev " + hc.id);
+        ok(hm.querySelector('[aria-label="Next chapter"]').disabled === !reply.next,
+           "Y0 host fixture: next navigation consumes actual nullable next " + hc.id);
+        var lo = reply.verse_start == null ? reply.verses[0][0] : reply.verse_start;
+        var hi = Math.min(reply.verse_end == null ? lo : reply.verse_end, reply.verses[reply.verses.length - 1][0]);
+        var expectedSelected = reply.verses.filter(function(v) { return v[0] >= lo && v[0] <= hi; }).map(function(v) { return v[0]; });
+        ok(JSON.stringify(rows.filter(function(r) { return r.getAttribute("aria-selected") === "true"; }).map(function(r) { return +r.dataset.vnum; })) === JSON.stringify(expectedSelected),
+           "Y0 host fixture: actual parsed selection/clamp and translation gap preserved " + hc.id);
+        var selectedRef = reply.reference + ":" + lo + (hi > lo ? "-" + hi : "");
+        ok(previewOf(hm) === "✦ " + selectedRef + " · " + reply.translation,
+           "Y0 host fixture: preview uses actual canonical selection " + hc.id);
+        if (hc.id === "past-chapter-end") {
+          ok(/^Note:/.test(hm.querySelector(".pm-link-hint").textContent) && /cut back to 2-6/.test(hm.querySelector(".pm-link-hint").textContent),
+             "Y0 host fixture: Browse visibly explains the real six-verse clamp");
+        }
+        await closeModal();
+      }
+      for (var hostId of ["bare-chapter", "single-verse", "verse-range"]) {
+        var typedCase = hostCaseById(hostId), beforeHits = window.__chapterFixtureHits.length;
+        var beforeLinks = hostLinkCalls().length, typedModal = await hostOpen(typedCase, false);
+        await hostPressLink(typedModal);
+        var actualLinks = hostLinkCalls(), typedReply = typedCase.result.Ok;
+        var typedRef = typedReply.reference + (typedReply.verse_start == null ? "" : ":" + typedReply.verse_start +
+          (typedReply.verse_end > typedReply.verse_start ? "-" + typedReply.verse_end : ""));
+        ok(hostHit(typedCase, beforeHits), "Y0 host fixture: typed Link consumes exact recorded reply " + hostId);
+        ok(actualLinks.length === beforeLinks + 1 && actualLinks[actualLinks.length - 1].args.link.reference === typedRef &&
+           actualLinks[actualLinks.length - 1].args.link.translation === "KJV",
+           "Y0 host fixture: typed Link commits real canonical reference/selection " + hostId);
+      }
+      var pastCase = hostCaseById("past-chapter-end"), pastHits = window.__chapterFixtureHits.length;
+      var pastBefore = hostLinkCalls().length, pastModal = await hostOpen(pastCase, false);
+      await hostPressLink(pastModal);
+      ok(hostHit(pastCase, pastHits), "Y0 host fixture: typed past-end consumes unmodified real host2..10 reply");
+      ok(hostLinkCalls().length === pastBefore && /^Note:/.test(pastModal.querySelector(".pm-link-hint").textContent) &&
+         /has 6 verses/.test(pastModal.querySelector(".pm-link-hint").textContent) &&
+         pastModal.querySelector('input[aria-label="Scripture reference"]').value === "Psalms 1:2-6",
+         "Y0 host fixture: real past-end first press visibly clamps and waits without committing");
+      var confirmCase = hostCaseById("confirmed-past-chapter-end"), confirmHits = window.__chapterFixtureHits.length;
+      await hostPressLink(pastModal);
+      ok(hostHit(confirmCase, confirmHits), "Y0 host fixture: second press uses separately recorded canonical companion, no parser fallback");
+      ok(hostLinkCalls().length === pastBefore + 1 && hostLinkCalls().slice(-1)[0].args.link.reference === confirmCase.request.reference,
+         "Y0 host fixture: confirmed real past-end commits only2..6");
+      var missingCase = hostCaseById("nonexistent-chapter"), missingHits = window.__chapterFixtureHits.length;
+      var missingBefore = hostLinkCalls().length, missingModal = await hostOpen(missingCase, false);
+      await hostPressLink(missingModal);
+      ok(hostHit(missingCase, missingHits), "Y0 host fixture: real nonexistent chapter rejects exact recorded error");
+      ok(hostLinkCalls().length === missingBefore && /^Note:/.test(missingModal.querySelector(".pm-link-hint").textContent) &&
+         /isn't a chapter/.test(missingModal.querySelector(".pm-link-hint").textContent) && /Missing/.test(missingModal.querySelector(".pm-link-hint").textContent),
+         "Y0 host fixture: missing chapter first press explains and keeps modal open");
+      missingHits = window.__chapterFixtureHits.length;
+      await hostPressLink(missingModal);
+      ok(hostHit(missingCase, missingHits) && hostLinkCalls().length === missingBefore + 1 &&
+         hostLinkCalls().slice(-1)[0].args.link.reference === missingCase.request.reference,
+         "Y0 host fixture: real missing chapter links as typed only after explicit second press");
+      var invalidCase = hostCaseById("unparseable-reference"), invalidHits = window.__chapterFixtureHits.length;
+      var invalidBefore = hostLinkCalls().length, invalidModal = await hostOpen(invalidCase, false);
+      await hostPressLink(invalidModal);
+      ok(hostHit(invalidCase, invalidHits), "Y0 host fixture: unparseable input rejects exact real error");
+      ok(hostLinkCalls().length === invalidBefore && document.querySelector(".pm-confirm.pm-link") === invalidModal &&
+         invalidModal.querySelector(".pm-link-hint").classList.contains("pm-link-hint-err") &&
+         /Couldn.t read/.test(invalidModal.querySelector(".pm-link-hint").textContent),
+         "Y0 host fixture: unreadable real input refuses commit with actionable error");
+      await closeModal();
+      // The existing deferred host lifecycle remains effective with real replies.
+      var deferredCase = hostCaseById("single-verse"), deferredBefore = hostLinkCalls().length;
+      var deferredModal = await hostOpen(deferredCase, false);
+      window.__getChapterDeferOnce = true;
+      Array.prototype.find.call(deferredModal.querySelectorAll("button"), function(b) { return b.textContent === "Link"; }).click();
+      await sleep(10);
+      ok(typeof window.__getChapterDeferredResolve === "function" && hostLinkCalls().length === deferredBefore,
+         "Y0 host fixture: real reply can remain pending before commit");
+      await closeModal();
+      window.__getChapterDeferredResolve(); window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(hostLinkCalls().length === deferredBefore, "Y0 host fixture: closing during recorded reply refuses late commit");
+      window.__chapterFixturesOnly = false;
 
       var lmR = await browseOnce("Psalms 119");
       var rRows = lmR.querySelectorAll(".pm-verse");

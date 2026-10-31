@@ -53,7 +53,7 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 ### Assumptions and unknowns
 
 - VERIFIED exact hosted output41192240681 at81b0/3faf with real WEBLuke17 gap; production past-end selection2..10 and actualPsalm1sixverses preserved. Frozen fixtures must never be regenerated from JS or memory.
-- Backend phase is independent; frontend phase remains required and blocked only on explicit shared-script release, not silently omitted.
+- Backend phase is complete. Root explicitly released headless after verified F31PR313 merge add4702e, all4Pass/current normal+mutants; frontend remains mandatory.
 
 ## Dependencies and approvals
 
@@ -125,8 +125,18 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - Hypothesis: real get_chapter calls prove default(None) equals explicit KJV for all7captured default requests, and the actual modal-generated confirmation query has a separately captured immutable host reply, avoiding legacy handparser fallback during the second press.
 - Change or investigation: root authorized bounded backend-only companion capture before F31 release. Added cfg(test) whole-result equivalence over actual requests and one actual-command recorder for exact Psalms1:2-6/KJV, derived from current dist/app.js resolveTyped/doLink request. Original8fixturebytes/provenance and production/headless remain unchanged. After actual hosted capture, freeze small companion/provenance and add its Rust comparison within this iteration.
 - Verifier executed: actual companion41193350478 source195bb/diag5e7c soleparent/workflow-only SUCCESS3new+5existingtests/0fail/0ignore; whole actual None/KJV equality for7requests inclbotherrors, original8payload reobserved byte-identical. Exactsmallcompanion marker/fields/source/rawhash inspected, then frozenwithprovenance/defaultRustcomparison; focused newcomparison runtimepending. No local project runtime.
-- Result: actual companion/default-equivalence proof PASS; captured exact Psalms1:2-6/KJV result has selection2..6/full6verses/prevJob42/nextPsalms2. Newdefault frozencompanion comparison prepared; actualfocused run and frontend/finalgates pending. No productRED or frontendcompletion claim.
+- Result: actual companion/default-equivalence proof PASS; captured exact Psalms1:2-6/KJV result has selection2..6/full6verses/prevJob42/nextPsalms2. Actual companion-contract41193651347 at032/fa0 succeeded4new+5existing/0fail/0ignore; committed companion and original8payload reobserved byte-identical. Backend companion comparison PASS; frontend/finalgates pending. No productRED or frontendcompletion claim.
 - New evidence: chapter-reply-contract/companion-recording-ci officialmetadata/raw/hash, companion-classification.json; committed fixtures/get_chapter/modal-companion.json and modal-companion-provenance.json; forthcoming focusedcomparison receipt.
+- Decision: iterate
+
+### Iteration 6
+
+- Target criterion: C-003.
+- Hypothesis: exact recorded host replies at the real invoke boundary, strict no-fallback requests and actual modal assertions catch mock/consumer drift without production changes.
+- Change or investigation: ordinary integrated actual main add4702e (F31 and P16 plus other-user changes) into own032 branch. Added provenance hash/byte checks, safe JSON injection, exact request/defaultKJV mapping proved by actual backend commands, fixture hit/error trace, unchanged deferred lifecycle and modal replay for every recorded class plus real WEB gap and first/last navigation. All existing2831 harness assertion source retained byte-for-byte; no production or workflow edits.
+- Verifier executed: static Python AST/scope/source reconstruction and fixture hashes; hosted full behavior-count measurement pending. Existing pin deliberately2831 until actual count observed.
+- Result: prepared coverage-only replay; no productRED, actual browser/fullcount pending.
+- New evidence: chapter-reply-contract/implement_modal_replay.py; forthcoming exact-source hosted measurement receipt.
 - Decision: iterate
 
 ## Risks and rollback
@@ -151,5 +161,5 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - Validator result: PASS structural preflight before code
 - Independent verification result: pending
 - Terminal state: ACTIVE
-- Remaining failed or blocked criteria: C-002 through C-005 pending
+- Remaining failed or blocked criteria: C-003 through C-005 pending
 - ClickUp final evidence comment: root-owned pending
