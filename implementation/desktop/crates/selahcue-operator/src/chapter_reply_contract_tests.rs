@@ -61,3 +61,16 @@ fn y0_record_actual_chapter_replies() {
         serde_json::to_string(&replies).expect("command results serialize")
     );
 }
+
+#[test]
+fn y0_command_serialization_matches_recorded_fixtures() {
+    // Frozen hosted output, not expected data regenerated from the implementation under test.
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/get_chapter/host-replies.json"))
+            .expect("committed actual-host fixtures are valid JSON");
+    assert_eq!(
+        actual_replies(),
+        recorded,
+        "get_chapter wire payload drifted from the recorded modal contract"
+    );
+}

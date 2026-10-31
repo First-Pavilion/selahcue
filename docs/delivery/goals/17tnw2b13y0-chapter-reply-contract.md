@@ -52,7 +52,7 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 
 ### Assumptions and unknowns
 
-- UNKNOWN exact recorded output until actual hosted Rust get_chapter executes; do not populate expected replies from JS or memory.
+- VERIFIED exact hosted output41192240681 at81b0/3faf with real WEBLuke17 gap; production past-end selection2..10 and actualPsalm1sixverses preserved. Frozen fixtures must never be regenerated from JS or memory.
 - Backend phase is independent; frontend phase remains required and blocked only on explicit shared-script release, not silently omitted.
 
 ## Dependencies and approvals
@@ -64,7 +64,7 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Fixtures are actual current Rust get_chapter replies, not reconstructed mock output | Hosted pinned operator recorder invoking get_chapter and serde serialization, immutable source/output/blob/hash receipt | All6 required input classes recorded including exact errors, canonical selection/full verses/prev-next; provenance establishes real source and command | chapter-reply-contract/recording metadata/raw/decoded fixture/hash provenance | PENDING |
+| C-001 | yes | Fixtures are actual current Rust get_chapter replies, not reconstructed mock output | Hosted pinned operator recorder invoking get_chapter and serde serialization, immutable source/output/blob/hash receipt | All6 required input classes recorded including exact errors, canonical selection/full verses/prev-next; provenance establishes real source and command | recording-v2-ci raw/hash + committed fixtures/get_chapter/provenance.json, actual1+5PASS | PASS |
 | C-002 | yes | Rust serialization remains locked to committed actual-host fixtures | Default Rust contract tests using frozen fixture bytes plus meaningful field/selection/navigation/error mutants and exact restore | Real source output matches all fixtures, mutants genuinely fail, original source restored; existing Rust contracts pass | Hosted Rust contract/mutation/restoration logs | PENDING |
 | C-003 | yes | Actual headless modal replays the exact same fixtures for required cases | After F31 merge/release, real browser modal requests/replies linked to committed fixture bytes, consumer mutant and positives | Canonical linked references, selection/clamp/navigation and missing/hard error behavior proven; no independent JS parser/length expectation for those cases | Hosted actual modal/full DOM and fixture-consumer sensitivity receipts | PENDING |
 | C-004 | yes | Final current-source normal integration gates and preserved source boundaries pass | Exact-source full normal operator/Rust/RELEASE/native/headless gates plus measured assertion counts and complete source/component proof | Required affected gates succeed; old assertions preserved, skips/platform limits explicit, unrelated main bytes unchanged | Normal metadata/raw, full patch/component/provenance proof | PENDING |
@@ -99,6 +99,16 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - New evidence: chapter-reply-contract/recording-ci and recorded-v1.json/recording-v1-classification.json; forthcoming corrected exact-source recording.
 - Decision: iterate
 
+### Iteration 3
+
+- Target criterion: C-001 and C-002.
+- Hypothesis: freezing the exact corrected hosted payload and comparing whole actual serde output makes host-field/navigation/selection/error drift observable without any production behavior change.
+- Change or investigation: actual recording41192240681 succeeded1new+5existingtests, source81b0/diagnostic3faf soleparent/workflow-only. Verified official rawhash, exactmarker/8classes, WEBLuke17 absent36 with35/37, past-end2..10 with6realverses, firstprev/lastnextnull. Committed exact markerbytes+newline, immutable provenance/README; added default Rust whole-value comparison. Existing recorder and priorcontracts retained; no headless changes.
+- Verifier executed: official raw/metadata/hash/source/parent inspection, byte-exact decode and static scope/formatter/Goal checks. Hosted baseline/meaningful backendmutants/restoration pending.
+- Result: C-001 PASS; C-002 and allfrontend/finalgates pending, coverage-only no productRED.
+- New evidence: chapter-reply-contract/recording-v2-ci and recording-v2-classification.json; committed fixtures/get_chapter/{host-replies.json,provenance.json,README.md}; source diff.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: fixture written from mock rather than host, wrapper envelope confused with Tauri IPC, incomplete fields/text/navigation, fixture regenerated to hide drift, frontend bypasses fixture, unrelated main/harness changes, shared-file conflict, skipped final frontend phase.
@@ -114,5 +124,5 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - Validator result: PASS structural preflight before code
 - Independent verification result: pending
 - Terminal state: ACTIVE
-- Remaining failed or blocked criteria: C-001 through C-005 pending
+- Remaining failed or blocked criteria: C-002 through C-005 pending
 - ClickUp final evidence comment: root-owned pending
