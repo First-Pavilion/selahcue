@@ -251,9 +251,9 @@ describe('the heading outline never skips a level (home-bug-01)', () => {
       'Service plans & timers',
       'Stage & confidence monitor',
       'NDI & multi-output',
-      'On-device transcript',
+      'Optional cloud AI assistance',
       'Never blanks the screen',
-      'Works fully offline',
+      'Core live controls work offline',
       'Fast & bounded',
       'Plan your service',
       'Go live with one tap',
@@ -464,12 +464,12 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.deepEqual(controlProblems(page), [])
   })
 
-  test('the hero: Download free goes to /download; the demo button is disabled and described, not a link to #demo', () => {
+  test('the hero: View pilot downloads goes to /download; the demo button is disabled and described, not a link to #demo', () => {
     const hero = section(page, 'hero-section')
     const buttons = findAll(hero, (e) => hasClass(e, 'ui-button'))
-    const dl = buttons.find((b) => textOf(b) === 'Download free') as El
+    const dl = buttons.find((b) => textOf(b) === 'View pilot downloads') as El
     assert.equal(dl.tag, 'a')
-    assert.equal(dl.attrs['href'], '/download')
+    assert.equal(dl.attrs['href'], '/download#pilot-downloads')
     assert.ok(hasClass(dl, 'variant-primary'), 'the hero button is primary, not the gradient alias')
     const demo = buttons.find((b) => textOf(b) === 'Watch 2-min demo') as El
     assert.ok(demo, 'the demo button is still drawn, as Figma has it')
@@ -513,10 +513,10 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '/contact').length, 0, 'nothing on Home sends a visitor to the contact form')
   })
 
-  test('the final band: Download free and See pricing, as the white and outlined buttons for a gradient card', () => {
+  test('the final band: View pilot downloads and See pricing, as the white and outlined buttons for a gradient card', () => {
     const band = section(page, 'final-cta-section')
     const [dl, pricing] = findAll(band, (e) => hasClass(e, 'ui-button')) as [El, El]
-    assert.deepEqual([textOf(dl), dl.attrs['href'], hasClass(dl, 'variant-inverse')], ['Download free', '/download', true])
+    assert.deepEqual([textOf(dl), dl.attrs['href'], hasClass(dl, 'variant-inverse')], ['View pilot downloads', '/download#pilot-downloads', true])
     assert.deepEqual([textOf(pricing), pricing.attrs['href'], hasClass(pricing, 'variant-inverse-outline')], ['See pricing', '/pricing', true])
   })
 
@@ -577,11 +577,11 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Run your service with total confidence.',
     // "controlled from anywhere" is gone: PRD NG-5 says mobile control is LAN-based (ClickUp 17tnw2b0x3h).
     'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, slides, a service countdown, stage display, and NDI outputs.',
-    'Download free',
+    'View pilot downloads',
     'Watch 2-min demo',
     // The reason the demo button is disabled, VISIBLE as the Pro plan's note is (owner decision, 2026-10-04).
     'Demo video not available yet',
-    'Free to start · Works fully offline · Windows, macOS & mobile control',
+    'Pilot registration · Core live controls work offline · Windows, Ubuntu & macOS',
     // The console mock (Figma 470:124): one named image for assistive technology, its drawing hidden from it.
     'SelahCue operator console showing a Preview and a Live scripture slide',
     'SelahCue — Live Console',
@@ -607,8 +607,8 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     "A dedicated speaker view — current line, what's next, and the service timer — that the audience never sees.",
     'NDI & multi-output',
     'Broadcast an audience output as an NDI source for OBS or vMix. Orientation, scaling and mirror apply to the projector and stage windows.',
-    'On-device transcript',
-    'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.',
+    'Optional cloud AI assistance',
+    'Pilot Deepgram transcription and OpenAI assistance require internet access and consent. Provider access expires with the pilot; core offline controls remain available.',
   ],
   'reliability-section': [
     'WHY SELAHCUE',
@@ -616,7 +616,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     "Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so a rendering fault holds the last good frame — reliable, offline, and fast.",
     'Never blanks the screen',
     'A renderer fault, a lost display signal or a dropped phone holds the last good frame instead of blanking the output.',
-    'Works fully offline',
+    'Core live controls work offline',
     // NFR-015 is "all core live functions operate with the network disabled", not "everything".
     'Every core live control works with no internet and no cloud dependency during the service. It just works.',
     'Fast & bounded',
@@ -672,7 +672,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Questions, answered',
     'Do I need an internet connection?',
     // NFR-015: core live controls work with the network off. Sign-in, activation and the first speech-model download need it.
-    'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.',
+    'Core live controls work with no internet. Optional pilot Deepgram transcription and OpenAI assistance need internet access and consent, and provider access expires with the pilot.',
     'Which platforms are supported?',
     // No version number, architecture or file format: the product is available for Windows, macOS and Linux (owner, 2026-10-04).
     'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.',
@@ -686,7 +686,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   'final-cta-section': [
     'Ready to run your best service yet?',
     'Start free. Core live controls keep working with no network.',
-    'Download free',
+    'View pilot downloads',
     'See pricing',
   ],
 }
@@ -729,7 +729,7 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     assert.deepEqual(unlistedBlocks(planted), ['Trusted by 5,000 churches.'])
     const reworded = parseHtml('<p>Start free. Core live controls keep working with no network!</p>')
     assert.equal(unlistedBlocks(reworded).length, 1)
-    assert.deepEqual(unlistedBlocks(parseHtml('<p>Download free</p><p>See pricing</p>')), [])
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>View pilot downloads</p><p>See pricing</p>')), [])
     // The claims that were tolerated before ClickUp 17tnw2b0x3h are now reported, not allow-listed.
     assert.deepEqual(unlistedBlocks(parseHtml('<p>$19</p><p>MOST POPULAR</p><p>Sarah Jenkins</p>')), ['$19', 'MOST POPULAR', 'Sarah Jenkins'])
   })
@@ -764,13 +764,13 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     const trust = findAll(section(page, 'hero-section'), (e) => hasClass(e, 'hero-trust'))[0] as El
     assert.ok(trust, 'no .hero-trust')
     const raw = trust.children.filter((c): c is string => typeof c === 'string').join('')
-    for (const item of ['Free to start', 'Works fully offline', 'Windows, macOS & mobile control']) {
+    for (const item of ['Pilot registration', 'Core live controls work offline', 'Windows, Ubuntu & macOS']) {
       const joined = item.replace(/ /g, '\u00a0')
       assert.ok(raw.includes(joined), `"${item}" can break inside itself: ${JSON.stringify(raw)}`)
     }
     // ...and a real space (a place to break) follows each separator.
     assert.equal((raw.match(/·\u00a0 /g) ?? []).length, 2, 'a breakable space after each dot')
-    assert.equal(raw.replace(/\u00a0/g, ' ').replace(/\s+/g, ' '), 'Free to start · Works fully offline · Windows, macOS & mobile control')
+    assert.equal(raw.replace(/\u00a0/g, ' ').replace(/\s+/g, ' '), 'Pilot registration · Core live controls work offline · Windows, Ubuntu & macOS')
   })
 
   test('showcase (home-24): three single-line checks', () => {

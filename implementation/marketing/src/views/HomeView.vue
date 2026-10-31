@@ -48,8 +48,8 @@ const features = [
   },
   {
     icon: 'mic',
-    title: 'On-device transcript',
-    description: 'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.'
+    title: 'Optional cloud AI assistance',
+    description: 'Pilot Deepgram transcription and OpenAI assistance require internet access and consent. Provider access expires with the pilot; core offline controls remain available.'
   }
 ]
 
@@ -62,7 +62,7 @@ const pillars = [
   },
   {
     icon: 'wifi-off',
-    title: 'Works fully offline',
+    title: 'Core live controls work offline',
     description: 'Every core live control works with no internet and no cloud dependency during the service. It just works.',
     variant: 'preview'
   },
@@ -99,7 +99,7 @@ const steps = [
 const faqItems = [
   {
     question: 'Do I need an internet connection?',
-    answer: 'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.'
+    answer: 'Core live controls work with no internet. Optional pilot Deepgram transcription and OpenAI assistance need internet access and consent, and provider access expires with the pilot.'
   },
   {
     question: 'Which platforms are supported?',
@@ -141,8 +141,8 @@ const faqItems = [
         </p>
 
         <div class="hero-actions">
-          <UiButton variant="primary" size="lg" to="/download">
-            Download free
+          <UiButton variant="primary" size="lg" to="/download#pilot-downloads">
+            View pilot downloads
           </UiButton>
           <!-- The demo video does not exist yet (audit home-18). It was a link to #demo, which did nothing. The
                owner's decision (2026-10-04): keep the button, disabled, with the reason VISIBLE, as the Pro
@@ -159,7 +159,7 @@ const faqItems = [
         <!-- One text node, as Figma draws it. Inside an item every space is a non-breaking one and the two spaces
              either side of a dot are non-breaking too except the last, which is the place a narrow phone breaks:
              between items, never inside one ("Free to start · Works fully / offline · ..." is what a plain space did). -->
-        <p class="hero-trust">Free&nbsp;to&nbsp;start&nbsp;&nbsp;&middot;&nbsp; Works&nbsp;fully&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;macOS&nbsp;&amp;&nbsp;mobile&nbsp;control</p>
+        <p class="hero-trust">Pilot&nbsp;registration&nbsp;&nbsp;&middot;&nbsp; Core&nbsp;live&nbsp;controls&nbsp;work&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;Ubuntu&nbsp;&amp;&nbsp;macOS</p>
 
         <!-- Product Window Mockup -->
         <div class="hero-mockup-frame">
@@ -293,7 +293,7 @@ const faqItems = [
             Start free. Core live controls keep working with no network.
           </p>
           <div class="cta-btn-group">
-            <UiButton variant="inverse" size="lg" to="/download">Download free</UiButton>
+            <UiButton variant="inverse" size="lg" to="/download#pilot-downloads">View pilot downloads</UiButton>
             <UiButton variant="inverse-outline" size="lg" to="/pricing">See pricing</UiButton>
           </div>
         </div>

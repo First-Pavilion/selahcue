@@ -162,3 +162,8 @@ describe('the CSS side of the same rule', () => {
     assert.match(css, /\.category-card,/)
   })
 })
+
+
+test('P14 pilot hash navigation clears the rendered sticky navbar', () => {
+  assert.deepEqual(scrollFor({ hash: '#pilot-downloads', name: 'download' }, MOTION), { el: '#pilot-downloads', top: 84, behavior: 'smooth' })
+})

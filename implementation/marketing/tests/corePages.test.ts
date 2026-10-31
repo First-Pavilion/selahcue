@@ -66,6 +66,13 @@ type Page = keyof typeof VIEWS
 
 const pages = {} as Record<Page, HtmlNode>
 
+/** P14 adds a separately configured pilot unit; legacy release copy bans still apply
+ * to the standard Download content. Pilot behavior/copy is covered by pilot runtime tests,
+ * including absence of direct artifact URLs, cloud consent copy and approved policy gating. */
+function standardContent(root: HtmlNode): HtmlNode {
+  return { ...root, children: root.children.filter(child => child.attrs.id !== 'pilot-downloads').map(standardContent) }
+}
+
 let server: ViteDevServer
 const loaded = new Map<string, Component>()
 
@@ -80,7 +87,11 @@ before(async () => {
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
   })
-  for (const page of Object.keys(VIEWS) as Page[]) pages[page] = await render(VIEWS[page])
+  for (const page of Object.keys(VIEWS) as Page[]) {
+    const rendered = await render(VIEWS[page])
+    if (page === 'download') assert.equal(all(rendered, node => node.attrs.id === 'pilot-downloads').length, 1, 'pilot component missing; see dedicated runtime tests')
+    pages[page] = page === 'download' ? standardContent(rendered) : rendered
+  }
 })
 
 after(async () => {
@@ -426,7 +437,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   download: [
     "DOWNLOAD",
     "Get SelahCue for your platform",
-    "Desktop installers are not available to download yet. Core live controls work with no network, and mobile control pairs over your local network.",
+    "See pilot registration availability below. Standard desktop installers are not available to download yet. Core live controls work with no network.",
     "Free plan · Core live controls work offline",
     "Windows",
     "Windows desktop app · 64-bit",

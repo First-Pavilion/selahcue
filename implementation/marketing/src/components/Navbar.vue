@@ -182,7 +182,7 @@ onBeforeUnmount(() => {
             <a :href="href" class="nav-item" @click="navigate">How it works</a>
           </router-link>
           <router-link to="/pricing" class="nav-item" active-class="active">Pricing</router-link>
-          <router-link to="/download" class="nav-item" active-class="active">Download</router-link>
+          <router-link to="/download#pilot-downloads" class="nav-item" active-class="active">Download</router-link>
         </nav>
       </div>
 
@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
           </button>
         </template>
         <router-link v-else to="/signin" class="signin-btn">Sign in</router-link>
-        <UiButton to="/download" size="compact" class="download-cta">Download free</UiButton>
+        <UiButton to="/download#pilot-downloads" size="compact" class="download-cta">Pilot downloads</UiButton>
       </div>
 
       <!-- Mobile Hamburger Toggle (< 768px) -->
@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
               <a :href="href" class="mobile-link" @click="navigate($event); closeMobileMenu()">How it works</a>
             </router-link>
             <router-link to="/pricing" class="mobile-link" @click="closeMobileMenu()">Pricing</router-link>
-            <router-link to="/download" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
+            <router-link to="/download#pilot-downloads" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
           </nav>
 
           <div class="mobile-actions">
@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
               </button>
             </template>
             <router-link v-else to="/signin" class="mobile-link account-link" @click="closeMobileMenu()">Sign in</router-link>
-            <router-link to="/download" class="sheet-cta" @click="closeMobileMenu()">Download free</router-link>
+            <router-link to="/download#pilot-downloads" class="sheet-cta" @click="closeMobileMenu()">Pilot downloads</router-link>
           </div>
         </div>
       </div>
