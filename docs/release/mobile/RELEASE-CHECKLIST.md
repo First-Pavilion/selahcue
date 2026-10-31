@@ -5,7 +5,7 @@
 
 ## Build config (done in code)
 - [x] Real app icons generated from the brand logo (`flutter_launcher_icons`) — iOS opaque + Android adaptive.
-- [x] Native splash generated (`flutter_native_splash`, `#0E1116` + logo) matching the in-app `SplashView`.
+- [x] Native splash generated (`flutter_native_splash`, `#0B0D12` + logo) matching the in-app `SplashView`.
 - [x] DEBUG banner hidden (`debugShowCheckedModeBanner: false`).
 - [x] Responsive/tablet layouts; landscape safe.
 - [x] Privacy policy + Terms drafts (`docs/legal/`) + in-app screens.
