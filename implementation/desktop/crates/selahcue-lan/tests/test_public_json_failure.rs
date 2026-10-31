@@ -201,3 +201,81 @@ fn parse_positions_still_match_real_serde_syntax_eof_and_data_errors() {
         assert_eq!((public.line(), public.column()), (raw.line(), raw.column()));
     }
 }
+
+#[test]
+fn public_helper_return_types_are_the_ungated_safe_type() {
+    use selahcue_lan::JsonFailure;
+    let decode: fn(&str) -> Result<Command, JsonFailure> = from_json::<Command>;
+    let encode: fn(&Command) -> Result<String, JsonFailure> = to_json::<Command>;
+    assert_eq!(decode(r#"{"cmd":"go_live"}"#).unwrap(), Command::GoLive);
+    assert_eq!(encode(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+    fn safe_error_bounds<T: Error + Send + Sync + Copy + Eq>() {}
+    safe_error_bounds::<JsonFailure>();
+}
+
+#[test]
+fn safe_kind_position_wording_and_conversion_remain_exact_for_all_categories() {
+    use selahcue_lan::{JsonFailure, JsonFailureKind};
+    struct FailedReader;
+    impl std::io::Read for FailedReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other(SECRET))
+        }
+    }
+    let errors = [
+        (
+            serde_json::from_str::<Command>("not JSON").unwrap_err(),
+            JsonFailureKind::Syntax,
+            "the message was not valid JSON",
+        ),
+        (
+            serde_json::from_str::<Command>("{").unwrap_err(),
+            JsonFailureKind::Eof,
+            "the message ended early",
+        ),
+        (
+            serde_json::to_string(&SensitiveSerializeFailure).unwrap_err(),
+            JsonFailureKind::Data,
+            "the message did not have the shape the protocol defines",
+        ),
+        (
+            serde_json::from_reader::<_, Command>(FailedReader).unwrap_err(),
+            JsonFailureKind::Io,
+            "the message could not be read",
+        ),
+    ];
+    for (raw, kind, words) in errors {
+        let borrowed = JsonFailure::from(&raw);
+        assert_eq!(borrowed.kind(), kind);
+        assert_eq!(
+            (borrowed.line(), borrowed.column()),
+            (raw.line(), raw.column())
+        );
+        let expected = if raw.line() == 0 {
+            format!("{words} (no position)")
+        } else {
+            format!("{words} at line {} column {}", raw.line(), raw.column())
+        };
+        assert_eq!(borrowed.to_string(), expected);
+        let owned = JsonFailure::from(raw);
+        assert_eq!(owned, borrowed);
+        assert!(Error::source(&owned).is_none());
+        for text in renderings(&owned) {
+            assert_safe("safe category conversion", &text, SECRET);
+        }
+        #[cfg(feature = "server")]
+        {
+            let old_path: selahcue_lan::tls::JsonFailure = owned;
+            let old_kind: selahcue_lan::tls::JsonFailureKind = kind;
+            assert_eq!(old_kind, old_path.kind());
+            let transport = selahcue_lan::TransportError::from(owned);
+            match &transport {
+                selahcue_lan::TransportError::Json(actual) => assert_eq!(*actual, owned),
+                other => panic!("safe conversion changed transport variant: {other:?}"),
+            }
+            for text in renderings(&transport) {
+                assert_safe("transport conversion", &text, SECRET);
+            }
+        }
+    }
+}

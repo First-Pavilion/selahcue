@@ -64,7 +64,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Public helper regression exposes raw error before fix and legitimate wire controls pass | Hosted tests-first targeted tests plus raw premise controls | Intended redaction failures with executed positive controls, no setup failure substitution | wave3 public-json-failure/red-ci | PENDING |
+| C-001 | yes | Public helper regression exposes raw error before fix and legitimate wire controls pass | Hosted tests-first targeted tests plus raw premise controls | Intended redaction failures with executed positive controls, no setup failure substitution | wave3 public-json-failure/red-ci | PASS |
 | C-002 | yes | Ungated protocol API returns redacted JsonFailure preserving category/position and safe error output/chains | Hosted no-default/server tests, API type assertions and meaningful mutants | Safe Display/Debug/source, exact categories/positions, mutants fail specifically and restore exactly | wave3 public-json-failure/supplemental-ci | PENDING |
 | C-003 | yes | Existing callers and exact wire/cross-language behavior remain compatible | Full caller audit, immutable fixture hashes and configured normal CI | All applicable normal gates pass; fixtures unchanged; skips explicit | wave3 public-json-failure/normal-ci and caller-audit.md | PENDING |
 | C-004 | yes | All four independent reviewers pass final source/current target | Root Cody/Quinn/Vera/Shadow reports and remediation re-review | Four final Pass reports, no open required finding | wave3 reviews/17tnw2b9dq0-*.md | PENDING |
@@ -89,6 +89,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: task packet and exact base identity.
 - Decision: iterate
 
+### Iteration 2
+
+- Target criterion: C-002 and C-003.
+- Hypothesis: moving the existing three-field safe type unchanged and mapping both helpers at their public boundary prevents accidental raw-error propagation without changing wire values.
+- Change or investigation: actual tests-only41185544571 verified six intended failures/six controls in both ungated and server modes, plus37 existing wire tests. Implement the ungated type move, retain old TLS aliases/raw-serde transport compatibility, add safe conversion/Error implementation, update raw-premise tests and pin public type/category contracts.
+- Verifier executed: actual red-ci metadata/raw/hash inspection before implementation; direct rustfmt and diff/structural checks; candidate hosted normal/mutation gates pending.
+- Result: C-001 PASS; other mandatory criteria pending actual candidate evidence and independent review.
+- New evidence: public-json-failure/red-ci, tests-only manifest and diagnostic sole-parent/source proof.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: accidental feature gating, error-type compatibility, source-chain leakage or fixture drift.
@@ -103,7 +113,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b9dq0-public-json-failure.md
-- Validator result: pending initial structural validation
+- Validator result: initial structural validation PASS
 - Independent verification result: pending
 - Terminal state: ACTIVE
 - Remaining failed or blocked criteria: C-001 through C-005
