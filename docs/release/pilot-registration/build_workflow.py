@@ -1,5 +1,6 @@
 """Reproduce the inactive n8n export; no network calls or live credentials."""
 
+from html import escape
 import json
 from pathlib import Path
 
@@ -41,7 +42,12 @@ def completion(name, x, y, title, message):
         "completionTitle": title, "completionMessage": message, "options": {}})
 
 
-def build():
+def build(deployment=None):
+    deployment = json.loads((ROOT / "deployment-config.json").read_text()) if deployment is None else deployment
+    package_label = " / ".join(str(deployment.get(key, "Not configured")) for key in ("platform", "version"))
+    architectures = deployment.get("architectures", [])
+    package_label += " (" + ", ".join(str(value) for value in architectures) + ")" if isinstance(architectures, list) else ""
+    registration_code = "const deployment = " + json.dumps(deployment, separators=(",", ":")) + ";\n" + (ROOT / "validate-registration.js").read_text()
     fields = [{"fieldLabel": "registration_id", "fieldName": "registration_id",
                "fieldType": "hiddenField", "fieldValue": ""},
               # Keep label and output name identical for the pinned 2.2 query
@@ -54,11 +60,11 @@ def build():
                for label in ("Full name", "Email", "Phone (optional)", "Church name", "Role at church", "Church city", "Church country")]
     nodes = [node("Pilot registration", "formTrigger", 2.2, 0, 0, {
         "authentication": "none", "formTitle": "SelahCue field-test registration",
-        "formDescription": "DRAFT — configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.",
+        "formDescription": "<p><strong>Package: " + escape(package_label) + "</strong></p><p>DRAFT — configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.</p>",
         "formFields": {"values": fields}, "responseMode": "lastNode",
-        "options": {"path": "selahcue-pilot-registration", "buttonLabel": "Register for the pilot", "ignoreBots": True},
+        "options": {"path": deployment.get("form_path", "selahcue-pilot-registration"), "buttonLabel": "Register and request this download", "ignoreBots": True},
     }, webhookId="a3a78a22-b62e-439a-a19a-d9eccb9db960"),
-    node("Validate registration", "code", 2, 240, 0, {"jsCode": (ROOT / "validate-registration.js").read_text()}),
+    node("Validate registration", "code", 2, 240, 0, {"jsCode": registration_code}),
     condition("Valid registration", 460, 0, "valid"),
     request("Reserve registration", 680, 0,
             "={{ $json.api_origin + '/v1/pilot/registrations:reserve' }}", "={{ JSON.stringify($json.payload) }}"),
@@ -93,13 +99,17 @@ if (result.schema_version !== 1 || result.state !== 'confirmed' || result.regist
     !Number.isSafeInteger(result.expires_at) || result.expires_at <= now || result.expires_at > now + 3600)
   throw new Error('Registration was not confirmed. No download is authorized.');
 return [{json:result}];"""}, onError="continueErrorOutput"),
-    completion("Registration saved", 2000, -100, "Registration saved",
-               "Your pilot registration has been recorded. Download delivery is not connected in this inactive handoff; complete the separate private download-grant integration before publishing."),
+    request("Request private download", 2000, -100,
+            "={{ $('Validate registration').first().json.api_origin + '/v1/pilot/downloads:grant' }}",
+            "={{ JSON.stringify({schema_version:1,receipt:$json.receipt,artifact_id:$('Validate registration').first().json.deployment.artifact_id}) }}"),
+    node("Validate private download", "code", 2, 2220, -100,
+         {"jsCode": (ROOT / "validate-private-download.js").read_text()}, onError="continueErrorOutput"),
+    completion("Download ready", 2440, -100, "Your selected download is ready", "={{ $json.completion_html }}"),
     completion("Correct registration", 700, 450, "Check your registration",
                "={{ $('Validate registration').first().json.errors }}"),
     completion("Retry registration", 1780, 450, "Registration needs a retry",
                "Registration or download confirmation could not complete. Return through the same marketing download choice to retry the same attempt. A failed/ambiguous Sheet write does not authorize a download and retries reuse the reserved row."),
-    node("Setup required", "stickyNote", 1, 0, -340, {"content": "## INACTIVE — do not publish until configured\nSee README.md. Configure approved notice/API origin and select server Header Auth + scoped Google Sheets OAuth credentials. Dedicated protected A:M tab; no inserts/sorts/deletes. Stable UUIDv4 comes from marketing production form query, never execution ID. Fixed RAW update, never append. P12 download grant is a separate unconnected step.", "width": 800, "height": 240}),
+    node("Setup required", "stickyNote", 1, 0, -340, {"content": "## INACTIVE — do not publish until configured\nSee README.md. Derive this form and validator from one reviewed deployment-config.json matching the promoted package and marketing entry. Approve notice/privacy copy. Configure separate grant Header Auth, registration Header Auth and scoped Google Sheets OAuth. Dedicated protected A:M tab; no inserts/sorts/deletes. Stable UUIDv4 comes from marketing production form query, never execution ID. Fixed RAW update, never append. Real private read and all deployment gates remain required.", "width": 800, "height": 240}),
     ]
     connections = {}
 
@@ -113,13 +123,14 @@ return [{json:result}];"""}, onError="continueErrorOutput"),
                            ("Valid registration", "Reserve registration"), ("Reserve registration", "Already confirmed"),
                            ("Already confirmed", "Validate saved receipt"), ("Validate reserved row", "Write fixed Sheet row"),
                            ("Write fixed Sheet row", "Confirm acknowledged write"), ("Confirm acknowledged write", "Validate saved receipt"),
-                           ("Validate saved receipt", "Registration saved")]:
+                           ("Validate saved receipt", "Request private download"), ("Request private download", "Validate private download"),
+                           ("Validate private download", "Download ready")]:
         wire(source, 0, target)
     wire("Valid registration", 1, "Correct registration")
     wire("Already confirmed", 1, "Validate reserved row")
-    for source in ("Reserve registration", "Validate reserved row", "Write fixed Sheet row", "Confirm acknowledged write", "Validate saved receipt"):
+    for source in ("Reserve registration", "Validate reserved row", "Write fixed Sheet row", "Confirm acknowledged write", "Validate saved receipt", "Request private download", "Validate private download"):
         wire(source, 1, "Retry registration")
-    return {"name": "SelahCue pilot registration — fixed-row durable handoff (inactive)",
+    return {"name": "SelahCue pilot registration — fixed package private grant (inactive)",
             "nodes": nodes, "connections": connections, "active": False, "pinData": {},
             "settings": {"executionOrder": "v1", "timezone": "UTC", "saveDataSuccessExecution": "none",
                          "saveDataErrorExecution": "none", "saveManualExecutions": False}, "tags": []}
