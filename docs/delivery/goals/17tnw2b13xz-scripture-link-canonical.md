@@ -111,6 +111,30 @@ Fresh actual main400bbb524de76e4cbc49b8c99db7df6299b6dfa4 after root-verified AY
 - Result: candidate prepared; fresh target integration, full normal Rust and meaningful hosted mutants/restoration pending. No local project runtime.
 - Decision: ordinarily integrate fresh actual main before publication, freeze the single PR310 candidate and separate exact-parent diagnostic; root owns all4 reviews/mergeQA. No next unit.
 
+### Iteration 4
+
+- Target criterion: C-004 and C-005
+- Verifier executed: exact-source normal41178023431 at4e76a71f FAILED only the original operator DEFAULT Test: autolaunch.rs233 stand-in-sidecar spawn assertion,435 passed/1 failed/1 ignored. All other seven selected jobs and the other three operator feature phases passed. Full raw/metadata/hash/classification preserved in W3 mobile-qualification/17tnw2b13xz/normal-attempt1.
+- Sensitivity result: separate exact-parent workflow-only run41178278280 SUCCESS. All four canonical-storage/fit/pin/neverLive mutants fail the intended named assertions with every unaffected sibling passing; all13 baseline/restored cases pass and all nine tracked source/test/Cargo identities restore exactly. Actual receipt/raw in mutation-attempt1.
+- New evidence: autolaunch None precedes endpoint waiting and can reflect absent sidecar or the original suppressed spawn error. Actual original cause/errno UNKNOWN; no canonicalization failure or attributed source regression is claimed.
+- Decision: keep failed normal intact and freeze product source. A separately authorized bounded observation-only diagnostic may investigate the original boundary; sensitivity success is no normal waiver.
+
+### Iteration 5
+
+- Target criterion: C-005
+- Verifier executed: one separate workflow-only diagnostic41185328467 at4d089f18, exact firstparent4e76. It preserves the original full operator job/default parallelism/assertions/lifetimes/30-minute cap in current4e76 and baseline3bb contexts. Each context then executes16 full DEFAULT plus16 focused DEFAULT spawn suites within the finite five-minute trial phase.
+- Actual result: all original Format/Check/four Clippy+Test phases/Chrome/WebKit passed in both contexts. All64 requested trials completed successfully. Original phase counts per context are436/449/440/453 passed with0failed/1ignored. Trial summaries are436passed/0failed/1ignored for full suites and4passed/0failed for focused suites.
+- Classification: zero spawn-error/FD markers; the32 captured absent-sidecar markers per context belong only to the two intentional absent-sidecar controls. None is evidence for the originally failing stale-endpoint test. Original cause/errno remain UNKNOWN. Immutable source-start/component identities and observed instrumentation hashes verified in autolaunch-diagnostic-ci/author-classification.json; successful harness output capture and post-error/non-atomic observer limits remain explicit.
+- Decision: STOP diagnostics. No autolaunch production fix, flake label, causality claim or normal waiver. Original normal41178023431 remains FAILURE. Hosted diagnostics do not establish normal acceptance.
+
+### Iteration 6
+
+- Target criterion: C-005 and current-source review readiness
+- Change: ordinarily integrate verified actual main93bf472f65a1846117eecf09b1972c4118dc0cd4 (AYETE selector and AWR operator-row work). These target changes do not modify this controller fix, focused tests, parser, LAN, dependencies or autolaunch source. Update this Goal ledger with actual historical results; no application fix is inferred from target integration.
+- Verifier: full source/target patch and expected-prefix object proof, component mapping back to the four verified mutants, structural Goal validator and full diffcheck. One fresh normal full affected CI is required on the resulting revision; no blind rerun of the old failed head or more spawn diagnostics.
+- Result: current candidate preparation; new normal and all four current-source independent reviews remain pending. C-006/root merge and persistedQA remain pending; no completion claim.
+- Decision: freeze the clean candidate, publish the updated ordinary branch and yield an immutable CI checkpoint. If required work remains at max8, report the remaining predicate for root replan rather than silently extend.
+
 ## Risks and rollback
 
 - Risks: changing fit/pin order, silently rejecting unresolved passages, permission mutation, legacy load changes or accidentally updating Live while re-staging Preview.
