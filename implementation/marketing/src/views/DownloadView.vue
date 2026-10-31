@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PilotDownloads from '@/components/PilotDownloads.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import PageHero from '@/components/core/PageHero.vue'
@@ -6,25 +7,11 @@ import ToneChip from '@/components/core/ToneChip.vue'
 import ControllerMock from '@/components/core/ControllerMock.vue'
 import SrOnly from '@/components/core/SrOnly.vue'
 
-/*
- * Figma 487:124. Layout and styling follow the frame; the wording follows the repo, because the frame's
- * numbers are not backed (audit download-04, -05, -09, and the Copy rule on ClickUp 17tnw2b2cey):
- *
- *  - no installer version, format or size: the repo packages one Windows NSIS installer, there is no
- *    .msi, no macOS bundle and no recorded size, and no release exists;
- *  - no OS floor: no document states a minimum Windows or macOS version;
- *  - no hardware figures: Figma, the PRD (Tier A: 8 GB) and the owner requirement (4 GB) disagree, so each
- *    value reads "To be confirmed" until the owner chooses (download-05);
- *  - the apps are not in the stores (download-09), so the bullet and the badges say so.
- *
- * "Offline" is claimed only as far as NFR-015 backs it: every CORE LIVE function works with the network
- * off. Sign-in, device activation, hosted speech-to-text and the speech model's first download need the
- * network (docs/ops/WINDOWS-INSTALLER.md), so nothing here says "fully offline" (review round 1, Shadow F1).
- *
- * The download buttons stay DISABLED (ClickUp 17tnw2b0q9j, PR 134; `tests/downloadView.test.ts`). The
- * product confirmed on 2026-10-04 that the app is available for Windows, Linux and macOS, but it is not
- * known that a downloadable installer exists for each, so no page may claim a macOS or Linux installer
- * and Linux is not drawn (Figma draws two cards).
+/* Figma487:124 supplies the existing layout/tokens. P14 adds a separately gated
+ * pilot registration unit with Ubuntu support. Standard/licensed installers and mobile
+ * stores retain honest disabled controls until their separate delivery gates pass.
+ * No illustrative Figma package versions, sizes, OS floors or hardware requirements
+ * become published release metadata; the pilot uses validated deployment configuration.
  */
 </script>
 
@@ -41,13 +28,15 @@ import SrOnly from '@/components/core/SrOnly.vue'
       <template #eyebrow>
         <UiBadge variant="featured">DOWNLOAD</UiBadge>
       </template>
-      Desktop installers are not available to download yet. Core live controls work with no network, and mobile control pairs over your local network.
+      See pilot registration availability below. Standard desktop installers are not available to download yet. Core live controls work with no network.
       <template #after>
         <p class="trust-line">Free plan · Core live controls work offline</p>
       </template>
     </PageHero>
 
-    <section class="platforms-section">
+    <PilotDownloads />
+
+    <section class="platforms-section" aria-label="Standard desktop downloads">
       <div class="container">
         <div class="platforms-grid">
           <div class="platform-card">
