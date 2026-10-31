@@ -2467,6 +2467,69 @@ struct RemoteShared {
     endpoint: OnceLock<std::path::PathBuf>,
 }
 
+/// Shared host-domain body of the output window's `P` action. The App delegates here so
+/// real-host process tests exercise the production toggle without constructing GPU windows.
+fn toggle_pairing_in(controller: &Mutex<LiveController>, remote: &RemoteShared) {
+    let Ok(mut c) = controller.lock() else {
+        return;
+    };
+    if c.pairing_qr_active() {
+        c.clear_pairing_qr();
+        withdraw_active_code(remote);
+        println!("  Pairing mode off — the code is no longer redeemable.");
+        return;
+    }
+    let Some((port, pin_hex)) = remote.lan.get().cloned() else {
+        eprintln!("  Pairing unavailable: the control server is not running.");
+        return;
+    };
+    let code = generate_pairing_code();
+    if code.is_empty() {
+        eprintln!("  Pairing unavailable: could not generate a code.");
+        return;
+    }
+    let now = Instant::now();
+    {
+        let mut reg = remote.registry.blocking_lock();
+        // Housekeeping: reclaim any expired offers + idle sessions so both maps stay
+        // bounded (audit #8: an idle session self-reclaims after SESSION_IDLE_TTL).
+        reg.prune_expired(now);
+        reg.prune_idle(now, selahcue_lan::session::SESSION_IDLE_TTL);
+        reg.offer_pairing(code.clone(), Role::Producer, now, PAIRING_TTL);
+    }
+    if let Ok(mut slot) = remote.active_code.lock() {
+        *slot = Some(code.clone());
+    }
+    let host = lan_ip();
+    if host.is_loopback() {
+        eprintln!(
+            "  WARNING: no LAN-facing interface found — the invite uses 127.0.0.1, \
+             so only clients on THIS machine can pair."
+        );
+    }
+    let invite = PairingInvite {
+        host: host.to_string(),
+        port,
+        pin_hex,
+        code: code.clone(),
+    };
+    match invite.to_uri() {
+        Some(uri) => {
+            print_pairing_block(&uri, &code);
+            c.show_pairing_qr(uri, now + PAIRING_TTL);
+        }
+        None => eprintln!("  Pairing unavailable: could not encode the invite."),
+    }
+}
+
+/// Withdraw the code owned by this host when pairing is cancelled.
+fn withdraw_active_code(remote: &RemoteShared) {
+    let code = remote.active_code.lock().ok().and_then(|mut g| g.take());
+    if let Some(code) = code {
+        remote.registry.blocking_lock().withdraw(&code);
+    }
+}
+
 struct App {
     /// The main audience/program output window. `None` means the `main` screen is
     /// DISABLED — for a built-in screen, `enabled` means "the OS window exists".
@@ -3454,73 +3517,11 @@ impl App {
     }
 
     /// `P`: toggle pairing mode — offer a fresh single-use code (2-minute TTL) and
-    /// show the invite QR on the stage output + as ASCII in the terminal. Toggling
+    /// show the invite QR on stage (and as ASCII in debug terminals). Toggling
     /// off **withdraws** the code from the registry (a cancelled code must die
     /// immediately, e.g. when the operator suspects the QR was photographed).
     fn toggle_pairing(&self) {
-        let Ok(mut c) = self.controller.lock() else {
-            return;
-        };
-        if c.pairing_qr_active() {
-            c.clear_pairing_qr();
-            self.withdraw_active_code();
-            println!("  Pairing mode off — the code is no longer redeemable.");
-            return;
-        }
-        let Some((port, pin_hex)) = self.remote.lan.get().cloned() else {
-            eprintln!("  Pairing unavailable: the control server is not running.");
-            return;
-        };
-        let code = generate_pairing_code();
-        if code.is_empty() {
-            eprintln!("  Pairing unavailable: could not generate a code.");
-            return;
-        }
-        let now = Instant::now();
-        {
-            let mut reg = self.remote.registry.blocking_lock();
-            // Housekeeping: reclaim any expired offers + idle sessions so both maps stay
-            // bounded (audit #8: an idle session self-reclaims after SESSION_IDLE_TTL).
-            reg.prune_expired(now);
-            reg.prune_idle(now, selahcue_lan::session::SESSION_IDLE_TTL);
-            reg.offer_pairing(code.clone(), Role::Producer, now, PAIRING_TTL);
-        }
-        if let Ok(mut slot) = self.remote.active_code.lock() {
-            *slot = Some(code.clone());
-        }
-        let host = lan_ip();
-        if host.is_loopback() {
-            eprintln!(
-                "  WARNING: no LAN-facing interface found — the invite uses 127.0.0.1, \
-                 so only clients on THIS machine can pair."
-            );
-        }
-        let invite = PairingInvite {
-            host: host.to_string(),
-            port,
-            pin_hex,
-            code: code.clone(),
-        };
-        match invite.to_uri() {
-            Some(uri) => {
-                print_pairing_block(&uri, &code);
-                c.show_pairing_qr(uri, now + PAIRING_TTL);
-            }
-            None => eprintln!("  Pairing unavailable: could not encode the invite."),
-        }
-    }
-
-    /// Remove the currently offered code (if any) from the registry.
-    fn withdraw_active_code(&self) {
-        let code = self
-            .remote
-            .active_code
-            .lock()
-            .ok()
-            .and_then(|mut g| g.take());
-        if let Some(code) = code {
-            self.remote.registry.blocking_lock().withdraw(&code);
-        }
+        toggle_pairing_in(&self.controller, &self.remote);
     }
 
     /// The renderer whose window matches `id`, if any.
@@ -4875,8 +4876,16 @@ pub fn pin_fingerprint(pin_hex: &str) -> String {
         .join("-")
 }
 
-/// Print the pairing invite: the URI, the hand-typable code, and an ASCII QR.
+/// Confirm pairing mode without disclosing an invite to inherited release logs.
+/// Debug builds retain the developer URI, hand-typable code and ASCII QR.
 fn print_pairing_block(uri: &str, code: &str) {
+    if !cfg!(debug_assertions) {
+        println!(
+            "  PAIRING MODE (2 minutes) — scan the QR on the stage/confidence window; \
+             press P again to cancel."
+        );
+        return;
+    }
     println!();
     println!("  PAIRING MODE (2 minutes) — scan from the SelahCue mobile app:");
     println!("  {uri}");
@@ -7837,3 +7846,6 @@ mod output_fault_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod pairing_output_tests;
