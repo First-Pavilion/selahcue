@@ -97,6 +97,16 @@ Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. E
 - New evidence: focused regression tests and docs/release/PILOT-SCANNER.md audit-correction section
 - Decision: blocked; return corrected Python phase, keep native/extraction/P01/review gates open
 
+### Iteration 3
+
+- Target criterion: C003/C004 declared frontend policy and build-chain helper source
+- Hypothesis: separate known-actual-secret scanning of closed reviewed frontend inputs preserves public help while fresh generated-output and emitted/package hash bindings fail stale source/cache/member evidence
+- Change or investigation: root-accepted aria-p04-embedded-assets.md clarification; own Python asset helper/tests/docs only, no native files
+- Verifier executed: focused asset tests initially RED5missing-module failures; existing31core/45old controls retained
+- Result:9asset controls pass after RED,31existing policy and45old controls pass; helpers cannot prove an actual Tauri/Cargo/package chain
+- New evidence: scripts/test_pilot_asset_provenance.py and docs/release/PILOT-SCANNER.md Iteration3 section
+- Decision: bounded final iteration; native/extraction/P01/review gates remain blocked/pending, later continuation needs explicit budget disposition
+
 ## Risks and rollback
 
 - Risks: compiler pooling, unsafe extraction, stale provenance and diagnostics; fail closed
