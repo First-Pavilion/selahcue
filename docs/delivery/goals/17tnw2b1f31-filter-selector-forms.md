@@ -85,8 +85,38 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: exact selector matching misses listed/nested/pseudo/ancestor hover declarations while the browser applies their filter; independent real stylesheet and hover controls expose this without changing existing selector/background policy.
 - Change or investigation: full task/zero comments/link/qualification/runbook read; isolate from actual21483835, validate child before tests; inventory real CSSOM/raw/filter/background call sites and prepare tests-only fixtures/hosted diagnostics. No candidacy fix before actual RED.
 - Verifier executed: Goal structural validation and static source/Git preparation; hosted behavior RED/positive controls next.
-- Result: Pending actual runtime; no GREEN or completion claim.
+- Result: Actual tests-only41184891450 full driver2733checks/66F31behaviorFAIL plus separate old2612count mismatch. All original2612 and55new records PASS (32premises,16clean,boundary,6already-protected list-last records); no sibling behavioral FAIL. Original pointer diagnostic stopped on first matches-hover premise, not40case proof.
 - New evidence: filter-selector-forms packet/receipts in WAVE3 evidence root.
+- Decision: iterate
+
+### Iteration 2 — observed pointer-state oracle
+
+- Target criterion: C-001 real hover premises.
+- Hypothesis: matches-hover query is not a faithful premise in this observed browser state; trusted pointer events and actual hover-only filter transition can distinguish a genuine hazard from a fixture state-query failure.
+- Change or investigation: observation-only41185313667 on same tests-only71 records trusted pointerover/move to button, computed none to brightness and back to none on exit, while matches-hover remains false after style resolution/frame. Only1case/1clean actually ran; inherited summary5clean is explicitly not actual count. Diagnostic-only premise correction retains all40cases/5clean, requires trusted entry/exit and three computed states, retains matches as observation.
+- Verifier executed: actual observation raw and corrected pointer41185454243.
+- Result: First6TD forms qualify real pointer/state premises;5intendedguard failures,1already-caught list-last. Ancestor case exposes a separate fixture geometry issue: viewport0,0 is still inside its full-width parent, so before/after legitimately remains bright. No full40/5 claim and no guard fix yet.
+- New evidence: filter-selector-forms/hover-trace.log, hover-corrected.log and red-classification.json.
+- Decision: iterate
+
+### Iteration 3 — bounded ancestor geometry
+
+- Target criterion: C-001 complete real hover premises and C-002 clean controls.
+- Hypothesis: fixing the ancestor box away from origin makes the same real pointer-away point demonstrably outside the ancestor, preserving all original state/event and guard assertions.
+- Change or investigation: workflow-only exact71 diagnostic gives parent an explicit bounded rectangle and asserts its measured x/y exclude origin. No source guard, test matrix, budget or count change.
+- Verifier executed: Actual41185734427, all40geometry/pointer-state premises and5clean controls.
+- Result: Qualified expected guard RED:40trusted entries/exits and none-brightness-none transitions PASS,5clean PASS;35unsafe guards wrongly pass (7forms across5sites),5list-last hazards already refused. No setup/oracle failure. Both earlier partial attempts remain separately recorded.
+- New evidence: filter-selector-forms/hover-red-boxed.log/receipt and full original driver2733/66 raw.
+- Decision: iterate
+
+### Iteration 4 — filter-only candidacy
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: shared compound-plus-hover candidacy and relative-selector resolution in both halves closes observed alternate spellings; exact background lookup and old per-property priority behavior can remain unchanged.
+- Change or investigation: filter-specific CSSOM candidates retain existing condition-aware flattening and resolve parent style rules. Existing declaration-value loop is shared; each resolved selector retains priority/source order, while alternate spellings conservatively retain any non-none value rather than pretending to model cross-selector specificity. Balanced raw blocks preserve parent context, quoted/escaped value delimiters, source order and all-block/condition-blind declaration OR. Class-prefix boundary/none/backdrop rules retained. Pin observed2733; DRIVER/STUB and assertions remain byte-identical to actual tests-only RED.
+- Verifier executed: Actual qualified RED/positive classification, stdlib AST, full baseline diffcheck, Goal structural validator and current-source hosted GREEN next.
+- Result: Static preparation PASS; no current runtime/fullnormal/mutation/review completion claim. Maximum8 unchanged.
+- New evidence: filter-selector-forms/current candidate/diagnostic receipts and forthcoming actual raw.
 - Decision: iterate
 
 ## Risks and rollback

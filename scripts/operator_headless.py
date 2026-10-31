@@ -2039,6 +2039,9 @@ EXPECTED_MIN_CHECKS = 2565
 # Measured on a70d4d22 in hosted41138510265 baseline:2612 checks,18 intended FAIL.
 # The old last-rule eleven-site witness skipped19 guarded checks; it is not the new count.
 EXPECTED_MIN_CHECKS = 2612
+# F31 full tests-only41184891450 actually ran2733checks/66intendedFAIL; the complete
+# original2612 and55new records passed. Assertions unchanged by the candidacy fix.
+EXPECTED_MIN_CHECKS = 2733
 
 
 def find_chrome():
@@ -2468,6 +2471,36 @@ CSS_SRC = (
     var matches = window.__cssRules(sel, src);
     return matches.length ? matches[matches.length - 1] : null;
   };
+  // Filter candidacy is deliberately broader than the background lookup. A rule can
+  // reach the guarded compound under a list, pseudo wrapper or ancestor hover without
+  // spelling its canonical selector exactly. Keep the compound's token boundary so
+  // .button-extra is not mistaken for .button. Non-hover fixture selectors retain the
+  // existing exact lookup; this is not an arbitrary CSS selector/data-flow evaluator.
+  function _cssFilterCandidate(selector, sel) {
+    var target = _cssNormSel(sel), normalized = _cssNormSel(selector);
+    var hover = /^(\.[A-Za-z0-9_-]+):hover$/.exec(target);
+    if (!hover) return normalized === target;
+    var compound = hover[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(compound + "(?![A-Za-z0-9_\\\\-])").test(normalized) && /:hover\b/i.test(normalized);
+  }
+  function _cssResolveFilterSelector(selector, parent) {
+    if (!parent) return selector;
+    return selector.indexOf("&") >= 0
+      ? selector.replace(/&/g, function() { return ":is(" + parent + ")"; })
+      : parent + " " + selector;
+  }
+  function _cssFilterSelector(rule) {
+    var selector = rule.selectorText;
+    for (var parent = rule.parentRule; parent; parent = parent.parentRule) {
+      if (parent.selectorText) selector = _cssResolveFilterSelector(selector, parent.selectorText);
+    }
+    return selector;
+  }
+  function _cssFilterRules(sel, src) {
+    return _cssFlatten(_cssSrc(src).sheet.cssRules, [], true).filter(function(rule) {
+      return _cssFilterCandidate(_cssFilterSelector(rule), sel);
+    });
+  }
   // Background is a family of interacting longhands. Let the browser cascade the matching
   // declarations together: a shorthand resets longhands, !important wins per longhand, and
   // var() shorthands can leave CSSOM longhands empty until substitution. Joining declarations
@@ -2494,12 +2527,10 @@ CSS_SRC = (
   // the vendor-prefix and CSS-escape normalisation __cssFilter relies on. A declaration the
   // parser rejected is absent from the CSSOM, exactly as it is absent from the browser's cascade.
   //
-  // NOT MODELLED (deliberately — the guards are about the guarded selector's own rules, matched by
-  // exact selector text, which is also why the fixtures below cover what they cover and no more):
-  //   - a rule with HIGHER specificity than `sel` (a sibling `.parent .tb-golive:hover`), and the
-  //     selector-shape variants that behave like one: a selector LIST with the guarded selector
-  //     first (`.tb-golive:hover, .x`), `:is()` / `:not()` / `:where()` wrappers, ancestor-hover;
-  //   - CSS nesting (a nested rule keeps its relative selectorText, `& .child`);
+  // This generic property read retains exact-selector matching (including background).
+  // The filter wrapper below widens candidacy independently; it conservatively unions
+  // alternate selector spellings rather than inventing a full specificity evaluator.
+  // NOT MODELLED by this property read:
   //   - `@layer` ordering and `@container` conditions (a container query is evaluated here by
   //     `CSS.supports(conditionText)`, which is NOT what a container query means);
   //   - `all:` resets, inline styles, JS-set styles.
@@ -2513,8 +2544,12 @@ CSS_SRC = (
   // stylesheet that mentions `filter:` (it reds that overridden shape too, in the safe direction).
   // The cascade read is what catches the spellings the raw half cannot see (CSS escapes).
   window.__cssEffective = function(sel, prop, src) {
-    var rules = window.__cssRules(sel, src), val = null, important = false;
+    var rules = window.__cssRules(sel, src);
     if (prop === "background") return _cssEffectiveBackground(rules);
+    return _cssDeclaredValue(rules, prop);
+  };
+  function _cssDeclaredValue(rules, prop) {
+    var val = null, important = false;
     for (var i = 0; i < rules.length; i++) {
       var v = rules[i].style.getPropertyValue(prop);
       if (!v) continue;
@@ -2523,7 +2558,7 @@ CSS_SRC = (
       val = v; important = imp;
     }
     return val;
-  };
+  }
   // The rule's declared background, shorthand first: CSSStyleDeclaration puts a var()-valued
   // `background` shorthand's own longhands (background-color/-image) into a "pending
   // substitution" state where they read back empty, so the shorthand is the only property
@@ -2562,8 +2597,10 @@ CSS_SRC = (
   // deliberately dumb and deliberately conservative rule is: collect EVERY matching block and
   // treat the guard as tripped if ANY has a non-none filter declaration. An earlier dangerous
   // declaration remains disqualifying even if a later rule overrides it with none. The
-  // match semantics themselves (a block whose selector text ENDS in `sel`) are unchanged; only
-  // the aggregation moved from "last" to "all".
+  // F31 widens the selector candidates while retaining that all-block union. A small
+  // balanced-block walk keeps relative selectors attached to their parent and keeps
+  // child declarations out of the parent's body. Quotes/escapes/parentheses/brackets
+  // protect braces inside values; this remains a declaration backstop, not a CSS parser.
   //
   // This half is deliberately CONDITION-BLIND (it ignores any enclosing @media/@supports), and
   // that must NOT be "fixed" (Shadow F3/F5, Cody 7): in the headless configuration this gate runs
@@ -2594,11 +2631,44 @@ CSS_SRC = (
     return String(text || "").replace(/\/\*[\s\S]*?\*\//g, "");
   }
   window.__cssRawBlocks = function(sel, src) {
-    var escaped = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    var re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "gi");
-    var text = _cssStripComments(_cssSrc(src).text), m, bodies = [];
-    while ((m = re.exec(text)) !== null) { bodies.push(m[1]); }
-    return bodies;
+    var text = _cssStripComments(_cssSrc(src).text), bodies = [], stack = [];
+    var start = 0, quote = "", escaped = false, parens = 0, brackets = 0;
+    function retain(frame) {
+      if (frame.selector && _cssFilterCandidate(frame.selector, sel)) bodies.push({ offset: frame.offset, body: frame.body });
+    }
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      if (quote) { if (ch === quote) quote = ""; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === "(") { parens++; continue; }
+      if (ch === ")") { parens--; continue; }
+      if (ch === "[") { brackets++; continue; }
+      if (ch === "]") { brackets--; continue; }
+      if (parens || brackets) continue;
+      if (ch === "{") {
+        var header = text.slice(start, i).trim();
+        var parent = stack.length ? stack[stack.length - 1].selector : "";
+        var selector = header[0] === "@" ? parent : _cssResolveFilterSelector(header, parent);
+        stack.push({ selector: selector, body: "", offset: i });
+        start = i + 1;
+      } else if (ch === ";") {
+        if (stack.length) stack[stack.length - 1].body += text.slice(start, i + 1);
+        start = i + 1;
+      } else if (ch === "}") {
+        if (stack.length) {
+          var frame = stack.pop();
+          frame.body += text.slice(start, i);
+          retain(frame);
+        }
+        start = i + 1;
+      }
+    }
+    // An unclosed source block must not erase a non-none declaration from the backstop.
+    if (stack.length) stack[stack.length - 1].body += text.slice(start);
+    stack.forEach(retain);
+    return bodies.sort(function(a, b) { return a.offset - b.offset; }).map(function(frame) { return frame.body; });
   };
   window.__cssRawHasFilter = function(sel, src) {
     return window.__cssRawBlocks(sel, src).some(function(body) {
@@ -2609,10 +2679,23 @@ CSS_SRC = (
       return false;
     });
   };
-  // The filter the browser's cascade gives `sel` — what the CSSOM half of every filter guard
-  // reads (17tnw2ayetm: previously `__cssFilter(__cssRule(sel))`, i.e. the last rule only).
+  // Preserve per-property priority/source order within one resolved selector. Across
+  // alternate selector spellings, conservatively retain any non-none value: a later
+  // lower-specificity `none` must not hide an escaped higher-specificity hazard from
+  // the CSSOM half. The raw half already conservatively unions all matching blocks.
   window.__cssEffectiveFilter = function(sel, src) {
-    return window.__cssEffective(sel, "filter", src);
+    var groups = new Map(), val = null, hazard = null;
+    _cssFilterRules(sel, src).forEach(function(rule) {
+      var key = _cssNormSel(_cssFilterSelector(rule));
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rule);
+    });
+    groups.forEach(function(rules) {
+      var value = _cssDeclaredValue(rules, "filter");
+      if (value) val = value;
+      if (value && !/^\s*none\s*$/i.test(value)) hazard = value;
+    });
+    return hazard || val;
   };
   // What the call sites' FAIL messages print as "found ...": the effective filter, or an explicit
   // note when the selector matches no rule at all (a vacuous guard — see the fail-closed note on
@@ -2621,7 +2704,7 @@ CSS_SRC = (
   // literal (the static check at the top of this file refuses that), the message would still read
   // "found <the real effective filter>" or "found none" while the guard failed closed.
   window.__cssFilterFound = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
+    if (_cssFilterRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
     return window.__cssEffectiveFilter(sel, src);
   };
   // Sana (security review, PR #79 follow-up round 2, finding NEW-3): a check that only calls
@@ -2646,7 +2729,7 @@ CSS_SRC = (
   // one selector variable for premise, message and guard, and a static check at the top of this
   // file refuses a call site whose guard argument is not the variable its premise looked up.
   window.__cssFilterGuardOk = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return false; }
+    if (_cssFilterRules(sel, src).length === 0) { return false; }
     var filterVal = window.__cssEffectiveFilter(sel, src);
     return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
