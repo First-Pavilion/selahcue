@@ -85,6 +85,7 @@ Main cbc8949145bd15bb47f08442358e081f27a72599. Existing Vue Download page matche
 - Screenshot inspection found the new hash route needed the established sticky-header offset; corrected through router/scroll.ts and regression-tested. Native select styling was normalized with existing tokens. Existing static assets/components are reused, with no new Figma-derived raster/SVG substitution.
 - Scoped copy ledgers now reflect approved pilot cloud consent/internet/expiry copy and Ubuntu; legacy standard Download bans still cover standard content. The independently tested pilot panel has a distinct copy/behavior scope rather than treating old cloud/architecture bans as current pilot requirements.
 - Live-service limitation: committed public config is schema_version1/enabledfalse. No actual form/notice/artifact/grant URL is fabricated. README specifies schema, deploy prerequisites, trust boundaries and separate platformQA. Root independently reported n8n2.45.7 production hidden-field fixture proof; this is not full end-to-end registration/grant proof.
+- Integration: rebased the unpublished ticket branch onto origin/main add4702e3474fb9c6c793beccbd2d38b59993db0 without conflicts. Upstream changed only an unrelated Operator test and goal document; the tested marketing source/build inputs remain unchanged.
 - Decision: hand off the completed frontend unit for four independent reviews; live collection/release enablement remains dependency-gated.
 
 ## Risks and rollback
