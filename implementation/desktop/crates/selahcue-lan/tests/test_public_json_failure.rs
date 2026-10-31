@@ -205,10 +205,10 @@ fn parse_positions_still_match_real_serde_syntax_eof_and_data_errors() {
 #[test]
 fn public_helper_return_types_are_the_ungated_safe_type() {
     use selahcue_lan::JsonFailure;
-    let decode: fn(&str) -> Result<Command, JsonFailure> = from_json::<Command>;
-    let encode: fn(&Command) -> Result<String, JsonFailure> = to_json::<Command>;
-    assert_eq!(decode(r#"{"cmd":"go_live"}"#).unwrap(), Command::GoLive);
-    assert_eq!(encode(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+    let decode: Result<Command, JsonFailure> = from_json(r#"{"cmd":"go_live"}"#);
+    let encode: Result<String, JsonFailure> = to_json(&Command::GoLive);
+    assert_eq!(decode.unwrap(), Command::GoLive);
+    assert_eq!(encode.unwrap(), r#"{"cmd":"go_live"}"#);
     fn safe_error_bounds<T: Error + Send + Sync + Copy + Eq>() {}
     safe_error_bounds::<JsonFailure>();
 }

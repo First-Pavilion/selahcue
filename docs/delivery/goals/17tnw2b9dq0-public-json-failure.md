@@ -72,7 +72,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 ## Verification plan
 
-- Focused verification: actual helper redaction/category/position/raw-premise/serialization failure tests without server and with server; precise API type assertions after fix.
+- Focused verification: actual helper redaction/category/position/raw-premise/serialization failure tests without server and with server; precise concrete Result type assertions after fix.
 - Broader regression verification: configured affected normal Rust/operator/server/Flutter fixture gates; exact existing fixture/component hashes.
 - Independent verifier: root dispatches Cody, Quinn, Vera and Shadow; original author remediates valid findings.
 - Required environment: hosted configured Linux toolchains only; native/device limits explicit.
@@ -97,6 +97,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Verifier executed: actual red-ci metadata/raw/hash inspection before implementation; direct rustfmt and diff/structural checks; candidate hosted normal/mutation gates pending.
 - Result: C-001 PASS; other mandatory criteria pending actual candidate evidence and independent review.
 - New evidence: public-json-failure/red-ci, tests-only manifest and diagnostic sole-parent/source proof.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 and C-003.
+- Hypothesis: the new function-pointer type oracle overconstrains the helper's late-bound/early-bound input lifetime; concrete Result annotations pin the intended public error type without changing the API's lifetime contract.
+- Change or investigation: supplemental41186036501 stopped before mutants with E0308 at the baseline decoder function-pointer annotation, not a raw-error regression. Correct only the two new type assertions to concrete parsed/serialized Result values; retain original12 tests/borrowed decode and all production bytes. Dart fixture job actually passed.
+- Verifier executed: official failed raw rustc lifetime diagnostic; static rustfmt/diff/structural checks; fresh exact-source normal/supplemental required.
+- Result: previous supplemental FAILED/setup-oracle and not credited as sensitivity. New source remains pending hosted gates and four reviews.
+- New evidence: supplemental-attempt1-failed.log and archived official attempt1, corrected API test annotations.
 - Decision: iterate
 
 ## Risks and rollback
