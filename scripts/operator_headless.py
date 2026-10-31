@@ -2042,6 +2042,9 @@ EXPECTED_MIN_CHECKS = 2612
 # F31 full tests-only41184891450 actually ran2733checks/66intendedFAIL; the complete
 # original2612 and55new records passed. Assertions unchanged by the candidacy fix.
 EXPECTED_MIN_CHECKS = 2733
+# Review S1 corrected run41189844529 measured2761/0; only this stale count guard
+# exited4. All original2733 plus28 recovery assertions are unchanged by this pin.
+EXPECTED_MIN_CHECKS = 2761
 
 
 def find_chrome():

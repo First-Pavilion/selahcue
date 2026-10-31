@@ -145,7 +145,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: keeping unmatched closing-delimiter counters at zero and ending bad strings on unescaped CSS newlines prevents unrelated malformed prefixes from hiding later candidates, while valid quoted/escaped continuations and function context remain intact.
 - Change or investigation: floor the two closing counters and reset only bad-string newline state; the prior escape branch still consumes valid escaped newlines before quote recovery. Retain nested parent/source-order/all-declaration/condition-blind behavior, all existing/new assertions and original CSSOM/background logic. Ordinary currentmain integration before final candidate. No complete parser/policy expansion.
 - Verifier executed: qualified actual review RED/current-vs-previous controls, source/static/Goal checks; small recovery GREEN and full driver count measurement next, then actual-count pin/current mutants/restoration/fullnormal/all4re-review.
-- Result: Static preparation only; no current full-count/GREEN/review completion claim. Maximum8 unchanged; no evidence-only source churn after final freeze.
+- Result: Actual41189844529 small corrected current28PASS/actual previous28PASS; complete full2761checks/0behaviorFAIL, all2733prior+28new assertions PASS. Sole failure stale2733strictcount/exit4; pin ONLY observed2761 with DRIVER/STUB/assertions unchanged. Fresh final normal/mutation/restoration/four-review evidence remains pending. Maximum8 unchanged; no evidence-only source churn after final freeze.
 - New evidence: filter-selector-forms/review-red.log, review-red-object-proof.json, current-source recovery/normal/mutation receipts.
 - Decision: iterate
 
