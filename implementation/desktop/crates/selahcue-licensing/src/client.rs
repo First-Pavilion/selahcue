@@ -45,7 +45,10 @@ use crate::contract::{
 use crate::custody::DeviceCredentials;
 use crate::device::{DeviceIdentity, IdempotencyKey};
 use crate::error::ActivationFailure;
-use selahcue_cloud::{HttpResponse, HttpTransport, SecretError, SecretStore, Token};
+use selahcue_cloud::transport::{require_https_base_url, require_loopback_test_url};
+use selahcue_cloud::{
+    HttpResponse, HttpTransport, SecretError, SecretStore, Token, TransportError,
+};
 use serde::de::DeserializeOwned;
 
 /// The most response body this client will parse.
@@ -203,19 +206,32 @@ pub struct LicensingClient<T: HttpTransport> {
 }
 
 impl<T: HttpTransport> LicensingClient<T> {
-    /// A client against `base_url`, e.g. `https://api.selahcue.example`.
+    /// A client against an HTTPS base, e.g. `https://api.selahcue.example`.
     ///
-    /// **The scheme is not validated here, and the wiring must require `https://`.** Every
-    /// call this client makes carries a credential — the password on sign-in, the enrollment
-    /// key on activation, the session token as a bearer — so an `http://` base URL puts all
-    /// three on the wire in clear. The check belongs at the configuration boundary, where a
-    /// bad value can be refused with something an operator can act on, rather than here
-    /// where it would be a panic or a silent rewrite deep in a call stack.
-    pub fn new(transport: T, base_url: impl Into<String>) -> Self {
-        LicensingClient {
+    /// Invalid/non-HTTPS configuration is refused before any call can carry a password,
+    /// enrollment key or bearer. The error contains no URL, query, userinfo or parser text.
+    pub fn new(transport: T, base_url: impl Into<String>) -> Result<Self, TransportError> {
+        let base_url = base_url.into();
+        require_https_base_url(&base_url)?;
+        Ok(LicensingClient {
             transport,
-            base_url: base_url.into(),
-        }
+            base_url,
+        })
+    }
+
+    /// Explicit local HTTP fixture constructor, never the normal application constructor.
+    /// Accepts HTTPS or HTTP with a parsed loopback host only. A real HTTP fixture must also
+    /// explicitly use `ReqwestTransport::new_for_loopback_tests`.
+    pub fn new_for_loopback_tests(
+        transport: T,
+        base_url: impl Into<String>,
+    ) -> Result<Self, TransportError> {
+        let base_url = base_url.into();
+        require_loopback_test_url(&base_url)?;
+        Ok(LicensingClient {
+            transport,
+            base_url,
+        })
     }
 
     /// The transport, for tests that assert what left the device.

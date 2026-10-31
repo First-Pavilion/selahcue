@@ -318,7 +318,8 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
     );
     // ...and one left UNCONSUMED, so the queued-steps side is non-empty when Debug runs.
     transport.push_response(200, format!(r#"{{"activation_token":"{DEVICE_TOKEN}"}}"#));
-    let client = LicensingClient::new(transport, "https://api.selahcue.example");
+    let client = LicensingClient::new(transport, "https://api.selahcue.example")
+        .expect("valid HTTPS test base");
     let _ = client.sign_in("admin@example.test", &Token::new(PASSWORD));
     let _ = client.activate_with_enrollment_key(
         &Token::new(ENROLLMENT_KEY),
