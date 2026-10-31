@@ -690,7 +690,7 @@ mod tests {
         }
         let _ = provider.poll();
         {
-            let lens = seen.lock().unwrap();
+            let lens = seen.lock().expect("recorded recognition windows");
             assert!(!lens.is_empty(), "interims fired while speaking");
             assert!(
                 lens.iter().all(|&n| n <= window),
@@ -699,9 +699,9 @@ mod tests {
         }
         engine.process(&silence_chunk(20)); // close → the final decodes the WHOLE utterance
         let _ = provider.poll();
-        let lens = seen.lock().unwrap();
+        let lens = seen.lock().expect("recorded recognition windows");
         assert!(
-            *lens.last().unwrap() > window,
+            *lens.last().expect("a final recognition window") > window,
             "the final decodes the whole utterance (> the interim window): {lens:?}"
         );
     }
