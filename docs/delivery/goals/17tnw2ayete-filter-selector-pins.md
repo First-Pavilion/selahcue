@@ -88,16 +88,6 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-pins source/diagnostic receipts and raw archives.
 - Decision: iterate
 
-### Iteration 3 — benign full-selftest construction
-
-- Target criterion: C-002, actual gate acceptance of benign literal syntax.
-- Hypothesis: a checker-only benign PASS is insufficient when control constructors still search an exact double-quoted definition; valid quoting/spacing can then fail the gate itself. New AYETE constructors must not regress legitimate input syntax.
-- Change or investigation: add a check that existing accepted harmless inputs remain constructible by the actual negative/benign control builders. This tests real self-test behavior without recursion, a new parser or any browser/source-guard bypass. Preserve candidate47a pin logic and all2612 browser assertions; prepare actual prebrowser RED before correcting fixture replacements.
-- Verifier executed: stdlib AST/full baseline/static; bounded hosted actual self-test constructor regression.
-- Result: Actual hosted41174198471 on3fa1b761 exits1 with named benign control construction failure for valid single-quoted TD binding, no Chrome started; exact double-quote constructor matched0. This is a fixture/selftest regression, separately classified from original selector exposure and earlier launcher source-isolation setup failure.
-- New evidence: filter-selector-pins/benign-red receipts/raw and current bounded ledger.
-- Decision: iterate
-
 ### Iteration 2
 
 - Target criterion: C-001 through C-004.
@@ -106,6 +96,16 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Verifier executed: actual RED/full witness/raw classification, Python AST/unchanged browser/helper source and baseline diffcheck; focused current checker/whole-browser GREEN and sensitive pin removal/unsafe PSC checks next.
 - Result: Static preparation PASS; current hosted runtime/full normal/four independent reviews pending.
 - New evidence: filter-selector-pins/red-attempt1 and red-attempt2 official raw/metadata/hash receipts, current source/diagnostic proof.
+- Decision: iterate
+
+### Iteration 3 — benign full-selftest construction
+
+- Target criterion: C-002, actual gate acceptance of benign literal syntax.
+- Hypothesis: a checker-only benign PASS is insufficient when control constructors still search an exact double-quoted definition; valid quoting/spacing can then fail the gate itself. New AYETE constructors must not regress legitimate input syntax.
+- Change or investigation: add a check that existing accepted harmless inputs remain constructible by the actual negative/benign control builders. This tests real self-test behavior without recursion, a new parser or any browser/source-guard bypass. Preserve candidate47a pin logic and all2612 browser assertions; prepare actual prebrowser RED before correcting fixture replacements.
+- Verifier executed: stdlib AST/full baseline/static; bounded hosted actual self-test constructor regression.
+- Result: Actual hosted41174198471 on3fa1b761 exits1 with named benign control construction failure for valid single-quoted TD binding, no Chrome started; exact double-quote constructor matched0. This is a fixture/selftest regression, separately classified from original selector exposure and earlier launcher source-isolation setup failure.
+- New evidence: filter-selector-pins/benign-red receipts/raw and current bounded ledger.
 - Decision: iterate
 
 ### Iteration 4 — format-tolerant fixtures and current verification
