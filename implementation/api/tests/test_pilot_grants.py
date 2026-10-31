@@ -1,14 +1,14 @@
 import copy
 import hashlib
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
 import pytest
 from django.utils import timezone
 from django.test import Client
 from django.core.cache import cache
-from django.db import close_old_connections, connection
+from django.db import connections, connection
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from selahcue_api.apps.pilot_downloads import grants
@@ -49,8 +49,12 @@ def manifest_value(now):
 
 
 @pytest.fixture
-def grant_config(settings, tmp_path, pilot_policy):
-    now = timezone.now().replace(microsecond=0)
+def grant_config(settings, tmp_path, pilot_policy, monkeypatch):
+    # Synthetic positive cases must stay within the fixed cohort regardless of
+    # the CI wall clock. Explicit boundary tests below still advance this clock.
+    now = datetime(2026, 11, 1, 12, tzinfo=UTC)
+    monkeypatch.setattr(timezone, "now", lambda: now)
+    pilot_policy["pilot_expires_at"] = (now + timedelta(days=60)).isoformat()
     value = manifest_value(now)
     path = tmp_path / "manifest.json"
     data = json.dumps(value).encode()
@@ -352,12 +356,12 @@ def test_postgres_concurrent_replay_preserves_ledger_without_locking_signer(gran
                 raise AssertionError("remote signer inside database transaction")
             return super().sign_read(request)
     def worker():
-        close_old_connections()
+        connections.close_all()
         try:
             start.wait(timeout=10)
             return grant_download(dict(body), signer=NoLockSigner())
         finally:
-            close_old_connections()
+            connections.close_all()
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(lambda _: worker(), range(4)))
     assert {value["artifact_id"] for value in results} == {"ubuntu"}

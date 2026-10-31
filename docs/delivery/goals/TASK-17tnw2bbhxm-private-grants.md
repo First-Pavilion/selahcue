@@ -20,7 +20,7 @@ A pilot-only server grant validates the live receipt and immutable allowlisted a
 
 ## Baseline
 
-Verified original main3f651d14 contains P13 receipts and confirmed allocation ledger. No private signer/manifest consumer exists; licensed downloads are separate501 stubs. Integrated reviewed current maincbc1e541 (Linux-only delta, no API overlap). Root supplies previously browser-verified criteria; current ClickUp reread/start evidence awaits root browser access.
+Verified original main3f651d14 contains P13 receipts and confirmed allocation ledger. No private signer/manifest consumer exists; licensed downloads are separate501 stubs. Integrated reviewed current maincbc1e541 (Linux-only delta, no API overlap). Root supplies previously browser-verified criteria; root current browser reread confirmed the four original criteria; root owns remote status verification.
 
 ## Inputs and evidence sources
 
@@ -79,9 +79,19 @@ Verified original main3f651d14 contains P13 receipts and confirmed allocation le
 - Hypothesis: strict receipt/manifest/signer boundaries can earn source evidence without live storage
 - Change or investigation: read baseline, write failing behavioral tests first
 - Verifier executed: structural validator; baseline32 registration checks; RED/GREEN grant tests; combined347 grant/P13/env/route/foundation checks; final85 grant checks; Django check and migration drift
-- Result: source85 grant checks pass,1 PG-only case skipped on SQLite; prior combined347 checks pass; full PostgreSQL suite running
-- New evidence: docs/delivery/evidence/p12-private-grants.md and private pytest logs; generated PG credentials remain only in harness process memory
+- Result: source85 grant checks pass,1 PG-only case skipped on SQLite; prior combined347 checks pass; initial PostgreSQL runs failed from fixture termination; final narrow97 checks pass, full-suite green not claimed
+- New evidence: docs/delivery/evidence/p12-private-grants.md and private pytest logs; fresh PG credentials only; first failed tracebacks briefly contained the disposable password before redaction; later harnesses redact before writing
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C001-C003 and independent review remediation
+- Hypothesis: narrow source/security inventories, a deterministic synthetic clock and explicit worker cleanup close the confirmed test gates without modifying production expiry/auth.
+- Change or investigation: reproduced Cody CSRF inventory RED and future-clock RED; added only dedicated server-auth route to inventory, anchored synthetic fixture time, closed worker connections explicitly. Diagnosed two external fixture terminations without claiming a source defect.
+- Verifier executed: final97-case actual PG scope (grant/P13 races/original catalogue/CSRF/v1), final86-pass future-clock grant/CSRF scope with one explicit PG-only skip, target-only audit and production-byte comparison.
+- Result: focused integration PASS with clean fixture/teardown. Full local API attempt failed from fixture loss; actual private-read C004 BLOCKED and current reviews/hosted CI pending.
+- New evidence: docs/delivery/evidence/p12-private-grants.md and redacted final PG/state logs
+- Decision: gate-review
 
 ## Risks and rollback
 
@@ -100,4 +110,4 @@ Verified original main3f651d14 contains P13 receipts and confirmed allocation le
 - Independent verification result: root scheduling all four reviewers; not yet passed
 - Terminal state: GATE_REVIEW for source snapshot; live C004 BLOCKED and reviews/CI pending
 - Remaining failed or blocked criteria: C004 live journey; C005 review/CI
-- ClickUp final evidence comment: root browser pending
+- ClickUp final evidence comment: root owns browser status/evidence verification
