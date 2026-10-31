@@ -257,15 +257,15 @@ if not check_jump_call_site_is_click_only():
 # check (each clause neutralised in turn) shows three clauses are mutually REDUNDANT by
 # construction (exactly five calls, all arguments distinct, each registered variable guarded once:
 # any two imply the third), so deleting any ONE of them is an equivalent mutant, not a gap; they
-# stay because each names a different slip in the failure message. Not pinned: the selector
-# literals themselves (that is 17tnw2ayete); the fail-closed predicates only catch a literal that
-# matches NO rule.
+# stay because each names a different slip in the failure message. AYETE also pins the canonical
+# literal at each definition: a different EXISTING clean rule must not hide a hazardous hover
+# rule. This remains bounded source analysis, not a JavaScript data-flow/grammar parser.
 FILTER_GUARD_SITES = {
-    "wTdHoverSel": "__cssFilterGuardOk",
-    "wPsHoverSel": "__cssFilterGuardOk",
-    "wTbGlHoverSel": "__cssFilterGuardOk",
-    "wTsHoverSel": "__cssFilterGuardOk",
-    "wPpGenHoverSel": "__cssNoBrightnessFilter",
+    "wTdHoverSel": ("__cssFilterGuardOk", ".td-save-cta:hover"),
+    "wPsHoverSel": ("__cssFilterGuardOk", ".ps-start:hover"),
+    "wTbGlHoverSel": ("__cssFilterGuardOk", ".tb-golive:hover"),
+    "wTsHoverSel": ("__cssFilterGuardOk", ".timer-start:hover"),
+    "wPpGenHoverSel": ("__cssNoBrightnessFilter", ".pp-generate:hover"),
 }
 FILTER_GUARD_CALL_RE = re.compile(
     r"\bok\(\s*(__cssFilterGuardOk|__cssNoBrightnessFilter)\(\s*([^,()\s]+)\s*\)\s*,"
@@ -305,19 +305,22 @@ def filter_guard_selector_problems(js):
                 "%s is called with %r, which is not one of the registered selector variables %s"
                 % (fn, arg, sorted(FILTER_GUARD_SITES))
             )
-        elif want != fn:
-            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want, fn))
+        elif want[0] != fn:
+            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want[0], fn))
     premise_re = re.compile(r"\b__cssRule\(\s*(" + "|".join(map(re.escape, FILTER_GUARD_SITES)) + r")\s*\)")
     premises = [(m.start(), m.group(1)) for m in premise_re.finditer(code)]
-    for var, fn in FILTER_GUARD_SITES.items():
+    for var, (fn, selector) in FILTER_GUARD_SITES.items():
         assigned = len(re.findall(r"\b" + re.escape(var) + _JS_ASSIGN_RE, code))
-        literal = len(re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])[^\"']*\1\s*;", code))
+        bindings = re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])([^\"']*)\1\s*;", code)
+        literal = len(bindings)
         looked_up = [p for p, v in premises if v == var]
         guarded = [p for p, _, a in calls if a == var]
         if assigned != 1:
             problems.append("%s is assigned %d times, want exactly 1 (a reassignment can point the guard elsewhere)" % (var, assigned))
         if literal != 1:
             problems.append("%s is bound to a string literal by `var` %d times, want exactly 1" % (var, literal))
+        elif bindings[0][1] != selector:
+            problems.append("%s selector literal is %r, expected %r" % (var, bindings[0][1], selector))
         if len(looked_up) != 1:
             problems.append("%s is looked up through __cssRule %d times, want exactly 1 (its premise)" % (var, len(looked_up)))
         if len(guarded) != 1:
@@ -340,7 +343,9 @@ def _filter_guard_negative_controls(js):
     """Deliberately broken copies of the real driver text; every one MUST be refused. Each is built
     from the real text with replacements that must apply exactly once (an inapplicable control would
     be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
+    js = _strip_js_comments(js)
     ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
+    binding_spans = {}
 
     def call(fn, var):
         return "ok(" + fn + "(" + var + "),"
@@ -349,6 +354,22 @@ def _filter_guard_negative_controls(js):
         if text.count(old) != 1:
             raise AssertionError("negative control cannot apply: %r matches %d times" % (old, text.count(old)))
         return text.replace(old, new)
+
+    def binding(text, var, selector, replacement):
+        # Every binding fixture starts from this same real source. Locate each definition
+        # once per source, then splice its exact span; rebuilding all harmless variants
+        # must not rescan the full driver for every replacement of the same definition.
+        if text is not js:
+            raise AssertionError("binding fixture must start from its original driver text")
+        key = (var, selector)
+        if key not in binding_spans:
+            pattern = re.compile(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])" + re.escape(selector) + r"\1\s*;")
+            matches = list(pattern.finditer(text))
+            if len(matches) != 1:
+                raise AssertionError("negative control cannot apply: %s canonical binding matches %d times" % (var, len(matches)))
+            binding_spans[key] = matches[0].span()
+        start, end = binding_spans[key]
+        return text[:start] + replacement + text[end:]
 
     def crossed(t):
         t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
@@ -359,7 +380,7 @@ def _filter_guard_negative_controls(js):
         ("D1 aliasing: the PSC-005 guard is fed the TD-012 variable",
          lambda t: sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "wTdHoverSel"))),
         ("D2 reassignment: wTbGlHoverSel is reassigned after its declaration",
-         lambda t: sub(t, 'var wTbGlHoverSel = ".tb-golive:hover";',
+         lambda t: binding(t, "wTbGlHoverSel", ".tb-golive:hover",
                        'var wTbGlHoverSel = ".tb-golive:hover";\n        wTbGlHoverSel = ".tb-golive";')),
         ("D3 block-comment decoy: guard fed a decoy variable whose lookup exists only in a comment",
          lambda t: sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wTbGlAlt"))
@@ -377,7 +398,7 @@ def _filter_guard_negative_controls(js):
          lambda t: sub(t, "var wTsHoverRule = __cssRule(wTsHoverSel);",
                        "var wTsHoverRule = __cssRule(wTsHoverSel); var wTsHoverRule2 = __cssRule(wTsHoverSel);")),
         ("selector variable no longer bound to a string literal",
-         lambda t: sub(t, 'var wTdHoverSel = ".td-save-cta:hover";', "var wTdHoverSel = pickSelector();")),
+         lambda t: binding(t, "wTdHoverSel", ".td-save-cta:hover", "var wTdHoverSel = pickSelector();")),
         ("failure message reads another site's variable",
          lambda t: sub(t, "__cssFilterFound(wPsHoverSel)", "__cssFilterFound(wTdHoverSel)")),
         ("a call site is deleted",
@@ -391,6 +412,33 @@ def _filter_guard_negative_controls(js):
         ("comments containing call-shaped strings are not call sites",
          lambda t: t + "\n/* ok(" + ok_fn + "(wFooSel), */\n// ok(" + nb_fn + "(wBarSel),\n"),
     ]
+    # AYETE: independent literal expectations at the real definitions. The older twelve
+    # controls pin wiring, not these values (two of their builders incidentally depend on
+    # exact TD/Go-Live text; PSC/Timer/PP bindings still evade the whole original gate).
+    literal_sites = [
+        ("wTdHoverSel", ".td-save-cta:hover", ".td-save-cta"),
+        ("wPsHoverSel", ".ps-start:hover", ".ps-start"),
+        ("wTbGlHoverSel", ".tb-golive:hover", ".tb-golive"),
+        ("wTsHoverSel", ".timer-start:hover", ".timer-start"),
+        ("wPpGenHoverSel", ".pp-generate:hover", ".pp-generate"),
+    ]
+    for var, selector, other in literal_sites:
+        controls.extend([
+            ("AYETE existing clean selector: " + var,
+             lambda t, v=var, s=selector, value=other: binding(t, v, s, 'var ' + v + ' = "' + value + '";')),
+            ("AYETE stale selector: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = "' + s + '__stale__";')),
+            ("AYETE alias binding: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = __ayeteAlias; var __ayeteAlias = "' + s + '";')),
+        ])
+        accepted.extend([
+            ("AYETE single quotes: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, "var " + v + " = '" + s + "';")),
+            ("AYETE spacing: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var   ' + v + '   =   "' + s + '"  ;')),
+            ("AYETE commented decoy: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, '/* var ' + v + ' = ".decoy"; */\nvar ' + v + ' = "' + s + '";')),
+        ])
     return ([(name, build(js)) for name, build in controls],
             [(name, build(js)) for name, build in accepted])
 
@@ -408,7 +456,7 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
         return False
     print(
         "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass their own "
-        "distinct single-literal selector variable, assigned once and looked up by their own premise"
+        "distinct canonical-literal selector variable, assigned once and looked up by their own premise"
     )
     try:
         controls, accepted = _filter_guard_negative_controls(js)
@@ -429,6 +477,15 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
             "%d harmless source(s) it must accept (a false red): %s" % (len(refused_good), refused_good)
         )
         return False
+    # An accepted harmless definition must also remain usable by the real gate's own
+    # control builders; an exact double-quoted replacement could otherwise reject a
+    # legitimate quote/spacing change only when the whole self-test runs.
+    for name, good in accepted:
+        try:
+            _filter_guard_negative_controls(good)
+        except AssertionError as exc:
+            print("FAIL: filter-guard-selector benign control construction — %s: %s" % (name, exc))
+            return False
     print(
         "PASS: filter-guard-selector negative controls (17tnw2ayetm) — all %d deliberately broken "
         "driver texts were refused and the %d harmless one(s) accepted" % (len(controls), len(accepted))
