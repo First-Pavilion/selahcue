@@ -58,7 +58,7 @@ class ComponentResult:
 
 
 def _fail(code: str):
-    raise PolicyError(code)
+    raise PolicyError(code) from None
 
 
 def _unique_object(pairs):
@@ -366,16 +366,9 @@ def _scan_component(path: Path, *, minimum: int, profile: str = 'ordinary', oper
     inventory = development_inventory(Path(__file__).resolve().parents[1])
     if len(known_secrets) > 256:
         _fail('known-secret-inventory')
-    for secret in known_secrets + inventory:
-        if not isinstance(secret, bytes) or not 8 <= len(secret) <= 4096:
-            _fail('known-secret-inventory')
-        probes = (secret, base64.b64encode(secret), secret.hex().encode('ascii'))
-        try:
-            probes += (secret.decode('ascii').encode('utf-16-le'),)
-        except UnicodeError:
-            pass
-        if next(occurrences(path, probes), None) is not None:
-            _fail('known-secret')
+    probes = known_secret_probes(known_secrets + inventory)
+    if next(occurrences(path, probes), None) is not None:
+        _fail('known-secret')
     _positive_control(path, expected, known_secrets + inventory)
     if file_digest(path) != before:
         _fail('component-changed')
@@ -523,3 +516,19 @@ def scan_resource(path: Path, *, profile: str = 'ordinary', expected: ExpectedPa
     """
     return _scan_component(path, minimum=0, profile=profile, expected=expected,
                            known_secrets=known_secrets)
+
+
+def known_secret_probes(inventory: tuple[bytes, ...]) -> tuple[bytes, ...]:
+    """Validate/cap then deduplicate deny-only representations for one read pass."""
+    if not 0 < len(inventory) <= 258:
+        _fail('known-secret-inventory')
+    probes = []
+    for value in inventory:
+        if not isinstance(value, bytes) or not 8 <= len(value) <= 4096:
+            _fail('known-secret-inventory')
+        probes.extend((value, base64.b64encode(value), value.hex().encode('ascii')))
+        try:
+            probes.append(value.decode('ascii').encode('utf-16-le'))
+        except UnicodeError:
+            pass
+    return tuple(dict.fromkeys(probes))

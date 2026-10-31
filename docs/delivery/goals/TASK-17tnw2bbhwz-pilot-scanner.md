@@ -11,7 +11,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2bbhwz
 - Created: 2026-10-31
 - Updated: 2026-10-31
-- Maximum iterations: 3
+- Maximum iterations: 5
 - Independent verification required: yes
 
 ## Objective
@@ -106,6 +106,17 @@ Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. E
 - Result:9asset controls pass after RED,31existing policy and45old controls pass; helpers cannot prove an actual Tauri/Cargo/package chain
 - New evidence: scripts/test_pilot_asset_provenance.py and docs/release/PILOT-SCANNER.md Iteration3 section
 - Decision: bounded final iteration; native/extraction/P01/review gates remain blocked/pending, later continuation needs explicit budget disposition
+
+### Iteration 4 — root-authorized review remediation
+
+- Authorization: p04-review-remediation-disposition.md explicitly extends the consumed3iteration budget to5 before work; original ledger/predicate unchanged. Iteration5 reserved only for verified re-review correction, no6/native work.
+- Target criterion: C003 diagnostic boundary and V-P04-1 bounded known-secret scan passes
+- Hypothesis: suppressing implicit exception context centrally closes full traceback/logger leakage; validated deduplicated deny probes in one matcher pass remove inventory-sized full-file rereads
+- Change or investigation: reproduce P04-SHADOW-01 and V-P04-1 with focused RED controls, then fix owned Python only
+- Verifier executed: test_pilot_asset_provenance.py, test_pilot_installer_scan.py, original scanner selftest
+- Result: RED2findings reproduced; GREEN11asset/31core/45legacy, logical target read passes independent of inventory0vs16; whole native/package/P01/review gates remain blocked/pending
+- New evidence: root disposition, four phase reports at ac8798b9, traceback/logger and read-count regressions
+- Decision: bounded remediation; no silent further extension
 
 ## Risks and rollback
 

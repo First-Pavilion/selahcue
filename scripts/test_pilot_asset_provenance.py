@@ -1,5 +1,9 @@
 """Synthetic file controls, not actual Tauri build/package proof."""
 import json
+import logging
+import traceback
+from unittest.mock import patch
+import pilot_installer_scan as core
 import contextlib
 import io
 import tempfile
@@ -81,5 +85,38 @@ class AssetTests(unittest.TestCase):
    try: assets.capture_assets(self.root, self.inventory, known_secrets=(secret,))
    except assets.PolicyError as error: output.write(str(error))
   for index in range(len(secret)-7): self.assertNotIn(secret[index:index+8].decode(),output.getvalue())
+
+ def test_full_traceback_and_logger_suppress_private_filesystem_context(self):
+  target = self.root / 'regular'; target.write_bytes(bytes(1000000))
+  private_path = 'synthetic-private-path-canary-2764'
+  original = Path.open
+  def denied(path, *args, **kwargs):
+   if path == target: raise PermissionError(private_path)
+   return original(path, *args, **kwargs)
+  for call in (lambda: core.scan_component(target), lambda: assets.scan_asset(target)):
+   output = io.StringIO(); logger = logging.Logger('isolated-p04-test')
+   logger.addHandler(logging.StreamHandler(output))
+   with patch.object(Path, 'open', denied):
+    try: call()
+    except assets.PolicyError as error:
+     output.write(''.join(traceback.format_exception(type(error),error,error.__traceback__)))
+     logger.exception('public refusal')
+   text = output.getvalue(); self.assertIn('component-unreadable',text)
+   for index in range(len(private_path)-7): self.assertNotIn(private_path[index:index+8],text)
+ def test_known_secret_inventory_size_does_not_add_target_read_passes(self):
+  target = self.root / 'read-target'; target.write_bytes(b'clean synthetic public asset')
+  original = Path.open
+  for call in (lambda values: core.scan_resource(target,known_secrets=values),
+               lambda values: assets.scan_asset(target,values)):
+   counts = []
+   for count in (0,16):
+    opened = []
+    def counted(path,*args,**kwargs):
+     if path == target: opened.append(1)
+     return original(path,*args,**kwargs)
+    values = tuple(('synthetic-known-inventory-%04d'%i).encode() for i in range(count))
+    with patch.object(Path,'open',counted): call(values)
+    counts.append(len(opened))
+   self.assertEqual(counts[0],counts[1])
 
 if __name__ == '__main__': unittest.main()
