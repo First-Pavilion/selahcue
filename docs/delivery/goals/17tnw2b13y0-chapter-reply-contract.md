@@ -89,6 +89,16 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - New evidence: full qualification/owner amendment and this contract.
 - Decision: iterate
 
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: the actual hosted serialization provides an immutable fixture baseline, while a genuine translation-gap positive must be established from real corpus rows rather than inferred from its case label.
+- Change or investigation: recording41191713052 atc6fac/diagnostic964796c0 succeeded1new+5existingtests; decoded exact16,643byte marker with all6requiredclasses. Optional Matthew17:21 WEB case contains21, so original successful record is retained as translation-variant evidence, not gap coverage. Existing scripture primary tests identify omitted WEB Luke17:36; changed only eighth input to that reference and added real neighboring35/37/non36 premise for bounded recapture, no production/parser/corpus change.
+- Verifier executed: official metadata/raw/hash and actual recorded whole response inspection, repository primary gap test reads; no local runtime/fixture generation.
+- Result: original capture valid, optional gap premise corrected transparently. Corrected actual capture/frozenfixtures and frontend replay remain pending.
+- New evidence: chapter-reply-contract/recording-ci and recorded-v1.json/recording-v1-classification.json; forthcoming corrected exact-source recording.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: fixture written from mock rather than host, wrapper envelope confused with Tauri IPC, incomplete fields/text/navigation, fixture regenerated to hide drift, frontend bypasses fixture, unrelated main/harness changes, shared-file conflict, skipped final frontend phase.

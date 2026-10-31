@@ -17,7 +17,7 @@ const REQUESTS: [(&str, &str, Option<&str>, bool); 8] = [
     ("nonexistent-chapter", "Romans 99", None, false),
     ("unparseable-reference", "Hezekiah 4:4", None, false),
     ("last-chapter", "Rev 22", None, true),
-    ("translation-gap", "Matthew 17:21", Some("WEB"), true),
+    ("translation-gap", "Luke 17:36", Some("WEB"), true),
 ];
 
 fn actual_replies() -> serde_json::Value {
@@ -42,6 +42,18 @@ fn y0_record_actual_chapter_replies() {
     assert_eq!(
         replies["cases"].as_array().expect("recorded cases").len(),
         REQUESTS.len()
+    );
+    let gap = &replies["cases"][7]["result"]["Ok"];
+    let numbers: Vec<_> = gap["verses"]
+        .as_array()
+        .expect("real WEB chapter")
+        .iter()
+        .map(|verse| verse[0].as_u64().expect("verse number"))
+        .collect();
+    assert!(!numbers.contains(&36), "actual WEB Luke17 omits verse36");
+    assert!(
+        numbers.contains(&35) && numbers.contains(&37),
+        "both real neighboring verses remain"
     );
     // Captured once by the hosted recorder. No source fixture is generated or rewritten by tests.
     println!(
