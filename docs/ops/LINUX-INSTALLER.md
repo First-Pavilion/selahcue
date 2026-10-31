@@ -1,6 +1,6 @@
 # Ubuntu installer candidate
 
-Ticket: https://app.clickup.com/t/86ak0qn4j. The first target is Ubuntu 24.04 x86_64 GNU, packaged as `.deb`. This path builds the real winit/wgpu audience-output executable with default encryption and no NDI feature. The operator retains its default encrypted-transcript support and enables local STT. Speech models are not downloaded or bundled by this workflow; model provisioning and actual microphone transcription still need device testing.
+Source bootstrap: https://app.clickup.com/t/90131572460/17tnw2bbjg0 (same PR325/legacy published branch; no duplicate implementation). Actual package/runtime acceptance: https://app.clickup.com/t/86ak0qn4j; independent clean-location validation: https://app.clickup.com/t/90131572460/17tnw2bbhxr. The prospective source-only split preserves original mandatory C-004 as BLOCKED/NOT RUN in its original goal; source merge is not native installer acceptance. The first target is Ubuntu 24.04 x86_64 GNU, packaged as `.deb`. This path builds the real winit/wgpu audience-output executable with default encryption and no NDI feature. The operator retains its default encrypted-transcript support and enables local STT. Speech models are not downloaded or bundled by this workflow; model provisioning and actual microphone transcription still need device testing.
 
 ## Build and inspect
 
@@ -38,7 +38,7 @@ WebDriver teardown kills its process group for test cleanup. This does **not** p
 
 On 2026-10-31, fourteen Python regressions passed on Darwin/arm64 and in an official Ubuntu 24.04 amd64 container emulated on that host. Ubuntu apt resolved the nine declared additional runtime dependencies and WebKit WebDriver. The pinned `tauri-utils` 2.10.1 parser also deserialized and merged both platform configurations: Linux Debian/no Windows resources and Windows NSIS/DLL retained. These checks do not build or execute either installed Linux binary.
 
-Workflow admission/cost guards, actionlint, the unchanged scanner self-tests and the P06 regressions pass locally. No native `.deb`, installed-app IPC/frame evidence or manual packaging run exists yet. Actual main-workflow build/install evidence and independent reviews remain mandatory; the full ticket stays in progress.
+Workflow admission/cost guards, actionlint, the unchanged scanner self-tests and the P06 regressions pass locally. No native `.deb`, installed-app IPC/frame evidence or manual packaging run exists yet. Actual main-workflow build/install evidence and runtime acceptance reviews remain mandatory under the original installer goal; that ticket stays in progress. The source-bootstrap goal separately requires normal CI and four fresh independent reviews before merge. Neither predicate waives the other.
 
 ## Recovery and release boundary
 

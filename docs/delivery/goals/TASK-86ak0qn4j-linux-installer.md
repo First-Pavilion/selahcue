@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Manual main-only Ubuntu packaging builds and checks a real non-NDI output sidecar
 - Role: devops-engineer
-- Status: GATE_REVIEW
+- Status: ACTIVE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak0qn4j
 - Created: 2026-10-31
@@ -28,6 +28,12 @@ Verified main 020ab896: Windows NSIS/shared DLL configuration; no Linux packagin
 - Aria continuation report and actual no-NDI Cargo dependency tree
 - P06 preflight, Tauri pinned config parser2.10.1 and official platform merge/Debian documentation
 - Existing installer scanner and autolaunch/host_connected IPC implementation
+
+## Source bootstrap prerequisite (2026-10-31)
+
+Architecture and delivery prospectively split the source bootstrap into ticket [17tnw2bbjg0](https://app.clickup.com/t/90131572460/17tnw2bbjg0), governed by [its separate contract](TASK-17tnw2bbjg0-ubuntu-pipeline-bootstrap.md). The same PR325 and published branch are retained; no duplicate implementation is introduced. The original source attempt/head a680e025 is history, not evidence of native completion. C-004 below remains **mandatory and BLOCKED/NOT RUN**, with its wording unchanged. Source-prerequisite reviews do not satisfy this ticket's runtime acceptance or independent verification.
+
+Required sequence: source-bootstrap review/normal CI/merge -> authorized exact-main manual packaging run recorded on this existing ticket -> independent clean-location [P18](https://app.clickup.com/t/90131572460/17tnw2bbhxr). Record the actual source SHA/run/attempt, Debian hash/metadata, native package/ELF closure, installed real IPC/frame and uninstall evidence. A retained CI artifact after smoke failure is not an accepted installer. Original clean installed-app obligations remain unresolved until actual sufficient evidence is cross-linked here/P18; hosted software-GPU coverage does not waive them.
 
 ## Scope
 
@@ -102,6 +108,6 @@ Verified main 020ab896: Windows NSIS/shared DLL configuration; no Linux packagin
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ak0qn4j-linux-installer.md
 - Validator result: structural contract validation passes; completion intentionally not asserted
 - Independent verification result: pending
-- Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: actual package/runtime and independent reviews
+- Terminal state: ACTIVE
+- Remaining failed or blocked criteria: mandatory C-004 actual package/runtime including clean installed-app evidence remains BLOCKED/NOT RUN; runtime acceptance reviews pending; source bootstrap now belongs to 17tnw2bbjg0
 - ClickUp final evidence comment: root coordinates browser update
