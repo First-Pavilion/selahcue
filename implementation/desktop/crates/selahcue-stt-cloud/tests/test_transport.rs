@@ -78,6 +78,7 @@ fn brisk_retry() -> RetryPolicy {
 
 fn config_for(endpoint: DeepgramEndpoint, retry: RetryPolicy) -> SessionConfig {
     SessionConfig {
+        access_deadline: None,
         endpoint,
         params: StreamParams::default(),
         retry,

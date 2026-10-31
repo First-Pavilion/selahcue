@@ -92,6 +92,12 @@ pub enum SessionState {
     Reconnecting { attempt: u32, of: u32 },
     /// Stopped on request.
     Stopped,
+    /// Native pilot budget retired; no courtesy flush or reconnect is allowed.
+    AccessExpired,
+    /// The admitted clock became unavailable; the budget is retired.
+    AccessUnavailable,
+    /// A pilot provider explicitly rejected authentication. No raw response is retained.
+    CredentialRejected,
     /// Stopped for good. Carries what the operator should do and a message safe to display —
     /// never the credential.
     Failed {
@@ -110,7 +116,14 @@ impl SessionState {
     /// console needs this distinction to decide between "reconnecting…" and an actionable
     /// message.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, SessionState::Stopped | SessionState::Failed { .. })
+        matches!(
+            self,
+            SessionState::Stopped
+                | SessionState::Failed { .. }
+                | SessionState::AccessExpired
+                | SessionState::AccessUnavailable
+                | SessionState::CredentialRejected
+        )
     }
 }
 

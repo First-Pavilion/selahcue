@@ -908,6 +908,7 @@ impl Backend {
     /// (86akgqdv0) — `transcript_generate_notes`'s persist-on-success path (via `persist_generated_draft`). `Ok(None)` when the
     /// host refuses it (an oversized field, or no store configured) — never a hard error, so a
     /// persistence failure never blocks the draft from still being shown to the operator.
+    #[cfg(test)]
     async fn save_sermon_note_draft(
         &self,
         transcript_id: i64,
@@ -921,6 +922,28 @@ impl Backend {
                 .await
                 .map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.save_sermon_note_draft(transcript_id, draft)),
+        }
+    }
+    async fn save_sermon_note_draft_admitted(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool + Send + Sync,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+        match self {
+            Backend::Remote(m) => {
+                let mut remote = m.lock().await;
+                if !admit() {
+                    return Err("generated mutation admission refused".into());
+                }
+                remote
+                    .save_sermon_note_draft_admitted(transcript_id, draft, admit)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            Backend::Local(local) => {
+                Ok(local.save_sermon_note_draft_admitted(transcript_id, draft, admit))
+            }
         }
     }
     /// Apply an operator edit to the persisted draft's text for `transcript_id` (86akgqdv0).
@@ -944,19 +967,26 @@ impl Backend {
     /// replacing the currently-accepted draft (FR-129, 86akgqdx8). `Ok(None)` when the host
     /// refuses it (no accepted draft exists yet, an oversized field, or the frame would
     /// exceed the control link's cap on a Remote backend).
-    async fn stage_sermon_note_regeneration(
+    async fn stage_sermon_note_regeneration_admitted(
         &self,
         transcript_id: i64,
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool + Send + Sync,
     ) -> Result<Option<selahcue_app::RegenerationSlot>, String> {
         match self {
-            Backend::Remote(m) => m
-                .lock()
-                .await
-                .stage_sermon_note_regeneration(transcript_id, draft)
-                .await
-                .map_err(|e| e.to_string()),
-            Backend::Local(s) => Ok(s.stage_sermon_note_regeneration(transcript_id, draft)),
+            Backend::Remote(m) => {
+                let mut remote = m.lock().await;
+                if !admit() {
+                    return Err("generated mutation admission refused".into());
+                }
+                remote
+                    .stage_sermon_note_regeneration_admitted(transcript_id, draft, admit)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+            Backend::Local(local) => {
+                Ok(local.stage_sermon_note_regeneration_admitted(transcript_id, draft, admit))
+            }
         }
     }
     /// Accept the pending regeneration for `transcript_id` on the host (FR-129), replacing
@@ -6287,11 +6317,25 @@ fn transcription_status() -> (bool, Option<TranscriptionProviderView>) {
     transcription_status_from(provider_source::transcription_status())
 }
 
+#[tauri::command]
+fn pilot_access_status(state: State<'_, AppState>) -> Option<provider_source::PilotAccessView> {
+    #[cfg(feature = "pilot-credentials")]
+    {
+        provider_source::access_status_for_route(selected_notes_route(&state).uses_pilot())
+    }
+    #[cfg(not(feature = "pilot-credentials"))]
+    {
+        let _ = state;
+        None
+    }
+}
+
 /// The full Providers & Privacy panel state (node 338:124). `quota` is `None` until a live cloud
 /// fetch returns one — never a fabricated figure (the server owns the count, and it does not exist
 /// yet), matching the console's "no guessed numbers" convention.
 #[derive(serde::Serialize)]
 struct ProvidersView {
+    pilot_access: Option<provider_source::PilotAccessView>,
     transcription_mode: String,
     on_device: SttReadyReply,
     cloud_transcription_consent: bool,
@@ -6550,6 +6594,7 @@ fn providers_view_from(
     let notes_available = notes_provider.is_some();
     let inc = cfg.settings.include;
     ProvidersView {
+        pilot_access: provider_source::access_status(),
         transcription_mode: cfg.settings.transcription_mode.as_str().to_string(),
         on_device: stt_ready(),
         cloud_transcription_consent: cfg.consent.cloud_transcription,
@@ -6607,6 +6652,7 @@ mod providers_view_tests {
         let mut expected = vec![
             "transcription_mode",
             "on_device",
+            "pilot_access",
             "cloud_transcription_consent",
             "cloud_notes_consent",
             "offline_by_default",
@@ -7401,7 +7447,14 @@ fn with_providers(
         }
     }
     let token_set = account_token_is_set(state);
-    Ok(providers_view_of(&cfg, token_set))
+    #[allow(unused_mut)]
+    let mut view = providers_view_of(&cfg, token_set);
+    #[cfg(feature = "pilot-credentials")]
+    {
+        view.pilot_access =
+            provider_source::access_status_for_route(selected_notes_route(state).uses_pilot());
+    }
+    Ok(view)
 }
 
 #[tauri::command]
@@ -8054,124 +8107,88 @@ mod sermon_note_codec_tests {
 /// Run note generation with consent gating + graceful fallback. In a `cloud-live` build with a
 /// configured base URL + stored token it calls the real SelahCue service; otherwise it still
 /// honours the consent gate and then reports the honest "not configured" state (no live transport).
-#[cfg(feature = "cloud-live")]
+/// Capture the actual source once. This same selector drives status applicability
+/// and the request's immutable admission policy across provider/save awaits.
+enum NotesRoute {
+    #[cfg(feature = "cloud-live")]
+    Hosted {
+        base: String,
+        token: selahcue_cloud::Token,
+    },
+    #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
+    Direct,
+    #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
+    Offline,
+}
+impl NotesRoute {
+    fn uses_pilot(&self) -> bool {
+        #[cfg(feature = "pilot-credentials")]
+        {
+            matches!(self, Self::Direct)
+        }
+        #[cfg(not(feature = "pilot-credentials"))]
+        {
+            false
+        }
+    }
+}
+fn selected_notes_route(state: &State<'_, AppState>) -> NotesRoute {
+    #[cfg(feature = "cloud-live")]
+    if let (Some(base), Some(token)) = (
+        cloud_base_url(),
+        state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten(),
+    ) {
+        if !token.is_empty() {
+            return NotesRoute::Hosted { base, token };
+        }
+    }
+    #[cfg(not(feature = "cloud-live"))]
+    let _ = state;
+    #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
+    {
+        NotesRoute::Direct
+    }
+    #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
+    {
+        NotesRoute::Offline
+    }
+}
 async fn run_note_generation(
     cfg: selahcue_core::providers::ProvidersConfig,
     transcript: String,
-    state: &State<'_, AppState>,
+    route: NotesRoute,
 ) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
-    let base = cloud_base_url();
-    let token = state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten();
-    // Offload the BLOCKING reqwest call onto a blocking thread so a slow/unreachable endpoint
-    // (up to the 60s transport timeout) never stalls a Tokio worker and starves other async
-    // Tauri commands (honours the offload contract in selahcue-cloud/src/transport.rs).
     tauri::async_runtime::spawn_blocking(move || {
         let local = selahcue_cloud::LocalNoteProvider::new();
-        match (base, token) {
-            (Some(b), Some(t)) if !t.is_empty() => {
+        match route {
+            #[cfg(feature = "cloud-live")]
+            NotesRoute::Hosted { base, token } => {
                 let transport = selahcue_cloud::transport::ReqwestTransport::new()
                     .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
-                let client = selahcue_cloud::SelahCueCloudClient::new(transport, b, t);
+                let client = selahcue_cloud::SelahCueCloudClient::new(transport, base, token);
                 selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
             }
-            _ => {
-                // No hosted account/endpoint. Try the direct developer-key provider when it is
-                // compiled in — this mirrors `notes_status`, where hosted wins and direct is the
-                // stand-in for its absence, so what the panel reports and what actually runs are
-                // decided by the same precedence.
-                #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
-                {
-                    let transport =
-                        selahcue_cloud::transport::ReqwestTransport::new().map_err(|e| {
-                            selahcue_core::providers::NoteError::Transport(e.to_string())
-                        })?;
-                    if let Some(client) = provider_source::openai(transport) {
-                        return selahcue_cloud::generate_sermon_notes(
-                            &cfg,
-                            &transcript,
-                            true,
-                            &client,
-                            &local,
-                        );
-                    }
-                }
-                // Honour the gate first (ConsentRequired if not opted in), then report the honest
-                // NotConfigured state.
+            #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
+            NotesRoute::Direct => {
+                let transport = provider_source::notes_transport()?;
+                let Some(client) = provider_source::openai(transport) else {
+                    cfg.build_note_request(&transcript, true)?;
+                    return Err(selahcue_core::providers::NoteError::NotConfigured);
+                };
+                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
+            }
+            #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
+            NotesRoute::Offline => {
+                let _ = local;
                 cfg.build_note_request(&transcript, true)?;
                 Err(selahcue_core::providers::NoteError::NotConfigured)
             }
         }
     })
     .await
-    .map_err(|e| {
-        selahcue_core::providers::NoteError::Transport(format!("worker join error: {e}"))
+    .map_err(|_| {
+        selahcue_core::providers::NoteError::Transport("notes worker stopped unexpectedly".into())
     })?
-}
-
-/// Direct OpenAI GPT generation with a developer key (Phase 1, `openai-notes`).
-///
-/// **Deliberately throwaway** — the shipping path proxies notes through the SelahCue platform API,
-/// and this whole function goes when that lands. It is a sibling of the `cloud-live` path above,
-/// not a replacement: when both are compiled the hosted service wins, matching `notes_status`.
-///
-/// The consent gate is untouched. The generation path (`run_note_generation`) calls
-/// `build_note_request` first, so nothing is sent without cloud-notes consent and an explicit,
-/// confirmed Generate, and the request carries the completed transcript only.
-#[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
-async fn run_openai_note_generation(
-    cfg: selahcue_core::providers::ProvidersConfig,
-    transcript: String,
-) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
-    // Offload the BLOCKING request so a slow provider (up to the transport timeout) never stalls a
-    // Tokio worker and starves other async Tauri commands.
-    tauri::async_runtime::spawn_blocking(move || {
-        let local = selahcue_cloud::LocalNoteProvider::new();
-        let transport = selahcue_cloud::transport::ReqwestTransport::new()
-            .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
-        match provider_source::openai(transport) {
-            Some(client) => {
-                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
-            }
-            None => {
-                // No developer key. Honour the gate first so the UI still distinguishes
-                // ConsentRequired from NotConfigured, then report the honest state.
-                cfg.build_note_request(&transcript, true)?;
-                Err(selahcue_core::providers::NoteError::NotConfigured)
-            }
-        }
-    })
-    .await
-    .map_err(|e| {
-        selahcue_core::providers::NoteError::Transport(format!("worker join error: {e}"))
-    })?
-}
-
-#[cfg(all(
-    not(feature = "cloud-live"),
-    any(feature = "openai-notes", feature = "pilot-credentials")
-))]
-async fn run_note_generation(
-    cfg: selahcue_core::providers::ProvidersConfig,
-    transcript: String,
-    _state: &State<'_, AppState>,
-) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
-    run_openai_note_generation(cfg, transcript).await
-}
-
-#[cfg(all(
-    not(feature = "cloud-live"),
-    not(any(feature = "openai-notes", feature = "pilot-credentials"))
-))]
-async fn run_note_generation(
-    cfg: selahcue_core::providers::ProvidersConfig,
-    transcript: String,
-    _state: &State<'_, AppState>,
-) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
-    // Offline build: honour the consent gate (so the UI still gets ConsentRequired vs
-    // NotConfigured correctly), then report the honest "not configured" state — neither the live
-    // SelahCue service nor a direct provider is compiled in.
-    cfg.build_note_request(&transcript, true)?;
-    Err(selahcue_core::providers::NoteError::NotConfigured)
 }
 
 /// Generate AI sermon notes from a COMPLETED transcript. Consent-gated end-to-end: with cloud-notes
@@ -8190,6 +8207,56 @@ async fn run_note_generation(
 /// A transcript that ALREADY has an accepted draft gets the new draft STAGED instead —
 /// the accepted draft is never touched by this call, and the operator must explicitly
 /// confirm or discard it via the two new commands below. See [`PersistOutcome`].
+/// The guard is captured with the actual notes route and records rejection at any
+/// pre-dispatch wait. Once a mutation is admitted, its ordinary exchange may finish
+/// after expiry; we never cancel it or misreport an admitted save as "nothing saved".
+#[derive(Clone)]
+struct GeneratedAdmission {
+    check: Arc<dyn Fn() -> Result<(), provider_source::PilotFault> + Send + Sync>,
+    refused: Arc<Mutex<Option<provider_source::PilotFault>>>,
+}
+impl GeneratedAdmission {
+    fn new(
+        check: impl Fn() -> Result<(), provider_source::PilotFault> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            check: Arc::new(check),
+            refused: Arc::new(Mutex::new(None)),
+        }
+    }
+    fn for_route(notes_uses_pilot: bool) -> Self {
+        Self::new(move || {
+            if notes_uses_pilot {
+                provider_source::notes_fault().map_or(Ok(()), Err)
+            } else {
+                Ok(())
+            }
+        })
+    }
+    fn failure(&self) -> Option<provider_source::PilotFault> {
+        *self.refused.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    fn ensure(&self) -> Result<(), provider_source::PilotFault> {
+        if let Some(fault) = self.failure() {
+            return Err(fault);
+        }
+        let result = (self.check)();
+        if let Err(fault) = result {
+            *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(fault);
+        }
+        result
+    }
+    fn admit(&self) -> bool {
+        self.ensure().is_ok()
+    }
+}
+fn pilot_failure(
+    fault: provider_source::PilotFault,
+    clamp: &Option<TranscriptClampNotice>,
+) -> serde_json::Value {
+    serde_json::json!({"ok":false,"error":fault.code(),"message":fault.message(),"clamp":clamp})
+}
+
 struct PersistOutcome {
     /// The transcript id persistence was attempted against, when resolvable AND the
     /// attempt succeeded (either an immediate save or a stage) — `None` on any failure
@@ -8214,7 +8281,7 @@ struct PersistOutcome {
 /// `None` and so turned every failed check into permission to overwrite the operator's notes.
 /// The type has no `From<Result<..>>` that drops errors silently and no `Default`; the one
 /// conversion, [`ExistingDraft::from_load`], keeps the error as [`ExistingDraft::CheckFailed`],
-/// and [`persist_generated_draft`] matches on all three arms with no wildcard.
+/// and [`persist_generated_draft_admitted`] matches on all three arms with no wildcard.
 ///
 /// What that does and does not guarantee: a compile error follows only if a variant or an arm is
 /// added or removed. `Err(_) => Absent` inside `from_load`, or a call site that skips `from_load`
@@ -8248,7 +8315,7 @@ impl ExistingDraft {
     }
 }
 
-/// Returned by [`persist_generated_draft`] when the check for an existing draft failed: nothing
+/// Returned by [`persist_generated_draft_admitted`] when the check for an existing draft failed: nothing
 /// was saved and nothing was staged. A unit struct on purpose, see [`ExistingDraft::CheckFailed`].
 #[derive(Debug, PartialEq, Eq)]
 struct ExistingDraftCheckFailed;
@@ -8266,20 +8333,36 @@ const EXISTING_DRAFT_CHECK_FAILED_MESSAGE: &str = "Could not check for an existi
 /// The one exception is a failed check for an existing draft (17tnw2b9af5): that is an `Err`,
 /// because the safe outcome (save nothing) must be visible to the caller, not folded into a
 /// "persisted nothing" `PersistOutcome` that reads like any other soft failure.
+#[cfg(test)]
 async fn persist_generated_draft(
     state: &State<'_, AppState>,
     transcript_id: i64,
     draft: selahcue_lan::protocol::SermonNoteDraftInput,
 ) -> Result<PersistOutcome, ExistingDraftCheckFailed> {
+    let admission = GeneratedAdmission::new(|| Ok(()));
+    persist_generated_draft_admitted(state, transcript_id, draft, &admission).await
+}
+async fn persist_generated_draft_admitted(
+    state: &State<'_, AppState>,
+    transcript_id: i64,
+    draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    admission: &GeneratedAdmission,
+) -> Result<PersistOutcome, ExistingDraftCheckFailed> {
+    if admission.ensure().is_err() {
+        return Err(ExistingDraftCheckFailed);
+    }
     let existing =
         ExistingDraft::from_load(state.backend.load_sermon_note_draft(transcript_id).await);
-    Ok(match existing {
+    if admission.ensure().is_err() {
+        return Err(ExistingDraftCheckFailed);
+    }
+    let persist = match existing {
         // An accepted draft already exists: STAGE, never upsert-replace directly — the
         // whole point of FR-129 is that this call must not be able to destroy it.
         ExistingDraft::Present(existing_view) => {
             match state
                 .backend
-                .stage_sermon_note_regeneration(transcript_id, draft)
+                .stage_sermon_note_regeneration_admitted(transcript_id, draft, || admission.admit())
                 .await
             {
                 Ok(Some(_)) => {
@@ -8319,7 +8402,7 @@ async fn persist_generated_draft(
         // No accepted draft yet: the ORIGINAL, unchanged immediate-save path.
         ExistingDraft::Absent => match state
             .backend
-            .save_sermon_note_draft(transcript_id, draft)
+            .save_sermon_note_draft_admitted(transcript_id, draft, || admission.admit())
             .await
         {
             Ok(Some(_)) => PersistOutcome {
@@ -8354,7 +8437,11 @@ async fn persist_generated_draft(
             );
             return Err(ExistingDraftCheckFailed);
         }
-    })
+    };
+    if admission.failure().is_some() {
+        return Err(ExistingDraftCheckFailed);
+    }
+    Ok(persist)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -8523,7 +8610,21 @@ async fn transcript_generate_notes(
 
     // Captured before `cfg` moves into `run_note_generation` below (86akby820).
     let scripture_extraction_on = cfg.settings.include.scripture_extraction;
-    match run_note_generation(cfg, transcript, &state).await {
+    if let Err(e) = cfg.build_note_request(&transcript, true) {
+        return Ok(
+            serde_json::json!({"ok":false,"error":note_error_code(&e),"message":e.to_string(),"clamp":clamp}),
+        );
+    }
+    let route = selected_notes_route(&state);
+    let admission = GeneratedAdmission::for_route(route.uses_pilot());
+    if let Err(fault) = admission.ensure() {
+        return Ok(pilot_failure(fault, &clamp));
+    }
+    let generated = run_note_generation(cfg, transcript, route).await;
+    if let Err(fault) = admission.ensure() {
+        return Ok(pilot_failure(fault, &clamp));
+    }
+    match generated {
         Ok(mut outcome) => {
             // 86akby820 (FR-125/FR-128), ported from the removed live-tail command (17tnw2b0ntd):
             // every scripture reference this draft carries — in the extracted list AND embedded in
@@ -8554,7 +8655,12 @@ async fn transcript_generate_notes(
             // (17tnw2b0ntd) but the linking behaviour is unchanged.
             link_note_timestamps(&mut outcome.draft, &after.segments);
 
-            Ok(save_and_describe_generated_notes(&state, id, &outcome, &clamp).await)
+            Ok(
+                save_and_describe_generated_notes_admitted(
+                    &state, id, &outcome, &clamp, &admission,
+                )
+                .await,
+            )
         }
         Err(e) => Ok(serde_json::json!({
             "ok": false,
@@ -8570,18 +8676,38 @@ async fn transcript_generate_notes(
 /// so the persist step can be exercised without a provider (86akmfn54): the command needs a
 /// live model to reach it, and a test must be able to prove that what is SAVED carries the
 /// requested-but-empty caveats.
+#[cfg(test)]
 async fn save_and_describe_generated_notes(
     state: &State<'_, AppState>,
     id: i64,
     outcome: &selahcue_cloud::GenerationOutcome,
     clamp: &Option<TranscriptClampNotice>,
 ) -> serde_json::Value {
+    let admission = GeneratedAdmission::new(|| Ok(()));
+    save_and_describe_generated_notes_admitted(state, id, outcome, clamp, &admission).await
+}
+async fn save_and_describe_generated_notes_admitted(
+    state: &State<'_, AppState>,
+    id: i64,
+    outcome: &selahcue_cloud::GenerationOutcome,
+    clamp: &Option<TranscriptClampNotice>,
+    admission: &GeneratedAdmission,
+) -> serde_json::Value {
     // 86akmfn54: the requested-but-empty caveats (86akc0tua) are persisted WITH the sections,
     // so a reload, restart, edit-save or regenerate-confirm shows the same "nothing came back"
     // the live response did. (They used to be filtered out here, which is what made them
     // vanish.)
+    if let Err(fault) = admission.ensure() {
+        return pilot_failure(fault, clamp);
+    }
     let draft = sermon_note_caveats::draft_input_for(outcome);
-    let persist = match persist_generated_draft(state, id, draft).await {
+    let persisted = persist_generated_draft_admitted(state, id, draft, admission).await;
+    // Do not re-check time after an admitted exchange. Only a recorded pre-send
+    // refusal means nothing was saved/staged; accepted pre-cutoff writes may finish.
+    if let Some(fault) = admission.failure() {
+        return pilot_failure(fault, clamp);
+    }
+    let persist = match persisted {
         Ok(persist) => persist,
         // 17tnw2b9af5: the check for an existing draft failed, so NOTHING was saved or staged
         // and the accepted draft is untouched. Tell the operator plainly instead of showing a
@@ -9805,6 +9931,8 @@ mod regenerate_with_retention_tests {
     #[derive(Default)]
     struct StoreGate {
         fail_loads: std::sync::atomic::AtomicBool,
+        expire_after_load: std::sync::atomic::AtomicBool,
+        expired: std::sync::atomic::AtomicBool,
         saves: std::sync::atomic::AtomicUsize,
         stages: std::sync::atomic::AtomicUsize,
     }
@@ -9859,7 +9987,17 @@ mod regenerate_with_retention_tests {
             if self.gate.loads_fail() {
                 return Err(STORE_READ_ERROR.to_string());
             }
-            self.inner.load_draft(transcript_id)
+            let loaded = self.inner.load_draft(transcript_id);
+            if self
+                .gate
+                .expire_after_load
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                self.gate
+                    .expired
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            loaded
         }
         fn update_draft(
             &mut self,
@@ -10128,6 +10266,173 @@ mod regenerate_with_retention_tests {
         assert!(
             matches!(ExistingDraft::from_load(Ok(Some(view))), ExistingDraft::Present(v) if v.title == "T")
         );
+    }
+
+    #[tokio::test]
+    async fn pilot_late_result_and_expiry_during_existing_draft_load_never_save_or_stage() {
+        use std::sync::atomic::Ordering;
+        for late_before_load in [true, false] {
+            let (app, id, gate) = flaky_state(true);
+            let state = app.state::<AppState>();
+            let accepted = seed_edited_accepted_draft(&state, id).await;
+            state
+                .backend
+                .stage_scripture("John 3:16".into(), Some("KJV".into()))
+                .await
+                .expect("stage scripture");
+            let before = state.backend.go_live().await.expect("live scripture");
+            assert!(
+                before.live_scripture.is_some(),
+                "a real live slide is the premise"
+            );
+            let pixels = match &state.backend {
+                Backend::Local(s) => s.console_thumbnails(320, 180).1.bytes().to_vec(),
+                _ => panic!("local fixture"),
+            };
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p[0] > 200 && p[1] > 200 && p[2] > 200),
+                "live frame must contain visible text"
+            );
+            let saves = gate.saves();
+            let stages = gate.stages();
+            gate.expired.store(late_before_load, Ordering::SeqCst);
+            gate.expire_after_load
+                .store(!late_before_load, Ordering::SeqCst);
+            let observed = gate.clone();
+            let admission = GeneratedAdmission::new(move || {
+                if observed.expired.load(Ordering::SeqCst) {
+                    Err(provider_source::PilotFault::Expired)
+                } else {
+                    Ok(())
+                }
+            });
+            let generated = outcome_with_empties(&[], "Main points");
+            let reply = save_and_describe_generated_notes_admitted(
+                &state, id, &generated, &None, &admission,
+            )
+            .await;
+            assert_eq!(reply["ok"], false);
+            assert_eq!(reply["error"], "pilot_expired");
+            assert!(reply.get("draft").is_none());
+            assert_eq!(gate.saves(), saves);
+            assert_eq!(gate.stages(), stages);
+            assert_eq!(
+                state
+                    .backend
+                    .load_sermon_note_draft(id)
+                    .await
+                    .expect("load retained draft")
+                    .expect("accepted draft retained"),
+                accepted
+            );
+            assert_eq!(
+                state.backend.view().await.expect("retained live view"),
+                before,
+                "pilot failure must preserve live output"
+            );
+            let after = match &state.backend {
+                Backend::Local(s) => s.console_thumbnails(320, 180).1.bytes().to_vec(),
+                _ => panic!("local fixture"),
+            };
+            assert_eq!(after, pixels, "audience pixels stay unchanged");
+            let valid = GeneratedAdmission::new(|| Ok(()));
+            let saved =
+                save_and_describe_generated_notes_admitted(&state, id, &generated, &None, &valid)
+                    .await;
+            assert_eq!(saved["ok"], true);
+            assert_eq!(
+                gate.stages(),
+                stages + 1,
+                "positive stage control reaches real store"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pilot_expiry_during_remote_backend_mutex_wait_prevents_mutation_dispatch() {
+        use selahcue_lan::protocol::{Command, DenyReason};
+        use selahcue_lan::server::Reply;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let writes = Arc::new(AtomicUsize::new(0));
+        let seen = writes.clone();
+        let handler: selahcue_lan::server::Handler = Arc::new(move |_, command| {
+            if matches!(
+                command,
+                Command::SaveSermonNoteDraft { .. } | Command::StageSermonNoteRegeneration { .. }
+            ) {
+                seen.fetch_add(1, Ordering::SeqCst);
+            }
+            Reply::Deny(DenyReason::BadRequest)
+        });
+        let (addr, pin, server) = spawn_host(handler);
+        let app = remote_app(addr, pin).await;
+        let state = app.state::<AppState>();
+        let Backend::Remote(m) = &state.backend else {
+            panic!("remote fixture")
+        };
+        for stage in [false, true] {
+            let held = m.lock().await;
+            let expired = Arc::new(AtomicBool::new(false));
+            let observed = expired.clone();
+            let admission = GeneratedAdmission::new(move || {
+                if observed.load(Ordering::SeqCst) {
+                    Err(provider_source::PilotFault::Expired)
+                } else {
+                    Ok(())
+                }
+            });
+            let attempt = async {
+                if stage {
+                    state
+                        .backend
+                        .stage_sermon_note_regeneration_admitted(
+                            1,
+                            sample_draft("late", true),
+                            || admission.admit(),
+                        )
+                        .await
+                        .map(|_| ())
+                } else {
+                    state
+                        .backend
+                        .save_sermon_note_draft_admitted(1, sample_draft("late", true), || {
+                            admission.admit()
+                        })
+                        .await
+                        .map(|_| ())
+                }
+            };
+            let release = async {
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                expired.store(true, Ordering::SeqCst);
+                drop(held);
+            };
+            let (result, _) = tokio::join!(attempt, release);
+            assert!(result.is_err());
+            assert_eq!(
+                admission.failure(),
+                Some(provider_source::PilotFault::Expired)
+            );
+            assert_eq!(
+                writes.load(Ordering::SeqCst),
+                0,
+                "no mutation may cross the actual link after queue expiry"
+            );
+        }
+        let _ = state
+            .backend
+            .save_sermon_note_draft_admitted(1, sample_draft("admitted", true), || true)
+            .await;
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            1,
+            "positive control really dispatches"
+        );
+        server.shutdown_background();
     }
 
     /// A pinned-TLS control host on loopback with one paired Operator device, answering through
@@ -11010,11 +11315,11 @@ mod regenerate_with_retention_tests {
 
 /// The account-token secret store: OS keychain in a `cloud-live` build (FR-134/NFR-017), an
 /// in-memory store otherwise (nothing to persist until the live service exists).
-#[cfg(feature = "cloud-live")]
+#[cfg(all(feature = "cloud-live", not(test)))]
 fn make_secret_store() -> Box<dyn selahcue_cloud::SecretStore + Send + Sync> {
     Box::new(selahcue_cloud::secret::KeyringSecretStore::new("SelahCue"))
 }
-#[cfg(not(feature = "cloud-live"))]
+#[cfg(any(not(feature = "cloud-live"), test))]
 fn make_secret_store() -> Box<dyn selahcue_cloud::SecretStore + Send + Sync> {
     Box::new(selahcue_cloud::InMemorySecretStore::new())
 }
@@ -11113,6 +11418,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            pilot_access_status,
             remote_snapshot,
             remote_approve,
             remote_deny,
@@ -11259,3 +11565,6 @@ fn main() {
 
 #[cfg(all(test, feature = "cloud-live"))]
 mod cloud_url_tests;
+
+#[cfg(all(test, feature = "cloud-live", feature = "pilot-credentials"))]
+mod pilot_mixed_tests;

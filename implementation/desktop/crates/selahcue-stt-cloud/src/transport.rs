@@ -49,6 +49,8 @@ use crate::session::{DeepgramEndpoint, RequestSpec, StreamAuthorization, StreamP
 /// How the session behaves, separately from what it connects to.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
+    /// Optional admitted pilot UTC/monotonic budget, cloned unchanged across attempts.
+    pub access_deadline: Option<selahcue_core::deadline::AccessDeadline>,
     /// Where to connect.
     pub endpoint: DeepgramEndpoint,
     /// The wire parameters.
@@ -158,6 +160,7 @@ const _: () = assert!(
 impl Default for SessionConfig {
     fn default() -> Self {
         SessionConfig {
+            access_deadline: None,
             endpoint: DeepgramEndpoint::default(),
             params: StreamParams::default(),
             retry: RetryPolicy::default(),
@@ -244,6 +247,7 @@ pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct CloudSttSession {
+    hard_stop: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     /// Signalled by the worker as it returns, so shutdown can wait with a deadline —
     /// `JoinHandle` has no timed join.
@@ -272,6 +276,11 @@ impl CloudSttSession {
         status: SessionStatus,
     ) -> Result<Self, DeepgramError> {
         config.validate()?;
+        if !access_valid(&config) {
+            return Err(DeepgramError::InvalidConfig {
+                detail: "pilot access expired or clock unavailable".into(),
+            });
+        }
         let spec = RequestSpec::build(
             authorization,
             &config.endpoint,
@@ -281,7 +290,10 @@ impl CloudSttSession {
         let _ = ensure_crypto_provider();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = Arc::clone(&stop);
+        let hard_stop = Arc::new(AtomicBool::new(false));
+        let worker_hard_stop = hard_stop.clone();
         let (finished_tx, finished) = std::sync::mpsc::channel();
+        let deadline_controlled = config.access_deadline.is_some();
         let join = std::thread::Builder::new()
             .name("selahcue-stt-cloud".to_string())
             .spawn(move || {
@@ -305,7 +317,15 @@ impl CloudSttSession {
                 // converted into an honest terminal state. Defence in depth behind
                 // `ensure_crypto_provider`, which removes the panic we actually hit.
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    runtime.block_on(run(spec, config, audio, queue, status.clone(), worker_stop))
+                    runtime.block_on(run(
+                        spec,
+                        config,
+                        audio,
+                        queue,
+                        status.clone(),
+                        worker_stop,
+                        worker_hard_stop,
+                    ))
                 }));
                 if outcome.is_err() {
                     status.set(SessionState::Failed {
@@ -315,11 +335,18 @@ impl CloudSttSession {
                             .to_string(),
                     });
                 }
+                // A system DNS lookup can be blocking even though the request future
+                // is cancelled. Retire the private pilot runtime before signalling a
+                // join; detached resolver work has no request/credential continuation.
+                if deadline_controlled {
+                    runtime.shutdown_timeout(Duration::from_millis(100));
+                }
                 // Last thing the worker does: tell shutdown it is safe to join.
                 let _ = finished_tx.send(());
             })
             .map_err(|e| DeepgramError::transport(e, None))?;
         Ok(CloudSttSession {
+            hard_stop,
             stop,
             finished,
             join: Some(join),
@@ -330,6 +357,23 @@ impl CloudSttSession {
     /// sentence of a sermon is not lost to an abrupt close.
     pub fn stop(mut self) {
         self.shutdown();
+    }
+
+    /// Hard cutoff: no CloseStream, no flush, and a measured join result instead
+    /// of treating a detached worker as a completed shutdown.
+    pub fn stop_immediately(mut self) -> bool {
+        self.hard_stop.store(true, Ordering::SeqCst);
+        self.stop.store(true, Ordering::SeqCst);
+        let Some(join) = self.join.take() else {
+            return true;
+        };
+        match self.finished.recv_timeout(Duration::from_millis(500)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => join.join().is_ok(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                drop(join);
+                false
+            }
+        }
     }
 
     fn shutdown(&mut self) {
@@ -358,8 +402,64 @@ impl Drop for CloudSttSession {
     }
 }
 
-/// The connect → stream → back off → give up loop.
+fn access_valid(config: &SessionConfig) -> bool {
+    config
+        .access_deadline
+        .as_ref()
+        .is_none_or(|d| d.remaining().is_ok())
+}
+fn access_terminal(deadline: &selahcue_core::deadline::AccessDeadline) -> Option<SessionState> {
+    use selahcue_core::deadline::DeadlineError;
+    match deadline.remaining() {
+        Ok(_) => None,
+        Err(DeadlineError::Expired) => Some(SessionState::AccessExpired),
+        Err(DeadlineError::Unavailable) => Some(SessionState::AccessUnavailable),
+    }
+}
+/// The actual worker future owns the socket/connect/backoff. Cancelling it drops
+/// those I/O resources; normal stop/flush is deliberately a different path.
+#[allow(clippy::too_many_arguments)]
 async fn run(
+    spec: RequestSpec,
+    config: SessionConfig,
+    audio: AudioRing,
+    queue: SegmentQueue,
+    status: SessionStatus,
+    stop: Arc<AtomicBool>,
+    hard_stop: Arc<AtomicBool>,
+) {
+    let deadline = config.access_deadline.clone();
+    let work = run_inner(spec, config, audio.clone(), queue, status.clone(), stop);
+    tokio::pin!(work);
+    loop {
+        if let Some(terminal) = deadline.as_ref().and_then(access_terminal) {
+            audio.drain();
+            status.set(terminal);
+            return;
+        }
+        if hard_stop.load(Ordering::SeqCst) {
+            audio.drain();
+            status.set(SessionState::Stopped);
+            return;
+        }
+        let wait = deadline
+            .as_ref()
+            .and_then(|d| d.remaining().ok())
+            .unwrap_or(Duration::from_millis(20))
+            .min(Duration::from_millis(20));
+        tokio::select! {
+            biased;
+            _=tokio::time::sleep(wait)=>{},
+            _=&mut work=>{
+                if let Some(terminal)=deadline.as_ref().and_then(access_terminal){audio.drain();status.set(terminal);}
+                return;
+            }
+        }
+    }
+}
+
+/// The connect → stream → back off → give up loop.
+async fn run_inner(
     spec: RequestSpec,
     config: SessionConfig,
     audio: AudioRing,
@@ -369,6 +469,9 @@ async fn run(
 ) {
     let mut attempt: u32 = 0;
     loop {
+        if !access_valid(&config) {
+            return;
+        }
         if stop.load(Ordering::SeqCst) {
             status.set(SessionState::Stopped);
             return;
@@ -416,6 +519,12 @@ async fn run(
         };
 
         if !outcome.is_retryable() {
+            if config.access_deadline.is_some()
+                && matches!(outcome, DeepgramError::CredentialRejected { .. })
+            {
+                status.set(SessionState::CredentialRejected);
+                return;
+            }
             status.set(SessionState::Failed {
                 action: outcome.operator_action(),
                 message: outcome.to_string(),
@@ -530,6 +639,7 @@ async fn pump(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if !access_valid(config) {return Ok(());}
                 if stop.load(Ordering::SeqCst) {
                     // Ask Deepgram to flush before closing, so trailing words survive — but
                     // BOUNDED. Against a peer that has stopped reading, an unbounded flush
@@ -569,6 +679,7 @@ async fn pump(
                     }
                 } else {
                     for chunk in chunks {
+                        if !access_valid(config) {return Ok(());}
                         send_bounded(
                             &mut socket,
                             Message::Binary(chunk.as_bytes().to_vec().into()),
@@ -591,6 +702,7 @@ async fn pump(
                 }
             }
             incoming = socket.next() => {
+                if !access_valid(config) {return Ok(());}
                 // Any frame at all is a sign of life, including a ping or a metadata message.
                 last_heard = Instant::now();
                 audio_sent_since_heard = false;

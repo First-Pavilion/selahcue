@@ -1,6 +1,8 @@
 //! Compiles the actual operator selector; no Tauri state or provider network needed.
 #![cfg(feature = "pilot-credentials")]
 #![allow(clippy::unwrap_used)]
+// Import the real selector; app-only entry points are exercised by bin tests.
+#[allow(dead_code)]
 #[path = "../src/provider_source.rs"]
 mod provider_source;
 use selahcue_cloud::transport::{HttpResponse, HttpTransport, TransportError};
@@ -160,4 +162,29 @@ fn developer_environment_is_still_refused_in_release() {
     }
     assert!(selahcue_cloud::OpenAiNoteProvider::from_env(InspectTransport).is_none());
     assert!(selahcue_stt_cloud::developer_credential_from_env().is_err());
+}
+
+#[test]
+fn release_executable_does_not_contain_the_test_clock_override() {
+    use std::io::Read;
+    let marker = b"SELAHCUE_PILOT_TEST_EPOCH";
+    let mut binary = std::fs::File::open(env!("CARGO_BIN_EXE_selahcue-operator"))
+        .expect("production executable");
+    let mut tail = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let n = binary.read(&mut chunk).expect("read executable bytes");
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&chunk[..n]);
+        assert!(
+            !tail.windows(marker.len()).any(|w| w == marker),
+            "production executable must exclude test-clock environment lookup"
+        );
+        let retain = marker.len() - 1;
+        if tail.len() > retain {
+            tail.drain(..tail.len() - retain);
+        }
+    }
 }

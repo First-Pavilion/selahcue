@@ -1291,6 +1291,20 @@ const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consen
      On-device was selected) while a session was active. The transcript below is coming from \
      the on-device engine instead.";
 
+/// Pilot expiry/rejection closes the worker without sending CloseStream or
+/// flushing pending cloud audio. A failed join is not reported as completed.
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+fn close_cloud_session_immediately(slot: &SharedCloudSession) {
+    let session = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(session) = session {
+        if !session.stop_immediately() {
+            record_failure(
+                "pilot cloud worker did not acknowledge hard shutdown within 500ms".to_owned(),
+            );
+        }
+    }
+}
+
 /// The `CloudSttSession`'s wire configuration — real Deepgram in production, and in a TEST
 /// build only, an optional override so a test can point `run_cloud` at a local stub instead
 /// (`SELAHCUE_STT_CLOUD_TEST_ENDPOINT`, e.g. `ws://127.0.0.1:PORT/v1/listen`).
@@ -1420,7 +1434,24 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     // built through the validated path rather than hand-rolled, per the review note that this
     // guard is what stands between this branch and an unbounded reconnect loop (V-2). See
     // `cloud_session_config` for why a TEST build can reach a different endpoint here.
-    let config = cloud_session_config();
+    let mut config = cloud_session_config();
+    config.access_deadline = match crate::provider_source::transcription_deadline() {
+        Ok(deadline) => deadline,
+        Err(fault) => {
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                Some(ready_tx),
+                Some(FallbackContext {
+                    prior_failure: fault.message().to_owned(),
+                    note: fault.message(),
+                }),
+            );
+            return;
+        }
+    };
 
     let session = match CloudSttSession::start(
         &authorization,
@@ -1472,7 +1503,9 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     // handoff block here previously left the whole suite green).
     let app_for_level = app_worker.clone();
     let app_for_check = app_worker.clone();
-    run_cloud_stream_loop(
+    let status_for_access = status.clone();
+    let status_for_fallback = status.clone();
+    run_cloud_stream_loop_with_access(
         source,
         stop_worker,
         seg_tx,
@@ -1497,7 +1530,17 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
             // developer credential for as long as capture runs (86akby7th PR #22 remediation
             // round 2, Cody High / Vera High: the previous `on_fallback` never touched `session`
             // at all). See `close_cloud_session`.
-            close_cloud_session(&session_for_fallback);
+            if matches!(
+                status_for_fallback.get(),
+                selahcue_stt_cloud::SessionState::CredentialRejected
+            ) {
+                crate::provider_source::mark_transcription_rejected();
+            }
+            if crate::provider_source::transcription_fault().is_some() {
+                close_cloud_session_immediately(&session_for_fallback);
+            } else {
+                close_cloud_session(&session_for_fallback);
+            }
             run_on_device(
                 app_worker,
                 source,
@@ -1509,6 +1552,15 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
                     note,
                 }),
             );
+        },
+        move || {
+            if matches!(
+                status_for_access.get(),
+                selahcue_stt_cloud::SessionState::CredentialRejected
+            ) {
+                crate::provider_source::mark_transcription_rejected();
+            }
+            crate::provider_source::transcription_fault()
         },
     );
 }
@@ -1532,8 +1584,46 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 /// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]) — never loops forever once any of the three
 /// fires.
 #[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn run_cloud_stream_loop<S: CaptureSource>(
+    source: S,
+    stop_worker: Arc<AtomicBool>,
+    seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
+    handoff: &AudioHandoff,
+    audio_ring: &selahcue_stt_cloud::AudioRing,
+    provider: selahcue_stt_cloud::CloudTranscriptProvider,
+    status: &selahcue_stt_cloud::SessionStatus,
+    emit_level_cb: impl FnMut(&mut S),
+    may_stream_now: impl FnMut() -> bool,
+    on_clean_stop: impl FnOnce(),
+    on_fallback: impl FnOnce(
+        S,
+        Arc<AtomicBool>,
+        tokio::sync::mpsc::Sender<ProviderSegment>,
+        String,
+        &'static str,
+    ),
+) {
+    run_cloud_stream_loop_with_access(
+        source,
+        stop_worker,
+        seg_tx,
+        handoff,
+        audio_ring,
+        provider,
+        status,
+        emit_level_cb,
+        may_stream_now,
+        on_clean_stop,
+        on_fallback,
+        || None,
+    )
+}
+
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+#[allow(clippy::too_many_arguments)]
+fn run_cloud_stream_loop_with_access<S: CaptureSource>(
     mut source: S,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
@@ -1551,6 +1641,7 @@ fn run_cloud_stream_loop<S: CaptureSource>(
         String,
         &'static str,
     ),
+    mut pilot_access: impl FnMut() -> Option<crate::provider_source::PilotFault>,
 ) {
     use selahcue_stt_cloud::{AudioChunk as CloudAudioChunk, DEGRADED_FALLBACK_NOTICE};
 
@@ -1569,6 +1660,23 @@ fn run_cloud_stream_loop<S: CaptureSource>(
     loop {
         if stop_worker.load(Ordering::Relaxed) {
             on_clean_stop();
+            return;
+        }
+
+        if let Some(fault) = pilot_access() {
+            audio_ring.drain();
+            // Preserve already accepted final transcript segments; do not capture
+            // or enqueue another cloud audio frame after the admission retires.
+            pump(&mut provider, |seg| {
+                let _ = seg_tx.try_send(seg);
+            });
+            on_fallback(
+                source,
+                stop_worker,
+                seg_tx,
+                fault.message().to_owned(),
+                fault.message(),
+            );
             return;
         }
 
@@ -2062,7 +2170,7 @@ mod tests {
         clear_failure();
     }
 
-    #[cfg(feature = "cloud-stt")]
+    #[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
     mod cloud_stt {
         use super::super::*;
         use selahcue_stt::audio::{AudioChunk, AudioSource, FakeAudioSource};
@@ -2154,6 +2262,52 @@ mod tests {
 
         /// Generous enough that no test below trips the hand-off's OWN drop-oldest bound by
         /// accident — each test isolates ONE specific exit path or drop/refusal source.
+        #[test]
+        fn pilot_cutoff_precedes_next_audio_push_and_retains_the_same_local_source() {
+            use crate::provider_source::PilotFault;
+            for fault in [
+                PilotFault::Expired,
+                PilotFault::Rejected,
+                PilotFault::Unavailable,
+            ] {
+                let audio = AudioRing::new();
+                let observe = audio.clone();
+                let source = TestSource::with_one_chunk(AudioChunk::new(vec![0.2; 320], 16_000, 1));
+                let (tx, _rx) = tokio::sync::mpsc::channel(8);
+                let fell_back = Arc::new(AtomicBool::new(false));
+                let seen = fell_back.clone();
+                assert_loop_returns_within(move || {
+                    run_cloud_stream_loop_with_access(
+                        source,
+                        Arc::new(AtomicBool::new(false)),
+                        tx,
+                        &generous_handoff(),
+                        &audio,
+                        empty_provider(),
+                        &SessionStatus::new(),
+                        |_| panic!("must not capture after retirement"),
+                        || true,
+                        || panic!("expiry/rejection is not clean stop"),
+                        move |mut source, _, _, message, note| {
+                            assert_eq!(message, fault.message());
+                            assert_eq!(note, fault.message());
+                            assert!(
+                                source.next_chunk().is_some(),
+                                "same unconsumed microphone source remains available locally"
+                            );
+                            seen.store(true, Ordering::SeqCst);
+                        },
+                        || Some(fault),
+                    )
+                });
+                assert!(
+                    observe.drain().is_empty(),
+                    "no next cloud audio frame is admitted"
+                );
+                assert!(fell_back.load(Ordering::SeqCst));
+            }
+        }
+
         fn generous_handoff() -> AudioHandoff {
             AudioHandoff::new(NonZeroUsize::new(10_000_000).expect("nonzero"))
         }
