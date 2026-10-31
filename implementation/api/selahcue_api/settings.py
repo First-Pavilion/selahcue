@@ -224,6 +224,22 @@ SELAHCUE_PILOT_REGISTRATION = {
 }
 SELAHCUE_THROTTLE_PILOT_REGISTRATION = (60, 60)
 
+# P12 has no production storage adapter yet: even complete configuration cannot
+# enable real reads until P10 implements and validates the explicit signer port.
+SELAHCUE_PILOT_DOWNLOAD_GRANTS = {
+    "enabled": env_bool("SELAHCUE_PILOT_GRANT_ENABLED", False),
+    "n8n_token": os.getenv("SELAHCUE_PILOT_GRANT_N8N_TOKEN", ""),
+    "storage_target": os.getenv("SELAHCUE_PILOT_GRANT_STORAGE_TARGET", ""),
+    "download_origin": os.getenv("SELAHCUE_PILOT_GRANT_DOWNLOAD_ORIGIN", ""),
+    "cohort_id": os.getenv("SELAHCUE_PILOT_GRANT_COHORT_ID", ""),
+    "manifest_path": os.getenv("SELAHCUE_PILOT_GRANT_MANIFEST_PATH", ""),
+    "manifest_sha256": os.getenv("SELAHCUE_PILOT_GRANT_MANIFEST_SHA256", ""),
+    "max_ttl_seconds": os.getenv("SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS", ""),
+    "signed_query_keys": env_list("SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS"),
+    "signing_requirements": os.getenv("SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS", ""),
+}
+SELAHCUE_THROTTLE_PILOT_DOWNLOAD_GRANT = (30, 60)
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True

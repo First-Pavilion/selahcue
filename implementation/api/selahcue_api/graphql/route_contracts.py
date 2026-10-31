@@ -141,6 +141,13 @@ def pilot_registration_contracts() -> tuple[CommandEndpointContract, ...]:
     )
 
 
+def pilot_download_grant_contracts() -> tuple[CommandEndpointContract, ...]:
+    """Distinct grant credential; no account/device/cookie authorization."""
+    return (
+        CommandEndpointContract("pilot_automation", "v1/pilot/downloads:grant", "POST", "n8n_grant_bearer_no_cookie"),
+    )
+
+
 def billing_webhook_contract() -> CommandEndpointContract:
     return CommandEndpointContract(
         surface="billing_provider",

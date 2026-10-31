@@ -117,6 +117,24 @@ These server-only n8n callbacks are separate from licensed-device downloads. No 
 | `SELAHCUE_PILOT_RECEIPT_TTL_SECONDS` | when pilot enabled | no | empty | Explicit 30–3600-second receipt lifetime anchored once at confirmation; retry never extends expiry. |
 | `SELAHCUE_PILOT_EXPIRES_AT` | when pilot enabled | no | empty | Fixed timezone-aware pilot end; owner choice 2027-04-30T23:59:59Z, not six months from each build/retry. |
 
+
+#### Pilot private-download grant (P12 — disabled, real signer pending P10)
+
+No grant is live by adding these settings. Registration policy, complete verified P11 manifest, P10 real signer and private-read proof remain mandatory. The service has no production fake signer. See `docs/release/pilot-download-grants.md`.
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PILOT_GRANT_ENABLED` | no | no | `false` | Grant callback admission only; real signer remains required. |
+| `SELAHCUE_PILOT_GRANT_N8N_TOKEN` | when enabled | **SECRET** | empty | Dedicated 32–256-character printable ASCII token, distinct from all P13 keys. |
+| `SELAHCUE_PILOT_GRANT_STORAGE_TARGET` | when enabled | no | empty | Approved opaque private storage destination identifier; no client bucket selection. |
+| `SELAHCUE_PILOT_GRANT_DOWNLOAD_ORIGIN` | when enabled | no | empty | Exact lowercase HTTPS signing origin, no path, userinfo or port. |
+| `SELAHCUE_PILOT_GRANT_COHORT_ID` | when enabled | no | empty | Exact promoted manifest cohort identifier. |
+| `SELAHCUE_PILOT_GRANT_MANIFEST_PATH` | when enabled | no | empty | Absolute server-owned regular JSON snapshot path; final symlinks refused. |
+| `SELAHCUE_PILOT_GRANT_MANIFEST_SHA256` | when enabled | no | empty | SHA256 of exact consumed promoted manifest bytes. |
+| `SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS` | when enabled | no | empty | Explicit integer1–300 seconds, further limited by anchored receipt/artifact/cohort expiry. |
+| `SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS` | when enabled | no | empty | Space/comma-separated provider signature field allowlist; no PII/receipt/redirect fields. |
+| `SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS` | when enabled | no | empty | Strict JSON object of approved Windows, Ubuntu and macOS signing states; Mac requires Developer ID/notarized/stapled. |
+
 ---
 
 ## 2. Logto — self-hosted IdP service (DROPPED — superseded by DEC-007)
