@@ -5,8 +5,8 @@
 	<!-- SelahCue Controller privacy manifest (Apple requirement). The app does not
 	     track users and collects no data that leaves the device to us — it talks
 	     only to the paired desktop on the local network. Grounded in PRIVACY.md.
-	     RELEASE MANAGER: add this file to the Runner target in Xcode (Build Phases
-	     → Copy Bundle Resources) and verify the accessed-API set against Apple's
+	     Included in the Runner target Copy Bundle Resources. RELEASE MANAGER:
+	     verify the accessed-API set against Apple's
 	     "required reason API" report for the final build; bundled plugins
 	     (flutter_secure_storage, package_info_plus, etc.) ship their own manifests. -->
 	<key>NSPrivacyTracking</key>

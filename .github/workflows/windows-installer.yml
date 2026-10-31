@@ -1,7 +1,7 @@
 # Manual, on-demand build of the downloadable Windows installer bundling the operator console +
 # native output window, with NDI broadcast (--features ndi) and on-device STT (--features stt).
 # Kept OUT of the push/PR matrix (workflow_dispatch only) so it never slows normal CI and only runs
-# when someone clicks "Run workflow".
+# when someone clicks "Run workflow" on main. Other branches and tags are refused before the job starts.
 #
 # NDI is self-provisioned from PUBLIC sources — no licence-gated developer SDK download needed:
 #   * headers  -> committed under implementation/desktop/vendor/ndi/windows/include
@@ -45,8 +45,13 @@ name: windows-installer
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    # Guard at job admission, before runner setup, signing credentials or uploads.
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
     name: build Windows installer (NDI + STT)
     runs-on: windows-latest
     timeout-minutes: 60
@@ -55,6 +60,31 @@ jobs:
         working-directory: implementation/desktop
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record installer source
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          SOURCE_EVENT: ${{ github.event_name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $actual = git rev-parse HEAD
+          if ($actual -ne $env:SOURCE_SHA) { throw "Checkout differs from the authorized dispatch SHA" }
+          @{
+            source_sha = $actual
+            source_ref = $env:SOURCE_REF
+            source_event = $env:SOURCE_EVENT
+            repository = $env:SOURCE_REPOSITORY
+            run_id = $env:SOURCE_RUN_ID
+            run_attempt = $env:SOURCE_RUN_ATTEMPT
+          } | ConvertTo-Json | Set-Content -Encoding utf8 release-metadata.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -211,9 +241,17 @@ jobs:
             throw "A developer-key signature is present in an artefact this workflow ships, or the scan could not prove it read one. See the step log for the artefact path and the matched string."
           }
 
+      - name: Require installer before upload
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem crates/selahcue-operator/target/release/bundle/nsis/*-setup.exe -File -ErrorAction SilentlyContinue)
+          if ($installers.Count -eq 0) { throw "No NSIS installer was produced; metadata alone must not be published" }
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: selahcue-windows-installer
-          path: implementation/desktop/crates/selahcue-operator/target/release/bundle/nsis/*-setup.exe
+          path: |
+            implementation/desktop/crates/selahcue-operator/target/release/bundle/nsis/*-setup.exe
+            release-metadata.json
           if-no-files-found: error

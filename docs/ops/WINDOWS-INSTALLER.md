@@ -6,11 +6,20 @@ maintainer's machine, no manual SDK download, and end users never install Rust.*
 
 ## Produce an installer
 
-1. GitHub → Actions → **windows-installer** → **Run workflow**.
+1. GitHub → Actions → **windows-installer** → **Run workflow**, with branch **main** selected.
+   Packaging is manual-only: pushes, pull requests, tags and releases never start it. A manual
+   dispatch on any other branch or tag skips the packaging job before runner setup or credentials.
 2. When it finishes, download the **selahcue-windows-installer** artifact — it contains
-   `SelahCue Operator_<version>_x64-setup.exe`.
+   `SelahCue Operator_<version>_x64-setup.exe` and `release-metadata.json`. The metadata records
+   the exact dispatched main commit SHA, ref, event, repository, run ID and attempt. Checkout is
+   pinned to that SHA, so a newer commit reaching main during the run cannot change its source.
 
-There is nothing to set up first. NDI is self-provisioned on the runner from public sources:
+This workflow still builds the ordinary release profile. It does **not** yet ship the new
+expiring-key field-test profile: credential-expiry proof, a dedicated pilot profile and its
+approved artifact-scanner policy remain tracked prerequisites (17tnw2bbhvz, 17tnw2bbhw1,
+17tnw2bbhwz). A skipped non-main run or a metadata file is not proof of a working installer.
+
+For the existing ordinary-release path, NDI is self-provisioned on the runner from public sources:
 committed headers + the public NDI runtime redistributable (`ndi.link/NDIRedistV6`) + an import
 library generated from the DLL. See `.github/workflows/windows-installer.yml` and
 `implementation/desktop/vendor/ndi/windows/README.md`.

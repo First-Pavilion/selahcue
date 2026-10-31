@@ -14,6 +14,14 @@
       // out-of-scope green tint) so the new STAGED text label can never say something the host
       // has not actually confirmed.
       let lastStagedScripture = null;
+      // Operator usability policy (17tnw2bbhxp): secondary-click must not open
+      // native webview menus or descendant custom menus, including on inputs
+      // and dialogs. Capture before target handlers; keyboard editing shortcuts
+      // and the designer's explicit ContextMenu / Shift+F10 actions remain.
+      document.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }, true);
 
       function render(view) {
         planRememberCanEdit(view);
@@ -3299,7 +3307,7 @@
         if (tdActiveIsEl()) { tdActive().align_h = e.target.value; tdPreview(); }
       };
 
-      // --- Right-click context menu (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
+      // --- Keyboard element actions (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
       let tdClip = null; // session clipboard: a deep-cloned element
       const tdMenu = document.getElementById("td-ctx"); // (tdCtx is the canvas 2D context)
       const tdCloseCtx = () => { tdMenu.hidden = true; };
@@ -3364,14 +3372,6 @@
           const n = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
           if (items[n]) items[n].focus();
         }
-      });
-      // Right-click on the canvas opens the menu (selecting the element under the cursor first).
-      tdBox.addEventListener("contextmenu", (e) => {
-        if (!tdTheme) return;
-        e.preventDefault();
-        const hit = tdHitTest(e.clientX, e.clientY);
-        if (hit >= 0 && hit !== tdSelEl) { tdSelEl = hit; tdSync(); }
-        tdOpenCtx(e.clientX, e.clientY);
       });
       // Close the menu on any pointerdown outside it (cheap no-op while hidden).
       document.addEventListener("pointerdown", (e) => { if (!tdMenu.hidden && !tdMenu.contains(e.target)) tdCloseCtx(); });
@@ -4332,7 +4332,7 @@
         // App menu: F10 opens/closes the surface navigation (reachable anywhere).
         // Cmd/Ctrl+M is intentionally NOT bound — it is the macOS "Minimize window"
         // accelerator. disarm() so opening the menu can't leave a Clear-all armed.
-        if (e.key === "F10") {
+        if (e.key === "F10" && !e.shiftKey) {
           e.preventDefault();
           disarm();
           toggleAppMenu();

@@ -13,7 +13,8 @@
 - [ ] Review adaptive-icon safe zone — the logo is line-art; confirm it isn't clipped by the round/mask on Android and looks right at small sizes.
 
 ## iOS **[owner: release/devops]**
-- [ ] Add `ios/Runner/PrivacyInfo.xcprivacy` to the Runner target (Build Phases → Copy Bundle Resources); verify accessed-API declarations against the "required reason API" report for the final build.
+- [x] Add `ios/Runner/PrivacyInfo.xcprivacy` to the Runner target (Build Phases → Copy Bundle Resources). Graph check: `python3 implementation/mobile/selahcue_controller/scripts/check_ios_privacy_manifest.py` on macOS (ticket 17tnw2bbhyu).
+- [ ] Verify the manifest is present in the final archived app and verify accessed-API declarations against the "required reason API" report for that build; project-graph inclusion alone does not prove either.
 - [ ] Signing: Apple Developer account, App ID, provisioning profiles, distribution certificate (via approved secret mechanism — **not** committed).
 - [ ] `Info.plist`: confirm `NSCameraUsageDescription` (QR pairing) + `NSLocalNetworkUsageDescription` + `NSBonjourServices` (`_selahcue._tcp`) copy is present and accurate.
 - [ ] Archive + upload to App Store Connect; TestFlight internal test; submit for review.
@@ -34,3 +35,10 @@
 ## Verification
 - [x] `make mobile-test` green.
 - [ ] Manual smoke on a real phone + a real tablet (portrait + landscape): pair, drive live, splash/icon look, revoke → re-pair.
+
+## Current app-side readiness findings (2026-10-31; 17tnw2bbhyu)
+
+- Native iOS resource graph now includes the existing privacy manifest; declarations are unchanged. Final archive, bundled-plugin required-reason report, signing and physical-device evidence remain pending.
+- Android `release` still uses the debug signing configuration. Replace it through the approved signing handoff before any store release; do not treat a debug-signed artifact as store-ready.
+- Android launcher label is still `selahcue_controller`; reconcile with the approved SelahCue Controller display name before release.
+- No store upload, account provisioning, signing secret handling or deployment was performed by this increment.
