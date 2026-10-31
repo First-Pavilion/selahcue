@@ -13868,6 +13868,86 @@ DRIVER = r"""
           });
         });
 
+        // F31: the guarded compound can occur in lists, pseudo wrappers, ancestor hover
+        // and nested relative selectors. Exercise the REAL CSSOM/raw/composed reads on
+        // literal sources. Trusted hover cannot be forced by this page script; separate
+        // hosted real-pointer controls measure computed brightness for these same forms.
+        var f31Forms = [
+          ["list_first", "@T@, .__f31_other__{@D@}"],
+          ["list_last", ".__f31_other__, @T@{@D@}"],
+          ["nested", "@B@{&:hover{@D@}}"],
+          ["is", "@B@:is(:hover){@D@}"],
+          ["not_after", "@T@:not(.__f31_absent__){@D@}"],
+          ["not_before", "@B@:not(.__f31_absent__):hover{@D@}"],
+          ["ancestor", ".__f31_parent__:hover @B@{@D@}"],
+          ["nested_twice", ".__f31_parent__{@B@{&:hover{@D@}}}"]
+        ];
+        function f31ParsedFilter(sheet) {
+          return Array.from(sheet.cssRules).some(function(rule) {
+            return !!(rule.style && rule.style.getPropertyValue("filter"))
+              || !!(rule.cssRules && f31ParsedFilter(rule));
+          });
+        }
+        f31Forms.forEach(function(c) {
+          var base = ".__cssom_f31_" + c[0] + "__", target = base + ":hover";
+          function source(declaration, conditional) {
+            var rule = c[1].replace(/@B@/g, base).replace(/@T@/g, target).replace(/@D@/g, declaration);
+            return target + "{background:#111;}" + (conditional ? "@media(max-width:1px){" + rule + "}" : rule);
+          }
+          var valid = __cssFixture(source("filter:brightness(1.06);"));
+          try {
+            ok(f31ParsedFilter(valid.sheet),
+               "F31 CSSOM premise/" + c[0] + ": the browser retains a real filter declaration");
+            ok(__cssEffectiveFilter(target, valid) === "brightness(1.06)",
+               "F31 CSSOM candidate/" + c[0] + ": the filter half sees the approved selector form");
+            ok(__cssRawHasFilter(target, valid),
+               "F31 raw candidate/" + c[0] + ": raw candidacy sees the same approved form");
+            ok(!__cssFilterGuardOk(target, valid) && !__cssNoBrightnessFilter(target, valid),
+               "F31 composed/" + c[0] + ": both registered predicates reject the candidate hazard");
+          } finally { valid.dispose(); }
+          var escaped = __cssFixture(source("f\\69lter:brightness(1.06);"));
+          try {
+            ok(f31ParsedFilter(escaped.sheet),
+               "F31 escaped premise/" + c[0] + ": CSSOM retains the escaped property the literal raw scanner cannot read");
+            ok(__cssEffectiveFilter(target, escaped) === "brightness(1.06)",
+               "F31 escaped CSSOM/" + c[0] + ": normalized declarations retain widened candidacy");
+            ok(!__cssFilterGuardOk(target, escaped) && !__cssNoBrightnessFilter(target, escaped),
+               "F31 escaped composed/" + c[0] + ": CSSOM alone protects both registered predicates");
+          } finally { escaped.dispose(); }
+          var dropped = __cssFixture(source("filter:brightness(1.06) not-a-real-css-function();"));
+          try {
+            ok(!f31ParsedFilter(dropped.sheet),
+               "F31 dropped premise/" + c[0] + ": the browser discards the malformed value");
+            ok(__cssRawHasFilter(target, dropped),
+               "F31 dropped raw/" + c[0] + ": the raw half retains parser-discarded hazards");
+            ok(!__cssFilterGuardOk(target, dropped) && !__cssNoBrightnessFilter(target, dropped),
+               "F31 dropped composed/" + c[0] + ": parser rejection cannot create a passing guard");
+          } finally { dropped.dispose(); }
+          var inactive = __cssFixture(source("filter:brightness(1.06);", true));
+          try {
+            ok(!matchMedia("(max-width:1px)").matches && __cssEffectiveFilter(target, inactive) === null,
+               "F31 condition premise/" + c[0] + ": CSSOM correctly ignores the inactive group");
+            ok(__cssRawHasFilter(target, inactive),
+               "F31 condition raw/" + c[0] + ": the raw backstop remains condition blind");
+            ok(!__cssFilterGuardOk(target, inactive) && !__cssNoBrightnessFilter(target, inactive),
+               "F31 condition composed/" + c[0] + ": inactive hazards remain conservatively refused");
+          } finally { inactive.dispose(); }
+          ["filter:none !important;", "backdrop-filter:brightness(1.06);"].forEach(function(declaration) {
+            var clean = __cssFixture(source(declaration));
+            try {
+              ok(!__cssRawHasFilter(target, clean) && __cssFilterGuardOk(target, clean) && __cssNoBrightnessFilter(target, clean),
+                 "F31 clean/" + c[0] + "/" + declaration + ": harmless declarations retain passing guards");
+            } finally { clean.dispose(); }
+          });
+        });
+        var f31Unrelated = __cssFixture(".__cssom_f31_boundary__:hover{background:#111;} .__cssom_f31_boundary__extra:hover{filter:brightness(1.06);}");
+        try {
+          ok(!__cssRawHasFilter(".__cssom_f31_boundary__:hover", f31Unrelated)
+             && __cssFilterGuardOk(".__cssom_f31_boundary__:hover", f31Unrelated)
+             && __cssNoBrightnessFilter(".__cssom_f31_boundary__:hover", f31Unrelated),
+             "F31 clean boundary: another class with the same prefix is not the guarded compound");
+        } finally { f31Unrelated.dispose(); }
+
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
         // predicate (not just one half) rejects it.
