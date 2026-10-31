@@ -166,6 +166,10 @@ fn canonical_references_keep_exact_bytes_and_link_metadata() {
         audience_snapshot(&c) != live_before,
         "positive control: the oracle detects a real switch from song to scripture"
     );
+    assert!(
+        c.presenter().live_output().bytes() != live_before.rgba.as_slice(),
+        "positive control: a real GoLive changes actual RGBA bytes, not only the index"
+    );
 }
 
 #[test]
