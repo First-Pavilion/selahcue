@@ -1,0 +1,396 @@
+name: diagnostic13XZ default spawn boundary current and baseline
+on:
+  push:
+    branches: [codex/17tnw2b13xz-autolaunch-diagnostic]
+    paths: [.github/workflows/wave3-13xz-autolaunch-diagnostic.yml]
+permissions:
+  contents: read
+concurrency:
+  group: diagnostic-13xz-autolaunch-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  CARGO_TERM_COLOR: always
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.context.outputs.desktop }}
+      os: ${{ steps.context.outputs.os }}
+      rust: ${{ steps.context.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: context
+        env:
+          CANDIDATE: 4e76a71f589b90c5040e1f3fddcd3aa91f105485
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-13xz-autolaunch-diagnostic.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          echo 'desktop=true' >> "$GITHUB_OUTPUT"
+          echo 'os=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+          channel="$(sh scripts/check_toolchain.sh --print-channel)"
+          echo "rust=$channel" >> "$GITHUB_OUTPUT"
+  operator:
+    name: operator shell (${{ matrix.os }}, ${{ matrix.source }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
+    # not GitHub's 6h default (audit #11 review).
+    #
+    # Lowered from 25 to 15 (86akcmzyq CI-timeout remediation, 2026-09-05) when the RELEASE and
+    # stt,cloud-stt feature-gate pairs moved out to `operator-native` below -- see that job's
+    # own timeout comment for why it moved, not just where. What is LEFT in this job is
+    # Format/Check/Clippy/Test plus three cheap feature-flag pairs and the two Linux webview
+    # smokes, none of them native-toolchain- or release-codegen-heavy -- true when this was
+    # written, no longer true on Windows.
+    #
+    # RAISED 15 -> 30 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` becoming Cargo default features means `Check`/`Clippy`/`Test`
+    # in THIS job now also compile the vendored-OpenSSL build every run, on every OS -- and on
+    # Windows that build is `nmake`, one file at a time, genuinely slow. This job ACTUALLY TIMED
+    # OUT at 15 minutes on a real run of PR #125 (run 36727646787, attempt 2, job 109935685146:
+    # "The job has exceeded the maximum execution time of 15m0s"), with `Check` alone taking
+    # 11m3s against a pre-encryption 2m19s baseline on the same job. Vera measured the
+    # OpenSSL-build portion of that gap directly (`nmake build_libs`) and projected ~19-20
+    # minutes for a fully cold run (no warm `Swatinem/rust-cache` hit) -- which is routine here:
+    # this repo's total Actions cache was already at 10.12 GB against GitHub's 10 GB limit during
+    # that same PR's run, evicting this very job's Windows caches. 30 minutes keeps real headroom
+    # over the cold-run projection without resurrecting the original 25-minute failure mode this
+    # job was split to fix -- see `operator-native` below, whose own timeout got the same
+    # treatment for the same reason.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux always; Windows only when the tier step says so (17tnw2b2nxk). No macOS.
+        os: ${{ fromJSON(needs.changes.outputs.os || '["ubuntu-latest"]') }}
+        source: [4e76a71f589b90c5040e1f3fddcd3aa91f105485, 3bbdd4b5970958e11b56db2206630afb6cf69776]
+    runs-on: ${{ matrix.os }}
+    env:
+      DIAG_SOURCE: ${{ matrix.source }}
+    defaults:
+      run:
+        working-directory: implementation/desktop/crates/selahcue-operator
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: DIAGNOSTIC ONLY verify workflow child and exact context start
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD^)" = "4e76a71f589b90c5040e1f3fddcd3aa91f105485"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-13xz-autolaunch-diagnostic.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          case "$DIAG_SOURCE" in
+            4e76a71f589b90c5040e1f3fddcd3aa91f105485|3bbdd4b5970958e11b56db2206630afb6cf69776) ;;
+            *) exit 1 ;;
+          esac
+          git checkout --detach "$DIAG_SOURCE"
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD)" = "$DIAG_SOURCE"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ needs.changes.outputs.rust }}
+          components: clippy, rustfmt
+      # Refuse to gate on a compiler nobody pinned. Same script `make ci` runs, so a
+      # divergence between this pipeline and the local gate fails loudly here instead
+      # of silently producing a green that means nothing (86ak5rc9c).
+      - name: Verify the pinned toolchain is what is running
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so Check/Clippy/
+      # Test below compile the vendored-OpenSSL build here as well — see the `rust` job's
+      # identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libx11-dev libxkbcommon-dev \
+            libasound2-dev
+      - name: Stage Tauri sidecar/resource placeholders (compile-check only)
+        # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
+        # resource dll exist at build time. This job COMPILE-checks the operator (it does not
+        # bundle the app), so empty placeholders satisfy the existence check — the real sidecar is
+        # built in the packaging/release flow. Without this the build script fails on CI
+        # ("resource path `binaries/selahcue-output-<triple>` doesn't exist").
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          mkdir -p binaries
+          # CREATE-ONLY. `: > file` truncates, and these names include the
+          # owner-supplied NDI dll. That is harmless on an ephemeral runner, but this
+          # is the snippet people copy to reproduce CI locally, where truncating a real
+          # dll is silent and git-unrecoverable (binaries/ is gitignored). Never make
+          # this unconditional. 86ak5rjh7.
+          stage() { [ -e "$1" ] || : > "$1"; }
+          if [[ "$triple" == *windows* ]]; then
+            stage "binaries/selahcue-output-${triple}.exe"
+          else
+            stage "binaries/selahcue-output-${triple}"
+          fi
+          stage "binaries/Processing.NDI.Lib.x64.dll"
+          echo "staged Tauri placeholders for ${triple}"
+      # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
+      # failure aborted before `cargo test` ever ran -- so this job still had exactly
+      # the masking the rest of this change removes, while appearing to be covered.
+      # From the first GATE step onward, `!cancelled()`, and NO setup step after it.
+      # Staging used to sit between Format and Check as a `success()` step, so a
+      # formatting failure skipped it and Check/Clippy/Test then ran WITHOUT the
+      # placeholders — turning one formatting error into four red steps, three failing
+      # for a reason unrelated to the code. In a change about signals that lie, that was
+      # one. Setup steps above keep `success()`: if checkout, the toolchain install or
+      # the pin assertion fails, every downstream result is meaningless.
+      - name: DIAGNOSTIC ONLY fixture lifetime and spawn errno observer
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import difflib
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import platform
+          import subprocess
+          source = os.environ['DIAG_SOURCE']
+          manifest = {'contexts': {'4e76a71f589b90c5040e1f3fddcd3aa91f105485': {'.github/workflows/ci.yml': 'eb442c32705ccf67be7151118f70ef93aa438f8f', 'rust-toolchain.toml': 'ce5c05ce58bc7315a053bd714ef7080757b90ad4', 'implementation/desktop/Cargo.toml': 'b4ad3a7549d380cca477a17b40d0c04010396428', 'implementation/desktop/Cargo.lock': '7d49a890267885bc0d1600f27f58b1ff967b8c3d', 'implementation/desktop/crates/selahcue-operator/Cargo.toml': '59ae3b3a6af61a7cd1b0d58ea9fb87191e54c2b5', 'implementation/desktop/crates/selahcue-operator/Cargo.lock': 'c723f922b94ec828e9c4c0056d37eeb12ed33773', 'implementation/desktop/crates/selahcue-operator/build.rs': '833b7b79dab39b8dfddde35175d055a4a93e6981', 'implementation/desktop/crates/selahcue-operator/tauri.conf.json': 'f2b9449e0cd0631c84222e1e1f63720c8abff351', 'implementation/desktop/crates/selahcue-operator/src/autolaunch.rs': '788e87139d22ff7110c35c35c86281f765586ecb', 'implementation/desktop/crates/selahcue-app/src/controller.rs': '1c83452e104cbf9039f87866c3049f205182cf39', 'scripts/operator_headless.py': 'fe2172ec4378172ab0f967311df5026031d82fc5'}, '3bbdd4b5970958e11b56db2206630afb6cf69776': {'.github/workflows/ci.yml': 'eb442c32705ccf67be7151118f70ef93aa438f8f', 'rust-toolchain.toml': 'ce5c05ce58bc7315a053bd714ef7080757b90ad4', 'implementation/desktop/Cargo.toml': 'b4ad3a7549d380cca477a17b40d0c04010396428', 'implementation/desktop/Cargo.lock': '7d49a890267885bc0d1600f27f58b1ff967b8c3d', 'implementation/desktop/crates/selahcue-operator/Cargo.toml': '59ae3b3a6af61a7cd1b0d58ea9fb87191e54c2b5', 'implementation/desktop/crates/selahcue-operator/Cargo.lock': 'c723f922b94ec828e9c4c0056d37eeb12ed33773', 'implementation/desktop/crates/selahcue-operator/build.rs': '833b7b79dab39b8dfddde35175d055a4a93e6981', 'implementation/desktop/crates/selahcue-operator/tauri.conf.json': 'f2b9449e0cd0631c84222e1e1f63720c8abff351', 'implementation/desktop/crates/selahcue-operator/src/autolaunch.rs': '788e87139d22ff7110c35c35c86281f765586ecb', 'implementation/desktop/crates/selahcue-app/src/controller.rs': '2d316a6e79dc094fcb123b839595fa64ab558fe2', 'scripts/operator_headless.py': 'fe2172ec4378172ab0f967311df5026031d82fc5'}}, 'original_source_sha256': 'a40a60f216f20052883670f0a26540dbf179b03b9b9ab9e4142774ee94f305b1', 'instrumented_source_sha256': '1fa4369e7ca929ef816155f1819d19ed176723a4b38d9aac9338549b46d4c2fd', 'instrumentation_patch_sha256': '37fc54aca979ee368784f36d4514488781916c4e12d1407a698e5d812690f74f', 'original_operator_job_sha256': '72a14bd71df8cd1b5818c396bd3fcf6ddb0f7689b072ac5bb9597c6f502d21e2', 'all_original_test_bodies_and_TempDir_lifetimes_unchanged': True, 'original_write_chmod_expressions_unchanged': True, 'job_timeout_minutes': 30, 'trial_phase_cap_minutes': 5, 'per_context_full_default': 16, 'per_context_focused_default': 16, 'normal_gate': False, 'observation_limit': 'metadata only;128-event ring;128 proc entries/256FDs each; matching target dev/inode/currentUID only; post-error non-atomic; no env/args/content/other paths'}
+          assert source in manifest['contexts']
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode().strip() == source
+          assert {p: subprocess.check_output(['git', 'rev-parse', source + ':' + p]).decode().strip()
+                  for p in manifest['contexts'][source]} == manifest['contexts'][source]
+          p = pathlib.Path('implementation/desktop/crates/selahcue-operator/src/autolaunch.rs')
+          before = p.read_text()
+          assert hashlib.sha256(before.encode()).hexdigest() == manifest['original_source_sha256']
+          after = '//! Auto-launch of the native audience output window bundled beside the operator.\n//!\n//! In a packaged install the operator ships `selahcue-output(.exe)` as a sibling binary and\n//! starts it on launch, then connects over the loopback endpoint file (the same file a\n//! hand-started output window writes). This keeps the ADR-0002/0003 two-process model: the\n//! console never renders audience output; it drives a separate native compositor process.\n//!\n//! In a dev run (`cargo run` / `make operator`) the sibling binary does not exist next to the\n//! operator\'s `target/` executable, so [`spawn_output_window`] returns `None` and today\'s\n//! behaviour (connect to a separately-launched window, else the demo backend) is unchanged.\n\nuse std::path::{Path, PathBuf};\nuse std::process::{Child, Command};\nuse std::sync::Mutex;\nuse std::time::Duration;\n\n/// The bundled output-window binary that should sit beside the operator executable.\npub fn output_sidecar_path(operator_exe: &Path) -> PathBuf {\n    let name = format!("selahcue-output{}", std::env::consts::EXE_SUFFIX);\n    match operator_exe.parent() {\n        Some(dir) => dir.join(name),\n        None => PathBuf::from(name),\n    }\n}\n\n/// Poll `ready` up to `max_attempts` times, calling `on_wait` between attempts. Returns `true`\n/// as soon as `ready()` is true, else `false`. Clock-free so it is deterministically testable;\n/// the real caller passes a filesystem check + a `thread::sleep`.\npub fn wait_for_endpoint(\n    mut ready: impl FnMut() -> bool,\n    max_attempts: u32,\n    mut on_wait: impl FnMut(),\n) -> bool {\n    for attempt in 0..max_attempts {\n        if ready() {\n            return true;\n        }\n        if attempt + 1 < max_attempts {\n            on_wait();\n        }\n    }\n    false\n}\n\n/// Handle to the spawned output window so the operator can terminate it on exit (no orphan\n/// process). [`SpawnedOutput::kill`] is best-effort and safe to call more than once.\npub struct SpawnedOutput {\n    child: Mutex<Option<Child>>,\n}\n\nimpl SpawnedOutput {\n    pub fn kill(&self) {\n        if let Ok(mut guard) = self.child.lock() {\n            if let Some(mut child) = guard.take() {\n                let _ = child.kill();\n                let _ = child.wait();\n            }\n        }\n    }\n}\n\n// DIAGNOSTIC ONLY: bounded, fixture-only observations, not a production change.\nstatic DIAG_EVENTS: Mutex<std::collections::VecDeque<String>> =\n    Mutex::new(std::collections::VecDeque::new());\nstatic DIAG_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);\nstatic DIAG_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();\n\nfn diag_fixture_path(path: &Path) -> bool {\n    path.starts_with(std::env::temp_dir())\n        && path.file_name() == Some(std::ffi::OsStr::new("selahcue-output"))\n}\n\nfn diag_event(stage: &str, path: &Path, detail: &str) {\n    use std::os::unix::fs::MetadataExt;\n    if !diag_fixture_path(path) {\n        return;\n    }\n    let metadata = std::fs::symlink_metadata(path).map(|m| {\n        (\n            m.dev(),\n            m.ino(),\n            m.mode(),\n            m.len(),\n            m.uid(),\n            m.nlink(),\n            m.is_file(),\n            m.file_type().is_symlink(),\n        )\n    });\n    let sequence = DIAG_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);\n    let nanos = DIAG_START\n        .get_or_init(std::time::Instant::now)\n        .elapsed()\n        .as_nanos();\n    let event = format!(\n        "seq={sequence} nanos={nanos} pid={} thread={:?} stage={stage} target={path:?} metadata={metadata:?} detail={detail}",\n        std::process::id(),\n        std::thread::current().name(),\n    );\n    if let Ok(mut events) = DIAG_EVENTS.lock() {\n        if events.len() == 128 {\n            events.pop_front();\n        }\n        events.push_back(event.clone());\n    }\n    eprintln!("DIAG_AUTO event {event}");\n}\n\nfn diag_recent() {\n    if let Ok(events) = DIAG_EVENTS.lock() {\n        for event in events.iter() {\n            eprintln!("DIAG_AUTO recent {event}");\n        }\n    }\n}\n\n// Post-error metadata only. A missing owner is NOT proof none existed at exec.\nfn diag_fd_owners(sidecar: &Path) {\n    use std::io::Read;\n    use std::os::unix::fs::MetadataExt;\n    if !diag_fixture_path(sidecar) {\n        return;\n    }\n    let Ok(target) = std::fs::symlink_metadata(sidecar) else {\n        eprintln!("DIAG_AUTO fd_scan target_metadata_unavailable target={sidecar:?}");\n        return;\n    };\n    let uid = selahcue_lan::local_endpoint::current_uid();\n    if !target.is_file() || target.uid() != uid {\n        eprintln!("DIAG_AUTO fd_scan target_not_current_uid_regular_file target={sidecar:?}");\n        return;\n    }\n    let Ok(processes) = std::fs::read_dir("/proc") else {\n        eprintln!("DIAG_AUTO fd_scan proc_unavailable target={sidecar:?}");\n        return;\n    };\n    let mut pids_seen = 0;\n    let mut fds_seen = 0;\n    let mut owners = 0;\n    for (index, process) in processes.flatten().take(128).enumerate() {\n        pids_seen = index + 1;\n        let Ok(pid) = process.file_name().to_string_lossy().parse::<u32>() else {\n            continue;\n        };\n        let Ok(metadata) = std::fs::metadata(process.path()) else {\n            continue;\n        };\n        if metadata.uid() != uid {\n            continue;\n        }\n        let Ok(entries) = std::fs::read_dir(process.path().join("fd")) else {\n            continue;\n        };\n        let descriptors: Vec<_> = entries.flatten().take(256).collect();\n        fds_seen += descriptors.len();\n        for descriptor in descriptors {\n            let Ok(fd) = descriptor.file_name().to_string_lossy().parse::<u32>() else {\n                continue;\n            };\n            let Ok(metadata) = std::fs::metadata(descriptor.path()) else {\n                continue;\n            };\n            if metadata.dev() != target.dev() || metadata.ino() != target.ino() {\n                continue;\n            }\n            let flags = std::fs::File::open(process.path().join("fdinfo").join(fd.to_string()))\n                .ok()\n                .and_then(|file| {\n                    let mut info = String::new();\n                    file.take(4096).read_to_string(&mut info).ok()?;\n                    info.lines()\n                        .find_map(|line| line.strip_prefix("flags:"))\n                        .map(|value| value.trim().to_string())\n                });\n            let writable = flags\n                .as_ref()\n                .and_then(|value| u32::from_str_radix(value, 8).ok())\n                .map(|value| matches!(value & 3, 1..=2));\n            owners += 1;\n            eprintln!(\n                "DIAG_AUTO fd_owner observer_thread={:?} target={sidecar:?} dev={} inode={} uid={uid} pid={pid} fd={fd} flags_octal={flags:?} writable={writable:?} post_error_non_atomic=true",\n                std::thread::current().name(),\n                target.dev(),\n                target.ino(),\n            );\n        }\n    }\n    eprintln!(\n        "DIAG_AUTO fd_scan target={sidecar:?} pids_seen={pids_seen} fds_seen={fds_seen} matching_owners={owners} pid_entry_cap=128 fd_per_pid_cap=256 post_error_non_atomic=true"\n    );\n}\n\n/// Start the bundled output window (packaged install only) and wait briefly for its loopback\n/// endpoint file to appear, so the operator\'s subsequent `build_backend()` connects instead of\n/// falling back to the demo. Returns `None` when the sibling binary is absent (dev run) or the\n/// spawn fails — the caller then keeps today\'s behaviour.\npub fn spawn_output_window(operator_exe: &Path, endpoint: &Path) -> Option<SpawnedOutput> {\n    spawn_output_window_with(operator_exe, endpoint, 66, Duration::from_millis(150))\n}\n\n/// [`spawn_output_window`] with the wait for the endpoint injected (66 attempts of 150 ms, about 10 s,\n/// in production), so a test can run the real spawn path without waiting that long.\nfn spawn_output_window_with(\n    operator_exe: &Path,\n    endpoint: &Path,\n    max_attempts: u32,\n    pause: Duration,\n) -> Option<SpawnedOutput> {\n    let sidecar = output_sidecar_path(operator_exe);\n    if !sidecar.exists() {\n        diag_event(\n            "sidecar_absent",\n            &sidecar,\n            "original exists branch returned false",\n        );\n        diag_recent();\n        // Dev run: leave any endpoint written by a hand-started output window untouched.\n        return None;\n    }\n    // Remove any stale endpoint from a previous run so we only ever connect to THIS instance. Only\n    // from a directory that is private to this user: a symlink planted where the directory should\n    // be is refused, not followed to delete a file of someone else\'s choosing (17tnw2b9agb).\n    if let Err(why) = selahcue_lan::local_endpoint::remove_descriptor(\n        endpoint,\n        selahcue_lan::local_endpoint::current_uid(),\n    ) {\n        eprintln!(\n            "SelahCue operator: left the endpoint file at {} alone ({why}).",\n            endpoint.display()\n        );\n    }\n    diag_event("spawn_begin", &sidecar, "original Command::spawn boundary");\n    let child = Command::new(&sidecar)\n        .spawn()\n        .inspect_err(|error| {\n            diag_event(\n                "spawn_error",\n                &sidecar,\n                &format!(\n                    "kind={:?} raw_os_error={:?} error={}",\n                    error.kind(),\n                    error.raw_os_error(),\n                    error\n                ),\n            );\n            diag_fd_owners(&sidecar);\n            diag_recent();\n        })\n        .ok()?;\n    diag_event(\n        "spawn_success",\n        &sidecar,\n        &format!("child_pid={}", child.id()),\n    );\n    let appeared = wait_for_endpoint(\n        || endpoint.exists(),\n        max_attempts,\n        || std::thread::sleep(pause),\n    );\n    if !appeared {\n        eprintln!(\n            "SelahCue operator: output window started but wrote no endpoint yet; \\\n             using the demo backend until it connects."\n        );\n    }\n    Some(SpawnedOutput {\n        child: Mutex::new(Some(child)),\n    })\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    use std::cell::Cell;\n    use std::path::Path;\n\n    #[test]\n    fn sidecar_sits_beside_the_operator_exe() {\n        let got = output_sidecar_path(Path::new("/opt/selahcue/selahcue-operator"));\n        let want = format!(\n            "/opt/selahcue/selahcue-output{}",\n            std::env::consts::EXE_SUFFIX\n        );\n        assert_eq!(got, Path::new(&want));\n    }\n\n    #[test]\n    fn wait_returns_true_as_soon_as_ready_and_stops_polling() {\n        let calls = Cell::new(0u32);\n        let waits = Cell::new(0u32);\n        // false, false, true -> ready on the 3rd check\n        let ok = wait_for_endpoint(\n            || {\n                let n = calls.get() + 1;\n                calls.set(n);\n                n >= 3\n            },\n            10,\n            || waits.set(waits.get() + 1),\n        );\n        assert!(ok);\n        assert_eq!(calls.get(), 3, "stops checking once ready");\n        assert_eq!(waits.get(), 2, "waits only between checks");\n    }\n\n    #[test]\n    fn wait_gives_up_after_max_attempts() {\n        let waits = Cell::new(0u32);\n        let ok = wait_for_endpoint(|| false, 3, || waits.set(waits.get() + 1));\n        assert!(!ok);\n        assert_eq!(waits.get(), 2, "no wait after the final failed check");\n    }\n\n    #[test]\n    fn wait_with_zero_attempts_is_false() {\n        assert!(!wait_for_endpoint(|| true, 0, || {}));\n    }\n\n    #[test]\n    fn spawn_returns_none_when_no_sidecar_present() {\n        // A temp dir with no selahcue-output binary beside the fake operator exe.\n        let dir = std::env::temp_dir().join(format!("selahcue-autolaunch-{}", std::process::id()));\n        let _ = std::fs::create_dir_all(&dir);\n        let fake_operator = dir.join(format!("selahcue-operator{}", std::env::consts::EXE_SUFFIX));\n        let endpoint = dir.join("selahcue-operator-endpoint.json");\n        assert!(spawn_output_window(&fake_operator, &endpoint).is_none());\n        let _ = std::fs::remove_dir_all(&dir);\n    }\n\n    /// A stand-in output window that exits at once, beside a fake operator executable, so the real\n    /// spawn path runs. `bin` must be a fresh directory.\n    #[cfg(unix)]\n    fn fake_sidecar(bin: &Path) -> PathBuf {\n        use std::os::unix::fs::PermissionsExt;\n        let sidecar = bin.join(format!("selahcue-output{}", std::env::consts::EXE_SUFFIX));\n        diag_event(\n            "fixture_write_begin",\n            &sidecar,\n            "original fs::write about to run",\n        );\n        std::fs::write(&sidecar, "#!/bin/sh\\nexit 0\\n").expect("write sidecar");\n        diag_event(\n            "fixture_write_return",\n            &sidecar,\n            "original fs::write returned; no claim about inherited child FDs",\n        );\n        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).expect("chmod");\n        diag_event(\n            "fixture_chmod_return",\n            &sidecar,\n            "original chmod755 returned",\n        );\n        bin.join(format!("selahcue-operator{}", std::env::consts::EXE_SUFFIX))\n    }\n\n    #[cfg(unix)]\n    fn private_dir() -> tempfile::TempDir {\n        use std::os::unix::fs::PermissionsExt;\n        let dir = tempfile::tempdir().expect("tempdir");\n        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))\n            .expect("chmod");\n        dir\n    }\n\n    /// Startup removes the previous run\'s descriptor so the operator only connects to THIS host,\n    /// but only from a private directory. Here the descriptor path runs through a symlink to a\n    /// directory holding a file of that name; following the link would delete it.\n    #[cfg(unix)]\n    #[test]\n    fn spawn_never_follows_a_symlinked_directory_to_delete_a_stale_endpoint() {\n        let bin = private_dir();\n        let operator = fake_sidecar(bin.path());\n        let victim_dir = private_dir();\n        let victim = victim_dir.path().join("selahcue-operator-endpoint.json");\n        std::fs::write(&victim, "precious").expect("victim");\n        let holder = private_dir();\n        let link = holder.path().join("dir-link");\n        std::os::unix::fs::symlink(victim_dir.path(), &link).expect("symlink");\n\n        let spawned = spawn_output_window_with(\n            &operator,\n            &link.join("selahcue-operator-endpoint.json"),\n            1,\n            Duration::ZERO,\n        )\n        .expect("the stand-in sidecar spawns");\n        spawned.kill();\n\n        assert_eq!(\n            std::fs::read_to_string(&victim).expect("victim"),\n            "precious"\n        );\n    }\n\n    /// Positive control for the test above: the same spawn on a real private directory does remove\n    /// the stale descriptor, so "survived" above is the directory check, not a dead removal.\n    #[cfg(unix)]\n    #[test]\n    fn spawn_removes_a_stale_endpoint_from_a_private_directory() {\n        let bin = private_dir();\n        let operator = fake_sidecar(bin.path());\n        let dir = private_dir();\n        let stale = dir.path().join("selahcue-operator-endpoint.json");\n        std::fs::write(&stale, "stale").expect("stale");\n\n        let spawned = spawn_output_window_with(&operator, &stale, 1, Duration::ZERO)\n            .expect("the stand-in sidecar spawns");\n        spawned.kill();\n\n        assert!(\n            !stale.exists(),\n            "a stale descriptor in a private directory is removed"\n        );\n    }\n\n    #[test]\n    fn spawn_leaves_a_live_endpoint_alone_when_no_sidecar_present() {\n        // Dev run (`make output` + `make operator`): no sibling binary, so an endpoint written by\n        // a hand-started output window must survive — deleting it would strand the console on the\n        // demo backend.\n        let dir =\n            std::env::temp_dir().join(format!("selahcue-autolaunch-ep-{}", std::process::id()));\n        let _ = std::fs::create_dir_all(&dir);\n        let fake_operator = dir.join(format!("selahcue-operator{}", std::env::consts::EXE_SUFFIX));\n        let endpoint = dir.join("selahcue-operator-endpoint.json");\n        std::fs::write(&endpoint, "{}").expect("seed endpoint");\n        assert!(spawn_output_window(&fake_operator, &endpoint).is_none());\n        assert!(endpoint.exists(), "a live endpoint must not be removed");\n        let _ = std::fs::remove_dir_all(&dir);\n    }\n}\n'
+          assert hashlib.sha256(after.encode()).hexdigest() == manifest['instrumented_source_sha256']
+          p.write_text(after)
+          patch = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                          fromfile='a/' + str(p), tofile='b/' + str(p)))
+          assert hashlib.sha256(patch.encode()).hexdigest() == manifest['instrumentation_patch_sha256']
+          print(patch, flush=True)
+          assert subprocess.check_output(['git', 'diff', '--name-only']).decode().strip() == str(p)
+          manifest['source'] = source
+          manifest['source_tree'] = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}']).decode().strip()
+          manifest['platform'] = platform.platform()
+          print('13XZ_AUTO_CONTEXT_MANIFEST=' + json.dumps(manifest, sort_keys=True), flush=True)
+          PY
+      - name: Format
+        if: ${{ !cancelled() }}
+        run: cargo fmt --check
+      - name: Check
+        if: ${{ !cancelled() }}
+        run: cargo check
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --no-fail-fast
+      # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
+      # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
+      # at the WRITE boundary that no name outside the three-entry allowlist reaches the process
+      # environment, which is what stops the loader injecting an arbitrary environment from a
+      # `.env` file. Sana's PR #18 review (F1) found that control missing, and the mutation that
+      # exposed it left the whole suite green -- so this is exactly the kind of gap a gate has to
+      # cover rather than a developer remembering `make ci`. `selahcue-stt` is the standing
+      # example of what happens otherwise: its own lint policy is unenforced because no CI job
+      # compiles it. Runs on every OS this job runs on (Linux, plus Windows when the tier
+      # includes it), like the steps above.
+      - name: Clippy (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys --all-targets -- -D warnings
+      - name: Test (dev-keys)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys --no-fail-fast
+      # The `openai-notes` feature gates the direct-provider construction and the four-state
+      # status derivation (86akby7d8). The default build above compiles NEITHER, so without
+      # this step that code has the same "linted by nothing" problem as selahcue-stt.
+      # TWO steps, not one `run:` block -- for exactly the reason the comment above the
+      # Format/Check/Clippy/Test steps gives: under `bash -e` a clippy failure aborts the
+      # block before `cargo test` ever runs, so one broken gate costs two gates' worth of
+      # information. Splitting them keeps that from being reintroduced here.
+      - name: Clippy (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features openai-notes --all-targets -- -D warnings
+      - name: Test (openai-notes feature)
+        if: ${{ !cancelled() }}
+        run: cargo test --features openai-notes --no-fail-fast
+      # `dev-keys` and `openai-notes` compiled and tested TOGETHER. Each is gated alone above;
+      # this is the one build where this PR's shared `ENV_LOCK` actually has two
+      # independently-authored env-mutating test modules (dev_env's and the model-override
+      # tests') running in the same process -- the exact combination the lock exists to keep
+      # safe. A by-hand run during review found it green (97/97); that is a data point, not a
+      # gate. Without this step nothing regresses it automatically, the same "no gate compiles
+      # it" gap this PR's own commit messages cite `selahcue-stt` as the standing example of.
+      - name: Clippy (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features dev-keys,openai-notes --all-targets -- -D warnings
+      - name: Test (dev-keys,openai-notes)
+        if: ${{ !cancelled() }}
+        run: cargo test --features dev-keys,openai-notes --no-fail-fast
+      # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
+      # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
+      # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
+      # portable DOM behaviour; Chrome path/availability varies on macOS/Windows
+      # runners). REQUIRE=1 turns a missing Chrome into a hard fail so the gate can
+      # never silently no-op.
+      # Chrome version (audit #11): this uses the runner's pre-installed google-chrome-stable
+      # (currently 120+; the harness needs `--headless=new`, i.e. Chrome ≥ 112). The gate fails
+      # CLOSED on a Chrome change (spurious RED, never a false green); if a bump ever breaks it,
+      # pin a version here or switch the boot-render wait from a fixed sleep to a poll (#11).
+      - name: Webview behavioural check (Linux, headless Chrome)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/operator_headless.py
+      # Engine-fidelity smoke (audit #10): the Blink gate above covers browser-portable DOM/JS
+      # logic; this boot-smokes the SAME dist/ on WebKit (Playwright's WebKit = the JavaScript
+      # Core/WebCore core Tauri ships on — WebKitGTK/WKWebView), catching an engine-specific JS
+      # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
+      # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
+      - name: Install Playwright WebKit (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
+        # runner ships whatever WebKit that release bundles. `--break-system-packages` keeps the
+        # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
+        # where a plain `pip install --user` would otherwise refuse (audit #11 review).
+        run: |
+          python3 -m pip install --user --break-system-packages playwright==1.60.0
+          python3 -m playwright install --with-deps webkit
+      - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          SELAHCUE_WEBKIT_REQUIRE: "1"
+        run: python3 scripts/operator_webkit_smoke.py
+
+  # Split out of `operator` above (86akcmzyq CI-timeout remediation, 2026-09-05). PR #22 added
+  # the stt,cloud-stt pair below and this same PR added the RELEASE pair, both landing in the
+  # ONE 25-minute `operator` job. On the merged head (17b8fe8, run 33984097274) neither addition
+  # alone crossed the budget but both together did: `operator shell (windows-latest)` ran
+  # through and PASSED every step up to and including `Test (dev-keys,openai-notes, RELEASE)`,
+  # then was killed by `timeout-minutes` mid-`Clippy (stt,cloud-stt)` at 25:07 elapsed.
+  # `cancelled` is not `success` -- `.github/scripts/ci_alarm.py` explicitly treats a cancelled
+  # job as an outstanding failure on `main`, so that run was never actually green, and four
+  # reviewers approved a head whose CI has since been shown to time out on Windows.
+  #
+  # WHY A SPLIT, NOT JUST A BIGGER NUMBER ON THE ONE JOB: a bigger timeout fixes this merge but
+  # not the shape of the problem. This job gains a new feature-gate pair almost every time a
+  # slice ships -- dev-keys, openai-notes, their combination, now RELEASE and stt,cloud-stt --
+  # they all used to run SERIALLY in one job, and the next slice would just hit a higher wall
+  # further along, on the same OS, for the same underlying reason: Windows is where
+  # whisper-rs-sys compiles whisper.cpp natively AND where MSVC release codegen/linking is
+  # slowest, so it is structurally the tightest OS in this job and will keep being the first to
+  # blow whatever single number is set next.
+  #
+  # Narrowing coverage instead (dropping Windows from the RELEASE or stt,cloud-stt gates) was
+  # rejected too: it reintroduces exactly the "linted and tested by nothing on this OS" gap this
+  # job's own history has already paid for twice. The RELEASE pair exists because the debug-only
+  # gates in `operator` above never exercised `selahcue-operator`'s RELEASE arm at all. The
+  # `libasound2-dev` package below shipped in the WRONG job once already in this same ticket's
+  # remediation, invisible until someone read the actual Windows/Linux CI run rather than the
+  # diff. Dropping Windows here would recreate that exact class of gap on the one OS the shipped
+  # installer actually runs release builds on.
+  #
+  # Splitting keeps every OS x every feature combination covered and gives the two genuinely
+  # expensive, native-toolchain-bound gates (RELEASE codegen; whisper.cpp/cmake via cargo) their
+  # own honestly-sized budget instead of quietly spending down one meant for cheap feature-flag
+  # pairs. It also fixes where future growth lands: a cheap flag in the shape of `dev-keys` or
+  # `openai-notes` belongs in `operator` above, which has 3x headroom to spare; a slice that
+  # pulls in a native toolchain or needs its own release-profile gate belongs here, where a
+  # future budget bump is a deliberate, reviewable line next to the evidence that justified this
+  # one -- not a silent creep in a job whose name gives no hint what is eating the clock.
+      - name: DIAGNOSTIC ONLY bounded16full and16focused default trials
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import time
+
+          source = os.environ['DIAG_SOURCE']
+          assert source in ['4e76a71f589b90c5040e1f3fddcd3aa91f105485', '3bbdd4b5970958e11b56db2206630afb6cf69776']
+          trials = []
+          stop = time.monotonic() + 295
+          failed = False
+          commands = [
+              ('full-default', ['cargo', 'test', '--no-fail-fast']),
+              ('focused-default-spawn', ['cargo', 'test', '--no-fail-fast',
+                                         'autolaunch::tests::spawn_', '--', '--nocapture']),
+          ]
+          for kind, command in commands:
+              for iteration in range(1, 17):
+                  label = f'{kind}-{iteration:02d}/16'
+                  remaining = stop - time.monotonic()
+                  if remaining <= 0:
+                      failed = True
+                      trial = {'source': source, 'trial': label, 'result': 'not-executed-cap', 'exit_code': None}
+                      trials.append(trial)
+                      print('13XZ_AUTO_TRIAL=' + json.dumps(trial), flush=True)
+                      continue
+                  print(f'=== 13XZ AUTOLAUNCH TRIAL {source} {label} ===', flush=True)
+                  started = time.monotonic()
+                  try:
+                      result = subprocess.run(command, stdout=subprocess.PIPE,
+                                              stderr=subprocess.STDOUT, text=True, timeout=remaining)
+                      output, code = result.stdout, result.returncode
+                      outcome = 'success' if code == 0 else 'failure'
+                  except subprocess.TimeoutExpired as error:
+                      output = error.stdout or ''
+                      if isinstance(output, bytes):
+                          output = output.decode(errors='replace')
+                      code, outcome = 124, 'timeout'
+                  print(output, flush=True)
+                  failed = failed or code != 0
+                  plain = re.sub(r'\x1b\[[0-9;]*m', '', output)
+                  trial = {'source': source, 'trial': label, 'result': outcome, 'exit_code': code,
+                           'elapsed_seconds': round(time.monotonic() - started, 3),
+                           'summaries': re.findall(r'^test result: .*', plain, re.M),
+                           'spawn_error_markers': re.findall(r'^.*DIAG_AUTO event .*stage=spawn_error.*', plain, re.M),
+                           'sidecar_absent_markers': re.findall(r'^.*DIAG_AUTO event .*stage=sidecar_absent.*', plain, re.M),
+                           'fd_owner_markers': re.findall(r'^.*DIAG_AUTO fd_owner .*', plain, re.M),
+                           'file_lifetime_markers': re.findall(r'^.*DIAG_AUTO event .*stage=fixture_.*', plain, re.M)}
+                  trials.append(trial)
+                  print('13XZ_AUTO_TRIAL=' + json.dumps(trial, sort_keys=True), flush=True)
+          print('13XZ_AUTO_BOUNDED_RECEIPT=' + json.dumps(
+              {'source': source, 'trials': trials, 'sticky_nonzero': failed, 'requested': 32,
+               'full_default_requested': 16, 'focused_default_requested': 16,
+               'normal_gate': False, 'cap_seconds': 295}, sort_keys=True), flush=True)
+          raise SystemExit(1 if failed else 0)
+          PY
