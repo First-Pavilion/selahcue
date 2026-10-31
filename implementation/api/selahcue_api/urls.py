@@ -6,6 +6,7 @@ from selahcue_api.graphql.admin_schema import schema as admin_schema
 from selahcue_api.graphql.views import AccountGraphQLView, AdminGraphQLView, csrf_bootstrap
 from selahcue_api.platform.views import billing_webhook_not_implemented
 from selahcue_api.apps.pilot_downloads import views as pilot_registration_views
+from selahcue_api.apps.pilot_downloads import grant_views as pilot_grant_views
 
 
 graphql_view_options = {
@@ -31,5 +32,6 @@ urlpatterns = [
     path("v1/", include("selahcue_api.platform.urls")),
     path("v1/pilot/registrations:reserve", pilot_registration_views.reserve, name="pilot-registration-reserve"),
     path("v1/pilot/registrations:confirm", pilot_registration_views.confirm, name="pilot-registration-confirm"),
+    path("v1/pilot/downloads:grant", pilot_grant_views.grant, name="pilot-download-grant"),
     path("webhooks/billing/<str:provider>", billing_webhook_not_implemented, name="billing-webhook"),
 ]
