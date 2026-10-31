@@ -488,12 +488,16 @@ fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
         std::thread::sleep(Duration::from_secs(8));
         drop(held);
     });
-    let t = ReqwestTransport::from_builder(ReqwestTransport::configured_builder(
-        &[],
-        Duration::from_millis(300),
-        Duration::from_millis(500),
-    ))
+    let mut t = ReqwestTransport::from_builder(
+        ReqwestTransport::configured_builder(
+            &[],
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+        )
+        .https_only(false),
+    )
     .expect("transport with short timeouts");
+    t.loopback_http_for_tests = true;
     let (tx, rx) = mpsc::channel();
     let url = format!("http://127.0.0.1:{port}/stall");
     let started = std::time::Instant::now();
@@ -513,5 +517,29 @@ fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
     assert!(
         err.to_string().to_lowercase().contains("timed out"),
         "the failure should say it timed out: {err}"
+    );
+}
+
+// Bypass our request wrapper deliberately: this pins the separate reqwest builder guard.
+#[path = "../../tests/support/credential_receiver.rs"]
+mod credential_receiver;
+
+#[test]
+fn dnu_shipped_https_only_builder_blocks_http_without_wrapper_guard() {
+    let receiver = credential_receiver::Receiver::start();
+    let transport = ReqwestTransport::new().expect("production transport");
+    let result = transport
+        .client
+        .post(&receiver.base)
+        .body(BODY)
+        .bearer_auth(BEARER)
+        .send();
+    assert!(
+        receiver.finish().is_empty(),
+        "shipped builder sent an insecure request"
+    );
+    assert!(
+        result.is_err(),
+        "HTTPS-only builder must refuse plain HTTP independently"
     );
 }

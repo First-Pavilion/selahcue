@@ -70,7 +70,7 @@ fn http_proxy_routes_the_request_through_the_proxy_and_no_proxy_bypasses_it() {
     let target = format!("http://127.0.0.1:{target_port}/probe");
 
     // Case 1: no bypass, so the proxy answers and the target is never contacted.
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
     let resp = transport
         .get(&target, None)
         .expect("the request should have been answered by the proxy");
@@ -89,7 +89,7 @@ fn http_proxy_routes_the_request_through_the_proxy_and_no_proxy_bypasses_it() {
     // Case 2: the same target named in NO_PROXY, so the request goes straight to it.
     std::env::set_var("NO_PROXY", "127.0.0.1");
     std::env::set_var("no_proxy", "127.0.0.1");
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
     let resp = transport
         .get(&target, None)
         .expect("the request should have been answered by the target");

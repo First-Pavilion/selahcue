@@ -6361,9 +6361,15 @@ fn providers_translations() -> Vec<TranslationOption> {
 /// not exist). Read from the environment only in a `cloud-live` build.
 #[cfg(feature = "cloud-live")]
 fn cloud_base_url() -> Option<String> {
-    std::env::var("SELAHCUE_CLOUD_URL")
+    let base = std::env::var("SELAHCUE_CLOUD_URL")
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|s| !s.is_empty())?;
+    if selahcue_cloud::transport::require_https_base_url(&base).is_err() {
+        // Never quote the configured value: it may contain credentials or a secret query.
+        eprintln!("SELAHCUE_CLOUD_URL must be an HTTPS URL; hosted cloud is disabled");
+        return None;
+    }
+    Some(base)
 }
 #[cfg(not(feature = "cloud-live"))]
 fn cloud_base_url() -> Option<String> {
@@ -11254,3 +11260,6 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
 }
+
+#[cfg(all(test, feature = "cloud-live"))]
+mod cloud_url_tests;

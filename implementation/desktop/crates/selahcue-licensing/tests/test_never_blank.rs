@@ -233,7 +233,8 @@ fn an_unreachable_platform_is_a_silent_retryable_unknown() {
     let client = LicensingClient::new(
         ScriptedTransport::failing("dns error: no such host"),
         "https://api.selahcue.example",
-    );
+    )
+    .expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new("SC-TRIAL-KEY"), &identity(), &idem())
@@ -271,7 +272,8 @@ fn a_failed_activation_destroys_nothing_that_was_already_working() {
         ),
         ScriptedTransport::responding(500, "<html>boom</html>"),
     ] {
-        let client = LicensingClient::new(transport, "https://api.selahcue.example");
+        let client = LicensingClient::new(transport, "https://api.selahcue.example")
+            .expect("valid HTTPS test base");
         let result =
             client.activate_with_enrollment_key(&Token::new("SC-TRIAL-KEY"), &identity(), &idem());
 
@@ -300,7 +302,8 @@ fn nothing_leaves_the_device_when_the_identity_is_rejected_locally() {
     let client = LicensingClient::new(
         ScriptedTransport::failing("should never be called"),
         "https://api.selahcue.example",
-    );
+    )
+    .expect("valid HTTPS test base");
     assert_eq!(
         client.transport().request_count(),
         0,

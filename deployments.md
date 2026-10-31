@@ -138,7 +138,7 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 
 | Key | Required | Secret | Purpose |
 |---|---|---|---|
-| `SELAHCUE_CLOUD_URL` | for cloud-live | no | Base URL of the SelahCue cloud service (Providers & Privacy / AI notes; operator `--features cloud-live`). Empty ⇒ cloud shows honest "not configured". |
+| `SELAHCUE_CLOUD_URL` | for cloud-live | no | HTTPS base URL of the SelahCue-hosted cloud service (Providers & Privacy / AI notes; operator `--features cloud-live`). Absent/empty ⇒ cloud is not configured. Invalid or non-HTTPS ⇒ hosted cloud is disabled with a fixed diagnostic that never prints the configured URL. |
 | `SELAHCUE_PASSPHRASE` | no | **SECRET** | Passphrase deriving the at-rest DB encryption key (Argon2id) when no OS keychain path is used (`selahcue-desktop/src/keys.rs`). |
 | `SELAHCUE_STT_MODEL` | no | no | **Development builds only.** Path to a local Whisper model file to load instead of the pinned download; needs `SELAHCUE_STT_MODEL_SHA256`. A release build (`--release`, `make launch RELEASE=1`, the installer) ignores it, prints one line on stderr and uses the pinned, hash-checked model (17tnw2b0prh). Never set it on a production machine. |
 | `SELAHCUE_STT_MODEL_SHA256` | with `SELAHCUE_STT_MODEL` | no | **Development builds only.** SHA-256 the `SELAHCUE_STT_MODEL` file must match. It proves the file is the one you meant, not that SelahCue ships it, which is why release builds ignore the pair. |
@@ -146,6 +146,22 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 | `SELAHCUE_SMOKE` | no | no | Test/smoke-run flag. |
 
 > Runtime secrets the desktop *stores* (not env): the SelahCue account/session token and provider tokens live in the **OS keychain** (`KeyringSecretStore`), never in env or files.
+
+The hosted cloud boundary requires HTTPS even for a loopback address. A refused value prints
+`SELAHCUE_CLOUD_URL must be an HTTPS URL; hosted cloud is disabled`, without its userinfo or
+query. Existing presentation/offline operation continues. `LicensingClient::new` is fallible:
+callers must handle its fixed configuration error before attempting sign-in or activation.
+The normal `ReqwestTransport::new` validates HTTPS before every GET/POST and also configures
+reqwest with `https_only(true)`; it still follows no redirects, uses OS certificate roots and
+ring, and keeps the existing connect/request deadlines.
+
+Plain HTTP is available **only through the explicitly named test constructors**
+`LicensingClient::new_for_loopback_tests` and `ReqwestTransport::new_for_loopback_tests`.
+They admit HTTP only for parsed loopback IPv4/IPv6 addresses or literal `localhost`, never
+arbitrary hosts or loopback-looking domain suffixes. They are for local test fixtures, are not
+selected by an environment switch, and are never used by normal operator/cloud wiring. TLS,
+redirect, proxy and wire tests retain their existing assertions; loopback HTTP fixtures opt in
+explicitly. This is unrelated to the abandoned OIDC callback below.
 
 ### 3b. OIDC native client (DROPPED — superseded by DEC-007)
 
