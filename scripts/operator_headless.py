@@ -460,6 +460,15 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
             "%d harmless source(s) it must accept (a false red): %s" % (len(refused_good), refused_good)
         )
         return False
+    # An accepted harmless definition must also remain usable by the real gate's own
+    # control builders; an exact double-quoted replacement could otherwise reject a
+    # legitimate quote/spacing change only when the whole self-test runs.
+    for name, good in accepted:
+        try:
+            _filter_guard_negative_controls(good)
+        except AssertionError as exc:
+            print("FAIL: filter-guard-selector benign control construction — %s: %s" % (name, exc))
+            return False
     print(
         "PASS: filter-guard-selector negative controls (17tnw2ayetm) — all %d deliberately broken "
         "driver texts were refused and the %d harmless one(s) accepted" % (len(controls), len(accepted))

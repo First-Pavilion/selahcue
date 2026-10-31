@@ -88,6 +88,16 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-pins source/diagnostic receipts and raw archives.
 - Decision: iterate
 
+### Iteration 3 — benign full-selftest construction
+
+- Target criterion: C-002, actual gate acceptance of benign literal syntax.
+- Hypothesis: a checker-only benign PASS is insufficient when control constructors still search an exact double-quoted definition; valid quoting/spacing can then fail the gate itself. New AYETE constructors must not regress legitimate input syntax.
+- Change or investigation: add a check that existing accepted harmless inputs remain constructible by the actual negative/benign control builders. This tests real self-test behavior without recursion, a new parser or any browser/source-guard bypass. Preserve candidate47a pin logic and all2612 browser assertions; prepare actual prebrowser RED before correcting fixture replacements.
+- Verifier executed: stdlib AST/full baseline/static; bounded hosted actual self-test constructor regression.
+- Result: Pending actual observation; no fixture correction before RED. Original exposure and first source-resolution failure remain separately preserved.
+- New evidence: filter-selector-pins/benign-red receipts/raw and current bounded ledger.
+- Decision: iterate
+
 ### Iteration 2
 
 - Target criterion: C-001 through C-004.
