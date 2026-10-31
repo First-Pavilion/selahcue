@@ -420,7 +420,7 @@ fn append_engine_note(addition: &str) {
 /// - polled every iteration of the streaming loop so a mid-service revocation (or leaving Cloud
 ///   mode) is caught within one `CAPTURE_INTERVAL`, not only at the moment streaming started
 ///   (Sana, High).
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 fn live_providers_config<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> selahcue_core::providers::ProvidersConfig {
@@ -437,7 +437,7 @@ fn live_providers_config<R: tauri::Runtime>(
 /// reach the session at all. `Option` because [`close_cloud_session`] takes it out; a second
 /// call (there is at most one today, but the type does not rely on that) is then a no-op
 /// rather than a double-stop.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 type SharedCloudSession = Arc<Mutex<Option<selahcue_stt_cloud::transport::CloudSttSession>>>;
 
 /// Take the session out of `slot`, if still present, and stop it.
@@ -468,7 +468,7 @@ type SharedCloudSession = Arc<Mutex<Option<selahcue_stt_cloud::transport::CloudS
 /// today: only `run_cloud`'s two `FnOnce` closures ever call this, and exactly one of them runs
 /// per session — but a future third locker (e.g. a UI force-disconnect command) would otherwise
 /// block behind a lock this function no longer needs to hold.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 fn close_cloud_session(slot: &SharedCloudSession) {
     let session = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(session) = session {
@@ -675,7 +675,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
         let guard = state.providers.lock().unwrap_or_else(|e| e.into_inner());
         guard.clone()
     };
-    let readiness = selahcue_stt_cloud::readiness::readiness();
+    let readiness = crate::provider_source::transcription_readiness();
     let route = TranscriptionRoute::decide(&providers_snapshot, readiness);
     // Honest from the first frame: if Cloud was selected but is not usable, say so before a
     // single sample is captured — never let the console imply cloud streaming that never
@@ -752,7 +752,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
 
         match route {
             TranscriptionRoute::Cloud => {
-                #[cfg(feature = "cloud-stt")]
+                #[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
                 {
                     // `providers_snapshot` (captured above for the route DECISION only) is
                     // deliberately NOT threaded through to `run_cloud`: it re-fetches the LIVE
@@ -761,7 +761,7 @@ pub fn start(app: AppHandle) -> tokio::sync::oneshot::Receiver<Result<(), String
                     // `CpalSource::new()` above returns (86akby7th PR #22 review, Cody High).
                     run_cloud(app_worker, source, stop_worker, seg_tx, ready_tx);
                 }
-                #[cfg(not(feature = "cloud-stt"))]
+                #[cfg(not(any(feature = "cloud-stt", feature = "pilot-credentials")))]
                 {
                     // Unreachable in practice: `readiness()` can only report `Ready` — the one
                     // input that makes `decide()` return `Cloud` — when this build was compiled
@@ -1276,7 +1276,7 @@ const CAPTURE_WINDOW: Duration = Duration::from_secs(5);
 /// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`] because the two are different claims: that
 /// one says the engine changed; this one says the still-running Cloud engine's transcript may
 /// have a gap.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 const AUDIO_DROPPED_NOTICE: &str = "Cloud transcription is running, but the connection is \
      falling behind — some audio may not have reached the transcript.";
 
@@ -1286,7 +1286,7 @@ const AUDIO_DROPPED_NOTICE: &str = "Cloud transcription is running, but the conn
 /// for it to keep running). Both land the operator in the same place — on-device, with an
 /// honest reason — but conflating "it broke" with "you turned it off" would misreport an
 /// intentional privacy action as a fault (86akby7th PR #22 review, Sana High / Cody High).
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consent revoked, or \
      On-device was selected) while a session was active. The transcript below is coming from \
      the on-device engine instead.";
@@ -1305,12 +1305,12 @@ const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consen
 /// generic, closure-driven `run_cloud_stream_loop` — can be driven end to end in a test against
 /// a real `CloudSttSession` and a local stub server (86akby7th PR #22 remediation round 2,
 /// Sana: "the composition is untested, not untestable").
-#[cfg(all(feature = "cloud-stt", not(test)))]
+#[cfg(all(any(feature = "cloud-stt", feature = "pilot-credentials"), not(test)))]
 fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
     selahcue_stt_cloud::transport::SessionConfig::default()
 }
 
-#[cfg(all(feature = "cloud-stt", test))]
+#[cfg(all(any(feature = "cloud-stt", feature = "pilot-credentials"), test))]
 fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
     use selahcue_stt_cloud::transport::SessionConfig;
     match std::env::var("SELAHCUE_STT_CLOUD_TEST_ENDPOINT") {
@@ -1331,7 +1331,7 @@ fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
 /// returns before the socket is open (it runs on its own thread), and every iteration of
 /// [`run_cloud_stream_loop`]'s loop is bounded local work — draining the mic, pushing into the
 /// bounded `AudioRing`, draining the bounded `SegmentQueue`, and one non-blocking status read.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     source: S,
@@ -1341,10 +1341,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 ) {
     use selahcue_stt_cloud::session::{StreamAuthorization, StreamParams};
     use selahcue_stt_cloud::transport::CloudSttSession;
-    use selahcue_stt_cloud::{
-        developer_credential_from_env, AudioRing, CloudTranscriptProvider, SegmentQueue,
-        SessionStatus,
-    };
+    use selahcue_stt_cloud::{AudioRing, CloudTranscriptProvider, SegmentQueue, SessionStatus};
 
     // Size the shared capture hand-off from THIS device's real configuration — never a literal
     // (see `capture_handoff.rs` / `selahcue_core::audio_capacity`). `None` means the device
@@ -1398,7 +1395,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
             return;
         }
     };
-    let credential = match developer_credential_from_env() {
+    let credential = match crate::provider_source::deepgram() {
         Ok(c) => c,
         Err(e) => {
             record_failure(format!("cloud transcription credential unavailable: {e}"));
@@ -1534,7 +1531,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 /// or when `status` goes terminal (`on_fallback` runs with
 /// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]) — never loops forever once any of the three
 /// fires.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 #[allow(clippy::too_many_arguments)]
 fn run_cloud_stream_loop<S: CaptureSource>(
     mut source: S,
@@ -1669,7 +1666,7 @@ fn run_cloud_stream_loop<S: CaptureSource>(
 /// is told to expect ([`selahcue_stt_cloud::session::Encoding::Linear16`]). Out-of-range input
 /// (should not occur post-resample, but a capture glitch is not impossible) is clamped rather
 /// than wrapped, so a bad sample is a loud click, never noise that reads as speech.
-#[cfg(feature = "cloud-stt")]
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
 fn pcm_i16_from_f32(samples: &[f32]) -> Vec<i16> {
     samples
         .iter()

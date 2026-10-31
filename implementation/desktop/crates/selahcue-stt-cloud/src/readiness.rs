@@ -65,6 +65,12 @@ impl TransportInBuild {
 pub struct CredentialPresent(bool);
 
 impl CredentialPresent {
+    /// Presence derived from the actual selected native credential, for injected sources.
+    /// Readiness callers must use the same constructor result as their request route.
+    pub fn for_credential(credential: Option<&crate::Credential>) -> Self {
+        CredentialPresent(credential.is_some())
+    }
+
     /// State a process cannot reach on its own. **Tests only** — production reads
     /// [`credential_present`].
     pub const fn observed(present: bool) -> Self {
@@ -175,8 +181,8 @@ pub struct SttProviderView {
     pub name: &'static str,
     /// The model being requested.
     pub model: &'static str,
-    /// `true` while this is the Phase 1 developer-key path rather than a server-minted grant
-    /// token. Phase 2 sets it `false`.
+    /// `true` for the developer-environment path; `false` for a restricted native pilot
+    /// package or server-minted grant source.
     pub developer_key: bool,
 }
 

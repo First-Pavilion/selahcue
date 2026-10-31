@@ -15,5 +15,31 @@ fn main() {
             plist.display()
         );
     }
+    pilot_config();
     tauri_build::build()
+}
+
+/// CI supplies a generated file through an explicit build-only path. No dotenv, no
+/// runtime environment lookup, and no values in Cargo diagnostics. Absent config
+/// produces an unavailable source, including when the feature is explicitly selected.
+fn pilot_config() {
+    use std::{env, fs, io::Read, path::PathBuf};
+    println!("cargo:rerun-if-env-changed=SELAHCUE_PILOT_CONFIG_PATH");
+    let mut bytes = Vec::new();
+    if env::var_os("CARGO_FEATURE_PILOT_CREDENTIALS").is_some() {
+        if let Some(path) = env::var_os("SELAHCUE_PILOT_CONFIG_PATH") {
+            // Track rotation without printing the secret-bearing file contents.
+            println!("cargo:rerun-if-changed={}", PathBuf::from(&path).display());
+            if let Ok(file) = fs::File::open(path) {
+                if file.take(16_385).read_to_end(&mut bytes).is_err()
+                    || bytes.len() > 16_384
+                    || std::str::from_utf8(&bytes).is_err()
+                {
+                    bytes.clear();
+                }
+            }
+        }
+    }
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
+    fs::write(out.join("pilot-config.json"), bytes).expect("write native pilot configuration");
 }
