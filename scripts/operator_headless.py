@@ -2673,6 +2673,22 @@ CSS_SRC = (
     // An unclosed source block must not erase a non-none declaration from the backstop.
     if (stack.length) stack[stack.length - 1].body += text.slice(start);
     stack.forEach(retain);
+    // Keep the previous independent literal backstop as a union, not an EOF-only
+    // recovery guess. Malformed unrelated values can hide a block and later regain
+    // balanced depth, or keep a quote open. None may erase a formerly guarded body.
+    // Preserve DIFFERENT bodies at one opening (nested/direct partitioning differs);
+    // only exact offset+body duplicates are redundant to the declaration OR.
+    var literalSelector = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var literalBlocks = new RegExp(literalSelector + "\\s*\\{([^}]*)\\}", "gi"), literalMatch;
+    var seenBodies = new Set(bodies.map(function(frame) { return frame.offset + ":" + frame.body; }));
+    while ((literalMatch = literalBlocks.exec(text)) !== null) {
+      var offset = literalMatch.index + literalMatch[0].indexOf("{");
+      var key = offset + ":" + literalMatch[1];
+      if (!seenBodies.has(key)) {
+        bodies.push({ offset: offset, body: literalMatch[1] });
+        seenBodies.add(key);
+      }
+    }
     return bodies.sort(function(a, b) { return a.offset - b.offset; }).map(function(frame) { return frame.body; });
   };
   window.__cssRawHasFilter = function(sel, src) {

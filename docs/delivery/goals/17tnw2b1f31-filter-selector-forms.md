@@ -172,8 +172,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: positive unresolved paren/bracket depth in an unrelated prefix hides subsequent raw dropped/inactive hazards while the actual previous raw helper still refuses them; valid balanced quoted/escaped/function and clean none/backdrop controls must remain passing.
 - Change or investigation: read full S2 review, verify current source paths, amend this child before substantive step9 and structurally validate. Prepare only opening-prefix cases in the existing committed recovery block; current guard/CSS_SRC/count unchanged before bounded actual current-versus-previous RED.
 - Verifier executed: Goal amendment structural validation, static source/unchanged guard proof, then actual hosted small fixture RED/controls.
-- Result: First actual41192387286 qualifies current34PASS/8opening-prefix raw/composedFAIL versus actualprevious42PASS; S1/clean/quoted/escaped/function controls PASS. Root requests the same positive-depth class with a later closing token after the hidden block, plus an open quote without newline; EOF-only fallback would not guarantee prior raw safety. Extend this same bounded step9 with those cases and balanced nested-function/quoted-opening controls before any guard correction. Original2761 behavior remains preserved; no guessed complete count or arbitrary full-parser claim.
+- Result: First actual41192387286 qualifies current34PASS/8opening-prefix raw/composedFAIL versus actualprevious42PASS. Stronger actual41193348716 then qualifies current57PASS/20FAIL versus actualprevious77PASS, including late-closing paren/bracket and open quote without newline; all oldS1/clean/balanced nested-function/quoted-opening controls PASS. EOF-only fallback is rejected before implementation because regained depth misses the same preservation class. No guard correction before these actual REDs. Original2761 behavior remains preserved; no guessed complete count or arbitrary full-parser claim.
 - New evidence: filter-selector-forms/S2 small diagnostic/object/raw receipts.
+- Decision: iterate
+
+### Iteration 10 — independent previous-body union
+
+- Target criterion: C-002 plus bounded actual GREEN/full-count measurement.
+- Hypothesis: unconditionally unioning the actual previous literal-selector backstop with structural candidates preserves prior raw safety regardless of lost/regained delimiter or quote context, without globally rejecting malformed clean input.
+- Change or investigation: retain the previous literal regex over the same stripped source and OR unchanged declarations. Deduplicate only exact offset+body pairs, keeping different bodies at one opening and source order. Background/CSSOM/condition/none/backdrop logic and all old/new assertions stay unchanged. This is baseline preservation, not new CSS grammar/selector policy.
+- Verifier executed: actual strong current-versus-previous77case RED, static/Goal checks; current-versus-actual-previous body-set/predicate preservation and small GREEN/full-count measurement next.
+- Result: Preparation only; strict2761 remains until actual complete new count. The added independent backstop makes some original canonical S1 single-removal mutants behaviorally redundant; do not falsely require/claim they fail. Retain historical evidence, prove new union removal/current independent family failures and label any component isolation explicitly. Root approved this transparent qualification direction, with all product assertions retained.
+- New evidence: filter-selector-forms/S2 current/previous helper raw and upcoming step10 proof/measurement.
 - Decision: iterate
 
 ## Risks and rollback
