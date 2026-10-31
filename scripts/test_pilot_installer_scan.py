@@ -326,5 +326,24 @@ class PolicyTests(unittest.TestCase):
             self.assertNotIn(secret[index:index+8].decode(), output.getvalue())
 
 
+    def test_complete_nonobject_or_nonjson_second_frame_is_not_ignored(self):
+        valid = scan.frame_payload(payload())
+        for body in (b'[]', b'not-json', b''):
+            extra = scan.MAGIC + struct.pack('<I', len(body)) + body + scan.TRAILER
+            with self.subTest(body_kind=len(body)):
+                with self.assertRaises(scan.PolicyError):
+                    self.run_pilot(valid + extra)
+
+    def test_standalone_runtime_magic_next_to_valid_frame_remains_allowed(self):
+        valid = scan.frame_payload(payload())
+        for body in (scan.MAGIC + valid, valid + scan.MAGIC):
+            self.assertEqual(self.run_pilot(body).envelopes, 1)
+
+    def test_complete_overlength_second_frame_fails_before_payload_read(self):
+        extra = scan.MAGIC + struct.pack('<I', scan.MAX_PAYLOAD + 1) + b'[' * (scan.MAX_PAYLOAD + 1) + scan.TRAILER
+        with self.assertRaisesRegex(scan.PolicyError, 'envelope-malformed'):
+            self.run_pilot(scan.frame_payload(payload()) + extra)
+
+
 if __name__ == '__main__':
     unittest.main()

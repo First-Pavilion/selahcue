@@ -87,6 +87,16 @@ Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. E
 - New evidence: scripts/test_pilot_installer_scan.py and docs/release/PILOT-SCANNER.md; Python phase frozen at a2ed7f96 base
 - Decision: blocked; hand Python phase to root pending coordinated P03 native ownership release
 
+### Iteration 2
+
+- Target criterion: C002 complete framed candidate accounting
+- Hypothesis: classifying a complete frame by header/length/trailer independently of body syntax closes the confirmed ignored nonobject-frame gap without rejecting standalone runtime MAGIC
+- Change or investigation: owner reproduced Aria audit with complete second nonobject/non-JSON/empty and overlength bodies; added standalone-adjacency compatibility controls
+- Verifier executed: scripts/test_pilot_installer_scan.py and original scanner --self-test
+- Result: RED4failures, then GREEN31focused and45old controls
+- New evidence: focused regression tests and docs/release/PILOT-SCANNER.md audit-correction section
+- Decision: blocked; return corrected Python phase, keep native/extraction/P01/review gates open
+
 ## Risks and rollback
 
 - Risks: compiler pooling, unsafe extraction, stale provenance and diagnostics; fail closed

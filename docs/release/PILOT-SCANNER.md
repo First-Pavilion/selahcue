@@ -45,3 +45,9 @@ A separate py_compile attempt hit sandbox denial writing its default cache outsi
 3. Bind platform formats/expected architectures and required primary targets to actual build metadata; prove retention/no raw JSON copy with the real Rust operator per supported architecture, and preserve ordinary-build absence.
 4. Complete P01 real provider restriction/model/expiry proof before any real credential injection. No account/key access or provider call occurred here.
 5. Four independent integrated source reviews, remediation/re-review, current CI and root merge remain mandatory. Actual P05/P07/P09 installer proof and P17/P18/P19 clean-location QA remain separate. Do not enable a workflow, publish a bucket artifact or call full P04 complete from these fixtures.
+
+## Architecture-audit correction
+
+At checkpoint609855cc, Aria independently reproduced a complete second frame with body `[]` being ignored because the matcher classified candidates only by an opening object brace. Owner reproduced RED with complete `[]`, non-JSON, empty and overlength framed bodies (four failures). The correction first recognizes bounded complete framing independently of body syntax, then applies existing length and exact authorized-input binding. Standalone public MAGIC constants adjacent to the real frame remain tolerated; object-started truncated/bad-trailer candidates still fail.
+
+After correction:31focused tests pass (3.269s), including all previous28, plus45unchanged selftests. No native code, original scanner or admission/platform gates changed. This is owner remediation evidence; Aria's recheck and the integrated four-reviewer round are still required.

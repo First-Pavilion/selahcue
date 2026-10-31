@@ -301,14 +301,16 @@ def _envelopes(path: Path, images, expected: ExpectedPayload):
             continue  # Runtime may retain a standalone public magic constant.
         length = struct.unpack('<I', _read(path, start, 4, size))[0]
         body = start + 4
-        # A full frame starts with JSON; standalone magic in validation code is not a payload.
-        if body >= size or _read(path, body, 1, size) != b'{':
+        # Complete framing is a candidate even when its body is not an object.
+        # Validation code may retain standalone MAGIC, without length/body/trailer.
+        end = body + length + len(TRAILER)
+        complete = end <= size and _read(path, body + length, len(TRAILER), size) == TRAILER
+        object_start = body < size and _read(path, body, 1, size) == b'{'
+        if not complete and not object_start:
             continue
-        if not 0 < length <= MAX_PAYLOAD or body + length + len(TRAILER) > size:
+        if not 0 < length <= MAX_PAYLOAD or not complete:
             _fail('envelope-malformed')
         raw = _read(path, body, length, size)
-        if _read(path, body + length, len(TRAILER), size) != TRAILER:
-            _fail('envelope-malformed')
         owner = [index for index, (left, right, _) in enumerate(images) if left <= offset and body + length + len(TRAILER) <= right]
         if len(owner) != 1 or raw != expected.raw:
             _fail('envelope-binding')
