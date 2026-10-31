@@ -11,7 +11,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b1f31
 - Created: 2026-10-31
 - Updated: 2026-10-31
-- Maximum iterations: 12
+- Maximum iterations: 16
 - Independent verification required: yes
 
 ## Objective
@@ -196,6 +196,24 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-forms/S2-green-measurement-ci and forthcoming immutable final source/run/whole-prefix packet.
 - Decision: iterate
 
+## Native-CI and overlapping-target technical replan
+
+- Authority: root explicitly extended SAME child maximum12to16 after actual bcc normal41194724216 failed the native stt,cloud-stt autolaunch symlink-directory stand-in spawn assertion and external PR318 merged overlapping harness/dist changes. Preserve iterations1–11 and every actual RED, setup/partial/unknown timeout and passing historical receipt; no reset, scope/assertion/deadline relaxation or inferred flakiness.
+- External amendment `filter-selector-forms/native-ci-replan.json` and Kenji auxiliary diagnosis Goal preserve the failed bcc source and bounded paired native investigation. Original errno/cause is UNKNOWN. Shipping Rust/test-fixture correction is not authorized by this amendment alone.
+- Exactly bounded remaining steps:12paired bounded native diagnosis in parallel with ordinary actual target integration and combined driver measurement;13original-author minimal test-only remediation ONLY if actual evidence qualifies it and root separately authorizes;14final current integration/normal/mutation/restoration proof;15all four independent final reviews/remediation re-review;16closure/QA/export.
+- Actual context-menu PR318 is outside selected20. Preserve its shipping files and updated assertions alongside all F31 selector/recovery controls. Original2612 byte-identity is historical after this legitimate target change; never discard target assertions or arithmetically guess a combined count. Keep observed2810 stale until actual hosted combined measurement.
+- Root owns final target freshness and Y0 harness release. Canonical amendment/structural validation precede this authorized source integration; no source-only churn to relabel bcc CI red as green. No silent iteration17.
+
+### Iteration 12 — actual overlapping integration and bounded native diagnosis
+
+- Target criterion: C-001 through C-005 current-source validity and native failure classification.
+- Hypothesis: ordinary integration preserves both independently approved context-menu and F31 assertions; actual combined execution measures their joint count. Separate exact-context native diagnosis can classify the spawn failure without guessing a harness causation or shipping Rust change.
+- Change or investigation: record explicit max16/history amendment before integration, validate structurally, then ordinary-merge actualcbc8949145bd15bb47f08442358e081f27a72599. Keep F31 CSS_SRC correction identicalbcc and target shipping dist intact; mechanically map both DRIVER changes. Strict2810 remains deliberately stale for actual combined count measurement.
+- Verifier executed: max16 structural validator before code; source/component/full-target proof and bounded hosted exact-parent combined measurement next. Root-approved Kenji native paired diagnostic is separate, no author Rust/test-fixture change yet.
+- Result: Preparation only; actual combined count/native cause/current normal/current final mutants/four-review gates remain pending. Bcc normal FAILURE native-only and all4 bcc mutants/restoration SUCCESS remain historical exact-source outcomes.
+- New evidence: filter-selector-forms/native-ci-replan.json, s2-bcc-author-classification.json, s2-bcc-step11-result.md and forthcoming combined-target measurement receipts.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: broadening background instead of filters, missing nested parent context, raw parser drops a declaration or scopes conditions, class-prefix false positive, fixture hover is not real, or caching makes CSS mutations stale. Separate filter candidacy, literal browser premises, real hover and per-half mutation controls address the supported boundary.
@@ -204,7 +222,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 ## Pause and escalation conditions
 
 - Do not implement before qualified hosted RED. Return exact owner boundary if full task cannot be met within unchanged scope; no new parser/policy invented to bypass a failing gate.
-- Original maximum8 and its completed outcome remain historical. Explicit root replan authorizes maximum12 and the four defined additional steps; no-progress limits still apply. Preserve all actual failures/partial/setup outcomes and stop for root replan if exhausted.
+- Original maximum8 and its completed outcome remain historical; first explicit replan maximum12 and original step outcomes remain. New explicit native/overlapping-target replan authorizes maximum16 with defined remaining steps; no-progress limits still apply. Preserve all actual failures/partial/setup outcomes and stop for root replan if exhausted.
 
 ## Final evaluation
 
