@@ -105,6 +105,27 @@ Ordinary builds: `providers_view.pilot_access` and command `pilot_access_status`
 - New evidence: /private/tmp/p03-exact-ci.log, /private/tmp/p03-native-clippy.log, docs/delivery/evidence/p03-pilot-expiry.md.
 - Decision: focused checks complete; freeze source for four independent reviews and separately authorized isolated native CUA smoke.
 
+
+### Iteration 4
+
+- Target criterion: C-001 rejection across every capture exit (CODY-P03-01).
+- Hypothesis: publishing rejection into one source-owned atomic observer from the real worker closes clean-stop/bounded-join gaps independent of capture polling.
+- Change or investigation: optional nonsecret SessionStatus latch, source-owned factory used by actual run_cloud, removed redundant poll-only observers; ordinary default has none. No arbitrary callback under mutex.
+- Verifier executed: deterministic real403 after private stop flag proves join admission; isolated source real401 before-stop/during-join; actual run_cloud held pre-loop/clean-stop composition; shared affected release tests and strict lint.
+- Result: behavioral RED available-vs-rejected in both source orders and actual composition; held-join latch RED. GREEN shared STT101 pass and focused bin/source controls pass. Subsequent transcription construction/readiness refused, notes stay healthy; no sticky reset in tests.
+- New evidence: docs/delivery/evidence/p03-pilot-expiry.md; /private/tmp/p03-cody-{red-worker,red-source,red-composition,green-stt-suite,green-stt-clippy}.log.
+- Decision: freeze fix for independent re-review.
+
+### Iteration 5
+
+- Target criterion: C-002/C-001 responsive and authoritative status (V-P03-1).
+- Hypothesis: a blocking-pool lookup plus absent-base short circuit keeps unrelated offline event-loop work available without caching or mislabelling hosted applicability.
+- Change or investigation: only new poll command async+spawn_blocking; no timer detach, no stale cache; fixed six-field fail-closed notes result on dispatch failure; hosted selector skips store with no base. Ordinary null requires no managed state/store.
+- Verifier executed: injected held SecretStore vs actual lightweight view body on single-thread executor, absent-base zero-read control, failed-task safe schema and ordinary release null control; exact focused pilot CI step with all new required names.
+- Result: both targeted behavioral RED controls confirmed; final GREEN32 named/nonzero pilot executions (9/9/4/5/5), ordinary1 pass, strict operator/STT lint and workflow/format checks pass.
+- New evidence: docs/delivery/evidence/p03-pilot-expiry.md; /private/tmp/p03-vera-red-final.log, p03-round2-exact-ci.log, p03-round2-ordinary.log; immutable artifact hashes p03-round2-native-binaries.json.
+- Decision: one combined remediation commit; require four fresh reviews/current CI. C004 remains pending: first native CUA candidate identity was not established and expired before before-state observation; no native PASS or waiver.
+
 ## Risks and rollback
 
 - Risks: native/UI and loopback evidence does not establish real provider-account, installer or hardware behavior; system time is not tamper-proof across restart. Root acceptance/current CI/four independent reviews remain required.
@@ -118,7 +139,7 @@ Ordinary builds: `providers_view.pilot_access` and command `pilot_access_status`
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2bbhwt-pilot-expiry.md
 - Validator result: structural PASS; completion intentionally not claimed.
-- Independent verification result: pending four independent reviews/current hosted CI.
+- Independent verification result: original-head round1 Changes requested (Cody/Vera Medium); both fixed with RED/GREEN evidence, four fresh reviews/current hosted CI pending.
 - Terminal state: GATE_REVIEW (source increment; whole task remains active).
 - Remaining failed or blocked criteria: C-004 native CUA journey/acceptance pending; C-005 four current independent reviews pending.
 - ClickUp final evidence comment:

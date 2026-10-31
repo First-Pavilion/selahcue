@@ -1355,7 +1355,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 ) {
     use selahcue_stt_cloud::session::{StreamAuthorization, StreamParams};
     use selahcue_stt_cloud::transport::CloudSttSession;
-    use selahcue_stt_cloud::{AudioRing, CloudTranscriptProvider, SegmentQueue, SessionStatus};
+    use selahcue_stt_cloud::{AudioRing, CloudTranscriptProvider, SegmentQueue};
 
     // Size the shared capture hand-off from THIS device's real configuration — never a literal
     // (see `capture_handoff.rs` / `selahcue_core::audio_capacity`). `None` means the device
@@ -1428,7 +1428,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     let params = StreamParams::default();
     let audio_ring = AudioRing::new();
     let queue = SegmentQueue::new();
-    let status = SessionStatus::new();
+    let status = crate::provider_source::transcription_session_status();
     // `SessionConfig::default()` is the crate's own validated baseline (it is a compile-time-
     // pinned invariant of that crate that its defaults satisfy `SessionConfig::validate`) —
     // built through the validated path rather than hand-rolled, per the review note that this
@@ -1503,8 +1503,6 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     // handoff block here previously left the whole suite green).
     let app_for_level = app_worker.clone();
     let app_for_check = app_worker.clone();
-    let status_for_access = status.clone();
-    let status_for_fallback = status.clone();
     run_cloud_stream_loop_with_access(
         source,
         stop_worker,
@@ -1530,12 +1528,6 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
             // developer credential for as long as capture runs (86akby7th PR #22 remediation
             // round 2, Cody High / Vera High: the previous `on_fallback` never touched `session`
             // at all). See `close_cloud_session`.
-            if matches!(
-                status_for_fallback.get(),
-                selahcue_stt_cloud::SessionState::CredentialRejected
-            ) {
-                crate::provider_source::mark_transcription_rejected();
-            }
             if crate::provider_source::transcription_fault().is_some() {
                 close_cloud_session_immediately(&session_for_fallback);
             } else {
@@ -1553,15 +1545,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
                 }),
             );
         },
-        move || {
-            if matches!(
-                status_for_access.get(),
-                selahcue_stt_cloud::SessionState::CredentialRejected
-            ) {
-                crate::provider_source::mark_transcription_rejected();
-            }
-            crate::provider_source::transcription_fault()
-        },
+        crate::provider_source::transcription_fault,
     );
 }
 
@@ -2306,6 +2290,154 @@ mod tests {
                 );
                 assert!(fell_back.load(Ordering::SeqCst));
             }
+        }
+
+        #[cfg(feature = "pilot-credentials")]
+        #[test]
+        fn pilot_clean_stop_retains_real_worker_rejection() {
+            if std::env::var("PILOT_TEST_EXPECT_READY").as_deref() != Ok("1") {
+                return;
+            }
+            if std::env::var("P03_CLEAN_STOP_CHILD").as_deref() != Ok("1") {
+                let result = std::process::Command::new(
+                    std::env::current_exe().expect("test executable"),
+                )
+                .args([
+                    "--exact",
+                    "listening::tests::cloud_stt::pilot_clean_stop_retains_real_worker_rejection",
+                    "--nocapture",
+                ])
+                .env("P03_CLEAN_STOP_CHILD", "1")
+                .output()
+                .expect("isolated source process");
+                assert!(
+                    result.status.success(),
+                    "{}{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                return;
+            }
+            let _env = crate::env_locked();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback");
+            std::env::set_var(
+                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
+                format!("ws://{}/", listener.local_addr().expect("address")),
+            );
+            let (connected_tx, connected_rx) = std::sync::mpsc::channel();
+            let (reject_tx, reject_rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut socket, _) = listener.accept().expect("accept");
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("timeout");
+                let mut bytes = [0; 4096];
+                assert!(socket.read(&mut bytes).expect("handshake") > 0);
+                connected_tx.send(()).expect("connected");
+                reject_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release response");
+                socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("reject");
+            });
+            let mut providers = selahcue_core::providers::ProvidersConfig::default();
+            providers.settings.transcription_mode =
+                selahcue_core::providers::TranscriptionMode::Cloud;
+            providers.consent.cloud_transcription = true;
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            handle.manage(crate::AppState {
+                backend: crate::Backend::Local(crate::demo_shell()),
+                deck: Mutex::new(crate::DeckWorkspace::demo()),
+                library: Mutex::new(crate::DeckLibrary::load(None)),
+                providers: Mutex::new(providers),
+                providers_db: None,
+                transcript_db: None,
+                secrets: crate::make_secret_store(),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
+                media_store: None,
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let (stop_pending_tx, stop_pending_rx) = std::sync::mpsc::channel();
+            // run_cloud calls label AFTER starting the real provider worker and
+            // BEFORE entering its capture loop. Hold that exact boundary until
+            // the handshake is real, then make clean-stop win before any poll.
+            struct StopAtLoopEntry {
+                connected: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+                stop: Arc<AtomicBool>,
+                pending: std::sync::mpsc::Sender<()>,
+            }
+            impl AudioSource for StopAtLoopEntry {
+                fn label(&self) -> &str {
+                    if let Some(rx) = self.connected.lock().expect("gate").take() {
+                        rx.recv_timeout(Duration::from_secs(2))
+                            .expect("actual handshake before capture loop");
+                        self.stop.store(true, Ordering::SeqCst);
+                        self.pending.send(()).expect("stop pending");
+                    }
+                    "synthetic source"
+                }
+                fn next_chunk(&mut self) -> Option<AudioChunk> {
+                    None
+                }
+            }
+            impl CaptureSource for StopAtLoopEntry {
+                fn peak_level(&self) -> f32 {
+                    0.0
+                }
+            }
+            impl DeviceCaptureSource for StopAtLoopEntry {
+                fn sample_rate(&self) -> u32 {
+                    16_000
+                }
+                fn channels(&self) -> u16 {
+                    1
+                }
+            }
+            let source = StopAtLoopEntry {
+                connected: Mutex::new(Some(connected_rx)),
+                stop: stop.clone(),
+                pending: stop_pending_tx,
+            };
+            let (segments, _rx) = tokio::sync::mpsc::channel(8);
+            let (ready_tx, _ready_rx) = tokio::sync::oneshot::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                run_cloud(handle, source, stop, segments, ready_tx);
+                done_tx.send(()).expect("finished run_cloud");
+            });
+            stop_pending_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("clean stop pending before first access poll");
+            assert!(
+                matches!(
+                    done_rx.recv_timeout(Duration::from_millis(30)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "clean exit waits for real provider handshake"
+            );
+            reject_tx.send(()).expect("reject during clean stop");
+            done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("clean exit completes");
+            worker.join().expect("capture worker");
+            server.join().expect("provider fixture");
+            let view = crate::provider_source::access_status().expect("pilot status");
+            assert_eq!(
+                view.transcription_state,
+                crate::provider_source::PilotState::Rejected
+            );
+            assert_eq!(
+                view.notes_state,
+                crate::provider_source::PilotState::Available
+            );
+            assert!(!crate::provider_source::transcription_readiness().is_ready());
+            assert!(
+                crate::provider_source::deepgram().is_err(),
+                "subsequent Start refuses rejected credential"
+            );
+            assert!(crate::provider_source::notes_model().is_some());
         }
 
         fn generous_handoff() -> AudioHandoff {

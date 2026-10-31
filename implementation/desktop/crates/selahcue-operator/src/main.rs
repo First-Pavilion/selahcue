@@ -6318,15 +6318,59 @@ fn transcription_status() -> (bool, Option<TranscriptionProviderView>) {
 }
 
 #[tauri::command]
-fn pilot_access_status(state: State<'_, AppState>) -> Option<provider_source::PilotAccessView> {
+async fn pilot_access_status(app: tauri::AppHandle) -> Option<provider_source::PilotAccessView> {
+    pilot_access_status_for(app).await
+}
+
+async fn pilot_access_status_for<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Option<provider_source::PilotAccessView> {
     #[cfg(feature = "pilot-credentials")]
     {
-        provider_source::access_status_for_route(selected_notes_route(&state).uses_pilot())
+        // OS secret-store lookup can block indefinitely. Keep it off BOTH the
+        // Tauri event loop and async workers. Await the same blocking task rather
+        // than detach on a timer and let periodic polling accumulate lookups.
+        tokio::task::spawn_blocking(move || {
+            let state = app.state::<AppState>();
+            provider_source::access_status_for_route(selected_notes_route(&state).uses_pilot())
+        })
+        .await
+        .unwrap_or_else(|_| unavailable_notes_access_status())
     }
     #[cfg(not(feature = "pilot-credentials"))]
     {
-        let _ = state;
+        let _ = app;
         None
+    }
+}
+
+/// A failed dispatch has no authoritative hosted exemption. Keep the exact safe
+/// schema, explicitly close notes, and retain the independent transcription lane.
+#[cfg(feature = "pilot-credentials")]
+fn unavailable_notes_access_status() -> Option<provider_source::PilotAccessView> {
+    use provider_source::PilotState;
+    provider_source::access_status().map(|mut status| {
+        status.notes_uses_pilot = true; // conservative applicability, never an exemption
+        status.notes_state = PilotState::Unavailable;
+        status.state = match status.transcription_state {
+            PilotState::Expired => PilotState::Expired,
+            PilotState::Rejected => PilotState::Rejected,
+            _ => PilotState::Unavailable,
+        };
+        status.replacement_required = true;
+        status
+    })
+}
+
+#[cfg(all(test, not(feature = "pilot-credentials")))]
+mod pilot_status_ordinary_tests {
+    use super::*;
+    #[tokio::test]
+    async fn pilot_status_is_null_without_any_managed_state_in_ordinary_builds() {
+        let app = tauri::test::mock_app();
+        assert!(pilot_access_status_for(app.handle().clone())
+            .await
+            .is_none());
     }
 }
 
@@ -8134,12 +8178,11 @@ impl NotesRoute {
 }
 fn selected_notes_route(state: &State<'_, AppState>) -> NotesRoute {
     #[cfg(feature = "cloud-live")]
-    if let (Some(base), Some(token)) = (
-        cloud_base_url(),
-        state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten(),
-    ) {
-        if !token.is_empty() {
-            return NotesRoute::Hosted { base, token };
+    if let Some(base) = cloud_base_url() {
+        if let Some(token) = state.secrets.get(ACCOUNT_TOKEN_NAME).ok().flatten() {
+            if !token.is_empty() {
+                return NotesRoute::Hosted { base, token };
+            }
         }
     }
     #[cfg(not(feature = "cloud-live"))]

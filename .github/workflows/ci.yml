@@ -1370,7 +1370,7 @@ jobs:
             log="$(mktemp)"
             "$@" 2>&1 | tee "$log"
             case "$phase" in
-              before-bin) required=(pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
+              before-bin) required=(pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
               before-sources) required=(real_notes_rejection_observer selected_source_drives_both observed_transcription_rejection release_executable_does_not_contain_the_test_clock) ;;
               mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
               *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;

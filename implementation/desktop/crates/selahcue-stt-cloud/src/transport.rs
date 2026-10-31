@@ -750,3 +750,106 @@ async fn sleep_interruptible(total: Duration, stop: &AtomicBool) {
 }
 
 // Tests live in `tests/test_transport.rs` (feature-gated, against a local stub socket).
+
+#[cfg(test)]
+mod rejection_shutdown_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    #[test]
+    fn pilot_rejection_after_clean_join_begins_retires_the_shared_observer() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback");
+        let endpoint =
+            DeepgramEndpoint::custom(format!("ws://{}/", listener.local_addr().expect("address")));
+        let (connected_tx, connected_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("timeout");
+            let mut bytes = [0; 4096];
+            assert!(socket.read(&mut bytes).expect("handshake") > 0);
+            connected_tx.send(()).expect("connected");
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release rejection");
+            socket
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("reject");
+        });
+        struct NativeClock;
+        impl selahcue_core::deadline::Clock for NativeClock {
+            fn now(&self) -> selahcue_core::deadline::ClockReading {
+                selahcue_core::deadline::ClockReading {
+                    wall: Some(std::time::SystemTime::now()),
+                    monotonic: Instant::now(),
+                }
+            }
+        }
+        let latch = Arc::new(AtomicBool::new(false));
+        let status = SessionStatus::with_rejection_latch(latch.clone());
+        let mut providers = selahcue_core::providers::ProvidersConfig::default();
+        providers.settings.transcription_mode = selahcue_core::providers::TranscriptionMode::Cloud;
+        providers.consent.cloud_transcription = true;
+        let authorization = StreamAuthorization::from_config(&providers).expect("consent");
+        let config = SessionConfig {
+            endpoint,
+            access_deadline: Some(
+                selahcue_core::deadline::AccessDeadline::admit(
+                    std::time::SystemTime::now() + Duration::from_secs(10),
+                    Arc::new(NativeClock),
+                )
+                .expect("deadline"),
+            ),
+            ..Default::default()
+        };
+        let worker = CloudSttSession::start(
+            &authorization,
+            Credential::pilot_key("synthetic-join-fixture").expect("fixture"),
+            config,
+            AudioRing::new(),
+            SegmentQueue::new(),
+            status.clone(),
+        )
+        .expect("start");
+        connected_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("connected");
+        // Private real stop flag proves stop() has ENTERED its join before the
+        // provider is released. No sleep or thread-start signal stands in for it.
+        let stop_requested = worker.stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            worker.stop();
+            done_tx.send(()).expect("joined");
+        });
+        let end = Instant::now() + Duration::from_secs(2);
+        while !stop_requested.load(Ordering::SeqCst) {
+            assert!(Instant::now() < end, "stop never requested");
+            std::thread::yield_now();
+        }
+        assert!(matches!(
+            done_rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        assert!(!latch.load(Ordering::SeqCst));
+        release_tx.send(()).expect("release provider");
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("real join completes");
+        closer.join().expect("closer");
+        server.join().expect("server");
+        assert_eq!(status.get(), SessionState::CredentialRejected);
+        assert!(
+            latch.load(Ordering::SeqCst),
+            "rejection while clean join waits must retire observer"
+        );
+        status.set(SessionState::Stopped);
+        assert!(
+            latch.load(Ordering::SeqCst),
+            "later session status cannot undo retirement"
+        );
+    }
+}

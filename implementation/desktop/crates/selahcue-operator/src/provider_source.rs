@@ -133,12 +133,24 @@ fn notes_rejected() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         .clone()
 }
 #[cfg(feature = "pilot-credentials")]
-static TRANSCRIPTION_REJECTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+fn transcription_rejected() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    static REJECTED: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+        std::sync::OnceLock::new();
+    REJECTED
+        .get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .clone()
+}
+/// Bind the actual worker's rejection publication to the same sticky source lane.
 #[cfg(any(feature = "pilot-credentials", feature = "cloud-stt"))]
-pub fn mark_transcription_rejected() {
+pub fn transcription_session_status() -> selahcue_stt_cloud::SessionStatus {
     #[cfg(feature = "pilot-credentials")]
-    TRANSCRIPTION_REJECTED.store(true, std::sync::atomic::Ordering::SeqCst);
+    {
+        selahcue_stt_cloud::SessionStatus::with_rejection_latch(transcription_rejected())
+    }
+    #[cfg(not(feature = "pilot-credentials"))]
+    {
+        selahcue_stt_cloud::SessionStatus::new()
+    }
 }
 #[cfg(any(test, feature = "pilot-credentials"))]
 fn status_from(
@@ -190,7 +202,7 @@ pub fn access_status() -> Option<PilotAccessView> {
             base,
             configuration().map(|c| c.effective_expiry()),
             notes_rejected().load(std::sync::atomic::Ordering::SeqCst),
-            TRANSCRIPTION_REJECTED.load(std::sync::atomic::Ordering::SeqCst),
+            transcription_rejected().load(std::sync::atomic::Ordering::SeqCst),
         ))
     }
     #[cfg(not(feature = "pilot-credentials"))]
