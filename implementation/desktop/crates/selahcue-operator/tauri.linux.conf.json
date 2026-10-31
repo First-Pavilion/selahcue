@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["deb"],
+    "resources": [],
+    "linux": {
+      "deb": {
+        "depends": ["libasound2t64", "libvulkan1", "libdbus-1-3", "libxkbcommon-x11-0", "libwayland-client0", "libwayland-cursor0", "libwayland-egl1", "libxkbcommon0", "fonts-dejavu-core"]
+      }
+    }
+  }
+}

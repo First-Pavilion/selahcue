@@ -1,0 +1,102 @@
+# Ordinary release candidate only: no pilot keys, no NDI, no public/bucket publication.
+name: linux-installer
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: linux-installer-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    name: build Ubuntu24.04 x86_64 deb (real output, non-NDI, local STT)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read pinned Rust toolchain
+        id: toolchain
+        run: echo "channel=$(sh scripts/check_toolchain.sh --print-channel)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            implementation/desktop
+            implementation/desktop/crates/selahcue-operator
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libx11-dev libxkbcommon-dev \
+            libasound2-dev libssl-dev libdbus-1-dev libwayland-dev libxkbcommon-x11-dev \
+            libvulkan1 cmake libclang-dev perl patchelf file
+      - name: Install pinned packaging and installed-app test tools
+        run: |
+          cargo install tauri-cli --version '=2.12.4' --locked
+          cargo install tauri-driver --version '=2.1.0' --locked
+      - name: Verify packaging controls and original developer-key scanner
+        run: |
+          python3 scripts/test_linux_installer.py
+          python3 scripts/installer_secret_scan.py --self-test
+      - name: Build real release sidecar, bundle deb, inspect ELF and scan unpacked payload
+        run: python3 scripts/build_linux_installer.py
+      - name: Stage test helper (not installed in the application package)
+        run: cp "$(command -v tauri-driver)" dist/linux/tauri-driver
+      - name: Upload private CI candidate and metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: selahcue-linux-candidate
+          path: dist/linux/
+          if-no-files-found: error
+          retention-days: 7
+  installed-smoke:
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    name: fresh Ubuntu runner install and real backend IPC smoke (X11/software GPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: selahcue-linux-candidate
+          path: dist/linux
+      - name: Verify candidate checksum before installation
+        working-directory: dist/linux
+        run: sha256sum --check SHA256SUMS
+      - name: Install candidate with runtime dependencies and GUI test infrastructure
+        run: |
+          sudo apt-get update
+          # No application build/development dependency setup here. Hosted runners may
+          # already contain tools; this is not proof of a minimal-runtime installation. Xvfb/WebDriver/software GPU are
+          # test infrastructure; this is X11/lavapipe coverage, not physical-display QA.
+          sudo apt-get install -y --no-install-recommends \
+            ./dist/linux/*.deb xvfb xauth dbus-x11 webkit2gtk-driver mesa-vulkan-drivers
+          chmod +x dist/linux/tauri-driver
+          echo "$GITHUB_WORKSPACE/dist/linux" >> "$GITHUB_PATH"
+      - name: Installed output presents a real frame then exits
+        env:
+          WGPU_BACKEND: vulkan
+          SELAHCUE_PASSPHRASE: ci-only-ephemeral-install-smoke
+        run: dbus-run-session -- xvfb-run -a timeout 60s /usr/bin/selahcue-output --smoke
+      - name: Installed operator must connect to the real output backend (not demo)
+        env:
+          WGPU_BACKEND: vulkan
+        run: |
+          app=$(python3 -c 'import json; from pathlib import Path; m=json.loads(Path("dist/linux/release-metadata.json").read_text()); print(m["main_binary"])')
+          dbus-run-session -- xvfb-run -a python3 scripts/smoke_linux_install.py --application "/usr/bin/$app"
+      - name: Uninstall candidate (retain user data per normal Debian removal)
+        if: ${{ always() }}
+        run: |
+          package=$(dpkg-deb --field ./dist/linux/*.deb Package)
+          sudo apt-get remove -y "$package"
