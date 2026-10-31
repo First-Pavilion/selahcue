@@ -257,15 +257,15 @@ if not check_jump_call_site_is_click_only():
 # check (each clause neutralised in turn) shows three clauses are mutually REDUNDANT by
 # construction (exactly five calls, all arguments distinct, each registered variable guarded once:
 # any two imply the third), so deleting any ONE of them is an equivalent mutant, not a gap; they
-# stay because each names a different slip in the failure message. Not pinned: the selector
-# literals themselves (that is 17tnw2ayete); the fail-closed predicates only catch a literal that
-# matches NO rule.
+# stay because each names a different slip in the failure message. AYETE also pins the canonical
+# literal at each definition: a different EXISTING clean rule must not hide a hazardous hover
+# rule. This remains bounded source analysis, not a JavaScript data-flow/grammar parser.
 FILTER_GUARD_SITES = {
-    "wTdHoverSel": "__cssFilterGuardOk",
-    "wPsHoverSel": "__cssFilterGuardOk",
-    "wTbGlHoverSel": "__cssFilterGuardOk",
-    "wTsHoverSel": "__cssFilterGuardOk",
-    "wPpGenHoverSel": "__cssNoBrightnessFilter",
+    "wTdHoverSel": ("__cssFilterGuardOk", ".td-save-cta:hover"),
+    "wPsHoverSel": ("__cssFilterGuardOk", ".ps-start:hover"),
+    "wTbGlHoverSel": ("__cssFilterGuardOk", ".tb-golive:hover"),
+    "wTsHoverSel": ("__cssFilterGuardOk", ".timer-start:hover"),
+    "wPpGenHoverSel": ("__cssNoBrightnessFilter", ".pp-generate:hover"),
 }
 FILTER_GUARD_CALL_RE = re.compile(
     r"\bok\(\s*(__cssFilterGuardOk|__cssNoBrightnessFilter)\(\s*([^,()\s]+)\s*\)\s*,"
@@ -305,19 +305,22 @@ def filter_guard_selector_problems(js):
                 "%s is called with %r, which is not one of the registered selector variables %s"
                 % (fn, arg, sorted(FILTER_GUARD_SITES))
             )
-        elif want != fn:
-            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want, fn))
+        elif want[0] != fn:
+            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want[0], fn))
     premise_re = re.compile(r"\b__cssRule\(\s*(" + "|".join(map(re.escape, FILTER_GUARD_SITES)) + r")\s*\)")
     premises = [(m.start(), m.group(1)) for m in premise_re.finditer(code)]
-    for var, fn in FILTER_GUARD_SITES.items():
+    for var, (fn, selector) in FILTER_GUARD_SITES.items():
         assigned = len(re.findall(r"\b" + re.escape(var) + _JS_ASSIGN_RE, code))
-        literal = len(re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])[^\"']*\1\s*;", code))
+        bindings = re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])([^\"']*)\1\s*;", code)
+        literal = len(bindings)
         looked_up = [p for p, v in premises if v == var]
         guarded = [p for p, _, a in calls if a == var]
         if assigned != 1:
             problems.append("%s is assigned %d times, want exactly 1 (a reassignment can point the guard elsewhere)" % (var, assigned))
         if literal != 1:
             problems.append("%s is bound to a string literal by `var` %d times, want exactly 1" % (var, literal))
+        elif bindings[0][1] != selector:
+            problems.append("%s selector literal is %r, expected %r" % (var, bindings[0][1], selector))
         if len(looked_up) != 1:
             problems.append("%s is looked up through __cssRule %d times, want exactly 1 (its premise)" % (var, len(looked_up)))
         if len(guarded) != 1:
@@ -436,7 +439,7 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
         return False
     print(
         "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass their own "
-        "distinct single-literal selector variable, assigned once and looked up by their own premise"
+        "distinct canonical-literal selector variable, assigned once and looked up by their own premise"
     )
     try:
         controls, accepted = _filter_guard_negative_controls(js)

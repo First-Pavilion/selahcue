@@ -84,8 +84,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: the real checker accepts an arbitrary quoted value at a registered definition; new per-site input mutations can demonstrate that gap while retaining existing wiring controls.
 - Change or investigation: read full task/one narrowing comment, qualification/runbook/current source; create isolated branch from actual656dac3b and validate child before code. Prepare tests-only negative/benign inputs, no literal validation fix before hosted RED.
 - Verifier executed: Goal structural and source/Git preparation; hosted actual checker/browser controls next.
-- Result: Preparation only; actual runtime and four-review gates pending.
+- Result: Corrected actual41173464608 exposes10 wrongly accepted quoted literal inputs, with original12/alias5 refused, clean source/benign16 accepted; actual prebrowser self-test exits1. Original-main actual PSC hazardous CSS with intended selector runs2612/1, same CSS redirected to valid clean .ps-start runs2612/0, proving real false green. Identical helper/source/dist markers verified. Attempt141173380883 separately fails original-gate launcher CLI self-tests through wrong source resolution; no valid real-site witness there. Workflow-only isolation repair copies identical original helper beside named original gate without bypassing assertions.
 - New evidence: filter-selector-pins source/diagnostic receipts and raw archives.
+- Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: storing each intended function and selector together in the existing registry and checking the captured real binding value closes whole-site redirection while preserving existing wiring, alias refusal and benign quoting/spacing/comments.
+- Change or investigation: add canonical values to existing registry tuples, compare the one captured literal at each definition, retain all old clauses/controls and all actual CSS_SRC/STUB/DRIVER2612 assertions. TD/Go-Live old constructor incidental text pins are not counted as new whole-gate exposure; PSC actual witness establishes the remaining gap.
+- Verifier executed: actual RED/full witness/raw classification, Python AST/unchanged browser/helper source and baseline diffcheck; focused current checker/whole-browser GREEN and sensitive pin removal/unsafe PSC checks next.
+- Result: Static preparation PASS; current hosted runtime/full normal/four independent reviews pending.
+- New evidence: filter-selector-pins/red-attempt1 and red-attempt2 official raw/metadata/hash receipts, current source/diagnostic proof.
 - Decision: iterate
 
 ## Risks and rollback
@@ -101,7 +111,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2ayete-filter-selector-pins.md
-- Validator result: Pending initial structural validation.
+- Validator result: Initial structural PASS before code; current static checks PASS, no completion claim.
 - Independent verification result: Pending all four root-owned reviews.
 - Terminal state: ACTIVE, tests-first preparation.
 - Remaining failed or blocked criteria: C-001 through C-005 pending.
