@@ -8,7 +8,9 @@
 //! Offline-first (NFR-015 / CON-2): nothing here runs unless the caller invokes it on an
 //! explicit user action, a network failure is a plain `Err` (never a crash), and a cached
 //! model needs no network. The URL and the pinned digest travel together in the manifest, so
-//! a corrupted or substituted download is rejected before it is ever loaded.
+//! a corrupted or substituted download is rejected before it is ever loaded. HTTPS is required
+//! before the first request and every redirect hop, with at most five redirects. The pinned
+//! client resolves legitimate relative/HTTPS redirects; proxy and timeout defaults are unchanged.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -18,6 +20,9 @@ use crate::model::{verify_model, ModelAsset};
 
 /// Bytes streamed per read/write while downloading (bounds transient memory).
 const DL_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Same finite redirect bound as the scripture downloader; every hop remains HTTPS-only.
+const DL_MAX_REDIRECTS: u32 = 5;
 
 /// A phase of the on-demand model download, surfaced so the operator's "Offline Download Modal"
 /// (Figma node 396-124) can render a distinct state per step. Driven in order: `Downloading*`
@@ -158,7 +163,19 @@ pub fn fetch_model_phased(
     // ureq 3 reads HTTP(S)_PROXY from the environment by default; ureq 2 never did. Keep the model
     // download's network path exactly what it was — routing a 0.5-1.6 GB transfer through a proxy
     // is a product decision, not a side effect of a dependency bump.
-    let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+    // Pinned ureq checks https_only before headers/connect on each redirect call, so this
+    // enforces the scripture rule without duplicating URL resolution or its redirect loop.
+    let builder = ureq::Agent::config_builder()
+        .proxy(None)
+        .https_only(true)
+        .max_redirects(DL_MAX_REDIRECTS);
+    // Private test-only CA injection. No production trust or redirect setting changes here.
+    #[cfg(test)]
+    let builder = match redirect_tests::fixture_tls() {
+        Some(tls) => builder.tls_config(tls),
+        None => builder,
+    };
+    let agent: ureq::Agent = builder.build().into();
     let resp = match agent.get(&url).call() {
         Ok(r) => r,
         Err(e) => {
@@ -338,7 +355,7 @@ mod tests {
             std::process::id(),
             n
         ));
-        fs::create_dir_all(&d).unwrap();
+        fs::create_dir_all(&d).expect("model fetch fixture setup");
         d
     }
 
@@ -354,7 +371,7 @@ mod tests {
             sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             size_bytes: 3,
         };
-        fs::write(dir.join("test.bin"), b"abc").unwrap();
+        fs::write(dir.join("test.bin"), b"abc").expect("model fetch fixture setup");
         let got = fetch_model(&asset, &dir, |_, _| {}).expect("cache hit");
         assert_eq!(got, dir.join("test.bin"));
         let _ = fs::remove_dir_all(&dir);
@@ -400,7 +417,7 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             3,
         );
-        fs::write(dir.join("test.bin"), b"abc").unwrap();
+        fs::write(dir.join("test.bin"), b"abc").expect("model fetch fixture setup");
         let mut phases: Vec<DownloadPhase> = Vec::new();
         let got =
             fetch_model_phased(&asset, &dir, |p| phases.push(p), || false).expect("cache hit");
@@ -418,7 +435,7 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             3,
         );
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("model fetch fixture setup");
         let mut phases: Vec<DownloadPhase> = Vec::new();
         let got = install_from_stream(
             &asset,
@@ -461,7 +478,7 @@ mod tests {
         // file is never resumed — resumable is false with zero bytes kept.
         let dir = tmp_dir("mismatch-phase");
         let asset = asset_pinned(NON_MATCHING_SHA, 3);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("model fetch fixture setup");
         let mut phases: Vec<DownloadPhase> = Vec::new();
         let res = install_from_stream(
             &asset,
@@ -506,12 +523,12 @@ mod tests {
         // fixed DL_CHUNK_BYTES reads, so each Downloading step advances by at most one chunk —
         // mirroring the bounded hash chunk in model.rs. Assert the cadence, not final integrity.
         assert!(
-            DL_CHUNK_BYTES <= 64 * 1024,
+            std::hint::black_box(DL_CHUNK_BYTES) <= 64 * 1024,
             "download chunk must stay small (bounded memory)"
         );
         let dir = tmp_dir("chunked-phase");
         let asset = asset_pinned(NON_MATCHING_SHA, 0);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("model fetch fixture setup");
         let len = DL_CHUNK_BYTES * 3 + 7; // spans several chunks plus a remainder
         let data = vec![0u8; len];
         let mut deltas: Vec<u64> = Vec::new();
@@ -550,7 +567,7 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tmp_dir("cancel-mid");
         let asset = asset_pinned(NON_MATCHING_SHA, 0);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("model fetch fixture setup");
         let len = DL_CHUNK_BYTES * 4; // several chunks so a mid-stream cancel is observable
         let data = vec![0u8; len];
         let cancel_flag = AtomicBool::new(false);
@@ -617,7 +634,7 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             3,
         );
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&dir).expect("model fetch fixture setup");
         let mut phases: Vec<DownloadPhase> = Vec::new();
         let got = install_from_stream(
             &asset,
@@ -651,7 +668,7 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
             3,
         );
-        fs::write(dir.join("test.bin"), b"abc").unwrap();
+        fs::write(dir.join("test.bin"), b"abc").expect("model fetch fixture setup");
         let mut phases: Vec<DownloadPhase> = Vec::new();
         let got = fetch_model_phased(&asset, &dir, |p| phases.push(p), || true)
             .expect("a cache hit ignores cancel");
@@ -699,3 +716,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod redirect_tests;
