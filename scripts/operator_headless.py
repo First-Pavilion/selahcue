@@ -2039,6 +2039,9 @@ EXPECTED_MIN_CHECKS = 2565
 # Measured on a70d4d22 in hosted41138510265 baseline:2612 checks,18 intended FAIL.
 # The old last-rule eleven-site witness skipped19 guarded checks; it is not the new count.
 EXPECTED_MIN_CHECKS = 2612
+# 2612 ->2631 (17tnw2bbhxp): six target-existence/cancellation/custom-menu
+# triplets plus the Shift+F10 designer-vs-app-navigation assertion.
+EXPECTED_MIN_CHECKS = 2631
 
 
 def find_chrome():
@@ -4751,15 +4754,31 @@ DRIVER = r"""
       var tdSurf2=el("surface-theme-designer"); tdSurf2.style.display="block"; tdSurf2.classList.add("active");
       var cdisp=(id)=>getComputedStyle(el(id)).display;
 
-      // #4 context menu: right-click opens it; Copy→Paste clones; Cmd+C/V; Delete.
+      // 17tnw2bbhxp: secondary-click never opens native/custom menus, even on
+      // inputs, overlays and the designer canvas. Cancellation is observable in
+      // Blink; native OS menu rendering still needs platform smoke evidence.
+      [["document", document], ["console", el("surface-console")],
+       ["input", document.querySelector("input")],
+       ["dialog", el("notif-panel")],
+       ["designer", el("td-canvas-box")], ["selection", el("td-sel")]].forEach(([label, target]) => {
+        ok(!!target, "P16: " + label + " contextmenu target exists");
+        var event = new MouseEvent("contextmenu", {button:2,clientX:40,clientY:40,bubbles:true,cancelable:true});
+        ok(target && !target.dispatchEvent(event) && event.defaultPrevented,
+           "P16: " + label + " contextmenu default is cancelled");
+        ok(el("td-ctx").hidden, "P16: " + label + " secondary-click does not open the custom menu");
+      });
+
+      // #4 keyboard menu: Copy→Paste clones; Cmd+C/V; Delete.
       addShape();
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
-      ok(!el("td-ctx").hidden, "#4 right-click opens the context menu");
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
+      ok(!el("td-ctx").hidden, "#4 ContextMenu key opens the element actions menu");
       ok(cdisp("td-ctx")!=="none", "#4 open menu is actually VISIBLE (computed display, not just attr)");
       el("td-ctx").querySelector('[data-ctx="copy"]').click();
       ok(el("td-ctx").hidden && cdisp("td-ctx")==="none", "#4 menu truly HIDDEN after close (the [hidden] guard works)");
       var nb = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"F10",shiftKey:true,bubbles:true,cancelable:true}));
+      ok(!el("td-ctx").hidden && el("app-menu-btn").getAttribute("aria-expanded")!=="true",
+         "P16: Shift+F10 opens element actions without also opening app navigation");
       el("td-ctx").querySelector('[data-ctx="paste"]').click();
       ok(applied().elements.length===nb+1, "#4 Copy then Paste clones the element (+1)");
       var n2 = applied().elements.length;
@@ -4767,14 +4786,14 @@ DRIVER = r"""
       el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"v",metaKey:true,bubbles:true}));
       ok(applied().elements.length===n2+1, "#4 Cmd+C then Cmd+V pastes a clone");
       var n3 = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
       el("td-ctx").querySelector('[data-ctx="delete"]').click();
       ok(applied().elements.length===n3-1, "#4 context-menu Delete removes the element");
 
       // LOW: a left-click while the menu is open just dismisses it (no select/deselect side-effect).
       addShape();
       var nSel = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
       ok(cdisp("td-ctx")!=="none", "#4 menu open before dismiss");
       el("td-canvas-box").dispatchEvent(new PointerEvent("pointerdown",{clientX:40,clientY:40,button:0,bubbles:true}));
       ok(cdisp("td-ctx")==="none", "#4 left-click dismisses the menu");
