@@ -64,7 +64,7 @@ Actual main93bf472f65a1846117eecf09b1972c4118dc0cd4. The GUI App toggle offers a
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Actual release pairing output defect reproduced before fix | Hosted actual debug/release child host capture, exact-body/source proof | Release genuinely prints actual code/link and fails; debug/real startup/QR controls pass | pairing-release-output/red-ci and classification | PENDING |
+| C-001 | yes | Actual release pairing output defect reproduced before fix | Hosted actual debug/release child host capture, exact-body/source proof | Release genuinely prints actual code/link and fails; debug/real startup/QR controls pass | pairing-release-output/red-job.log and red-classification.json actual debug138/0, release pairing0/1, release banner8/0 | PASS |
 | C-002 | yes | Release never discloses actual pairing code/link and debug retains developer printout | Actual-profile host capture and meaningful disclosure/debug mutants | Release both streams safe with stage instruction; debug actual code/link present; mutants caught; bytes restored | Candidate focused/mutation hosted receipts | PENDING |
 | C-003 | yes | Real QR/auth/lifecycle remains correct | Actual host registry/stage QR/single-use/pending approval/withdrawal positives and source comparison | Stage invite is real; role approval and120s/single-use semantics unchanged; no live shared files | Host child assertions and immutable source proof | PENDING |
 | C-004 | yes | Required final normal and profile-specific gates pass | Hosted normal configured Linux plus explicit debug/release host tests | All required executed gates pass; ignores/skips/platform limits explicit | Current-source normal and supplemental raw | PENDING |
@@ -88,6 +88,26 @@ Actual main93bf472f65a1846117eecf09b1972c4118dc0cd4. The GUI App toggle offers a
 - Result: scope established; runtime, review and delivery pending.
 - New evidence: full task, approved plan and this contract.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001.
+- Hypothesis: actual release prints the real code while real debug and lifecycle controls pass.
+- Change or investigation: independently read official41186228673 raw/metadata at exact tests-first827/workflow-onlyf9d5. Debug fullhost138passed0failed6existing/childignored, actual debug code+URI capture positive; real release parent fails specifically on actual code in stdout after successful child lifecycle/private receipt; release existing-banner8passed0failed. No compile/setup/oracle substitution. URI assertion was after first code assertion, so original actual release URI presence is not separately claimed. Six component hashes restore exactly; original diagnostic marker substitution is recorded honestly.
+- Verifier executed: official raw phase/test/failure/compiled-profile markers, immutable parent/source/workflow/body proofs and final component maps.
+- Result: C-001 PASS; exact release code-exposure defect reproduced. All final candidate/profile/mutation/review/delivery gates remain pending.
+- New evidence: pairing-release-output/red-job.log, red-metadata.json, red-classification.json and extraction-proof.json.
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-002 through C-004.
+- Hypothesis: an actual release cfg guard with a safe stage-QR notice prevents inherited-stream disclosure while preserving the exact debug printout and pairing lifecycle.
+- Change or investigation: minimal early release branch in print_pairing_block; original developer print body remains byte-identical after the guard. Added nonsecret boolean stream-premise traces to the existing parent test without weakening assertions; final independent code-only/link-only stderr and debug-suppression mutants must prove both stream/oracle obligations.
+- Verifier executed: installed pinned formatting, source/diff/component/contract static checks; hosted candidate profiles/normal/mutants pending.
+- Result: candidate prepared, no runtime-green or review/completion claim.
+- New evidence: forthcoming immutable candidate/component/profile/mutation receipts.
+- Decision: handoff
 
 ## Risks and rollback
 

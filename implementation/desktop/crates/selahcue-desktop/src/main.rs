@@ -3517,7 +3517,7 @@ impl App {
     }
 
     /// `P`: toggle pairing mode — offer a fresh single-use code (2-minute TTL) and
-    /// show the invite QR on the stage output + as ASCII in the terminal. Toggling
+    /// show the invite QR on stage (and as ASCII in debug terminals). Toggling
     /// off **withdraws** the code from the registry (a cancelled code must die
     /// immediately, e.g. when the operator suspects the QR was photographed).
     fn toggle_pairing(&self) {
@@ -4876,8 +4876,16 @@ pub fn pin_fingerprint(pin_hex: &str) -> String {
         .join("-")
 }
 
-/// Print the pairing invite: the URI, the hand-typable code, and an ASCII QR.
+/// Confirm pairing mode without disclosing an invite to inherited release logs.
+/// Debug builds retain the developer URI, hand-typable code and ASCII QR.
 fn print_pairing_block(uri: &str, code: &str) {
+    if !cfg!(debug_assertions) {
+        println!(
+            "  PAIRING MODE (2 minutes) — scan the QR on the stage/confidence window; \
+             press P again to cancel."
+        );
+        return;
+    }
     println!();
     println!("  PAIRING MODE (2 minutes) — scan from the SelahCue mobile app:");
     println!("  {uri}");

@@ -79,6 +79,14 @@ fn real_host_pairing_output_respects_actual_build_profile() {
         "host-started-qr-approval-single-use-withdrawal-ok"
     );
     let pairs = [(fields[0], fields[1]), (fields[2], fields[3])];
+    println!(
+        "CPM_STREAM_PREMISES debug={} codes_stdout={} invites_stdout={} codes_stderr={} invites_stderr={} lifecycle=true",
+        cfg!(debug_assertions),
+        pairs.iter().filter(|(code, _)| stdout.contains(*code)).count(),
+        pairs.iter().filter(|(_, uri)| stdout.contains(*uri)).count(),
+        pairs.iter().filter(|(code, _)| stderr.contains(*code)).count(),
+        pairs.iter().filter(|(_, uri)| stderr.contains(*uri)).count(),
+    );
     for (code, uri) in pairs {
         assert_eq!(code.len(), 8, "the code must be real, nonempty entropy");
         assert!(uri.starts_with("selahcue://pair?") && uri.contains("&code="));
