@@ -55,8 +55,9 @@ caught by human review rather than by any gate; the third (cache saves) and the 
 
    The rule is deliberately NOT "every rust-cache step in every workflow": a
    `workflow_dispatch`-only workflow (windows-installer.yml) cannot run on a pull
-   request, is normally dispatched from a feature branch, and would be cold on every
-   dispatch if only main could save. Only the pull-request-reachable class is checked.
+   request, historically allowed feature-branch dispatches. Installer workflows now reject
+   non-main dispatches (17tnw2bbhxf), but the cache rule remains PR-scoped. Only the
+   pull-request-reachable class is checked.
    Exactly ONE spelling is accepted (`github.ref == 'refs/heads/main'`), so an inverted,
    always-true or literal value cannot pass for a decision. `github.ref_name == 'main'`
    is refused on purpose: it is also true for a tag named `main`.
@@ -474,6 +475,63 @@ def protected_environment_violations(workflow: dict, filename: str = "<workflow>
     return out
 
 
+# Installer packaging is owner-triggered, main-only work (17tnw2bbhxf). Keep this
+# check inside the existing always-run workflow gate: it adds no paid runner.
+INSTALLER_GUARD = "${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}"
+
+
+def installer_violations(workflow: dict, filename: str) -> list[str]:
+    if not filename.endswith(("-installer.yml", "-installer.yaml")):
+        return []
+    out = []
+    if not workflow.get("jobs"):
+        out.append(f"{filename}: installer workflow requires a guarded packaging job")
+    triggers = workflow.get("on", workflow.get(True, {}))
+    if not isinstance(triggers, dict) or set(triggers) != {"workflow_dispatch"}:
+        out.append(f"{filename}: installer packaging must use workflow_dispatch only")
+    for name, job in (workflow.get("jobs") or {}).items():
+        if job.get("if") != INSTALLER_GUARD:
+            out.append(f"{filename}: installer job {name} requires the exact manual/main-only job guard")
+        checkouts = [step for step in job.get("steps", [])
+                     if str(step.get("uses", "")).startswith("actions/checkout@")]
+        if len(checkouts) != 1 or checkouts[0].get("with", {}).get("ref") != "${{ github.sha }}":
+            out.append(f"{filename}: installer job {name} must checkout the immutable dispatch SHA")
+    return out
+
+
+def installer_cases() -> list[tuple[str, dict, str | None]]:
+    def example():
+        return yaml.safe_load("""
+on: {workflow_dispatch: {}}
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v7
+        with: {ref: '${{ github.sha }}'}
+""")
+    cases = [("manual-main pinned checkout accepted", example(), None)]
+    empty = example()
+    empty["jobs"] = {}
+    cases.append(("installer without jobs rejected", empty, "guarded packaging job"))
+    for event in ("push", "pull_request", "release", "schedule", "workflow_run", "workflow_call"):
+        w = example()
+        w[True][event] = {}
+        cases.append((f"installer automatic {event} rejected", w, "workflow_dispatch only"))
+    for guard in (None, "${{ github.ref == 'refs/heads/main' }}",
+                  "${{ github.event_name == 'workflow_dispatch' }}",
+                  "${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}",
+                  "${{ github.event_name == 'workflow_dispatch' && github.ref_name == 'main' }}"):
+        w = example()
+        w["jobs"]["build"]["if"] = guard
+        cases.append((f"installer broad guard rejected: {guard}", w, "manual/main-only"))
+    for ref in (None, "main", "${{ github.ref }}", "${{ inputs.ref }}"):
+        w = example()
+        w["jobs"]["build"]["steps"][0]["with"]["ref"] = ref
+        cases.append((f"installer mutable checkout rejected: {ref}", w, "immutable dispatch SHA"))
+    return cases
+
+
 def all_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
     return (
         permission_violations(workflow, filename)
@@ -481,6 +539,7 @@ def all_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
         + cache_save_violations(workflow, filename)
         + secret_violations(workflow, filename)
         + protected_environment_violations(workflow, filename)
+        + installer_violations(workflow, filename)
     )
 
 
@@ -988,12 +1047,19 @@ jobs:
             failures.append(f"{label}: expected no violation, got {found}")
         elif needle is not None and not any(needle in v for v in found):
             failures.append(f"{label}: expected a violation mentioning {needle!r}, got {found}")
+    packaging_cases = installer_cases()
+    for label, workflow, needle in packaging_cases:
+        found = installer_violations(workflow, "windows-installer.yml")
+        if needle is None and found:
+            failures.append(f"{label}: expected no violation, got {found}")
+        elif needle is not None and not any(needle in v for v in found):
+            failures.append(f"{label}: expected {needle!r}, got {found}")
     if failures:
         print("check_workflows self-test FAILED:", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print(f"check_workflows self-test: {len(cases) + len(cases4)} cases passed")
+    print(f"check_workflows self-test: {len(cases) + len(cases4) + len(packaging_cases)} cases passed")
     return 0
 
 
