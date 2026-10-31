@@ -118,6 +118,16 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-pins/benign-red.log and current source/diagnostic receipts.
 - Decision: iterate
 
+### Iteration 5 — bounded fixture cost correction
+
+- Target criterion: C-002/C-004 without changing any assertion or runtime budget.
+- Hypothesis: each harmless source rebuilds the same canonical binding replacements repeatedly; retaining exact-one validation but memoizing each definition span per source avoids repeated full-driver regex scans.
+- Change or investigation: actual normal41174518456 succeeded at53932a47 (Chrome2612/0, WebKit44/0), but combined41174530990 timed out its first baseline CLI at240s after checker matrix PASS, then restored17components; no mutants ran. Observation41175641362 measured original checker4.1852s/candidate30.6409s before its separate whole-gate wrapper IndentationError. Earlier trace41175588594 failed shallow original-blob lookup; both setup failures remain distinct, whole-phase attribution incomplete. Static source shows repeated binding searches, multiplied by benign construction and existing real CLI probes.
+- Verifier executed: original/current finite hosted timing samples, raw logs, static caller inventory; exact fixture-output equivalence and current hosted whole browser/mutants/normal gates next.
+- Result: minimal fixture-only span memoization retains the same regex, exact-one requirement and all27negative/16benign construction checks. Source must be the original fixture input; no arbitrary intermediate-text cache. No timeout increase, skipped assertion or browser/source guard change. Actual corrected timing/equivalence and runtime receipts remain pending.
+- New evidence: filter-selector-pins/combined-attempt1, phase-trace-attempt1.log, phase-trace-attempt2, timeout-investigation-checkpoint.md. Fresh current source diagnostics must prove byte-identical generated fixtures, actual-sensitive mutants and17component restoration before closure.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: a source-text decoy satisfies the value pin, benign syntax falsely fails, stale wording overclaims full data-flow, or witness CSS changes unrelated background behavior. Existing comment stripping, literal independent fixtures and real browser premises address the supported boundary.

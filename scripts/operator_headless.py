@@ -345,6 +345,7 @@ def _filter_guard_negative_controls(js):
     be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
     js = _strip_js_comments(js)
     ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
+    binding_spans = {}
 
     def call(fn, var):
         return "ok(" + fn + "(" + var + "),"
@@ -355,11 +356,20 @@ def _filter_guard_negative_controls(js):
         return text.replace(old, new)
 
     def binding(text, var, selector, replacement):
-        pattern = re.compile(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])" + re.escape(selector) + r"\1\s*;")
-        matches = list(pattern.finditer(text))
-        if len(matches) != 1:
-            raise AssertionError("negative control cannot apply: %s canonical binding matches %d times" % (var, len(matches)))
-        return pattern.sub(lambda match: replacement, text, count=1)
+        # Every binding fixture starts from this same real source. Locate each definition
+        # once per source, then splice its exact span; rebuilding all harmless variants
+        # must not rescan the full driver for every replacement of the same definition.
+        if text is not js:
+            raise AssertionError("binding fixture must start from its original driver text")
+        key = (var, selector)
+        if key not in binding_spans:
+            pattern = re.compile(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])" + re.escape(selector) + r"\1\s*;")
+            matches = list(pattern.finditer(text))
+            if len(matches) != 1:
+                raise AssertionError("negative control cannot apply: %s canonical binding matches %d times" % (var, len(matches)))
+            binding_spans[key] = matches[0].span()
+        start, end = binding_spans[key]
+        return text[:start] + replacement + text[end:]
 
     def crossed(t):
         t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
