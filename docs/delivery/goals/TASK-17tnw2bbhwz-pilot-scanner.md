@@ -1,0 +1,108 @@
+# Goal Contract — TASK-17tnw2bbhwz-pilot-scanner
+
+## Identity
+
+- Goal ID: TASK-17tnw2bbhwz-pilot-scanner
+- Parent goal ID: NONE
+- Title: Confine the pilot exception to two consumed native credential fields
+- Role: devops-engineer
+- Status: BLOCKED
+- Execution engine: goal
+- ClickUp task: https://app.clickup.com/t/17tnw2bbhwz
+- Created: 2026-10-31
+- Updated: 2026-10-31
+- Maximum iterations: 3
+- Independent verification required: yes
+
+## Objective
+
+An ordinary installer cannot carry pilot/developer credentials; a provenance-bound pilot permits only its two exact consumed native fields, with secret-safe deny scanning of every shipped component.
+
+## Baseline
+
+Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. Existing8markers/45selftests pass unchanged. P03 native files are reserved to Nova/Farah until freeze/merge. Actual provider approval and produced-installer proof are unavailable from fixtures.
+
+## Inputs and evidence sources
+
+- Browser-verified P04 original3criteria: root p04-clickup-source.txt
+- Root-accepted Aria minimal contract aria-p04-contract.md; endpoint call-site attribution explicitly not required
+- P02 source and unchanged scanner/licensing development key gate
+
+## Scope
+
+### In scope
+
+- Python policy/all-occurrence matcher, canonical payload/frame and native-image/slice admission; package provenance/inventory controls; tests/docs
+- Narrow consumed native envelope integration only after root coordinates P03 merge
+
+### Non-goals
+
+- Real credential access, .env discovery, provider calls, competing heavy builds, workflow enablement, dispatch, uploads or public artifacts
+- P03 consent/transport/deadline logic or unrelated API/mobile/marketing work
+
+### Constraints
+
+- Own isolated worktree/branch only, never revert others; root owns browser/review/merge
+- Preserve8ordinary markers/45controls/default scanner API/floors/positivecontrols/read-onlyhashes
+- Only2exact credential spans; no package-wide endpoint/credential bypass
+
+### Assumptions and unknowns
+
+- UNKNOWN native envelope retention per platform; platform acceptance requires actual compiler/package proof
+- UNKNOWN P01 real issuer restrictions/expiry; synthetic source admission never authorizes real embedding
+
+## Dependencies and approvals
+
+- User authorized atomic implementation plus4reviews/fixes/re-review/main merge; root accepted Aria contract
+- P03 native ownership blocks hooks until coordinated merge; Python phase allowed now
+- P01 remains real-input/publication gate, not permission to read existing keys
+
+## Completion predicate
+
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| C-001 | yes | Ordinary policy retains old controls and rejects pilot/known credential bytes | old45selftests and new policy negatives | oldcontrols and ordinary negatives pass | 28focused controls and45old selftests | PASS |
+| C-002 | yes | Only2field spans in1consumed native envelope per expected slice pass | frame/schema/image/all-occurrence controls and narrow native probe | duplicates/outside/encoded/ambiguous keys and bad provenance fail | Python native fixtures pass; actual Rust hooks wait P03 | BLOCKED |
+| C-003 | yes | Known unrelated secrets/development signing fixtures fail without diagnostics leaking | inventory/labeled matcher/captured-output canaries | no8byte fragment or input fingerprint in output/errors | focused output/error/repr controls and public fixture inventory | PASS |
+| C-004 | yes | Accepted platform uses actual produced installer/fresh extraction/closed inventory/hash proof | real platform extraction + package/native validation | no synthetic fixture substituted for installer acceptance | platform run links | BLOCKED |
+| C-005 | yes | Real input meets P01 restrictions/expiry and fixed cohort | actual issuer proof linked by root | no real embedding without approval/proof | P01 ticket | BLOCKED |
+| C-006 | yes | Integrated source passes4independent reviews and normalCI after fixes | Cody/Shadow/Quinn/Vera + exactheadCI | no blockers, applicable checks green | root review reports | PENDING |
+
+## Verification plan
+
+- Focused verification: unittest scripts/test_pilot_installer_scan.py and unchanged scanner selftest
+- Broader regression verification: affected packaging/workflow suites and exactheadCI; no competing whole operator build
+- Independent verifier: root-coordinated4reviewers
+- Required environment: Python3.9+ (3.9.6 verified), tiny local native fixture compiler; actual package adapters remain platform gates
+
+## Iteration ledger
+
+### Iteration 1
+
+- Target criterion: C001–003 Python phase
+- Hypothesis: exact canonical frame plus all-occurrence labeled matching confines2field spans while preserving deny scanning
+- Change or investigation: tests first, then bounded core; native hook waits P03
+- Verifier executed: old scanner selftest
+- Result:28focused controls and45old selftests pass; tiny native consumed-frame fixture compiled, not executed
+- New evidence: scripts/test_pilot_installer_scan.py and docs/release/PILOT-SCANNER.md; Python phase frozen at a2ed7f96 base
+- Decision: blocked; hand Python phase to root pending coordinated P03 native ownership release
+
+## Risks and rollback
+
+- Risks: compiler pooling, unsafe extraction, stale provenance and diagnostics; fail closed
+- Rollback or recovery: revert P04 unit; ordinary deny policy and real-input block remain
+
+## Pause and escalation conditions
+
+- Native edits await P03 merge and root coordination; no criteria waived
+- Stop after3materially distinct failed approaches without new evidence
+- Full completion requires actual package/P01 and independent checks
+
+## Final evaluation
+
+- Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2bbhwz-pilot-scanner.md
+- Validator result: structural validation passed before iteration; repeat at phase handoff
+- Independent verification result: pending
+- Terminal state: BLOCKED
+- Remaining failed or blocked criteria: C002 actual native hooks/retention, C004 real extraction/package, C005 real provider proof; C006 integrated reviews/CI pending
+- ClickUp final evidence comment: root owns browser, not yet claimed applied
