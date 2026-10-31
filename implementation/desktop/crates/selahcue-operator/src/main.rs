@@ -5131,6 +5131,9 @@ fn get_chapter(reference: String, translation: Option<String>) -> Result<Chapter
 /// `get_chapter` is hand-written, so nothing else would notice the real one stop returning what the
 /// modal builds the canonical reference from.
 #[cfg(test)]
+mod chapter_reply_contract_tests;
+
+#[cfg(test)]
 mod get_chapter_link_modal_contract_tests {
     use super::get_chapter;
 

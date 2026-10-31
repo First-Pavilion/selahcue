@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "task": "17tnw2b13y0",
+  "capture": "Actual get_chapter command returns serialized by serde_json in cfg(test); no JS mock/parser/length reconstruction",
+  "production_baseline": "179dbb97665148170a7d20eb5419fa710b2b3ab1",
+  "recording_source": "81b0d4e6d61749b93df9300819d39583bc12c02a",
+  "recording_source_tree": "7f94f0fa3582a3ee542de596b7e10e354ca1ce7d",
+  "diagnostic_commit": "3faf68ce4ac3b1e7ef13a6514cf989eff6cded53",
+  "diagnostic_sole_parent": "81b0d4e6d61749b93df9300819d39583bc12c02a",
+  "diagnostic_only_override": ".github/workflows/ci.yml",
+  "run": 41192240681,
+  "url": "https://github.com/First-Pavilion/selahcue/actions/runs/41192240681",
+  "job": 124511203850,
+  "official_raw_log_sha256": "79ac7fb3b8bba5968234a9b7cf829d1f2dc1e02ac9ef71139c4c69d1e639cffc",
+  "marker": "Y0_ACTUAL_CHAPTER_FIXTURES=",
+  "fixture_sha256": "779143e1a1bddc1d186b5f105df97ffd430fba7adf6035bc55a6d3f272fe9e2d",
+  "fixture_bytes": 17344,
+  "encoding": "Exact UTF-8 JSON marker payload plus one newline; not reformatted or generated locally",
+  "commands": [
+    "cargo test --locked chapter_reply_contract_tests:: -- --nocapture",
+    "cargo test --locked get_chapter_link_modal_contract_tests:: -- --nocapture"
+  ],
+  "observed_tests": {
+    "recorder": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    },
+    "existing_contracts": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "envelope": "Rust Result serde Ok/Err is fixture transport; modal adapter resolves Ok value or rejects Err string, not claimed Tauri IPC framing",
+  "host_response_semantics": "The past-end host selection remains2..10 with actual six-verse Psalm1; clamping is a frontend consumer behavior, not an invented host clamp. WEB Luke17 genuinely omits36 with35/37present.",
+  "coverage_only": true,
+  "history": "Original successful41191713052 captured mandatorysix; optional Matthew17:21 contained21, so original is preserved locally without claiming gap evidence. This recapture corrected only optional eighthinput to repository-proven Luke17:36."
+}
