@@ -343,6 +343,7 @@ def _filter_guard_negative_controls(js):
     """Deliberately broken copies of the real driver text; every one MUST be refused. Each is built
     from the real text with replacements that must apply exactly once (an inapplicable control would
     be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
+    js = _strip_js_comments(js)
     ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
 
     def call(fn, var):
@@ -353,6 +354,13 @@ def _filter_guard_negative_controls(js):
             raise AssertionError("negative control cannot apply: %r matches %d times" % (old, text.count(old)))
         return text.replace(old, new)
 
+    def binding(text, var, selector, replacement):
+        pattern = re.compile(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])" + re.escape(selector) + r"\1\s*;")
+        matches = list(pattern.finditer(text))
+        if len(matches) != 1:
+            raise AssertionError("negative control cannot apply: %s canonical binding matches %d times" % (var, len(matches)))
+        return pattern.sub(lambda match: replacement, text, count=1)
+
     def crossed(t):
         t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
         t = sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wPsHoverSel"))
@@ -362,7 +370,7 @@ def _filter_guard_negative_controls(js):
         ("D1 aliasing: the PSC-005 guard is fed the TD-012 variable",
          lambda t: sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "wTdHoverSel"))),
         ("D2 reassignment: wTbGlHoverSel is reassigned after its declaration",
-         lambda t: sub(t, 'var wTbGlHoverSel = ".tb-golive:hover";',
+         lambda t: binding(t, "wTbGlHoverSel", ".tb-golive:hover",
                        'var wTbGlHoverSel = ".tb-golive:hover";\n        wTbGlHoverSel = ".tb-golive";')),
         ("D3 block-comment decoy: guard fed a decoy variable whose lookup exists only in a comment",
          lambda t: sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wTbGlAlt"))
@@ -380,7 +388,7 @@ def _filter_guard_negative_controls(js):
          lambda t: sub(t, "var wTsHoverRule = __cssRule(wTsHoverSel);",
                        "var wTsHoverRule = __cssRule(wTsHoverSel); var wTsHoverRule2 = __cssRule(wTsHoverSel);")),
         ("selector variable no longer bound to a string literal",
-         lambda t: sub(t, 'var wTdHoverSel = ".td-save-cta:hover";', "var wTdHoverSel = pickSelector();")),
+         lambda t: binding(t, "wTdHoverSel", ".td-save-cta:hover", "var wTdHoverSel = pickSelector();")),
         ("failure message reads another site's variable",
          lambda t: sub(t, "__cssFilterFound(wPsHoverSel)", "__cssFilterFound(wTdHoverSel)")),
         ("a call site is deleted",
@@ -405,22 +413,21 @@ def _filter_guard_negative_controls(js):
         ("wPpGenHoverSel", ".pp-generate:hover", ".pp-generate"),
     ]
     for var, selector, other in literal_sites:
-        before = 'var ' + var + ' = "' + selector + '";'
         controls.extend([
             ("AYETE existing clean selector: " + var,
-             lambda t, old=before, v=var, value=other: sub(t, old, 'var ' + v + ' = "' + value + '";')),
+             lambda t, v=var, s=selector, value=other: binding(t, v, s, 'var ' + v + ' = "' + value + '";')),
             ("AYETE stale selector: " + var,
-             lambda t, old=before, v=var, value=selector: sub(t, old, 'var ' + v + ' = "' + value + '__stale__";')),
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = "' + s + '__stale__";')),
             ("AYETE alias binding: " + var,
-             lambda t, old=before, v=var, value=selector: sub(t, old, 'var ' + v + ' = __ayeteAlias; var __ayeteAlias = "' + value + '";')),
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = __ayeteAlias; var __ayeteAlias = "' + s + '";')),
         ])
         accepted.extend([
             ("AYETE single quotes: " + var,
-             lambda t, old=before, v=var, value=selector: sub(t, old, "var " + v + " = '" + value + "';")),
+             lambda t, v=var, s=selector: binding(t, v, s, "var " + v + " = '" + s + "';")),
             ("AYETE spacing: " + var,
-             lambda t, old=before, v=var, value=selector: sub(t, old, 'var   ' + v + '   =   "' + value + '"  ;')),
+             lambda t, v=var, s=selector: binding(t, v, s, 'var   ' + v + '   =   "' + s + '"  ;')),
             ("AYETE commented decoy: " + var,
-             lambda t, old=before, v=var: sub(t, old, '/* var ' + v + ' = ".decoy"; */\n' + old)),
+             lambda t, v=var, s=selector: binding(t, v, s, '/* var ' + v + ' = ".decoy"; */\nvar ' + v + ' = "' + s + '";')),
         ])
     return ([(name, build(js)) for name, build in controls],
             [(name, build(js)) for name, build in accepted])

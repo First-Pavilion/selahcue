@@ -94,7 +94,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: a checker-only benign PASS is insufficient when control constructors still search an exact double-quoted definition; valid quoting/spacing can then fail the gate itself. New AYETE constructors must not regress legitimate input syntax.
 - Change or investigation: add a check that existing accepted harmless inputs remain constructible by the actual negative/benign control builders. This tests real self-test behavior without recursion, a new parser or any browser/source-guard bypass. Preserve candidate47a pin logic and all2612 browser assertions; prepare actual prebrowser RED before correcting fixture replacements.
 - Verifier executed: stdlib AST/full baseline/static; bounded hosted actual self-test constructor regression.
-- Result: Pending actual observation; no fixture correction before RED. Original exposure and first source-resolution failure remain separately preserved.
+- Result: Actual hosted41174198471 on3fa1b761 exits1 with named benign control construction failure for valid single-quoted TD binding, no Chrome started; exact double-quote constructor matched0. This is a fixture/selftest regression, separately classified from original selector exposure and earlier launcher source-isolation setup failure.
 - New evidence: filter-selector-pins/benign-red receipts/raw and current bounded ledger.
 - Decision: iterate
 
@@ -106,6 +106,16 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Verifier executed: actual RED/full witness/raw classification, Python AST/unchanged browser/helper source and baseline diffcheck; focused current checker/whole-browser GREEN and sensitive pin removal/unsafe PSC checks next.
 - Result: Static preparation PASS; current hosted runtime/full normal/four independent reviews pending.
 - New evidence: filter-selector-pins/red-attempt1 and red-attempt2 official raw/metadata/hash receipts, current source/diagnostic proof.
+- Decision: iterate
+
+### Iteration 4 — format-tolerant fixtures and current verification
+
+- Target criterion: C-002 through C-005 readiness.
+- Hypothesis: replacing canonical bindings by existing bounded regex after comment stripping retains their independent values and exact-one requirement while allowing accepted quote/spacing/comment variations through the whole actual self-test.
+- Change or investigation: use a narrow literal-binding fixture replacement helper for the two old incidental exact-text builders and all new literal cases; preserve all27 invalid inputs/16benign inputs and full-selftest construction check. No real checker/browser semantics beyond the explicit five pins, no JavaScript parser/data-flow expansion.
+- Verifier executed: actual benign constructor RED/raw, Python AST/unchanged CSS_SRC/STUB/DRIVER/count/full baseline; current hosted checker/full browser/sensitivity and normal CI to follow fresh target integration.
+- Result: Static preparation PASS; current runtime/CI/four reviews pending. Maximum8 remains unchanged.
+- New evidence: filter-selector-pins/benign-red.log and current source/diagnostic receipts.
 - Decision: iterate
 
 ## Risks and rollback
