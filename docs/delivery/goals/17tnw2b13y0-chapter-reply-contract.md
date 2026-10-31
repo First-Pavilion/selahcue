@@ -66,7 +66,7 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 |---|---|---|---|---|---|---|
 | C-001 | yes | Fixtures are actual current Rust get_chapter replies, not reconstructed mock output | Hosted pinned operator recorder invoking get_chapter and serde serialization, immutable source/output/blob/hash receipt | All6 required input classes recorded including exact errors, canonical selection/full verses/prev-next; provenance establishes real source and command | recording-v2-ci raw/hash + committed fixtures/get_chapter/provenance.json, actual1+5PASS | PASS |
 | C-002 | yes | Rust serialization remains locked to committed actual-host fixtures | Default Rust contract tests using frozen fixture bytes plus meaningful field/selection/navigation/error mutants and exact restore | Real source output matches all fixtures, mutants genuinely fail, original source restored; existing Rust contracts pass | backend-ci41192600560 raw/hash;9baseline/restored and7mutants each specifically fail newcomparison | PASS |
-| C-003 | yes | Actual headless modal replays the exact same fixtures for required cases | After F31 merge/release, real browser modal requests/replies linked to committed fixture bytes, consumer mutant and positives | Canonical linked references, selection/clamp/navigation and missing/hard error behavior proven; no independent JS parser/length expectation for those cases | Hosted actual modal/full DOM and fixture-consumer sensitivity receipts | PENDING |
+| C-003 | yes | Actual headless modal replays the exact same fixtures for required cases | After F31 merge/release, real browser modal requests/replies linked to committed fixture bytes, consumer mutant and positives | Canonical linked references, selection/clamp/navigation and missing/hard error behavior proven; no independent JS parser/length expectation for those cases | Actual modal2906/0 atffd/41210918334; exact75new+2831old PASS, fullrequest/error/gap/selection premises; phase7consumer sensitivity pending | PASS |
 | C-004 | yes | Final current-source normal integration gates and preserved source boundaries pass | Exact-source full normal operator/Rust/RELEASE/native/headless gates plus measured assertion counts and complete source/component proof | Required affected gates succeed; old assertions preserved, skips/platform limits explicit, unrelated main bytes unchanged | Normal metadata/raw, full patch/component/provenance proof | PENDING |
 | C-005 | yes | Four final independent reviews and actual merged tree/QA verified | Root Cody/Quinn/Vera/Shadow reports, current integration tree/parents proof and exact linked-ticket qa readback | No unresolved finding, reviewed result merged, qa persisted | Root review/merge/QA receipts | PENDING |
 
@@ -137,6 +137,16 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - Verifier executed: static Python AST/scope/source reconstruction and fixture hashes; hosted full behavior-count measurement pending. Existing pin deliberately2831 until actual count observed.
 - Result: actual measurement41210322733 completed2891checks/4behaviorFAIL, all4WEBgap; other56new and2831old assertionsPASS plus old2831countguard. Source diagnosis: the existing mockhost V advertises onlyKJV, so the actual modal correctly has noWEBoption; assigningWEB silently becomes empty and strictlookup refuses unrecordedNone. Corrected fixture setup by real render(V) with recorded installedtranslations, restore originalhostlist afterward, and add actualoffered-option plus35/37/non36premises. No production change or assertion weakening, no countpin yet; corrected fullmeasurement pending.
 - New evidence: chapter-reply-contract/implement_modal_replay.py; forthcoming exact-source hosted measurement receipt.
+- Decision: iterate
+
+### Iteration 7
+
+- Target criterion: C-003 and C-004.
+- Hypothesis: pinning only the actual complete measured2906 count keeps all existing/new assertions, while meaningful fixture-bypass and actual modal-consumer mutations establish sensitivity and exact restoration.
+- Change or investigation: corrected hosted41210918334 atffd/9fd8 completed2906checks/0behaviorFAIL, all75new+2831oldPASS including offered/selectedWEB, exactrequest/reply hits, fulltuples/gap35/37/non36, canonicalselection/clamp/errors/cancellation; soleold2831strictcountguard failed. Updated only observed count2906 and this ledger. Fresh actualmain remainsadd4702e, already integrated. Original8/companion/provenance unchanged; retained7backendmutants source/component evidence remains explicit.
+- Verifier executed: independent officialraw/metadata/hash and full namedactualassertions classification; static AST/scope/Goal/formatter checks. Fresh final normal and bounded meaningful frontend mutants/exact restoration pending.
+- Result: actual modal replay coverage PASS; currentnormal/integration and consumer sensitivity pending, no productRED or finalcompletion claim.
+- New evidence: chapter-reply-contract/modal-measurement-v2-classification.json and officialarchive; forthcoming currentnormal/mutation/runtime/component receipts.
 - Decision: iterate
 
 ## Risks and rollback

@@ -2059,6 +2059,10 @@ EXPECTED_MIN_CHECKS = 2810
 # Hosted41199766261 actually measured2831/0; only stale2810count exited4.
 # Both actual target and F31 assertions remain unchanged by this observed pin.
 EXPECTED_MIN_CHECKS = 2831
+# 17tnw2b13y0 corrected hosted fixture replay41210918334 actually measured
+# 2906/0: all2831 existing and75 real-host fixture/modal assertions PASS.
+# Only the stale2831 count failed. No assertions or runtime budgets change here.
+EXPECTED_MIN_CHECKS = 2906
 
 
 def find_chrome():
