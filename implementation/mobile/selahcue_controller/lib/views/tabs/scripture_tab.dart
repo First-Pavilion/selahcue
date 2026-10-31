@@ -187,17 +187,12 @@ class _ScriptureTabState extends State<ScriptureTab> {
     final current = options.contains(_translation)
         ? _translation
         : options.first;
-    // A stage/go-live command is still on the wire — a tap must not accept a
-    // second one while it is unresolved (17tnw2ay2pq, follow-up to the
-    // act()-level guard in 17tnw2ay2kk). This tab does not gate on `syncing`
-    // (act() already backstops that, see live_controller.dart's own note),
-    // but `busy` still clears well short of needing a reconnect (bounded by
-    // the in-flight command's own round trip, the refresh() that follows
-    // it, and any wait behind a call already in flight — each call capped at
-    // `commandTimeout` from its own turn start, so not "well under" one
-    // window; see session.dart), so it is worth surfacing here rather
-    // than leaving every tap silently dropped.
+    // Audience actions reflect the same busy/syncing guard as act();
+    // browsing stays available while the host catches up.
+    final syncing = widget.live.syncing;
     final busy = widget.live.busy;
+    final disabled = syncing || busy;
+    final disabledReason = syncing ? 'unavailable while reconnecting' : 'sending…';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -286,7 +281,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
             color: DesignTokens.d2Primary,
           ),
         if (_chapter != null) _chapterNav(_chapter!),
-        Expanded(child: _body(view, busy)),
+        Expanded(child: _body(view, disabled, disabledReason)),
         Padding(
           padding: const EdgeInsets.fromLTRB(
             SelahSpace.gutter,
@@ -294,12 +289,17 @@ class _ScriptureTabState extends State<ScriptureTab> {
             SelahSpace.gutter,
             SelahSpace.md,
           ),
-          child: Text(
-            busy
-                ? 'Sending… controls are disabled until the command finishes.'
-                : 'Tap a verse to stage · double-tap to send live',
-            style: SelahType.caption.copyWith(
-              color: DesignTokens.d2TextSecondary,
+          child: Opacity(
+            opacity: disabled ? 0.4 : 1,
+            child: Text(
+              syncing
+                  ? 'Syncing live state… controls are disabled until this device is back in step with the desktop.'
+                  : busy
+                  ? 'Sending… controls are disabled until the command finishes.'
+                  : 'Tap a verse to stage · double-tap to send live',
+              style: SelahType.caption.copyWith(
+                color: DesignTokens.d2TextSecondary,
+              ),
             ),
           ),
         ),
@@ -348,7 +348,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
     ),
   );
 
-  Widget _body(OperatorStateView? view, bool busy) {
+  Widget _body(OperatorStateView? view, bool disabled, String disabledReason) {
     final ch = _chapter;
     if (ch != null) {
       return ListView.separated(
@@ -365,17 +365,20 @@ class _ScriptureTabState extends State<ScriptureTab> {
           final ref = _verseRef(v);
           final staged = view?.stagedScripture == ref;
           final live = view?.liveScripture == ref;
-          return _VerseRow(
-            verse: v,
-            staged: staged,
-            live: live,
-            onTap: busy ? null : () => _stageVerse(v),
-            onDoubleTap: busy ? null : () => _liveVerse(v),
+          return Opacity(
+            opacity: disabled ? 0.4 : 1,
+            child: _VerseRow(
+              verse: v,
+              staged: staged,
+              live: live,
+              onTap: disabled ? null : () => _stageVerse(v),
+              onDoubleTap: disabled ? null : () => _liveVerse(v),
+            ),
           );
         },
       );
     }
-    if (_fetchFailed) return _fallback(busy);
+    if (_fetchFailed) return _fallback(disabled, disabledReason);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(SelahSpace.section),
@@ -389,7 +392,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
   }
 
   /// Old-host / bad-reference fallback: stage the typed reference directly.
-  Widget _fallback(bool busy) => Center(
+  Widget _fallback(bool disabled, String disabledReason) => Center(
     child: Padding(
       padding: const EdgeInsets.all(SelahSpace.gutter),
       child: Column(
@@ -409,8 +412,8 @@ class _ScriptureTabState extends State<ScriptureTab> {
             children: [
               SelahButton(
                 label: 'Stage',
-                disabledReason: 'sending…',
-                onPressed: busy
+                disabledReason: disabledReason,
+                onPressed: disabled
                     ? null
                     : () {
                         final ref = _ctrl.text.trim();
@@ -424,8 +427,8 @@ class _ScriptureTabState extends State<ScriptureTab> {
               SelahButton(
                 label: 'Live',
                 variant: SelahButtonVariant.success,
-                disabledReason: 'sending…',
-                onPressed: busy
+                disabledReason: disabledReason,
+                onPressed: disabled
                     ? null
                     : () {
                         final ref = _ctrl.text.trim();

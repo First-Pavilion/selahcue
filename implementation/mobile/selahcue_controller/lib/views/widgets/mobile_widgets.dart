@@ -528,12 +528,17 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     Map<String, dynamic> Function() intent, {
     bool immediate = false,
   }) {
-    // Disabled while state is unknown (syncing) or while a command this
-    // strip (or any other control) sent is still on the wire (busy) — a tap
-    // that lands here must not look live while it would only be dropped.
-    if (widget.live.syncing || widget.live.busy) return null;
+    // Unknown state blocks both steps. Busy blocks only a host send; the
+    // first destructive tap can still arm locally and pause its window.
+    final sends = immediate || _armed?.which == which;
+    if (widget.live.syncing || (widget.live.busy && sends)) return null;
     return () {
       final armed = _armed;
+      // Recheck at tap time in case a previously built callback is retained.
+      if (widget.live.syncing ||
+          (widget.live.busy && (immediate || armed?.which == which))) {
+        return;
+      }
       // An existing arm wins over [immediate]. If the host moved while this
       // control sat armed, the intent the operator actually expressed is still
       // the one to honour — never the one the new state happens to offer.
