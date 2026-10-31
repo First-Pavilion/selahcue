@@ -11,7 +11,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b1f31
 - Created: 2026-10-31
 - Updated: 2026-10-31
-- Maximum iterations: 8
+- Maximum iterations: 12
 - Independent verification required: yes
 
 ## Objective
@@ -65,10 +65,10 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | CSSOM and raw filter candidates cover guarded compound plus hover for all approved forms | Real CSSOM/raw/composed cases and actual browser hover premises | List-first, nesting, is/not and ancestor hazards refused in both halves as applicable | Hosted tests-first RED/current GREEN | PENDING |
-| C-002 | yes | Raw dropped/nonmatching hazards remain caught and clean forms remain accepted | None/backdrop/unrelated-selector/condition/parser controls with existing siblings | No new clean FAIL, no loss of conservative all-block/condition-blind behavior | Actual browser/full-driver raw | PENDING |
+| C-002 | yes | Raw dropped/nonmatching hazards remain caught and clean forms remain accepted | None/backdrop/unrelated-selector/condition/parser controls with existing siblings | No new clean FAIL, no loss of conservative all-block/condition-blind behavior | Current S2 review/source proof; hosted reproduction next | FAIL |
 | C-003 | yes | Controls detect candidacy reversion and exact restoration passes full siblings | Current-source CSSOM/raw/list/nested/is reversion mutants | Intended failures, actual-source/dist identical restoration, complete clean count | Exact-parent/raw/hash chain | PENDING |
 | C-004 | yes | Current normal affected CI succeeds on final integrated source | Full configured operator/Chrome/WebKit/Rust/native/launcher gates | All selected jobs pass, count measured, skipped domains/platforms explicit | Official normal metadata/raw | PENDING |
-| C-005 | yes | Four independent current-source reviews pass | Root-owned Cody/Quinn/Vera/Shadow and author remediation | No unresolved blocking finding | Root reports/consolidation | PENDING |
+| C-005 | yes | Four independent current-source reviews pass | Root-owned Cody/Quinn/Vera/Shadow and author remediation | No unresolved blocking finding | Current Cody/Shadow S2 Changes requested | FAIL |
 
 ## Verification plan
 
@@ -149,6 +149,33 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-forms/review-red.log, review-red-object-proof.json, current-source recovery/normal/mutation receipts.
 - Decision: iterate
 
+### Iteration 8 — completed qualification and S2 Changes requested
+
+- Target criterion: C-003/C-004/C-005 final source3f qualification.
+- Hypothesis: the measured2761 pin and complete current normal/original/S1 mutation/hover chain establish the intended candidate, pending independent requirement review.
+- Change or investigation: source3f integrated actual179dbb; root explicitly authorized auxiliary CLI240to300seconds after finite whole-CLI263/259s observations, preserving12minute job and90second product browser deadlines, all assertions and oldUNKNOWN timeout history. No silent budget reset.
+- Verifier executed: actual normal41190562144, mutants41190855042 and hover41190934247; complete root archives and four independent reviews.
+- Result: Actual current2761/0 normal8success/4skip/WebKit44; CSSOM24/raw35/nesting18/S1combined12 failures each restored2761/0 with17before/after hashes; focused three S1branches4fail each and40realhover/40guardrefusal/5clean PASS. S1 closed. Cody/Shadow then confirmed Medium S2: unmatched opening delimiters still hide later raw blocks. Outcome Changes requested, C-002/C-005 FAIL; old passing cases do not close S2.
+- New evidence: filter-selector-forms/normal-final-ci, mutations-final-ci, hover-final-ci and reviews/17tnw2b1f31-shadow.md. Default37,545byte patch and full-index37,673byte patch differ only index headers, not source objects.
+- Decision: handoff
+
+## Explicit owner-authorized bounded replan
+
+- Authority: root's explicit technical replan under the user's valid-review-remediation instruction, recorded2026-10-31 after S2 exhausted original8iterations. Preserve iterations1–8 and their Changes requested outcome; SAME task/Goal/PR, no reset or acceptance relaxation.
+- Maximum changes **8to12**, exactly four additional materially evidenced steps:9bounded actual S2 tests-first current-versus-previous RED/controls;10minimal conservative correction plus actual GREEN/full-count measurement;11exact observed pin/currentnormal/opening-delimiter and retained original/S1mutants/exact17restore/fullsiblings;12four independent current-source re-reviews and closure.
+- Full parser/new CSS policy, global speculative clean rejection, assertion deletion and unsupported gate bypass remain prohibited. Product90s/job12min and explicitly authorized auxiliary300s bounds remain unchanged.
+- If the new bound or no-progress rule is reached, return concrete remaining predicate for explicit root replan. No silent iteration13, scope expansion or replacement Goal.
+
+### Iteration 9 — S2 tests-first opening-delimiter recovery
+
+- Target criterion: C-002/C-005.
+- Hypothesis: positive unresolved paren/bracket depth in an unrelated prefix hides subsequent raw dropped/inactive hazards while the actual previous raw helper still refuses them; valid balanced quoted/escaped/function and clean none/backdrop controls must remain passing.
+- Change or investigation: read full S2 review, verify current source paths, amend this child before substantive step9 and structurally validate. Prepare only opening-prefix cases in the existing committed recovery block; current guard/CSS_SRC/count unchanged before bounded actual current-versus-previous RED.
+- Verifier executed: Goal amendment structural validation, static source/unchanged guard proof, then actual hosted small fixture RED/controls.
+- Result: Preparation only; no S2 correction or new full-count claim before qualified actual RED. Original2761 assertion behavior remains preserved; new complete count is unknown until actual full execution.
+- New evidence: filter-selector-forms/S2 small diagnostic/object/raw receipts.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: broadening background instead of filters, missing nested parent context, raw parser drops a declaration or scopes conditions, class-prefix false positive, fixture hover is not real, or caching makes CSS mutations stale. Separate filter candidacy, literal browser premises, real hover and per-half mutation controls address the supported boundary.
@@ -157,7 +184,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 ## Pause and escalation conditions
 
 - Do not implement before qualified hosted RED. Return exact owner boundary if full task cannot be met within unchanged scope; no new parser/policy invented to bypass a failing gate.
-- Maximum8 and no-progress limits apply; preserve all actual failures/partial/setup outcomes and stop for root replan if exhausted.
+- Original maximum8 and its completed outcome remain historical. Explicit root replan authorizes maximum12 and the four defined additional steps; no-progress limits still apply. Preserve all actual failures/partial/setup outcomes and stop for root replan if exhausted.
 
 ## Final evaluation
 
@@ -165,5 +192,5 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Validator result: Structural validation before tests; runtime/reviews pending.
 - Independent verification result: Pending all4 root-owned roles.
 - Terminal state: ACTIVE, tests-first preparation.
-- Remaining failed or blocked criteria: C-001 through C-005 pending.
+- Remaining failed or blocked criteria: C-002/C-005 FAIL for current S2; C-001/C-003/C-004 pending final corrected-source gates.
 - ClickUp final evidence comment: Root owns tracker and final QA readback.

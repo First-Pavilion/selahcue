@@ -14044,6 +14044,8 @@ DRIVER = r"""
           var prefixes = [
             ["stray_paren", ".__f31_unrelated__{bad:);}"],
             ["stray_bracket", ".__f31_unrelated__{bad:];}"],
+            ["open_paren", ".__f31_unrelated__{bad:(;}"],
+            ["open_bracket", ".__f31_unrelated__{bad:[;}"],
             ["bad_string_newline", ".__f31_unrelated__{bad:\"unterminated\n;}"],
             ["balanced_value", ".__f31_unrelated__{color:rgb(1,2,3);content:\"}])\";--x:\"line\\\ncontinued\";}"]
           ];
