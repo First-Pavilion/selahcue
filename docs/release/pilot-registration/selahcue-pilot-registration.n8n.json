@@ -25,8 +25,21 @@
             {
               "fieldLabel": "platform",
               "fieldName": "platform",
-              "fieldType": "hiddenField",
-              "fieldValue": ""
+              "fieldType": "dropdown",
+              "requiredField": true,
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Windows"
+                  },
+                  {
+                    "option": "Ubuntu"
+                  },
+                  {
+                    "option": "macOS"
+                  }
+                ]
+              }
             },
             {
               "fieldLabel": "Full name",

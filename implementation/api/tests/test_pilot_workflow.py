@@ -66,8 +66,13 @@ def test_production_hidden_fields_and_supported_path_match_runtime_probe():
     assert trigger["options"]["path"] == "selahcue-pilot-registration"
     assert "path" not in trigger
     hidden = [value for value in trigger["formFields"]["values"] if value["fieldType"] == "hiddenField"]
-    assert {value["fieldName"] for value in hidden} == {"registration_id", "platform"}
+    assert {value["fieldName"] for value in hidden} == {"registration_id"}
     assert all(value["fieldValue"] == "" for value in hidden)
+    platform = next(value for value in trigger["formFields"]["values"] if value["fieldLabel"] == "platform")
+    assert platform["fieldType"] == "dropdown"
+    assert platform["requiredField"] is True
+    assert platform["fieldOptions"]["values"] == [{"option": value} for value in ("Windows", "Ubuntu", "macOS")]
+    assert "defaultValue" not in platform  # Only the actual query may preselect an OS.
 
 
 def test_boolean_if_uses_the_unary_descriptor_required_by_n8n_runtime():
@@ -87,7 +92,13 @@ def test_validation_requires_stable_identity_and_explicit_deployment_configurati
     assert result["valid"] is True
     assert result["payload"]["email"] == "test@example.invalid"
     assert result["payload"]["registration_id"] == form()["registration_id"]
+    for platform in ("Windows", "Ubuntu", "macOS"):
+        selected = run_code(configured_code(), form(platform=platform))["result"][0]["json"]
+        assert selected["valid"] is True
+        assert selected["payload"]["platform"] == platform
+        assert selected["payload"]["registration_id"] == form()["registration_id"]
     for changes in ({"registration_id": ""}, {"registration_id": "pilot-execution-123"}, {"platform": ""},
+                    {"platform": "Android"}, {"platform": ["Windows", "Ubuntu"]},
                     {"Full name": "a" * 201}, {"Email": "private-secret"}):
         invalid = run_code(configured_code(), form(**changes))["result"][0]["json"]
         assert invalid["valid"] is False
@@ -127,4 +138,3 @@ def test_valid_max_length_literal_email_passes_workflow_row_boundary(pilot_polic
     result = run_code(check, reserved, data)
     assert "error" not in result
     assert result["result"][0]["json"]["sheet_write"] == reserved["sheet_write"]
-

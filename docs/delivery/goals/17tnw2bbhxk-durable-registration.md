@@ -101,9 +101,17 @@ Verified origin/main add4702e3474fb9c6c793beccbd2d38b59993db0 includes the pure 
 - Hypothesis: the unary boolean If descriptor must carry singleValue=true so strict validation does not treat the empty right operand as a boolean.
 - Change or investigation: root's actual n8n 2.45.7 mocked graph reproduced the missing-descriptor error; generator fixed and regression control added. Privacy execution-retention settings stay unchanged.
 - Verifier executed: current workflow structure/Code suite; root reruns pinned n8n full graph with synthetic callback/Sheet mocks.
-- Result: runtime rerun pending; no live or full-graph success claim.
+- Result: root subsequently verified both saved and Sheet-failure retry completions on the prior export using mocked transport nodes. Real HTTP authentication and Google persistence remain unverified. Cody's required visible-platform finding is addressed below; its updated runtime rerun remains pending.
 - New evidence: import validation alone does not execute strict If operand validation.
 - Decision: handoff.
+
+### Required review remediation — Cody round 1
+
+- Finding: the marketing page promises platform confirmation, but the original export hid platform; reviewers also found a blank line at the new workflow test file's EOF, invalidating the earlier diff-check claim for that snapshot.
+- Change: only the stable UUID remains hidden. A required visible platform dropdown offers Windows, Ubuntu and macOS, using identical label/name `platform` and no configured default. Existing query fields, strict enum validation and server payload binding stay intact. Removed the extra EOF blank line.
+- Red control: the revised workflow test failed with platform still hidden (1 failed, 6 passed); two narrower invocations hit the repository's session catalogue fixture without a DB-marked test, so the full workflow module was used to initialize its synthetic schema.
+- Verifier: current workflow/service/race/contract and affected integration checks, diff check against the PR base, plus root's pinned n8n 2.45.7 visible-prefill and graph controls.
+- Result: PostgreSQL 17 affected checks PASS (107 tests, 57 subtests); full PR diff against base passes `git diff --check`, and goal structure validates. Updated-runtime verification remains pending. C-003/C-004 remain PENDING until coordinator evidence and four independent rechecks are current.
 
 ## Risks and rollback
 

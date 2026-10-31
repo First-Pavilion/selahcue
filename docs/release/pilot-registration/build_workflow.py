@@ -42,8 +42,13 @@ def completion(name, x, y, title, message):
 
 
 def build():
-    fields = [{"fieldLabel": key, "fieldName": key, "fieldType": "hiddenField", "fieldValue": ""}
-              for key in ("registration_id", "platform")]
+    fields = [{"fieldLabel": "registration_id", "fieldName": "registration_id",
+               "fieldType": "hiddenField", "fieldValue": ""},
+              # Keep label and output name identical for the pinned 2.2 query
+              # prefill contract. The user sees and confirms the selected OS.
+              {"fieldLabel": "platform", "fieldName": "platform", "fieldType": "dropdown",
+               "requiredField": True, "fieldOptions": {"values": [
+                   {"option": value} for value in ("Windows", "Ubuntu", "macOS")]}}]
     fields += [{"fieldLabel": label, "fieldType": "email" if label == "Email" else "text",
                 "requiredField": label != "Phone (optional)"}
                for label in ("Full name", "Email", "Phone (optional)", "Church name", "Role at church", "Church city", "Church country")]
