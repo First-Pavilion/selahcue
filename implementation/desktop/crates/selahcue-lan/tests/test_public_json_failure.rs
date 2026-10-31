@@ -1,0 +1,203 @@
+//! Public helpers must not require callers to remember transport-specific redaction.
+//! Ungated: this boundary also exists when the server/TLS feature is disabled.
+#![allow(clippy::unwrap_used)]
+
+use selahcue_lan::protocol::{from_json, to_json, Command, Hello, Request, ServerMessage};
+use serde::Serialize;
+use std::error::Error;
+
+const SECRET: &str = "PRIVATE-SERMON-9f3a-PAIR-TOKEN";
+const NUMBER: &str = "4815162342";
+
+struct ParseCase {
+    name: &'static str,
+    text: String,
+    secret: &'static str,
+    raw: fn(&str) -> serde_json::Error,
+    shown: fn(&str) -> Vec<String>,
+}
+
+fn renderings(error: &dyn Error) -> Vec<String> {
+    let mut out = vec![
+        error.to_string(),
+        format!("{error:?}"),
+        format!("{error:#?}"),
+    ];
+    let mut cause = error.source();
+    for _ in 0..8 {
+        let Some(next) = cause else { return out };
+        out.extend([next.to_string(), format!("{next:?}"), format!("{next:#?}")]);
+        cause = next.source();
+    }
+    assert!(
+        cause.is_none(),
+        "the JSON failure source chain must terminate"
+    );
+    out
+}
+
+fn raw<T: serde::de::DeserializeOwned + std::fmt::Debug>(text: &str) -> serde_json::Error {
+    serde_json::from_str::<T>(text).unwrap_err()
+}
+
+fn shown<T: serde::de::DeserializeOwned + std::fmt::Debug>(text: &str) -> Vec<String> {
+    renderings(&from_json::<T>(text).unwrap_err())
+}
+
+fn cases() -> Vec<ParseCase> {
+    vec![
+        ParseCase {
+            name: "transcript shape",
+            text: format!(
+                r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":"{SECRET}"}}}}"#
+            ),
+            secret: SECRET,
+            raw: raw::<ServerMessage>,
+            shown: shown::<ServerMessage>,
+        },
+        ParseCase {
+            name: "command tag",
+            text: format!(r#"{{"cmd":"{SECRET}"}}"#),
+            secret: SECRET,
+            raw: raw::<Command>,
+            shown: shown::<Command>,
+        },
+        ParseCase {
+            name: "pairing code numeric",
+            text: format!(
+                r#"{{"hello":"pair","v":2,"code":{NUMBER},"device_name":"phone","platform":"android"}}"#
+            ),
+            secret: NUMBER,
+            raw: raw::<Hello>,
+            shown: shown::<Hello>,
+        },
+        ParseCase {
+            name: "token numeric",
+            text: format!(r#"{{"hello":"auth","v":2,"device_id":"phone","token":{NUMBER}}}"#),
+            secret: NUMBER,
+            raw: raw::<Hello>,
+            shown: shown::<Hello>,
+        },
+        ParseCase {
+            name: "request id",
+            text: format!(r#"{{"v":2,"request_id":"{SECRET}","command":{{"cmd":"get_state"}}}}"#),
+            secret: SECRET,
+            raw: raw::<Request>,
+            shown: shown::<Request>,
+        },
+    ]
+}
+
+fn assert_safe(label: &str, text: &str, secret: &str) {
+    let fragments: &[&str] = if secret == NUMBER {
+        &[NUMBER, "4815", "162342"]
+    } else {
+        &[SECRET, "PRIV", "SERMON", "9f3a", "PAIR", "TOKEN"]
+    };
+    for piece in fragments {
+        assert!(
+            !text.contains(piece),
+            "{label}: public JSON error leaked `{piece}`: {text}"
+        );
+    }
+}
+
+#[derive(Debug)]
+struct SensitiveSerializeFailure;
+impl Serialize for SensitiveSerializeFailure {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom(SECRET))
+    }
+}
+
+#[test]
+fn raw_parse_premises_really_quote_each_sensitive_value() {
+    let all = cases();
+    assert_eq!(all.len(), 5);
+    for case in all {
+        let error = (case.raw)(&case.text);
+        assert!(error.is_data(), "{}", case.name);
+        assert!(error.to_string().contains(case.secret), "{}", case.name);
+        assert!(format!("{error:?}").contains(case.secret), "{}", case.name);
+    }
+}
+
+#[test]
+fn raw_serialize_premise_really_quotes_the_custom_sensitive_message() {
+    let raw = serde_json::to_string(&SensitiveSerializeFailure).unwrap_err();
+    assert!(raw.is_data());
+    assert!(raw.to_string().contains(SECRET));
+    assert!(format!("{raw:?}").contains(SECRET));
+}
+
+#[test]
+fn public_parse_display_never_quotes_sensitive_values() {
+    for case in cases() {
+        assert_safe(case.name, &(case.shown)(&case.text)[0], case.secret);
+    }
+}
+#[test]
+fn public_parse_debug_never_quotes_sensitive_values() {
+    for case in cases() {
+        assert_safe(case.name, &(case.shown)(&case.text)[1], case.secret);
+    }
+}
+#[test]
+fn public_parse_alternate_debug_never_quotes_sensitive_values() {
+    for case in cases() {
+        assert_safe(case.name, &(case.shown)(&case.text)[2], case.secret);
+    }
+}
+#[test]
+fn public_parse_source_chain_has_no_sensitive_cause() {
+    for case in cases() {
+        for cause in (case.shown)(&case.text).iter().skip(3) {
+            assert_safe(case.name, cause, case.secret);
+        }
+    }
+}
+#[test]
+fn public_serialize_display_never_quotes_sensitive_values() {
+    let error = to_json(&SensitiveSerializeFailure).unwrap_err();
+    assert_safe("serialize Display", &error.to_string(), SECRET);
+}
+#[test]
+fn public_serialize_debug_never_quotes_sensitive_values() {
+    let error = to_json(&SensitiveSerializeFailure).unwrap_err();
+    assert_safe("serialize Debug", &format!("{error:?}"), SECRET);
+}
+#[test]
+fn public_serialize_alternate_debug_never_quotes_sensitive_values() {
+    let error = to_json(&SensitiveSerializeFailure).unwrap_err();
+    assert_safe("serialize alternate Debug", &format!("{error:#?}"), SECRET);
+}
+#[test]
+fn public_serialize_source_chain_has_no_sensitive_cause() {
+    let error = to_json(&SensitiveSerializeFailure).unwrap_err();
+    for cause in renderings(&error).iter().skip(3) {
+        assert_safe("serialize source", cause, SECRET);
+    }
+}
+#[test]
+fn valid_wire_and_borrowed_decode_remain_exact() {
+    assert_eq!(to_json(&Command::GoLive).unwrap(), r#"{"cmd":"go_live"}"#);
+    assert_eq!(
+        from_json::<Command>(r#"{"cmd":"go_live"}"#).unwrap(),
+        Command::GoLive
+    );
+    let text = r#""borrowed transcript""#;
+    let decoded: &str = from_json(text).unwrap();
+    assert_eq!(decoded, "borrowed transcript");
+    assert_eq!(decoded.as_ptr(), text[1..].as_ptr());
+    let request = r#"{"v":2,"request_id":7,"command":{"cmd":"get_state"}}"#;
+    let decoded: Request = from_json(request).unwrap();
+    assert_eq!(to_json(&decoded).unwrap(), request);
+}
+#[test]
+fn parse_positions_still_match_real_serde_syntax_eof_and_data_errors() {
+    for text in ["{", "{\n broken", "\n 42", r#"{"cmd":"unknown-command"}"#] {
+        let raw = serde_json::from_str::<Command>(text).unwrap_err();
+        let public = from_json::<Command>(text).unwrap_err();
+        assert_eq!((public.line(), public.column()), (raw.line(), raw.column()));
+    }
+}
