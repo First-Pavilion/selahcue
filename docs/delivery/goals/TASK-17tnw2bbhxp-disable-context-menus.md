@@ -96,6 +96,7 @@ Verified at original main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js ope
 - Native smoke did not run. The cua.getApp call stalled for 719.8s and was interrupted; root recovered the UI session and observed that the Mac is locked and automatic unlock failed. The user was asked to unlock it. No bypass, criterion waiver, repeated app-control call or completed native check is claimed.
 - Candidate source hashes: index.html SHA-256 e91f74ff692a0006fe16540a08ebaae8d2adeb69145695391094d1d68beae281; app.js SHA-256 4b5b8797543e273bedbed25ecb27957387f8c76779a9760261733bb3fd56d033. Ad-hoc-signed candidate executable SHA-256 2b9db740af4023a609f70d654288facd2b629a1e763fc6e1b1222faa4e4efd5c. Provenance is retained at /private/tmp/farah-p16-native/provenance.json. Compare final source bytes with those hashes before later native smoke; the earlier pre-sign binary hash is not the signed executable hash.
 - Decision: hand off corrected source for all-four re-review; mandatory native QA remains blocked until unlock and actual candidate interaction.
+- Integrated main `bf8190c26b66cc998d54cc316eeaff6823e0f8ee` with a conflict-free merge because the ticket branch was already published and force-push is prohibited. The resulting source commit is `f0509061058cc815a68fa030cad86bacef4e73f0`, with zero commits behind origin/main. The newly integrated workflow/mobile/API changes do not touch the Operator JS/HTML or browser gate; final dist hashes still exactly match the native candidate above, so no rebuild or repeated stable suite was needed.
 
 ## Risks and rollback
 
