@@ -65,7 +65,7 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | Fixtures are actual current Rust get_chapter replies, not reconstructed mock output | Hosted pinned operator recorder invoking get_chapter and serde serialization, immutable source/output/blob/hash receipt | All6 required input classes recorded including exact errors, canonical selection/full verses/prev-next; provenance establishes real source and command | recording-v2-ci raw/hash + committed fixtures/get_chapter/provenance.json, actual1+5PASS | PASS |
-| C-002 | yes | Rust serialization remains locked to committed actual-host fixtures | Default Rust contract tests using frozen fixture bytes plus meaningful field/selection/navigation/error mutants and exact restore | Real source output matches all fixtures, mutants genuinely fail, original source restored; existing Rust contracts pass | Hosted Rust contract/mutation/restoration logs | PENDING |
+| C-002 | yes | Rust serialization remains locked to committed actual-host fixtures | Default Rust contract tests using frozen fixture bytes plus meaningful field/selection/navigation/error mutants and exact restore | Real source output matches all fixtures, mutants genuinely fail, original source restored; existing Rust contracts pass | backend-ci41192600560 raw/hash;9baseline/restored and7mutants each specifically fail newcomparison | PASS |
 | C-003 | yes | Actual headless modal replays the exact same fixtures for required cases | After F31 merge/release, real browser modal requests/replies linked to committed fixture bytes, consumer mutant and positives | Canonical linked references, selection/clamp/navigation and missing/hard error behavior proven; no independent JS parser/length expectation for those cases | Hosted actual modal/full DOM and fixture-consumer sensitivity receipts | PENDING |
 | C-004 | yes | Final current-source normal integration gates and preserved source boundaries pass | Exact-source full normal operator/Rust/RELEASE/native/headless gates plus measured assertion counts and complete source/component proof | Required affected gates succeed; old assertions preserved, skips/platform limits explicit, unrelated main bytes unchanged | Normal metadata/raw, full patch/component/provenance proof | PENDING |
 | C-005 | yes | Four final independent reviews and actual merged tree/QA verified | Root Cody/Quinn/Vera/Shadow reports, current integration tree/parents proof and exact linked-ticket qa readback | No unresolved finding, reviewed result merged, qa persisted | Root review/merge/QA receipts | PENDING |
@@ -109,10 +109,37 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - New evidence: chapter-reply-contract/recording-v2-ci and recording-v2-classification.json; committed fixtures/get_chapter/{host-replies.json,provenance.json,README.md}; source diff.
 - Decision: iterate
 
+### Iteration 4
+
+- Target criterion: C-002.
+- Hypothesis: the frozen whole-result contract detects actual host field/selection/navigation/error drift and restores cleanly.
+- Change or investigation: no source churn for receipt; official backend41192600560 atf7/001943 soleparent/workflow-only inspected. Actual9baseline/0fail,7mutants fail2/3/3/4/1/1/2 with7/6/6/5/8/8/7positivecontrols, every mutant specifically fails newfrozencomparison. Seven actual exactmainhashrestorations, fixture/teststablechecks and9restored/0fail. Codyearlysourceinspection noactionabledefect explicitlyNOTfinalPass. Source-read plan found realmodalexplicitKJV/defaultNone and second-press canonicalPsalms1:2-6 seams.
+- Verifier executed: official metadata/raw/hash, exactsource/parent/workflowonly and independently recomputed7mutant/original hashes; source-read modal request/consumer paths.
+- Result: C-002 PASS for backend. C003..C005/frontend/finalreviews remainpending.
+- New evidence: chapter-reply-contract/backend-results.json/backend-results-handoff.md/phase2-replay-plan.md.
+- Decision: iterate
+
+### Iteration 5
+
+- Target criterion: C-001 and C-002 companion/default-equivalence boundary needed by C-003.
+- Hypothesis: real get_chapter calls prove default(None) equals explicit KJV for all7captured default requests, and the actual modal-generated confirmation query has a separately captured immutable host reply, avoiding legacy handparser fallback during the second press.
+- Change or investigation: root authorized bounded backend-only companion capture before F31 release. Added cfg(test) whole-result equivalence over actual requests and one actual-command recorder for exact Psalms1:2-6/KJV, derived from current dist/app.js resolveTyped/doLink request. Original8fixturebytes/provenance and production/headless remain unchanged. After actual hosted capture, freeze small companion/provenance and add its Rust comparison within this iteration.
+- Verifier executed: source/Git/static/formatter/Goal checks; actual hosted companion/equivalence capture pending, no local project runtime.
+- Result: preparation only; companion proof remainspending. No productRED or frontendcompletion claim.
+- New evidence: forthcoming chapter-reply-contract/companion-recording metadata/raw/hash and exactsource immutable packet.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: fixture written from mock rather than host, wrapper envelope confused with Tauri IPC, incomplete fields/text/navigation, fixture regenerated to hide drift, frontend bypasses fixture, unrelated main/harness changes, shared-file conflict, skipped final frontend phase.
 - Rollback or recovery: one scoped PR, actual hosted source/output receipts, immutable fixture hashes, direct production command tests, unchanged main-body/source proof, meaningful mutants and exact restoration, explicit phased root release.
+
+## Remaining bounded execution plan
+
+- Iteration5 completes actual companioncapture, qualified frozen companion/provenance and Rust comparison without headless edits.
+- Iteration6, only after actualF31merge/rootrelease: integrate latestmain, actualsamefixture modalreplay and full behavior-count measurement.
+- Iteration7 pins actualmeasuredcount, finalnormal and meaningful frontend sensitivity/restoration with retained backend source/hash proof.
+- Iteration8 allfour independent finalreviews and valid bounded author remediation/re-review. Report an explicit replan need before exceeding8 if newfacts require more; no hidden reset.
 
 ## Pause and escalation conditions
 

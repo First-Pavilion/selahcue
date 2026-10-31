@@ -74,3 +74,62 @@ fn y0_command_serialization_matches_recorded_fixtures() {
         "get_chapter wire payload drifted from the recorded modal contract"
     );
 }
+
+// The real modal replaces a past-end input with this canonical cut-back reference before its
+// second Link press (dist/app.js resolveTyped/doLink). Input only; response is still real host data.
+fn modal_companion_reply() -> serde_json::Value {
+    let reference = "Psalms 1:2-6";
+    let translation = "KJV";
+    let result = get_chapter(reference.to_owned(), Some(translation.to_owned()));
+    assert!(result.is_ok(), "the modal's confirmed Psalm1 range exists");
+    serde_json::json!({
+        "schema_version": 1,
+        "cases": [{
+            "id": "confirmed-past-chapter-end",
+            "request": {"reference": reference, "translation": translation},
+            "result": result,
+        }],
+    })
+}
+
+#[test]
+fn y0_record_modal_companion_and_default_translation_equivalence() {
+    let default_code = selahcue_scripture::Translation::default().code();
+    assert_eq!(
+        default_code, "KJV",
+        "fixture requests record the current default"
+    );
+    let mut compared = 0;
+    for &(id, reference, translation, expected_ok) in &REQUESTS {
+        if translation.is_some() {
+            continue;
+        }
+        let default = get_chapter(reference.to_owned(), None);
+        let explicit = get_chapter(reference.to_owned(), Some(default_code.to_owned()));
+        assert_eq!(
+            default.is_ok(),
+            expected_ok,
+            "default input-class premise: {id}"
+        );
+        assert_eq!(
+            explicit.is_ok(),
+            expected_ok,
+            "explicit input-class premise: {id}"
+        );
+        assert_eq!(
+            serde_json::to_value(default).expect("default result serializes"),
+            serde_json::to_value(explicit).expect("explicit result serializes"),
+            "the modal's explicit KJV must match the captured default(None) result for {id}"
+        );
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 7,
+        "all seven default requests, including both errors, are compared"
+    );
+    println!("Y0_DEFAULT_KJV_EQUIVALENCE={compared}");
+    println!(
+        "Y0_ACTUAL_MODAL_COMPANION_FIXTURES={}",
+        serde_json::to_string(&modal_companion_reply()).expect("actual companion serializes")
+    );
+}
