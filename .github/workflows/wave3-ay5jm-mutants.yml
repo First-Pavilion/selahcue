@@ -1,0 +1,235 @@
+name: wave3 AY5JM widget sensitivity v2
+on:
+  push:
+    branches: [codex/17tnw2ay5jm-widget-sensitivity-v2]
+    paths: [.github/workflows/wave3-ay5jm-mutants.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wave3-ay5jm-widget-sensitivity-v2
+  cancel-in-progress: false
+jobs:
+  widget-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: 8a273682556473117422ba2c02d2ca9b7d52ec19
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only child and check out exact candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-ay5jm-mutants.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Install exact locked dependencies
+        working-directory: implementation/mobile/selahcue_controller
+        run: flutter pub get --enforce-lockfile
+      - name: All 23 scoped widget cases, eight meaningful mutants and exact restoration
+        run: |
+          python3 - <<'PYRUN'
+          import difflib
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          mobile = root / 'implementation/mobile/selahcue_controller'
+          emergency = mobile / 'lib/views/widgets/mobile_widgets.dart'
+          scripture = mobile / 'lib/views/tabs/scripture_tab.dart'
+          tests = ['test/views/emergency_confirm_test.dart', 'test/views/scripture_tab_test.dart']
+          paths = [emergency, scripture, *(mobile / p for p in tests),
+                   mobile / 'lib/controllers/live_controller.dart', mobile / 'lib/models/session.dart',
+                   mobile / 'lib/views/widgets/primitives.dart', mobile / 'pubspec.yaml', mobile / 'pubspec.lock']
+          saved = {p: p.read_bytes() for p in paths}
+          for p, b in saved.items():
+              assert b == subprocess.check_output(['git', 'show', '8a273682556473117422ba2c02d2ca9b7d52ec19:' + str(p.relative_to(root))])
+          hashes = {str(p.relative_to(root)): hashlib.sha256(b).hexdigest() for p, b in saved.items()}
+          receipts = []
+          errors = []
+          EXPECTED_NAMES = ['one tap on Blackout does not black out the audience', 'a second tap confirms and sends the blackout', 'the armed state reverts on its own so it cannot fire later', 'UN-blackout is one tap — recovery is never gated', 'a blackout armed before the desktop blacked out still means BLACKOUT', 'un-blackout stays one tap after the desktop blacks out', 'Clear All also needs a confirming tap', 'emergency controls are disabled while the link is syncing', 'another local arm is available while an emergency send is busy', 'busy Blackout arms locally and waits for confirmation', 'busy Clear all arms locally and waits for confirmation', 'syncing blocks both an armed confirmation and a new clear arm', 'busy state does not grant emergency controls to an Assistant', 'Un-blackout stays send-gated while a command is in flight', 'an armed BLACKOUT survives an UNRELATED command overlapping the confirm window, instead of silently expiring (17tnw2ay2pq review, Sana)', 'a pause-then-resume grants only the time that was left, not a fresh window, and the arm still expires once that runs out', 'a verse that is both staged and live announces "live", not "staged"', 'a verse row is disabled while a command is in flight', 'the fallback Stage/Live buttons are disabled while a command is in flight', 'syncing dims verse rows and disables both gestures until refresh', 'syncing caption dims and explains why Scripture gestures pause', 'syncing disables fallback actions and recovers after fresh state', 'Viewer Scripture remains read only during this UI change']
+          arm = 'busy Blackout arms locally and waits for confirmation'
+          clear = 'busy Clear all arms locally and waits for confirmation'
+          rearm = 'another local arm is available while an emergency send is busy'
+          sync = 'syncing blocks both an armed confirmation and a new clear arm'
+          sync_first = 'emergency controls are disabled while the link is syncing'
+          recovery = 'Un-blackout stays send-gated while a command is in flight'
+          rows = 'syncing dims verse rows and disables both gestures until refresh'
+          caption = 'syncing caption dims and explains why Scripture gestures pause'
+          fallback = 'syncing disables fallback actions and recovers after fresh state'
+          viewer = 'Viewer Scripture remains read only during this UI change'
+          assistant = 'busy state does not grant emergency controls to an Assistant'
+          overlap = ('an armed BLACKOUT survives an UNRELATED command overlapping the '
+                     'confirm window, instead of silently expiring (17tnw2ay2pq review, Sana)')
+          remaining = ('a pause-then-resume grants only the time that was left, not a fresh '
+                       'window, and the arm still expires once that runs out')
+          busy_row = 'a verse row is disabled while a command is in flight'
+
+
+          def audit(stage, before):
+              report = {}
+              for p, b in before.items():
+                  actual = p.read_bytes()
+                  report[str(p.relative_to(root))] = {
+                      'before_sha256': hashlib.sha256(b).hexdigest(),
+                      'after_sha256': hashlib.sha256(actual).hexdigest(), 'changed': actual != b,
+                      'diff': ''.join(difflib.unified_diff(b.decode().splitlines(keepends=True),
+                               actual.decode().splitlines(keepends=True)))}
+              print('AY5JM_FILE_AUDIT=' + json.dumps({'stage': stage, 'files': report}, sort_keys=True), flush=True)
+              return {p for p, b in before.items() if p.read_bytes() != b}
+
+
+          def run(name):
+              before = {p: p.read_bytes() for p in paths}
+              proc = subprocess.run(['flutter', 'test', '--no-pub', *tests, '--machine'], cwd=mobile,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
+              print(f'\n=== {name} exit={proc.returncode} ===\n{proc.stdout}', flush=True)
+              names, done, assertions, printed = {}, {}, {}, {}
+              for line in proc.stdout.splitlines():
+                  try:
+                      e = json.loads(line)
+                  except json.JSONDecodeError:
+                      continue
+                  if not isinstance(e, dict):
+                      continue
+                  if e.get('type') == 'testStart':
+                      names[e['test']['id']] = e['test']['name']
+                  if e.get('type') == 'testDone' and not e.get('hidden', False):
+                      done[e['testID']] = e['result']
+                  if e.get('type') == 'error':
+                      assertions.setdefault(e['testID'], []).append(e.get('error', ''))
+                  if e.get('type') == 'print' and 'testID' in e:
+                      printed.setdefault(e['testID'], []).append(e.get('message', ''))
+              results = {names[k]: v for k, v in done.items() if k in names and not names[k].startswith('loading ')}
+              messages = {names[k]: v for k, v in assertions.items() if k in names}
+              output = {names[k]: v for k, v in printed.items() if k in names}
+              assert set(results) == set(EXPECTED_NAMES), ('setup/missing cases', results)
+              receipts.append({'case': name, 'exit_code': proc.returncode, 'results': results,
+                               'assertions': messages, 'framework_prints': output,
+                               'output_sha256': hashlib.sha256(proc.stdout.encode()).hexdigest()})
+              assert not audit('after-' + name, before), 'test invocation changed tracked source/dependencies'
+              return proc.returncode, results, messages, output
+
+
+          def genuine_widget_assertion(mutant, name, result, messages, output):
+              assert result in {'error', 'failure'}, (name, result)
+              assert messages.get(name), (name, 'no same-test error event')
+              if mutant == 'busy-send-enabled' and name == overlap:
+                  # This unchanged legacy case taps the disabled semantics label before
+                  # asserting its continued arm. Removing busy gating changes that label;
+                  # Flutter's tap finder itself asserts. Require its exact cause, named
+                  # test, widget call and unchanged source location, never generic error.
+                  tokens = (
+                      'The following assertion was thrown running a test:',
+                      'Found 0 widgets with a semantics label named',
+                      'Confirm blackout, sending…',
+                      'used in a call to "tap()"',
+                      'could not find any matching widgets.',
+                      'WidgetController._getElementPoint',
+                      'WidgetController.tap',
+                      'emergency_confirm_test.dart:533:18',
+                      'The test description was:', overlap,
+                  )
+                  matches = [m for m in output.get(name, [])
+                             if all(t in ' '.join(m.split()) for t in tokens)]
+                  assert matches, (name, 'missing exact same-test disabled-control finder assertion')
+                  return {'kind': 'framework-tap-finder-assertion', 'evidence': matches,
+                          'generic_error_alone_accepted': False}
+              evidence = messages.get(name, []) + output.get(name, [])
+              matches = [m for m in evidence if 'Expected:' in m and 'Actual:' in m
+                         and ('TestFailure' in m or result == 'failure')]
+              assert matches, (name, 'missing actual named widget matcher assertion')
+              return {'kind': 'Expected/Actual matcher assertion', 'evidence': matches,
+                      'generic_error_alone_accepted': False}
+
+
+          def once(text, old, new):
+              assert text.count(old) == 1, (old, text.count(old))
+              return text.replace(old, new)
+
+
+          def restore():
+              for p, b in saved.items():
+                  p.write_bytes(b)
+              assert not audit('restored-before-next-invocation', saved)
+
+
+          original_e = emergency.read_text()
+          original_s = scripture.read_text()
+          old_busy = once(original_e, '(widget.live.busy && sends)', 'widget.live.busy')
+          no_busy = once(original_e, '(widget.live.busy && sends)', '(false && sends)')
+          no_busy = once(no_busy, '(widget.live.busy && (immediate || armed?.which == which))',
+                         '(false && (immediate || armed?.which == which))')
+          a = original_e.index('  VoidCallback? _guarded(')
+          b = original_e.index('\n  @override', a)
+          assert original_e[a:b].count('widget.live.syncing') == 2
+          no_sync = original_e[:a] + original_e[a:b].replace('widget.live.syncing', 'false') + original_e[b:]
+          row_callbacks = once(original_s, 'onTap: disabled ? null : () => _stageVerse(v)',
+                               'onTap: false ? null : () => _stageVerse(v)')
+          row_callbacks = once(row_callbacks, 'onDoubleTap: disabled ? null : () => _liveVerse(v)',
+                               'onDoubleTap: false ? null : () => _liveVerse(v)')
+          row_style = once(original_s, 'return Opacity(\n            opacity: disabled ? 0.4 : 1,',
+                           'return Opacity(\n            opacity: 1,')
+          caption_style = once(original_s, 'child: Opacity(\n            opacity: disabled ? 0.4 : 1,',
+                               'child: Opacity(\n            opacity: 1,')
+          caption_text = once(original_s,
+              'Syncing live state… controls are disabled until this device is back in step with the desktop.',
+              'Tap a verse to stage · double-tap to send live')
+          assert original_s.count('onPressed: disabled\n') == 2
+          fallback_callbacks = original_s.replace('onPressed: disabled\n', 'onPressed: widget.live.busy\n')
+          mutants = [
+              ('busy-blocks-local-arm', emergency, old_busy, {arm, clear, rearm}),
+              ('busy-send-enabled', emergency, no_busy, {arm, clear, rearm, recovery, overlap, remaining}),
+              ('emergency-sync-ignored', emergency, no_sync, {sync, sync_first}),
+              ('scripture-row-callbacks-enabled', scripture, row_callbacks, {rows, busy_row}),
+              ('scripture-rows-not-dimmed', scripture, row_style, {rows}),
+              ('scripture-caption-not-dimmed', scripture, caption_style, {caption}),
+              ('scripture-caption-ready-while-syncing', scripture, caption_text, {caption}),
+              ('scripture-fallback-enabled-while-syncing', scripture, fallback_callbacks, {fallback}),
+          ]
+          print('AY5JM_SOURCE_HASHES=' + json.dumps(hashes, sort_keys=True), flush=True)
+          try:
+              code, results, _, _ = run('baseline')
+              assert code == 0 and set(results.values()) == {'success'}, results
+              for name, path, text, expected in mutants:
+                  restore()
+                  path.write_text(text)
+                  print('MUTANT_PATCH ' + name + '\n' + subprocess.check_output(
+                      ['git', 'diff', '--', str(path.relative_to(root))]).decode(), flush=True)
+                  try:
+                      code, results, messages, output = run(name)
+                      assert code != 0, (name, 'survived')
+                      failed = {n for n, v in results.items() if v != 'success'}
+                      assert failed == expected, (name, failed, expected)
+                      receipts[-1]['genuine_assertion_evidence'] = {
+                          n: genuine_widget_assertion(name, n, results[n], messages, output)
+                          for n in sorted(expected)
+                      }
+                      assert results[viewer] == results[assistant] == 'success'
+                      receipts[-1].update(verified=True, required_failures=sorted(expected),
+                                           required_controls=sorted(set(results)-expected))
+                  except Exception as error:
+                      errors.append({'case': name, 'oracle_error': repr(error)})
+                      print('AY5JM_MUTANT_ORACLE_FAILURE=' + json.dumps(errors[-1]), flush=True)
+          finally:
+              restore()
+              code, results, _, _ = run('restored')
+              assert code == 0 and set(results.values()) == {'success'}, results
+              restored = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+              print('AY5JM_RESTORED_HASHES=' + json.dumps(restored, sort_keys=True), flush=True)
+              audit('final-restored-vs-candidate', saved)
+              assert restored == hashes
+              print('AY5JM_MUTATION_RECEIPT=' + json.dumps({'cases': receipts, 'errors': errors,
+                    'restore_identical': True, 'normal_gate': False}, sort_keys=True), flush=True)
+          assert not errors, errors
+          assert sum(r.get('verified', False) for r in receipts) == 8
+          PYRUN
