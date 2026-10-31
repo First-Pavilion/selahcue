@@ -172,7 +172,7 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: positive unresolved paren/bracket depth in an unrelated prefix hides subsequent raw dropped/inactive hazards while the actual previous raw helper still refuses them; valid balanced quoted/escaped/function and clean none/backdrop controls must remain passing.
 - Change or investigation: read full S2 review, verify current source paths, amend this child before substantive step9 and structurally validate. Prepare only opening-prefix cases in the existing committed recovery block; current guard/CSS_SRC/count unchanged before bounded actual current-versus-previous RED.
 - Verifier executed: Goal amendment structural validation, static source/unchanged guard proof, then actual hosted small fixture RED/controls.
-- Result: Preparation only; no S2 correction or new full-count claim before qualified actual RED. Original2761 assertion behavior remains preserved; new complete count is unknown until actual full execution.
+- Result: First actual41192387286 qualifies current34PASS/8opening-prefix raw/composedFAIL versus actualprevious42PASS; S1/clean/quoted/escaped/function controls PASS. Root requests the same positive-depth class with a later closing token after the hidden block, plus an open quote without newline; EOF-only fallback would not guarantee prior raw safety. Extend this same bounded step9 with those cases and balanced nested-function/quoted-opening controls before any guard correction. Original2761 behavior remains preserved; no guessed complete count or arbitrary full-parser claim.
 - New evidence: filter-selector-forms/S2 small diagnostic/object/raw receipts.
 - Decision: iterate
 

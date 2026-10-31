@@ -14046,6 +14046,11 @@ DRIVER = r"""
             ["stray_bracket", ".__f31_unrelated__{bad:];}"],
             ["open_paren", ".__f31_unrelated__{bad:(;}"],
             ["open_bracket", ".__f31_unrelated__{bad:[;}"],
+            ["open_paren_late_close", ".__f31_unrelated__{bad:(;}", ".__f31_late__{bad:);}"],
+            ["open_bracket_late_close", ".__f31_unrelated__{bad:[;}", ".__f31_late__{bad:];}"],
+            ["open_quote", ".__f31_unrelated__{bad:\"unterminated;}"],
+            ["balanced_nested_value", ".__f31_unrelated__{--tokens:fn(a{b});color:rgb(1,2,3);content:\"}])\";}"],
+            ["quoted_open_value", ".__f31_unrelated__{content:\"([\";--tokens:fn([v]);}"],
             ["bad_string_newline", ".__f31_unrelated__{bad:\"unterminated\n;}"],
             ["balanced_value", ".__f31_unrelated__{color:rgb(1,2,3);content:\"}])\";--x:\"line\\\ncontinued\";}"]
           ];
@@ -14055,7 +14060,7 @@ DRIVER = r"""
               ["dropped", target + "{filter:brightness(1.06) not-a-real-css-function();}"],
               ["inactive", "@media(max-width:1px){" + target + "{filter:brightness(1.06);}}"]
             ].forEach(function(hazard) {
-              var fx = __cssFixture(base + hazard[1]);
+              var fx = __cssFixture(base + hazard[1] + (c[2] || ""));
               try {
                 ok(__cssRules(target, fx).length >= 1 && __cssEffectiveFilter(target, fx) === null,
                    "F31 recovery premise/" + c[0] + "/" + hazard[0] + ": the guarded rule is nonvacuous but CSSOM cannot report the hazard");
@@ -14065,7 +14070,7 @@ DRIVER = r"""
                    "F31 recovery composed/" + c[0] + "/" + hazard[0] + ": both registered predicates retain the raw backstop");
               } finally { fx.dispose(); }
             });
-            var clean = __cssFixture(base + target + "{filter:none !important;backdrop-filter:brightness(1.06);}");
+            var clean = __cssFixture(base + target + "{filter:none !important;backdrop-filter:brightness(1.06);}" + (c[2] || ""));
             try {
               ok(!__cssRawHasFilter(target, clean) && __cssFilterGuardOk(target, clean) && __cssNoBrightnessFilter(target, clean),
                  "F31 recovery clean/" + c[0] + ": exact none and backdrop remain harmless despite the unrelated prefix");
