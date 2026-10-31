@@ -1,0 +1,184 @@
+name: wave3 13XZ canonical storage sensitivity
+on:
+  push:
+    branches: [codex/17tnw2b13xz-canonical-sensitivity]
+    paths: [.github/workflows/wave3-13xz-mutants.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wave3-13xz-canonical-sensitivity
+  cancel-in-progress: false
+jobs:
+  canonical-mutants:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: 4e76a71f589b90c5040e1f3fddcd3aa91f105485
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only child and check out exact product candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-13xz-mutants.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - name: Verify exact pinned compiler
+        run: sh scripts/check_toolchain.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop
+          save-if: false
+      - name: All13 siblings, four meaningful mutants and identical restoration
+        run: |
+          python3 - <<'PYRUN'
+          import difflib
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          source = '4e76a71f589b90c5040e1f3fddcd3aa91f105485'
+          controller = root / 'implementation/desktop/crates/selahcue-app/src/controller.rs'
+          paths = [root / p for p in ['implementation/desktop/crates/selahcue-app/src/controller.rs', 'implementation/desktop/crates/selahcue-app/tests/test_scripture_link_canonical.rs', 'implementation/desktop/crates/selahcue-app/Cargo.toml', 'implementation/desktop/crates/selahcue-core/src/scripture.rs', 'implementation/desktop/crates/selahcue-lan/src/protocol.rs', 'implementation/desktop/Cargo.toml', 'implementation/desktop/Cargo.lock', 'rust-toolchain.toml', 'scripts/check_toolchain.sh']]
+          saved = {p: p.read_bytes() for p in paths}
+          for p, b in saved.items():
+              assert b == subprocess.check_output(['git', 'show', source + ':' + str(p.relative_to(root))])
+          hashes = {str(p.relative_to(root)): hashlib.sha256(b).hexdigest() for p, b in saved.items()}
+          expected_names = set(['controller_canonicalizes_to_range', 'controller_canonicalizes_en_dash_range', 'controller_canonicalizes_through_range', 'canonical_references_keep_exact_bytes_and_link_metadata', 'canonical_storage_preserves_chapter_fitting_and_translation_pinning', 'malformed_link_is_denied_without_changing_prior_canonical_plan', 'parseable_missing_passages_are_still_accepted_and_reported_missing', 'sanitizing_still_precedes_parse_and_canonical_storage', 'remote_operator_canonicalizes_to_range', 'remote_operator_canonicalizes_en_dash_range', 'remote_operator_canonicalizes_through_range', 'remote_operator_keeps_already_canonical_bytes', 'wire_denials_do_not_mutate_the_host_plan_or_live_output'])
+          canonical_names = {n for n in expected_names if '_canonicalizes_' in n}
+          fit = 'canonical_storage_preserves_chapter_fitting_and_translation_pinning'
+          canonical = 'canonical_references_keep_exact_bytes_and_link_metadata'
+          wire_canonical = 'remote_operator_keeps_already_canonical_bytes'
+          receipts = []
+          errors = []
+          command = ['cargo', 'test', '--locked', '--color', 'never', '--manifest-path',
+                     'implementation/desktop/Cargo.toml', '-p', 'selahcue-app', '--features', 'server',
+                     '--test', 'test_scripture_link_canonical', '--', '--color', 'never']
+
+
+          def audit(stage, before):
+              report = {}
+              for p, b in before.items():
+                  actual = p.read_bytes()
+                  report[str(p.relative_to(root))] = {
+                      'before_sha256': hashlib.sha256(b).hexdigest(),
+                      'after_sha256': hashlib.sha256(actual).hexdigest(), 'changed': actual != b,
+                      'diff': ''.join(difflib.unified_diff(b.decode().splitlines(keepends=True),
+                               actual.decode().splitlines(keepends=True)))}
+              print('13XZ_MUTANT_FILE_AUDIT=' + json.dumps({'stage': stage, 'files': report}, sort_keys=True), flush=True)
+              return {p for p, b in before.items() if p.read_bytes() != b}
+
+
+          def restore():
+              for p, b in saved.items():
+                  p.write_bytes(b)
+              assert not audit('restore-candidate', saved)
+
+
+          def run(name):
+              before = {p: p.read_bytes() for p in paths}
+              proc = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, timeout=600)
+              print(f'\n=== {name} exit={proc.returncode} ===\n{proc.stdout}', flush=True)
+              results = dict(re.findall(r'^test (\w+) \.\.\. (ok|FAILED|ignored)$', proc.stdout, re.M))
+              blocks = dict(re.findall(r'^---- (\w+) stdout ----\n(.*?)(?=\n----|\nfailures:|\n\ntest result:)',
+                                       proc.stdout, re.M | re.S))
+              assert set(results) == expected_names, ('missing/unexpected13 cases', results)
+              assert not audit('after-' + name, before), 'test invocation changed tracked source/dependencies'
+              receipts.append({'case': name, 'exit_code': proc.returncode, 'results': results,
+                               'actual_assertions': blocks,
+                               'output_sha256': hashlib.sha256(proc.stdout.encode()).hexdigest()})
+              return proc.returncode, results, blocks
+
+
+          def once(text, old, new):
+              assert text.count(old) == 1, (old, text.count(old))
+              return text.replace(old, new)
+
+
+          def genuine_assertion(mutant, name, block):
+              assert 'panicked at crates/selahcue-app/tests/test_scripture_link_canonical.rs:' in block
+              if mutant == 'link-commits-live' and name == canonical:
+                  assert 'canonical edits also leave the real audience output untouched' in block
+                  return 'actual audience RGBA/Slide/index assertion'
+              assert 'assertion `left == right` failed' in block and 'left:' in block and 'right:' in block
+              if mutant == 'drop-canonical-storage':
+                  assert 'Romans 8:28-30' in block
+                  assert ('the stored plan must be canonical' in block or
+                          'the real authenticated wire response must expose canonical host storage' in block)
+                  assert any(typed in block for typed in ['Romans 8:28 to 30', 'Romans 8:28 – 30',
+                                                          'Romans 8 verses 28 through 30'])
+              elif mutant == 'drop-chapter-fit':
+                  assert 'the stored plan must be canonical' in block and 'left: "Psalms 1"' in block
+                  assert 'right: "Psalms 1:1-' in block
+              elif mutant == 'drop-fit-translation-pin':
+                  assert 'left: None' in block and 'right: Some("KJV")' in block
+              elif mutant == 'link-commits-live':
+                  assert 'left: Some(1)' in block and 'right: Some(0)' in block
+              else:
+                  raise AssertionError(('unknown mutant', mutant))
+              return 'actual typed Expected/Actual Rust assertion'
+
+
+          original = controller.read_text()
+          a = original.index('    fn set_item_content(')
+          b = original.index('\n    /// Set (or clear,', a)
+          body = original[a:b]
+          no_canonical = once(body, '*reference = parsed.to_string();', 'let _ = parsed;')
+          no_fit = once(body, 'fitted_scripture_reference(reference, translation.as_deref())',
+                        'fitted_scripture_reference(reference, translation.as_deref()).filter(|_| false)')
+          no_pin = once(body, '                        pin_fitted_translation(translation);\n', '')
+          commits_live = once(body, '        ControllerReply::Ack\n',
+                             '        let _ = self.apply(&Command::GoLive);\n        ControllerReply::Ack\n')
+          mutants = [
+              ('drop-canonical-storage', no_canonical, canonical_names),
+              ('drop-chapter-fit', no_fit, {fit}),
+              ('drop-fit-translation-pin', no_pin, {fit}),
+              ('link-commits-live', commits_live, canonical_names | {canonical, wire_canonical}),
+          ]
+          print('13XZ_MUTANT_SOURCE_HASHES=' + json.dumps(hashes, sort_keys=True), flush=True)
+          try:
+              code, results, _ = run('baseline')
+              assert code == 0 and set(results.values()) == {'ok'}, results
+              for name, replacement, expected in mutants:
+                  restore()
+                  controller.write_text(original[:a] + replacement + original[b:])
+                  print('MUTANT_PATCH ' + name + '\n' + subprocess.check_output(
+                      ['git', 'diff', '--', str(controller.relative_to(root))]).decode(), flush=True)
+                  try:
+                      code, results, blocks = run(name)
+                      assert code == 101, (name, code)
+                      failed = {n for n, v in results.items() if v != 'ok'}
+                      assert failed == expected, (name, failed, expected)
+                      evidence = {n: genuine_assertion(name, n, blocks.get(n, '')) for n in sorted(expected)}
+                      assert all(results[n] == 'ok' for n in expected_names - expected)
+                      receipts[-1].update(verified=True, required_failures=sorted(expected),
+                                           required_controls=sorted(expected_names-expected),
+                                           genuine_assertion_types=evidence)
+                  except Exception as error:
+                      errors.append({'case': name, 'oracle_error': repr(error)})
+                      print('13XZ_MUTANT_ORACLE_FAILURE=' + json.dumps(errors[-1]), flush=True)
+          finally:
+              restore()
+              code, results, _ = run('restored')
+              assert code == 0 and set(results.values()) == {'ok'}, results
+              restored = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+              print('13XZ_MUTANT_RESTORED_HASHES=' + json.dumps(restored, sort_keys=True), flush=True)
+              assert not audit('final-restored-vs-candidate', saved)
+              assert restored == hashes
+              print('13XZ_MUTATION_RECEIPT=' + json.dumps({'source': source, 'cases': receipts,
+                    'errors': errors, 'restore_identical': True, 'normal_gate': False}, sort_keys=True), flush=True)
+          assert not errors, errors
+          assert sum(c.get('verified', False) for c in receipts) == 4
+          PYRUN
