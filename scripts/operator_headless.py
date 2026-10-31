@@ -14031,6 +14031,43 @@ DRIVER = r"""
              "F31 clean boundary: another class with the same prefix is not the guarded compound");
         } finally { f31Unrelated.dispose(); }
 
+        // F31-RECOVERY-BEGIN
+        // A malformed unrelated declaration must not erase later raw candidates.
+        // This same committed block is also exercised by the bounded review RED.
+        function f31RecoveryChecks() {
+          var target = ".__cssom_f31_recovery__:hover";
+          var prefixes = [
+            ["stray_paren", ".__f31_unrelated__{bad:);}"],
+            ["stray_bracket", ".__f31_unrelated__{bad:];}"],
+            ["bad_string_newline", ".__f31_unrelated__{bad:\"unterminated\n;}"],
+            ["balanced_value", ".__f31_unrelated__{color:rgb(1,2,3);content:\"}])\";--x:\"line\\\ncontinued\";}"]
+          ];
+          prefixes.forEach(function(c) {
+            var base = target + "{background:#111;}" + c[1];
+            [
+              ["dropped", target + "{filter:brightness(1.06) not-a-real-css-function();}"],
+              ["inactive", "@media(max-width:1px){" + target + "{filter:brightness(1.06);}}"]
+            ].forEach(function(hazard) {
+              var fx = __cssFixture(base + hazard[1]);
+              try {
+                ok(__cssRules(target, fx).length >= 1 && __cssEffectiveFilter(target, fx) === null,
+                   "F31 recovery premise/" + c[0] + "/" + hazard[0] + ": the guarded rule is nonvacuous but CSSOM cannot report the hazard");
+                ok(__cssRawHasFilter(target, fx),
+                   "F31 recovery raw/" + c[0] + "/" + hazard[0] + ": unrelated malformed text cannot hide a later declaration");
+                ok(!__cssFilterGuardOk(target, fx) && !__cssNoBrightnessFilter(target, fx),
+                   "F31 recovery composed/" + c[0] + "/" + hazard[0] + ": both registered predicates retain the raw backstop");
+              } finally { fx.dispose(); }
+            });
+            var clean = __cssFixture(base + target + "{filter:none !important;backdrop-filter:brightness(1.06);}");
+            try {
+              ok(!__cssRawHasFilter(target, clean) && __cssFilterGuardOk(target, clean) && __cssNoBrightnessFilter(target, clean),
+                 "F31 recovery clean/" + c[0] + ": exact none and backdrop remain harmless despite the unrelated prefix");
+            } finally { clean.dispose(); }
+          });
+        }
+        f31RecoveryChecks();
+        // F31-RECOVERY-END
+
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
         // predicate (not just one half) rejects it.

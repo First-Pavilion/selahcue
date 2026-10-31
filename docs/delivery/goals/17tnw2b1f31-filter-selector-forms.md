@@ -119,6 +119,26 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - New evidence: filter-selector-forms/current candidate/diagnostic receipts and forthcoming actual raw.
 - Decision: iterate
 
+### Iteration 5 — original candidate sensitivity closure
+
+- Target criterion: C-003/C-004 on frozen b7 candidate before review correction.
+- Hypothesis: same-source per-half and nested reversion failures plus exact restoration establish the intended candidacy controls independently.
+- Change or investigation: normal41186819713 actual SUCCESS8selected/4skips,2733/0 Chrome44/0 WebKit. First mutation41186941761 actual raw2733/35 and nested2733/18, both restored2733/0 with17identical hashes; CSSOM exceeded outer240s before receipt, originalphaseUNKNOWN. One observable CSSOM-only41188320895 with same mutant/bounds actually2733/24 then restored2733/0,17hashes before/after; finite166.56/159.66s samples do not identify original timeout cause or establish flakiness.
+- Verifier executed: full official normal/mutation/observable archives and exact-source hashes, root independent reviews.
+- Result: Original selected gates passed their cases, but review S1 reveals an untested raw recovery regression; those old receipts cannot close the new finding or final review.
+- New evidence: filter-selector-forms/normal-ci, mutation-attempt1, cssom-observable-ci; reviews/17tnw2b1f31-shadow.md.
+- Decision: iterate
+
+### Iteration 6 — review S1 tests-first raw recovery
+
+- Target criterion: C-002/C-005, Medium malformed-prefix raw gate regression.
+- Hypothesis: negative closing-delimiter counters and a bad string retained across an unescaped newline can hide later raw candidates even when CSSOM cannot report the hazard; the real previous raw helper should still refuse them.
+- Change or investigation: add one committed standalone regression block using actual helpers, three malformed unrelated prefixes, parser-dropped/inactive hazards and none/backdrop clean cases, plus a balanced quoted/escaped/function-value positive. CSS_SRC/guard correction and old2733count remain unchanged while a small hosted current-versus-actual-previous helper RED runs. No fullnormal or40hover rerun for initial review RED.
+- Verifier executed: reviewer source/caller verification, stdlib AST/unchanged original candidate CSS_SRC/STUB/structural checks; actual hosted bounded review RED next.
+- Result: Tests-only preparation pending actual behavior; no recovery fix or new full-count claim before actual RED. Existing2733 assertions preserved; new complete count remains unmeasured until full driver executes.
+- New evidence: filter-selector-forms review-red workflow/parent/raw receipts.
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: broadening background instead of filters, missing nested parent context, raw parser drops a declaration or scopes conditions, class-prefix false positive, fixture hover is not real, or caching makes CSS mutations stale. Separate filter candidacy, literal browser premises, real hover and per-half mutation controls address the supported boundary.
