@@ -340,6 +340,8 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+          # Offline controls only; installer builds remain manual/main-only.
+          python3 scripts/test_linux_installer.py
       # Three additional launchers share the file/PID lifecycle. These are real
       # caller commands with interpreter-backed fixtures, so no Chrome/Cargo is
       # required. This always-run job has a full checkout: auth-only and shared
