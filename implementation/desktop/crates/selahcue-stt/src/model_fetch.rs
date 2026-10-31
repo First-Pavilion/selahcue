@@ -158,7 +158,14 @@ pub fn fetch_model_phased(
     // ureq 3 reads HTTP(S)_PROXY from the environment by default; ureq 2 never did. Keep the model
     // download's network path exactly what it was — routing a 0.5-1.6 GB transfer through a proxy
     // is a product decision, not a side effect of a dependency bump.
-    let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+    let builder = ureq::Agent::config_builder().proxy(None);
+    // Private test-only CA injection. No production trust or redirect setting changes here.
+    #[cfg(test)]
+    let builder = match redirect_tests::fixture_tls() {
+        Some(tls) => builder.tls_config(tls),
+        None => builder,
+    };
+    let agent: ureq::Agent = builder.build().into();
     let resp = match agent.get(&url).call() {
         Ok(r) => r,
         Err(e) => {
@@ -699,3 +706,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod redirect_tests;
