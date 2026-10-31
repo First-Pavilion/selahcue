@@ -128,6 +128,19 @@ def browser_bootstrap_contract() -> CommandEndpointContract:
     )
 
 
+def pilot_registration_contracts() -> tuple[CommandEndpointContract, ...]:
+    """Server-only callbacks: neither customer cookies nor device licences authorize them.
+
+    Separate from the desktop surface to preserve the licensed download contract.
+    Both are disabled unless complete pilot policy and a dedicated n8n credential
+    are configured; no grant endpoint is implied by this inventory.
+    """
+    return (
+        CommandEndpointContract("pilot_automation", "v1/pilot/registrations:reserve", "POST", "n8n_server_bearer_no_cookie"),
+        CommandEndpointContract("pilot_automation", "v1/pilot/registrations:confirm", "POST", "n8n_server_bearer_no_cookie"),
+    )
+
+
 def billing_webhook_contract() -> CommandEndpointContract:
     return CommandEndpointContract(
         surface="billing_provider",

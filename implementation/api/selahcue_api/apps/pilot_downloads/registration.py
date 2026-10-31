@@ -32,7 +32,7 @@ class RegistrationValidationError(ValueError):
         super().__init__("Invalid registration fields: " + ", ".join(self.fields))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class PilotRegistration:
     registration_id: UUID
     full_name: str

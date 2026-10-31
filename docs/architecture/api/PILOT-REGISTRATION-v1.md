@@ -1,6 +1,6 @@
-# Pilot registration v1 — first implementation increment
+# Pilot registration v1
 
-Ticket: [P13 n8n registration](https://app.clickup.com/t/17tnw2bbhxk). Grant follow-up: [P12](https://app.clickup.com/t/17tnw2bbhxm). Status: proposed integration contract; only normalized validation and Sheet-cell rendering are implemented. No route is registered or deployed by this increment.
+Ticket: [P13 n8n registration](https://app.clickup.com/t/17tnw2bbhxk). Grant follow-up: [P12](https://app.clickup.com/t/17tnw2bbhxm). Normalized validation, durable row reservation, authenticated confirmation and signed receipts are implemented behind disabled-by-default configuration. Deployment and the download-grant flow remain unconnected. The exact callback/runbook contract is [durable n8n handoff](../../release/pilot-registration/README.md).
 
 ## Boundary and fields
 
@@ -20,21 +20,18 @@ Unknown fields, nonstring field values, ASCII controls, malformed identifiers an
 
 `to_sheet_row()` supplies literal values for Sheets writes that also use RAW input. Formula-like leading characters are escaped only at this serialization boundary; normalized identity values are not mutated. The function does not supply a receipt or installer URL. Server time/source provenance must be added by trusted orchestration, not accepted as browser assertions.
 
-## Required orchestration, still unimplemented
+## Orchestration and remaining integration
 
-1. Host and handle the form in n8n; use HTTPS, request bounds and throttling. Keep personal/church data and credentials out of URL parameters and routine logs.
-2. Establish a stable submission UUID before writing. The attached draft's `pilot-${execution.id}` changes between executions and is not a retry identity. Do not silently substitute a new UUID after an ambiguous failure.
-3. Authenticate n8n's server callback using a dedicated deployment credential. A public form or a browser-provided `registered=true` flag cannot attest persistence.
-4. Durably claim the UUID with uniqueness/concurrency protection and bind it to a canonical payload fingerprint. Same UUID/same normalized payload resumes the existing record; same UUID/different payload fails rather than modifying an existing registration.
-5. Write the private Google Sheet row with that UUID. Serialize writers for a submission. A timeout is an ambiguous outcome: reconcile by submission UUID before appending again. A lookup followed by append without locking is not concurrency-safe and does not guarantee exactly once.
-6. Mark persistence confirmed only after an acknowledged write or verified reconciliation. Outage or unconfirmed persistence cannot issue a success receipt or download. Store minimal durable state with a defined retention policy; do not duplicate full personal data without a requirement.
-7. Only trusted server code may issue a short-lived signed receipt. An allowlisted receipt format should bind schema version, registration UUID, platform, pilot channel/release, issuer/audience and issue/expiry times; no contact/church data, provider keys or arbitrary bucket paths. Signing keys, TTL and deployed route names remain explicit configuration/design decisions, not fabricated values here.
-8. P12 verifies signature/purpose/expiry and resolves only allowlisted available manifest entries before returning a bounded private-object URL. Expired pilot builds and absent artifacts cannot be granted. Define replay/recovery behavior so a grant outage after registration does not require another Sheet append. Preserve the separate licensed-account/device API.
+1. The inactive n8n export hosts/maps the form and consumes a stable UUIDv4 from the marketing production-form query. There is no execution-ID fallback. Hidden platform/UUID fields are untrusted. Actual deployment requires approved fields/notice, owner/retention and protected private Sheet configuration.
+2. `POST /v1/pilot/registrations:reserve` requires dedicated server Bearer authentication and bounded JSON. It validates the notice allowlist, binds canonical payload/destination fingerprints, and allocates one durable row with PostgreSQL locking and uniqueness constraints. Same UUID/different payload fails.
+3. n8n uses fixed-row Google `values.update` with RAW cell formatting, never append. Concurrent or ambiguous-timeout retries use identical values at the same reserved range. The dedicated Sheet structure must be protected: no inserts, sorts, deletes or other writers. Preserve allocation counters; retention clears values without shifting rows.
+4. `POST /v1/pilot/registrations:confirm` accepts only authenticated n8n's matching write acknowledgement: document, exact row/range and 1 row/13 columns/13 cells. Only then is confirmation time set once and a purpose-bound signed receipt issued. No contact fields or provider keys are in the receipt. Retry does not extend receipt expiry; no confirmation means no receipt.
+5. `verify_registration_receipt()` checks signature/purpose and the live confirmed ledger, fixed expiry and retention. Receipts bind schema version, registration UUID, platform, pilot channel, intended audience and issue/expiry times. They are not tied to an arbitrary client-supplied bucket path. P12 must resolve the requested architecture/release to an allowlisted available manifest entry, enforce build expiry, produce a private-object URL and define replay/recovery. The licensed-account/device API remains separate.
 
-Suggested browser-facing failure categories for coordination are invalid submission, registration pending/retry, download temporarily unavailable, and pilot expired/unavailable. They are not an implemented HTTP schema. Farah must use configured deployment URLs only after the route/response contract is implemented and tested.
+The [runbook](../../release/pilot-registration/README.md) defines actual callback responses/error statuses and n8n configuration. Farah uses configured production form URLs and retains retry identity; these API callbacks are not browser endpoints. No live hostname, signing secret or provider credential is invented by this contract.
 
 ## Verification and remaining evidence
 
 Run `python3 implementation/api/tests/test_pilot_registration_contract.py` from the repository root. The pure boundary suite loads its module directly because importing the API package starts Celery; it is not an API/Django integration test.
 
-Remaining before P13/P12 completion: durable model/migration and race tests; authenticated callback; actual n8n JSON mapping and stable browser retry identity; sandbox import and Sheets acknowledged/ambiguous write tests; approved fields/notice/retention; signing and expiry/replay tests; manifest/private-bucket grant integration; keyboard/mobile form checks; independent code/security/performance/QA review. This module is intentionally not wired into application settings or URL routing until these trust boundaries are implemented.
+The new service/workflow suites cover durable identity/row binding, callback authorization/configuration, RAW serialization, ACK matching and expiry, with real PostgreSQL races. Remaining gates: final n8n export runtime/import proof, sandbox/live Sheet write/recovery evidence and structural protection, approved fields/notice/owner/retention, actual deployment credentials, P12 manifest/private-bucket integration, representative mobile/keyboard form checks and independent reviews. Registered API routes remain disabled until all required deployment configuration is supplied; this is not a completed public installer journey.

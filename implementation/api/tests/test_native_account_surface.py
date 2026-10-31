@@ -69,6 +69,10 @@ EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/downloads:prepare",
     "v1/downloads/<str:lease_id>:complete",
     "v1/usage-events:batch",
+    # Dedicated authenticated n8n server callbacks; never ambient cookie/device
+    # auth, and disabled until explicit collection policy is configured (P13).
+    "v1/pilot/registrations:reserve",
+    "v1/pilot/registrations:confirm",
     "webhooks/billing/<str:provider>",
 }
 

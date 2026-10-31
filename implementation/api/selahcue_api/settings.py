@@ -158,6 +158,7 @@ INSTALLED_APPS = [
     "selahcue_api.apps.catalogue.apps.SelahCueCatalogueConfig",
     "selahcue_api.apps.entitlements.apps.SelahCueEntitlementsConfig",
     "selahcue_api.apps.downloads.apps.SelahCueDownloadsConfig",
+    "selahcue_api.apps.pilot_downloads.apps.SelahCuePilotDownloadsConfig",
     "selahcue_api.apps.devices.apps.SelahCueDevicesConfig",
     "selahcue_api.apps.audit.apps.SelahCueAuditConfig",
     "selahcue_api.apps.throttling.apps.SelahCueThrottlingConfig",
@@ -201,6 +202,27 @@ WSGI_APPLICATION = "selahcue_api.wsgi.application"
 ASGI_APPLICATION = "selahcue_api.asgi.application"
 
 DATABASES = {"default": _database_config()}
+
+# P13 is intentionally closed until the operator supplies every deployment/policy
+# prerequisite. These settings contain server credentials; never expose them to
+# Vite, the form/browser, logs, or ticket evidence. Numeric strings are validated
+# together by the pilot policy loader so incomplete configuration fails closed.
+SELAHCUE_PILOT_REGISTRATION = {
+    "enabled": env_bool("SELAHCUE_PILOT_REGISTRATION_ENABLED", False),
+    "n8n_token": os.getenv("SELAHCUE_PILOT_N8N_TOKEN", ""),
+    "signing_key": os.getenv("SELAHCUE_PILOT_RECEIPT_KEY", ""),
+    "fingerprint_key": os.getenv("SELAHCUE_PILOT_FINGERPRINT_KEY", ""),
+    "spreadsheet_id": os.getenv("SELAHCUE_PILOT_SHEET_ID", ""),
+    "sheet_tab": os.getenv("SELAHCUE_PILOT_SHEET_TAB", ""),
+    "capacity": os.getenv("SELAHCUE_PILOT_SHEET_ROW_CAPACITY", ""),
+    "notice_versions": env_list("SELAHCUE_PILOT_APPROVED_NOTICE_VERSIONS"),
+    "collection_owner": os.getenv("SELAHCUE_PILOT_COLLECTION_OWNER", ""),
+    "retention_days": os.getenv("SELAHCUE_PILOT_RETENTION_DAYS", ""),
+    "layout_protected": env_bool("SELAHCUE_PILOT_SHEET_LAYOUT_PROTECTED", False),
+    "receipt_ttl_seconds": os.getenv("SELAHCUE_PILOT_RECEIPT_TTL_SECONDS", ""),
+    "pilot_expires_at": os.getenv("SELAHCUE_PILOT_EXPIRES_AT", ""),
+}
+SELAHCUE_THROTTLE_PILOT_REGISTRATION = (60, 60)
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
