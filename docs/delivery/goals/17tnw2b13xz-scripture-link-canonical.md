@@ -91,6 +91,16 @@ Fresh actual main400bbb524de76e4cbc49b8c99db7df6299b6dfa4 after root-verified AY
 - New evidence: fitted_scripture_reference deliberately leaves fit-free passages alone, so fix belongs only in set_item_content after parse; shared load-time helper need not change.
 - Decision: add meaningful tests-only host/realTLS cases and freeze draftPR for actual RED; no local runtime.
 
+### Iteration 2
+
+- Target criterion: C-001 through C-005
+- Verifier executed: actual tests-first normal41175610073 at80345b41, full8 executed raw/hash archive mobile-qualification/17tnw2b13xz/red-attempt1. Format/compile/setup passed; focused13-case file repeatedly reports4 passed/9 failed. Six real direct/pinned-TLS loose-reference mismatches prove the storage defect. Three preservation checks fail only because live_generation increments by1, after earlier plan/metadata/denial assertions succeeded.
+- New evidence: controller field/method docs explicitly define live_generation as a safe over-approximation; apply increments it before dispatch for potentially mutating commands, even when later denied. It does not imply actual audience pixels changed. My generation-equality oracle was invalid; no production fix is warranted for those counts.
+- Change: tests only replace counter equality with full actual audience RGBA dimensions/bytes, Live Slide and index snapshots. Keep all prior canonical/plan/dirty/permission/metadata assertions. Add actual GoLive positive control to the existing canonical case to prove the snapshot detects real output change. All13 named cases retained; production still identical to400bbb52.
+- Hypothesis: a bounded focused hosted run now yields exactly six genuine canonicalization failures and all seven preservation controls pass against unchanged production.
+- Result: static correction prepared; actual corrected RED pending. No broad blind normal rerun or source edit.
+- Decision: publish separate exact-parent workflow-only focused diagnostic, preserving failed9-case history, before minimal canonical storage fix. Parent/root owns tracker catch-up and review/mergeQA.
+
 ## Risks and rollback
 
 - Risks: changing fit/pin order, silently rejecting unresolved passages, permission mutation, legacy load changes or accidentally updating Live while re-staging Preview.

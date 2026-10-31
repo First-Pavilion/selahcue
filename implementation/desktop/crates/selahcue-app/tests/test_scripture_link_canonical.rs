@@ -9,7 +9,7 @@ use selahcue_core::plan::{ItemContent, ItemId, ItemKind, ServicePlan};
 use selahcue_lan::protocol::{Command, ContentLinkView, DenyReason, ServerMessage};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{CertPin, ControlClient, ControlServer, Role, SelfSigned};
-use selahcue_present::Theme;
+use selahcue_present::{Slide, Theme};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,6 +68,26 @@ fn assert_stored(c: &LiveController, id: u64, expected: &str) {
     );
 }
 
+// live_generation deliberately over-counts potentially state-changing commands,
+// including a denied edit. Observe actual audience bytes and content instead.
+#[derive(PartialEq, Eq)]
+struct AudienceSnapshot {
+    dimensions: (u32, u32),
+    rgba: Vec<u8>,
+    slide: Option<Slide>,
+    index: Option<usize>,
+}
+
+fn audience_snapshot(c: &LiveController) -> AudienceSnapshot {
+    let frame = c.presenter().live_output();
+    AudienceSnapshot {
+        dimensions: (frame.width(), frame.height()),
+        rgba: frame.bytes().to_vec(),
+        slide: c.presenter().live_slide().cloned(),
+        index: c.live_index(),
+    }
+}
+
 fn assert_controller_canonical(typed: &str) {
     assert_ne!(typed, "Romans 8:28-30", "exercise a noncanonical spelling");
     assert_eq!(
@@ -78,7 +98,7 @@ fn assert_controller_canonical(typed: &str) {
         "premise: the existing parser accepts and canonicalizes this spelling"
     );
     let (mut c, id) = controller();
-    let live_generation = c.live_generation();
+    let live_before = audience_snapshot(&c);
     assert_eq!(
         c.apply(&Command::SetItemContent {
             item_id: id,
@@ -100,10 +120,9 @@ fn assert_controller_canonical(typed: &str) {
     assert_eq!(view.items[1].slide_count, Some(2));
     assert_eq!(view.staged_index, Some(1));
     assert_eq!(view.live_index, Some(0));
-    assert_eq!(
-        c.live_generation(),
-        live_generation,
-        "linking is Preview only"
+    assert!(
+        audience_snapshot(&c) == live_before,
+        "linking must preserve actual Live pixels, slide and index"
     );
 }
 
@@ -125,6 +144,7 @@ fn controller_canonicalizes_through_range() {
 #[test]
 fn canonical_references_keep_exact_bytes_and_link_metadata() {
     let (mut c, id) = controller();
+    let live_before = audience_snapshot(&c);
     for translation in [None, Some("WEB")] {
         let link = scripture_link("Romans 8:28-30", translation);
         assert_eq!(
@@ -136,7 +156,16 @@ fn canonical_references_keep_exact_bytes_and_link_metadata() {
         );
         assert_stored(&c, id, "Romans 8:28-30");
         assert_eq!(c.operator_view().items[1].link.as_ref(), Some(&link));
+        assert!(
+            audience_snapshot(&c) == live_before,
+            "canonical edits also leave the real audience output untouched"
+        );
     }
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert!(
+        audience_snapshot(&c) != live_before,
+        "positive control: the oracle detects a real switch from song to scripture"
+    );
 }
 
 #[test]
@@ -179,7 +208,7 @@ fn malformed_link_is_denied_without_changing_prior_canonical_plan() {
     );
     c.take_plan_dirty();
     let before = c.plan().clone();
-    let live_generation = c.live_generation();
+    let live_before = audience_snapshot(&c);
     for typed in ["Not a reference", "Romans 8:30 to 28", "Romans 8:0 to 3"] {
         assert!(selahcue_core::scripture::parse_one(typed).is_err());
         assert_eq!(
@@ -191,7 +220,10 @@ fn malformed_link_is_denied_without_changing_prior_canonical_plan() {
         );
         assert_eq!(c.plan(), &before);
         assert!(!c.take_plan_dirty());
-        assert_eq!(c.live_generation(), live_generation);
+        assert!(
+            audience_snapshot(&c) == live_before,
+            "editing or denying a link must preserve actual Live pixels, slide and index"
+        );
     }
 }
 
@@ -287,7 +319,7 @@ async fn host() -> Host {
 
 async fn assert_remote_canonical(typed: &str) {
     let h = host().await;
-    let live_generation = h.controller.lock().unwrap().live_generation();
+    let live_before = audience_snapshot(&h.controller.lock().unwrap());
     let mut op = RemoteOperator::connect(h.addr, "localhost", h.pin, "operator", "tok-operator")
         .await
         .unwrap();
@@ -321,7 +353,10 @@ async fn assert_remote_canonical(typed: &str) {
     assert_eq!(view.staged_index, Some(1));
     let c = h.controller.lock().unwrap();
     assert_stored(&c, h.reading, "Romans 8:28-30");
-    assert_eq!(c.live_generation(), live_generation);
+    assert!(
+        audience_snapshot(&c) == live_before,
+        "editing or denying a link must preserve actual Live pixels, slide and index"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -348,7 +383,7 @@ async fn remote_operator_keeps_already_canonical_bytes() {
 async fn wire_denials_do_not_mutate_the_host_plan_or_live_output() {
     let h = host().await;
     let before = h.controller.lock().unwrap().plan().clone();
-    let live_generation = h.controller.lock().unwrap().live_generation();
+    let live_before = audience_snapshot(&h.controller.lock().unwrap());
     let mut viewer = ControlClient::connect(h.addr, "localhost", h.pin, "viewer", "tok-viewer")
         .await
         .unwrap();
@@ -386,6 +421,9 @@ async fn wire_denials_do_not_mutate_the_host_plan_or_live_output() {
     operator.close().await.unwrap();
     let c = h.controller.lock().unwrap();
     assert_eq!(c.plan(), &before);
-    assert_eq!(c.live_generation(), live_generation);
+    assert!(
+        audience_snapshot(&c) == live_before,
+        "editing or denying a link must preserve actual Live pixels, slide and index"
+    );
     assert_eq!(c.live_index(), Some(0));
 }
