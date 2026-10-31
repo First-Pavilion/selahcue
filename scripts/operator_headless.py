@@ -391,6 +391,34 @@ def _filter_guard_negative_controls(js):
         ("comments containing call-shaped strings are not call sites",
          lambda t: t + "\n/* ok(" + ok_fn + "(wFooSel), */\n// ok(" + nb_fn + "(wBarSel),\n"),
     ]
+    # AYETE: independent literal expectations at the real definitions. The older twelve
+    # controls pin wiring, not these values (two of their builders incidentally depend on
+    # exact TD/Go-Live text; PSC/Timer/PP bindings still evade the whole original gate).
+    literal_sites = [
+        ("wTdHoverSel", ".td-save-cta:hover", ".td-save-cta"),
+        ("wPsHoverSel", ".ps-start:hover", ".ps-start"),
+        ("wTbGlHoverSel", ".tb-golive:hover", ".tb-golive"),
+        ("wTsHoverSel", ".timer-start:hover", ".timer-start"),
+        ("wPpGenHoverSel", ".pp-generate:hover", ".pp-generate"),
+    ]
+    for var, selector, other in literal_sites:
+        before = 'var ' + var + ' = "' + selector + '";'
+        controls.extend([
+            ("AYETE existing clean selector: " + var,
+             lambda t, old=before, v=var, value=other: sub(t, old, 'var ' + v + ' = "' + value + '";')),
+            ("AYETE stale selector: " + var,
+             lambda t, old=before, v=var, value=selector: sub(t, old, 'var ' + v + ' = "' + value + '__stale__";')),
+            ("AYETE alias binding: " + var,
+             lambda t, old=before, v=var, value=selector: sub(t, old, 'var ' + v + ' = __ayeteAlias; var __ayeteAlias = "' + value + '";')),
+        ])
+        accepted.extend([
+            ("AYETE single quotes: " + var,
+             lambda t, old=before, v=var, value=selector: sub(t, old, "var " + v + " = '" + value + "';")),
+            ("AYETE spacing: " + var,
+             lambda t, old=before, v=var, value=selector: sub(t, old, 'var   ' + v + '   =   "' + value + '"  ;')),
+            ("AYETE commented decoy: " + var,
+             lambda t, old=before, v=var: sub(t, old, '/* var ' + v + ' = ".decoy"; */\n' + old)),
+        ])
     return ([(name, build(js)) for name, build in controls],
             [(name, build(js)) for name, build in accepted])
 
