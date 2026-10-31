@@ -337,6 +337,7 @@ def activate_device_with_session(request):
         platform=raw.get("platform", ""),
         app_version=raw.get("app_version", ""),
         display_name=raw.get("display_name", ""),
+        replace_token=raw.get("replace_token", False),
     )
     try:
         result = _activate_device_with_session_service(
@@ -374,7 +375,7 @@ def _device_bearer_token(request) -> str:
 @throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
-    status to refresh its cached offline entitlement (DEC-004). Pure read; device-token auth."""
+    status, rotating a live token after extension (FR-509); device-token auth."""
     try:
         result = _refresh_license_service(_device_bearer_token(request))
     except SafeAPIError as error:
@@ -401,10 +402,14 @@ def refresh_license(request):
         "surface": "desktop",
         "operation": "license_refresh",
     }
-    # Refresh returns only status (no token material), so — unlike the activation payload — it is
-    # safe to run the redaction guard as defense-in-depth against a future field addition.
+    # Guard every status field before adding the one intentional show-once credential,
+    # using the activation response's existing field name. Never include it in an audit.
     assert_no_restricted_payload_fields(payload)
-    return JsonResponse(payload, status=200)
+    if result.full_token is not None:
+        payload["activation_token"] = result.full_token
+    response = JsonResponse(payload, status=200)
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 @require_GET

@@ -422,10 +422,11 @@ from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it
 # `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
 # interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
 CELERY_BEAT_SCHEDULE = {
-    # Hourly: a revoked licence should stop working within the hour, not at expiry.
+    # Minute recovery tick: the bounded cascade drains batches in one cycle, and DB
+    # eligibility survives broker/worker interruption (NFR-503, 65 minute maximum).
     "cascade-license-revocations": {
         "task": "devices.cascade_license_revocations",
-        "schedule": crontab(minute=0),
+        "schedule": crontab(),
     },
     # Nightly: pure row hygiene, no behavioural effect.
     "sweep-expired-credentials": {
@@ -714,6 +715,18 @@ SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 # throttle each other. 30 a minute is far above a human working a queue of billing holds and
 # far below a script. Fails OPEN when the cache is down, like every budget in this file.
 SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (30, 60)
+
+# How fast the revoke / extend permission gate may write "you were refused" audit rows
+# (86ak1090r). A caller who is identified but not permitted gets PERMISSION_DENIED and an audit
+# row, so an investigator can see the attempt. This RATE-LIMITS that path; it does not bound the
+# table. The first budget is per identity, the second per KIND of actor (staff, customer,
+# device, service), so a crowd of customer identities cannot use up the staff allowance. With
+# the numbers below that is at most 100 x 60 x 24 = 144,000 rows a day for each kind under
+# sustained attack, and the budget fails OPEN when the cache is down (the row is written:
+# auditing is the safe side to err on), so there is no cap at all during an outage. Past a cap
+# the call is STILL refused; it just stops writing rows.
+SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT = (5, 60)
+SELAHCUE_THROTTLE_ADMIN_LICENSE_REFUSAL_AUDIT_GLOBAL = (100, 60)
 
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates

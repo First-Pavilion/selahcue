@@ -13,11 +13,15 @@ from selahcue_api.apps.accounts.services import (
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey
 from selahcue_api.apps.license_keys.services import (
+    ExtendLicenseKeyData,
     GenerateLicenseKeyData,
     ReinstateLicenseKeyData,
+    RevokeLicenseKeyData,
     SuspendLicenseKeyData,
+    extend_license_key,
     generate_license_key,
     reinstate_license_key,
+    revoke_license_key,
     suspend_license_key,
 )
 from selahcue_api.graphql.context import (
@@ -86,6 +90,27 @@ class AdminReinstateLicenseKeyInput:
     # Same retry-key rules as `AdminSuspendLicenseKeyInput`.
     idempotency_key: str
     license_key_id: strawberry.ID
+    reason: str
+
+
+@strawberry.input
+class AdminRevokeLicenseKeyInput:
+    # Same retry-key rules as `AdminSuspendLicenseKeyInput`. Revocation is PERMANENT (FR-505):
+    # nothing moves a licence out of REVOKED except archiving, so the reason is the record of
+    # why, and it is mandatory.
+    idempotency_key: str
+    license_key_id: strawberry.ID
+    reason: str
+
+
+@strawberry.input
+class AdminExtendLicenseKeyInput:
+    # Same retry-key rules as `AdminSuspendLicenseKeyInput`.
+    idempotency_key: str
+    license_key_id: strawberry.ID
+    # The new expiry. Must carry a UTC offset (a value without one is refused, not guessed),
+    # be later than the current expiry and in the future, and be within five years of now.
+    new_expires_at: datetime
     reason: str
 
 
@@ -187,6 +212,24 @@ class AdminSuspendLicenseKeyPayload:
 @strawberry.type
 class AdminReinstateLicenseKeyPayload:
     license_key: AdminLicenseKeySummary
+    changed: bool
+    replayed: bool
+
+
+@strawberry.type
+class AdminRevokeLicenseKeyPayload:
+    license_key: AdminLicenseKeySummary
+    # False when this call changed nothing: the licence was already revoked, OR this was a
+    # retry of a request that already took effect (then `replayed` is also true).
+    changed: bool
+    replayed: bool
+
+
+@strawberry.type
+class AdminExtendLicenseKeyPayload:
+    license_key: AdminLicenseKeySummary
+    # False only for a retry of a request that already took effect (`replayed` is then true):
+    # an extension that would change nothing is rejected, not reported as a no-op.
     changed: bool
     replayed: bool
 
@@ -359,6 +402,47 @@ class AdminMutation:
             ),
         )
         return AdminReinstateLicenseKeyPayload(
+            license_key=license_key_to_summary(result.license_key),
+            changed=result.changed,
+            replayed=_is_replay(result),
+        )
+
+    @strawberry.mutation
+    def admin_revoke_license_key(
+        self,
+        info: strawberry.Info,
+        input: AdminRevokeLicenseKeyInput,
+    ) -> AdminRevokeLicenseKeyPayload:
+        result = revoke_license_key(
+            actor_from_info(info),
+            RevokeLicenseKeyData(
+                idempotency_key=input.idempotency_key,
+                license_key_id=str(input.license_key_id),
+                reason=input.reason,
+            ),
+        )
+        return AdminRevokeLicenseKeyPayload(
+            license_key=license_key_to_summary(result.license_key),
+            changed=result.changed,
+            replayed=_is_replay(result),
+        )
+
+    @strawberry.mutation
+    def admin_extend_license_key(
+        self,
+        info: strawberry.Info,
+        input: AdminExtendLicenseKeyInput,
+    ) -> AdminExtendLicenseKeyPayload:
+        result = extend_license_key(
+            actor_from_info(info),
+            ExtendLicenseKeyData(
+                idempotency_key=input.idempotency_key,
+                license_key_id=str(input.license_key_id),
+                new_expires_at=input.new_expires_at,
+                reason=input.reason,
+            ),
+        )
+        return AdminExtendLicenseKeyPayload(
             license_key=license_key_to_summary(result.license_key),
             changed=result.changed,
             replayed=_is_replay(result),

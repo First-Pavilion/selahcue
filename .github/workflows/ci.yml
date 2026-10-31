@@ -265,6 +265,8 @@ jobs:
             # desktop catch-all is not a substitute.
             marketing:
               - 'implementation/marketing/**'
+              # apiSeam.test.ts derives the client error-code contract from this enum.
+              - 'implementation/api/selahcue_api/graphql/errors.py'
               - '.github/workflows/ci.yml'
               # NOT a stray path. The marketing job re-derives the client's email rule
               # from the Django the API pins, and installs that Django by READING this
@@ -1473,9 +1475,11 @@ jobs:
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
     # Run 41038300286 attempts 1/2 passed 2147 tests in 14:14/14:17, but service,
-    # install/check and post-job work exhausted the 15-minute job cap. Keep a bounded
-    # 20-minute cap so the unchanged full suite and cleanup can report their result.
-    timeout-minutes: 20
+    # install/check and post-job work exhausted the 15-minute job cap. This change adds
+    # the licence revoke/extend and renewal suites on top of that; the realistic local
+    # Postgres/Redis gate takes 9m before runner/setup overhead. Keep every check and
+    # allow bounded headroom for the slower shared Linux runner.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: implementation/api

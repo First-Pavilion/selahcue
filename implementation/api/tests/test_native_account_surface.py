@@ -51,7 +51,8 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
-from selahcue_api.graphql.context import ACCOUNT_SESSION_COOKIE
+from selahcue_api.apps.license_keys.services import ExtendLicenseKeyData, extend_license_key
+from selahcue_api.graphql.context import ACCOUNT_SESSION_COOKIE, ActorContext, ActorKind, StaffPermission
 
 SESSIONS = "/v1/sessions"
 ACTIVATE = "/v1/activations:with-session"
@@ -1123,3 +1124,100 @@ def test_a_malformed_activation_body_is_labelled_as_the_activation_operation():
         "desktop",
         "activation_with_session",
     )
+
+
+# PR233 FR-509 recovery: explicit ADMIN session authority replaces a lost live token.
+@pytest.mark.django_db
+@pytest.mark.parametrize("bad", [None, "true", "false", 1, 0, [], {}])
+def test_native_recovery_refuses_non_boolean_replace_token(bad):
+    seed_admin_with_license()
+    client = native_client()
+    session = session_token(client)
+    response = post_json(client, ACTIVATE, {**activation_payload(), "replace_token": bad}, **bearer(session))
+    assert response.status_code == 400
+    assert not Device.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_lost_refresh_response_recovers_via_admin_session_without_reviving_dead_token():
+    org, user = seed_admin_with_license()
+    key = AppLicenseKey.objects.get(customer=org)
+    client = native_client()
+    session = session_token(client)
+    activated = post_json(client, ACTIVATE, activation_payload(), **bearer(session))
+    original = activated.json()["activation_token"]
+    extend_license_key(
+        ActorContext(kind=ActorKind.STAFF, actor_id="recovery-staff",
+                     staff_permissions=frozenset({StaffPermission.EXTEND_LICENSE_KEY})),
+        ExtendLicenseKeyData(idempotency_key="lost-refresh-extension", license_key_id=str(key.pk),
+                             new_expires_at=key.expires_at + timezone.timedelta(days=30),
+                             reason="Renewed subscription for response loss test."))
+    refreshed = post_json(client, "/v1/license:refresh", {}, **bearer(original))
+    assert refreshed.status_code == 200 and refreshed.json()["activation_token"]
+    lost = refreshed.json()["activation_token"]
+    assert post_json(client, "/v1/license:refresh", {}, **bearer(original)).status_code == 401
+    recovery = {**activation_payload(idem="lost-response-recovery-1"), "replace_token": True}
+    recovered = post_json(client, ACTIVATE, recovery, **bearer(session))
+    assert recovered.status_code == 200 and recovered.json()["activation_token"]
+    replacement = recovered.json()["activation_token"]
+    assert recovered.json()["reminted"] and "no-store" in recovered["Cache-Control"]
+    assert post_json(client, "/v1/license:refresh", {}, **bearer(lost)).status_code == 401
+    assert post_json(client, "/v1/license:refresh", {}, **bearer(replacement)).status_code == 200
+    retry = post_json(client, ACTIVATE, recovery, **bearer(session))
+    assert retry.status_code == 200 and retry.json()["activation_token"] is None
+    # Lost recovery responses use another explicit user intent, never secret replay.
+    recovery["idempotency_key"] = "lost-response-recovery-2"
+    again = post_json(client, ACTIVATE, recovery, **bearer(session))
+    assert again.json()["activation_token"]
+    assert Device.objects.count() == 1
+    assert DeviceToken.objects.filter(status=DeviceTokenStatus.ACTIVE).count() == 1
+    audits = list(AuditEvent.objects.values("before", "after", "reason"))
+    for secret in (original, lost, replacement, again.json()["activation_token"]):
+        assert secret not in json.dumps(audits)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("status", [LicenseKeyStatus.EXPIRED, LicenseKeyStatus.REVOKED])
+def test_admin_recovery_cannot_replace_under_a_dead_licence(status):
+    org, user = seed_admin_with_license()
+    key = AppLicenseKey.objects.get(customer=org)
+    client = native_client()
+    session = session_token(client)
+    post_json(client, ACTIVATE, activation_payload(), **bearer(session))
+    AppLicenseKey.objects.filter(pk=key.pk).update(status=status)
+    response = post_json(client, ACTIVATE,
+                         {**activation_payload(idem="dead-licence-recovery"), "replace_token": True},
+                         **bearer(session))
+    assert response.status_code in (403, 404)
+    assert DeviceToken.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_admin_recovery_is_scoped_to_the_sessions_org_and_cannot_create_foreign_device():
+    org, user = seed_admin_with_license()
+    key = AppLicenseKey.objects.get(customer=org)
+    client = native_client()
+    session = session_token(client)
+    original = post_json(client, ACTIVATE, activation_payload(), **bearer(session)).json()["activation_token"]
+    other = seed_org(tag="other-recovery")
+    seed_user(other, email="other-recovery@example.com")
+    seed_license(other)
+    other_session = sign_in(client, email="other-recovery@example.com").json()["session_token"]
+    response = post_json(client, ACTIVATE,
+                         {**activation_payload(idem="foreign-recovery-req"), "replace_token": True},
+                         **bearer(other_session))
+    assert response.status_code == 404
+    assert DeviceToken.objects.count() == 1
+    assert post_json(client, "/v1/license:refresh", {}, **bearer(original)).status_code == 200
+
+
+@pytest.mark.django_db
+def test_member_session_cannot_request_explicit_token_replacement():
+    org = seed_org(tag="member-recovery")
+    seed_user(org, email="member-recovery@example.com", role=CustomerRole.MEMBER)
+    seed_license(org)
+    client = native_client()
+    session = sign_in(client, email="member-recovery@example.com").json()["session_token"]
+    response = post_json(client, ACTIVATE,
+                         {**activation_payload(), "replace_token": True}, **bearer(session))
+    assert response.status_code == 403 and not DeviceToken.objects.exists()
