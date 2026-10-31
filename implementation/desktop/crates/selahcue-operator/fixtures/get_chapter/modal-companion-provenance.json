@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "task": "17tnw2b13y0",
+  "purpose": "Actual second Link-press request after visible past-end clamp; no legacy parser fallback or handcrafted expected response",
+  "request_source": "dist/app.js resolveTyped builds canonical2..6 from actualPsalm1reply; doLink updatesinput theninvokesget_chapteragain onsecondpress",
+  "production_baseline": "179dbb97665148170a7d20eb5419fa710b2b3ab1",
+  "recording_source": "195bb40acbc995712af7f2d426662681e2dc36dc",
+  "recording_source_tree": "bbc3790b94f9ad68cf1db46f6b91647bfa9dc0ce",
+  "diagnostic_commit": "5e7c8306794860b3a890b93715806d842175d2bb",
+  "diagnostic_sole_parent": "195bb40acbc995712af7f2d426662681e2dc36dc",
+  "diagnostic_only_override": ".github/workflows/ci.yml",
+  "run": 41193350478,
+  "url": "https://github.com/First-Pavilion/selahcue/actions/runs/41193350478",
+  "job": 124514460517,
+  "official_raw_log_sha256": "87c9719bc418b17f2592e8a4aa43339c8c6659891f0d27b8f997e6dcfaa7f0a7",
+  "marker": "Y0_ACTUAL_MODAL_COMPANION_FIXTURES=",
+  "fixture_bytes": 1059,
+  "fixture_sha256": "40b3b73048f183081947337f8bf29be8ccfc31723eb3b69ef2819bebb0487b99",
+  "encoding": "Exact actual get_chapter+serde marker payload and one newline; not reformatted/reconstructed",
+  "observed_tests": {
+    "new_backend_tests_passed": 3,
+    "existing_contract_tests_passed": 5,
+    "failed": 0,
+    "ignored": 0
+  },
+  "default_translation_equivalence": {
+    "default_code": "KJV",
+    "actual_whole_result_comparisons": 7,
+    "includes": "five successful original default requests plus both exact rejection classes",
+    "method": "Actual get_chapter(None) compared by serde whole Value to actual get_chapter(Some(Translation::default().code())) for every original default request; no fixture-derived substitute"
+  },
+  "original_fixture_sha256": "779143e1a1bddc1d186b5f105df97ffd430fba7adf6035bc55a6d3f272fe9e2d",
+  "original_eight_payload_reobserved_byte_identical": true,
+  "envelope": "Serde Result Ok/Err is fixturetransport: resolveOk/rejectErrstring, not Tauri IPC framing",
+  "limits": "Companion capture/equivalence is actual; newly added default frozencompanion comparison and frontend consume proof require subsequent actual gates. Originalsevenbackendmutants remain source/hash-bound to their original snapshot."
+}

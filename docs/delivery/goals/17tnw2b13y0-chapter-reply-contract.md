@@ -124,9 +124,9 @@ Actual main179dbb97665148170a7d20eb5419fa710b2b3ab1. Existing get_chapter_link_m
 - Target criterion: C-001 and C-002 companion/default-equivalence boundary needed by C-003.
 - Hypothesis: real get_chapter calls prove default(None) equals explicit KJV for all7captured default requests, and the actual modal-generated confirmation query has a separately captured immutable host reply, avoiding legacy handparser fallback during the second press.
 - Change or investigation: root authorized bounded backend-only companion capture before F31 release. Added cfg(test) whole-result equivalence over actual requests and one actual-command recorder for exact Psalms1:2-6/KJV, derived from current dist/app.js resolveTyped/doLink request. Original8fixturebytes/provenance and production/headless remain unchanged. After actual hosted capture, freeze small companion/provenance and add its Rust comparison within this iteration.
-- Verifier executed: source/Git/static/formatter/Goal checks; actual hosted companion/equivalence capture pending, no local project runtime.
-- Result: preparation only; companion proof remainspending. No productRED or frontendcompletion claim.
-- New evidence: forthcoming chapter-reply-contract/companion-recording metadata/raw/hash and exactsource immutable packet.
+- Verifier executed: actual companion41193350478 source195bb/diag5e7c soleparent/workflow-only SUCCESS3new+5existingtests/0fail/0ignore; whole actual None/KJV equality for7requests inclbotherrors, original8payload reobserved byte-identical. Exactsmallcompanion marker/fields/source/rawhash inspected, then frozenwithprovenance/defaultRustcomparison; focused newcomparison runtimepending. No local project runtime.
+- Result: actual companion/default-equivalence proof PASS; captured exact Psalms1:2-6/KJV result has selection2..6/full6verses/prevJob42/nextPsalms2. Newdefault frozencompanion comparison prepared; actualfocused run and frontend/finalgates pending. No productRED or frontendcompletion claim.
+- New evidence: chapter-reply-contract/companion-recording-ci officialmetadata/raw/hash, companion-classification.json; committed fixtures/get_chapter/modal-companion.json and modal-companion-provenance.json; forthcoming focusedcomparison receipt.
 - Decision: iterate
 
 ## Risks and rollback

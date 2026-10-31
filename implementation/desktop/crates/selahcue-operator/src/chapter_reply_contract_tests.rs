@@ -133,3 +133,15 @@ fn y0_record_modal_companion_and_default_translation_equivalence() {
         serde_json::to_string(&modal_companion_reply()).expect("actual companion serializes")
     );
 }
+
+#[test]
+fn y0_modal_confirmation_serialization_matches_recorded_companion() {
+    let recorded: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/get_chapter/modal-companion.json"))
+            .expect("committed actual modal companion is valid JSON");
+    assert_eq!(
+        modal_companion_reply(),
+        recorded,
+        "the modal confirmation reply drifted from its actual-host fixture"
+    );
+}
