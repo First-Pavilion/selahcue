@@ -97,6 +97,26 @@ Redis db **1** is the cache/throttle store and db **2** is the Celery broker; ke
 | `DEFAULT_FROM_EMAIL` | prod: yes | no | `noreply@selahcue.com` | Sender address; use your verified sending domain. |
 | `DEFAULT_EMAIL` | no | no | `info@firstpavitech.com` | Read into `settings.DEFAULT_EMAIL`; nothing in the API uses it today. |
 
+#### Pilot registration callbacks (P13 — disabled until configured)
+
+These server-only n8n callbacks are separate from licensed-device downloads. No collection is enabled by adding these rows. Final owner/retention/notice and protected dedicated Sheet evidence are mandatory before enabling. Exact setup/recovery rules: `docs/release/pilot-registration/README.md`.
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PILOT_REGISTRATION_ENABLED` | no | no | `false` | Enables only fully configured authenticated callbacks; disabled returns 404. |
+| `SELAHCUE_PILOT_N8N_TOKEN` | when pilot enabled | **SECRET** | empty | Dedicated server callback Bearer token, 32–256 non-whitespace ASCII characters; never browser/form/source. |
+| `SELAHCUE_PILOT_RECEIPT_KEY` | when pilot enabled | **SECRET** | empty | Separate short-lived receipt signing key; never a provider key or Django key fallback. |
+| `SELAHCUE_PILOT_FINGERPRINT_KEY` | when pilot enabled | **SECRET** | empty | Separate payload/destination HMAC key; rotation requires allocation/binding reconciliation. |
+| `SELAHCUE_PILOT_SHEET_ID` | when pilot enabled | no | empty | Dedicated private Google spreadsheet identifier. |
+| `SELAHCUE_PILOT_SHEET_TAB` | when pilot enabled | no | empty | Dedicated structurally protected tab; no inserts/sorts/deletes or other writers. |
+| `SELAHCUE_PILOT_SHEET_ROW_CAPACITY` | when pilot enabled | no | empty | Actual precreated final row index, including header; application bound 2–100000. Allocations are never recycled. |
+| `SELAHCUE_PILOT_APPROVED_NOTICE_VERSIONS` | when pilot enabled | no | empty | Explicit space/comma-separated approved notice IDs; draft values rejected. |
+| `SELAHCUE_PILOT_COLLECTION_OWNER` | when pilot enabled | no | empty | Approved record owner; not invented by this implementation. |
+| `SELAHCUE_PILOT_RETENTION_DAYS` | when pilot enabled | no | empty | Approved 1–3650-day retention; expired attempts cannot issue receipts. Disposal must preserve row layout/valid allocation history. |
+| `SELAHCUE_PILOT_SHEET_LAYOUT_PROTECTED` | when pilot enabled | no | `false` | Operator attestation backed by protection/access evidence; this flag does not itself protect Google Sheets. |
+| `SELAHCUE_PILOT_RECEIPT_TTL_SECONDS` | when pilot enabled | no | empty | Explicit 30–3600-second receipt lifetime anchored once at confirmation; retry never extends expiry. |
+| `SELAHCUE_PILOT_EXPIRES_AT` | when pilot enabled | no | empty | Fixed timezone-aware pilot end; owner choice 2027-04-30T23:59:59Z, not six months from each build/retry. |
+
 ---
 
 ## 2. Logto — self-hosted IdP service (DROPPED — superseded by DEC-007)

@@ -92,6 +92,7 @@ from selahcue_api.graphql.route_contracts import (
     LICENSE_GATES,
     CommandEndpointContract,
     desktop_command_contracts,
+    pilot_registration_contracts,
 )
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -1671,7 +1672,7 @@ def test_every_v1_route_in_the_urlconf_has_a_contract_entry():
     view with no gate answered 200 for a suspended licence's token in review). This ties the
     two together: the `v1/` routes the resolver serves and the contract paths must be the
     same set, in both directions. It cannot see a route registered outside `v1/`."""
-    contracts = desktop_command_contracts()
+    contracts = desktop_command_contracts() + pilot_registration_contracts()
 
     assert _urlconf_routes_without_a_contract(_v1_urlconf_routes(), contracts) == []
     assert {c.path for c in contracts} - _v1_urlconf_routes() == set(), (
@@ -1682,7 +1683,7 @@ def test_every_v1_route_in_the_urlconf_has_a_contract_entry():
 
 def test_the_urlconf_comparison_reports_a_route_that_has_no_contract_entry():
     routes = _v1_urlconf_routes() | {"v1/ai:models"}
-    assert _urlconf_routes_without_a_contract(routes, desktop_command_contracts()) == [
+    assert _urlconf_routes_without_a_contract(routes, desktop_command_contracts() + pilot_registration_contracts()) == [
         "v1/ai:models"
     ]
 

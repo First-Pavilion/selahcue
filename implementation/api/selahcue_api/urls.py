@@ -5,6 +5,7 @@ from selahcue_api.graphql.account_schema import schema as account_schema
 from selahcue_api.graphql.admin_schema import schema as admin_schema
 from selahcue_api.graphql.views import AccountGraphQLView, AdminGraphQLView, csrf_bootstrap
 from selahcue_api.platform.views import billing_webhook_not_implemented
+from selahcue_api.apps.pilot_downloads import views as pilot_registration_views
 
 
 graphql_view_options = {
@@ -28,5 +29,7 @@ urlpatterns = [
     # /v1 is the device-token desktop surface and is csrf_exempt, so it needs nothing from this.
     path("graphql/csrf", csrf_bootstrap, name="csrf-bootstrap"),
     path("v1/", include("selahcue_api.platform.urls")),
+    path("v1/pilot/registrations:reserve", pilot_registration_views.reserve, name="pilot-registration-reserve"),
+    path("v1/pilot/registrations:confirm", pilot_registration_views.confirm, name="pilot-registration-confirm"),
     path("webhooks/billing/<str:provider>", billing_webhook_not_implemented, name="billing-webhook"),
 ]

@@ -1,0 +1,497 @@
+{
+  "name": "SelahCue pilot registration \u2014 fixed-row durable handoff (inactive)",
+  "nodes": [
+    {
+      "id": "pilot-registration",
+      "name": "Pilot registration",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "authentication": "none",
+        "formTitle": "SelahCue field-test registration",
+        "formDescription": "DRAFT \u2014 configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "registration_id",
+              "fieldName": "registration_id",
+              "fieldType": "hiddenField",
+              "fieldValue": ""
+            },
+            {
+              "fieldLabel": "platform",
+              "fieldName": "platform",
+              "fieldType": "hiddenField",
+              "fieldValue": ""
+            },
+            {
+              "fieldLabel": "Full name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Phone (optional)",
+              "fieldType": "text",
+              "requiredField": false
+            },
+            {
+              "fieldLabel": "Church name",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Role at church",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Church city",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Church country",
+              "fieldType": "text",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "path": "selahcue-pilot-registration",
+          "buttonLabel": "Register for the pilot",
+          "ignoreBots": true
+        }
+      },
+      "webhookId": "a3a78a22-b62e-439a-a19a-d9eccb9db960"
+    },
+    {
+      "id": "validate-registration",
+      "name": "Validate registration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\n// Deployment configuration; replace only after notice/policy approval. No secrets here.\nconst apiOrigin = 'https://REPLACE_WITH_API_HOST.invalid';\nconst noticeVersion = 'REPLACE_WITH_APPROVED_NOTICE';\nconst errors = [];\nconst read = (label, max = 200, optional = false) => {\n  const value = raw[label] === undefined && optional ? '' : raw[label];\n  if (typeof value !== 'string' || value.length > max || /[\\x00-\\x1f\\x7f]/.test(value)) {\n    errors.push('Check the form field values and try again.');\n    return '';\n  }\n  if (!optional && !value.trim()) errors.push('Complete all required fields.');\n  return value.trim();\n};\nconst payload = {\n  schema_version: 1,\n  registration_id: read('registration_id', 36),\n  platform: read('platform', 20),\n  full_name: read('Full name'), email: read('Email', 254).toLowerCase(),\n  phone: read('Phone (optional)', 50, true), church_name: read('Church name'),\n  church_role: read('Role at church'), church_city: read('Church city'),\n  church_country: read('Church country'), notice_version: noticeVersion,\n};\nif (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(payload.registration_id))\n  errors.push('Return to the marketing page to start or resume this registration.');\nif (!['Windows', 'Ubuntu', 'macOS'].includes(payload.platform))\n  errors.push('Return to the marketing page and select your platform.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(payload.email)) errors.push('Enter a valid email address.');\nif (!/^https:\\/\\/[^/?#\\s]+$/.test(apiOrigin) || apiOrigin.includes('REPLACE') ||\n    noticeVersion.includes('REPLACE') || /draft/i.test(noticeVersion))\n  errors.push('Pilot registration has not been configured for collection yet.');\nreturn [{ json: { valid: errors.length === 0, errors: [...new Set(errors)].join(' '),\n  api_origin: apiOrigin, payload } }];\n"
+      }
+    },
+    {
+      "id": "valid-registration",
+      "name": "Valid registration",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        460,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Valid registration",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "reserve-registration",
+      "name": "Reserve registration",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.api_origin + '/v1/pilot/registrations:reserve' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "already-confirmed",
+      "name": "Already confirmed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        900,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "Already confirmed",
+              "leftValue": "={{ $json.state }}",
+              "rightValue": "confirmed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "validate-reserved-row",
+      "name": "Validate reserved row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const value = $input.first().json;\nconst original = $('Validate registration').first().json.payload;\nconst write = value.sheet_write;\n// The literal-cell apostrophe may add one character to a valid field. Keep\n// serializer bounds (especially a 254-character email -> 255), not a global cap.\nconst cellLimits = [36, 40, 201, 255, 51, 201, 201, 201, 201, 20, 40, 80, 1];\nconst match = write && typeof write.range === 'string' && write.range.match(/^'[A-Za-z][A-Za-z0-9_ -]{0,79}'!A([0-9]+):M([0-9]+)$/);\nif (value.schema_version !== 1 || value.registration_id !== original.registration_id || value.state !== 'pending' ||\n    !write || !/^[A-Za-z0-9_-]{1,200}$/.test(write.spreadsheet_id) || !match || match[1] !== match[2] ||\n    Number(match[1]) < 2 || Number(match[1]) > 100000 || write.valueInputOption !== 'RAW' ||\n    write.majorDimension !== 'ROWS' || !Array.isArray(write.values) || write.values.length !== 1 ||\n    !Array.isArray(write.values[0]) || write.values[0].length !== 13 ||\n    write.values[0].some((v, i) => typeof v !== 'string' || v.length > cellLimits[i]) ||\n    write.values[0][0] !== original.registration_id || write.values[0][9] !== original.platform)\n  throw new Error('The reserved registration row was not valid. No write was performed.');\nreturn [{json:value}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "write-fixed-sheet-row",
+      "name": "Write fixed Sheet row",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        100
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ 'https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent($json.sheet_write.spreadsheet_id) + '/values/' + encodeURIComponent($json.sheet_write.range) + '?valueInputOption=RAW' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({range:$json.sheet_write.range,majorDimension:'ROWS',values:$json.sheet_write.values}) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "confirm-acknowledged-write",
+      "name": "Confirm acknowledged write",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Validate registration').first().json.api_origin + '/v1/pilot/registrations:confirm' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({registration_id:$('Reserve registration').first().json.registration_id,sheet_ack:{spreadsheetId:$json.spreadsheetId,updatedRange:$json.updatedRange,updatedRows:$json.updatedRows,updatedColumns:$json.updatedColumns,updatedCells:$json.updatedCells}}) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": false
+    },
+    {
+      "id": "validate-saved-receipt",
+      "name": "Validate saved receipt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        -100
+      ],
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\nconst original = $('Validate registration').first().json.payload;\nconst now = Date.now() / 1000;\nif (result.schema_version !== 1 || result.state !== 'confirmed' || result.registration_id !== original.registration_id ||\n    typeof result.receipt !== 'string' || !result.receipt.length || result.receipt.length > 2048 ||\n    !Number.isSafeInteger(result.expires_at) || result.expires_at <= now || result.expires_at > now + 3600)\n  throw new Error('Registration was not confirmed. No download is authorized.');\nreturn [{json:result}];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "registration-saved",
+      "name": "Registration saved",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        -100
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Registration saved",
+        "completionMessage": "Your pilot registration has been recorded. Download delivery is not connected in this inactive handoff; complete the separate private download-grant integration before publishing.",
+        "options": {}
+      }
+    },
+    {
+      "id": "correct-registration",
+      "name": "Correct registration",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        700,
+        450
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Check your registration",
+        "completionMessage": "={{ $('Validate registration').first().json.errors }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "retry-registration",
+      "name": "Retry registration",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        450
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Registration needs a retry",
+        "completionMessage": "Registration or download confirmation could not complete. Return through the same marketing download choice to retry the same attempt. A failed/ambiguous Sheet write does not authorize a download and retries reuse the reserved row.",
+        "options": {}
+      }
+    },
+    {
+      "id": "setup-required",
+      "name": "Setup required",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -340
+      ],
+      "parameters": {
+        "content": "## INACTIVE \u2014 do not publish until configured\nSee README.md. Configure approved notice/API origin and select server Header Auth + scoped Google Sheets OAuth credentials. Dedicated protected A:M tab; no inserts/sorts/deletes. Stable UUIDv4 comes from marketing production form query, never execution ID. Fixed RAW update, never append. P12 download grant is a separate unconnected step.",
+        "width": 800,
+        "height": 240
+      }
+    }
+  ],
+  "connections": {
+    "Pilot registration": {
+      "main": [
+        [
+          {
+            "node": "Validate registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate registration": {
+      "main": [
+        [
+          {
+            "node": "Valid registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid registration": {
+      "main": [
+        [
+          {
+            "node": "Reserve registration",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Correct registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reserve registration": {
+      "main": [
+        [
+          {
+            "node": "Already confirmed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already confirmed": {
+      "main": [
+        [
+          {
+            "node": "Validate saved receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate reserved row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate reserved row": {
+      "main": [
+        [
+          {
+            "node": "Write fixed Sheet row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write fixed Sheet row": {
+      "main": [
+        [
+          {
+            "node": "Confirm acknowledged write",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirm acknowledged write": {
+      "main": [
+        [
+          {
+            "node": "Validate saved receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate saved receipt": {
+      "main": [
+        [
+          {
+            "node": "Registration saved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry registration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "UTC",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false
+  },
+  "tags": []
+}
