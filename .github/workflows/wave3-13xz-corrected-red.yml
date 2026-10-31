@@ -1,0 +1,122 @@
+name: wave3 13XZ corrected tests-only RED
+on:
+  push:
+    branches: [codex/17tnw2b13xz-corrected-red]
+    paths: [.github/workflows/wave3-13xz-corrected-red.yml]
+permissions:
+  contents: read
+concurrency:
+  group: wave3-13xz-corrected-red
+  cancel-in-progress: false
+jobs:
+  corrected-red:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANDIDATE: e6082726d4a3c7b5d7de0985ef44e79ffc3600bb
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Prove workflow-only child and check out exact tests-only candidate
+        run: |
+          test "$(git rev-parse HEAD^)" = "$CANDIDATE"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/wave3-13xz-corrected-red.yml"
+          git rev-parse HEAD "HEAD^{tree}" HEAD^
+          git checkout --detach "$CANDIDATE"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD "HEAD^{tree}"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - name: Verify exact pinned compiler
+        run: sh scripts/check_toolchain.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: implementation/desktop
+          save-if: false
+      - name: Corrected13 cases against original production, exactly six behavioral failures and seven positives
+        run: |
+          python3 - <<'PYRUN'
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import subprocess
+
+          root = pathlib.Path.cwd()
+          source = 'e6082726d4a3c7b5d7de0985ef44e79ffc3600bb'
+          base = '400bbb524de76e4cbc49b8c99db7df6299b6dfa4'
+          EXPECTED_COMPONENTS = {'implementation/desktop/crates/selahcue-app/src': '1c5bc3b2b90fc24483b99eff79f8b4fb89775a74', 'implementation/desktop/crates/selahcue-core': '0208d49d98211ec83374b8c67608225bca181695', 'implementation/desktop/crates/selahcue-lan': '7201d75059f7f83d750749188cd240875ed921e2', 'implementation/desktop/Cargo.toml': 'b4ad3a7549d380cca477a17b40d0c04010396428', 'implementation/desktop/Cargo.lock': '7d49a890267885bc0d1600f27f58b1ff967b8c3d', '.github/workflows': '1910df6e4e38b66cb480f3c70bec8fcd8b120005'}
+          for path, expected in EXPECTED_COMPONENTS.items():
+              actual = subprocess.check_output(['git', 'rev-parse', source + ':' + path]).decode().strip()
+              assert actual == expected, (path, actual, expected)
+          print('13XZ_ORIGINAL_PRODUCTION_COMPONENTS=' + json.dumps({
+              'original_base': base, 'tests_only_source': source,
+              'actual_unchanged_objects': EXPECTED_COMPONENTS}, sort_keys=True), flush=True)
+          paths = [root / p for p in ['implementation/desktop/crates/selahcue-app/src/controller.rs', 'implementation/desktop/crates/selahcue-app/tests/test_scripture_link_canonical.rs', 'implementation/desktop/crates/selahcue-app/Cargo.toml', 'implementation/desktop/crates/selahcue-core/src/scripture.rs', 'implementation/desktop/crates/selahcue-lan/src/protocol.rs', 'implementation/desktop/Cargo.toml', 'implementation/desktop/Cargo.lock', 'rust-toolchain.toml', 'scripts/check_toolchain.sh']]
+          saved = {p: p.read_bytes() for p in paths}
+          for p, b in saved.items():
+              assert b == subprocess.check_output(['git', 'show', source + ':' + str(p.relative_to(root))])
+          hashes = {str(p.relative_to(root)): hashlib.sha256(b).hexdigest() for p, b in saved.items()}
+          expected_names = set(['controller_canonicalizes_to_range', 'controller_canonicalizes_en_dash_range', 'controller_canonicalizes_through_range', 'canonical_references_keep_exact_bytes_and_link_metadata', 'canonical_storage_preserves_chapter_fitting_and_translation_pinning', 'malformed_link_is_denied_without_changing_prior_canonical_plan', 'parseable_missing_passages_are_still_accepted_and_reported_missing', 'sanitizing_still_precedes_parse_and_canonical_storage', 'remote_operator_canonicalizes_to_range', 'remote_operator_canonicalizes_en_dash_range', 'remote_operator_canonicalizes_through_range', 'remote_operator_keeps_already_canonical_bytes', 'wire_denials_do_not_mutate_the_host_plan_or_live_output'])
+          expected_failures = {
+              'controller_canonicalizes_to_range': 'Romans 8:28 to 30',
+              'controller_canonicalizes_en_dash_range': 'Romans 8:28 – 30',
+              'controller_canonicalizes_through_range': 'Romans 8 verses 28 through 30',
+              'remote_operator_canonicalizes_to_range': 'Romans 8:28 to 30',
+              'remote_operator_canonicalizes_en_dash_range': 'Romans 8:28 – 30',
+              'remote_operator_canonicalizes_through_range': 'Romans 8 verses 28 through 30',
+          }
+          command = ['cargo', 'test', '--locked', '--color', 'never', '--manifest-path',
+                     'implementation/desktop/Cargo.toml', '-p', 'selahcue-app', '--features', 'server',
+                     '--test', 'test_scripture_link_canonical', '--', '--color', 'never']
+          proc = subprocess.run(command, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, timeout=900)
+          print('13XZ_CORRECTED_TESTS_ONLY_RAW_BEGIN\n' + proc.stdout + '\n13XZ_CORRECTED_TESTS_ONLY_RAW_END', flush=True)
+          results = dict(re.findall(r'^test (\w+) \.\.\. (ok|FAILED|ignored)$', proc.stdout, re.M))
+          blocks = dict(re.findall(r'^---- (\w+) stdout ----\n(.*?)(?=\n----|\nfailures:|\n\ntest result:)',
+                                   proc.stdout, re.M | re.S))
+          errors = []
+          if proc.returncode != 101:
+              errors.append(['expected behavioral Rust test exit101', proc.returncode])
+          if set(results) != expected_names:
+              errors.append(['missing/unexpected13 named cases', results])
+          failed = {n for n, v in results.items() if v == 'FAILED'}
+          if failed != set(expected_failures):
+              errors.append(['wrong exact failed set', sorted(failed), sorted(expected_failures)])
+          if re.findall(r'test result: FAILED\. (\d+) passed; (\d+) failed;', proc.stdout) != [('7', '6')]:
+              errors.append(['expected seven positives and six genuine failures'])
+          assertions = {}
+          for name, typed in expected_failures.items():
+              block = blocks.get(name, '')
+              message = ('the real authenticated wire response must expose canonical host storage'
+                         if name.startswith('remote_') else 'the stored plan must be canonical')
+              required = ['test_scripture_link_canonical.rs:', 'assertion `left == right` failed:',
+                          message, 'left:', typed, 'right:', 'Romans 8:28-30']
+              if not all(token in block for token in required):
+                  errors.append(['missing genuine typed-versus-canonical assertion', name, block])
+              assertions[name] = block
+          controls = sorted(expected_names - set(expected_failures))
+          if any(results.get(n) != 'ok' for n in controls):
+              errors.append(['a preservation positive did not pass', {n: results.get(n) for n in controls}])
+          restored = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+          changed = {str(p.relative_to(root)): subprocess.check_output([
+              'git', 'diff', '--', str(p.relative_to(root))]).decode()
+              for p, b in saved.items() if p.read_bytes() != b}
+          print('13XZ_CORRECTED_TESTS_ONLY_FILE_AUDIT=' + json.dumps({
+              'before': hashes, 'after': restored, 'changed_diffs': changed}, sort_keys=True), flush=True)
+          if restored != hashes:
+              errors.append(['source/test/dependency identity changed', changed])
+          print('13XZ_CORRECTED_RED_RECEIPT=' + json.dumps({
+              'source': source, 'original_production_base': base, 'command': command,
+              'test_exit_code': proc.returncode, 'results': results,
+              'required_failures': sorted(expected_failures), 'required_positive_controls': controls,
+              'actual_assertions': assertions, 'errors': errors,
+              'source_test_dependency_identity': restored == hashes,
+              'output_sha256': hashlib.sha256(proc.stdout.encode()).hexdigest(),
+              'normal_gate': False, 'production_fix_applied': False}, sort_keys=True), flush=True)
+          assert not errors, errors
+          PYRUN
