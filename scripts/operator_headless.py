@@ -2054,8 +2054,10 @@ EXPECTED_MIN_CHECKS = 2761
 # Review S2 corrected run41194062859 measured2810/0; only the old2761 guard
 # exited4. All existing/new DRIVER and STUB assertions remain unchanged.
 EXPECTED_MIN_CHECKS = 2810
-# Combined actual PR318/F31 integration has not been measured yet. This last
-# observed2810 value is deliberately STALE until hosted combined measurement.
+# Combined actual PR318/F31 integration4e kept2810 deliberately STALE.
+# Hosted41199766261 actually measured2831/0; only stale2810count exited4.
+# Both actual target and F31 assertions remain unchanged by this observed pin.
+EXPECTED_MIN_CHECKS = 2831
 
 
 def find_chrome():
