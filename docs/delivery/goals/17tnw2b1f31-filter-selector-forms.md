@@ -182,8 +182,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: unconditionally unioning the actual previous literal-selector backstop with structural candidates preserves prior raw safety regardless of lost/regained delimiter or quote context, without globally rejecting malformed clean input.
 - Change or investigation: retain the previous literal regex over the same stripped source and OR unchanged declarations. Deduplicate only exact offset+body pairs, keeping different bodies at one opening and source order. Background/CSSOM/condition/none/backdrop logic and all old/new assertions stay unchanged. This is baseline preservation, not new CSS grammar/selector policy.
 - Verifier executed: actual strong current-versus-previous77case RED, static/Goal checks; current-versus-actual-previous body-set/predicate preservation and small GREEN/full-count measurement next.
-- Result: Preparation only; strict2761 remains until actual complete new count. The added independent backstop makes some original canonical S1 single-removal mutants behaviorally redundant; do not falsely require/claim they fail. Retain historical evidence, prove new union removal/current independent family failures and label any component isolation explicitly. Root approved this transparent qualification direction, with all product assertions retained.
+- Result: Actual41194062859 focused current77/actual previous77 PASS,36actual input-pair body-superset checks PASS including different bodies at one opening and quoted-brace clean/dropped controls. Complete real driver2810checks/0behaviorFAIL; sole old2761strictcount/exit4. All198actual F31 records PASS. Pin ONLY observed2810 with DRIVER/STUB/assertions unchanged. The added independent backstop makes some original canonical S1 single-removal mutants behaviorally redundant; do not falsely require/claim they fail. Retain historical evidence, prove new union removal/current independent family failures and label any component isolation explicitly. Root approved this transparent qualification direction, with all product assertions retained.
 - New evidence: filter-selector-forms/S2 current/previous helper raw and upcoming step10 proof/measurement.
+- Decision: iterate
+
+### Iteration 11 — measured pin and integrated current-source qualification
+
+- Target criterion: C-001 through C-004 and fresh C-005 evidence readiness.
+- Hypothesis: the observed2810 pin, ordinary current-main integration and meaningful independent CSSOM/raw-family/nested/legacy-union reversion failures followed by identical17component restoration establish the corrected all-block boundary without weakening any existing assertion.
+- Change or investigation: pin only actual2810 after complete zero-behavior-failure measurement. Integrate actual fresh main, preserving unrelated installer/iOS/pilot-registration changes. Keep DRIVER/STUB identical37f, shipping dist unchanged and all original/S1/S2 assertions. Canonical S1 guards now have independent legacy protection; retain their prior actual proof without pretending redundant single removals fail the final system.
+- Verifier executed: measurement41194062859 raw classification, structural Goal/stdlb AST/full baseline diff checks; final integrated normal and bounded current mutants next. Auxiliary300s, job12min and product90s remain unchanged; prior240s unknown-timeout history remains distinct.
+- Result: Preparation only; current normal/mutation/restoration/four-role final closure remain pending. No unexecuted gate is green, no budget or scope extension.
+- New evidence: filter-selector-forms/S2-green-measurement-ci and forthcoming immutable final source/run/whole-prefix packet.
 - Decision: iterate
 
 ## Risks and rollback

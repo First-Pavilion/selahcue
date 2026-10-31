@@ -2045,6 +2045,9 @@ EXPECTED_MIN_CHECKS = 2733
 # Review S1 corrected run41189844529 measured2761/0; only this stale count guard
 # exited4. All original2733 plus28 recovery assertions are unchanged by this pin.
 EXPECTED_MIN_CHECKS = 2761
+# Review S2 corrected run41194062859 measured2810/0; only the old2761 guard
+# exited4. All existing/new DRIVER and STUB assertions remain unchanged.
+EXPECTED_MIN_CHECKS = 2810
 
 
 def find_chrome():
