@@ -2042,6 +2042,9 @@ EXPECTED_MIN_CHECKS = 2612
 # 2612 ->2631 (17tnw2bbhxp): six target-existence/cancellation/custom-menu
 # triplets plus the Shift+F10 designer-vs-app-navigation assertion.
 EXPECTED_MIN_CHECKS = 2631
+# 2631 ->2633 (17tnw2bbhxp review): visible keyboard-action instructions and
+# their accessible association with the focusable selection.
+EXPECTED_MIN_CHECKS = 2633
 
 
 def find_chrome():
@@ -4770,6 +4773,15 @@ DRIVER = r"""
 
       // #4 keyboard menu: Copy→Paste clones; Cmd+C/V; Delete.
       addShape();
+      var tdActionsHint = document.querySelector(".td-canvas-foot .td-note");
+      ok(tdActionsHint && tdActionsHint.getBoundingClientRect().width > 0 &&
+         /Context Menu/.test(tdActionsHint.textContent) && /Shift\s*\+\s*F10/.test(tdActionsHint.textContent) &&
+         !/right.click for actions/i.test(tdActionsHint.textContent),
+         "P16: the visible canvas hint teaches keyboard element actions, not disabled right-click");
+      ok(tdActionsHint && tdActionsHint.id &&
+         (el("td-sel").getAttribute("aria-describedby") || "").split(/\s+/).includes(tdActionsHint.id),
+         "P16: the focusable selection describes its keyboard action path with the visible canvas hint");
+      el("td-sel").focus();
       el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
       ok(!el("td-ctx").hidden, "#4 ContextMenu key opens the element actions menu");
       ok(cdisp("td-ctx")!=="none", "#4 open menu is actually VISIBLE (computed display, not just attr)");
