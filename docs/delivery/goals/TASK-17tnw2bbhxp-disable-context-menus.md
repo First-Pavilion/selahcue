@@ -20,7 +20,7 @@ Suppress browser/webview and custom context-menu activation throughout the Opera
 
 ## Baseline
 
-Verified at main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js opens a custom Theme Designer menu on contextmenu; the headless driver explicitly expects right-click to open it. The designer already has ContextMenu and Shift+F10 key handlers; the window-level F10 shortcut also sees the latter event.
+Verified at original main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js opens a custom Theme Designer menu on contextmenu; the headless driver explicitly expects right-click to open it. The designer already has ContextMenu and Shift+F10 key handlers; the window-level F10 shortcut also sees the latter event. Rebased onto main `179dbb97665148170a7d20eb5419fa710b2b3ab1` before review; app.js, operator_headless.py and headless_chrome.py are unchanged between those two main revisions.
 
 ## Inputs and evidence sources
 
@@ -59,7 +59,7 @@ Verified at main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js opens a cust
 |---|---|---|---|---|---|---|
 | C-001 | yes | Console contextmenu events are cancelled across representative targets without opening a custom menu | operator_headless.py pointer scenarios | zero named pointer failures | /private/tmp/farah-p16-focused-green.log: 28 checks, 0 FAIL | PASS |
 | C-002 | yes | Keyboard designer menu commands still work and do not also open app navigation | operator_headless.py keyboard scenarios | copy/paste/delete and ContextMenu/Shift+F10 pass | /private/tmp/farah-p16-focused-green.log | PASS |
-| C-003 | yes | Existing operator browser-portable suite remains green | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | exit 0, no failures | pending | PENDING |
+| C-003 | yes | Existing operator browser-portable suite remains green | SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/operator_headless.py | exit 0, no failures | /private/tmp/farah-p16-green-full.log: 2631 checks, 0 FAIL; process exit 0 | PASS |
 | C-004 | yes | Independent code/performance/security/QA review and platform smoke completed | independent review + native smoke | no unresolved blockers | pending | PENDING |
 
 ## Verification plan
@@ -77,9 +77,15 @@ Verified at main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js opens a cust
 - Hypothesis: capture-phase contextmenu cancellation prevents native and descendant custom handlers, while explicit keydown menu activation remains available.
 - Change or investigation: trace real custom and global shortcut handlers; add browser behavioral checks first.
 - Verifier executed: real-Chrome focused extraction of the committed fixture/driver block via /private/tmp/farah_p16_focused.py before and after implementation; node --check app.js; git diff --check.
-- Result: focused RED 25 checks with 6 intended behavioral failures; focused GREEN 28 checks with 0 failures including dialog coverage. An escalated broad run observed 2628 checks with zero behavioral failures but an expected-count mismatch; it started before the final test count change. Final full-suite rerun remains pending. Sandboxed baseline Chrome aborted with SIGABRT (-6); it is not passing evidence.
+- Result: focused RED 25 checks with 6 intended behavioral failures; focused GREEN 28 checks with 0 failures including dialog coverage. The final full-suite run passed 2631 checks with 0 failures and process exit 0 (/private/tmp/farah-p16-green-full.log). The earlier 2628-check run had an expected-count mismatch and is not passing evidence. Sandboxed baseline Chrome aborted with SIGABRT (-6); that run is not passing evidence either.
 - New evidence: Shift+F10 previously opened both element actions and app navigation. Reserving shifted F10 fixes that without changing ordinary F10.
 - Decision: handoff
+
+### Review preparation
+
+- Rebased onto origin/main `179dbb97665148170a7d20eb5419fa710b2b3ab1` without conflicts. Confirmed no upstream change to the production JS, committed driver or Chrome launcher covered by the full-suite result.
+- Re-ran the focused real-Chrome smoke on the rebased tree: 28 checks, 0 failures, exit 0 (/private/tmp/farah-p16-focused-rebased.log).
+- Re-ran node --check, git diff --check and structural Goal Contract validation. Native Windows/WebView2, Linux/WebKitGTK and macOS/WKWebView smoke remain unverified; they are not implied by headless Chrome.
 
 ## Risks and rollback
 
@@ -95,6 +101,6 @@ Verified at main `93bf472f65a1846117eecf09b1972c4118dc0cd4`: app.js opens a cust
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2bbhxp-disable-context-menus.md
 - Validator result: structural check passed before implementation; completion validator withheld.
 - Independent verification result: pending
-- Terminal state: IN_PROGRESS
-- Remaining failed or blocked criteria: C-003 final broad regression; C-004 independent review/native smoke
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: C-004 independent review/native smoke
 - ClickUp final evidence comment: root to post
