@@ -20,7 +20,9 @@
 - [ ] Archive + upload to App Store Connect; TestFlight internal test; submit for review.
 
 ## Android **[owner: release/devops]**
-- [ ] Signing: upload keystore + Play App Signing (approved secret mechanism — **not** committed).
+- [x] Release signing uses explicit upload configuration and fails closed; debug builds retain development signing. See [Android upload-signing runbook](ANDROID-UPLOAD-SIGNING.md).
+- [ ] **[owner]** Provision and approve the real upload keystore outside the checkout and configure Play App Signing through the approved secret mechanism. Supply all four fields: `SELAHCUE_UPLOAD_STORE_FILE`, `SELAHCUE_UPLOAD_STORE_PASSWORD`, `SELAHCUE_UPLOAD_KEY_ALIAS`, `SELAHCUE_UPLOAD_KEY_PASSWORD`. The file must resolve to an existing absolute path whose canonical location is outside the checkout; no keystore or secret values belong in source.
+- [ ] **[owner]** Build the final signed AAB and compare its signer SHA-256 with the approved upload certificate in Play Console before upload. Disposable fixture signing does not satisfy this check.
 - [ ] `AndroidManifest.xml`: confirm `CAMERA`, `INTERNET`, `CHANGE_WIFI_MULTICAST_STATE` (mDNS) permissions + rationale.
 - [ ] `targetSdk`/`compileSdk` at the current Play requirement; build an app bundle (`.aab`).
 - [ ] Play Console: internal testing track → production; complete Data safety form (matches PRIVACY.md).
@@ -39,7 +41,8 @@
 ## Current app-side readiness findings (2026-10-31; 17tnw2bbhyu)
 
 - Native iOS resource graph now includes the existing privacy manifest; declarations are unchanged. Final archive, bundled-plugin required-reason report, signing and physical-device evidence remain pending.
-- Android `release` still uses the debug signing configuration. Replace it through the approved signing handoff before any store release; do not treat a debug-signed artifact as store-ready.
+- Android `release` now uses explicit upload signing (PR323, ticket 17tnw2bbjcd). Missing or partial configuration fails closed; missing/invalid keystores and incorrect credentials fail validation/signing. There is no debug fallback for release. Debug development remains usable without these four fields.
+- The [upload-signing evidence](ANDROID-UPLOAD-SIGNING.md#verified-implementation-evidence--2026-10-31) verifies negative cases, debug development and a disposable fixture signer. Owner-approved real upload identity, final signed AAB, certificate comparison and store acceptance remain pending under M01 (17tnw2bbhyu) and publishing (86ajxz3nj).
 - Android/iOS native display labels now match `SelahCue Controller`; iOS short fallback name is `SelahCue`. Compiled Android debug APK, actual Android release merged manifest and unsigned iOS release app metadata were verified in the app-identity continuation. See [dated evidence](2026-10-31-app-identity-evidence.md); unsigned/debug outputs are not store-ready.
 - No store upload, account provisioning, signing secret handling or deployment was performed by this increment.
 
