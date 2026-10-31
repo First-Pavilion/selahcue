@@ -1977,6 +1977,11 @@ EXPECTED_MIN_CHECKS = 2556
 # isolation/viewport controls and the first comment check reached by the second-swap probe.
 # Measured on tests-onlyf85996cc in hosted41134054406:2565 checks,4 intended FAIL.
 EXPECTED_MIN_CHECKS = 2565
+# 2565 ->2612 (17tnw2b0wkh): browser color/image/priority/variable cascade
+# premises, shared background read and safe/unsafe contrast plus absence controls.
+# Measured on a70d4d22 in hosted41138510265 baseline:2612 checks,18 intended FAIL.
+# The old last-rule eleven-site witness skipped19 guarded checks; it is not the new count.
+EXPECTED_MIN_CHECKS = 2612
 
 
 def find_chrome():
@@ -2406,6 +2411,23 @@ CSS_SRC = (
     var matches = window.__cssRules(sel, src);
     return matches.length ? matches[matches.length - 1] : null;
   };
+  // Background is a family of interacting longhands. Let the browser cascade the matching
+  // declarations together: a shorthand resets longhands, !important wins per longhand, and
+  // var() shorthands can leave CSSOM longhands empty until substitution. Joining declarations
+  // in source order preserves those rules instead of choosing a whole winning CSSRule.
+  function _cssEffectiveBackground(rules) {
+    var probe = document.createElement("span");
+    probe.style.cssText = rules.map(function(rule) { return rule.style.cssText; }).join(";");
+    var hasFill = Array.from(probe.style).some(function(prop) {
+      return prop === "background" || prop === "background-color" || prop === "background-image";
+    });
+    if (!hasFill) return null;
+    probe.style.setProperty("position", "absolute", "important");
+    probe.style.setProperty("left", "-9999px", "important");
+    document.body.appendChild(probe);
+    try { return getComputedStyle(probe).background; }
+    finally { probe.remove(); }
+  }
   // The value the browser's CASCADE gives `prop` across every rule that matches `sel` (null when
   // none declares it). Rules are already in source order and already filtered to those whose
   // enclosing @media/@supports currently hold (_cssFlatten). All matching rules share one selector
@@ -2435,6 +2457,7 @@ CSS_SRC = (
   // The cascade read is what catches the spellings the raw half cannot see (CSS escapes).
   window.__cssEffective = function(sel, prop, src) {
     var rules = window.__cssRules(sel, src), val = null, important = false;
+    if (prop === "background") return _cssEffectiveBackground(rules);
     for (var i = 0; i < rules.length; i++) {
       var v = rules[i].style.getPropertyValue(prop);
       if (!v) continue;
@@ -13512,7 +13535,7 @@ DRIVER = r"""
       // Resolve ANY colour declaration (hex, rgb(), or var(--token)) through the live CSS engine.
       function _resolve(decl){
         var pr=document.createElement("span");
-        pr.style.cssText="position:absolute;left:-9999px;top:-9999px;background-color:"+decl;
+        pr.style.cssText="position:absolute;left:-9999px;top:-9999px;background:"+decl;
         document.body.appendChild(pr);
         var c=getComputedStyle(pr).backgroundColor; pr.remove(); return _rgba(c);
       }
@@ -13543,7 +13566,7 @@ DRIVER = r"""
         var dupI1 = probeSheet.insertRule(".__cssom_dup_probe__{background:#111111;}", probeSheet.cssRules.length);
         var dupI2 = probeSheet.insertRule(".__cssom_dup_probe__{background:#333333;}", probeSheet.cssRules.length);
         var dupRule = __cssRule(".__cssom_dup_probe__");
-        var dupBg = __cssBg(dupRule);
+        var dupBg = __cssEffective(".__cssom_dup_probe__", "background");
         ok(!!dupRule && !!dupBg && _same(_resolve(dupBg), [51,51,51,1]),
            "CSSOM-PARSE-01: a selector declared TWICE (`.__cssom_dup_probe__`, #111111 then #333333) resolves to the LAST rule — " +
            "the one the cascade actually applies (got \"" + (dupBg || "none") + "\") — not the first; a lookup keyed on selector text alone could only ever find the first");
@@ -13604,7 +13627,7 @@ DRIVER = r"""
         var mqI1 = probeSheet.insertRule(mqSel + "{background:#0000ff;}", probeSheet.cssRules.length);
         var mqI2 = probeSheet.insertRule("@media (max-width:1px){" + mqSel + "{background:#ff0000;}}", probeSheet.cssRules.length);
         var mqRule = __cssRule(mqSel);
-        var mqBg = __cssBg(mqRule);
+        var mqBg = __cssEffective(mqSel, "background");
         ok(!!mqRule && !!mqBg && _same(_resolve(mqBg), [0,0,255,1]),
            "CSSOM-PARSE-04: a duplicate declared inside an @media block that does NOT match the current environment (max-width:1px) is skipped — __cssRule resolves to the rule the browser actually applies (got \"" +
            (mqBg || "none") + "\"), not whichever came last in SOURCE ORDER alone");
@@ -14161,10 +14184,57 @@ DRIVER = r"""
       ok(!!wTdBtn && getComputedStyle(wTdBtn).flexGrow === "1",
          "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
 
+      // WKH: literal browser premises and the actual shared per-property background read.
+      // A later unrelated rule must not erase an earlier fill; longhands, variables and
+      // !important must compose as they do on the real matching element, not by rule count.
+      [
+        ["earlier-shorthand", "background:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["earlier-longhand", "background-color:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-longhand-unsafe", "background:#112233", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["later-shorthand", "background-color:#fff", "background:#112233", "rgb(17, 34, 51)", "none", true],
+        ["important-longhand", "background-color:#112233!important", "background:#fff", "rgb(17, 34, 51)", "none", true],
+        ["important-shorthand", "background:#112233!important", "background-color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-important-longhand", "background:#fff", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-longhand", "background:#fff!important", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-shorthand", "background-color:#fff!important", "background:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["local-var-shorthand", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["local-var-longhand", "--__wkh-tone:#112233;background-color:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["var-later-longhand-unsafe", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["gradient-later-color", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-color:#fff", "rgb(255, 255, 255)", "linear-gradient(rgb(1, 2, 3), rgb(4, 5, 6))", false],
+        ["later-image-reset", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-image:none", "rgb(17, 34, 51)", "none", true],
+        ["priority-longhand-chain", "background-color:#fff", "background-color:#112233!important} .__WKH__ {background:#fff", "rgb(17, 34, 51)", "none", true]
+      ].forEach(function(c, i){
+        var cls = "__wkh_bg_" + i, sel = "." + cls;
+        var css = sel + "{" + c[1] + "}" + sel + "{" + c[2].replace(".__WKH__", sel) + "}";
+        var fx = window.__cssFixture(css), actual = document.createElement("div"), measured = document.createElement("div");
+        actual.className = cls;
+        try {
+          document.body.appendChild(actual);
+          var actualStyle = getComputedStyle(actual);
+          ok(actualStyle.backgroundColor === c[3] && actualStyle.backgroundImage === c[4],
+             "WKH browser premise/" + c[0] + ": the real cascade paints the literal expected color and image");
+          var value = window.__cssEffective(sel, "background", fx);
+          measured.style.background = value || "";
+          document.body.appendChild(measured);
+          var measuredStyle = getComputedStyle(measured);
+          ok(!!value && measuredStyle.backgroundColor === c[3] && measuredStyle.backgroundImage === c[4],
+             "WKH background cascade/" + c[0] + ": the shared read preserves actual color and image across every matching declaration");
+          ok((_cr([255,255,255,1], _rgba(measuredStyle.backgroundColor)) >= 4.5) === c[5],
+             "WKH contrast control/" + c[0] + ": an actual unsafe light fill is rejected and a dark earlier fill is accepted");
+        } finally { actual.remove(); measured.remove(); fx.dispose(); }
+      });
+      var wkhAbsent = window.__cssFixture(".__wkh_no_fill__{color:red}.__wkh_no_fill__{font-weight:bold}");
+      try {
+        ok(window.__cssEffective(".__wkh_no_fill__", "background", wkhAbsent) === null,
+           "WKH absent control: unrelated declarations do not fabricate a declared background");
+        ok(window.__cssEffective(".__wkh_missing__", "background", wkhAbsent) === null,
+           "WKH missing control: an unmatched selector has no background");
+      } finally { wkhAbsent.dispose(); }
+
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
       var wHoverRule = __cssRule(".pm-btn-primary:hover");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
-      var wHb = __cssBg(wHoverRule);
+      var wHb = __cssEffective(".pm-btn-primary:hover", "background");
       ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
       if (wHb) {
         var wHoverBg = _resolve(wHb.trim());
@@ -14198,7 +14268,7 @@ DRIVER = r"""
         var wTdHoverSel = ".td-save-cta:hover";
         var wTdHoverRule = __cssRule(wTdHoverSel);
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
-        var wTdHb = __cssBg(wTdHoverRule);
+        var wTdHb = __cssEffective(wTdHoverSel, "background");
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
         if (wTdHb) {
           var wTdHoverBg = _resolve(wTdHb.trim());
@@ -14238,7 +14308,7 @@ DRIVER = r"""
         var wPsHoverSel = ".ps-start:hover";
         var wPsHoverRule = __cssRule(wPsHoverSel);
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
-        var wPsHb = __cssBg(wPsHoverRule);
+        var wPsHb = __cssEffective(wPsHoverSel, "background");
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
         if (wPsHb) {
           var wPsHoverBg = _resolve(wPsHb.trim());
@@ -14266,7 +14336,7 @@ DRIVER = r"""
       // disabled rule's own declared background is checked to win the cascade.
       var wPsDisabledRule = __cssRule('.ps-start:disabled, .ps-start[aria-disabled="true"]');
       ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
-      var wPsDisabledBg = __cssBg(wPsDisabledRule);
+      var wPsDisabledBg = __cssEffective('.ps-start:disabled, .ps-start[aria-disabled="true"]', "background");
       ok(!!wPsDisabledBg,
          "PSC-005: the disabled rule declares its OWN background — without one, `:hover` (equal specificity, later in a real disabled+hover) wins the fill and a disabled button visibly flips to the active colour on hover");
       // Cody + Vera (PR #62 review): presence alone doesn't prove the VALUE is right — a
@@ -14277,7 +14347,7 @@ DRIVER = r"""
       // `:focus-visible` or the `:disabled, .ps-start[...]` rule above.
       var wPsBaseRule = __cssRule(".ps-start");
       ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
-      var wPsBaseBg = __cssBg(wPsBaseRule);
+      var wPsBaseBg = __cssEffective(".ps-start", "background");
       ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPsDisabledBg && wPsBaseBg) {
         ok(wPsDisabledBg.trim() === wPsBaseBg.trim(),
@@ -14327,7 +14397,7 @@ DRIVER = r"""
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = __cssRule(".dl-btn-primary:hover");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
-      var wDlHb = __cssBg(wDlHoverRule);
+      var wDlHb = __cssEffective(".dl-btn-primary:hover", "background");
       ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
       if (wDlHb) {
         var wDlRestEl = document.querySelector(".dl-btn-primary");
@@ -14386,7 +14456,7 @@ DRIVER = r"""
         var wTbGlHoverSel = ".tb-golive:hover";
         var wTbGlHoverRule = __cssRule(wTbGlHoverSel);
         ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
-        var wTbGlHb = __cssBg(wTbGlHoverRule);
+        var wTbGlHb = __cssEffective(wTbGlHoverSel, "background");
         ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTbGlHb) {
           var wTbGlHoverBg = _resolve(wTbGlHb.trim());
@@ -14425,7 +14495,7 @@ DRIVER = r"""
         var wTsHoverSel = ".timer-start:hover";
         var wTsHoverRule = __cssRule(wTsHoverSel);
         ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
-        var wTsHb = __cssBg(wTsHoverRule);
+        var wTsHb = __cssEffective(wTsHoverSel, "background");
         ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTsHb) {
           var wTsHoverBg = _resolve(wTsHb.trim());
@@ -14477,7 +14547,7 @@ DRIVER = r"""
         // unparseable one.
         ok(__cssNoBrightnessFilter(wPpGenHoverSel),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
-        var wPpGenHb = __cssBg(wPpGenHoverRule);
+        var wPpGenHb = __cssEffective(wPpGenHoverSel, "background");
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
         if (wPpGenHb) {
           var wPpGenHoverBg = _resolve(wPpGenHb.trim());
@@ -14496,12 +14566,12 @@ DRIVER = r"""
       // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
       var wPpGenDisabledRule = __cssRule('.pp-generate[disabled], .pp-generate[aria-busy="true"]');
       ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
-      var wPpGenDisabledBg = __cssBg(wPpGenDisabledRule);
+      var wPpGenDisabledBg = __cssEffective('.pp-generate[disabled], .pp-generate[aria-busy="true"]', "background");
       ok(!!wPpGenDisabledBg,
          "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
       var wPpGenBaseRule = __cssRule(".pp-generate");
       ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
-      var wPpGenBaseBg = __cssBg(wPpGenBaseRule);
+      var wPpGenBaseBg = __cssEffective(".pp-generate", "background");
       ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPpGenDisabledBg && wPpGenBaseBg) {
         ok(wPpGenDisabledBg.trim() === wPpGenBaseBg.trim(),
