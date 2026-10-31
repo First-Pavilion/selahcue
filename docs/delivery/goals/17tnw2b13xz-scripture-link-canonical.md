@@ -101,6 +101,16 @@ Fresh actual main400bbb524de76e4cbc49b8c99db7df6299b6dfa4 after root-verified AY
 - Result: static correction prepared; actual corrected RED pending. No broad blind normal rerun or source edit.
 - Decision: publish separate exact-parent workflow-only focused diagnostic, preserving failed9-case history, before minimal canonical storage fix. Parent/root owns tracker catch-up and review/mergeQA.
 
+### Iteration 3
+
+- Target criterion: C-001 through C-005
+- Verifier executed: bounded corrected tests-only diagnostic41177482383 SUCCESS at workflow-only386a84a9, exact first parente6082726. The actual Cargo invocation exits101 with exactly six typed-versus-canonical mismatches and all seven preservation positives passing,13 named cases total; all nine guarded source/test/dependency hashes unchanged. Full raw/metadata/SHA256, actual six assertion blocks and file/component audits archived in mobile-qualification/17tnw2b13xz/corrected-red-ci. This is qualified behavioral RED, not a normal GREEN.
+- Positive evidence: canonical bytes/metadata/default absence, fit/pin, malformed full-plan retention/dirty, parseable missing, sanitize-first, canonical TLS and forbidden/malformed wire/no-Live controls all pass against original production. Actual GoLive changes pixel bytes in the audience-oracle positive; generation counters are no longer used as output equality.
+- Hypothesis: retain the successfully parsed Reference and use its existing Display only when the existing chapter-fit path does not rewrite the reference.
+- Change: minimal set_item_content let-Ok parse and canonical else assignment, with precise related comments. Existing fitting/translation pinning, sanitized validation, malformed denial, missing acceptance/status, permissions, transport/errors and load-time legacy helpers untouched. All corrected test assertions remain intact.
+- Result: candidate prepared; fresh target integration, full normal Rust and meaningful hosted mutants/restoration pending. No local project runtime.
+- Decision: ordinarily integrate fresh actual main before publication, freeze the single PR310 candidate and separate exact-parent diagnostic; root owns all4 reviews/mergeQA. No next unit.
+
 ## Risks and rollback
 
 - Risks: changing fit/pin order, silently rejecting unresolved passages, permission mutation, legacy load changes or accidentally updating Live while re-staging Preview.
