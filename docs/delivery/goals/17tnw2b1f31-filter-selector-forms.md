@@ -135,8 +135,18 @@ All mandatory rows must PASS for VERIFIED_COMPLETE.
 - Hypothesis: negative closing-delimiter counters and a bad string retained across an unescaped newline can hide later raw candidates even when CSSOM cannot report the hazard; the real previous raw helper should still refuse them.
 - Change or investigation: add one committed standalone regression block using actual helpers, three malformed unrelated prefixes, parser-dropped/inactive hazards and none/backdrop clean cases, plus a balanced quoted/escaped/function-value positive. CSS_SRC/guard correction and old2733count remain unchanged while a small hosted current-versus-actual-previous helper RED runs. No fullnormal or40hover rerun for initial review RED.
 - Verifier executed: reviewer source/caller verification, stdlib AST/unchanged original candidate CSS_SRC/STUB/structural checks; actual hosted bounded review RED next.
-- Result: Tests-only preparation pending actual behavior; no recovery fix or new full-count claim before actual RED. Existing2733 assertions preserved; new complete count remains unmeasured until full driver executes.
+- Result: Actual small hosted41189552557 evaluates exactly the committed block: current16PASS/12FAIL, actual previous raw helper28PASS. All8nonvacuous/CSSOM-insufficient premises,4clean and balanced quoted/escaped/function controls PASS. Strayparen/bracket/newline raw and both composed predicates fail on dropped/inactive hazards; no setup/oracle failure. No recovery fix before this actual RED. Existing2733 assertions preserved; new complete count remains unmeasured until full driver executes.
 - New evidence: filter-selector-forms review-red workflow/parent/raw receipts.
+- Decision: iterate
+
+### Iteration 7 — bounded raw recovery correction
+
+- Target criterion: C-002/C-003/C-004/C-005 current-source closure.
+- Hypothesis: keeping unmatched closing-delimiter counters at zero and ending bad strings on unescaped CSS newlines prevents unrelated malformed prefixes from hiding later candidates, while valid quoted/escaped continuations and function context remain intact.
+- Change or investigation: floor the two closing counters and reset only bad-string newline state; the prior escape branch still consumes valid escaped newlines before quote recovery. Retain nested parent/source-order/all-declaration/condition-blind behavior, all existing/new assertions and original CSSOM/background logic. Ordinary currentmain integration before final candidate. No complete parser/policy expansion.
+- Verifier executed: qualified actual review RED/current-vs-previous controls, source/static/Goal checks; small recovery GREEN and full driver count measurement next, then actual-count pin/current mutants/restoration/fullnormal/all4re-review.
+- Result: Static preparation only; no current full-count/GREEN/review completion claim. Maximum8 unchanged; no evidence-only source churn after final freeze.
+- New evidence: filter-selector-forms/review-red.log, review-red-object-proof.json, current-source recovery/normal/mutation receipts.
 - Decision: iterate
 
 ## Risks and rollback

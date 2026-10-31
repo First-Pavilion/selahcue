@@ -2640,12 +2640,14 @@ CSS_SRC = (
       var ch = text[i];
       if (escaped) { escaped = false; continue; }
       if (ch === "\\") { escaped = true; continue; }
-      if (quote) { if (ch === quote) quote = ""; continue; }
+      // CSS ends a bad string at an unescaped newline. An escaped newline was
+      // already consumed above, so valid continuations keep their quote context.
+      if (quote) { if (ch === quote || /[\n\r\f]/.test(ch)) quote = ""; continue; }
       if (ch === '"' || ch === "'") { quote = ch; continue; }
       if (ch === "(") { parens++; continue; }
-      if (ch === ")") { parens--; continue; }
+      if (ch === ")") { parens = Math.max(0, parens - 1); continue; }
       if (ch === "[") { brackets++; continue; }
-      if (ch === "]") { brackets--; continue; }
+      if (ch === "]") { brackets = Math.max(0, brackets - 1); continue; }
       if (parens || brackets) continue;
       if (ch === "{") {
         var header = text.slice(start, i).trim();
