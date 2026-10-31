@@ -28,6 +28,7 @@ driven smoke would be a stronger fidelity check; tracked as an audit follow-up. 
 Tauri webview stays owner-run / dev-time.
 """
 import hashlib
+import subprocess
 import json
 import shutil
 import os, re, sys
@@ -2201,6 +2202,24 @@ def check_headless_launch_contract():
         "SIGINT unwind cleanly, including one that lands mid-launch or mid-cleanup"
     )
     return True
+
+
+# P03: exercise the same safe status client and actual settings/transcript modules
+# before browser discovery. DIST is explicit so staged/mutated gate runs test their own JS.
+try:
+    pilot_ui = subprocess.run(
+        ["node", "--test", os.path.join(_REPO, "scripts", "test_pilot_access.js")],
+        env=dict(os.environ, PILOT_TEST_DIST=DIST),
+        capture_output=True, text=True, timeout=60,
+    )
+except (OSError, subprocess.TimeoutExpired):
+    print("FAIL: pilot access JavaScript tests could not run (Node required, bounded60s)")
+    sys.exit(2)
+if pilot_ui.returncode != 0:
+    print("FAIL: pilot access JavaScript behavior")
+    print((pilot_ui.stdout + pilot_ui.stderr)[-8000:])
+    sys.exit(1 if pilot_ui.returncode == 1 else 2)
+print("PASS: pilot access JavaScript behavior — status, real panels, expiry and recovery controls")
 
 
 try:
