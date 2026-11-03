@@ -222,6 +222,8 @@ jobs:
               # `marketing:` below is, and why it is no longer caught here.
               - 'implementation/web/**'
               - '.github/workflows/ci.yml'
+              # Installer-only changes must re-run the desktop lint configurations.
+              - '.github/workflows/windows-installer.yml'
               # A toolchain bump changes which compiler every desktop gate runs, so
               # it must re-run the whole desktop matrix.
               - 'rust-toolchain.toml'
@@ -342,6 +344,8 @@ jobs:
           python3 .github/scripts/check_workflows.py
           # Offline controls only; installer builds remain manual/main-only.
           python3 scripts/test_linux_installer.py
+      - name: Installer features match a CI-linted configuration
+        run: make installer-feature-parity
       # Three additional launchers share the file/PID lifecycle. These are real
       # caller commands with interpreter-backed fixtures, so no Chrome/Cargo is
       # required. This always-run job has a full checkout: auth-only and shared
