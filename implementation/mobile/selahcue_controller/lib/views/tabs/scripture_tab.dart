@@ -34,8 +34,14 @@ class _ScriptureTabState extends State<ScriptureTab> {
   List<String> _suggestions = const [];
   String _translation = 'KJV';
   ChapterResult? _chapter;
+  // The chapter is browsing context; the requested reference is the selection.
+  // A chapter reply deliberately contains no verse/range identity.
+  String? _loadedReference;
+  int _loadGeneration = 0;
+  int _fieldRevision = 0;
   bool _loading = false;
-  bool _fetchFailed = false; // last fetch returned no chapter (old host / bad ref)
+  bool _fetchFailed =
+      false; // last fetch returned no chapter (old host / bad ref)
   bool _triedInitial = false;
 
   @override
@@ -65,11 +71,10 @@ class _ScriptureTabState extends State<ScriptureTab> {
   }
 
   void _onChanged() {
-    final next = suggestBooks(_ctrl.text);
-    final changed =
-        next.length != _suggestions.length ||
-        (next.isNotEmpty && next.first != _suggestions.first);
-    if (changed) setState(() => _suggestions = next);
+    _fieldRevision++;
+    // Rebuild even when suggestions do not change: editing invalidates the
+    // loaded-reference Stage action until the field is loaded again.
+    setState(() => _suggestions = suggestBooks(_ctrl.text));
   }
 
   void _pickBook(String book) {
@@ -80,18 +85,24 @@ class _ScriptureTabState extends State<ScriptureTab> {
 
   Future<void> _load(String reference, {String? asTranslation}) async {
     final ref = reference.trim();
-    if (_loading || ref.isEmpty) return;
+    if (ref.isEmpty) return;
+    final generation = ++_loadGeneration;
+    final fieldRevision = _fieldRevision;
     setState(() => _loading = true);
     final result = await widget.live.fetchChapter(
       ref,
       translation: asTranslation ?? _translation,
     );
-    if (!mounted) return;
+    if (!mounted || generation != _loadGeneration) return;
+    setState(() => _loading = false);
+    // A newer edit wins over this response, even when it has not been
+    // submitted yet. Never silently replace the operator's next selection.
+    if (fieldRevision != _fieldRevision) return;
     setState(() {
-      _loading = false;
       _suggestions = const [];
       if (result != null) {
         _chapter = result;
+        _loadedReference = ref;
         _translation = result.translation; // host is authoritative on the code
         _fetchFailed = false;
       } else {
@@ -99,14 +110,14 @@ class _ScriptureTabState extends State<ScriptureTab> {
       }
     });
     if (result != null) {
-      // Sync the field to the chapter actually shown, so ‹ › paging and the
-      // field never disagree.
-      _setField('${result.bookName} ${result.chapter}');
+      // Preserve the successful request, including a verse/range. Paging
+      // already supplies a chapter-only reference and replaces the selection.
+      _setField(ref);
     } else if (_chapter != null) {
       // A failed lookup while a chapter is displayed keeps that chapter on
       // screen — report the miss and re-sync the field rather than failing
       // silently (and leaving the picker/field pointing at the wrong place).
-      _setField('${_chapter!.bookName} ${_chapter!.chapter}');
+      _setField(_loadedReference!);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Couldn’t load “$ref”.'),
@@ -135,7 +146,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
       // Commit the new code only if the reload succeeds (via result.translation
       // in _load); on failure _translation is untouched, so the picker reverts
       // in step with the chapter still on screen.
-      _load('${ch.bookName} ${ch.chapter}', asTranslation: code);
+      _load(_loadedReference!, asTranslation: code);
     } else {
       setState(() => _translation = code);
     }
@@ -173,9 +184,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
           child: Text(
             'Scripture control is not part of your role.',
             textAlign: TextAlign.center,
-            style: SelahType.body.copyWith(
-              color: DesignTokens.d2TextSecondary,
-            ),
+            style: SelahType.body.copyWith(color: DesignTokens.d2TextSecondary),
           ),
         ),
       );
@@ -192,7 +201,9 @@ class _ScriptureTabState extends State<ScriptureTab> {
     final syncing = widget.live.syncing;
     final busy = widget.live.busy;
     final disabled = syncing || busy;
-    final disabledReason = syncing ? 'unavailable while reconnecting' : 'sending…';
+    final disabledReason = syncing
+        ? 'unavailable while reconnecting'
+        : 'sending…';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -281,6 +292,24 @@ class _ScriptureTabState extends State<ScriptureTab> {
             color: DesignTokens.d2Primary,
           ),
         if (_chapter != null) _chapterNav(_chapter!),
+        if (!_loading &&
+            _loadedReference != null &&
+            _ctrl.text.trim() == _loadedReference)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: SelahSpace.gutter),
+            child: SelahButton(
+              label: 'Stage',
+              disabledReason: disabledReason,
+              onPressed: disabled
+                  ? null
+                  : () => widget.live.act(
+                      cmdStageScripture(
+                        _loadedReference!,
+                        translation: _translation,
+                      ),
+                    ),
+            ),
+          ),
         Expanded(child: _body(view, disabled, disabledReason)),
         Padding(
           padding: const EdgeInsets.fromLTRB(
@@ -491,7 +520,9 @@ class _DetectionBanner extends StatelessWidget {
             borderRadius: BorderRadius.circular(SelahRadius.row),
             onTap: onTap,
             child: Container(
-              constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
+              constraints: const BoxConstraints(
+                minHeight: kSelahMinTouchTarget,
+              ),
               padding: const EdgeInsets.symmetric(
                 horizontal: SelahSpace.md,
                 vertical: SelahSpace.sm,
@@ -501,15 +532,11 @@ class _DetectionBanner extends StatelessWidget {
                 border: Border.all(color: tone.border),
               ),
               child: Row(
-            children: [
+                children: [
                   // Real icons, not the ⚠ / › glyphs: U+26A0 has an emoji
                   // presentation on iOS that ignores the ink colour, and glyph
                   // metrics differ across Android OEM fonts.
-                  Icon(
-                    Icons.warning_amber_rounded,
-                    size: 18,
-                    color: tone.ink,
-                  ),
+                  Icon(Icons.warning_amber_rounded, size: 18, color: tone.ink),
                   const SizedBox(width: SelahSpace.xs),
                   Expanded(
                     child: Text(
@@ -715,11 +742,7 @@ class _StageAffordance extends StatelessWidget {
     final (IconData glyph, Color fill, Color ink) = live
         ? (Icons.circle, DesignTokens.d2LiveSoft, DesignTokens.d2Live)
         : staged
-        ? (
-            Icons.check,
-            DesignTokens.d2Preview,
-            DesignTokens.d2PreviewSoft,
-          )
+        ? (Icons.check, DesignTokens.d2Preview, DesignTokens.d2PreviewSoft)
         : (
             Icons.arrow_forward,
             DesignTokens.d2Elevated,
