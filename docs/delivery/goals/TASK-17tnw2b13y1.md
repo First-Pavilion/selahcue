@@ -112,6 +112,16 @@ Verified host `StageScripture` narrows a range to its first verse and stores the
 - New evidence: `/private/tmp/scripture-range-green.log`, `/private/tmp/scripture-range-analyze.log`; committed regression suite. Fetched origin/main remains 9801fc587adba59a30ddee066efb5d0da26fc425; branch is 0 commits behind.
 - Decision: handoff
 
+### Iteration 4
+
+- Target criterion: C2 and C3, selection-only revision diagnostic requested before independent review.
+- Hypothesis: TextEditingController notifies for selection changes as well as text; unconditional revision increments can wrongly discard a valid response when only the cursor/selection moves.
+- Change or investigation: added two real widget text-input cases that assert unchanged reference text with a changed selection before resolving delayed chapter and translation replies. Both were RED on 3c742b8b: expected Delayed verse / Reloaded verse, found none. Added last-text comparison so only actual text changes advance the revision; request generations still guard out-of-order replies.
+- Verifier executed: the full scoped Flutter command from iteration 3; changed-file Flutter analyzer and format check; the single unchanged Rust range test; git diff --check.
+- Result: all 26 widget tests passed (14 focused, 12 existing), including both new selection-only cases, stale actual edits, out-of-order responses, disposal and reconnects. Analyzer: No issues found (9.9s). Format: 0 changed. Rust: 1 passed, 149 filtered, no failures. No lockfile changes.
+- New evidence: `/private/tmp/scripture-selection-red.log`, `/private/tmp/scripture-selection-green.log`, `/private/tmp/scripture-selection-analyze.log`, `/private/tmp/scripture-selection-host.log`; committed focused regression suite.
+- Decision: handoff for root-coordinated reviews of the updated frozen source.
+
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b13y1.md
@@ -119,4 +129,4 @@ Verified host `StageScripture` narrows a range to its first verse and stores the
 - Independent verification result: pending
 - Terminal state: GATE_REVIEW — implementation ready for root-coordinated independent reviews, not VERIFIED_COMPLETE.
 - Remaining failed or blocked criteria: C4 pending independent review and CI.
-- ClickUp final evidence comment: pending
+- ClickUp final evidence comment: implementation handoff 1400430000277652; remediation-start 1400430000277663; updated handoff linked on PR #344.

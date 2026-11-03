@@ -370,4 +370,87 @@ void main() {
       }
     },
   );
+  testWidgets(
+    'selection-only change does not discard a delayed chapter reply',
+    (tester) async {
+      final session = _Session()..chapterGate = Completer<ServerMessage>();
+      await _mount(tester, session);
+      await _browse(tester, 'Psalms 119:2-10');
+      await tester.tap(find.byType(TextField));
+      await tester.pump();
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: 'Psalms 119:2-10',
+          selection: TextSelection.collapsed(offset: 3),
+        ),
+      );
+      await tester.pump();
+      expect(_field(tester), 'Psalms 119:2-10');
+      expect(
+        tester.widget<TextField>(find.byType(TextField)).controller!.selection,
+        const TextSelection.collapsed(offset: 3),
+      );
+      session.chapterGate!.complete(
+        const ChapterResult(
+          bookName: 'Psalms',
+          chapter: 119,
+          translation: 'KJV',
+          verses: [VerseView(2, 'Delayed verse')],
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Delayed verse'), findsOneWidget);
+      await tester.tap(find.text('Stage'));
+      await tester.pump();
+      expect(session.sent.last, {
+        'cmd': 'stage_scripture',
+        'reference': 'Psalms 119:2-10',
+        'translation': 'KJV',
+      });
+    },
+  );
+
+  testWidgets('selection-only change does not discard a translation reload', (
+    tester,
+  ) async {
+    final session = _Session();
+    await _mount(tester, session);
+    await _browse(tester, 'Psalms 119:2-10');
+    session.chapterGate = Completer<ServerMessage>();
+    await tester.tap(find.text('KJV').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('WEB').last);
+    await tester.pump();
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'Psalms 119:2-10',
+        selection: TextSelection(baseOffset: 0, extentOffset: 6),
+      ),
+    );
+    await tester.pump();
+    expect(_field(tester), 'Psalms 119:2-10');
+    expect(
+      tester.widget<TextField>(find.byType(TextField)).controller!.selection,
+      const TextSelection(baseOffset: 0, extentOffset: 6),
+    );
+    session.chapterGate!.complete(
+      const ChapterResult(
+        bookName: 'Psalms',
+        chapter: 119,
+        translation: 'WEB',
+        verses: [VerseView(2, 'Reloaded verse')],
+      ),
+    );
+    await tester.pump();
+    expect(find.text('Reloaded verse'), findsOneWidget);
+    await tester.tap(find.text('Stage'));
+    await tester.pump();
+    expect(session.sent.last, {
+      'cmd': 'stage_scripture',
+      'reference': 'Psalms 119:2-10',
+      'translation': 'WEB',
+    });
+  });
 }

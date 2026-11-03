@@ -39,6 +39,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
   String? _loadedReference;
   int _loadGeneration = 0;
   int _fieldRevision = 0;
+  String _fieldText = '';
   bool _loading = false;
   bool _fetchFailed =
       false; // last fetch returned no chapter (old host / bad ref)
@@ -71,6 +72,10 @@ class _ScriptureTabState extends State<ScriptureTab> {
   }
 
   void _onChanged() {
+    // Controller notifications include cursor/selection/composing changes.
+    // Only a text edit invalidates a chapter request for this reference.
+    if (_ctrl.text == _fieldText) return;
+    _fieldText = _ctrl.text;
     _fieldRevision++;
     // Rebuild even when suggestions do not change: editing invalidates the
     // loaded-reference Stage action until the field is loaded again.
