@@ -1331,6 +1331,27 @@ fn malformed_retention_days_is_reported_corrupt_not_silently_kept_forever() {
 }
 
 #[test]
+fn corrupt_retention_diagnostic_never_quotes_the_stored_value() {
+    let db = db();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_setting (key, value) VALUES ('retention_days', ?1)",
+            params!["STORED-RETENTION-SENTINEL-17tnw2b9dq1"],
+        )
+        .unwrap();
+    let error = transcript_repo::load_retention_settings(&db).unwrap_err();
+    assert!(matches!(error, selahcue_data::DataError::Corrupt(_)));
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(rendered.contains("retention_days"));
+        assert!(rendered.contains("not a valid u32"));
+        assert!(
+            !rendered.contains("STORED-RETENTION-SENTINEL"),
+            "{rendered}"
+        );
+    }
+}
+
+#[test]
 fn deleting_a_transcript_succeeds_despite_a_malformed_retention_days_value() {
     // PR #33 review, Vera F4: `delete()` used to route through `load_retention_settings`
     // (the SAME fail-closed path `purge_expired` correctly uses for ITS OWN need of the

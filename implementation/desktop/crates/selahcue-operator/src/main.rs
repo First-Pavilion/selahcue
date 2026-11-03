@@ -2073,12 +2073,55 @@ async fn pick_image(app: tauri::AppHandle) -> PickImageOutcome {
 #[tauri::command]
 fn preview_theme(theme_json: String) -> Result<serde_json::Value, String> {
     use base64::Engine;
-    let theme: selahcue_present::Theme =
-        serde_json::from_str(&theme_json).map_err(|e| format!("invalid theme: {e}"))?;
+    let theme: selahcue_present::Theme = serde_json::from_str(&theme_json).map_err(|e| {
+        // serde's message can quote a theme value; category and position cannot.
+        format!(
+            "invalid theme: {:?} at line {} column {}",
+            e.classify(),
+            e.line(),
+            e.column()
+        )
+    })?;
     let (w, h) = (480u32, 270u32);
     let fb = selahcue_present::render_sample(&theme, w, h);
     let rgba = base64::engine::general_purpose::STANDARD.encode(fb.bytes());
     Ok(serde_json::json!({ "w": w, "h": h, "rgba": rgba }))
+}
+
+#[cfg(test)]
+mod theme_error_hygiene_tests {
+    use super::preview_theme;
+
+    #[test]
+    fn preview_theme_refuses_bad_values_without_quoting_them() {
+        let mut theme = serde_json::to_value(selahcue_present::Theme::classic())
+            .expect("built-in theme serializes");
+        theme["body"]["align_h"] = serde_json::json!("THEME-SENTINEL-17tnw2b9dq1");
+        let input = serde_json::to_string_pretty(&theme).expect("JSON serializes");
+        let raw = serde_json::from_str::<selahcue_present::Theme>(&input)
+            .expect_err("unknown alignment must fail");
+        assert!(raw.to_string().contains("THEME-SENTINEL"));
+        let error = preview_theme(input).expect_err("invalid theme refused");
+        assert!(error.contains("invalid theme"));
+        assert!(error.contains("Data"), "category lost: {error}");
+        assert!(
+            error.contains(&format!("line {} column {}", raw.line(), raw.column())),
+            "position lost: {error}"
+        );
+        assert!(!error.contains("THEME-SENTINEL"), "value leaked: {error}");
+    }
+
+    #[test]
+    fn preview_theme_still_renders_a_valid_theme() {
+        let input = serde_json::to_string(&selahcue_present::Theme::classic()).expect("serialize");
+        let rendered = preview_theme(input).expect("valid theme renders");
+        assert_eq!(rendered["w"], 480);
+        assert_eq!(rendered["h"], 270);
+        assert!(!rendered["rgba"]
+            .as_str()
+            .expect("encoded pixels")
+            .is_empty());
+    }
 }
 
 /// Render the CURRENT Preview + Live outputs to base64 RGBA8 thumbnails for the console
@@ -2824,9 +2867,9 @@ async fn transcript_get(
     // reply branch used to be a `Debug` dump of the ENTIRE unexpected `ServerMessage` (which can
     // be `OperatorState` carrying live `transcript`/`partial_transcript`/`detections` text).
     // 17tnw2axppb closed that Protocol-error class at its source: `selahcue-app/src/
-    // operator_reply.rs` now names the variant only. It did NOT close every `TransportError`:
-    // `TransportError::Json` still quotes a mistyped serde value (tracked in 17tnw2b9aec), so no
-    // `TransportError` variant is assumed safe to print. FR-082 (no transcript/detection text
+    // operator_reply.rs` now names the variant only, and 17tnw2b9aec replaced JSON messages with
+    // category/position metadata. Keep the fixed message as defence in depth rather than
+    // assuming every future backend error is safe. FR-082 (no transcript/detection text
     // reaches a diagnostic verbatim) covers that text the same as draft text.
     let draft_view = match state.backend.load_sermon_note_draft(id).await {
         Ok(view) => view,
@@ -8304,8 +8347,8 @@ async fn persist_generated_draft(
                 }
                 Err(_) => {
                     // Deliberately NOT interpolated, as defence in depth: the Protocol-error
-                    // Debug dump Sana's F1 found is closed at its source (17tnw2axppb) but
-                    // `TransportError::Json` can still quote a serde value (17tnw2b9aec); see
+                    // Debug dump is closed at its source (17tnw2axppb), and JSON errors now
+                    // retain category/position only (17tnw2b9aec); see
                     // `transcript_get`'s comment.
                     eprintln!("selahcue-operator: failed to stage sermon-note regeneration");
                     PersistOutcome {
@@ -9087,8 +9130,8 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
             // Deliberately NOT interpolated (Sana, PR #50 F1, mirrored from `transcript_get`'s
             // fix), as defence in depth: the `Debug`-dumped `ServerMessage::OperatorState` this
             // error used to be able to carry (live transcript/detection text, FR-082) is closed at
-            // its source (17tnw2axppb), but `TransportError::Json` can still quote a serde value
-            // (17tnw2b9aec) -- see `transcript_get`'s comment.
+            // its source (17tnw2axppb), and JSON diagnostics retain category/position only
+            // (17tnw2b9aec). Keep the fixed message; see `transcript_get`'s comment.
             eprintln!("selahcue-operator: failed to load sermon-note draft");
             Ok(serde_json::json!({ "ok": false }))
         }
@@ -9182,8 +9225,8 @@ async fn update_sermon_note_draft(
             // remediation): this "message" is rendered directly on the operator's own screen via
             // showGenError/saveDraftEdit (role="alert"), not merely logged, so a payload-bearing
             // error would be shown, not just written. The Protocol-error Debug dump is closed at
-            // its source (17tnw2axppb) but `TransportError::Json` can still quote a serde value
-            // (17tnw2b9aec), which is why this stays a fixed message. See transcript_get's comment.
+            // its source (17tnw2axppb), and JSON diagnostics retain category/position only
+            // (17tnw2b9aec). Keep this fixed message as defence in depth; see transcript_get.
             "ok": false, "error": "storage_error",
             "message": "The host reported a connection or protocol problem while saving this \
                 edit. Check the connection and try again.",
@@ -9232,7 +9275,7 @@ async fn confirm_sermon_note_regeneration(
         })),
         Err(_) => Ok(serde_json::json!({
             // Same fixed-message discipline as `update_sermon_note_draft` above (defence in
-            // depth: see its comment for the residual `TransportError::Json` quoting).
+            // depth: see its comment for the now-redacted JSON/backend error history).
             "ok": false, "error": "storage_error",
             "message": "The host reported a connection or protocol problem while confirming \
                 this regeneration. Check the connection and try again.",

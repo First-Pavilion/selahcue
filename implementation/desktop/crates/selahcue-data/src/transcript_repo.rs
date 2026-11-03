@@ -530,7 +530,7 @@ pub fn load_retention_settings(db: &Database) -> Result<RetentionSettings> {
             KEY_RETENTION_DAYS => {
                 settings.retention_days = Some(value.parse::<u32>().map_err(|_| {
                     DataError::Corrupt(format!(
-                        "transcript_setting {KEY_RETENTION_DAYS} value {value:?} is not a valid u32"
+                        "transcript_setting {KEY_RETENTION_DAYS} is not a valid u32"
                     ))
                 })?);
             }
