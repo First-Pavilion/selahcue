@@ -1171,21 +1171,33 @@ def login(data: LoginData, *, source_surface: str = ACCOUNT_AUDIT_SURFACE) -> Lo
     fingerprint = _email_fingerprint(email)
     now = djtz.now()
 
+    # JSON escapes can produce lone surrogates, which Django cannot hash as UTF-8.
+    # Still perform the normal KDF and failed-attempt accounting for every account
+    # state. A safe substitute must NEVER make an invalid candidate authenticate.
+    password = data.password
+    password_encodable = True
+    if isinstance(password, str):
+        try:
+            password.encode("utf-8")
+        except UnicodeEncodeError:
+            password = ""
+            password_encodable = False
+
     # Read (no lock) and run the slow PBKDF2 outside any transaction — holding a row lock across
     # check_password would serialise all logins for a user for no benefit.
     user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
     if user is None:
         # Equalise timing with the wrong-password path; then deny with no oracle.
-        check_password(data.password, _DUMMY_PASSWORD_HASH)
+        check_password(password, _DUMMY_PASSWORD_HASH)
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if user.locked_until is not None and user.locked_until > now:
         # Do NOT leak the locked state: a distinct RATE_LIMITED code (429) would be an existence
         # oracle, since only real accounts can be locked. Equalise timing (run the hash) and deny
         # with the SAME UNAUTHENTICATED as unknown-email / wrong-password. Lockout still blocks —
         # even a correct password is refused while locked.
-        check_password(data.password, user.password_hash)
+        check_password(password, user.password_hash)
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
-    if not check_password(data.password, user.password_hash):
+    if not check_password(password, user.password_hash) or not password_encodable:
         # Persist the failed attempt in its OWN committed transaction: it MUST survive the raise
         # below. A single atomic wrapping the whole login would roll the counter back on the raise,
         # so lockout would never accrue.
