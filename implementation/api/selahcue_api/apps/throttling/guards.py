@@ -85,9 +85,9 @@ def _report_sustained_denial(scope: str) -> None:
     # warning, not exception: no traceback, one line, and the scope is exactly what an
     # operator needs to go look at which budget is under pressure and from where.
     logger.warning(
-        "throttle scope=%s is refusing requests (RATE_LIMITED). This may be a sustained "
-        "attack against this scope's budget — see DEC-013 for the reset-path threat this "
-        "guards. Further reports for this scope suppressed for %.0fs.",
+        "throttle scope=%s is refusing requests (RATE_LIMITED). This may be sustained abuse "
+        "of this scope's budget; the scope names the endpoint or action that is under pressure. "
+        "Further reports for this scope suppressed for %.0fs.",
         scope,
         _DENIAL_LOG_INTERVAL_SECONDS,
     )

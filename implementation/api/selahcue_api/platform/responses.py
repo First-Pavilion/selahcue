@@ -26,6 +26,9 @@ _STATUS_BY_CODE = {
     ErrorCode.POLICY_DENIED: 403,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.NOT_IMPLEMENTED: 501,
+    # Not reachable from /v1 either (the admin GraphQL lifecycle mutations raise it); here for
+    # the same reason as PASSWORD_INVALID below: the map stays total over ErrorCode.
+    ErrorCode.CREDENTIAL_IN_INPUT: 400,
     # Not reachable from /v1 today — only `confirm_password_reset` raises it, on the GraphQL
     # account surface. It is here because the map must stay TOTAL over ErrorCode: `.get(code, 400)`
     # below silently absorbs a missing member, so the next code added would inherit a default

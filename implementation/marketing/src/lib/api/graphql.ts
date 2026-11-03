@@ -74,6 +74,8 @@ export type ApiErrorCode =
    * may say the password was refused, and must not say which rule refused it.
    */
   | 'PASSWORD_INVALID'
+  /** Staff-admin input contains a licence credential; never render the server message. */
+  | 'CREDENTIAL_IN_INPUT'
   | 'INTERNAL'
   /** Client-only: the request never got a usable answer (offline, DNS, TLS, timeout, proxy, non-JSON body). */
   | 'NETWORK'
@@ -102,6 +104,7 @@ const SERVER_ERROR_CODES: ReadonlySet<string> = new Set([
   'RATE_LIMITED',
   'NOT_IMPLEMENTED',
   'PASSWORD_INVALID',
+  'CREDENTIAL_IN_INPUT',
   'INTERNAL',
 ])
 

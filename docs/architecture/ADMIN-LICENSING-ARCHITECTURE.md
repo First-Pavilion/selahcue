@@ -246,8 +246,8 @@ Endpoint: `POST /graphql/admin`
 | ADMIN-GQL-002 | `Mutation.adminCreateCustomer` | Staff `ManageCustomers` | Creates prospect/customer; validates country/timezone/contact; requires idempotency key. |
 | ADMIN-GQL-003 | `Query.adminCustomer` | Staff `ViewCustomers` | Aggregated customer detail: subscription, keys, devices, entitlements, support, audit summary. |
 | ADMIN-GQL-004 | `Mutation.adminGenerateLicenseKey` | Staff `GenerateLicenseKey` | Returns full key once; requires reason; stores hash only. |
-| ADMIN-GQL-005 | `Mutation.adminExtendLicenseKey` | Staff `ExtendLicenseKey` | Requires reason and valid new end date. |
-| ADMIN-GQL-006 | `Mutation.adminRevokeLicenseKey` | Staff `RevokeLicenseKey` | Requires consequence confirmation token and reason. |
+| ADMIN-GQL-005 | `Mutation.adminExtendLicenseKey` | Staff `ExtendLicenseKey` | Requires reason and valid new end date. Shipped (86ak1090r, FR-509): the new end date carries a UTC offset, is later than the current one and in the future, and is at most five years beyond the later of now and the current end date; from ISSUED or ACTIVATED only the date moves, from EXPIRING or EXPIRED the licence returns to ACTIVATED through the state machine, in one transaction with one audit row; SUSPENDED (reinstate first), CONVERTED, REVOKED and ARCHIVED are refused with CONFLICT and a durable DENIED audit row; a date that would overlap another valid licence of the organisation, or an archived customer, is refused with POLICY_DENIED. A retry with the same key and the same date reports `replayed=true`; the same key with a different date, or a new key with the date already in effect, is rejected. Shares the per-staff lifecycle throttle (FR-539). |
+| ADMIN-GQL-006 | `Mutation.adminRevokeLicenseKey` | Staff `RevokeLicenseKey` | Requires consequence confirmation token and reason. Shipped WITHOUT the confirmation token (86ak1090r, FR-505): **the consequence confirmation token is NOT built; it is an open decision for the architect and owner** (ClickUp [17tnw2b9dpq](https://app.clickup.com/t/17tnw2b9dpq)). What shipped requires a reason and a retry key; revocation is permanent (nothing leaves REVOKED except archiving); revoking a REVOKED licence is a no-op (`changed=false`) and revoking an ARCHIVED one is refused with CONFLICT and a durable DENIED audit row; activation and manifest issuance refuse at once, and tokens already issued are revoked by the bounded cascade drain with minute recovery (NFR-503, 65 minutes). |
 | ADMIN-GQL-007 | `Query.adminTranslations` | Staff `ViewCatalogue` | Catalogue connection with legal and availability filters. |
 | ADMIN-GQL-008 | `Mutation.adminUpdateTranslation` | Staff `ManageCatalogue` | Draft/Review/Approved/Published/Suspended/Retired transitions. |
 | ADMIN-GQL-009 | `Mutation.adminGrantEntitlement` | Staff `GrantEntitlement` | Validates translation, legal fields, territory, plan/basis, and reason. |
@@ -360,6 +360,7 @@ Use stable machine codes with safe display messages:
 | `PROVIDER_UNAVAILABLE` | Upstream/provider unavailable |
 | `REPORTING_REQUIRED` | Reporting hook missing for a required provider |
 | `RATE_LIMITED` | Request over abuse or provider-safe limit |
+| `CREDENTIAL_IN_INPUT` | A licence key was found in text that is stored permanently (a lifecycle reason, or a retry key) on the staff admin surface; the fixed message names the problem and carries none of the key (86ak1090r, DEC-020) |
 
 ## 13. Event Contracts
 

@@ -78,12 +78,8 @@ function json(body: unknown, status = 200): Response {
  * own copy, as it must — but the copy is now checked against the original by a test that
  * fails the moment the two disagree, in either direction.
  *
- * RESIDUAL, stated because it bounds what this control proves: `npm test` runs when
- * something in `implementation/marketing` changes, and CI's `marketing` job is
- * path-filtered to that directory, so an API-ONLY commit that adds an error code will not
- * re-run this test until the next marketing change. It closes the drift, not the delay.
- * Adding `implementation/api/**` to that filter is the devops half and is tracked
- * separately (86ak5rjh7).
+ * CI's marketing area filter also includes the exact `errors.py` source path, so an
+ * API-only enum change runs this contract test without waiting for a marketing edit.
  */
 const ERRORS_PY = new URL('../../api/selahcue_api/graphql/errors.py', import.meta.url)
 

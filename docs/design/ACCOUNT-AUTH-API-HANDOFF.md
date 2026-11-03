@@ -45,10 +45,20 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 **`POST /v1/activations:with-session`** — activate this device for the signed-in administrator's organisation (the `activateDeviceWithSession` mutation's native twin; ADMIN only, same instance limit).
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
-- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?}` — the `POST /v1/activations` body without `license_key`.
-- All supplied fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd).
-- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
-- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `429 RATE_LIMITED`.
+- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?, "replace_token"?: boolean}` — the `POST /v1/activations` body without `license_key`.
+- All supplied fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd). `replace_token`, when sent, must be a JSON boolean.
+- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on a successful replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
+- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `409 CONFLICT` (consumed recovery intent with no live token), `429 RATE_LIMITED`.
+
+For explicit response-loss recovery, an ADMIN may send `replace_token: true` with the
+known installation fingerprint and a new idempotency key. The same org/licence/plan checks
+apply; this cannot create a new device or replace another org's token. The old credential
+is revoked atomically; persist the show-once replacement. A retry of that intent returns
+`activation_token: null` while a live token remains. If no live token remains, retrying
+the consumed intent returns `409 CONFLICT`; an ADMIN must use a fresh explicit recovery
+intent with a new idempotency key. Another lost response also requires a fresh explicit
+intent. The default remains unchanged. See `implementation/api/README.md` for live-token
+renewal and recovery.
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
 
