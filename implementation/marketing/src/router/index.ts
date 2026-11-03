@@ -24,6 +24,7 @@ const router = createRouter({
     // the catch-all is ranked last by vue-router either way.
     ...articleRoutes,
     { path: '/careers', name: 'careers', component: () => import('@/views/CareersView.vue') },
+    { path: '/pilot-privacy', name: 'pilot-privacy', component: () => import('@/views/PilotPrivacyView.vue') },
     { path: '/privacy', name: 'privacy', component: () => import('@/views/PrivacyView.vue') },
     { path: '/terms', name: 'terms', component: () => import('@/views/TermsView.vue') },
     // The auth trio. `meta.bare` for the same reason /verify and /reset carry it (design

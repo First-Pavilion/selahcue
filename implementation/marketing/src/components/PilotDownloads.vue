@@ -88,8 +88,9 @@ onUnmounted(() => { disposed = true; request?.abort(); clearInterval(timer) })
           <p id="pilot-reset-note">Returning after a failed submission? Continue to registration reuses your attempt. Start a new registration only when you intend to replace it; this may create another registration record.</p>
           <UiButton variant="ghost" aria-describedby="pilot-reset-note" @click="prepareRegistration(true)">Start a new registration</UiButton>
         </div>
+        <p class="pilot-note"><router-link to="/pilot-privacy">Read how pilot registration details are handled and how to request deletion</router-link>. Registration does not create an account, require payment or subscribe you to marketing. Cloud audio consent is separate.</p>
         <p id="pilot-form-note" class="pilot-note">The registration form opens in this tab. If it cannot save your details or start your download, follow its retry instructions.</p>
-        <p v-if="config.enabled && config.notice" class="pilot-note">Registration data owner: {{ config.notice.data_owner }}. Registration retention: {{ config.notice.retention_days }} days. <a :href="config.notice.url" referrerpolicy="no-referrer">Read the pilot data notice</a> ({{ config.notice.version }}).</p>
+        <p v-if="config.enabled && config.notice" class="pilot-note">Collection administrator: {{ config.notice.data_owner }}. Attempt and receipt lifetime: {{ config.notice.retention_days }} days. The pilot data notice gives the fixed record deletion deadline. <a :href="config.notice.url" referrerpolicy="no-referrer">Read the pilot data notice</a> ({{ config.notice.version }}).</p>
       </div>
     </div>
   </section>

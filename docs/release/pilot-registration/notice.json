@@ -1,0 +1,46 @@
+{
+  "version": "pilot-registration-2026-11-03",
+  "title": "Pilot registration data notice",
+  "pilot_end": "2027-04-30T23:59:59Z",
+  "delete_by": "2027-07-29T23:59:59Z",
+  "primary_contact": "legal@selahcueapp.com",
+  "alternate_contact": "support@selahcueapp.com",
+  "sections": [
+    {
+      "title": "Why we ask for your details",
+      "paragraphs": [
+        "When pilot registration opens, this form records who is testing SelahCue, which church they represent and which desktop package they need. We use the record to administer pilot downloads, understand church and location coverage, and contact you about your test or a registration problem. Registration does not create an account and does not require payment."
+      ]
+    },
+    {
+      "title": "What the form records",
+      "paragraphs": [
+        "Your name and email identify a contact for the test. Church name, your role at church, city and country describe the test setting and coverage. Platform identifies the requested installer. These fields are required; phone is optional. The record also includes a random registration ID, submission time and notice version for reliable retry and record handling. Do not submit congregation lists, audio, transcripts or sensitive church records in these fields."
+      ]
+    },
+    {
+      "title": "How the record is handled",
+      "paragraphs": [
+        "The hosted n8n workflow validates your submission and sends the contact and church fields to a dedicated Google Sheet. The download service keeps a minimal allocation record with a random ID, keyed fingerprint, assigned row, platform, notice version and timestamps; it does not keep the raw contact and church details in that ledger. Access is restricted to the configured workflow identity and the designated pilot registration administrator. The tester retains ownership of the church data they provide. Please provide only details you are authorised to share."
+      ]
+    },
+    {
+      "title": "How long we keep it",
+      "paragraphs": [
+        "The pilot ends on 30 April 2027 at 23:59:59 UTC. Identifiable contact, church and registration records will be deleted by 29 July 2027 at 23:59:59 UTC, 90 days after that fixed end date. A retry or new download does not restart this deadline. You can ask for earlier deletion. This notice does not promise immediate removal from every backup; the administrator must explain any remaining backup or service copies when handling your request."
+      ]
+    },
+    {
+      "title": "Request deletion or ask a question",
+      "paragraphs": [
+        "Email legal@selahcueapp.com, or support@selahcueapp.com as an alternative, to ask about your pilot record or request deletion. Give the email you registered with and, if available, your registration ID. Do not send passwords, provider keys, audio or transcripts. The administrator verifies the request using the existing registration contact, retires the matching registration and clears its stored contact and church values without moving other registrations."
+      ]
+    },
+    {
+      "title": "Separate choices for marketing and cloud audio",
+      "paragraphs": [
+        "This registration does not subscribe you to marketing. Any marketing opt-in must be separate and optional, and declining it must not prevent a pilot download. Registration is not consent to send audio or transcripts to cloud providers. The application asks separately before cloud transcription or AI assistance; core offline presentation controls remain available."
+      ]
+    }
+  ]
+}
