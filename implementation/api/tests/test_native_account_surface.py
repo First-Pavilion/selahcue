@@ -73,6 +73,9 @@ EXPECTED_CSRF_EXEMPT_ROUTES = {
     # auth, and disabled until explicit collection policy is configured (P13).
     "v1/pilot/registrations:reserve",
     "v1/pilot/registrations:confirm",
+    # P12 uses its own server Bearer token, never cookie/device authority.
+    # Off by default; missing real private-read signer still refuses503.
+    "v1/pilot/downloads:grant",
     "webhooks/billing/<str:provider>",
 }
 
