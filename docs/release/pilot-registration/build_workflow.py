@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from html import escape
 
 
 ROOT = Path(__file__).resolve().parent
@@ -42,6 +43,11 @@ def completion(name, x, y, title, message):
 
 
 def build():
+    notice = json.loads((ROOT / "notice.json").read_text())
+    notice_description = "<p><strong>" + escape(notice["title"]) + "</strong> (" + escape(notice["version"]) + ")</p>"
+    for section in notice["sections"]:
+        notice_description += "<p><strong>" + escape(section["title"]) + "</strong></p>"
+        notice_description += "".join("<p>" + escape(paragraph) + "</p>" for paragraph in section["paragraphs"])
     fields = [{"fieldLabel": "registration_id", "fieldName": "registration_id",
                "fieldType": "hiddenField", "fieldValue": ""},
               # Keep label and output name identical for the pinned 2.2 query
@@ -54,7 +60,7 @@ def build():
                for label in ("Full name", "Email", "Phone (optional)", "Church name", "Role at church", "Church city", "Church country")]
     nodes = [node("Pilot registration", "formTrigger", 2.2, 0, 0, {
         "authentication": "none", "formTitle": "SelahCue field-test registration",
-        "formDescription": "DRAFT — configure the approved collection notice and privacy link before publishing. This form records contact/church details for the pilot; it does not create an account.",
+        "formDescription": notice_description,
         "formFields": {"values": fields}, "responseMode": "lastNode",
         "options": {"path": "selahcue-pilot-registration", "buttonLabel": "Register for the pilot", "ignoreBots": True},
     }, webhookId="a3a78a22-b62e-439a-a19a-d9eccb9db960"),

@@ -94,6 +94,7 @@ ROUTES: list[tuple[str, bool]] = [
     ("/blog", False),
     ("/careers", False),
     ("/privacy", False),
+    ("/pilot-privacy", False),
     ("/terms", False),
     ("/affiliates", False),
     # The article routes (`...articleRoutes` in the router, GAP-08): one real article of each
@@ -912,7 +913,7 @@ def check_overlays(context, base: str, width: int, fail, count) -> None:
     page.close()
 
 
-BOUNDARY_ROUTES = ["/", "/pricing", "/privacy", "/account", "/admin", "/affiliates/dashboard"]
+BOUNDARY_ROUTES = ["/", "/pricing", "/privacy", "/pilot-privacy", "/account", "/admin", "/affiliates/dashboard"]
 BOUNDARY_WIDTHS = [767, 768, 1199, 1200]
 
 BOUNDARY_JS = r"""
