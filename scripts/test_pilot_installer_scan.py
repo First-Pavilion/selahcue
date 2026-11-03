@@ -5,6 +5,8 @@ import base64
 import contextlib
 import io
 import json
+import os
+import traceback
 from pathlib import Path
 import struct
 import shutil
@@ -226,6 +228,51 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaises(scan.PolicyError):
             scan.verify_inventory(root, expected)
 
+
+    def test_inventory_refuses_actual_unreadable_unlisted_subtree(self):
+        root = self.root / 'permission-inventory'; root.mkdir()
+        member = root / 'expected'; member.write_bytes(b'public fixture')
+        expected = {'expected': scan.file_digest(member)[1]}
+        hidden = root / 'unlisted-directory'; hidden.mkdir()
+        (hidden / 'extra').write_bytes(b'synthetic unlisted content')
+        hidden.chmod(0)
+        try:
+            try:
+                with os.scandir(hidden) as entries:
+                    list(entries)
+            except PermissionError:
+                pass
+            else:
+                self.skipTest('host privileges do not enforce directory read permission')
+            with self.assertRaisesRegex(scan.PolicyError, '^package-unreadable$'):
+                scan.verify_inventory(root, expected)
+        finally:
+            hidden.chmod(0o700)
+
+    def test_inventory_refuses_sanitized_recursive_enumeration_errors(self):
+        root = self.root / 'denied-inventory'; root.mkdir()
+        member = root / 'expected'; member.write_bytes(b'public fixture')
+        expected = {'expected': scan.file_digest(member)[1]}
+        hidden = root / 'unlisted-directory'; hidden.mkdir()
+        (hidden / 'extra').write_bytes(b'synthetic unlisted content')
+        original = os.scandir
+        private = 'synthetic-private-subtree-canary-6724'
+        def denied(directory):
+            if Path(directory) == hidden:
+                raise PermissionError(private)
+            return original(directory)
+        with patch.object(os, 'scandir', side_effect=denied):
+            with self.assertRaisesRegex(scan.PolicyError, '^package-unreadable$') as caught:
+                scan.verify_inventory(root, expected)
+        error = caught.exception
+        diagnostic = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+        for index in range(len(private) - 7):
+            self.assertNotIn(private[index:index + 8], diagnostic)
+        # Once complete enumeration is possible, the actual unlisted member is refused.
+        with self.assertRaisesRegex(scan.PolicyError, '^package-inventory$'):
+            scan.verify_inventory(root, expected)
+        (hidden / 'extra').unlink()
+        self.assertEqual(scan.verify_inventory(root, expected), ('expected',))
 
     def test_committed_public_development_inventory_is_always_denied(self):
         inventory = scan.development_inventory(Path(__file__).resolve().parents[1])

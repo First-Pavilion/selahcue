@@ -12,6 +12,7 @@ import hashlib
 import functools
 import inspect
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
@@ -433,8 +434,20 @@ def verify_inventory(root: Path, expected: dict[str, str], *, max_files: int = 1
     deadline = time.monotonic() + timeout
     files = []
     total = 0
+    def members(directory):
+        # pathlib.rglob can suppress subtree PermissionError, hiding extra members.
+        # Stream depth-first without buffering a directory and propagate every error.
+        if time.monotonic() > deadline:
+            _fail('package-time-bound')
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                member = Path(entry.path)
+                yield member
+                # The caller rejects symlinks/depth before advancing this generator.
+                if entry.is_dir(follow_symlinks=False):
+                    yield from members(member)
     try:
-        for member in root.rglob('*'):
+        for member in members(root):
             if time.monotonic() > deadline:
                 _fail('package-time-bound')
             mode = member.lstat()

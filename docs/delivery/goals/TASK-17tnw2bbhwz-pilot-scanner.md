@@ -10,8 +10,8 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2bbhwz
 - Created: 2026-10-31
-- Updated: 2026-10-31
-- Maximum iterations: 5
+- Updated: 2026-11-03
+- Maximum iterations: 6
 - Independent verification required: yes
 
 ## Objective
@@ -128,6 +128,17 @@ Base a2ed7f96dd5eb8508406f7a901c1ad57d3a519b5 has P02 generated native source. E
 - Result: RED6preflight failures reproduced; GREEN15asset/31core/45legacy including actual chmod000 and resolve-loop cases, no skips; whole native/extraction/P01/currentCI gates unchanged
 - New evidence: round2 Quinn/Shadow/root diagnostics; prior findings independently closed
 - Decision: final bounded correction frozen for final snapshot refresh; max5consumed, no6 or native continuation
+
+### Iteration 6 — authorized closed-inventory review correction
+
+- Authorization: current user authorized MR remediation; root explicitly extends exhausted maximum5 to6 for confirmed Q-P04-03 only. Original criteria and iterations1–5 are preserved. No native/driver/extraction/P01 work or acceptance waiver.
+- Target criterion: C003/C004 source-phase closed inventory, unreadable recursive subtrees.
+- Hypothesis: pathlib rglob suppresses child traversal errors; explicit error-propagating scandir traversal refuses unreadable unlisted subtrees while preserving symlink/depth/count/byte/time bounds.
+- Change or investigation: regression-first actual permission refusal and deterministic iterator refusal; smallest traversal correction only.
+- Verifier executed: regression-first scanner suite RED2; corrected scanner/asset/legacy suites and structural validation.
+- Result: GREEN33core/15asset/45legacy controls, no skips; actual mode000 subtree refuses, recursive iterator failure is sanitized, and readable extra/missing inventory remains rejected.
+- New evidence: docs/delivery/evidence/p04-scanner-review-fix.md and two focused regressions.
+- Decision: root owns four-review refresh and exact-head CI; whole C002/C004/C005 remain BLOCKED.
 
 ## Risks and rollback
 
