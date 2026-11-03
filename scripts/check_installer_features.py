@@ -46,34 +46,56 @@ def cargo_commands(job: dict, prefix: list[str]) -> list[tuple[list[str], dict]]
 
 
 def config(tokens: list[str]) -> tuple[frozenset[str], bool]:
+    """Parse only the literal feature grammar supported by this gate.
+
+    Tauri's -f/--features consumes multiple unquoted values; Cargo's -F/
+    --features consumes one value (which may itself contain spaces or commas).
+    Unknown options/operands are refused rather than skipped. This deliberately
+    does not attempt to interpret arbitrary shell commands or Cargo passthrough.
+    """
+    tauri = tokens[:3] == ["cargo", "tauri", "build"]
+    if not tauri and tokens[:2] != ["cargo", "clippy"]:
+        raise ValueError("Expected cargo tauri build or cargo clippy")
     features: set[str] = set()
     no_default = False
-    index = 0
+    index = 3 if tauri else 2
+    flags = ("--features", "-f") if tauri else ("--features", "-F")
+    plain_flags = {"--ci"} if tauri else {"--all-targets", "--release"}
     while index < len(tokens):
         token = tokens[index]
-        if any(marker in token for marker in ("$", "`", ";", "&&", "||")):
-            raise ValueError("Cargo configuration must use literal standalone commands")
-        if token in ("-p", "--package", "--manifest-path", "--workspace", "--exclude") or token.startswith(("--package=", "--manifest-path=", "--exclude=")):
-            raise ValueError("Cargo package selection must use the operator working-directory")
-        if token == "--all-features":
-            raise ValueError("--all-features cannot prove exact installer feature coverage")
+        if token == "--":
+            if not tauri and tokens[index:] == ["--", "-D", "warnings"]:
+                break
+            raise ValueError("Unsupported Cargo passthrough or Clippy arguments")
         if token == "--no-default-features":
             no_default = True
-        if token in ("--features", "-F"):
-            index += 1
-            if index >= len(tokens):
-                raise ValueError("Missing feature list")
-            value = tokens[index]
-        elif token.startswith("--features="):
-            value = token.split("=", 1)[1]
-        else:
             index += 1
             continue
-        names = value.replace(",", " ").split()
-        if not names or any(not name.replace("-", "").replace("_", "").isalnum() for name in names):
-            raise ValueError(f"Unsupported literal feature list: {value!r}")
-        features.update(names)
-        index += 1
+        if token in plain_flags:
+            index += 1
+            continue
+        if token in flags:
+            index += 1
+            values = []
+            if index < len(tokens) and not tokens[index].startswith("-"):
+                values.append(tokens[index])
+                index += 1
+        elif token.startswith("--features="):
+            values = [token.split("=", 1)[1]]
+            index += 1
+        else:
+            raise ValueError(f"Unsupported option or operand: {token!r}")
+        if tauri:
+            while index < len(tokens) and not tokens[index].startswith("-"):
+                values.append(tokens[index])
+                index += 1
+        if not values:
+            raise ValueError("Missing feature list")
+        for value in values:
+            names = value.replace(",", " ").split()
+            if not names or any(not name.replace("-", "").replace("_", "").isalnum() for name in names):
+                raise ValueError(f"Unsupported literal feature list: {value!r}")
+            features.update(names)
     return frozenset(features), no_default
 
 
@@ -150,6 +172,39 @@ jobs:
     def test_feature_drift_fails(self) -> None:
         self.installer["jobs"]["build"]["steps"][0]["run"] += ",cloud-stt"
         self.assertTrue(check(self.ci, self.installer))
+
+    def test_tauri_variadic_feature_drift(self) -> None:
+        for arguments in ('--features stt openai-notes',
+                          '--features "stt openai-notes"',
+                          '--features stt,openai-notes',
+                          '--features=stt openai-notes',
+                          '-f stt openai-notes'):
+            with self.subTest(arguments=arguments):
+                self.installer["jobs"]["build"]["steps"][0]["run"] = "cargo tauri build " + arguments
+                self.assertTrue(check(self.ci, self.installer))
+
+    def test_tauri_variadic_equivalence_and_defaults(self) -> None:
+        expected = (frozenset({"stt", "openai-notes"}), False)
+        lint = self.ci["jobs"]["operator-native"]["steps"][0]
+        lint["run"] = "cargo clippy --features stt,openai-notes --all-targets -- -D warnings"
+        for arguments in ('--features stt openai-notes',
+                          '--features "stt openai-notes"',
+                          '--features stt,openai-notes',
+                          '--features=stt,openai-notes',
+                          '-f stt openai-notes --ci'):
+            with self.subTest(arguments=arguments):
+                command = "cargo tauri build " + arguments
+                self.assertEqual(config(shlex.split(command)), expected)
+                self.installer["jobs"]["build"]["steps"][0]["run"] = command
+                self.assertEqual(check(self.ci, self.installer), [])
+                self.installer["jobs"]["build"]["steps"][0]["run"] += " --no-default-features"
+                self.assertTrue(check(self.ci, self.installer))
+
+    def test_cargo_does_not_consume_unquoted_variadic_features(self) -> None:
+        with self.assertRaises(ValueError):
+            config(shlex.split("cargo clippy --features stt openai-notes --all-targets -- -D warnings"))
+        self.assertEqual(config(shlex.split('cargo clippy -F "stt openai-notes" --all-targets -- -D warnings')),
+                         (frozenset({"stt", "openai-notes"}), False))
 
     def test_superset_is_not_exact(self) -> None:
         self.ci["jobs"]["operator-native"]["steps"][0]["run"] = "cargo clippy --features stt,cloud-stt --all-targets -- -D warnings"

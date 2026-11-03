@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b1f26
 - Created: 2026-11-03
-- Updated: 2026-11-03
+- Updated: 2026-11-04
 - Maximum iterations: 4
 - Independent verification required: yes
 
@@ -58,9 +58,9 @@ Verified at main 9801fc587adba59a30ddee066efb5d0da26fc425: packaging uses `cargo
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Installer feature drift fails gate used by Make and CI | make installer-feature-parity; feature mutant | baseline exits 0, mismatch exits nonzero | Iteration 2: make exits 0 baseline, 2 on feature mutant | PASS |
+| C-001 | yes | Installer feature drift fails gate used by Make and CI | make installer-feature-parity; feature mutant | baseline exits 0, mismatch exits nonzero | Iterations 2–3: baseline exits 0; comma and unquoted variadic mutants exit 2 | PASS |
 | C-002 | yes | Installer-only edit matches desktop filter | checker and removed-filter mutant | baseline matches, removed path rejected | Iteration 2: removed path exits 2 | PASS |
-| C-003 | yes | Self-test rejects deliberately mismatched features and dead checker | self-test and dead-check mutant | cases pass; disabled comparison rejected | Iteration 2: 9 tests; dead checker exits 1 | PASS |
+| C-003 | yes | Self-test rejects deliberately mismatched features and dead checker | self-test and dead-check mutant | cases pass; disabled comparison rejected | Iteration 3: 12 tests; dead checker fails variadic regression | PASS |
 | C-004 | yes | Workflow invariants and main-only packaging preserved | check_workflows.py; actionlint; diff | checks pass and installer workflow unchanged | Iteration 2: invariant checks and actionlint exit 0 | PASS |
 | C-005 | yes | Independent reviews pass at final revision | Root review round | all four verdicts pass | root handoff | PENDING |
 
@@ -92,6 +92,16 @@ Verified at main 9801fc587adba59a30ddee066efb5d0da26fc425: packaging uses `cargo
 - Result: static gate and negative proofs pass. `check_workflows.py --self-test` passes 118 cases; live checker reports six workflows/19 jobs OK; `check_ci_minutes.py` and its self-tests pass; actionlint over ci.yml and windows-installer.yml exits 0; `git diff --check` passes.
 - New evidence: an initial live mutant using `stt,cloud-stt` correctly remained green, because that exact set is already linted. The useful negative proof therefore adds an unlinted feature (`parity-probe`). A first parser attempt tokenized unrelated PowerShell lines and failed on a continuation; narrowed command tokenization to literal Cargo command lines before final verification.
 - Decision: handoff to root for independent reviews and hosted PR CI. Full green `make ci` was not run: no Rust, Flutter or application source changed; its real failing mutant proves the new gate is reached and enforced. No actual Windows build or install is claimed.
+
+### Iteration 3 — Cody C-342-1 remediation
+
+- Target criterion: C-001 and C-003; preserve C-002 and C-004.
+- Hypothesis: Tauri's variadic `-f`/`--features` operands must be consumed until the next option, separately from Cargo Clippy's single operand. Unknown arguments must be refused rather than ignored.
+- Change or investigation: independently reproduced reviewed head's defect in a fresh scratch copy: changing only the installer command to `cargo tauri build --features stt openai-notes` made the shared Make target falsely exit 0. Confirmed Tauri's documented grammar at https://v2.tauri.app/reference/cli/ (build `-f, --features [FEATURES...]`). Replaced silent unknown-token skipping with bounded supported grammar; added three regression tests covering unquoted/quoted/comma/equal forms, short Tauri `-f`, Cargo `-F`, exact matching and default-feature mismatch.
+- Verifier executed: `make installer-feature-parity` passes 12 tests and live comparison. Five distinct scratch Make mutants (`--features stt openai-notes`, quoted space list, comma list, equals plus extra operand, and `-f` space list) each exit 2 with exact-feature mismatch. Mutating the real worktree installer to the reviewer's unquoted form makes actual `make ci` exit 2 at the same gate. A dead-comparison script mutant exits 1 and specifically fails `test_tauri_variadic_feature_drift`. All temporary edits restored.
+- Result: regression corrected locally. Workflow checker self-test (118 cases), live workflow checker (six workflows/19 jobs), CI minute self-test and live rules, actionlint for both workflows and `git diff --check` pass. Origin main refreshed and branch remains zero commits behind 9801fc587adba59a30ddee066efb5d0da26fc425.
+- New evidence: the original parser dropped extra unquoted feature operands; this was a real false-green, not a difference in feature-set intent. Supported equivalent lists now resolve to the same full set; Cargo unquoted extras and unsupported command spellings fail closed.
+- Decision: handoff for Cody re-review and final independent review round. Hosted CI must be checked on the corrected head; no full green make-ci or packaging/install claim.
 
 ## Risks and rollback
 
