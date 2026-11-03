@@ -1,0 +1,516 @@
+{
+  "originalSourceSHA256": "9c59c43c2d80e6fa98df859cea77913f95d3e1be45899f57da768275bc353bbe",
+  "restored": true,
+  "cases": [
+    {
+      "fault": "missing-reservation",
+      "mode": "pending",
+      "exit": 1,
+      "target": "loading reservation missing",
+      "failures": [
+        "/pricing@375 run1: footer visible under fallback",
+        "/pricing@375 run1: loading reservation missing"
+      ],
+      "samples": [
+        {
+          "path": "/pricing",
+          "width": 375,
+          "run": 1,
+          "heldChunkObserved": true,
+          "pending": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 364
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 433,
+              "height": 467
+            },
+            "footerVisibility": "hidden",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": {
+              "top": 69,
+              "height": 364
+            },
+            "contrast": 8.737405631422499,
+            "statusRole": "status",
+            "statusText": "Loading...",
+            "statusFocused": false,
+            "loadingMinimum": "0px",
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          },
+          "resolved": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 448
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 517,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": null,
+            "contrast": null,
+            "statusRole": null,
+            "statusText": null,
+            "statusFocused": null,
+            "loadingMinimum": null,
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "fault": "visible-pending-footer",
+      "mode": "pending",
+      "exit": 1,
+      "target": "pending footer is not hidden",
+      "failures": [
+        "/pricing@375 run1: pending footer is not hidden"
+      ],
+      "samples": [
+        {
+          "path": "/pricing",
+          "width": 375,
+          "run": 1,
+          "heldChunkObserved": true,
+          "pending": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 831
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 900,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": {
+              "top": 69,
+              "height": 831
+            },
+            "contrast": 8.737405631422499,
+            "statusRole": "status",
+            "statusText": "Loading...",
+            "statusFocused": false,
+            "loadingMinimum": "831px",
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          },
+          "resolved": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 448
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 517,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": null,
+            "contrast": null,
+            "statusRole": null,
+            "statusText": null,
+            "statusFocused": null,
+            "loadingMinimum": null,
+            "layout": {
+              "cls": 0.18109753086419755,
+              "entries": [
+                {
+                  "value": 0.18109753086419755,
+                  "time": 1310.5,
+                  "sources": [
+                    {
+                      "node": "footer is-mobile",
+                      "before": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 0,
+                        "height": 0,
+                        "top": 0,
+                        "right": 0,
+                        "bottom": 0,
+                        "left": 0
+                      },
+                      "after": {
+                        "x": 0,
+                        "y": 517,
+                        "width": 375,
+                        "height": 383,
+                        "top": 517,
+                        "right": 375,
+                        "bottom": 900,
+                        "left": 0
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "fault": "missing-rejection-release",
+      "mode": "recovery",
+      "exit": 1,
+      "target": "readiness rejection left loading stuck",
+      "failures": [
+        "failed import@375: readiness rejection left loading stuck",
+        "failed import@375: footer stays hidden after rejection",
+        "failed import@375: navbar Home navigation did not recover"
+      ],
+      "samples": [
+        {
+          "path": "/",
+          "width": 375,
+          "eager": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 7179
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 7248,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": null,
+            "contrast": null,
+            "statusRole": null,
+            "statusText": null,
+            "statusFocused": null,
+            "loadingMinimum": null,
+            "layout": {
+              "cls": 0.0023533981481481483,
+              "entries": [
+                {
+                  "value": 0.0023533981481481483,
+                  "time": 900.4000000059605,
+                  "sources": [
+                    {
+                      "node": null,
+                      "before": {
+                        "x": 20,
+                        "y": 313,
+                        "width": 335,
+                        "height": 98,
+                        "top": 313,
+                        "right": 355,
+                        "bottom": 411,
+                        "left": 20
+                      },
+                      "after": {
+                        "x": 20,
+                        "y": 312,
+                        "width": 335,
+                        "height": 98,
+                        "top": 312,
+                        "right": 355,
+                        "bottom": 410,
+                        "left": 20
+                      }
+                    },
+                    {
+                      "node": null,
+                      "before": {
+                        "x": 20,
+                        "y": 167,
+                        "width": 335,
+                        "height": 84,
+                        "top": 167,
+                        "right": 355,
+                        "bottom": 251,
+                        "left": 20
+                      },
+                      "after": {
+                        "x": 20,
+                        "y": 167,
+                        "width": 335,
+                        "height": 84,
+                        "top": 167,
+                        "right": 355,
+                        "bottom": 251,
+                        "left": 20
+                      }
+                    },
+                    {
+                      "node": null,
+                      "before": {
+                        "x": 53,
+                        "y": 798,
+                        "width": 269,
+                        "height": 49,
+                        "top": 798,
+                        "right": 322,
+                        "bottom": 847,
+                        "left": 53
+                      },
+                      "after": {
+                        "x": 53,
+                        "y": 797,
+                        "width": 269,
+                        "height": 49,
+                        "top": 797,
+                        "right": 322,
+                        "bottom": 846,
+                        "left": 53
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "path": "/pricing",
+          "width": 375,
+          "failedImport": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 831
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 900,
+              "height": 467
+            },
+            "footerVisibility": "hidden",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": {
+              "top": 69,
+              "height": 831
+            },
+            "contrast": 8.737405631422499,
+            "statusRole": "status",
+            "statusText": "Loading...",
+            "statusFocused": false,
+            "loadingMinimum": "831px",
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          },
+          "recoveredHome": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 831
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 900,
+              "height": 467
+            },
+            "footerVisibility": "hidden",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": {
+              "top": 69,
+              "height": 831
+            },
+            "contrast": 8.737405631422499,
+            "statusRole": "status",
+            "statusText": "Loading...",
+            "statusFocused": false,
+            "loadingMinimum": "831px",
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "fault": "unchanged-shell-baseline",
+      "mode": "pending",
+      "exit": 1,
+      "target": "actual pending fallback is absent",
+      "failures": [
+        "/pricing@375 run1: actual pending fallback is absent",
+        "/pricing@375 run1: fallback must announce Loading...",
+        "/pricing@375 run1: fallback contrast below4.5",
+        "/pricing@375 run1: pending footer is not hidden",
+        "/pricing@375 run1: footer visible under fallback",
+        "/pricing@375 run1: loading reservation missing"
+      ],
+      "samples": [
+        {
+          "path": "/pricing",
+          "width": 375,
+          "run": 1,
+          "heldChunkObserved": true,
+          "pending": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 364
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 433,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": null,
+            "contrast": null,
+            "statusRole": null,
+            "statusText": null,
+            "statusFocused": null,
+            "loadingMinimum": null,
+            "layout": {
+              "cls": 0,
+              "entries": []
+            }
+          },
+          "resolved": {
+            "width": 375,
+            "height": 900,
+            "overflow": false,
+            "main": {
+              "top": 69,
+              "height": 448
+            },
+            "mainMinimum": "auto",
+            "footer": {
+              "top": 517,
+              "height": 467
+            },
+            "footerVisibility": "visible",
+            "nav": {
+              "top": 0,
+              "height": 69
+            },
+            "status": null,
+            "contrast": null,
+            "statusRole": null,
+            "statusText": null,
+            "statusFocused": null,
+            "loadingMinimum": null,
+            "layout": {
+              "cls": 0.04842962962962963,
+              "entries": [
+                {
+                  "value": 0.04842962962962963,
+                  "time": 1327.5,
+                  "sources": [
+                    {
+                      "node": "footer is-mobile",
+                      "before": {
+                        "x": 0,
+                        "y": 433,
+                        "width": 375,
+                        "height": 467,
+                        "top": 433,
+                        "right": 375,
+                        "bottom": 900,
+                        "left": 0
+                      },
+                      "after": {
+                        "x": 0,
+                        "y": 517,
+                        "width": 375,
+                        "height": 383,
+                        "top": 517,
+                        "right": 375,
+                        "bottom": 900,
+                        "left": 0
+                      }
+                    },
+                    {
+                      "node": "",
+                      "before": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 0,
+                        "height": 0,
+                        "top": 0,
+                        "right": 0,
+                        "bottom": 0,
+                        "left": 0
+                      },
+                      "after": {
+                        "x": 20,
+                        "y": 582,
+                        "width": 28,
+                        "height": 28,
+                        "top": 582,
+                        "right": 48,
+                        "bottom": 610,
+                        "left": 20
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
