@@ -228,41 +228,56 @@ void main() {
       reason: 'an unsubmitted edit must not stage the prior loaded passage',
     );
   });
-  testWidgets('newest submitted lookup wins when replies arrive out of order', (
-    tester,
-  ) async {
-    final first = Completer<ServerMessage>();
-    final second = Completer<ServerMessage>();
-    final session = _Session()..chapterGate = first;
-    await _mount(tester, session);
-    await _browse(tester, 'Psalms 119:2-10');
-    session.chapterGate = second;
-    await _browse(tester, 'Psalms 120');
-    second.complete(
-      const ChapterResult(
-        bookName: 'Psalms',
-        chapter: 120,
-        translation: 'KJV',
-        verses: [VerseView(1, 'New chapter')],
-      ),
-    );
-    await tester.pump();
-    first.complete(
-      const ChapterResult(
-        bookName: 'Psalms',
-        chapter: 119,
-        translation: 'KJV',
-        verses: [VerseView(2, 'Obsolete chapter')],
-      ),
-    );
-    await tester.pump();
-    expect(_field(tester), 'Psalms 120');
-    expect(find.text('New chapter'), findsOneWidget);
-    expect(find.text('Obsolete chapter'), findsNothing);
-    await tester.tap(find.text('Stage'));
-    await tester.pump();
-    expect(session.sent.last['reference'], 'Psalms 120');
-  });
+  // Production SelahSession serializes reads: parallel out-of-order replies
+  // are not a realistic transport scenario. Verify admission and latest intent
+  // instead: the edited reference stays, then can be explicitly retried.
+  testWidgets(
+    'latest edited reference can be browsed after active lookup ends',
+    (tester) async {
+      final first = Completer<ServerMessage>();
+      final second = Completer<ServerMessage>();
+      final session = _Session()..chapterGate = first;
+      await _mount(tester, session);
+      await _browse(tester, 'Psalms 119:2-10');
+      session.chapterGate = second;
+      await _browse(tester, 'Psalms 120');
+      expect(
+        session.sent.where((c) => c['cmd'] == 'get_chapter'),
+        hasLength(1),
+      );
+      first.complete(
+        const ChapterResult(
+          bookName: 'Psalms',
+          chapter: 119,
+          translation: 'KJV',
+          verses: [VerseView(2, 'Obsolete chapter')],
+        ),
+      );
+      await tester.pump();
+      expect(_field(tester), 'Psalms 120');
+      expect(find.text('Obsolete chapter'), findsNothing);
+      await tester.tap(find.byTooltip('Browse chapter'));
+      await tester.pump();
+      expect(
+        session.sent.where((c) => c['cmd'] == 'get_chapter'),
+        hasLength(2),
+      );
+      second.complete(
+        const ChapterResult(
+          bookName: 'Psalms',
+          chapter: 120,
+          translation: 'KJV',
+          verses: [VerseView(1, 'New chapter')],
+        ),
+      );
+      await tester.pump();
+      expect(_field(tester), 'Psalms 120');
+      expect(find.text('New chapter'), findsOneWidget);
+      await tester.tap(find.text('Stage'));
+      await tester.pump();
+      expect(session.sent.last['reference'], 'Psalms 120');
+    },
+  );
 
   testWidgets('initial old-host fallback stages the untouched typed range', (
     tester,
@@ -452,5 +467,97 @@ void main() {
       'reference': 'Psalms 119:2-10',
       'translation': 'WEB',
     });
+  });
+  testWidgets(
+    'repeated Browse admits one read and Stage resumes without obsolete reads',
+    (tester) async {
+      final session = _Session()..chapterGate = Completer<ServerMessage>();
+      await _mount(tester, session);
+      for (var i = 0; i < 12; i++) {
+        await _browse(tester, 'Psalms 119:2-10');
+      }
+      expect(
+        session.sent.where((c) => c['cmd'] == 'get_chapter'),
+        hasLength(1),
+      );
+      final browse = tester.widget<IconButton>(
+        find.byWidgetPredicate(
+          (widget) =>
+              widget is IconButton && widget.tooltip == 'Browse chapter',
+        ),
+      );
+      expect(browse.onPressed, isNull);
+      expect(find.textContaining('Loading chapter…'), findsOneWidget);
+      session.chapterGate!.complete(
+        const ChapterResult(
+          bookName: 'Psalms',
+          chapter: 119,
+          translation: 'KJV',
+          verses: [VerseView(2, 'Loaded verse')],
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Loaded verse'), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(
+              find.byWidgetPredicate(
+                (widget) =>
+                    widget is IconButton && widget.tooltip == 'Browse chapter',
+              ),
+            )
+            .onPressed,
+        isNotNull,
+      );
+      await tester.tap(find.text('Stage'));
+      await tester.pump();
+      expect(session.sent.map((c) => c['cmd']).toList(), [
+        'get_chapter',
+        'stage_scripture',
+      ]);
+      expect(session.sent.last['reference'], 'Psalms 119:2-10');
+    },
+  );
+
+  testWidgets('paging and translation do not admit reads while loading', (
+    tester,
+  ) async {
+    final session = _Session();
+    await _mount(tester, session);
+    await _browse(tester, 'Psalms 119:2-10');
+    session.chapterGate = Completer<ServerMessage>();
+    await _browse(tester, 'Psalms 119:2-10');
+    for (var i = 0; i < 12; i++) {
+      await tester.tap(find.bySemanticsLabel('Next chapter'));
+      await tester.tap(find.text('KJV').first);
+      await tester.pump();
+    }
+    expect(
+      session.sent.where((c) => c['cmd'] == 'get_chapter'),
+      hasLength(2),
+      reason: 'only initial successful read and current active read',
+    );
+    expect(
+      tester
+          .widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>))
+          .enabled,
+      isFalse,
+    );
+    session.chapterGate!.complete(
+      const ChapterResult(
+        bookName: 'Psalms',
+        chapter: 119,
+        translation: 'KJV',
+        verses: [VerseView(2, 'Loaded verse')],
+      ),
+    );
+    await tester.pump();
+    expect(_field(tester), 'Psalms 119:2-10');
+    expect(
+      tester
+          .widget<PopupMenuButton<String>>(find.byType(PopupMenuButton<String>))
+          .enabled,
+      isTrue,
+    );
   });
 }

@@ -90,7 +90,11 @@ class _ScriptureTabState extends State<ScriptureTab> {
 
   Future<void> _load(String reference, {String? asTranslation}) async {
     final ref = reference.trim();
-    if (ref.isEmpty) return;
+    // SelahSession serializes reads and audience commands on one queue.
+    // Keep chapter browsing single-flight so repeated taps cannot enqueue
+    // obsolete reads ahead of Stage or polling. Edited text stays available
+    // for an explicit Browse once the active lookup finishes.
+    if (_loading || ref.isEmpty) return;
     final generation = ++_loadGeneration;
     final fieldRevision = _fieldRevision;
     setState(() => _loading = true);
@@ -252,7 +256,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
                       color: DesignTokens.d2TextSecondary,
                     ),
                     tooltip: 'Browse chapter',
-                    onPressed: _onSubmit,
+                    onPressed: _loading ? null : _onSubmit,
                   ),
                   onSubmitted: (_) => _onSubmit(),
                 ),
@@ -262,6 +266,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
                 current: current,
                 options: options,
                 onPick: _setTranslation,
+                enabled: !_loading,
               ),
             ],
           ),
@@ -330,6 +335,8 @@ class _ScriptureTabState extends State<ScriptureTab> {
                   ? 'Syncing live state… controls are disabled until this device is back in step with the desktop.'
                   : busy
                   ? 'Sending… controls are disabled until the command finishes.'
+                  : _loading
+                  ? 'Loading chapter… you can edit the reference, then browse when loading finishes.'
                   : 'Tap a verse to stage · double-tap to send live',
               style: SelahType.caption.copyWith(
                 color: DesignTokens.d2TextSecondary,
@@ -355,7 +362,9 @@ class _ScriptureTabState extends State<ScriptureTab> {
         _NavBtn(
           icon: Icons.chevron_left,
           label: 'Previous chapter',
-          onTap: ch.prevRef == null ? null : () => _load(ch.prevRef!),
+          onTap: _loading || ch.prevRef == null
+              ? null
+              : () => _load(ch.prevRef!),
         ),
         Expanded(
           child: Text(
@@ -376,7 +385,9 @@ class _ScriptureTabState extends State<ScriptureTab> {
         _NavBtn(
           icon: Icons.chevron_right,
           label: 'Next chapter',
-          onTap: ch.nextRef == null ? null : () => _load(ch.nextRef!),
+          onTap: _loading || ch.nextRef == null
+              ? null
+              : () => _load(ch.nextRef!),
         ),
       ],
     ),
@@ -573,15 +584,18 @@ class _TranslationPicker extends StatelessWidget {
   final String current;
   final List<String> options;
   final ValueChanged<String> onPick;
+  final bool enabled;
   const _TranslationPicker({
     required this.current,
     required this.options,
     required this.onPick,
+    required this.enabled,
   });
 
   @override
   Widget build(BuildContext context) => PopupMenuButton<String>(
     tooltip: 'Translation',
+    enabled: enabled,
     initialValue: current,
     onSelected: onPick,
     itemBuilder: (context) => [

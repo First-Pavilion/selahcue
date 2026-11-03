@@ -122,6 +122,19 @@ Verified host `StageScripture` narrows a range to its first verse and stores the
 - New evidence: `/private/tmp/scripture-selection-red.log`, `/private/tmp/scripture-selection-green.log`, `/private/tmp/scripture-selection-analyze.log`, `/private/tmp/scripture-selection-host.log`; committed focused regression suite.
 - Decision: handoff for root-coordinated reviews of the updated frozen source.
 
+### Iteration 5 — confirmed review remediation V344-1
+
+- Authorization: coordinating owner explicitly authorized this bounded review-remediation iteration before edits. Existing maximum, criteria and prior ledger are retained.
+- Target criterion: C2 and C3, bounded chapter admission and responsiveness.
+- Hypothesis: restoring the original caller single-flight guard prevents obsolete reads from accumulating in SelahSession's serial command queue; a clear loading state can preserve editing without silently accepting queued Browse intent.
+- Change or investigation: read Vera and Quinn reports and the real SelahSession `_turn`/send-time timeout contract. Re-executed Vera's exact external reproducer on f647fb1d: RED, 12 admitted chapter reads vs permitted at most 2. The owned repeated-Browse regression also failed with 12 vs 1 before the fix. Restored `_loading` admission guard, disabled Browse/paging/translation selection while active, and added loading guidance while keeping reference text editable.
+- Prior fake assumption: the parallel out-of-order response test permitted concurrent transport replies that production's serialized session does not permit. Its latest-intent safety requirement remains covered by a replacement test asserting that the first read is the only admitted request, its reply cannot overwrite the newer edited reference, and an explicit Browse after completion loads and stages that latest reference. No arbitrary pending reads or automatic retry queue is retained.
+- Verifier executed: full scoped Flutter suite from iteration 3; exact external admission reproducer; changed-file analyzer/format; git diff --check.
+- Result: scoped Flutter suite passed all 28 tests (16 focused +12 existing). Repeated 12 Browse submissions admitted exactly one read; after its reply the next audience command was Stage, with no obsolete chapter reads between. Vera’s exact external reproducer also passed (1 test). Analyzer: No issues found (4.0s); format: 0 changed; diff check clean. Paging/translation stayed disabled and admitted no new reads while loading. Typed ranges, selection-only valid replies, stale actual edits, disposal, roles, busy and reconnect checks passed. A test-only IconButton/RawTooltip finder error was corrected after its admission assertion passed; no production change was needed for that harness error.
+- New evidence: `/private/tmp/scripture-admission-red.log`, `/private/tmp/scripture-admission-owned-red.log`, `/private/tmp/scripture-admission-green.log`, `/private/tmp/scripture-admission-external-green.log`, `/private/tmp/scripture-admission-analyze.log`; committed regression suite.
+- Scope: verifies admission count and interaction recovery, not measured production network latency. Physical-device/store/live-LAN limitations remain unchanged.
+- Decision: handoff for full Cody/Shadow review and affected Quinn/Vera refresh after current checks finish and source is frozen.
+
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b13y1.md
