@@ -46,6 +46,7 @@ type ForgotState = 'form' | 'submitting' | 'sent'
 
 const state = ref<ForgotState>('form')
 const heading = ref<HTMLElement | null>(null)
+const form = ref<HTMLFormElement | null>(null)
 
 const email = ref('')
 const emailError = ref('')
@@ -62,11 +63,21 @@ async function focusHeading(): Promise<void> {
   heading.value?.focus()
 }
 
+/** Wait for error associations to render, then read fields in their visual/DOM order. */
+async function focusFirstInvalid(): Promise<void> {
+  await nextTick()
+  if (unmounted) return
+  form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
+}
+
 async function submit(): Promise<void> {
   if (state.value === 'submitting') return
   requestError.value = ''
   emailError.value = validateEmail(email.value)
-  if (emailError.value) return
+  if (emailError.value) {
+    void focusFirstInvalid()
+    return
+  }
 
   const address = email.value.trim()
   state.value = 'submitting'
@@ -125,6 +136,7 @@ onBeforeUnmount(() => {
       </p>
 
       <form
+        ref="form"
         novalidate
         aria-label="Reset your password"
         :aria-busy="state === 'submitting'"
@@ -132,6 +144,7 @@ onBeforeUnmount(() => {
         @submit.prevent="submit"
       >
         <FormField
+          error-style="glyph"
           v-model="email"
           type="email"
           label="Email"
@@ -207,9 +220,5 @@ onBeforeUnmount(() => {
 .au-title:focus-visible {
   outline: 2px solid var(--sc-primary);
   outline-offset: 4px;
-}
-
-.is-submitting :deep(.form-field) {
-  opacity: 0.5;
 }
 </style>

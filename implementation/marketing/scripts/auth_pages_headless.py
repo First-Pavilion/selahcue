@@ -146,7 +146,11 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # 2608 -> 2645 in refresh/sign-out ordering (17tnw2b2ka9), measured in hosted
 # diagnostic41032605045 on source7b2f7d51: 75 scenarios, 2645 checks, zero behavioral
 # failures. The old exact count alone exited4; keep equality strict and rerun the gate.
-EXPECTED_MIN_CHECKS = 2645
+# 2645 -> 2765 in auth-card accessibility (17tnw2b2gmm), measured across all
+# 77 production-browser scenarios: first-invalid focus/glyph progression, busy effective
+# opacity and labels on both cards, and disabled signup reveal controls. The focused
+# responsive companion exercises true375px as well as desktop without changing this count.
+EXPECTED_MIN_CHECKS = 2765
 
 
 def find_chrome() -> str | None:
@@ -1713,7 +1717,11 @@ DRIVER = r"""
             return near(box(b).h, 44) && css(b, 'borderTopWidth') === '1px' && css(b, 'borderTopColor') === HAIRLINE; }),
           secondary.length + ' secondary button(s); first: ' + (secondary[0] ? box(secondary[0]).h + 'px / ' + css(secondary[0], 'borderTopWidth') + ' ' + css(secondary[0], 'borderTopColor') : 'none'));
     var content = card ? card.clientWidth - parseFloat(css(card, 'paddingLeft')) - parseFloat(css(card, 'paddingRight')) : -1;
-    check('the card content column is 358px wide', near(content, 358), 'content width: ' + content);
+    if (SCENARIO.endsWith('-narrow')) {
+      check('narrow card content remains within viewport', content > 0 && content < innerWidth && card.getBoundingClientRect().right <= innerWidth);
+    } else {
+      check('the card content column is 358px wide', near(content, 358), 'content width: ' + content);
+    }
 
     // Every drawn mark has the size the component gives it, in whatever engine this runs in (review of PR 179, Cody 3 / Quinn Q4):
     // the cross is 16px, the envelope 22px, the info diamond 14px, the danger-banner cross 10px.
@@ -1747,6 +1755,32 @@ DRIVER = r"""
   }
 
   /** The loading button keeps its label (reset-r3-01): the glyph and the words, at 50%, with the generic spinner hidden. */
+  function effectiveOpacity(el) {
+    var result = 1;
+    for (; el; el = el.parentElement) result *= Number(getComputedStyle(el).opacity);
+    return result;
+  }
+  function busyFieldChecks(label, reveals) {
+    var inputs = Array.from(document.querySelectorAll('.au-card .field-input'));
+    check(label + ' has busy fields', inputs.length > 0 && inputs.every(function (el) { return el.disabled; }));
+    check(label + ' inputs dim only once', inputs.every(function (el) { return Math.abs(effectiveOpacity(el) - 0.5) < 0.01; }));
+    var labels = Array.from(document.querySelectorAll('.au-card .field-label'));
+    check(label + ' labels remain full strength', labels.length > 0 && labels.every(function (el) { return effectiveOpacity(el) === 1; }));
+    if (reveals) {
+      var buttons = Array.from(document.querySelectorAll('.au-card .password-toggle'));
+      check('both reveal controls are disabled for keyboard', buttons.length === 2 && buttons.every(function (el) { el.focus(); return el.matches(':disabled') && document.activeElement !== el; }));
+    }
+  }
+  function invalidFieldChecks(input, label) {
+    check(label + ' first invalid field receives focus', !!input && document.activeElement === input);
+    var ids = input && (input.getAttribute('aria-describedby') || '').split(/\s+/);
+    var message = ids && ids.map(function (id) { return document.getElementById(id); }).find(function (el) { return el && el.getAttribute('role') === 'alert'; });
+    check(label + ' is invalid and described by its error', !!input && input.getAttribute('aria-invalid') === 'true' && !!message);
+    var crosses = message && Array.from(message.querySelectorAll('[aria-hidden="true"]')).filter(function (el) { return el.textContent.trim() === '✕'; });
+    check(label + ' has exactly one decorative cross and no circle', !!message && crosses.length === 1 && !message.querySelector('svg'));
+    check(label + ' error wraps within card', !!message && message.scrollWidth <= message.clientWidth + 1 && message.getBoundingClientRect().right <= document.querySelector('.au-card').getBoundingClientRect().right);
+  }
+
   function loadingButtonChecks(tag, words) {
     var btn = document.querySelector('.au-card .au-btn.is-loading');
     check(tag + ': a button is loading', !!btn);
@@ -3362,6 +3396,56 @@ DRIVER = r"""
      * button's label on screen at full strength and dims the button, so without the busy glyph the same words read as DISABLED.
      * Three buttons were missed once; each is held in flight here and must carry the glyph, the label and the 50%.
      */
+    'signup-validation-focus': async function () {
+      await wait(400);
+      var fields = Array.from(document.querySelectorAll('.au-card input, .au-card select'));
+      fields.forEach(function (el) { if (el.type !== 'checkbox') { el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); } });
+      var names = ['Church', 'Name', 'Email', 'Country', 'Password', 'Confirm', 'Terms'];
+      // Correct one invalid control at a time: focus must advance in DOM order.
+      type('input[autocomplete="name"]', 'x'.repeat(201));
+      await wait(50);
+      var selectors = ['input[autocomplete="organization"]', 'input[autocomplete="name"]', 'input[type="email"]', '#signup-country', 'input[type="password"]', 'input[type="password"]', 'input[type="checkbox"]'];
+      for (var n = 0; n < names.length; n++) {
+        var target = n === 5 ? document.querySelectorAll('input[type="password"]')[1] : document.querySelector(selectors[n]);
+        document.querySelector('.au-btn-primary').focus();
+        submit(); await wait(100);
+        invalidFieldChecks(target, 'Sign up ' + names[n]);
+        if (n === 0) type('input[autocomplete="organization"]', 'Grace Church');
+        if (n === 1) type('input[autocomplete="name"]', 'Alex Morgan');
+        if (n === 2) {
+          type('input[type="email"]', 'malformed'); await wait(50);
+          document.querySelector('.au-btn-primary').focus(); submit(); await wait(100);
+          invalidFieldChecks(target, 'Sign up malformed email');
+          type('input[type="email"]', 'pastor@yourchurch.org');
+        }
+        if (n === 3) { target.value = 'NG'; target.dispatchEvent(new Event('change', { bubbles: true })); }
+        if (n === 4) {
+          type('input[type="password"]', 'short'); await wait(50);
+          document.querySelector('.au-btn-primary').focus(); submit(); await wait(100);
+          invalidFieldChecks(target, 'Sign up short password');
+          type('input[type="password"]', 'long-password');
+        }
+        if (n === 5) {
+          target.value = 'different-password'; target.dispatchEvent(new Event('input', { bubbles: true })); await wait(50);
+          document.querySelector('.au-btn-primary').focus(); submit(); await wait(100);
+          invalidFieldChecks(target, 'Sign up password mismatch');
+          target.value = 'long-password'; target.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        await wait(50);
+      }
+      check('validation never sends a request', calls.length === 0);
+      check('validation card has no horizontal overflow', document.documentElement.scrollWidth <= innerWidth);
+      universalChecks();
+    },
+
+    'forgot-empty-focus': async function () {
+      await wait(400);
+      document.querySelector('.au-btn-primary').focus(); submit(); await wait(200);
+      invalidFieldChecks(document.querySelector('input[type="email"]'), 'Forgot empty email');
+      check('blank email sends no request', calls.length === 0);
+      universalChecks();
+    },
+
     'signup-submitting': async function () {
       await wait(400);
       fillSignup({});
@@ -3370,6 +3454,7 @@ DRIVER = r"""
       check('the in-flight state was reached', await settleInFlight());
       await wait(120);
       loadingButtonChecks('Sign up in flight', 'Creating account…');
+      busyFieldChecks('Sign up', true);
       releaseGate();
       check('the accepted state settled', await settle('Check your email to finish setting up'));
       universalChecks();
@@ -3404,6 +3489,7 @@ DRIVER = r"""
       check('the in-flight state was reached', await settleInFlight());
       await wait(120);
       loadingButtonChecks('Forgot password in flight', 'Sending…');
+      busyFieldChecks('Forgot password', false);
       releaseGate();
       check('the sent state settled', await settle('Check your inbox'));
       universalChecks();
@@ -3512,6 +3598,7 @@ DRIVER = r"""
       var input = document.querySelector('input[type="email"]');
       check('errored field is marked invalid', input.getAttribute('aria-invalid') === 'true');
       check('the field is still on screen to be corrected', !!input);
+      invalidFieldChecks(input, 'Forgot malformed email');
       forwardPathCheck('a malformed address on forgot-password');
       universalChecks();
     },
@@ -3744,7 +3831,8 @@ DRIVER = r"""
   };
 
   async function run() {
-    var fn = SCENARIOS[SCENARIO];
+    if (SCENARIO.endsWith('-narrow')) check('narrow viewport is exactly 375 CSS pixels', innerWidth === 375, 'innerWidth=' + innerWidth);
+    var fn = SCENARIOS[SCENARIO.replace(/-narrow$/, '')];
     if (!fn) {
       results.push('FAIL [' + SCENARIO + '] no such scenario in the driver');
     } else {
@@ -3857,6 +3945,8 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-signout-leave-failure", "/account"),
     ("account-signout-mobile-pending", "/account"),
     # ------------------------------------------------------------ create account --
+    ("signup-validation-focus", "/signup"),
+    ("forgot-empty-focus", "/forgot-password"),
     ("signup-form", "/signup"),
     ("signup-short-password", "/signup"),
     ("signup-no-terms", "/signup"),
