@@ -799,8 +799,14 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # marketing or API gate below stops the run before any cargo gate. Nor is the target
 # path-aware: it runs every area every time. Both -- run every gate, collect, exit
 # non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
+.PHONY: installer-feature-parity
+installer-feature-parity: ## Verify installer operator features match a CI-linted set (requires pyyaml==6.0.3)
+	python3 scripts/check_installer_features.py --self-test
+	python3 scripts/check_installer_features.py
+
 ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the RustSec audit (needs `make api-install` once, and the network for the audit; AUDIT=skip skips it offline, loudly). NOT covered: deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
+	$(MAKE_RECURSE) --no-print-directory installer-feature-parity
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
 	# `ci` -- a prerequisite would resolve before this recipe body starts, putting a plain
