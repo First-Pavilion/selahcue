@@ -71,6 +71,13 @@ Allowed criterion statuses: PENDING, PASS, FAIL, BLOCKED, NOT_APPLICABLE.
 - Plan: Add notice route/link, form text/version and an operator runbook, then verify generated graph/actual browser/build.
 - Result: Shared notice, real marketing route and inactive pre-submit form description implemented. Build/lint/1246 regression tests and both42-check focused responsive engine runs pass. Required independent review remains pending.
 
+### Iteration 2
+
+- Selected criterion: C-003, Cody CODY-P15-01.
+- Hypothesis: Attempt-only copy removes the false receipt lifetime claim without changing behavior.
+- Plan: Correct the public label, clarify the runbook's two clocks and verify against actual service consumers plus focused tests/build/lint.
+- Result: UI/service clock check PASS; focused51tests/build/typecheck/lint PASS. Independent final reviews remain pending. Local-only remediation; no remote publication attempted.
+
 ## Risks and rollback
 
 - Procedure is not an implemented deletion service. Production remains disabled pending operational checks. Revert this source unit to restore prior inactive notice.

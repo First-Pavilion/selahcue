@@ -4,11 +4,11 @@ Ticket: [Pilot collection notice](https://app.clickup.com/t/17tnw2bbhxn). Branch
 
 ## Implemented source
 
-One authored `docs/release/pilot-registration/notice.json` is consumed by both the marketing `/pilot-privacy` view and the generated n8n pre-submit `formDescription`. Vue interpolates plain text; the generator HTML-escapes each title/paragraph. The Download pilot panel links the notice before registration even while disabled. Existing enabled-config labels accurately distinguish the collection administrator and attempt/receipt lifetime from the fixed record-deletion policy.
+One authored `docs/release/pilot-registration/notice.json` is consumed by both the marketing `/pilot-privacy` view and the generated n8n pre-submit `formDescription`. Vue interpolates plain text; the generator HTML-escapes each title/paragraph. The Download pilot panel links the notice before registration even while disabled. Existing enabled-config labels accurately distinguish the collection administrator and registration attempt lifetime from separate short receipt validity and the fixed record-deletion policy.
 
 The approved notice records purpose/necessary fields, optional phone, n8n/Google Sheets handling, tester ownership of supplied church data, restricted collection administration, pilot end30April2027 and final deletion29July2027 at23:59:59UTC, earlier requests through legal@selahcueapp.com or support@selahcueapp.com, optional separate marketing and separate application cloud consent. No account/payment prerequisite or legal-controller classification was added.
 
-`DATA-HANDLING.md` assigns the procedure to SelahCue support operations, requires an identified restricted administrator before activation, documents verified-contact request handling, retire-before-clear, fixed Sheet row clearing/no allocation recycling, eventual pseudonymous ledger disposal, execution/support/backup copies and exact live activation prerequisites. The fixed deadline is a manual product-policy commitment; no purge automation or backup-erasure guarantee is claimed. Existing per-registration retention_days only retires attempts/receipts and must not be advertised as a Sheet purge.
+`DATA-HANDLING.md` assigns the procedure to SelahCue support operations, requires an identified restricted administrator before activation, documents verified-contact request handling, retire-before-clear, fixed Sheet row clearing/no allocation recycling, eventual pseudonymous ledger disposal, execution/support/backup copies and exact live activation prerequisites. The fixed deadline is a manual product-policy commitment; no purge automation or backup-erasure guarantee is claimed. Existing per-registration retention_days retires attempts and caps continued receipt use; receipt_ttl_seconds separately expires receipts after confirmation. Neither setting is a Sheet purge.
 
 ## Verification
 
@@ -21,3 +21,7 @@ The approved notice records purpose/necessary fields, optional phone, n8n/Google
 ## Remaining gates and limits
 
 Four independent reviewers and exact-head hosted CI are pending. The pre-submit description is generated into the real inactive graph; an actual pinned n8n rendering check is coordinated with Kenji's synthetic fixture and is distinct from marketing-browser proof. Restricted Sheet/account/credential/mailbox operations, calendared/rehearsed actual deletion and the P11/P12/P13/P14 live end-to-end installer journey remain activation gates. The source does not enable collection or downloads and does not claim those operational prerequisites are complete.
+
+## Cody remediation — CODY-P15-01
+
+The first review correctly identified that the public enabled-config label conflated registration retention days with the separately configured30–3600second receipt TTL. The label now describes only the registration attempt lifetime and explains that download receipts expire separately after a short period. The handling procedure identifies both actual source clocks. This is a local copy-only remediation; no backend, configuration, notice payload, graph, schema or layout styling changed. Focused51marketing configuration/route tests, build/typecheck/lint and a check against actual service/policy clock expressions pass. All four final independent reviews remain root-owned.
