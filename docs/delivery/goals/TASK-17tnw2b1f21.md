@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Operator SBOM includes shipped STT dependencies and rejects omissions
 - Role: devops-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b1f21
 - Created: 2026-11-04
@@ -90,6 +90,12 @@ Verified at main e45ac0ef: operator generation invokes cargo cyclonedx without f
 - New evidence: docs/delivery/evidence/17tnw2b1f21.md and raw task-owned temporary JSON/logs.
 - Decision: handoff after freshness, source freeze and hosted CI; C-004 remains root review gate.
 
+### Post-integration verification
+
+- Normally merged current main d9fcd524634ab9328231b6d984bd16be11d2ea78; zero commits behind at handoff preparation.
+- Actual feature/all-target generation and checker rerun after merge: exit 0, all 11 controls pass. Actionlint, 118 workflow controls, 6-workflow/19-job check, 12 parity controls and structural goal validator pass again; diff whitespace clean.
+- No manifest or lockfile changes; all required local verifier processes completed. Hosted CI and four-review gate remain pending.
+
 ## Risks and rollback
 
 - Risks: document schema/name validation could accept unrelated components; use package identity/root validation and deliberate omission cases.
@@ -103,8 +109,8 @@ Verified at main e45ac0ef: operator generation invokes cargo cyclonedx without f
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b1f21.md
-- Validator result: pending.
+- Validator result: structural validator passes; completion not claimed with C-004 pending.
 - Independent verification result: pending root reviews.
-- Terminal state: ACTIVE.
-- Remaining failed or blocked criteria: all pending.
-- ClickUp final evidence comment: pending.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: C-004 pending root-coordinated four reviews and hosted checks.
+- ClickUp final evidence comment: posted at PR handoff; linked from the ticket.
