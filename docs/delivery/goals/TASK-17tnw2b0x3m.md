@@ -94,7 +94,7 @@ Fresh main c0325d52e809847fac141a605b74a7e6d7de7021. Marketing checkout persists
 - Verifier executed: real checker RED exit1 on missing notice push route; GREEN28 path cases; real scratch CLI mutants each remove one event exception and fail with its named notice diagnostic. Full npm test1250 pass, existing118 workflow self-tests, normal workflow/minutes/actionlint and shared visual/audit gate pass. Initial sandbox-only loopback/Vite temporary-file denials were rerun with scoped permission; all final commands exit0 individually.
 - Result: local correction verified; current-source independent review refresh and CI remain root-owned, C-005 PENDING. No product, Docker, CSP, font, browser or tolerance changes in remediation; prior actual browser/image evidence retained for byte-unchanged scope.
 - New evidence: docs/delivery/evidence/17tnw2b0x3m/results.md and trigger-mutations.json. Root posted aggregate PR review6620739326 and UI remediation start comment; ticket In Progress read back.
-- Decision: gate-review; fetch/integrate updated main and rerun affected controls before final immutable handoff.
+- Decision: gate-review. Fresh main b3ae75f8 integrated without conflicts; affected checks re-run successfully:1250 npm tests,118 workflow self-tests,6workflow/20job controls, minutes/actionlint,28 path cases and shared visual206 checks/0FAIL at3.618s. Root owns all four refreshed reviews and actual corrected-head CI.
 
 ## Risks and rollback
 - Risks: overly restrictive CSP could block fonts or Vue styles; require actual-browser checks.
@@ -109,4 +109,4 @@ Fresh main c0325d52e809847fac141a605b74a7e6d7de7021. Marketing checkout persists
 - Independent verification result: first round all four requested the same notice trigger correction; root must refresh all four against corrected head and actual current CI
 - Terminal state: GATE_REVIEW
 - Remaining failed or blocked criteria: C-005 pending four refreshed independent reviews and actual current-source/target CI; separately tracked Home harness17tnw2bcadw remains outside this correction
-- ClickUp final evidence comment: root handoff comment will link the published PR and this evidence
+- ClickUp final evidence comment: root handles authenticated UI handoff; original start1400430000278574, aggregate GitHub review6620739326 and visible remediation start were posted/read back by root. Connector quota remains exhausted.
