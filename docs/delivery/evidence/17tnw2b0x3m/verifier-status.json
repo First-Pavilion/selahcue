@@ -89,5 +89,51 @@
       "exit": 0,
       "elapsed_seconds": 0.018
     }
+  },
+  "iteration5": {
+    "api-green": {
+      "exit": 0,
+      "elapsed_seconds": 1.007
+    },
+    "marketing-check": {
+      "exit": 0,
+      "elapsed_seconds": 9.722
+    },
+    "workflow-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.145
+    },
+    "workflow": {
+      "exit": 0,
+      "elapsed_seconds": 0.12
+    },
+    "minutes-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.468
+    },
+    "minutes": {
+      "exit": 0,
+      "elapsed_seconds": 0.154
+    },
+    "visual": {
+      "exit": 0,
+      "elapsed_seconds": 3.376
+    },
+    "actionlint": {
+      "exit": 0,
+      "elapsed_seconds": 0.357
+    },
+    "final-marketing-check": 0,
+    "production": {
+      "container_start": 0,
+      "nginx_config": 0,
+      "exact_image_config": 0,
+      "unused_include_absent": 0,
+      "production_csp": {
+        "exit": 0,
+        "elapsed_seconds": 149.44
+      },
+      "container_stop": 0
+    }
   }
 }

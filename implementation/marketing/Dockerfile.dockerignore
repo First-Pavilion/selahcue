@@ -11,7 +11,6 @@
 !implementation/marketing/vite.config.ts
 !implementation/marketing/tsconfig*.json
 !implementation/marketing/nginx.conf
-!implementation/marketing/security-headers.conf
 !implementation/marketing/src/
 !implementation/marketing/src/**
 !implementation/marketing/public/

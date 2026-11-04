@@ -194,8 +194,10 @@ The repository context is needed for the existing canonical public pilot notice 
 and that notice. Compose uses the same context. No notice contents or collection policy
 change as part of this ticket.
 
-nginx enforces the same CSP/security headers on documents, immutable assets and error
-responses. Scripts and API connections stay same-origin; inline scripts, inline style
+nginx repeats the identical CSP/security directives directly in the server and asset
+location, applying them to documents, immutable assets and error responses. No server
+include hides directives from the existing forwarded-proto trust guard. Scripts and API
+connections stay same-origin; inline scripts, inline style
 attributes, eval, plugins, foreign frames and foreign form submissions are prohibited.
 Google Fonts remains an explicit exception for stylesheet/font hosts only, matching the
 existing Inter delivery and privacy disclosure. Self-hosting was considered and deferred:

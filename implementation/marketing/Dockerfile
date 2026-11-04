@@ -28,7 +28,6 @@ RUN rm -rf /usr/share/nginx/html/*
 
 # Copy custom Nginx configuration
 COPY implementation/marketing/nginx.conf /etc/nginx/conf.d/default.conf
-COPY implementation/marketing/security-headers.conf /etc/nginx/security-headers.conf
 
 # Copy build artifacts from builder stage
 COPY --from=builder /repo/implementation/marketing/dist /usr/share/nginx/html
