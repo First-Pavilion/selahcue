@@ -488,6 +488,19 @@ def changed_lock_is_refused(ctx):
     check(r.calls() == [], "commands ran with stale lock")
 
 
+def different_uv_patch_is_refused_by_install(ctx):
+    """Compatible bot patches are NOT an implicit local bootstrap upgrade."""
+    r = new_repo(ctx, "differentuvpatch")
+    real_uv = shutil.which("uv")
+    fake = r.root / "fake-tools" / "uv"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'uv 0.13.5'; else exec \"%s\" \"$@\"; fi\n" % real_uv)
+    fake.chmod(0o755)
+    rc, out = r.install(env={"PATH": str(fake.parent) + os.pathsep + os.environ["PATH"]})
+    check(rc != 0 and "uv 0.13.4 is required" in out and "make api-install" in out, out)
+    check(not r.venv.exists(), "wrong bootstrap version modified the environment")
+
+
 def locked_manifest_drift_is_refused(ctx):
     """Deliberate install refuses stale manifest/lock instead of resolving or rewriting the lock."""
     r = new_repo(ctx, "manifestdrift")
@@ -1101,6 +1114,7 @@ CASES = [
     missing_pytest_fails_loudly,
     changed_pyproject_is_refused,
     changed_lock_is_refused,
+    different_uv_patch_is_refused_by_install,
     locked_manifest_drift_is_refused,
     missing_lock_is_refused,
     touching_lock_does_not_refuse,
@@ -1167,6 +1181,7 @@ M, H, G, D = "Makefile", "scripts/api_venv.py", "implementation/api/.gitignore",
 _ENV = 'env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:'
 _STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api), "inputs": hashes}) + "\\n")'
 MUTATIONS = [
+    ("exact local uv pin check removed", H, [('    if found.stdout.split()[:2] != ["uv", version]:', "    if False:")], "different_uv_patch_is_refused_by_install"),
     ("locked flag dropped", H, [('"sync", "--locked",', '"sync",')], "locked_manifest_drift_is_refused"),
     ("pytest failure swallowed", M, [("-m pytest tests -q -rfEs", "-m pytest tests -q -rfEs || true")], "failing_test_goes_red"),
     ("migration check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput\n', "")],

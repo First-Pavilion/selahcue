@@ -92,5 +92,7 @@ testpaths = ["tests"]
 build = ["setuptools==84.1.0"]
 
 [tool.uv]
-required-version = "==0.13.4"
+# Project/lock compatibility, including Dependabot's preinstalled compatible patch.
+# Deliberate local/CI/Docker bootstrap remains exactly 0.13.4; see .uv-version/README.
+required-version = ">=0.13.4,<0.14"
 exclude-newer = "14 days"
