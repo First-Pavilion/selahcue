@@ -702,12 +702,12 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
     // attempted on connection C from a second thread, so C's attempts can genuinely
     // land while A's checkpoint is (pre-fix) holding the WAL write lock.
     //
-    // Mutation-verified by hand: reverting `Database::try_checkpoint_truncate` to the
-    // bare `let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");` (no
-    // scoped busy_timeout) turns this test RED — observed `delete()` at ~5.18s (over
-    // the bound below by 50x) and, on the same run, the `append_segment` probe failing
-    // outright with `SQLITE_BUSY: database is locked` rather than merely being slow.
-    // Restoring the fix turns it GREEN again.
+    // The deterministic companion tests in db::checkpoint_tests install a real
+    // SQLite busy handler and verify this checkpoint disables it. Removing the
+    // scoped timeout setting fails that assertion even on a paused/slow runner.
+    // Keep this public-API scenario for deletion, concurrent writer success and
+    // eventual WAL cleanup; elapsed times below are diagnostics, not correctness
+    // gates (17tnw2b2nxe; implementation/desktop/CLAUDE.md timing policy).
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     let wal_path = wal_sidecar_path(&path);
@@ -729,19 +729,12 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
         .execute_batch("BEGIN; SELECT COUNT(*) FROM transcript;")
         .unwrap();
 
-    // Bound generous enough to never flake on a loaded CI box, but 10x tighter than
-    // the 5000ms `busy_timeout` the old code could stall for — nowhere close to the
-    // ~1-2ms this crate's own fix measures uncontended.
-    const BOUND: Duration = Duration::from_millis(500);
-
-    // Connection C's writes run on their own thread, started before A's delete() call
-    // below, so a scheduling hiccup cannot make them run only after A has already
-    // finished (which would trivially "pass" regardless of the fix).
+    // Keep C's public-API writes on an independent thread. Scheduling alone cannot
+    // prove overlap: the private busy-handler control above proves the checkpoint
+    // boundary, while this scenario checks actual writer success and WAL cleanup.
     let writer_thread = thread::spawn(move || {
-        // Tiny head start so A's DELETE + checkpoint call has begun before C's first
-        // attempt — irrelevant for correctness (the pre-fix bug's window is ~5s, five
-        // orders of magnitude longer than this sleep) but maximises the odds that a
-        // single hand-run of the mutated code actually overlaps.
+        // Preserve the original overlap pacing. This encourages C to attempt its
+        // writes after A starts, but is not the mechanism assertion or a time bound.
         thread::sleep(Duration::from_millis(5));
 
         let detection_start = Instant::now();
@@ -777,23 +770,14 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
     // Release the reader before the positive control below.
     reader.execute_batch("COMMIT;").unwrap();
 
-    assert!(
-        delete_elapsed < BOUND,
-        "delete() took {delete_elapsed:?} with a reader holding an open read \
-         transaction — Database::try_checkpoint_truncate's scoped busy_timeout = 0 \
-         fix (PR #30 review, Vera F5) must bound this to a few ms, not the \
-         connection's full 5s busy_timeout"
+    eprintln!(
+        "WAL contention timings (diagnostic only): delete={delete_elapsed:?}, \
+         append_detection={detection_elapsed:?}, append_segment={segment_elapsed:?}"
     );
     assert!(
         detection_result.is_ok(),
         "append_detection (an ordinary autocommit writer, concurrent with \
          delete()'s checkpoint) failed instead of succeeding: {detection_result:?}"
-    );
-    assert!(
-        detection_elapsed < BOUND,
-        "append_detection stalled for {detection_elapsed:?} while a concurrent \
-         delete() ran its checkpoint under WAL contention — a best-effort WAL \
-         truncate on one connection must not stall a write on another"
     );
     assert!(
         segment_result.is_ok(),
@@ -803,11 +787,6 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
          handler on that read-to-write upgrade and this shape fails immediately \
          rather than merely waiting, exactly as Vera's report describes"
     );
-    assert!(
-        segment_elapsed < BOUND,
-        "append_segment stalled for {segment_elapsed:?}"
-    );
-
     // Positive control: with the reader released and no contention, delete()'s
     // checkpoint still fully truncates the WAL, exactly as it always could when
     // uncontended — proving the scoped busy_timeout = 0 fix doesn't simply make the

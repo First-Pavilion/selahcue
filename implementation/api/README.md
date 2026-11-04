@@ -145,3 +145,25 @@ Migrations are **hand-committed**; the `makemigrations --check` gate catches a m
 ### Native single-session cleanup (17tnw2b1wf2)
 
 `POST /v1/sessions:revoke` requires an account bearer, `Content-Type: application/json` and `{}`; it never reads/sets cookies, accepts a body token or exposes an all-sessions option. It reuses account logout/auth/audit with `desktop_v1` provenance; an inactive token is401. The independent fixed `SELAHCUE_THROTTLE_SESSION_REVOKE` budget is10/minute/IP (a code setting, not an environment option). Simple content types and non-POST methods do not spend it;429 includes `Retry-After`/`no-store`. Device tokens, other account sessions and live output are unchanged. Native cleanup failure does not invalidate successful device activation; the client/handoff document exposes explicit retry and local secret-store outcomes. DEC-007 TTL and ADR-0029 Proposed status remain unchanged.
+
+
+### Plan catalogue data and price history (17tnw2az0gd)
+
+The catalogue now seeds exactly Free/Core/Pro with independent positive ranks and no configured price rows.
+Core/Pro device/screen/NDI grants are explicit restrictive placeholders (1/2/0), marked pending internally until
+owner launch configuration. Weekly cloud-transcript minutes are20/50/80 and sermon notes1/5/10; watermark is on/off/off.
+The previous monthly dimension is inactive; its signed key is never renamed or reinterpreted.
+
+`apps.catalogue.pricing.append_plan_price` is an internal audited service requiring MANAGE_PLAN_PRICING, a reason,
+request key and explicit aware non-backdated effective timestamp. Add a new version to edit a price; no update/delete
+service or staff/public endpoint ships here. No row/null amount is unpriced, distinct from zero. Currency and interval
+are per-row data; WEEK/MONTH/YEAR are technical vocabulary, not selected commercial intervals. Amounts are whole minor
+units against the pinned offline ISO4217 reference (JPY0/USD2/KWD3), never universally cents. `current_plan_price`
+selects latest effective-at-or-before time; `plan_price_history` derives prior end times and bounds returned rows.
+Price and internal audit/pending reasons are not signed entitlement fields.
+
+Migrations require a pre-migration backup and quiesced writers. Old obsolete commercial references are conservatively
+repointed to Free without changing any existing key seat counts. Unexpected custom data fails for inspection; price
+history is protected. Recovery must restore the complete backup and matching old code together; reverse constants cannot
+reconstruct former assignments. See `docs/delivery/evidence/17tnw2az0gd-plan-catalogue.md` for actual migration/recovery,
+concurrency and manifest evidence. No price/currency/interval choice or final paid-plan launch limit is invented by this build.
