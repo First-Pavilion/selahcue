@@ -34,10 +34,13 @@ jobs:
       - name: Verify Perl for vendored OpenSSL
         shell: pwsh
         run: |
-          if (-not (Get-Command perl -ErrorAction SilentlyContinue)) {
-            throw "perl not found: vendored OpenSSL requires it"
-          }
-          perl -v
+          $perl = (Get-Command perl -ErrorAction Stop).Source
+          & $perl -v
+          & $perl -MLocale::Maketext::Simple -MIPC::Cmd -e "exit 0"
+          if ($LASTEXITCODE -ne 0) { throw "verified Perl lacks OpenSSL build modules" }
+          # Git Bash prepends its own incomplete Perl; bind the actual build to
+          # the Windows Perl we just verified instead of consulting PATH again.
+          "OPENSSL_SRC_PERL=$perl" >> $env:GITHUB_ENV
       - name: Build the two data regression targets with the workspace SQLCipher backend
         run: cargo test --locked -p selahcue-data --features encryption --lib --test test_transcript_repo --no-run
       - name: Twenty consecutive WAL regression runs, no retries

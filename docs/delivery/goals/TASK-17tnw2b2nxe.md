@@ -75,6 +75,15 @@ Verified main6b096771 and PR359be13c756 have identical selahcue-data/test/Cargo.
 - New evidence: /private/tmp/17tnw2b2nxe-mechanism-green.log; /private/tmp/17tnw2b2nxe-old-timeout-mutant.log.
 - Decision: iterate
 
+### Iteration3
+- Target criterion: C-003 host proof and C-004 local controls.
+- Hypothesis: the same final Rust tree passes20 consecutive real macOS/Windows runs; explicit binding to the verified Windows Perl avoids shell-specific PATH drift during SQLCipher setup.
+- Change or investigation: local macOS20 completed; final formatting/clippy/full encrypted data suite and seven normal workflow controls passed. First Windows proof failed before tests because Git Bash selected incomplete MSYS Perl, while pwsh had verified Strawberry Perl. Inspecting openssl-src confirmed OPENSSL_SRC_PERL selects its actual executable; proof-only correction persists the verified path and checks required modules. No Rust changes.
+- Verifier executed: local40 target invocations; final local controls; hosted41827583650 setup and failure logs; actual encrypted old-boundary mutation with all data siblings.
+- Result: macOS20 pass; old mutation fails deterministic count1 versus0 and preserved public append_detection with DatabaseBusy. First hosted run failed setup, zero test iterations; Windows proof pending corrected setup, not represented as pass or a test retry.
+- New evidence: /private/tmp/17tnw2b2nxe-macos20.json; final-rust.json; final-controls.json; encrypted-old-mutant.log; windows-proof-failed.log.
+- Decision: iterate
+
 ## Risks and rollback
 - Risks: callback cross-test pollution, vacuous pinned-reader control, accidental removal of end-to-end functionality; isolate callback state and require real contention plus uncontended WAL truncate.
 - Rollback or recovery: revert isolated test/docs/proof changes; no persisted product state.
