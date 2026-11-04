@@ -1,0 +1,141 @@
+{
+  "scope": "Actual local macOS arm64 operator Clippy; not full workspace canary, Windows, Ubuntu setup or packaging execution",
+  "pinned_rustc": "1.98.0",
+  "isolated_official_stable_rustc": "1.99.1",
+  "locked_offline": true,
+  "cargo_build_jobs": 2,
+  "tracked_rust_build_resource_inputs": 453,
+  "inputs_unchanged": true,
+  "commands": [
+    {
+      "toolchain": "pinned",
+      "features": "",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 501.474
+    },
+    {
+      "toolchain": "pinned",
+      "features": "dev-keys",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 13.991
+    },
+    {
+      "toolchain": "pinned",
+      "features": "openai-notes",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 25.619
+    },
+    {
+      "toolchain": "pinned",
+      "features": "dev-keys,openai-notes",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 12.063
+    },
+    {
+      "toolchain": "pinned",
+      "features": "dev-keys,openai-notes",
+      "release": true,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 213.892
+    },
+    {
+      "toolchain": "pinned",
+      "features": "stt,cloud-stt",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 102.285
+    },
+    {
+      "toolchain": "pinned",
+      "features": "stt",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 18.501
+    },
+    {
+      "toolchain": "pinned",
+      "features": "stt",
+      "release": true,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 101.672
+    },
+    {
+      "toolchain": "floating",
+      "features": "",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 225.726
+    },
+    {
+      "toolchain": "floating",
+      "features": "dev-keys",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 7.372
+    },
+    {
+      "toolchain": "floating",
+      "features": "openai-notes",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 12.183
+    },
+    {
+      "toolchain": "floating",
+      "features": "dev-keys,openai-notes",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 6.162
+    },
+    {
+      "toolchain": "floating",
+      "features": "dev-keys,openai-notes",
+      "release": true,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 280.122
+    },
+    {
+      "toolchain": "floating",
+      "features": "stt,cloud-stt",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 127.161
+    },
+    {
+      "toolchain": "floating",
+      "features": "stt",
+      "release": false,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 12.281
+    },
+    {
+      "toolchain": "floating",
+      "features": "stt",
+      "release": true,
+      "exit": 0,
+      "timed_out": false,
+      "seconds": 109.593
+    }
+  ],
+  "timing_note": "First pinned command includes a233.105-second coordinated SIGSTOP/SIGCONT pause for frontend tests; shared-host observations are not benchmark comparisons.",
+  "tool_warning_note": "Pinned release build-script rust-objcopy emitted missing-libLLVM stripping warnings; all Cargo/Clippy commands exited0. macOS MallocStackLogging diagnostics retained in raw local logs."
+}

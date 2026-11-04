@@ -1,0 +1,30 @@
+[
+  {
+    "engine": "chromium",
+    "positive": [
+      "21trimmed characters",
+      "settled form",
+      "real blocked inline violation"
+    ],
+    "negative": [
+      "20trimmed characters",
+      "busy form",
+      "no CSP event",
+      "missing form"
+    ]
+  },
+  {
+    "engine": "webkit",
+    "positive": [
+      "21trimmed characters",
+      "settled form",
+      "real blocked inline violation"
+    ],
+    "negative": [
+      "20trimmed characters",
+      "busy form",
+      "no CSP event",
+      "missing form"
+    ]
+  }
+]

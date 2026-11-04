@@ -36,6 +36,9 @@ from selahcue_api.apps.catalogue.models import (
     PlanScopeAlias,
 )
 from selahcue_api.apps.devices.models import Device
+from selahcue_api.apps.catalogue.services import set_plan_grant, SetPlanGrantData
+from selahcue_api.apps.catalogue.pricing import append_plan_price, AppendPlanPriceData
+from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
 from selahcue_api.apps.entitlements.services import build_entitlement_manifest
 from selahcue_api.apps.entitlements.signing import load_signing_key, verify_envelope
 from selahcue_api.apps.license_keys.models import AppLicenseKey
@@ -56,7 +59,7 @@ ACCOUNTABLE = {
 SEAT_KEY = "device_instances"
 SCREEN_KEY = "screen_outputs"
 NDI_KEY = "ndi_outputs"
-STT_KEY = "stt_minutes_per_period"
+STT_KEY = "cloud_transcript_minutes_per_week"
 WATERMARK_KEY = "watermark"
 
 # Every field the manifest carried before the catalogue landed, WITH its JSON type. An
@@ -217,9 +220,9 @@ def test_the_manifest_carries_every_decided_dimension_as_a_typed_value(activated
 
     # Seats are resolved but NOT published — `instances_limit` is the one seat number.
     assert SEAT_KEY not in grants
-    assert grants[SCREEN_KEY] == 5
-    assert grants[NDI_KEY] == 5
-    assert grants[STT_KEY] == 300
+    assert grants[SCREEN_KEY] == 2
+    assert grants[NDI_KEY] == 0
+    assert grants[STT_KEY] == 80
     assert grants[WATERMARK_KEY] is False
     # Typed, not stringly: a client that has to parse "5" is one bad value from a crash.
     assert isinstance(grants[WATERMARK_KEY], bool)
@@ -230,16 +233,16 @@ def test_the_free_tier_watermarks_and_the_paid_tiers_do_not(activated):
     _device, token, key = activated
     _assign(key, "FREE")
     assert _payload(token)["grants"][WATERMARK_KEY] is True
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
     assert _payload(token)["grants"][WATERMARK_KEY] is False
 
 
 def test_a_rename_does_not_change_a_single_granted_value(activated):
     _device, token, key = activated
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
     before = _payload(token)["grants"]
 
-    plan = Plan.objects.get(code="PLATINUM")
+    plan = Plan.objects.get(code="CORE")
     plan.display_name = "Something Else Entirely"
     plan.save(update_fields=["display_name", "updated_at"])
 
@@ -253,7 +256,7 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
     so an unmodified client receives its values and honours them."""
     _device, token, key = activated
     plan = Plan.objects.create(
-        code="OBSIDIAN", display_name="Obsidian", sort_order=99, **ACCOUNTABLE
+        code="OBSIDIAN", rank=100, display_name="Obsidian", sort_order=99, **ACCOUNTABLE
     )
     for dimension_key, raw_value in (
         (SEAT_KEY, "12"),
@@ -284,6 +287,7 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
         SCREEN_KEY: 14,
         NDI_KEY: 15,
         STT_KEY: 1234,
+        "sermon_notes_per_week": 0,
         WATERMARK_KEY: False,
     }
     # Still the enforced number, not the new tier's aspiration.
@@ -293,7 +297,7 @@ def test_a_tier_that_did_not_exist_when_the_client_shipped_is_carried_verbatim(a
 def test_changing_a_grant_value_reaches_the_next_manifest_with_no_release(activated):
     _device, token, key = activated
     _assign(key, "PRO")
-    assert _payload(token)["grants"][STT_KEY] == 300
+    assert _payload(token)["grants"][STT_KEY] == 80
 
     grant = PlanGrant.objects.get(plan__code="PRO", dimension__key=STT_KEY)
     grant.raw_value = "480"
@@ -306,10 +310,10 @@ def test_no_tier_name_appears_anywhere_in_the_signed_payload_except_as_a_label(a
     """`plan_display_label` and `feature_scope` are the only places a name may appear, and
     both are documented as display-only. Anything else would invite client branching."""
     _device, token, key = activated
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
     payload = _payload(token)
 
-    plan = Plan.objects.get(code="PLATINUM")
+    plan = Plan.objects.get(code="CORE")
     label_fields = {"plan_display_label", "feature_scope"}
     for field, value in payload.items():
         if field in label_fields or not isinstance(value, str):
@@ -329,7 +333,7 @@ def test_no_tier_name_appears_anywhere_in_the_signed_payload_except_as_a_label(a
 
 @pytest.mark.parametrize(
     "plan_code",
-    [None, "LEGACY", "FREE", "PRO", "PLATINUM"],
+    [None, "FREE", "PRO", "CORE"],
 )
 def test_the_manifest_publishes_exactly_the_seat_number_activation_enforces(activated, plan_code):
     """The invariant, stated as a test: whatever the catalogue says about a tier's seats,
@@ -362,23 +366,23 @@ def test_a_legacy_licence_publishes_no_catalogue_seat_number_at_all(activated):
     )
     assert payload["instances_limit"] == key.device_limit
     # Positive control: the other grants ARE published, so "absent" is not an empty map.
-    assert payload["grants"][WATERMARK_KEY] is False
+    assert payload["grants"][WATERMARK_KEY] is True
 
 
 def test_a_plans_seat_grant_never_reaches_the_wire_or_moves_instances_limit(activated):
-    """A plan may express a seat count, and PLATINUM does. Until something reconciles it
+    """A plan may express a private seat count. Until something reconciles it
     with `device_limit` it stays off the wire entirely — publishing it would tell a church
     it has seven seats while the server refuses the fourth, in a signed artefact that
     outlives the disagreement."""
     _device, token, key = activated
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
     payload = _payload(token)
 
     assert SEAT_KEY not in payload["grants"]
     assert payload["instances_limit"] == key.device_limit == 3
     # Positive control: the tier's other grants DID come through, so absence is specific to
     # the seat dimension rather than a plan that failed to resolve.
-    assert payload["grants"][SCREEN_KEY] == 10
+    assert payload["grants"][SCREEN_KEY] == 2
 
 
 def test_an_override_does_not_move_instances_limit_either(activated):
@@ -460,7 +464,7 @@ def test_a_dimension_named_like_a_restricted_field_cannot_deny_the_manifest(acti
     assert "signing_key" not in payload["grants"]
     # Positive control: the benign grants are still there, so the manifest did not simply
     # come back empty.
-    assert payload["grants"][SCREEN_KEY] == 5
+    assert payload["grants"][SCREEN_KEY] == 2
 
 
 def test_the_http_surface_returns_the_grants(client, activated):
@@ -473,7 +477,7 @@ def test_the_http_surface_returns_the_grants(client, activated):
     payload = verify_envelope(
         resp.json(), public_key=load_signing_key(TEST_SEED_B64).public_key()
     )
-    assert payload["grants"][NDI_KEY] == 5
+    assert payload["grants"][NDI_KEY] == 0
 
 
 def test_the_entitlement_version_did_not_move_for_an_additive_change():
@@ -512,7 +516,7 @@ def test_an_expired_override_does_not_reach_the_manifest(activated):
 # `instances_limit` directly.
 
 
-@pytest.mark.parametrize("plan_code", [None, "LEGACY", "FREE", "PRO", "PLATINUM"])
+@pytest.mark.parametrize("plan_code", [None, "FREE", "PRO", "CORE"])
 def test_the_payload_never_carries_two_seat_numbers(activated, plan_code):
     """The manifest must contain exactly ONE number describing seats.
 
@@ -546,30 +550,30 @@ def test_the_unpublished_seat_row_still_exists_for_fr_516_to_read(activated):
     Positive control for the test above: proves the value is absent from the payload
     BECAUSE it is unpublished, not because the plan has no seat grant at all."""
     _device, _token, key = activated
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
 
     dimension = GrantDimension.objects.get(key=SEAT_KEY)
     assert dimension.publish_in_manifest is False
-    assert PlanGrant.objects.get(plan__code="PLATINUM", dimension=dimension).raw_value == "7"
+    assert PlanGrant.objects.get(plan__code="CORE", dimension=dimension).raw_value == "1"
     # And the server-side resolution still sees it, so FR-516 has something to act on.
     from selahcue_api.apps.catalogue.services import resolve_entitlement
 
     resolved = resolve_entitlement(key)
-    assert resolved.values[SEAT_KEY] == 7
+    assert resolved.values[SEAT_KEY] == 1
     assert SEAT_KEY not in resolved.published_values
 
 
 def test_flipping_the_publish_flag_is_all_it_takes_to_ship_the_value(activated):
     """The day FR-516's write-back lands, publishing is a row edit — not a release."""
     _device, token, key = activated
-    _assign(key, "PLATINUM")
+    _assign(key, "CORE")
     assert SEAT_KEY not in _payload(token)["grants"]
 
     dimension = GrantDimension.objects.get(key=SEAT_KEY)
     dimension.publish_in_manifest = True
     dimension.save(update_fields=["publish_in_manifest", "updated_at"])
 
-    assert _payload(token)["grants"][SEAT_KEY] == 7
+    assert _payload(token)["grants"][SEAT_KEY] == 1
 
 
 # --- A degraded read must not mint a multi-year artefact ------------------------------------
@@ -703,7 +707,7 @@ def test_a_restricted_name_reaching_via_an_OVERRIDE_cannot_deny_the_manifest(act
     payload = _payload(token)
     assert "device_token" not in payload["grants"]
     # Positive control: the licence still gets a real manifest with its ordinary grants.
-    assert payload["grants"][SCREEN_KEY] == 5
+    assert payload["grants"][SCREEN_KEY] == 2
 
 
 def test_the_published_seat_number_is_the_one_activation_actually_refuses_over(client):
@@ -756,3 +760,26 @@ def test_the_published_seat_number_is_the_one_activation_actually_refuses_over(c
 
     # And the count the manifest reports as used matches what actually activated.
     assert _payload(tokens[0])["instances_used"] == seat_count
+
+
+def test_core_weekly_notes_data_edit_reaches_the_next_fresh_signed_manifest(activated):
+    _device, token, key = activated
+    _assign(key, "CORE")
+    first = _payload(token)
+    assert first["grants"]["sermon_notes_per_week"] == 5
+    actor = ActorContext(kind=ActorKind.STAFF, actor_id="catalogue-ops",
+                         staff_permissions=frozenset({StaffPermission.GRANT_ENTITLEMENT}))
+    set_plan_grant(actor, SetPlanGrantData(idempotency_key="weekly-notes-data-edit-0001",
+        plan_code="CORE", dimension_key="sermon_notes_per_week", raw_value="6",
+        reason="Approved weekly notes allowance change."))
+    price_actor = ActorContext(kind=ActorKind.STAFF, actor_id="pricing-ops",
+        staff_permissions=frozenset({StaffPermission.MANAGE_PLAN_PRICING}))
+    append_plan_price(price_actor, AppendPlanPriceData(plan_code="CORE", currency="USD", interval="YEAR",
+        amount_minor=999, effective_from=timezone.now()+timedelta(hours=1),
+        reason="Test-only configured price never enters signed grants.", idempotency_key="signed-price-separation-0001"))
+    second = _payload(token)
+    assert second["grants"]["sermon_notes_per_week"] == 6
+    assert second["instances_limit"] == first["instances_limit"] == key.device_limit
+    assert "device_instances" not in second["grants"]
+    assert not any("price" in name or "amount" in name or "currency" in name for name in second)
+    assert "stt_minutes_per_period" not in second["grants"]

@@ -39,7 +39,8 @@
 //!
 //! In a debug build the same presence rule applies: an empty `SELAHCUE_STT_MODEL` is an override
 //! to the empty path (the loader then fails to find it), and a hash that is not valid UTF-8 is
-//! treated as missing, so the loader refuses with [`MISSING_HASH_MESSAGE`].
+//! treated as missing, so the loader refuses with [`MISSING_HASH_MESSAGE`]. A selected debug
+//! override writes one fixed public marker notice, without the path or supplied hash.
 //!
 //! # How the gate is built, and why this way
 //!
@@ -77,7 +78,7 @@
 //!   text, so a name assembled at run time (`concat!`, `format!`) or a walk over
 //!   `std::env::vars()` would get past it; that is a review rule, not a gate.
 //!
-//! # What this does NOT guard against
+//! # Why the compiled artifact also needs a gate
 //!
 //! `cfg!(debug_assertions)` is a build setting, and several build settings turn it back on under
 //! `--release`, in which case a "release" binary honours the override and the release wiring test
@@ -92,9 +93,15 @@
 //!   directory or `$CARGO_HOME`
 //!
 //! `scripts/import_guards.sh` refuses some spellings of the manifest and config routes and says of
-//! itself "THIS IS NOT THE GATE": it matches text and cannot see the environment. Nothing in this
-//! repo checks the shipped binary for this today; an effect-level check is tracked in ClickUp
-//! 17tnw2b9dbz (https://app.clickup.com/t/17tnw2b9dbz).
+//! itself "THIS IS NOT THE GATE": it matches text and cannot see the environment. The compiled
+//! capability must therefore be checked at the artifact boundary too. The actual
+//! `DeveloperOverride` branch now supplies a debug-only fixed notice containing
+//! `SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1`. The existing once-only `announce` writer consumes
+//! it, so the literal has an observable use and survives optimization when that branch exists.
+//! `scripts/installer_secret_scan.py` declares the marker permanently and scans the actual
+//! uncompressed operator in the installer workflow. The source-exact LTO/stripping probe is
+//! supplemental; acceptance also requires full-policy scans of real native operator release
+//! artifacts (17tnw2b9dbz). No artifact-size floor, existing signature or runtime gate is relaxed.
 //!
 //! # Why not a Cargo feature
 //!
@@ -189,14 +196,26 @@ fn resolve(profile: BuildProfile, model: Option<OsString>, sha256: Option<OsStri
         };
     }
     match model {
-        Some(path) => Resolution {
-            source: ModelSource::DeveloperOverride {
-                path: PathBuf::from(path),
-                // A hash that is not UTF-8 cannot be hex, so it is treated as missing.
-                sha256: sha256.and_then(|s| s.into_string().ok()),
-            },
-            notice: None,
-        },
+        Some(path) => {
+            // This observable once-only write is the artifact marker: it is reachable
+            // through the actual override branch, not an unreferenced static or a
+            // best-effort optimizer hint. Never interpolate caller-controlled values.
+            #[cfg(debug_assertions)]
+            let notice = Some(
+                "SelahCue STT: development-only model override selected \
+                 [SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1].",
+            );
+            #[cfg(not(debug_assertions))]
+            let notice = None;
+            Resolution {
+                source: ModelSource::DeveloperOverride {
+                    path: PathBuf::from(path),
+                    // A hash that is not UTF-8 cannot be hex, so it is treated as missing.
+                    sha256: sha256.and_then(|s| s.into_string().ok()),
+                },
+                notice,
+            }
+        }
         None => Resolution {
             source: ModelSource::Pinned,
             notice: None,
@@ -244,14 +263,14 @@ fn source_and_announce(
     resolution.source
 }
 
-/// Set once the release notice has been written, so a polled caller writes it at most once.
+/// Set once an override notice has been written, so a polled caller writes it at most once.
 static NOTICE_PRINTED: AtomicBool = AtomicBool::new(false);
 
 /// The model source the worker and the readiness check use: the only way into this module from
-/// outside it. Writes the release notice to stderr the first time it applies in this process.
+/// outside it. Writes this build's fixed override notice to stderr at most once per process.
 ///
 /// Its one job is to hand the process-wide [`NOTICE_PRINTED`] flag and the real stderr to
-/// [`model_source_with`]; `this_build_writes_the_notice_once_per_process_iff_release` checks
+/// [`model_source_with`]; `this_build_writes_the_notice_once_per_process_for_model_override` checks
 /// the flag it passes is the real one. Nothing checks the writer is the real stderr (see the
 /// PR's known gaps).
 pub(crate) fn model_source_from_env() -> ModelSource {
@@ -303,6 +322,23 @@ mod tests {
 
     fn sha() -> Option<OsString> {
         Some(OsString::from(SHA))
+    }
+
+    fn assert_developer_notice(notice: Option<&str>) {
+        if cfg!(debug_assertions) {
+            let notice = notice.expect("debug override has its artifact marker notice");
+            assert!(notice.contains("SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1"));
+            assert!(!notice.contains(PATH), "notice must not echo a model path");
+            assert!(
+                !notice.contains(SHA),
+                "notice must not echo the supplied hash"
+            );
+        } else {
+            assert_eq!(
+                notice, None,
+                "normal release compiles no debug override notice"
+            );
+        }
     }
 
     /// Bytes that are not valid UTF-8 (unix only: Windows `OsString`s are built from UTF-16).
@@ -418,7 +454,7 @@ mod tests {
                 sha256: Some(SHA.to_string()),
             }
         );
-        assert_eq!(r.notice, None);
+        assert_developer_notice(r.notice);
     }
 
     #[test]
@@ -515,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn the_debug_path_writes_nothing() {
+    fn the_debug_path_obeys_the_compiled_notice_policy() {
         let printed = AtomicBool::new(false);
         let mut out = Vec::new();
         let source = source_and_announce(
@@ -524,7 +560,17 @@ mod tests {
             &mut out,
         );
         assert!(matches!(source, ModelSource::DeveloperOverride { .. }));
-        assert!(out.is_empty(), "a debug build wrote: {out:?}");
+        let text = String::from_utf8(out).expect("utf-8 notice");
+        if cfg!(debug_assertions) {
+            assert_developer_notice(Some(text.trim_end()));
+            assert!(printed.load(Ordering::Relaxed));
+        } else {
+            assert!(
+                text.is_empty(),
+                "release compiled a debug-only notice: {text}"
+            );
+            assert!(!printed.load(Ordering::Relaxed));
+        }
     }
 
     /// Restores both variables when the test ends, including on a failed assertion, so a failure
@@ -567,7 +613,7 @@ mod tests {
                 "a debug build stopped honouring SELAHCUE_STT_MODEL: development and evaluation \
                  work (docs/quality/EVAL-PLAN-stt-nigerian-accent.md) depend on it"
             );
-            assert_eq!(r.notice, None);
+            assert_developer_notice(r.notice);
         } else {
             assert_eq!(
                 r.source,
@@ -649,7 +695,7 @@ mod tests {
     /// reach the write. Asserts whichever arm this binary was compiled for (debug in every operator
     /// test line, release in the `--features dev-keys,openai-notes --release` line).
     #[test]
-    fn the_inner_entry_point_writes_the_notice_once_iff_this_is_a_release_build() {
+    fn the_inner_entry_point_writes_the_notice_once_for_model_override() {
         let _env_guard = crate::env_locked();
         let _vars = OverrideVars::set(PATH, SHA);
         let printed = AtomicBool::new(false);
@@ -663,8 +709,13 @@ mod tests {
         let text = String::from_utf8(out).expect("utf-8");
         if cfg!(debug_assertions) {
             assert!(matches!(first, ModelSource::DeveloperOverride { .. }));
-            assert!(text.is_empty(), "a debug build wrote: {text}");
-            assert!(!printed.load(Ordering::Relaxed));
+            assert_eq!(
+                text.lines().count(),
+                1,
+                "debug override writes one fixed notice"
+            );
+            assert_developer_notice(Some(text.trim_end()));
+            assert!(printed.load(Ordering::Relaxed));
         } else {
             assert_eq!(first, ModelSource::Pinned);
             assert_eq!(
@@ -677,14 +728,13 @@ mod tests {
     }
 
     /// The outer entry point, the one the worker and `stt_ready` call, must use the PROCESS-WIDE
-    /// flag, or a polled `stt_ready` would print the notice on every poll. Only a release build
-    /// ever sets that flag (a debug build has no notice), so: in release it is set after a call
-    /// with a variable present; in debug it stays clear. A fresh `AtomicBool` per call, or a
-    /// `model_source_from_env` that skips `source_and_announce`, leaves it clear and fails the
-    /// release run. Other tests may already have set it, which is why this asserts "set after",
-    /// not "clear before".
+    /// flag, or a polled `stt_ready` would print the notice on every poll. With a model
+    /// override requested, debug writes its selected-marker notice and release writes its
+    /// ignored notice. A fresh `AtomicBool` per call, or a `model_source_from_env` that skips
+    /// `source_and_announce`, leaves the process flag clear and fails this check. Other tests
+    /// may already have set it, so assert "set after", not "clear before".
     #[test]
-    fn this_build_writes_the_notice_once_per_process_iff_release() {
+    fn this_build_writes_the_notice_once_per_process_for_model_override() {
         let _env_guard = crate::env_locked();
         let _vars = OverrideVars::set(PATH, SHA);
         let first = model_source_from_env();
@@ -694,8 +744,8 @@ mod tests {
             assert!(matches!(first, ModelSource::DeveloperOverride { .. }));
             assert_eq!(first, second);
             assert!(
-                !NOTICE_PRINTED.load(Ordering::Relaxed),
-                "a debug build set the release-notice flag"
+                flag_after_first,
+                "debug override did not use the process notice flag"
             );
         } else {
             assert_eq!(first, ModelSource::Pinned);
@@ -707,6 +757,39 @@ mod tests {
                  would print the notice every time"
             );
         }
+    }
+
+    /// The reachable developer path must emit a fixed, once-only public marker,
+    /// never the caller's model path or hash. Actual binary tests pin retention too.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn developer_override_notice_is_once_only_and_does_not_echo_inputs() {
+        let printed = AtomicBool::new(false);
+        let mut out = Vec::new();
+        for _ in 0..2 {
+            let source = source_and_announce(
+                resolve(BuildProfile::Debug, set(), sha()),
+                &printed,
+                &mut out,
+            );
+            assert!(matches!(source, ModelSource::DeveloperOverride { .. }));
+        }
+        let text = String::from_utf8(out).expect("utf-8 marker notice");
+        assert_eq!(
+            text.lines().count(),
+            1,
+            "the override marker is written once"
+        );
+        assert!(text.contains("SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1"));
+        assert!(
+            !text.contains(PATH),
+            "the marker must not disclose the model path"
+        );
+        assert!(
+            !text.contains(SHA),
+            "the marker must not disclose the supplied hash"
+        );
+        assert!(printed.load(Ordering::Relaxed));
     }
 
     /// Whether `line` would let a file outside this module read the variables: it spells either

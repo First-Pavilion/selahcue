@@ -50,7 +50,7 @@ class GenerateLicenseKeyData:
     feature_scope: str
     # The catalogue plan this licence is sold on (DEC-014). REQUIRED, and deliberately a
     # field with no default: a licence issued without one used to fall through to the
-    # catalogue's fallback plan, which is the most permissive in the catalogue. Giving this
+    # catalogue's fallback plan, which is the lowest-ranked plan in the catalogue. Giving this
     # a default would restore that path for every caller that forgets it, which is exactly
     # the failure mode DEC-014 closes.
     plan_code: str
@@ -271,23 +271,14 @@ def generate_license_key(
                 f"`{field_name}` contains a control character. Supply it as plain text.",
             )
 
-    # DEC-014. Naming a plan is now part of issuing a licence.
-    #
-    # `resolve_plan_for_license` tries the assignment, then a legacy scope alias, then the
-    # designated fallback — and the fallback is the most permissive plan in the catalogue
-    # (unlimited screens, unlimited NDI, no watermark), because its job is to freeze what
-    # pre-catalogue licences already had. `feature_scope` is free staff text, so before this
-    # every licence typed with a scope nobody had aliased landed on that fallback silently,
-    # was signed, and was cached offline until expiry. Refusing here is the whole fix: the
-    # fallback stays exactly as it is for the rows that legitimately need it, and no NEW row
-    # can reach it by accident.
+    # DEC-014 still requires an explicit selection; fallback is now the least-ranked plan.
     plan_code = (data.plan_code or "").strip()
     if not plan_code:
         raise SafeAPIError(
             ErrorCode.VALIDATION_FAILED,
             "This licence needs a plan. Choose the catalogue plan it is sold on and pass "
             "its code as `plan_code` — a licence issued without one would silently receive "
-            "the catalogue's most permissive grants.",
+            "unselected catalogue defaults.",
         )
 
     with transaction.atomic():
@@ -350,51 +341,7 @@ def generate_license_key(
                 "that exists, or add the plan to the catalogue first.",
             )
 
-        # DEC-014, second half: the fallback cannot be sold ON PURPOSE either.
-        #
-        # The check above closed the SILENT path onto the fallback. This closes the
-        # deliberate one. The designated fallback is a no-regression bridge — its display
-        # name is literally "Legacy (pre-catalogue)" — and it is the most permissive plan in
-        # the catalogue. A typo or a copied admin call that names it grants unlimited
-        # outputs, unlimited NDI and no watermark for the licence's ENTIRE LIFE, signed and
-        # cached offline until expiry, with no revocation list to take it back.
-        #
-        # Keyed on `is_fallback`, never on the code: which plan is the fallback is DATA
-        # (FR-544/DEC-008), so designating a different one moves this refusal with it and
-        # no tier name is hardcoded here — the invariant `test_product_catalogue_slice.py`
-        # sweeps the source for.
-        #
-        # POLICY_DENIED rather than VALIDATION_FAILED: the request is well formed and the
-        # plan really exists, so this is policy refusing a legal request — the same shape as
-        # the archived-customer refusal above. It also happens to be the more useful code
-        # through GraphQL, where `SAFE_MESSAGES` discards this message: the caller at least
-        # gets "The current policy does not allow this action." instead of "The request is
-        # invalid.", which is the difference between a hint and nothing.
-        if plan.is_fallback:
-            # The specific reason has to survive somewhere an operator will actually look,
-            # because the GraphQL caller will never see it. Audit rows in this service are
-            # written on success only — deliberately, and the code review confirmed that —
-            # so a refusal has no audit row to carry it. The log is the diagnosis surface.
-            logger.warning(
-                "refused to issue a licence for customer %s on plan %r (%s): it is the "
-                "catalogue's designated fallback (is_fallback=True), which exists to "
-                "preserve what pre-catalogue licences already had and grants the "
-                "catalogue's most permissive values. Issue on a sellable plan. "
-                "Requested by actor %s.",
-                data.customer_id,
-                plan.code,
-                plan.display_name,
-                staff.actor_id,
-            )
-            raise SafeAPIError(
-                ErrorCode.POLICY_DENIED,
-                f"Plan {plan.code!r} ({plan.display_name}) is the catalogue's designated "
-                "fallback, not a sellable tier. It exists to preserve what licences issued "
-                "before the catalogue already had, so it carries the most permissive grants "
-                "in the catalogue — a licence issued on it would keep them for its whole "
-                "life, cached offline until it expires. Issue this licence on the plan the "
-                "customer is actually buying.",
-            )
+        # The migrated fallback has the lowest rank; an explicit selection is valid.
 
         # 86ak5mn0m: the key's device limit is the PLAN's seat count, copied here once and from
         # then on the key's own field (the number activation enforces, the manifest publishes
