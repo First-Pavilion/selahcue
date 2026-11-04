@@ -5,12 +5,12 @@
 - Parent goal ID: TASK-17tnw2b0x3m
 - Title: CSP-safe authentication wait in shipping-image verification
 - Role: frontend-engineer
-- Status: GATE_REVIEW
+- Status: BLOCKED
 - Execution engine: goal
-- ClickUp task: https://app.clickup.com/t/17tnw2b0x3m
+- ClickUp task: https://app.clickup.com/t/17tnw2bcj0m (necessary follow-up; original17tnw2b0x3m remains QA)
 - Created: 2026-11-04
 - Updated: 2026-11-04
-- Maximum iterations: 4
+- Maximum iterations: 5
 - Independent verification required: yes
 
 ## Objective
@@ -39,8 +39,9 @@ Verified main6b096771d3d65c1dacf105523a4ee48edc2d4f93. Actual CI41823034596/job1
 
 ## Dependencies and approvals
 - User authorized fix/review loop; root explicitly assigned this necessary CI unblock.
-- Tracker write is pending: connector dailyquota1000/1000 and browser inputs unavailable. Root explicitly authorizes code before verified InProgress for this external write blocker and will backfill native bug/status; no saved InProgress claim.
+- Historical at original6b baseline: tracker write was pending, with connector dailyquota1000/1000 and browser inputs unavailable. Root explicitly authorizes code before verified InProgress for this external write blocker and will backfill native bug/status; no saved InProgress claim.
 - Root owns all four independent reviews, actual CI, merge/main verification and QA.
+- Current nativeBug17tnw2bcj0m independently read InProgress; exact public-publication approval remains pending. No new public action or status mutation is performed by this local refresh.
 
 ## Completion predicate
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
@@ -48,7 +49,7 @@ Verified main6b096771d3d65c1dacf105523a4ee48edc2d4f93. Actual CI41823034596/job1
 | C-001 | yes | Existing failure reproduced and auth wait uses CSP-safe DOM observation | real strict-CSP browser positive/negative regression | settled passes; busy/missing state fails; old expression refusal recorded | docs/delivery/evidence/17tnw2b0x3m-csp-wait/results.md | PASS |
 | C-002 | yes | Complete shipping probe and API proxy guards preserved | actual Docker/CSP Chromium/WebKit and locked API file |68routes each/all existing checks and28APIcases pass | docs/delivery/evidence/17tnw2b0x3m-csp-wait/results.md | PASS |
 | C-003 | yes | Current-source controls and clean immutable PR ready | focused tests, workflow/visual controls and freshness | actual completed commands pass, source/target recorded | docs/delivery/evidence/17tnw2b0x3m-csp-wait/results.md | PASS |
-| C-004 | yes | Independent reviews/CI/integration/tracker backfill recorded | root Cody Shadow Quinn Vera/currentCI/merge/QA/readback | actual gates pass and tracker write confirmed | root handoff | PENDING |
+| C-004 | yes | Independent reviews/CI/integration/tracker backfill recorded | root Cody Shadow Quinn Vera/currentCI/merge/QA/readback | actual gates pass and tracker write confirmed | root handoff | BLOCKED |
 
 ## Verification plan
 - Focused verification: real CSP fixture old-expression RED, locator wait GREEN, busy/missing negative.
@@ -89,3 +90,22 @@ Verified main6b096771d3d65c1dacf105523a4ee48edc2d4f93. Actual CI41823034596/job1
 - Terminal state: GATE_REVIEW.
 - Remaining failed or blocked criteria: C-004 pending root four reviews/currentCI/merge/main/QA and native tracker backfill; no write or completion claimed.
 - ClickUp final evidence comment: pending root backfill; no write claimed.
+
+## Explicit current-main local refresh — iteration3
+
+Root expressly extends this SAME Goal maximum4to5 for one normal current-main integration and affected verification only. Original recorded iterations1–2 and the previous maximum4 remain historical. This is the actual next iteration3 under the explicitly authorized maximum5; unused capacity is not recorded as executed. Original exact6297c7db source/worktree must remain clean and unchanged for its pending publication approval.
+
+- Target criterion: C002/C003 current-main freshness; C004 remains root-owned and blocked by exact public-publication approval.
+- Hypothesis: the three reviewed CSP-safe wait implementations remain correct with maina6cbd07d's changed App/footer, while strict policy, browser pins and30-second deadlines stay unchanged.
+- Change or investigation: NEWPRIVATEownedworktree from6297, normal merge8178a699 of maina6cbd07dd4684621ffb8bb8d6f08f790fa6946d3. No conflict or production/source-helper edit. NativeBug17tnw2bcj0m independently read InProgress; original task remains QA. Nativeworktree API failed to identify repository before creation; sandbox Git metadata write denied before creation; task-owned Git worktree fallback then succeeded under authorized escalation.
+- Verifier executed: PENDING one actual current shipping image/both-engine68routes; current14wait positive/negative cases and three actual missing-wait CLI mutants; API28 and affected workflow controls as input comparisons require. Root explicitly authorizes ONE serialized current visual --run after all browser/container cleanup because C003 includes changed-target visual controls. No full responsive repeat, repeated attempt, or deadline/browser/CSP change.
+- Result: PASS current Docker/nginx/source identity; actual68+68shipping,14readiness controls/three actual mutants, fresh ownlockedAPI28, current118+39workflow/supply/canary/minutes andONEserialcurrentvisual3.324s<10. Oldvisual11.383failure/9.257passremainhistorical. All processes reaped/containerreadbackempty.
+- New evidence: current summary/source/bundle/command/exit receipts in /private/tmp/csp-current-local-evidence and appended current section in existing results.md; no new public source or record.
+- Decision: execute exactly this bounded verifier set; stop on a new actual failure, with no further actual attempt authorized by unused iteration capacity. NO push/PR/publication/merge/QA; prior automatic approval rejection is not bypassed by a private branch.
+
+## Current local handoff evaluation
+
+- Actualiteration3 completed under maximum5; no further implementation/test attempt authorized from unused capacity.
+- C001–C003 local PASS for integrated current main; C004 BLOCKED for root four affected reviews, exact public approval, actual hosted CI/main/QA.
+- NativeBug17tnw2bcj0m independently read InProgress. Original task17tnw2b0x3m remains QA; no status write claimed by this local verification.
+- Terminal state: BLOCKED. Source scripts unchanged6297; original pending-approval worktree unchanged/clean; no public push/PR/CI/merge/QA.

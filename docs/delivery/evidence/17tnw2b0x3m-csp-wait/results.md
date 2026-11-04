@@ -33,3 +33,27 @@ An intercepted synthetic strict-CSP fixture independently reproduced the same ol
 Both timing observations are retained. The serial pass is a local observation, not a general speedup or hosted-budget promise. Actual current-source CI remains required. Controlled fixture output and source are separate from the actual full shipping proof; all68-route assertions, real fonts, auth POST/menu behavior, response headers and actual blocked script checks remain enabled. Only API responses use the unchanged synthetic account fixtures; no live account/provider/registration/deployment/installer operation occurs.
 
 All local verifiers finished and the isolated container stopped/removed successfully before handoff. Root owns full diff inspection, four independent reviews, actual CI, fresh main merge and native tracker/QA updates. Pending tracker write and review/CI gates must not be treated as completed.
+
+
+## Current-main private verification — actual iteration3, maximum5
+
+The sections above are historical6b-baseline results. Root explicitly authorized this SAME Goal maximum4to5 and one current-target verification iteration; only original iterations1–2 existed, so this is actual iteration3, not fabricated executed slots3–4. NEWprivate branch `codex/17tnw2b0x3m-csp-current-local` normally merged current maina6cbd07dd4684621ffb8bb8d6f08f790fa6946d3 at8178a69926ba57eaf12ae556c19f122e1f63de6c, without conflicts. The original exact6297c7db worktree remains clean and unchanged for its pending public-publication approval. No push, PR, hosted CI, merge or QA transition occurred here.
+
+The two CSP wait/verifier scripts, nginx policy, Dockerfile, package/lock, Vite configuration and pilot notice are byte-identical to6297. Target marketing changes are App.vue/footer readiness, responsive_sweep.py and the separately reviewed loading-footer verifier. Because App.vue is a production input, a fresh actual shipping image and both-engine probe were executed rather than reusing old68+68 evidence. Current image `sha256:7980c6716c9cd689b7ea230a3b2b2c7f09e3a9b2737bbc020353ec454703c365`; actual nginx configuration byte-matches source, `nginx -t` exits0, and the actual117-file shipping bundle is copied and hashed.
+
+| Current verifier | Actual result |
+|---|---|
+| Current Docker production build | exit0;15.597s; no source input changed during build |
+| Actual shipping browser gate | exit0;Chromium68 +WebKit68, real fonts/auth/mobile375/headers/assets/errors/blocked-inline-event controls;156.063s shared-local observation |
+| Real strict-CSP readiness fixture | exit0;3positive +4negative per engine |
+| Three actual CLI helper-removal mutants | each exits1 specifically for accepting an incomplete condition |
+| Fresh own locked API environment/proxy guards | verifieduv0.13.4/Python3.14.5; actual28passed,0.42s; helper verifies current checkout |
+| Current workflow coverage |118legacy +39CLI cache cases;6workflows/20jobs normalcheck PASS |
+| Current affected supply/canary/minute controls |8policy mutants +36actualalias/status probes;16canary drift refusals +2real shell probes; minute self-test/normal PASS |
+| ONE serial current visual/audit gate after browser/container cleanup | exit0; internal3.324s<unchanged10s; wrapper3.434s; no retry |
+
+The new elapsed observations are scoped shared-host results, not controlled performance comparisons. Historical11.383s failure and9.257s pass remain above and are not relabelled current results. No full responsive sweep, browser-pin/policy/default30-second change, live account/provider/collection, deployment or installer action was performed. API tests were rerun in a new owned locked environment because current main changed catalogue model/bootstrap inputs even though the proxy test/config bytes are unchanged. Read-only pinneduv binary reused; no global install/toolchain change.
+
+Raw current command argv, stdout/stderr, elapsed/exit/timeout/reaped receipts, exact source and image bundle manifests, mutant copies and summary are in `/private/tmp/csp-current-local-evidence/`. Private evidence driver `/private/tmp/csp-current-local-run.py`. An explicit initial Python syntax compile was denied while attempting the host's external bytecode-cache path before tests; using a task-owned PYTHONPYCACHEPREFIX completed it. Native worktree API could not identify the repository, and the sandbox denied Git metadata creation before authorized task-owned fallback succeeded. These setup observations are not product-test retries.
+
+All verifier/browser processes completed; owned Docker container was removed and independently read back absent. Local image/bundle/environment remain available for independent review. Native Bug17tnw2bcj0m was independently read InProgress, while root owns final audit/status. Current C001–C003 local evidence is ready; C004 remains BLOCKED for four current affected reviews, exact publication approval, actual hosted CI and root main/QA verification. The automatic rejection of the original exact public payload is not bypassed by this private branch.
