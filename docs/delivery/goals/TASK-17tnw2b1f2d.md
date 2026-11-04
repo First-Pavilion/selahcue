@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Push-time NDI sidecar type and lint coverage without SDK redistribution
 - Role: devops-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b1f2d
 - Created: 2026-11-04
@@ -82,6 +82,13 @@ Verified at main d9fcd524: no push-time NDI gate. The committed Windows SDK head
 - New evidence: docs/delivery/evidence/17tnw2b1f2d.md and /private/tmp/wave10-ndi-local.log; no source/lock/header changes remain.
 - Decision: integrate fresh main and publish draft for actual Linux CI and independent review. C-001 and C-004 remain pending.
 
+### Post-integration verification
+
+- Normally merged main 8a66f0ba168e422ef1f60a7b3c8418ae8bb1f2f7, preserving the newly merged SBOM checker/step; zero behind at handoff preparation.
+- Repeated actual NDI helper on integrated source: exit 0; check 20.46s, strict Clippy 7.37s. Earlier real mutant evidence remains applicable because target delta is SBOM CI/helper/evidence only, no NDI/app/header/manifest change.
+- Four helper controls, 118 workflow controls, normal workflow/minute checks and minute self-tests, actionlint, 12 installer-parity controls, 11 SBOM controls and structural validator pass. Diff whitespace clean; no header/application/manifest/lock edits; local verifiers complete.
+- Root owns required hosted Linux and independent review results before merge/QA.
+
 ## Risks and rollback
 
 - Risks: false assurance from missing feature or placeholder leakage; prove real gated mutation and isolate child environment/lifecycle.
@@ -95,8 +102,8 @@ Verified at main d9fcd524: no push-time NDI gate. The committed Windows SDK head
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b1f2d.md
-- Validator result: pending.
+- Validator result: structural validator passes; completion not claimed while C-001/C-004 pending.
 - Independent verification result: pending.
-- Terminal state: ACTIVE.
-- Remaining failed or blocked criteria: all pending.
-- ClickUp final evidence comment: pending.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: hosted Linux C-001 and independent-review C-004 pending.
+- ClickUp final evidence comment: recorded at PR handoff.

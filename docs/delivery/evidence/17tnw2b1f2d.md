@@ -32,3 +32,7 @@ Raw log: `/private/tmp/wave10-ndi-local.log` (task-owned local diagnostic, not a
 - Diff checks confirm vendor headers, manifests/locks, installer workflow and application source unchanged.
 
 Required hosted Linux check/clippy/mutation and all four independent reviews remain pending until their actual results are recorded. Local macOS verification does not establish Linux success. This is debug-profile type/lint coverage of the real `ndi` feature, not release code generation, link correctness, NDI discovery/broadcast, SDK licensing readiness or Windows packaging acceptance. Real release installers continue to require their own approved runtime/import library and manual/main-only packaging path.
+
+## Integrated-source receipt
+
+Normal merge of main 8a66f0ba preserved the SBOM step/checker. Actual positive helper repeated after integration exits 0: check 20.46s, strict Clippy 7.37s. Earlier actual mutant/restore remains valid with unchanged NDI/application inputs. Workflow/minute/helper controls and merged installer-parity (12) / SBOM (11) controls pass; local verifiers completed, no placeholder directories remain. Hosted Linux and independent reviews remain separate pending gates.
