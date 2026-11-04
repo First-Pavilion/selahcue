@@ -1703,9 +1703,15 @@ jobs:
       - name: Generate CycloneDX SBOM (desktop workspace)
         working-directory: implementation/desktop
         run: cargo cyclonedx --format json
-      - name: Generate CycloneDX SBOM (operator shell)
+      - name: Generate CycloneDX SBOM (operator shell, shipped STT)
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo cyclonedx --format json
+        # The installer enables stt. Include all target trees so Linux generation
+        # also inventories the Windows installer dependencies (metadata, no build).
+        run: cargo cyclonedx --format json --features stt --target all
+      - name: Refuse an operator SBOM missing shipped STT dependencies
+        run: |
+          python3 scripts/check_operator_sbom.py --self-test
+          python3 scripts/check_operator_sbom.py implementation/desktop/crates/selahcue-operator/selahcue-operator.cdx.json
       - name: Upload SBOMs
         uses: actions/upload-artifact@v7
         with:
