@@ -71,7 +71,7 @@ jobs:
             libx11-dev libxkbcommon-dev libwayland-dev \
             libvulkan1 mesa-vulkan-drivers libdbus-1-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev cmake libasound2-dev
 
       - name: Record both versions
         id: versions
@@ -129,14 +129,18 @@ jobs:
           cd crates/selahcue-operator
           cargo fmt --check || fail=1
           cargo clippy --all-targets -- -D warnings || fail=1
-          # selahcue-stt is deliberately NOT linted here. It is the other out-of-workspace
-          # root, but NO gate lints it -- not CI, not `make ci` -- and it currently fails
-          # its own declared `unwrap_used` policy under -D warnings (3 errors in
-          # src/engine.rs on the pinned toolchain). Linting it here would make the canary
-          # permanently red for something no toolchain bump can fix, which would train
-          # people to ignore it. The canary's job is to predict what a bump does to the
-          # gates we ACTUALLY run. That selahcue-stt sits outside every gate is a real
-          # coverage hole -- tracked on 86ak5rjh7, not papered over here.
+          # Match every actual operator CI profile/feature set, including the shipped
+          # release+stt path. Parity is checked by scripts/check_rust_canary_coverage.py.
+          cargo clippy --features dev-keys --all-targets -- -D warnings || fail=1
+          cargo clippy --features openai-notes --all-targets -- -D warnings || fail=1
+          cargo clippy --features dev-keys,openai-notes --all-targets -- -D warnings || fail=1
+          cargo clippy --features dev-keys,openai-notes --release --all-targets -- -D warnings || fail=1
+          cargo clippy --features stt,cloud-stt --all-targets -- -D warnings || fail=1
+          cargo clippy --features stt --all-targets -- -D warnings || fail=1
+          cargo clippy --features stt --release --all-targets -- -D warnings || fail=1
+          # cloud-live remains opt-in/not shipped; --no-default-features would drop
+          # shipping encryption defaults. Neither replaces the actual CI/installer
+          # configurations above. See the central evidence disposition for source refs.
           exit $fail
 
       - name: Report

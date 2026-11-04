@@ -364,6 +364,8 @@ jobs:
           # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
           python3 scripts/check_rust_supply_ci.py --self-test
           python3 scripts/check_rust_supply_ci.py
+          python3 scripts/check_rust_canary_coverage.py --self-test
+          python3 scripts/check_rust_canary_coverage.py
       - name: Installer features match a CI-linted configuration
         run: make installer-feature-parity
       # Three additional launchers share the file/PID lifecycle. These are real
