@@ -41,10 +41,13 @@ import http.server
 import json
 import os
 import socketserver
+import subprocess
 import sys
 import threading
 from pathlib import Path
 from urllib.parse import urlparse
+
+from core_pages_headless import fit_figma_frame
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -125,7 +128,7 @@ MEASURE_JS = r"""
   const sec = (c) => q('section.' + c);
   const pad = (e) => ({ top: parseFloat(cs(e).paddingTop), bottom: parseFloat(cs(e).paddingBottom) });
   const font = (e) => ({ size: cs(e).fontSize, weight: cs(e).fontWeight, lh: cs(e).lineHeight, ls: cs(e).letterSpacing, color: cs(e).color });
-  const out = { vw: innerWidth, docOverflowX: document.documentElement.scrollWidth > innerWidth };
+  const out = { vw: innerWidth };
   const hero = sec('hero-section');
   out.heroPad = pad(hero);
   out.h1 = font(q('h1', hero));
@@ -232,12 +235,35 @@ TARGET_TOP_JS = r"""
 """
 
 
-def measure(page, width: int, height: int = 900):
+def measure(page, width: int, height: int = 900, *, figma_frame: bool = False):
     page.set_viewport_size({"width": width, "height": height})
     page.goto(BASE_URL + "/", wait_until="networkidle")
     page.evaluate("document.fonts && document.fonts.ready")
     page.wait_for_timeout(300)
+    if figma_frame:
+        if width != 1440:
+            raise ValueError("Only the 1440px Figma frame may be compensated")
+        fit_figma_frame(page)
     return page.evaluate(MEASURE_JS)
+
+
+def check_figma_widths(r: Run, m) -> None:
+    """The unchanged eight strict Figma width assertions, shared with the frame regression."""
+    f, rel, o, s, c = m["features"], m["rel"], m["outputs"], m["steps"], m["cta"]
+    r.near(m["consoleBox"]["x"], 150, 0.5, "console mock starts at x=150")
+    r.near(f["grid"]["w"], 1248, 0.5, "feature grid is 1248 wide (472:129): the shared container, 96px gutters")
+    r.near(f["container"]["w"], 1440, 0.5, "the container is the frame, 1440 (main.css .container)")
+    r.check(all(abs(c["w"] - 402.67) <= 0.7 for c in f["cards"]), f"feature cards are 402 wide (472:130): {[round(c['w'], 1) for c in f['cards']]}")
+    r.near(rel["box"]["w"], 1440, 0.5, "Reliability is a full-width band (474:124)")
+    r.near(o["win"]["w"], 706, 0.5, "output window is 706 wide (475:142)")
+    r.check(all(abs(c["w"] - 397.33) <= 0.7 for c in s["cards"]), f"step cards are 397.3 wide (476:130): {[round(c['w'], 1) for c in s['cards']]}")
+    r.near(c["card"]["w"], 1248, 0.5, "final CTA card is 1248 wide (479:125)")
+
+
+def check_no_horizontal_scroll(r: Run, page, width: int) -> None:
+    # innerWidth can include external scrollbar chrome; compare genuine layout extents.
+    overflow = page.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth")
+    r.check(not overflow, f"no horizontal scroll at {width}")
 
 
 BASE_URL = ""
@@ -288,9 +314,10 @@ def run_engine(p, engine_name: str) -> Run:
         page.on("pageerror", lambda e: page_errors.append(str(e)))
 
         # ------------------------------------------------------------------ 1440: the designed layout
-        m = measure(page, 1440)
+        m = measure(page, 1440, figma_frame=True)
+        check_figma_widths(r, m)
         r.eq(page.evaluate(INTER_LOADED_JS), [True, True, True], "Inter 400, 600 and 700 are loaded FontFace objects: the heights below are the heights of text in Inter, so a run without it would measure the wrong face")
-        r.check(not m["docOverflowX"], "no horizontal scroll at 1440")
+        check_no_horizontal_scroll(r, page, 1440)
         r.eq(m["styleAttrs"], 0, "no element in main carries a style attribute (a strict style-src would drop it)")
 
         # Figma 469:124: padding 96 above, 72 below; H1 60/64 Bold, 0 tracking; sub 19/29 muted; trust 13.5.
@@ -326,13 +353,10 @@ def run_engine(p, engine_name: str) -> Run:
         # 470:124: 1140 x 348 at x=150.
         r.near(m["consoleBox"]["w"], 1140, 0.5, "console mock is 1140 wide (470:124)")
         r.near(m["consoleBox"]["h"], 348, 0.5, "console mock is 348 tall (470:124)")
-        r.near(m["consoleBox"]["x"], 150, 0.5, "console mock starts at x=150")
         r.eq(m["consoleRole"], "img", "the console mock is one image for assistive technology")
 
         # 472:129: grid 1248 wide, cards 402 x 218, 20 apart, padding 88.
         f = m["features"]
-        r.near(f["grid"]["w"], 1248, 0.5, "feature grid is 1248 wide (472:129): the shared container, 96px gutters")
-        r.near(f["container"]["w"], 1440, 0.5, "the container is the frame, 1440 (main.css .container)")
         # Approved claims corrections a526a5ec and pilot copy 6f6a50bc lengthened the
         # second-row descriptions. The existing content-sized grid stretches that row
         # to 240px (one extra 22px line), while the first row stays at Figma's 218px.
@@ -340,7 +364,6 @@ def run_engine(p, engine_name: str) -> Run:
         heights = [218, 218, 218, 240, 240, 240]
         r.check(len(f["cards"]) == len(heights) and all(abs(c["h"] - h) <= 0.5 for c, h in zip(f["cards"], heights)), f"feature cards match approved content geometry {heights}: {[c['h'] for c in f['cards']]}")
         r.check(all(f["contentVisible"]), f"all feature titles/descriptions remain visible inside non-overflowing cards: {f['contentVisible']}")
-        r.check(all(abs(c["w"] - 402.67) <= 0.7 for c in f["cards"]), f"feature cards are 402 wide (472:130): {[round(c['w'], 1) for c in f['cards']]}")
         r.near(f["cards"][1]["x"] - (f["cards"][0]["x"] + f["cards"][0]["w"]), 20, 0.5, "feature cards are 20 apart (472:129)")
         r.eq(f["pad"], {"top": 88, "bottom": 88}, "Features padding 88 (472:124)")
         r.eq((m["featureTitle"]["size"], m["featureTitle"]["weight"]), ("18.5px", "600"), "feature title 18.5/600 (472:132)")
@@ -348,7 +371,6 @@ def run_engine(p, engine_name: str) -> Run:
 
         # 474:124: a full-width band, #171b22 with 1px edges, padding 90, cards on base, 28 apart.
         rel = m["rel"]
-        r.near(rel["box"]["w"], 1440, 0.5, "Reliability is a full-width band (474:124)")
         r.eq((rel["bg"], rel["bt"], rel["bb"], rel["bc"]), (SURFACE, "1px", "1px", BORDER), "Reliability band fill and 1px edge rules (474:124)")
         r.near(rel["box"]["h"], 651, 1, "Reliability section is 651 tall (474:124)")
         r.eq(rel["cardBg"], BASE, "pillar cards sit on the base ground (474:130)")
@@ -362,7 +384,6 @@ def run_engine(p, engine_name: str) -> Run:
         o = m["outputs"]
         r.eq(o["pad"], {"top": 90, "bottom": 90}, "Showcase padding 90 (475:124)")
         r.near(o["text"]["w"], 470, 0.5, "showcase text column is 470 wide (475:125)")
-        r.near(o["win"]["w"], 706, 0.5, "output window is 706 wide (475:142)")
         r.near(o["win"]["h"], 306, 0.5, "output window is 306 tall (475:142)")
         r.near(o["win"]["x"] - (o["text"]["x"] + o["text"]["w"]), 72, 0.5, "showcase columns are 72 apart (475:124)")
         r.near(o["text"]["h"], 336, 1, "showcase text column is 336 tall (475:125)")
@@ -374,7 +395,6 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq(s["id"], "how-it-works", "the steps section has id how-it-works (the nav link's target)")
         r.eq(s["pad"], {"top": 88, "bottom": 88}, "How it works padding 88 (476:124)")
         r.check(all(abs(c["h"] - 232) <= 0.5 for c in s["cards"]), f"step cards are 232 tall (476:130): {[c['h'] for c in s['cards']]}")
-        r.check(all(abs(c["w"] - 397.33) <= 0.7 for c in s["cards"]), f"step cards are 397.3 wide (476:130): {[round(c['w'], 1) for c in s['cards']]}")
         r.eq((s["markerBg"], s["markerR"]), (PRIMARY, "999px"), "step marker is a brand circle (476:131)")
         r.eq((s["marker"]["size"], s["marker"]["weight"]), ("21px", "700"), "step numeral 21/700 (476:132)")
         r.eq((s["title"]["size"], s["title"]["weight"]), ("21px", "600"), "step title 21/600 (476:133)")
@@ -398,7 +418,6 @@ def run_engine(p, engine_name: str) -> Run:
         # 479:125: card 1248 x 337, radius 24, the brand gradient, no shadow; H2 44/50; buttons 167x49 and 137x47.
         c = m["cta"]
         r.eq(c["pad"], {"top": 90, "bottom": 90}, "Final CTA padding 90 (479:124)")
-        r.near(c["card"]["w"], 1248, 0.5, "final CTA card is 1248 wide (479:125)")
         # Figma draws a two-line subtitle (337 tall). The copy that carried "Cancel anytime" and "go live this Sunday" is gone
         # (ClickUp 17tnw2b0x3h) and the honest sentence fits one 28px line, so the card is 28px shorter: 309.
         r.near(c["card"]["h"], 309, 1, "final CTA card is 309 tall: Figma's 337 less the second subtitle line (479:125)")
@@ -485,7 +504,7 @@ def run_engine(p, engine_name: str) -> Run:
         # ------------------------------------------------------------------ the other widths
         for w in (768, 375, 320):
             mm = measure(page, w)
-            r.check(not mm["docOverflowX"], f"no horizontal scroll at {w}")
+            check_no_horizontal_scroll(r, page, w)
             r.eq(mm["consoleRole"], "img", f"the console mock is still one image at {w}")
             hbm = {b["label"]: b for b in mm["heroButtons"]}
             r.check(hbm.get("View pilot downloads", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
@@ -535,6 +554,7 @@ def main() -> int:
 
     failed = 0
     total = 0
+    completed_engines = set()
     try:
         with sync_playwright() as p:
             for engine in engines:
@@ -548,9 +568,18 @@ def main() -> int:
                         print(f"!! {engine} SKIPPED -- not installed")
                         continue
                     raise
+                completed_engines.add(engine)
                 total += run.checks
                 failed += len(run.failures)
                 print(f"{engine}: {run.checks} checks, {len(run.failures)} failed")
+        if {"chromium", "webkit"} <= completed_engines:
+            print("Home frame/nominal-overflow regression (120s bound)", flush=True)
+            try:
+                result = subprocess.run([sys.executable, str(Path(__file__).with_name("home_frame_regression.py"))], timeout=120)
+                failed += int(result.returncode != 0)
+            except subprocess.TimeoutExpired:
+                print("FAIL: Home frame regression exceeded 120 seconds")
+                failed += 1
     finally:
         server.shutdown()
     print(json.dumps({"checks": total, "failed": failed}))
