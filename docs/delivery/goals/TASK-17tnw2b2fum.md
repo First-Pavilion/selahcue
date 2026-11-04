@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Existing visual/audit and page-browser gates run in local and hosted CI
 - Role: devops-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b2fum
 - Created: 2026-11-04
@@ -61,7 +61,7 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 |---|---|---|---|---|---|---|
 | C-001 | yes | Shared target runs existing visual/audit controls in make ci and CI | actual target and wiring control | controls pass, same target both callers, no new dependency | docs/delivery/evidence/17tnw2b2fum.md | PASS |
 | C-002 | yes | Either self-test failure stops actual make ci before later gates | scratch cap mutation and scratch audit self-test defect | nonzero make ci with expected failing control | evidence logs | PASS |
-| C-003 | yes | Existing browser suites run with required engines and reject focus defect | actual components/core/home/secondary scripts and current-core behavior mutation | positive suites pass; negative exits nonzero on focus | evidence logs and CI | PASS |
+| C-003 | yes | Existing browser suites run with required engines and reject a current behavior defect | actual components/core/home/secondary scripts and current-core behavior mutation | positive suites pass; enabled-download/Tab-order negative exits nonzero | evidence logs and CI | PASS |
 | C-004 | yes | Visual-only paths trigger cheap gate, unrelated docs skip | actual workflow trigger/wiring controls | scripts vp and visual docs positive, unrelated docs negative | evidence/control | PASS |
 | C-005 | yes | Shallow target passes and fake commit fails with full history | scratch depth1/full clones and actual audit mutation | shallow pass, fake cited commit refused | evidence logs | PASS |
 | C-006 | yes | Actual hosted no-browser gate completes under 10 seconds and docs explain coverage | CI measured target and docs inspection | elapsed less than 10s, required docs current | CI and docs | PENDING |
@@ -99,9 +99,16 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 - Hypothesis: stale selectors/copy rather than layout defects explain newly activated Home/Support failures; current core behavior must replace the removed-control negative.
 - Change or investigation: exact harness reconciliation, verified gutter tightening after 180 non-bare route/width positives, actual shallow/full clones and event-path negatives.
 - Verifier executed: Home/Secondary reruns, actual clone target runs, fake full-history audit commit, four event-path removal/reordering negatives.
-- Result: Home260checksPass; Secondary362checksPass; shallow/full targetsPass and fakecommit refused; both event exceptions have expected negative failures. Actual current-core disabled-button mutant exits1 with four expected disabled/Tab-order failures in two engines. Clean immutable WebKit responsive repeat remains pending.
+- Result: Home260checksPass; Secondary362checksPass; shallow/full targetsPass and fakecommit refused; both event exceptions have expected negative failures. Actual current-core disabled-button mutant exits1 with four expected disabled/Tab-order failures in two engines. Clean immutable WebKit responsive repeat passes2363checks/41routes/5widths exit0.
 - New evidence: task-owned reconciled, history and trigger logs; earlier WebKit sweep collided with a concurrent dist rebuild and is discarded as infrastructure, to be rerun on immutable snapshot.
 - Decision: iterate with current-core negative and stable-bundle WebKit verification; hosted timing/review gates remain pending.
+
+### Integrated verification and handoff
+
+- Normally merged main cfed597161fb3150db8d79d1bfeca58185e431ee, preserving SBOM/NDI gates; zero behind at handoff preparation.
+- Repeated shared target/wiring after browser verifiers ended: exit0, 5.965s locally. Actionlint, workflow118, minute checks, installer parity12, SBOM11 and NDI helper4 controls pass; diff clean.
+- Marketing src tree is identical to target; no layout/copy/product edits. All local verifiers finished, scratch mutant trees removed, clean immutable WebKit2363/0 exit0. Hosted timing and existing15min marketing job fit are not claimed yet.
+- Root owns independent reviews, hosted CI outcome, freshness and merge/QA.
 
 ## Risks and rollback
 
@@ -116,8 +123,8 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b2fum.md
-- Validator result: pending.
+- Validator result: structural validator passes; completion not claimed with hosted/review rows pending.
 - Independent verification result: pending.
-- Terminal state: ACTIVE.
-- Remaining failed or blocked criteria: all pending.
-- ClickUp final evidence comment: pending.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: C-006 hosted timing and C-007 full source CI/four reviews remain pending.
+- ClickUp final evidence comment: recorded at final branch/PR handoff.

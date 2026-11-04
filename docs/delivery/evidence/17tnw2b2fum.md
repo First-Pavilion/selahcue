@@ -22,12 +22,12 @@ The old AC's Pricing arrow-focus negative refers to a control removed under appr
 ## Executed positives
 
 - `make marketing-check`: type-check, lint, **1246 unit tests passed**, production build passed.
-- `python3 .github/scripts/check_visual_audit_ci.py --run`: actual shared target exit0, **8.068s locally**, visual controls pass, audit self-test **97 checks/0 FAIL**, actual audit/report **0 problems**. Local timing is not the required hosted measurement.
+- `python3 .github/scripts/check_visual_audit_ci.py --run`: actual shared target exit0, **8.068s locally**, visual self-test **206 checks/0 FAIL**, audit self-test **97 checks/0 FAIL**, actual audit/report **0 problems**. Local timing is not the required hosted measurement.
 - `npm run test:components`, required engines: **646 checks/0 failures** (324 Chromium,322 WebKit).
 - `npm run test:core`, required engines: **300 checks/0 failures**. Current no-pricing UI, geometry, disabled controls, contrast and five widths remain checked.
 - Reconciled `npm run test:home`: **260 checks/0 failures** (130 each engine, including new content-visibility check).
 - Reconciled `npm run test:secondary`: **362 checks/0 failures** (183 Chromium,179 WebKit).
-- Tightened responsive Chromium: **2363 checks,41 routes,5 widths,0 failed**, exit0. WebKit's initial run also completed2363/0 exit0 but had background requests race with a bundle rebuild; clean immutable-bundle repeat is recorded separately at handoff.
+- Tightened responsive Chromium: **2363 checks,41 routes,5 widths,0 failed**, exit0. WebKit's initial run also completed2363/0 exit0 but had background requests race with a bundle rebuild; clean immutable-bundle repeat also completes **2363 checks/41 routes/5 widths/0 failures**, exit0, with no request/build race.
 - Actionlint passes; workflow controls118 pass and normal check6 workflows/19 jobs; minute controls pass. No new browser/dependency/runner installation was added to CI.
 
 ## Executed negatives and history/path controls
@@ -44,3 +44,7 @@ Rejected diagnostic attempts stay distinct: first core-focus scratch lacked impo
 Required hosted target <10s, full source CI, four independent reviews, source freshness and merge/QA remain root-owned gates. No deployment, provider/account call, installer dispatch, package or actual visual capture. Existing browser tests use loopback scripts and their existing allowed Inter font requests. No live customer state is used.
 
 Task-owned raw logs: `/private/tmp/wave10-visual-*`, geometry `/private/tmp/wave10-gutter-probe.json`; cloned/mutated source trees are removed after checks. The core stale-focus run is retained in `wave10-visual-core-focus-negative.log` as an inapplicable surviving mutant; accepted replacement is `wave10-visual-core-disabled-negative.log`.
+
+## Integrated final receipt
+
+Normal merge of main `cfed597161fb3150db8d79d1bfeca58185e431ee` preserves SBOM and NDI gates. Final integrated shared target passes in **5.965s locally**; 20 wiring/path cases pass. Actionlint, 118 workflow controls, minute controls and current6-workflow/19-job check, installer parity12, SBOM11 and NDI helper4 controls pass. The marketing `src` tree is identical to target (`18f63db3c207a89a29c608b03caaaed9d479a8a6`), confirming no product/source/layout change; browser evidence remains applicable after the CI-only target advance. All local verifier processes completed and temporary mutated trees were removed. Hosted under-10s and marketing-within-existing15min results are pending; neither is inferred from local timing.
