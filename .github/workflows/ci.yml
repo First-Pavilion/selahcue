@@ -361,6 +361,9 @@ jobs:
           python3 .github/scripts/check_workflows.py
           # Offline controls only; installer builds remain manual/main-only.
           python3 scripts/test_linux_installer.py
+          # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
+          python3 scripts/check_rust_supply_ci.py --self-test
+          python3 scripts/check_rust_supply_ci.py
       - name: Installer features match a CI-linted configuration
         run: make installer-feature-parity
       # Three additional launchers share the file/PID lifecycle. These are real
@@ -1751,8 +1754,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # 86akmdkdn (performance review, Vera): this is a fast, filesystem-only check with no
       # cargo/network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather
       # than after, so a coverage-drift finding fails in seconds instead of after paying for
@@ -1771,12 +1779,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      # Invoke the installed binary directly: Cargo aliases cannot replace it.
       - name: Audit desktop workspace
         working-directory: implementation/desktop
-        run: cargo audit
+        run: cargo-audit audit
       - name: Audit operator shell
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo audit
+        run: cargo-audit audit
       # selahcue-stt is a third independent Cargo root (its own `[workspace]` table, its own
       # Cargo.lock — see selahcue-stt/Cargo.toml's own comment) with a real network dependency
       # (rustls via ureq's model-download feature). It shipped invisible to this job until
@@ -1786,7 +1795,7 @@ jobs:
       # above, close that gap.
       - name: Audit STT crate
         working-directory: implementation/desktop/crates/selahcue-stt
-        run: cargo audit
+        run: cargo-audit audit
 
   supply-chain:
     # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
@@ -1796,17 +1805,26 @@ jobs:
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-cyclonedx
       - name: License / source / bans policy (desktop workspace)
         working-directory: implementation/desktop
-        run: cargo deny check licenses sources bans
+        run: cargo-deny check licenses sources bans
       - name: License / source / bans policy (operator shell)
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo deny check licenses sources bans
+        run: cargo-deny check licenses sources bans
+      # Independent STT root has its own all-features policy; metadata only, no native build.
+      - name: License / source / bans policy (STT crate)
+        working-directory: implementation/desktop/crates/selahcue-stt
+        run: cargo-deny check licenses sources bans
       - name: Generate CycloneDX SBOM (desktop workspace)
         working-directory: implementation/desktop
         run: cargo cyclonedx --format json
