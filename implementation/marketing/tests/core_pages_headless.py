@@ -3,7 +3,7 @@
 
 `tests/corePages.test.ts` reads the source and server-renders the pages. This drives the REAL production
 bundle (`dist/`) in a real browser, because what the node test cannot see is what the Figma audit found
-wrong: where a box lands and how big it is, whether the arrow keys move the billing toggle and its focus,
+wrong: where a box lands and how big it is, whether the approved empty-pricing state has no billing UI,
 whether a disabled button can be tabbed to, whether text on the gradient band holds its contrast, and
 whether the page scrolls sideways. Every size below is a Figma value from
 `docs/design/visual-parity/marketing/figma-style/*.json`, quoted next to its check, with a tolerance that
@@ -13,8 +13,8 @@ Usage (from implementation/marketing):
     npm run build
     python3 tests/core_pages_headless.py [--engine chromium|webkit|both] [--shots DIR]
 
-Not wired into `npm test` or CI on purpose (it needs a browser and a build; wiring is the CI ticket
-17tnw2b2fum, as for `scripts/shared_components_headless.py`). Run it by hand, as the contract records.
+Kept separate from `npm test` because it needs a browser and a build. CI now runs `npm run test:core`
+with both required engines (17tnw2b2fum), alongside the other existing page/component suites.
 
 Needs Playwright and an engine, and the network for Inter (without it the text wraps differently and a few
 height checks may move; those are marked). If Playwright is missing this exits 0 with a LOUD skip unless

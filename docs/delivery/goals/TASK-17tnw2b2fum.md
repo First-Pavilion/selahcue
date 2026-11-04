@@ -61,15 +61,15 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 |---|---|---|---|---|---|---|
 | C-001 | yes | Shared target runs existing visual/audit controls in make ci and CI | actual target and wiring control | controls pass, same target both callers, no new dependency | docs/delivery/evidence/17tnw2b2fum.md | PASS |
 | C-002 | yes | Either self-test failure stops actual make ci before later gates | scratch cap mutation and scratch audit self-test defect | nonzero make ci with expected failing control | evidence logs | PASS |
-| C-003 | yes | Existing browser suites run with required engines and reject focus defect | actual components/core/home/secondary scripts and core focus mutation | positive suites pass; negative exits nonzero on focus | evidence logs and CI | PENDING |
+| C-003 | yes | Existing browser suites run with required engines and reject focus defect | actual components/core/home/secondary scripts and current-core behavior mutation | positive suites pass; negative exits nonzero on focus | evidence logs and CI | PASS |
 | C-004 | yes | Visual-only paths trigger cheap gate, unrelated docs skip | actual workflow trigger/wiring controls | scripts vp and visual docs positive, unrelated docs negative | evidence/control | PASS |
-| C-005 | yes | Shallow target passes and fake commit fails with full history | scratch depth1/full clones and actual audit mutation | shallow pass, fake cited commit refused | evidence logs | PENDING |
+| C-005 | yes | Shallow target passes and fake commit fails with full history | scratch depth1/full clones and actual audit mutation | shallow pass, fake cited commit refused | evidence logs | PASS |
 | C-006 | yes | Actual hosted no-browser gate completes under 10 seconds and docs explain coverage | CI measured target and docs inspection | elapsed less than 10s, required docs current | CI and docs | PENDING |
 | C-007 | yes | Frozen source passes four independent reviews and required CI | root-coordinated Cody Shadow Quinn Vera and hosted jobs | four Pass verdicts and actual CI success | PR/root reports | PENDING |
 
 ## Verification plan
 
-- Focused verification: shared target, actual make ci negative controls, core browser focus mutant, event-path fixtures, shallow/full-history audit cases.
+- Focused verification: shared target, actual make ci negative controls, core browser current-behavior mutant, event-path fixtures, shallow/full-history audit cases.
 - Broader regression verification: existing browser suites, actionlint/workflow/minute/installer/SBOM controls, required docs.
 - Independent verifier: root dispatches Cody, Shadow, Quinn and Vera.
 - Required environment: local Python/Pillow, Node22+, pinned Playwright Chromium/WebKit; existing hosted Linux jobs. Fonts may use existing allowed Google Inter requests in browser tests only.
@@ -85,6 +85,23 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 - Result: no-browser target passes; both real scratch make ci negatives exit2 at their expected failing control before later installer/Rust gates. Normal marketing-check passes 1246 tests/type/lint/build. Browser suites and layout probe remain running.
 - New evidence: task-owned logs under /private/tmp/wave10-visual-*; components 646 checks pass. Initial concurrent layout probe collided with a suite rebuilding dist and was discarded; rerun uses immutable dist snapshot.
 - Decision: iterate with clone/history and browser/mutation evidence.
+
+### Verifier correction approved before iteration 2
+
+- The historical arrow-key focus criterion refers to the removed Pricing billing control. Current core script explicitly asserts no radiogroup under approved 17tnw2b0x3h and has 300 checks, not the old 396. Actual wrong-index SegmentedToggle focus mutation survived core (exit0) and is not accepted as a negative.
+- Root approved using a real current core disabled-download/tab-order/heading behavior mutation instead, retaining all 300 core assertions and the no-billing-UI contract. Existing shared-components gallery does not render SegmentedToggle or exercise arrow keys, so no separate focus-negative is claimed there.
+- The first focus scratch build omitted its imported pilot notice document and failed infrastructure before any test; it is discarded, not mutation evidence. A correctly assembled scratch root builds and demonstrates the inapplicable mutation survival above.
+- Root expanded ownership only for stale Home/Support harness repair: approved pilot CTA/trust literals, exact six-card [218,218,218,240,240,240] geometry with provenance/content-visibility checks, and Support search-region status scoping. No product source/layout/copy changes.
+
+### Iteration 2
+
+- Target criterion: C-003 and C-005.
+- Hypothesis: stale selectors/copy rather than layout defects explain newly activated Home/Support failures; current core behavior must replace the removed-control negative.
+- Change or investigation: exact harness reconciliation, verified gutter tightening after 180 non-bare route/width positives, actual shallow/full clones and event-path negatives.
+- Verifier executed: Home/Secondary reruns, actual clone target runs, fake full-history audit commit, four event-path removal/reordering negatives.
+- Result: Home260checksPass; Secondary362checksPass; shallow/full targetsPass and fakecommit refused; both event exceptions have expected negative failures. Actual current-core disabled-button mutant exits1 with four expected disabled/Tab-order failures in two engines. Clean immutable WebKit responsive repeat remains pending.
+- New evidence: task-owned reconciled, history and trigger logs; earlier WebKit sweep collided with a concurrent dist rebuild and is discarded as infrastructure, to be rerun on immutable snapshot.
+- Decision: iterate with current-core negative and stable-bundle WebKit verification; hosted timing/review gates remain pending.
 
 ## Risks and rollback
 

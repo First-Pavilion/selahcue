@@ -141,6 +141,16 @@ MEASURE_JS = r"""
   out.consoleBox = box(q('.console-mockup', hero));
   out.consoleRole = q('.console-mockup', hero).getAttribute('role');
   out.features = { container: box(q('.container', sec('features-section'))), grid: box(q('.features-grid')), cards: qa('.feature-card').map((c) => box(c)), pad: pad(sec('features-section')) };
+  out.features.contentVisible = qa('.feature-card').map((c) => {
+    const card = c.getBoundingClientRect();
+    return c.scrollWidth <= c.clientWidth && c.scrollHeight <= c.clientHeight &&
+      qa('.card-title, .card-desc', c).every((e) => {
+        const r = e.getBoundingClientRect(), style = cs(e);
+        return style.display !== 'none' && style.visibility !== 'hidden' && +style.opacity > 0 &&
+          r.width > 0 && r.height > 0 && r.left >= card.left && r.right <= card.right &&
+          r.top >= card.top && r.bottom <= card.bottom;
+      });
+  });
   out.featureTitle = font(q('.feature-card .card-title'));
   out.featureDesc = font(q('.feature-card .card-desc'));
   const rel = sec('reliability-section');
@@ -294,7 +304,7 @@ def run_engine(p, engine_name: str) -> Run:
         r.near(m["eyebrow"]["w"], 272, 3, "hero eyebrow pill is 272px wide (469:125)")
         # 469:131 is 49 tall (solid), 469:133 is 47 (quiet); the row is centred so neither is stretched.
         hb = {b["label"]: b for b in m["heroButtons"]}
-        r.eq(hb.get("Download free", {}).get("h"), 49, "hero Download free is 49px (469:131)")
+        r.eq(hb.get("View pilot downloads", {}).get("h"), 49, "hero View pilot downloads is 49px (469:131)")
         r.eq(hb.get("Watch 2-min demo", {}).get("h"), 47, "hero Watch 2-min demo is 47px, not stretched to 49 (469:133; PR 172 review)")
         r.eq(hb.get("Watch 2-min demo", {}).get("tag"), "BUTTON", "the demo control is a button")
         r.eq(hb.get("Watch 2-min demo", {}).get("disabled"), True, "the demo button is disabled (nothing to play yet)")
@@ -323,7 +333,13 @@ def run_engine(p, engine_name: str) -> Run:
         f = m["features"]
         r.near(f["grid"]["w"], 1248, 0.5, "feature grid is 1248 wide (472:129): the shared container, 96px gutters")
         r.near(f["container"]["w"], 1440, 0.5, "the container is the frame, 1440 (main.css .container)")
-        r.check(all(abs(c["h"] - 218) <= 0.5 for c in f["cards"]), f"feature cards are 218 tall (472:130): {[c['h'] for c in f['cards']]}")
+        # Approved claims corrections a526a5ec and pilot copy 6f6a50bc lengthened the
+        # second-row descriptions. The existing content-sized grid stretches that row
+        # to 240px (one extra 22px line), while the first row stays at Figma's 218px.
+        # Keep an exact six-card geometry oracle, not an unbounded minimum/tolerance.
+        heights = [218, 218, 218, 240, 240, 240]
+        r.check(len(f["cards"]) == len(heights) and all(abs(c["h"] - h) <= 0.5 for c, h in zip(f["cards"], heights)), f"feature cards match approved content geometry {heights}: {[c['h'] for c in f['cards']]}")
+        r.check(all(f["contentVisible"]), f"all feature titles/descriptions remain visible inside non-overflowing cards: {f['contentVisible']}")
         r.check(all(abs(c["w"] - 402.67) <= 0.7 for c in f["cards"]), f"feature cards are 402 wide (472:130): {[round(c['w'], 1) for c in f['cards']]}")
         r.near(f["cards"][1]["x"] - (f["cards"][0]["x"] + f["cards"][0]["w"]), 20, 0.5, "feature cards are 20 apart (472:129)")
         r.eq(f["pad"], {"top": 88, "bottom": 88}, "Features padding 88 (472:124)")
@@ -391,7 +407,7 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq((c["h2"]["size"], c["h2"]["lh"], c["h2"]["weight"]), ("44px", "50px", "700"), "final CTA title 44/50 Bold (479:127)")
         r.eq(c["sub"]["size"], "19px", "final CTA sub 19px (479:130)")
         bl = {b["label"]: b for b in c["buttons"]}
-        r.eq(bl.get("Download free", {}).get("h"), 49, "CTA Download free is 49px (479:129)")
+        r.eq(bl.get("View pilot downloads", {}).get("h"), 49, "CTA View pilot downloads is 49px (479:129)")
         r.eq(bl.get("See pricing", {}).get("h"), 47, "CTA See pricing is 47px (479:131)")
 
         # Semantics: one h1, no skipped level, the mocks are named images with no heading or tab stop inside.
@@ -422,13 +438,13 @@ def run_engine(p, engine_name: str) -> Run:
         in_main = [s for s in seen if s["inMain"]]
         labels = [s["label"] for s in in_main]
         want = [
-            "Download free",  # hero (the disabled demo button is skipped)
+            "View pilot downloads",  # hero (the disabled demo button is skipped)
             "Do I need an internet connection?",
             "Which platforms are supported?",
             "Can I use my own slides and designs?",
             "What is NDI, and do I need it?",
             "How does billing work?",
-            "Download free",  # the final band
+            "View pilot downloads",  # the final band
             "See pricing",
         ]
         r.eq(labels, [w[:40] for w in want], "Tab order through the page body")
@@ -472,14 +488,14 @@ def run_engine(p, engine_name: str) -> Run:
             r.check(not mm["docOverflowX"], f"no horizontal scroll at {w}")
             r.eq(mm["consoleRole"], "img", f"the console mock is still one image at {w}")
             hbm = {b["label"]: b for b in mm["heroButtons"]}
-            r.check(hbm.get("Download free", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
+            r.check(hbm.get("View pilot downloads", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
             dnm = mm["demoNote"]
             r.check(dnm is not None and dnm["y"] >= dnm["btn"]["y"] + dnm["btn"]["h"] and dnm["x"] >= 0 and dnm["x"] + dnm["w"] <= mm["vw"] and dnm["y"] + dnm["h"] <= dnm["trust"]["y"], f"the demo note is on screen and clear of the trust line at {w}: {dnm}")
             lv = [h["level"] for h in mm["headings"]]
             r.check(all(b <= a + 1 for a, b in zip(lv, lv[1:])), f"no heading level is skipped at {w}")
-            # The trust line breaks BETWEEN its three items, never inside one ("Free to start · Works fully / offline ...").
+            # Approved pilot copy (6f6a50bc): the trust line still breaks BETWEEN its three exact items, never inside one.
             trust = page.evaluate(LINES_JS, ".hero-trust")
-            items = ["Free to start", "Works fully offline", "Windows, macOS & mobile control"]
+            items = ["Pilot registration", "Core live controls work offline", "Windows, Ubuntu & macOS"]
             r.check(trust is not None and all(any(item in line for line in trust) for item in items), f"no item of the hero trust line is split across lines at {w}: {trust}")
             r.check(page.evaluate("[...document.querySelectorAll('.outputs-title br, .hero-title br, .section-title br')].every((b) => getComputedStyle(b).display === 'none') || innerWidth >= 768"), f"the designed title breaks are off on a phone ({w})")
         r.eq(page_errors, [], "no page error in the whole run")
