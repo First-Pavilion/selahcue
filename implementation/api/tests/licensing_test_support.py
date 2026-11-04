@@ -20,6 +20,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from django.utils import timezone
+from django.db.models import Max
 
 from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.catalogue.models import GrantDimension, Plan, PlanGrant
@@ -54,6 +55,7 @@ def seat_plan(code: str, device_instances, *, other_grants: dict[str, str] | Non
     """
     plan = Plan.objects.create(
         code=code,
+        rank=(Plan.objects.aggregate(Max("rank"))["rank__max"] or 0) + 1,
         display_name=f"Test plan {code}",
         is_fallback=False,
         sort_order=900,

@@ -1,7 +1,8 @@
 #!/bin/sh
 # Run `cargo audit` (RustSec) against EVERY Cargo root in this repository and fail if any of them
 # carries a vulnerability. This is the local twin of the `dependency audit (RustSec)` job in
-# .github/workflows/ci.yml, which runs plain `cargo audit` in each root.
+# .github/workflows/ci.yml, which invokes cargo-audit directly in each root. This local wrapper
+# retains its explicit alias identity/shadow-warning refusal; both use the same advisory defaults.
 #
 # Why it exists (17tnw2b9ax3): hosted CI was billing-blocked, so that job never ran, and `main`
 # sat with 12, 12 and 6 RustSec vulnerabilities in the three roots until a dependency review

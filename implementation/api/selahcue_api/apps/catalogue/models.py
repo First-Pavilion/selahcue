@@ -48,10 +48,14 @@ from __future__ import annotations
 
 import inspect
 
+from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
+from django.utils import timezone
 from django.db import models
 
-from selahcue_api.graphql.context import require_reason
+from selahcue_api.graphql.context import require_reason, has_control_characters
+from selahcue_api.graphql.errors import SafeAPIError
+from selahcue_api.apps.catalogue.currency_reference import CURRENT_MINOR_UNITS, KNOWN_CURRENCY_CODES
 
 # Dimension keys travel into a SIGNED payload, and a signed manifest is cached offline for
 # the licence's lifetime — so once a key ships it is effectively permanent. The field is
@@ -189,6 +193,8 @@ class Plan(models.Model):
     # The plan used when a licence resolves to nothing else. Exactly one row may carry it.
     is_fallback = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
+    # Entitlement order is independent of display sorting; assigned only by migration.
+    rank = models.PositiveIntegerField(editable=False)
     # Who last changed this row and why — see `accountability_constraints`. A plan is what
     # a licence is sold on, and `is_fallback` in particular decides what every unassigned
     # licence in the system grants, so a row appearing with nobody's name against it is
@@ -207,6 +213,8 @@ class Plan(models.Model):
                 condition=models.Q(is_fallback=True),
                 name="uniq_catalogue_fallback_plan",
             ),
+            models.UniqueConstraint(fields=["rank"], name="uniq_catalogue_plan_rank"),
+            models.CheckConstraint(condition=models.Q(rank__gte=1), name="catalogue_plan_rank_positive"),
             *accountability_constraints("catalogue_plan", actor_field="changed_by_actor_id"),
         ]
         indexes = [
@@ -216,6 +224,95 @@ class Plan(models.Model):
 
     def __str__(self) -> str:
         return self.display_name
+
+
+MAX_PRICE_AMOUNT_MINOR = 2**63 - 1
+
+
+class PriceInterval(models.TextChoices):
+    WEEK = "WEEK", "Weekly"
+    MONTH = "MONTH", "Monthly"
+    YEAR = "YEAR", "Yearly"
+
+
+class ImmutablePriceQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValidationError("Price history is append-only; insert a new effective version.")
+
+    def delete(self):
+        raise ValidationError("Price history cannot be deleted.")
+
+    def bulk_update(self, *args, **kwargs):
+        raise ValidationError("Price history is append-only.")
+
+    def bulk_create(self, *args, **kwargs):
+        raise ValidationError("Create accountable price versions through the audited service.")
+
+
+class PlanPrice(models.Model):
+    """Append-only effective versions, never a price embedded in signed grants.
+
+    No row and nullable amount both mean unpriced; zero is a configured zero price.
+    A row's effective end is derived from its successor, never written into old history.
+    """
+    plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="prices")
+    currency = models.CharField(max_length=3)
+    interval = models.CharField(max_length=8, choices=PriceInterval.choices)
+    amount_minor = models.BigIntegerField(null=True, blank=True)
+    effective_from = models.DateTimeField()
+    changed_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    objects = ImmutablePriceQuerySet.as_manager()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plan", "currency", "interval", "effective_from"], name="uniq_plan_price_effective"),
+            models.CheckConstraint(condition=models.Q(amount_minor__isnull=True) | models.Q(amount_minor__gte=0), name="plan_price_amount_nonnegative"),
+            models.CheckConstraint(condition=models.Q(interval__in=["WEEK", "MONTH", "YEAR"]), name="plan_price_interval_valid"),
+            models.CheckConstraint(condition=models.Q(currency__in=KNOWN_CURRENCY_CODES), name="plan_price_currency_known"),
+            *accountability_constraints("plan_price", actor_field="changed_by_actor_id"),
+        ]
+        indexes = [models.Index(fields=["plan", "currency", "interval", "effective_from"], name="plan_price_lookup_idx")]
+
+    def full_clean(self, *args, **kwargs):
+        # BEFORE Django coerces an integer field: bool/fraction/string are not minor units.
+        if self.amount_minor is not None and (type(self.amount_minor) is not int or not 0 <= self.amount_minor <= MAX_PRICE_AMOUNT_MINOR):
+            raise ValidationError({"amount_minor": "Use a bounded whole nonnegative minor-unit integer or null."})
+        if not isinstance(self.currency, str) or self.currency not in CURRENT_MINOR_UNITS or CURRENT_MINOR_UNITS[self.currency] is None:
+            raise ValidationError({"currency": "Use a current ISO4217 currency with a known minor-unit exponent."})
+        if not isinstance(self.changed_by_actor_id, str) or not self.changed_by_actor_id.strip() or has_control_characters(self.changed_by_actor_id):
+            raise ValidationError({"changed_by_actor_id": "An accountable actor is required."})
+        if not isinstance(self.reason, str):
+            raise ValidationError({"reason": "An accountable reason is required."})
+        try:
+            self.reason = require_reason(self.reason)
+        except SafeAPIError as error:
+            raise ValidationError({"reason": "An accountable reason is required."}) from error
+        if self.effective_from is None or not hasattr(self.effective_from, "tzinfo") or timezone.is_naive(self.effective_from):
+            raise ValidationError({"effective_from": "Use an aware effective timestamp."})
+        return super().full_clean(*args, **kwargs)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Price history is append-only.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Price history cannot be deleted.")
+
+    @property
+    def minor_unit_exponent(self):
+        # Historical rows stay readable even if a reference update marks currency inactive.
+        return CURRENT_MINOR_UNITS.get(self.currency)
+
+    @property
+    def effective_until(self):
+        if "_effective_until" in self.__dict__:
+            return self.__dict__["_effective_until"]
+        return (type(self).objects.filter(plan_id=self.plan_id, currency=self.currency, interval=self.interval,
+                effective_from__gt=self.effective_from).order_by("effective_from").values_list("effective_from", flat=True).first())
 
 
 class GrantDimension(models.Model):

@@ -109,7 +109,7 @@ _JOB_KEY_RE = re.compile(r"^  [A-Za-z0-9_-]+:\s*$", re.MULTILINE)
 # in this file's style. Used to split a job's `steps:` body into individual step blocks.
 _STEP_START_RE = re.compile(r"^      - ", re.MULTILINE)
 
-_RUN_CARGO_AUDIT_RE = re.compile(r"run:\s*cargo audit\b")
+_RUN_CARGO_AUDIT_RE = re.compile(r"run:\s*(?:cargo audit|cargo-audit audit)\b")
 _WORKING_DIR_RE = re.compile(r"working-directory:\s*(\S+)")
 
 # Tolerant of inner spacing (`[ workspace ]`), a trailing inline comment, and the
@@ -278,8 +278,8 @@ def audit_job_body(ci_workflow_text: str) -> str:
 
 def audited_roots(job_body: str) -> set[str]:
     """Return the `working-directory` of every step in the job body whose `run:` invokes
-    `cargo audit`. A `cargo audit` step with no `working-directory` is a parse error, not a
-    silent pass -- this repo's convention is always to set one explicitly for these steps, and an
+    `cargo audit` or direct `cargo-audit audit`. A matching step with no
+    `working-directory` is a parse error, not a silent pass -- this repo's convention is always to set one explicitly for these steps, and an
     implicit repo-root audit would silently skip whichever nested Cargo.lock it was meant to
     cover."""
     job_body = _without_full_line_comments(job_body)
@@ -610,6 +610,13 @@ def self_test() -> int:
     problems = check(required, stale_step_ci)
     assert len(problems) == 1, f"expected exactly one problem, got: {problems}"
     assert "selahcue-retired" in problems[0], problems
+
+    # CI invokes the binary directly to bypass Cargo aliases (17tnw2b9dbf).
+    # Both command spellings retain the independently discovered root comparison.
+    assert check(required, passing_ci.replace("run: cargo audit", "run: cargo-audit audit")) == []
+    direct_missing = check(required, missing_step_ci.replace("run: cargo audit", "run: cargo-audit audit"))
+    assert len(direct_missing) == 1 and "selahcue-stt" in direct_missing[0]
+    assert check(required, disabled_via_comment_ci.replace("run: cargo audit", "run: cargo-audit audit"))
 
     print("check_dependency_audit_coverage: self-test passed")
     return 0

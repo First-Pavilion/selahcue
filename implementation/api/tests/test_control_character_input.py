@@ -250,7 +250,7 @@ def test_a_control_character_is_refused_when_assigning_a_plan(caplog):
                 SetLicensePlanAssignmentData(
                     idempotency_key="control-assign-nul",
                     license_key_id=str(key.id),
-                    plan_code="PLATINUM" + NUL,
+                    plan_code="CORE" + NUL,
                     reason="An adequate reason for this.",
                 ),
             )
@@ -303,11 +303,11 @@ def test_the_catalogue_writers_still_work_on_clean_input(caplog):
         SetLicensePlanAssignmentData(
             idempotency_key="control-assign-clean",
             license_key_id=str(key.id),
-            plan_code="PLATINUM",
+            plan_code="CORE",
             reason="An adequate reason for this.",
         ),
     )
-    assert assigned.assignment.plan.code == "PLATINUM"
+    assert assigned.assignment.plan.code == "CORE"
 
     granted = set_plan_grant(
         _staff(StaffPermission.GRANT_ENTITLEMENT),
