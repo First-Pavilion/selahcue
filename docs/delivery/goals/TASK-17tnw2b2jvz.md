@@ -10,7 +10,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvz
 - Created: 2026-11-04
 - Updated: 2026-11-04
-- Maximum iterations: 7
+- Maximum iterations: 8
 - Independent verification required: yes
 
 ## Objective
@@ -58,7 +58,7 @@ Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing cur
 | C-004 | yes | Existing marketing gate passes on the actual source | make marketing-check | type-check/lint/full node suite/build exit0 | /private/tmp/17tnw2b2jvz-it7-marketing-check.log:1256passed0fail0skip plus lint/type/build | PASS |
 | C-005 | yes | Public backend dependency and required actual integration acceptance are satisfied | root verifies merged366, runtime/admin E2E and frontend real-stack behavior | current deployed-like API contract and no outstanding mandatory prerequisite | root dependency evidence | BLOCKED |
 | C-006 | yes | Cody, Shadow, Quinn, Vera and actual current CI pass before merge/QA | root independent reviews/CI/main/ClickUp readback | four passes, CI success, verified main before QA | root receipts | PENDING |
-| C-007 | yes | The legal harness supplies only exact public catalogue GET JSON, waits readiness and still rejects real unrelated failed requests | actual legal419check gate and browser negative control through the existing guard |419pass; inserted unrelatedrequest fails the unchanged navigation console assertion | docs/delivery/evidence/17tnw2b2jvz.md | PENDING |
+| C-007 | yes | The legal harness supplies only exact public catalogue GET JSON, waits readiness and still rejects real unrelated failed requests | actual legal419check gate and browser negative control through the existing guard |419pass; inserted unrelatedrequest fails the unchanged navigation console assertion | actual1faCI41893172544:418pass1fail419;iteration8-diagnostic.json scoped7passdoesnotexplainfailure | FAIL |
 | C-008 | yes | Matrix navigation follows visible native controls rather than nominal viewport width | actual WebKit768 old-helper negative/current-helper positive and one full matrix | oldnominalhelper fails hidden desktop link; correctedvisiblehelper passes nativeclicks, matrix complete bothengines | iteration7-navigation/matrix JSON and retained negative logs | PASS |
 
 ## Verification plan
@@ -189,3 +189,21 @@ Deterministic pre-fix response probe reproduced exact catalogue GET200/text-html
 - Normal main364 merge succeeded and actual364/8bf ancestry is verified. Its incoming delta from reviewed d31 contains seven CSP Goal/evidence files and exactly two frontend verification files: changed security_headers_headless.py and added security_headers_wait_regression.py. All compiledsrc/public/package/lock/config, matrix/tests/runtime imports and localnavigation driver remain byte-exact d31. The matrix import closure does not import either changed/new CSP verification module.
 - Current selectedinput map is239entries, explicitly one changed old CSP script plus one added CSP script versus the historic238 map, zero removals. Do NOT claim old238 map is all current. All117 actual dist files remain byte-exact the artifact consumed by the successful scoped39/final476check12scenario tests. Retain those scoped observed results only within this proved identity; no build, fullmatrix, fullresponsive or wholelegal rerun is performed in this phase.
 - Freshness map/imports/hash proof: docs/delivery/evidence/17tnw2b2jvz/publication-retention.json. Root owns final four affected scope/freshness disposition and actual hosted CI on the newly published source, which must close broader C003/C007. C005 actualbackend/admin E2E remainsBLOCKED, never substituted with synthetic fixtures or servicewrites. No merge/QA clearance is granted by publication.
+
+
+### Iteration8 — explicit bounded current legal-CI remediation
+- Target criterion: C007/current actuallegalCI; preserve C005 genuinebackend/adminacceptance blocker.
+- Hypothesis: UNKNOWN. Actualhead1fa legalrun41893172544 fails privacy navigation console clean on ownedcatalogue ERR_ABORTED (418pass1fail419checks), not CSPeval. First locate exactroute/request lifecycle/order beforecode.
+- Change or investigation: coordinator explicitly extends SAMEcardsGoalmax7→8 for one focusedreadonly Privacy navigation diagnostic on existing1fa compiledbundle. No broad419retry before causal evidence; no production abort/logging/datafixture policy/deadline/CSS/guard weakening. If missingharnessreadiness/fixture condition is established, narrowly fix testharness/actualguardregression only, prove oldnegative/fixedpositive and realUNRELATEDabort rejection through originalguard, then ONE full419set. Stop on unknown/newfailure/max8; no silent9.
+- Verifier executed: pending diagnostic, then only conditionally the authorized proof/fullset.
+- Result: pending. Originalpublic1fa legalfailure retained in /private/tmp/367-1fa-legal-failed.log; generalCI41893172556 outcome separatelyrootowned.
+- New evidence: pending iteration8 rawtimeline/proofs/currenthashes. Rootowns normalcurrentmain7f6dbcbb4782854cbb0fea14a3bb5a9ffcf7fcd0 integration/four explicitMANUALreviewcycle3 (automaticcap2notreset), actualCI and finalstatus.
+- Decision: stop ifunknown; otherwise boundednarrowremediationwithin8. No fullresponsive/matrix rerun or backendauth expansion.
+
+
+## Iteration8 diagnostic outcome — UNKNOWN, stopped without a guessed fix
+- The single focused originalPrivacy navigation diagnostic completedexit0 on the unchanged1fa compiledbundle, actualChrome156.0.8078.80. Its seven originalnavigationchecks pass. Mainnavigationcontext contains exactlyonecatalogueGET at final/pricing which completes200/requestfinished; separateobserverbaselinecontext has its own completedGET. Neithercontext records signalabort/fetchrejection/requestfailed. Originalfixture/console/pageerror/requestfailedguards/waits/clicks remained intact; instrumentation only observed lifecycle and captured finalstate.
+- This DOESNOT reproduce or explain actualhostedlegal41893172544's genuineprivacy ERR_ABORTED failure418pass1fail419. No missingfixture/readinesscondition is established. C007 FAIL on actualsourceCI; local7pass is not full419 or currentCI success. C005 genuinebackend/adminacceptance remainsBLOCKED. Root separately verified exact1faGENERAL41893172556SUCCESS; that is evidence for1fa, not a futureheadCIpass.
+- Following the explicit stopifunknown boundary, no production/harness/guard correction, old/fixedremediationproof, unrelatedabort rerun, full419, fullmatrix/responsive rerun, CIrerun or sourcepush was attempted. There is no automaticiteration9. Original1–7/private/rejection/publication/failurehistory remains unchanged.
+- Normalmain7f6dbcbb4782854cbb0fea14a3bb5a9ffcf7fcd0 integration succeeded locally. Incomingfivefiles are installerCIchecker/workflows/deliverydocs only; marketing subtree unchanged. All239currentselectedfrontendinputs and117bundlefiles remain byte-identical to publication-retention.json. Diagnostic rawpy/json/log remains /private/tmp/367-it8-legal-lifecycle-diagnostic.*.
+- Terminalstate BLOCKED unknownhostedfailurecause. Smallestnextunblocker: targeted evidence from an actualfailinghosted lifecycle (route/frame/requestfinished/requestfailed/signal-order), under a separately explicit boundeddiagnostic disposition; do not add unproved waits or suppress aborted-request guards. Root owns furtherdisposition/manualreviewcycle3/currentCI/status. The publicPR367 remains1fa; this localdiagnosis-only commit must not be pushed merely to rerun unchangedruntimeCI.
