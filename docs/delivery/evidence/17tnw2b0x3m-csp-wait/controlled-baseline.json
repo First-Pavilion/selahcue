@@ -1,0 +1,14 @@
+[
+  {
+    "engine": "chromium",
+    "old_wait": "error",
+    "unsafe_eval": true,
+    "message": "Page.wait_for_function: EvalError: Evaluating a string as JavaScript violates the following Content Security Policy directive because 'unsafe-eval' is not an allowed source of script: script-src 'self'\"."
+  },
+  {
+    "engine": "webkit",
+    "old_wait": "error",
+    "unsafe_eval": true,
+    "message": "Page.wait_for_function: EvalError: Refused to evaluate a string as JavaScript because 'unsafe-eval' or 'trusted-types-eval' is not an allowed source of script in the following Content Security Policy directive: \"script-src 'self'\"."
+  }
+]
