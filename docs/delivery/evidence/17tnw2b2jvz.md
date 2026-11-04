@@ -1,9 +1,9 @@
 # API-driven Home and Pricing — 17tnw2b2jvz
 
 Task: https://app.clickup.com/t/17tnw2b2jvz. Branch: `codex/17tnw2b2jvz-api-cards`.
-Base: reviewed main `85f1fbe7ef9cd12f91e8b698dd8b1db6a64770a7`, normally fast-forwarded from initial `013a84bc`. Primary checkout and its user-owned mobile lock were untouched. Root owns independent review, target freshness, hosted CI, merge and verified QA status.
+Initial source base: reviewed main `85f1fbe7ef9cd12f91e8b698dd8b1db6a64770a7`, normally fast-forwarded from initial `013a84bc`. Current target `2f4dcc25dfe401ceff7cabb7eafb584e9d2eb194` was normally merged, preserving its reviewed App.vue/footer and responsive resolved-child wait. Primary checkout and its user-owned mobile lock were untouched. Root owns independent review, target freshness, hosted CI, merge and verified QA status.
 
-**BLOCKED for full acceptance.** The full WebKit responsive gate did not finish: final serialized attempt exited2 on375px `/signin` with the unchanged20second `Page.goto` deadline. Earlier concurrent attempt exited2 on320px `/admin/licenses`. Exact cause is unknown; neither is a passing full suite or proof of a product defect. Goal maximum4 is exhausted; no further retry occurred. Public endpoint PR366 and its shipping HTTP/admin-mutation E2E requirements are also not complete. This frontend does not substitute fixture tests for backend integration and must not merge or move to QA yet.
+**BLOCKED for full acceptance.** Current-target legal fixture remediation passes419/419 and a real unrelated aborted request still fails its unchanged guard. Current make1256/Home262/core304/Chromium2379 gates pass. The current catalogue matrix completed only7scenarios before a hidden desktop-link click at native WebKit768; full WebKit responsive separately exited2 on375px `/affiliates/payouts` with the unchanged20second navigation deadline (cause UNKNOWN). A visible-control helper attempt then failed its focused sheet-link positive and was explicitly rolled back, without a full matrix retry. Historical476/12 is not presented as a current whole-matrix pass after the relevant footer target change. Backend PR366/shipping HTTP/admin E2E also remains blocked. Maximum6 is exhausted; no merge/QA/completion follows. Root owns four independent reviews and actual current hosted CI.
 
 ## Resulting behavior
 
@@ -15,7 +15,7 @@ Existing `PricingCard` is reused through an optional price slot; existing caller
 
 Names and commercial values are not typed into Home/Pricing or their copy ledgers. Exact browser card-copy ledgers derive every displayed line from supplied API data plus reviewed static labels, using independent Python integer formatting. A real planted unsupported claim must be rejected. Existing static claim bans/controls remain. The obsolete dormant literal Pro-first assertion is replaced with exact API visual order, using actual card rectangles; no popularity flag exists in the wire. The old one-column tablet geometry assertion remains active. Home's obsolete unpublished FAQ answer now directs visitors to the current cards rather than claiming backend publication state.
 
-## Completed evidence
+## Historical initial-source evidence (fe07)
 
 All listed completed commands finished and their processes were reaped. Local synthetic HTTP fixtures intentionally use different names/allowances from the seed catalogue and contain no customer/account/provider data.
 
@@ -55,3 +55,28 @@ Complete local logs are retained under `/private/tmp/17tnw2b2jvz-*`; compact fin
 Root explicitly authorized necessary implementation while ClickUp connector quota and native CDP inputs prevented a verified In Progress write. Exact proposed native updates are local `/private/tmp/17tnw2b2jvz-clickup-start.md` and `-clickup-handoff.md`; neither is claimed saved. Root owns backfill/readback when access recovers. The prerequisite remains https://app.clickup.com/t/17tnw2b2jvy /PR366, with actual admin E2E dependency17tnw2az0gg/real staff sign-in. No API, proxy, permissions, App.vue/footer, dependencies/lockfiles, workflow YAML, provider, deployment or installer operation was changed by this ticket.
 
 Next steps: diagnose the exact WebKit full-sweep navigation failure with a new explicit bounded disposition, finish the existing backend acceptance dependency, then all four independent reviews and actual current hosted CI. Only verified merged main permits QA. Rollback is this isolated frontend commit; there is no data/schema change.
+
+## Current target and review remediation (iterations5–6)
+
+Shadow confirmed actual hosted legal41848524912/job126638280109:417passed2failed/419, both Privacy/Terms→Pricing navigation-console guards reported the new catalogue `net::ERR_ABORTED`. The legal SpaHandler returned SPAHTML for the newly mounted GET, and production correctly refused/cancelled it. A deterministic actual-browser response probe failed before the fix: GET200/text-html/index989bytes rather than application/json. This establishes the missing fixture; precise hosted abort scheduling was not claimed reproduced.
+
+`legal_pages_headless.py` now supplies the existing shared synthetic public-wire fixture **only** for localhost HTTPGET `/v1/catalogue/plans` without query/fragment, with JSON/no-store/nosniff headers. Other localhost requests continue normally. Pricing readiness is observed before the existing legal navigation/error and observer checks. Console, pageerror and requestfailed listeners and their assertions are unchanged. No ERR_ABORTED exception/filter, error clearing, policy/content/CSP/budget/engine/dependency or production-loader cancellation change occurred.
+
+The new `scripts/legal_catalogue_guard_regression.py` drives the actual harness and browser. Its positive verifies exact GET JSON, consumed cards and clean guards. Its negative injects a REAL unrelated `/unrelated-request-negative` fetch aborted at the transport boundary with `net::ERR_ABORTED`; the ORIGINAL Privacy navigation-console assertion must fail and its detail must include `requestfailed:` and that URL/error. This is an expected rejection, not a fabricated error-list append or a passing legal suite with ignored errors.
+
+| Current-target verifier, serialized frozen set | Actual completed result |
+| --- | --- |
+| `make marketing-check` |1256passed,0failed,0skipped; lint/type-check/build exit0 |
+| `SELAHCUE_HEADLESS_REQUIRE=1 python3 scripts/legal_pages_headless.py` |419passed,0failed,419checks; original count retained |
+| `python3 scripts/legal_catalogue_guard_regression.py --output ...` | exact JSON/readinessPASS; actual unrelatedERR_ABORTED rejected by original guard; proof exit0 |
+| Current-target catalogue matrix | **INCOMPLETE/FAIL**,7scenarios completed (all six Chromium +WebKitHome320); WebKitHome768 chose hidden desktop link at30s. No476/12 current pass |
+| Home both engines +frame |262checks0failed and all original strict/nominal/real-overflow controlsPASS |
+| Core both engines +frame |304checks0failed,20nominal/20real negative controlsPASS |
+| Complete Chromium responsive |2379checks/41routes×5widths,0failed |
+| Complete WebKit responsive | **BLOCKED**, exit2 on375px `/affiliates/payouts`, Page.goto20s. Exact causeUNKNOWN; no retry |
+
+Read-only probe after the set: requested/innerWidth768, actual clientWidth756, mobile mediaTRUE, desktop displaynone and zerorect, actual Menuvisible, navbar69px. Screenshot was inspected; there was no click/style/viewport change. The old matrix helper's nominalwidth condition is therefore an evidenced test bug. Root authorized explicit maximum5→6 for one narrow correction/proof, with all earlier ledgers retained. Restoring the old helper in a scratch matrix reproduced hidden-desktop failure. The proposed visible-control helper opened Menu, but normal sheet Pricing click reported outsideviewport then detached; the focused positive FAILED. No full matrix/retry or production fix followed. Scroll-lock/breakpoint interaction is a hypothesis, not a confirmed cause.
+
+Root then explicitly ordered cleanup: revert ONLY the unverified helper conditional, exclude its failed proof from the public patch, preserve both under `/private/tmp` with all failure receipts, and publish the independently verified legal fix/proof. This is cleanup, not a seventh iteration. The original nominal helper and observed native768 sheet issue remain visible C003/C008 blockers. The current actual WebKit fullsweep Page.goto failure is separate and unexplained. All219 inputs captured before the serialized set match again after the owned helper rollback. All browser/server/subprocesses finished; no new build or test after cleanup. The production API component/view/transport files are byte-unchanged by the remediation; the only new app input was the already-reviewed target footer, which was rebuilt and tested explicitly.
+
+Compact current legal guard receipt and gate metadata are committed beside this document; full local receipts use `/private/tmp/17tnw2b2jvz-it5-*`, `-it6-navigation*` and `-nav768.*`. Historical full476 JSON remains labelled original fe07 evidence; it is not substituted for the current incomplete matrix. Native In Progress write remains pending external recovery, never claimed saved. Root owns new four reviews/current hostedCI and all remaining acceptance/main/QA decisions. Backend C005 remains blocked regardless of local source checks.

@@ -1,0 +1,20 @@
+{
+  "scope": "synthetic actual legal browser; fixture and unchanged request-failure guard",
+  "checks": [
+    {
+      "fixture": "exact anonymous GET JSON; actual cards ready; console/page/request guard clean",
+      "result": "PASS"
+    },
+    {
+      "negative": "actual unrelated net::ERR_ABORTED must fail original navigation console guard",
+      "observed": [
+        [
+          "privacy: navigation console clean",
+          false,
+          "requestfailed: http://127.0.0.1:57128/unrelated-request-negative net::ERR_ABORTED"
+        ]
+      ],
+      "result": "EXPECTED_REJECTION"
+    }
+  ]
+}

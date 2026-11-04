@@ -63,9 +63,13 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
+# Reuse the public-wire synthetic fixture shared by the Home/core browser gates.
+sys.path.insert(0, str(MARKETING / "tests"))
+import catalogue_browser_fixture as catalogue
 DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 
 WIDTHS = [(320, 800), (375, 812), (768, 1024), (1024, 800), (1440, 900)]
@@ -215,6 +219,13 @@ def new_page(browser, width: int, height: int, errors: list[str], scroll_padding
     # a REAL request failure still shows.
     def handle(route):
         url = route.request.url
+        target = urlsplit(url)
+        if (route.request.method == "GET" and target.scheme == "http" and
+                target.hostname == "127.0.0.1" and target.path == "/v1/catalogue/plans" and
+                not target.query and not target.fragment):
+            return route.fulfill(status=200, content_type="application/json",
+                headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+                body=json.dumps(catalogue.PLANS))
         if url.startswith("http://127.0.0.1"):
             return route.continue_()
         return route.fulfill(status=200, content_type="text/css", body="")
@@ -502,6 +513,7 @@ def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
     # Baseline: observers a NON-legal page (pricing) holds, so the legal page's own can be isolated.
     ctx_b, page_b = new_page(browser, 1440, 900, [])
     page_b.goto(base + "/pricing", wait_until="networkidle")
+    catalogue.wait(page_b)
     page_b.wait_for_timeout(500)
     baseline = live_observers(page_b)
     ctx_b.close()
@@ -521,6 +533,7 @@ def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
     check(f"{key}->{other_key}: title is the new page's", page.title() == all_exp[other_key]["title"], page.title())
     page.locator('footer a[href="/pricing"]').first.click()
     page.wait_for_function("location.pathname === '/pricing'")
+    catalogue.wait(page)
     page.wait_for_timeout(300)
     check(f"{key}->pricing: noindex is removed on leaving the legal pages", page.locator('meta[name="robots"][data-legal-noindex]').count() == 0, f"{page.locator('meta[name=robots]').count()}")
     after = live_observers(page)
@@ -586,6 +599,7 @@ def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
     mounted = page.evaluate("getComputedStyle(document.documentElement).scrollPaddingTop")
     page.locator('footer a[href="/pricing"]').first.click()
     page.wait_for_function("location.pathname === '/pricing'")
+    catalogue.wait(page)
     page.wait_for_timeout(300)
     after = page.evaluate("getComputedStyle(document.documentElement).scrollPaddingTop")
     check(f"{key}: html scroll-padding-top is zeroed while the page is mounted", mounted in ("0px", "auto"), mounted)

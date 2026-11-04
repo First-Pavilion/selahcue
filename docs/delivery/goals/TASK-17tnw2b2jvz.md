@@ -10,7 +10,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvz
 - Created: 2026-11-04
 - Updated: 2026-11-04
-- Maximum iterations: 4
+- Maximum iterations: 6
 - Independent verification required: yes
 
 ## Objective
@@ -58,6 +58,8 @@ Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing cur
 | C-004 | yes | Existing marketing gate passes on the actual source | make marketing-check | type-check/lint/full node suite/build exit0 | /private/tmp/17tnw2b2jvz-marketing-check-final.log:1256passed0fail0skip plus lint/type/build | PASS |
 | C-005 | yes | Public backend dependency and required actual integration acceptance are satisfied | root verifies merged366, runtime/admin E2E and frontend real-stack behavior | current deployed-like API contract and no outstanding mandatory prerequisite | root dependency evidence | BLOCKED |
 | C-006 | yes | Cody, Shadow, Quinn, Vera and actual current CI pass before merge/QA | root independent reviews/CI/main/ClickUp readback | four passes, CI success, verified main before QA | root receipts | PENDING |
+| C-007 | yes | The legal harness supplies only exact public catalogue GET JSON, waits readiness and still rejects real unrelated failed requests | actual legal419check gate and browser negative control through the existing guard |419pass; inserted unrelatedrequest fails the unchanged navigation console assertion | docs/delivery/evidence/17tnw2b2jvz.md | PENDING |
+| C-008 | yes | Matrix navigation follows visible native controls rather than nominal viewport width | actual WebKit768 old-helper negative/current-helper positive and one full matrix | oldnominalhelper fails hidden desktop link; correctedvisiblehelper passes nativeclicks, matrix complete bothengines | iteration6 navigation proof receipts | FAIL |
 
 ## Verification plan
 - Focused verification: real contract parser/decimal display tests, request/cancellation and Vue/browser fixture states with adverse responses and changed values.
@@ -80,14 +82,14 @@ Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing cur
 - Rollback or recovery: revert this isolated frontend change; no data/schema/runtime configuration changes.
 
 ## Pause and escalation conditions
-- Stop at four iterations, approval rejection, unavailable required dependency or owner-level API/design/scope changes; preserve partial evidence and notify root. No silent scope expansion or limit reset.
+- Original maxima4/5 and all prior ledgers remain recorded. Root explicitly authorizes iteration6 only for the confirmed nominal-width matrix navigation helper bug, its actual old-helper negative/current-helper positive and ONE full matrix. No further full WebKit responsive retry, production/bundle/style/breakpoint/tolerance change or silent reset. Stop after iteration6 or publication rejection.
 
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b2jvz.md
 - Validator result: structural validation passed; completion validation intentionally exits1 with mandatory C-003/C-005 blocked and C-006 pending.
-- Independent verification result: pending root.
+- Independent verification result: Shadow identified actual old-head legal failure; verified fixture remediation ready for root four-review refresh. No all-four/currentCI pass claimed.
 - Terminal state: BLOCKED.
-- Remaining failed or blocked criteria: C-003 full WebKit responsive navigation failed to complete; C-005 backend/admin E2E dependency blocked; C-006 independent reviews/hosted CI/merge/QA pending. C-001/C-002/C-004 pass with actual evidence.
+- Remaining failed or blocked criteria: C-003 current matrix7partial/old nominal navigation helper and separate fullWebKit20s/Page.goto UNKNOWN; C-005 backend/admin E2E blocked; C-006 fourreviews/currenthostedCI/mergeQA pending; C-008 attempted helper positive failed and was explicitly rolled back. C-007 legal419/strict actualnegative passes. Current1256/Home262/core304/Chromium2379 passed; no current fullmatrix/fullWebKit pass.
 - ClickUp final evidence comment: native start/status writes pending recovery; prepared payload /private/tmp/17tnw2b2jvz-clickup-start.md.
 
 ### Iteration2
@@ -121,3 +123,36 @@ Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing cur
 - The authorized single serialized set finished: full catalogue matrix476checks/12scenarios both enginesPASS; Home262plus strict frame/overflow controlsPASS; core304plus20nominal/20actualoverflow negativesPASS. WebKit full sweep exited2 on375px/signin Page.goto20second timeout; exact cause UNKNOWN. No further retry, source edit, budget increase or assertion waiver occurred.
 - Full Chromium2379/0 remains relevant for unchanged production inputs; current117default bundle files match the artifact used for it.144frozen production inputs reverified unchanged. All verifiers reaped. Current node gate1256/lint/type/build passes.
 - C-003/C-005 BLOCKED; C-006 pending root. Goal maximum4 reached. Draft source can be inspected with these explicit blockers, not merged/QA or called complete.
+
+### Iteration5 — explicit review remediation, same Goal
+- Target criterion: C-007 and parent-owned C-006 review/CI, preserving blockedC-003/C-005.
+- Hypothesis: the existing legal fixture server returns SPAHTML to the newly mounted public catalogue fetch; supplying only the exact anonymousGET JSON and waiting for actual card readiness removes the request failure without suppressing its guard.
+- Change or investigation: root authorized maximum4to5 for ONE narrowly bounded legal-fixture fix/verification after Shadow Changesrequested. Actual hosted legal41848524912/job126638280109 observed417pass2fail/419, both navigation console assertions list exactcatalogue net::ERR_ABORTED. Inspected the complete legal routing/request-failure guard and new loader; cancellation remains correct production behavior. Normal merge of reviewed main1488d310; target85→1488 marketing subtree is identical638bfeb9454ea315b01e456b064692e8c1597f38. No API/proxy/lock/runtime frontend change. Earlier1256/476/Home262/core304/Chromium2379 evidence retained for byte-identical production inputs only.
+- Verifier executed: structural validation and deterministic missing-fixture browser RED pending; narrow actual legal419 and unrelatedfailedrequest negative proof planned. No full WebKit sweep or API rehearsal.
+- Result: pending.
+- New evidence: /private/tmp/wave2-shadow-367.md and actual hosted failed-step log; no independent reviewer Pass or full acceptance inferred.
+- Decision: iterate
+
+#### Iteration5 explicit target expansion
+Root subsequently merged fully reviewed footer361 to main2f4dcc25. Normal merge preserved target App.vue byte-for-byte and responsive resolved-child wait together with this branch's API fixtures/order assertions; no hand conflict or own App edit. Because App readiness is a relevant new frontend input, old complete browser evidence is historical unless its scope is proven unaffected. Root explicitly broadens this SAME iteration5 (maximum remains5, all original1–4 retained) to ONE serialized current make/build, corrected complete legal419, actual unrelated-aborted-request negative, full catalogue matrix/Home/core and complete responsive both engines on the new frozen bundle. No additional retry or budget change is authorized after that set. Existing C-003/C-005 remain blocked until their actual verifiers complete; backend dependency is not waived.
+Deterministic pre-fix response probe reproduced exact catalogue GET200/text-html/index989bytes and failed application-json assertion. This establishes the missing fixture independently of browser-specific abort timing; no claim the precise hostedERR_ABORTED was reproduced locally. The first probe-file command used a wrong relative working-directory path and never created/executed the probe; it is not counted as a failing behavioral check. Corrected probe executes the real legal harness/server and frontend bundle.
+
+## Final iteration5 outcome
+- Current main2f4dcc25 was integrated normally; target App.vue remains byte-identical and own API-order/fixture changes plus resolved-childwait coexist. Current make1256/lint/type/buildPASS, corrected complete legal419/0PASS, actual unrelated net::ERR_ABORTED correctly fails the ORIGINAL navigation console guard (expectednegativePASS). Current Home262plusframePASS, core304plusframePASS, Chromium fullresponsive2379/0PASS. All219 frozen inputs stayed unchanged throughout the serialized set.
+- One-shot current matrix failed WebKit/Home768 when its nominalwidth helper clicked a hidden desktop Pricing link; all six Chromium scenarios plus WebKitHome320 completed. Full WebKit responsive separately exited2 on375px/affiliates/payouts Page.goto20s; UNKNOWN cause, not explained by the link helper. No test was retried in iteration5.
+- After all suites finished, root authorized a single read-only layout probe. Observed requested/innerWidth768 but clientWidth756, mobileMediaTRUE, desktopnone/zero rect, desktopPricingnotvisible, Menuvisible, navbar69px; screenshot inspected. This confirms a test-helper selection bug, without changing production CSS/viewport. Existing NavbarCSS hidesdesktop by default and exposesit at actual min-width768; helper incorrectly trusts the requested dimension.
+
+### Iteration6 — explicit bounded navigation-helper remediation, same Goal
+- Target criterion: C-008/current matrix; preserve separate C-003 fullresponsiveWebKit UNKNOWN and C-005 backend blockers.
+- Hypothesis: choosing the actual visible Menu button (otherwise native desktop link) follows rendered UI when native scrollbar reservation makes the CSS viewport differ from nominal768.
+- Change or investigation: root explicitly extends maximum5to6 after the actual read-only metrics. Only the navigation helper and meaningful old-helper restoration proof may change. Normal clicks only; no forceclick, CSS/viewport/breakpoint/tolerance or production change. Root permits focused real WebKit768 oldnominalnegative/newpositive then ONE full both-engine matrix, unchanged built application; no additional full responsive WebKit retry or automatic iteration.
+- Verifier executed: structural validator, old-helper negative/new-helper positive and full matrix pending. Earlier legal419/negative and current1256/Home262/core304/Chromium2379 retained only for unchanged relevant inputs; WebKit fullsweep remains failed/blocked.
+- Result: pending. Otto is pausing only his owned native Cargo work before this short browser set; no benchmark/SLA inference.
+- New evidence: /private/tmp/17tnw2b2jvz-nav768.json/png/log and matrix7completed diagnostic; no assumption about old independent Page.goto timeouts.
+- Decision: iterate
+
+## Final iteration6 outcome and explicit cleanup disposition
+- Actual restored-old-helper WebKit768 negative failed on hidden desktop Pricing link as expected. The corrected visible-control attempt selected real Menu but its sheet Pricing link was outsideviewport and detached during normal30second click. Positive FAILED; no full matrix or further retry followed. No post-open metrics confirmed a production cause. Static scroll-lock/breakpoint interaction is a hypothesis only.
+- Root explicitly disposed cleanup, NOT a new iteration: revert ONLY own unverified helper conditional to the prior source and exclude failed new navigation proof from the public patch. Copies/failure receipts stay in /private/tmp/17tnw2b2jvz-unverified-visible-helper.patch, -unverified-navigation-proof.py and -it6-navigation* files. Successful legal fixture/proof is retained. All219 iteration5 source/test inputs match their frozen manifest again after this rollback; no application/bundle change or additional test/build occurred.
+- Current actual target2f App.vue remains unchanged from reviewed main and responsive resolved-childwait remains combined with API fixtures/order checks. Verified currenttarget gates: make1256/lint/type/build, legal419, actual unrelatedERR_ABORTED guard rejection, Home262+frame, core304+frame, Chromium2379 PASS. Current fullmatrix remains7partial; fullWebKit375/affiliates/payouts20s failure remains UNKNOWN; backendC005 remains blocked. C008 FAIL, not silently deferred or markedpassed. Root will track observed nativeWebKit768 menu issue separately after dedup and own all4 final source reviews/currentCI.
+- Maximum6 exhausted with full1–6 ledger retained. All local processes were reaped; Otto notified to resume his owned paused Cargo work. No merge, QA, provider, deploy or installer action. Completion validator must remain non-green while mandatory criteria are unresolved.
