@@ -1,6 +1,6 @@
 # chacha20 lock patch — 17tnw2b9dbe
 
-Task: https://app.clickup.com/t/17tnw2b9dbe. Kenji, isolated branch `codex/17tnw2b9dbe-chacha20-lock`, base `8a66f0ba168e422ef1f60a7b3c8418ae8bb1f2f7`. The separate reviewed hygiene branch is untouched.
+Task: https://app.clickup.com/t/17tnw2b9dbe. Kenji, isolated branch `codex/17tnw2b9dbe-chacha20-lock`, original base `8a66f0ba168e422ef1f60a7b3c8418ae8bb1f2f7`; integrated current main `cfed597161fb3150db8d79d1bfeca58185e431ee`. The separate reviewed hygiene branch is untouched.
 
 ## Upstream and exact scope
 
@@ -46,6 +46,14 @@ Environment: macOS Apple ARM, pinned Rust1.98.0, existing locked dependencies an
 Workspace ignored cases comprise10 existing child-process entrypoints and one existing fresh-process translation warmup measurement probe. Operator's one ignored case is its child-process XDG descriptor entrypoint. Parent tests invoke their child helpers; no numerical performance measurement is claimed. The local clippy log contains macOS `MallocStackLogging: can't turn off ... because it was not enabled` notices; they are process-environment messages, not Rust lint failures, and both clippy commands completed0. `make stage-operator-binaries` created only missing ignored compile-check placeholders; it did not download an SDK or package an installer.
 
 Full receipts: `/private/tmp/17tnw2b9dbe-tests-{workspace,operator}.log`, `/private/tmp/17tnw2b9dbe-clippy-{workspace,operator}.log`. The separate hygiene changes are not part of these test counts or this source payload.
+
+## NDI main integration
+
+After the initial local freeze71508e49, root merged reviewed NDI PR347 into main as `cfed597161fb3150db8d79d1bfeca58185e431ee`. Integrated it through a normal merge (`c588cc61f5b67e718b159b8d332934a7eae8a5d0`), without conflicts. Full target delta8a66f0ba..cfed5971 is four files only: CI workflow, `scripts/check_ndi.py`, and that ticket's goal/evidence. No application source, manifest or lock input changed in that main advance, so the completed consumer suites, metadata and exact baseline/head audit comparisons remain applicable.
+
+Re-ran the parsed lock comparison against current main: still only chacha20 version/checksum differ in the two roots; every other package object is identical. Ran `python3 scripts/check_ndi.py --self-test`:4 passed, exit0. Then ran the actual new `python3 scripts/check_ndi.py --mutation-proof` with the updated lock: exit0. This executes locked NDI-enabled desktop all-target check, clippy with warnings denied, a deliberate NDI-gated wrong-type source mutation requiring E0308 plus its marker, automatic source restoration, and a final passing actual check. The expected mutation compiler failure is negative-control success, not an omitted product failure. Final git diff confirms video_sink.rs exactly restored. Full receipt `/private/tmp/17tnw2b9dbe-ndi-mutation.log`.
+
+The helper uses existing committed headers and a private temporary empty library selection placeholder for check/clippy only. No SDK/runtime was downloaded, linked, packaged or uploaded; no installer action ran. All verifier processes completed. New source snapshot needs root's affected review refresh; earlier passes are not represented as approval of its new commits.
 
 ## Gates and limits
 

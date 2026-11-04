@@ -66,6 +66,15 @@ All mandatory criteria must be PASS for VERIFIED_COMPLETE.
 - New evidence: docs/delivery/evidence/17tnw2b9dbe.md records commands, counts, exact advisory snapshot, existing ignored cases and local architecture limits. All required local processes completed.
 - Decision: gate-review.
 
+### Iteration2
+- Target criterion: C-004 integration freshness, preserving C-001 through C-003.
+- Hypothesis: the new main NDI CI/helper-only delta leaves lock/audit/consumer evidence unchanged, while its newly required NDI check also accepts the targeted patch and still detects gated-code faults.
+- Change or investigation: normal merge maincfed597161fb3150db8d79d1bfeca58185e431ee as c588cc61; full4-file target delta inspected, no appsource/manifests/locks changed. Parsed exact two-lock delta rechecked against newmain.
+- Verifier executed: NDI helper self-test4pass; actual check/clippy/mutation-proof/restored-check exit0. Expected gated E0308 observed with marker. Restored video_sink.rs verified byte-identical by clean git diff;0behind target.
+- Result: required new gate PASS with updated lock. Previous734+455 consumer suites and metadata/audits retained because exact inputs are unchanged. No active verifier, SDK/runtime download, linked build or packaging action.
+- New evidence: docs/delivery/evidence/17tnw2b9dbe.md integration section and /private/tmp/17tnw2b9dbe-ndi-mutation.log.
+- Decision: gate-review.
+
 ## Risks and rollback
 - Risks: transitive resolution drift; parsed lock comparison will refuse anything beyond expected package entry.
 - Rollback or recovery: revert the isolated two-lock patch; no persistent-data change.
@@ -79,5 +88,5 @@ All mandatory criteria must be PASS for VERIFIED_COMPLETE.
 - Validator result: structural validator passes before execution and at handoff; completion intentionally remains pending C-005.
 - Independent verification result: pending root review.
 - Terminal state: GATE_REVIEW.
-- Remaining failed or blocked criteria: C-005 pending root-owned four reviews, publication and exact-head hosted CI. Root requested final local freeze at current main8a66f0ba; if NDI CI work merges before publication, integration/helper verification and affected review freshness will be assessed without discarding unchanged lock/audit evidence.
+- Remaining failed or blocked criteria: C-005 pending root-owned four reviews, publication and exact-head hosted CI. NDI maincfed5971 is integrated and its actual mutation-proof gate passes with the updated lock; root refreshes affected reviews on the new frozen snapshot.
 - ClickUp final evidence comment: pending.
