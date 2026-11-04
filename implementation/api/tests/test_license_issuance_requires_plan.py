@@ -1,18 +1,7 @@
-"""Issuance names a plan, so no NEW licence can inherit the permissive fallback (DEC-014).
+"""Issuance still requires an explicit known plan; the least-ranked fallback is assignable.
 
-`resolve_plan_for_license` tries the assignment, then a legacy scope alias, then the
-designated fallback. The fallback is `LEGACY`, the MOST permissive plan in the catalogue —
-unlimited screen outputs, unlimited NDI, no watermark — because its job is to freeze what
-licences issued before the catalogue already had.
-
-`feature_scope` is free staff text. So before DEC-014, a licence issued with any scope
-nobody had aliased fell through to that fallback silently, was signed, and was cached
-offline until expiry. This file pins the refusal.
-
-**What DEC-014 does NOT change**, and what the last two tests here hold in place: the
-fallback itself. Rows that legitimately reach it — every licence issued before the
-catalogue existed — keep resolving exactly as they did. The change is a validation at the
-issuance boundary, not a change to resolution.
+The weekly catalogue replaced the old permissive legacy fallback. These tests preserve
+missing/unknown-plan validation and prove explicit selection of the safe fallback works.
 """
 
 from __future__ import annotations
@@ -44,7 +33,7 @@ pytestmark = pytest.mark.django_db
 # its device limit from the plan (86ak5mn0m), and a reseed of the catalogue (17tnw2az0gd) must
 # not be able to break a test that is about the fallback refusal. LEGACY, the fallback, IS the
 # migration seed's plan: that is the point of these tests.
-FALLBACK_PLAN_CODE = "LEGACY"
+FALLBACK_PLAN_CODE = "FREE"
 NAMED_PLAN_CODE = "TEST-NAMED-PLAN"
 NAMED_PLAN_SCREEN_OUTPUTS = 4
 
@@ -150,30 +139,15 @@ def _pre_catalogue_license(tag, *, feature_scope="SCOPE-FROM-BEFORE-THE-CATALOGU
     )
 
 
-def _assert_fallback_is_the_permissive_one(tag):
-    """The premise the whole ticket rests on, asserted rather than assumed."""
-    fallback = Plan.objects.filter(is_fallback=True).first()
-    assert fallback is not None, "no fallback plan exists; there is nothing to fall through to"
-    assert fallback.code == FALLBACK_PLAN_CODE, (
-        f"the fallback moved to {fallback.code!r}; these tests name {FALLBACK_PLAN_CODE!r}"
-    )
-    resolved = resolve_entitlement(_pre_catalogue_license(tag))
-    assert resolved.degraded is False, "the premise read itself failed, so it proves nothing"
-    assert resolved.plan is not None and resolved.plan.pk == fallback.pk, (
-        "a scope nobody aliases no longer reaches the fallback, so these tests are not "
-        "exercising the fallthrough they name"
-    )
-    # ABSENT and `unlimited` both read as None, and only one of them is the over-grant.
-    # Assert the key is PRESENT as well, or "no ceiling" is indistinguishable from "the
-    # catalogue says nothing" and this premise passes on an empty map.
-    assert "screen_outputs" in resolved.values, (
-        "the fallback grants no screen_outputs at all, so it is not the permissive plan "
-        "DEC-014 exists to keep new licences off"
-    )
-    assert resolved.values["screen_outputs"] is None, (
-        "the fallback no longer grants UNLIMITED screen outputs, so 'inheriting the "
-        "fallback' is no longer the over-grant DEC-014 exists to stop"
-    )
+def _assert_fallback_is_the_lowest_one(tag):
+    fallback = Plan.objects.get(is_fallback=True)
+    assert fallback.code == FALLBACK_PLAN_CODE
+    assert fallback.rank == Plan.objects.order_by("rank").first().rank
+    resolved = resolve_entitlement(_pre_catalogue_license("premise-" + tag))
+    assert not resolved.degraded and resolved.plan.pk == fallback.pk
+    assert resolved.values["screen_outputs"] == 2
+    assert resolved.values["ndi_outputs"] == 0
+    assert resolved.values["watermark"] is True
     return fallback
 
 
@@ -241,7 +215,7 @@ def test_a_novel_feature_scope_cannot_silently_reach_the_fallback():
     Carries its own positive control, because "refused" proves nothing on its own — if
     issuance were broken for every input the refusal would look identical.
     """
-    fallback = _assert_fallback_is_the_permissive_one("premise-novel")
+    fallback = _assert_fallback_is_the_lowest_one("premise-novel")
     novel_scope = "SCOPE-NOBODY-HAS-ALIASED"
     from selahcue_api.apps.catalogue.models import PlanScopeAlias
 
@@ -286,75 +260,32 @@ def test_a_novel_feature_scope_cannot_silently_reach_the_fallback():
 # offline until expiry, with no revocation list to take it back.
 
 
-def test_issuing_on_the_designated_fallback_is_refused_and_creates_nothing():
-    fallback = _assert_fallback_is_the_permissive_one("premise-sold-fallback")
-    customer = _org("sold-fallback")
-    before_keys = set(AppLicenseKey.objects.values_list("id", flat=True))
-    before_assignments = LicensePlanAssignment.objects.count()
-
-    with pytest.raises(SafeAPIError) as caught:
-        generate_license_key(
-            _actor(), _issue_data(customer, tag="sold-fallback", plan_code=fallback.code)
-        )
-
-    assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value, (
-        "a well-formed request naming a real plan that policy forbids is a POLICY_DENIED, "
-        f"not {caught.value.extensions['code']!r} — the code is what a caller branches on"
-    )
-    # The ENTITY, not a proxy: no row for this customer, and no new row anywhere.
-    assert not AppLicenseKey.objects.filter(customer=customer).exists(), (
-        "a licence was created on the fallback plan despite the refusal"
-    )
-    assert set(AppLicenseKey.objects.values_list("id", flat=True)) == before_keys
-    assert LicensePlanAssignment.objects.count() == before_assignments
+def test_explicit_issuance_on_the_lowest_fallback_creates_a_key_and_assignment():
+    fallback = _assert_fallback_is_the_lowest_one("fallback-success")
+    customer = _org("fallback-success")
+    result = generate_license_key(_actor(), _issue_data(customer, tag="fallback-success", plan_code=fallback.code))
+    assert result.created and result.full_key
+    assert result.license_key.device_limit == 1
+    assert LicensePlanAssignment.objects.get(license_key=result.license_key).plan_id == fallback.pk
 
 
-def test_the_fallback_refusal_names_why_rather_than_only_refusing():
-    """The message must say WHY, so the reason exists somewhere to be read.
-
-    Asserted on the SERVICE, for the same reason as the missing-plan refusal above: the
-    admin GraphQL view replaces every message with a canned one per error code, so this text
-    does not reach a GraphQL caller — see the note in the pull request. What that caller does
-    get is POLICY_DENIED rather than VALIDATION_FAILED, which is at least a different and
-    more accurate hint; the full reason reaches the operator through the log, asserted below.
-    """
-    fallback = _assert_fallback_is_the_permissive_one("premise-fallback-msg")
-    customer = _org("fallback-msg")
-
-    with pytest.raises(SafeAPIError) as caught:
-        generate_license_key(
-            _actor(), _issue_data(customer, tag="fallback-msg", plan_code=fallback.code)
-        )
-
-    message = str(caught.value)
-    assert "fallback" in message.lower(), (
-        f"the refusal does not say the plan is the fallback: {message!r}"
-    )
-    assert fallback.code in message, (
-        f"the refusal does not name the plan it refused: {message!r}"
-    )
+def test_explicit_fallback_issuance_keeps_operator_accountability():
+    fallback = _assert_fallback_is_the_lowest_one("fallback-accountable")
+    customer = _org("fallback-accountable")
+    data = _issue_data(customer, tag="fallback-accountable", plan_code=fallback.code)
+    result = generate_license_key(_actor(), data)
+    assert result.license_key.generated_by_actor_id == _actor().actor_id
+    assert result.license_key.generated_reason == data.reason
+    assignment = LicensePlanAssignment.objects.get(license_key=result.license_key)
+    assert assignment.assigned_by_actor_id == _actor().actor_id and assignment.reason
 
 
-def test_the_fallback_refusal_reaches_the_log_where_an_operator_will_look(caplog):
-    """`SAFE_MESSAGES` discards the reason for the GraphQL caller, and this service writes
-    audit rows on SUCCESS only — deliberately, and consistently with every other refusal in
-    it. So the log is the only diagnosis surface a refusal has, and it has to carry the
-    reason rather than just the fact."""
-    fallback = _assert_fallback_is_the_permissive_one("premise-fallback-log")
-    customer = _org("fallback-log")
-
+def test_fallback_issuance_does_not_emit_obsolete_permissive_policy_warning(caplog):
+    fallback = _assert_fallback_is_the_lowest_one("fallback-warning")
     with caplog.at_level("WARNING", logger="selahcue_api.apps.license_keys.services"):
-        with pytest.raises(SafeAPIError):
-            generate_license_key(
-                _actor(), _issue_data(customer, tag="fallback-log", plan_code=fallback.code)
-            )
-
-    logged = "\n".join(record.getMessage() for record in caplog.records)
-    assert logged, "the refusal logged nothing at all, so it is undiagnosable in production"
-    assert "is_fallback=True" in logged, (
-        f"the log does not say WHY the plan was refused: {logged!r}"
-    )
-    assert fallback.code in logged, f"the log does not name the plan refused: {logged!r}"
+        result = generate_license_key(_actor(), _issue_data(_org("fallback-warning"), tag="fallback-warning", plan_code=fallback.code))
+    assert result.created
+    assert not any("most permissive" in record.getMessage() for record in caplog.records)
 
 
 def test_a_non_fallback_plan_still_issues(caplog):
@@ -380,61 +311,19 @@ def test_a_non_fallback_plan_still_issues(caplog):
     )
 
 
-def test_the_refusal_follows_the_is_fallback_FLAG_not_the_plan_code():
-    """Which plan is the fallback is DATA (FR-544/DEC-008), so the refusal must move with
-    the flag. A refusal keyed on the literal 'LEGACY' would pass every test above and still
-    be the hardcoded-tier-name defect this whole app exists to avoid.
-
-    Designating a different fallback must therefore refuse THAT plan and release the old one.
-    """
-    old_fallback = Plan.objects.get(is_fallback=True)
-    new_fallback = Plan.objects.get(code=NAMED_PLAN_CODE)
-    assert old_fallback.code != new_fallback.code
-
-    # One fallback at a time — `uniq_catalogue_fallback_plan` is a partial unique index.
-    old_fallback.is_fallback = False
-    old_fallback.save(update_fields=["is_fallback"])
-    new_fallback.is_fallback = True
-    new_fallback.save(update_fields=["is_fallback"])
-
-    # The newly designated fallback is now refused...
-    with pytest.raises(SafeAPIError) as caught:
-        generate_license_key(
-            _actor(),
-            _issue_data(_org("moved-refused"), tag="moved-refused", plan_code=new_fallback.code),
-        )
-    assert caught.value.extensions["code"] == ErrorCode.POLICY_DENIED.value, (
-        f"{new_fallback.code!r} is now the fallback but issuance still allowed it — the "
-        "refusal is keyed on a hardcoded plan code, not on is_fallback"
-    )
-
-    # ...and the plan that used to be the fallback is now issuable.
-    #
-    # Issuing takes the key's device limit from the plan (86ak5mn0m), and the fallback plan
-    # declares no seat count of its own (it freezes what pre-catalogue licences had, which had
-    # none). So it needs one to be sold, exactly as any plan does; this test gives it one,
-    # because what it asserts is that the FALLBACK REFUSAL moved, not that LEGACY has seats.
-    PlanGrant.objects.create(
-        plan=old_fallback,
-        dimension=GrantDimension.objects.get(key="device_instances"),
-        raw_value="2",
-        changed_by_actor_id="staff_ops_1",
-        reason="Seat count so the former fallback can be sold in this test.",
-    )
-    result = generate_license_key(
-        _actor(),
-        _issue_data(_org("moved-allowed"), tag="moved-allowed", plan_code=old_fallback.code),
-    )
-    assert result.created is True, (
-        f"{old_fallback.code!r} is no longer the fallback but issuance still refused it"
-    )
+def test_renaming_the_fallback_does_not_reintroduce_an_issuance_refusal():
+    fallback = _assert_fallback_is_the_lowest_one("fallback-rename")
+    fallback.display_name = "Renamed Safe Fallback"
+    fallback.save(update_fields=["display_name"])
+    result = generate_license_key(_actor(), _issue_data(_org("fallback-rename"), tag="fallback-rename", plan_code=fallback.code))
+    assert result.created and result.license_key.device_limit == 1
 
 
 # --- What issuance now writes ----------------------------------------------------------------
 
 
 def test_a_licence_issued_on_a_plan_resolves_to_that_plan_not_the_fallback():
-    fallback = _assert_fallback_is_the_permissive_one("premise-named")
+    fallback = _assert_fallback_is_the_lowest_one("premise-named")
     customer = _org("named")
     result = generate_license_key(
         _actor(), _issue_data(customer, tag="named", plan_code=NAMED_PLAN_CODE)
@@ -483,7 +372,7 @@ def test_a_licence_that_predates_this_change_still_resolves_through_the_fallback
     existing row is. It carries no assignment, and its scope may match no alias. It must
     keep reaching the fallback and keep granting exactly what it granted.
     """
-    fallback = _assert_fallback_is_the_permissive_one("premise-pre-existing")
+    fallback = _assert_fallback_is_the_lowest_one("premise-pre-existing")
     pre_existing = _pre_catalogue_license("pre-existing")
     assert not LicensePlanAssignment.objects.filter(license_key=pre_existing).exists(), (
         "premise: a pre-existing row carries no assignment, or it is not testing the fallback"
@@ -496,8 +385,8 @@ def test_a_licence_that_predates_this_change_still_resolves_through_the_fallback
     )
     resolved = resolve_entitlement(pre_existing)
     assert "screen_outputs" in resolved.values, "the fallback stopped granting screen outputs"
-    assert resolved.values["screen_outputs"] is None, "the fallback's unlimited grant changed"
-    assert resolved.values["watermark"] is False, "the fallback's watermark grant changed"
+    assert resolved.values["screen_outputs"] == 2, "the fallback must remain restrictive"
+    assert resolved.values["watermark"] is True, "the fallback keeps the Free watermark"
 
 
 def test_the_fallback_mechanism_itself_is_untouched():
