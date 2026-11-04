@@ -1,0 +1,12 @@
+[
+  {
+    "removed_exception": "push",
+    "exit": 1,
+    "diagnostic": "Visual CI gate failed: push: wrong trigger result for docs/release/pilot-registration/notice.json; expected True"
+  },
+  {
+    "removed_exception": "pull_request",
+    "exit": 1,
+    "diagnostic": "Visual CI gate failed: pull_request: wrong trigger result for docs/release/pilot-registration/notice.json; expected True"
+  }
+]

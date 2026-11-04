@@ -31,6 +31,22 @@ From the repository root:
 - `make ci` runs `marketing-check`, and the `marketing (vue spa)` job in `.github/workflows/ci.yml` runs the same target, so the two cannot drift.
 - `test:mirrors` and `test:states` run in CI only, because they need Django and Chrome. `check:legal` and `test:legal-pages` run in the separate `legal-drift` workflow (`.github/workflows/legal-drift.yml`), not in `marketing-check`.
 
+### Home Figma layout viewport regression (17tnw2bcadw)
+
+`npm run test:home` retains all130 strict checks per engine. Only its explicit1440px
+Figma measurement uses Core's existing measured `fit_figma_frame`; nominal responsive
+requests remain exact. Horizontal overflow compares real document scrollWidth/clientWidth,
+because innerWidth may include external scrollbar chrome.
+
+The required both-engine Home gate automatically runs `tests/home_frame_regression.py` with a
+120-second bound. It verifies zero-gap behavior, eight unchanged strict width assertions,
+12px simulated external window chrome (plus any host-native scrollbar), exact nominal
+320/375/768/1024/1440 requests, five zero-overflow controls and15 genuine1px/12px/24px
+overflow rejections through the normal Home assertion path. It never changes product CSS
+or fakes document clientWidth/scrollWidth. Run it directly after a production build with
+`python3 tests/home_frame_regression.py` from `implementation/marketing` using the pinned
+Playwright Chromium and WebKit engines. Hosted Linux CI remains required evidence.
+
 ## Routes
 
 Defined in `src/router/index.ts`; every page except the home page is lazy-loaded.
@@ -151,3 +167,47 @@ and intercepts config/form responses with synthetic fixtures only. It covers sel
 retry identity/reset, unavailable/expired/policy/error/storage states and320/375/768/1440px widths. Ready screenshot
 metadata is synthetic, not a real package/retention claim. No live registration, Sheet write, provider request
 or installer download occurs. Native installer/platform acceptance belongs to separate QA tickets.
+
+
+### Production security gate (17tnw2b0x3m)
+
+Marketing CI runs with `contents: read`, disables checkout credential persistence, and
+uses `.npmrc` to disable dependency lifecycle hooks. Explicit `npm run` tasks still run;
+a fresh script-free install, type-check, lint, tests and both production builds verify
+that this lockfile does not require install hooks. `npm audit --audit-level=high` is a
+required, unsuppressed gate over development and production dependencies. Registry or
+request failures also fail CI. The current lock has a moderate minimatch glob-amplification
+advisory (GHSA-g3hv-75wg-m249) propagated through the eslint toolchain; no advisory is
+waived and no forced major downgrade is applied.
+
+The image matches CI's supported Node 22 line. Build from repository root:
+
+```sh
+docker build --pull -f implementation/marketing/Dockerfile -t selahcue-marketing .
+docker run --rm -p 127.0.0.1:4188:80 selahcue-marketing
+# In another terminal with the pinned CI Playwright browsers installed:
+python3 implementation/marketing/scripts/security_headers_headless.py --base-url http://127.0.0.1:4188
+```
+
+The repository context is needed for the existing canonical public pilot notice import.
+`Dockerfile.dockerignore` denies everything except explicit marketing source/configuration
+and that notice. Compose uses the same context. No notice contents or collection policy
+change as part of this ticket.
+
+nginx repeats the identical CSP/security directives directly in the server and asset
+location, applying them to documents, immutable assets and error responses. No server
+include hides directives from the existing forwarded-proto trust guard. Scripts and API
+connections stay same-origin; inline scripts, inline style
+attributes, eval, plugins, foreign frames and foreign form submissions are prohibited.
+Google Fonts remains an explicit exception for stylesheet/font hosts only, matching the
+existing Inter delivery and privacy disclosure. Self-hosting was considered and deferred:
+changing the font supply and its legal disclosure would require separately verified font
+artifacts/licensing. The browser gate fetches real fonts, visits every static route and
+published article, exercises auth submission/mobile menu styles, checks header inheritance,
+and proves an injected inline script cannot execute. Missing browsers or external font
+failures fail this gate; fonts are never aborted or replaced by fixtures. API responses
+use synthetic data and no live account is contacted.
+
+Actions SHA pinning is deferred to its dedicated delivery ticket `17tnw2b1wx5`, which
+covers the repository consistently. This change preserves the current action versions,
+existing visual/installer/NDI controls and the marketing job's 15-minute timeout.
