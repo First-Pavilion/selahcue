@@ -43,6 +43,17 @@ Local suite skips are intentional: live Postgres/Redis concurrency/cache control
 A retained failed-rebuild test caught uv reuse of cached editable metadata; final offline build disables that cache.
 A snapshot test caught missing selected-extra edges; exporter now includes celery/kombu redis and psycopg binary edges.
 
+## Measured installation/cache behavior
+
+Task-owned fresh cache and clean environment:4.979s wall, exit0. Rebuilding the same owned environment
+from that warm cache (still clearing the venv, not merely checking an existing install):2.514s, exit0.
+These are two local observations, not a general speedup target. Raw timing receipt was recorded in
+`/private/tmp/17tnw2az0kw-timings.json`; both processes completed.
+Hosted initial draft run41757601411 on d6a15e53 completed pinned setup-uv in1s, locked install in2s,
+and51-case gate/graph verification in25s; full service-backed tests were still running at this readback.
+The lock-aware cache post-step had not completed, so no cache-hit/save claim is made. Final PR CI and
+actual cache restoration/save outcome must be read from its completed current-source job logs.
+
 ## Fresh legacy pip comparison: intentionally recorded drift
 
 A separate fresh Python3.14 pip editable/dev install preserves the same direct pins but resolves newer transitives
