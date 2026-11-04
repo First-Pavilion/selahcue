@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+import catalogue_browser_fixture as catalogue
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -200,27 +201,21 @@ def hero_lead_ok(page, name: str, figma_height: float) -> None:
 
 
 def check_pricing(page, base: str, engine: str) -> None:
-    """ClickUp 17tnw2b0x3h: the page draws no plan, price, comparison table, billing toggle or FAQ. Plan names, prices and limits are
-    the API catalogue's data, so until it serves them the page says "Plans and prices have not been published yet." and nothing else."""
+    """Public API plans use the existing cards; unpriced fixtures never invent a checkout or interval."""
     print(f"[{engine}] pricing")
     go(page, base, "/pricing", figma_frame=True)
+    catalogue.wait(page)
     headings_ok(page, "pricing")
-
-    for selector, what in (
-        (".pricing-card", "a plan card"),
-        (".pricing-grid", "a plan grid"),
-        (".comparison-table", "a comparison table"),
-        ("[role=radiogroup]", "a billing toggle"),
-        (".faq-section", "a FAQ"),
-        ("main .ui-button", "a plan button"),
-    ):
-        check(f"pricing: no {what}", page.query_selector(selector) is None, selector)
-
-    text = page.inner_text("main") if page.query_selector("main") else page.inner_text("body")
-    check("pricing: no price figure is shown", "$" not in text, "a dollar sign is on the page")
-    check("pricing: the empty state says plans and prices are not published yet", page.query_selector(".plans-empty") is not None and "have not been published yet" in page.inner_text(".plans-empty"), "")
-    levels = page.evaluate("[...document.querySelectorAll('main h1, main h2')].map((h) => h.tagName)")
-    check("pricing: the page's own headings are one h1 and one h2 (so the footer h3s do not follow an h1)", levels == ["H1", "H2"], str(levels))
+    check("pricing: exact API-driven copy ledger", catalogue.check_copy(page, catalogue.PLANS["plans"]))
+    check("pricing: one card per API plan", page.locator(".pricing-card").count() == len(catalogue.PLANS["plans"]))
+    check("pricing: names follow API order", page.locator(".plan-name").all_text_contents() == [p["name"] for p in catalogue.PLANS["plans"]])
+    for selector, what in ((".comparison-table", "comparison table"), ("[role=radiogroup]", "billing toggle"), (".faq-section", "FAQ"), (".pricing-card a", "checkout link")):
+        check(f"pricing: unpriced fixture has no {what}", page.query_selector(selector) is None, selector)
+    check("pricing: no invented price figure", "$" not in page.inner_text("main"))
+    check("pricing: each unpriced card says so", page.locator(".catalogue-unpriced").all_text_contents() == ["Price not announced yet"] * len(catalogue.PLANS["plans"]))
+    check("pricing: all plan CTAs disabled", all(button.is_disabled() for button in page.locator(".pricing-card button").all()))
+    levels = page.evaluate("[...document.querySelectorAll('main h1, main h2, main h3')].map(h => h.tagName)")
+    check("pricing: plan h3 headings follow the section h2", levels == ["H1", "H2"] + ["H3"] * len(catalogue.PLANS["plans"]), str(levels))
 
 
 def check_features(page, base: str, engine: str) -> None:
@@ -416,6 +411,7 @@ def main() -> int:
                 context = browser.new_context(viewport={"width": 1440, "height": 1000})
                 # The account API is not under test; nothing here needs the network except Inter.
                 context.route("**/graphql/**", lambda r: r.fulfill(status=204, body=""))
+                catalogue.install(context)
                 page = context.new_page()
                 errors: list[str] = []
                 page.on("pageerror", lambda e: errors.append(str(e)))

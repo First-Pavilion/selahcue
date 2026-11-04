@@ -46,6 +46,7 @@ def main():
             try:
                 context = browser.new_context(viewport={'width': 1440, 'height': 1000})
                 context.route('**/graphql/**', lambda r: r.fulfill(status=204, body=''))
+                core.catalogue.install(context)
                 page = ReservedChromeWindow(context.new_page())
                 core.TAB = 'Alt+Tab'
                 core.check_download(page, base, 'webkit-simulated-12px-external-chrome')

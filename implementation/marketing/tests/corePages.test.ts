@@ -375,7 +375,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "PRICING",
     "Pricing that grows with your church",
     "Plans and pricing",
-    "Plans and prices have not been published yet.",
+    "Loading plans…",
   ],
   features: [
     "FEATURES",
@@ -593,9 +593,9 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
         const root = parseHtml(`<div><p>${plant}</p></div>`)
         assert.deepEqual(unlistedBlocks(root, page), [plant], `"${plant}" should be reported on ${page}`)
       }
-      const sentence = LEDGER[page].find((line) => line.endsWith('.')) as string
+      const sentence = LEDGER[page].find((line) => (/[.…。]$/.test(line))) as string
       assert.ok(sentence, `${page} has no sentence on its ledger to reword`)
-      const reworded = sentence.replace(/\.$/, '!')
+      const reworded = sentence.replace(/[.…。]$/, '!')
       assert.equal(unlistedBlocks(parseHtml(`<p>${reworded}</p>`), page).length, 1, `a reworded ledger line on ${page} should be reported`)
       assert.deepEqual(unlistedBlocks(parseHtml(`<p>${LEDGER[page][1]}</p>`), page), [], 'a ledger line is not reported')
     }
@@ -614,9 +614,9 @@ describe('Pricing', () => {
     assert.ok(textOf(pages.pricing).includes('PRICING'), 'no PRICING eyebrow')
     assert.deepEqual(byClass(pages.pricing, 'hero-lead'), [], 'the subline went with the plans it introduced')
     assert.deepEqual(byTag(pages.pricing, 'h2').map((h) => textOf(h)), ['Plans and pricing'], 'the h2 keeps the outline from skipping to the footer h3s')
-    const empty = byClass(pages.pricing, 'plans-empty')[0]
+    const empty = byClass(pages.pricing, 'catalogue-message')[0]
     assert.ok(empty, 'no empty state')
-    assert.equal(textOf(empty as HtmlNode), 'Plans and prices have not been published yet.')
+    assert.equal(textOf(empty as HtmlNode), 'Loading plans…')
   })
 
   // ClickUp 17tnw2b0x3h: plan names, prices and limits are the API catalogue's data, so until it serves them the page shows none.

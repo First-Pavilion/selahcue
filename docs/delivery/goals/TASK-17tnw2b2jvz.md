@@ -1,0 +1,123 @@
+# Goal Contract — TASK-17tnw2b2jvz
+
+## Identity
+- Goal ID: TASK-17tnw2b2jvz
+- Parent goal ID: NONE
+- Title: Home and Pricing show the current public catalogue with honest states
+- Role: frontend-engineer
+- Status: BLOCKED
+- Execution engine: goal
+- ClickUp task: https://app.clickup.com/t/17tnw2b2jvz
+- Created: 2026-11-04
+- Updated: 2026-11-04
+- Maximum iterations: 4
+- Independent verification required: yes
+
+## Objective
+Home and Pricing render public API plan names, weekly allowances and exact prices without hardcoded commercial data, invented claims or a non-working purchase link.
+
+## Baseline
+Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing currently show only unpublished empty copy. PricingCard exists with accessible disabled CTA. The public GET contract is draft PR366/source439ca56f, not merged, with mandatory HTTP/admin E2E blockers. Root has LIVE-read the task and supplied criteria. Native worktree tool failed repository identification; git created this isolated worktree. Primary user mobile lock is untouched.
+
+## Inputs and evidence sources
+- Root LIVE task read and assignment, original ticket https://app.clickup.com/t/17tnw2b2jvz.
+- Public API draft366 exact439ca56f and its committed evidence; root contract /private/tmp/wave2-public-catalogue-contract.md.
+- Existing PricingCard/Home/Pricing layout, copy ledgers and browser guards.
+
+## Scope
+### In scope
+- Shared catalogue loader, bounded validated data and reuse of existing PricingCard.
+- Loading, empty, unavailable, unpriced, zero and multiple configured offers; API-derived weekly allowances and watermark only.
+- Exact decimal-string display, cancellation/race cleanup, safe text rendering and fresh fetch on route entry/retry.
+- Faithful API-driven copy ledgers, unit/runtime tests, core/Home/responsive browser checks and evidence.
+### Non-goals
+- No API/proxy/auth/admin resolver or staff permission changes, billing/payment implementation, invented prices, default currency/interval, private device/output/NDI claims, new design or App.vue/footer changes.
+- No deployment, installer dispatch, real provider/data collection, or production operation.
+### Constraints
+- All names/prices/limits are response data, never view or ledger literals; no arbitrary claim-ban exemption or geometry-check weakening.
+- CTA disabled as Not available yet because the exact current API has no destination field.
+- Comparison/table and billing toggle must not invent unavailable data; all configured offers may be displayed without selecting a commercial default, subject to root clarification.
+- Root owns independent four reviews, actual CI, integration and QA. Worktree is agent-owned and other edits must be preserved.
+### Assumptions and unknowns
+- VERIFIED: current GET schema has no CTA destination or plan description/popularity; do not fabricate them.
+- BLOCKED: real public backend/admin-mutation acceptance and dependency merge; fixtures prove frontend behavior only.
+- UNKNOWN: native ClickUp write recovery. Root explicitly permits this necessary selected work with start status pending; do not claim a saved In Progress status.
+
+## Dependencies and approvals
+- User authorizes wave2 ten tickets and named implementation/review/fix loop.
+- PR366 public read endpoint must satisfy its own required acceptance and merge before this frontend can merge/QA; root owns dependency disposition.
+- ClickUp connector daily quota1000 exhausted and CUA inputs fail CDP deadlines; no MCP retry before16:16UTC. Exact pending start update is saved locally for root backfill.
+- Existing approved design/component reused, no new design decision requested. Engine is bundled goal.
+
+## Completion predicate
+| ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
+|---|---|---|---|---|---|---|
+| C-001 | yes | Home and Pricing render response-only names, allowances and exact current offers; distinguish absent/null from configured zero | unit contract/format tests plus real browser fixture states | alternate names/values render, max64-bit exact, no invented currency or private limits | docs/delivery/evidence/17tnw2b2jvz.md | PASS |
+| C-002 | yes | Loading/unavailable/empty/unpriced and retry/navigation changes are honest, cancellable and safe | browser delayed/error/change/escape scenarios and loader tests | no stale fallback, retry updates, unmount abort, no script interpretation; disabled explained CTA | focused runtime receipt | PASS |
+| C-003 | yes | Copy ledgers remain exact and claim controls detect invented data; layout/headings/responsiveness remain valid | updated real SSR and CLI negative controls; core/Home/responsive Chromium and WebKit | all checks pass with no skipped level or weakened claim/geometry controls | unit/browser logs | BLOCKED |
+| C-004 | yes | Existing marketing gate passes on the actual source | make marketing-check | type-check/lint/full node suite/build exit0 | /private/tmp/17tnw2b2jvz-marketing-check-final.log:1256passed0fail0skip plus lint/type/build | PASS |
+| C-005 | yes | Public backend dependency and required actual integration acceptance are satisfied | root verifies merged366, runtime/admin E2E and frontend real-stack behavior | current deployed-like API contract and no outstanding mandatory prerequisite | root dependency evidence | BLOCKED |
+| C-006 | yes | Cody, Shadow, Quinn, Vera and actual current CI pass before merge/QA | root independent reviews/CI/main/ClickUp readback | four passes, CI success, verified main before QA | root receipts | PENDING |
+
+## Verification plan
+- Focused verification: real contract parser/decimal display tests, request/cancellation and Vue/browser fixture states with adverse responses and changed values.
+- Broader regression verification: make marketing-check; core/Home/responsive both engines; preserve old claim bans and test their negative controls against inserted invented values.
+- Independent verifier: root coordinates Cody, Shadow, Quinn and Vera; author cannot self-approve.
+- Required environment: installed pinned Node/Vue dependencies and Playwright Chromium/WebKit; local synthetic fixtures, not real customer data.
+
+## Iteration ledger
+### Iteration1
+- Target criterion: C-001 through C-004 baseline and failing regression.
+- Hypothesis: one shared API catalogue component can supply both views while reusing accessible PricingCard and exact data-driven ledgers.
+- Change or investigation: inspect current components/tests and public GET contract, create goal, then establish test baseline and failing behavior before production edits.
+- Verifier executed: goal validator, npm test, real SSR loading test RED/GREEN, retained preimplementation build and browser RED.
+- Result: structural validator passed; isolated pinned npm ci offline passed; baseline full Node1250passed. Real initial Home SSR loading behavior failed before product changes and passed afterward. Preimplementation browser bundle also fails missing loading state; first loopback launch sandbox-denied, authorized escalation executed, no external account.
+- New evidence: both views are currently static empty states; existing old guards explicitly forbid any cards until the API follow-up.
+- Decision: iterate
+
+## Risks and rollback
+- Risks: stale/cached commercial data, precision loss, response-based claims hidden from ledgers, untrusted rendering, shared layout drift and required backend dependency unavailable.
+- Rollback or recovery: revert this isolated frontend change; no data/schema/runtime configuration changes.
+
+## Pause and escalation conditions
+- Stop at four iterations, approval rejection, unavailable required dependency or owner-level API/design/scope changes; preserve partial evidence and notify root. No silent scope expansion or limit reset.
+
+## Final evaluation
+- Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b2jvz.md
+- Validator result: structural validation passed; completion validation intentionally exits1 with mandatory C-003/C-005 blocked and C-006 pending.
+- Independent verification result: pending root.
+- Terminal state: BLOCKED.
+- Remaining failed or blocked criteria: C-003 full WebKit responsive navigation failed to complete; C-005 backend/admin E2E dependency blocked; C-006 independent reviews/hosted CI/merge/QA pending. C-001/C-002/C-004 pass with actual evidence.
+- ClickUp final evidence comment: native start/status writes pending recovery; prepared payload /private/tmp/17tnw2b2jvz-clickup-start.md.
+
+### Iteration2
+- Target criterion: C-001 through C-004.
+- Hypothesis: shared strict projection validation/exact decimal strings and lifecycle-owned fresh fetch can render both pages without commercial defaults.
+- Change or investigation: implemented shared loader/component, reused PricingCard price slot and existing interval toggle with neutral All intervals; added unit wire/precision/bounds checks and synthetic browser state matrix. Replaced obsolete SSR empty copy with loading, retained claim bans; fixed truthful FAQ text and exact ledger. Root confirmed conditional interval support; comparison table omitted because no additional comparison contract is required, public weekly data is in cards.
+- Verifier executed: loading SSR GREEN; affected149 unit tests pass; type-check/lint and production build pass. Initial ledger failures caught obsolete FAQ line and ellipsis control assumption; exact copy/control corrected. Initial browser test used hidden desktop Pricing link on mobile and failed locator visibility; test now uses actual mobile menu, not force click.
+- Result: implementation/unit green; current full browser and regression gates pending.
+- New evidence: exact64-bit maximum retained, zero/null separate, all configured currencies preserved. Native write and backend dependency remain blocked; no source/proxy/backend changes.
+- Decision: iterate
+
+### Iteration3
+- Target criterion: C-001 through C-004 runtime/regression.
+- Hypothesis: wrapping response labels at the actual card heading and cancelling refused unread bodies removes observed overflow/resource retention without weakening guards.
+- Change or investigation: actual320px mixed-offer long-name browser failed overflow. Added min-width0/overflow-wrap:anywhere to existing card name; short-name design unchanged. Added actual CSS-removal negative control and lifecycle abort-signal observation. New real Response-stream test demonstrated unread503 body was not cancelled (RED); refusal now cancels it. Exact API-driven card-copy ledger compares every card line against response data plus approved labels, with independent Python integer formatting, not production helpers.
+- Verifier executed: prior full marketing gate passed; prior core304checks0fail, final core frame regression completing at record. Cancel-body RED verified. Updated final browser/full/regression gates pending after source correction.
+- Result: new concrete bugs identified and narrowly fixed; no tolerance, claim ban, strict CSP or backend changes. A ledger append command used the wrong relative docs path after source edits; source edits applied and ledger was separately updated at repository root; no verification success inferred from that command.
+- New evidence: /private/tmp/17tnw2b2jvz-overflow-red.log actual overflow failure, /private/tmp/17tnw2b2jvz-error-cancel-red.log actualFalsevsTrue. Normal fast-forward of source baseline to reviewed current main85f1fbe7 only adds checker/docs outside marketing.
+- Decision: iterate
+
+### Iteration4
+- Target criterion: C-001 through C-003 final bounded browser set; C-004 already passes current production source.
+- Hypothesis: actual page-asset readiness and route-root observation, with a stable built bundle and serialized verifiers, allow the required checks to observe the intended product state without masking overflow.
+- Change or investigation: no further production edits authorized in this final iteration. Root explicitly authorized exactly one serialized full catalogue matrix, final Home/core and full WebKit sweep, with no timeout/budget changes or further retries. Current source is frozen on main85f1fbe7. Prior iteration3 full responsive Chromium2379checks0fail is retained only for identical source; WebKit exited2 at320/admin/licenses20second navigation INFRA, never counted passed. Initial tablet2-column source was corrected to existing1-column below1200 design. Dormant literal Pro-first rule is superseded by API-authoritative visual order because the wire has no popularity flag; its check remains exact against synthetic data, not removed.
+- Verifier executed: final set pending. Focused corrected WebKit768 scenario39checksPASS on unchanged production source validates actual loading/mixed offers/escaped text/copy/negative controls/retry/abort. Previous fullmatrix retry-state timeout cause remains UNKNOWN; this scoped pass does not prove that cause. Diagnostics now record exact scenario/DOM/request counts and progress. Earlier WebKit overflow diagnostic showed native-size1254px logo IMG, not card bounds; test now awaits actual asset load, without hiding/clipping or changing overflow allowance. Pending route callbacks are explicitly aborted/reaped at cleanup.
+- Result: pending final one-shot set; no further automatic retry after a mandatory verifier failure.
+- New evidence: /private/tmp/17tnw2b2jvz-retry-diagnostic.json39PASS; /private/tmp/17tnw2b2jvz-webkit-style-readiness.json; earlier infra/error logs retained. Complete make marketing-check1256tests/lint/type/build passed after all production corrections.
+- Decision: gate-review
+
+## Final iteration4 outcome
+- The authorized single serialized set finished: full catalogue matrix476checks/12scenarios both enginesPASS; Home262plus strict frame/overflow controlsPASS; core304plus20nominal/20actualoverflow negativesPASS. WebKit full sweep exited2 on375px/signin Page.goto20second timeout; exact cause UNKNOWN. No further retry, source edit, budget increase or assertion waiver occurred.
+- Full Chromium2379/0 remains relevant for unchanged production inputs; current117default bundle files match the artifact used for it.144frozen production inputs reverified unchanged. All verifiers reaped. Current node gate1256/lint/type/build passes.
+- C-003/C-005 BLOCKED; C-006 pending root. Goal maximum4 reached. Draft source can be inspected with these explicit blockers, not merged/QA or called complete.
