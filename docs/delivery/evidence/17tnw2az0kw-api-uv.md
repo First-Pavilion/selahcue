@@ -8,7 +8,7 @@ No API business/schema code, package direct pins or minimum Python requirement c
 
 - uv0.13.4 released2026-10-20, outside14-day ordinary-release cooldown. Official macOS arm64 release archive
   SHA256 `e0b1d4743ce64c55d9f0f4a444afa6b81125680070ee04e853fcd0f6c1ebf8f1` verified before use.
-- Official setup-uv v7 commit `94527f2e458b27549849d47d273a16bec83a01e9`, exact version input0.13.4.
+- Official setup-uv v7 annotated tag object `94527f2e458b27549849d47d273a16bec83a01e9`, peeling to commit `37802adc94f370d6bfd71619e3f0bf239e1f3b78`; exact version input0.13.4.
 - Official uv multi-platform container index digest `sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b`,
   metadata revision `7456b60bc6bc348e13e06e3691bf08e78d3aef54`.
 - Universal lock38 entries: editable root plus37 concrete registry versions (including platform-conditional colorama).
@@ -80,7 +80,7 @@ All application imports/checks/full local regression tests run against the locke
 
 Parent owns independent Cody/Shadow/Quinn/Vera review, remediation, current PR CI, fresh main integration/merge and QA status.
 No deployment or packaging dispatch performed. No existing user environment/secret or primary checkout file changed.
-GitHub static graph support does not currently list uv.lock; supported native Dependabot uv update support is separate.
+The published graph support matrix omitted uv at initial inspection; postmerge native GraphUpdate41759977317 actually indexed all37 locked versions before the custom job. Native graph support is verified, and Dependabot update compatibility is separately corrected in iteration3.
 A dedicated main-push/API-changes-only job (contents:write only there) submits the complete exact-version snapshot using built-in
 GITHUB_TOKEN and retains its payload. Actual main indexing has not been claimed: follow README postmerge instructions, compare all
 locked API PyPI name/version entries including platform conditionals, and record actual submission/run/merged-SHA plus SBOM readback
