@@ -1,6 +1,12 @@
 # Public current catalogue — 17tnw2b2jvy
 
-Task: https://app.clickup.com/t/17tnw2b2jvy. This is a read-only slice stacked on catalogue data PR358 (`f65731dd15401097e896b896fb0eccda2f3bd48a`). It does not include staff sign-in or catalogue mutations. Root owns dependency retarget, four independent reviews, current hosted CI, merge and QA.
+Task: https://app.clickup.com/t/17tnw2b2jvy. This is a read-only slice stacked on catalogue data PR358 (confirmed parent `0d7fbb615fe014d5d246d9ab6534e85bd11075c7`, original data freeze `f65731dd15401097e896b896fb0eccda2f3bd48a`). It does not include staff sign-in or catalogue mutations. Root owns dependency retarget, four independent reviews, current hosted CI, merge and QA.
+
+**Status: BLOCKED for full acceptance.** The read-only source is ready for independent
+inspection, but the final bounded shipping API-stop/separately committed price HTTP
+proof did not execute because disposable API migrations did not reach readiness. The
+original authenticated admin-mutation E2E also remains blocked on its separate task.
+No merge/QA/completion claim follows from the passing partial evidence.
 
 ## Browser/API contract
 
@@ -67,8 +73,8 @@ Adding a second legitimate proxy made the old bypass fixture's whole-file `HEADE
 - Verified RED: deep test29passed/1failed exposed missing exact marketing proxy; then actual Node negative-path probe caught an overbroad escaped Vite regex. Corrected with an unambiguous `[?]` class; exact/query match, suffix/trailing-slash do not.
 - Verified RED: real governed writer accepted `+7`/Arabic digit7, initial public projection refused. Reused existing `coerce_grant_value`; finite bounds remain enforced.
 - Verified focused: **67passed**, including real writer invalidation, all current price pairs/null/zero/64-bit amounts, scheduled time, clock rollback/TTL, revision race, bounded cold/warm queries, degraded data, both proxy trust locations and retained bypass shapes. Log `/private/tmp/17tnw2b2jvy-focused-final.log`.
-- Preliminary full API run was deliberately terminated before scalar compatibility correction; it is not a pass. Fresh final full gate pending at this checkpoint.
-- Shipping production/dev images and disposable actual HTTP/Redis-outage rehearsal pending at this checkpoint.
+- Preliminary full API run was deliberately terminated before scalar compatibility correction; it is not a pass. The subsequent final full gate passed2408 tests; see scoped receipts below.
+- Shipping source images built successfully. An earlier complete HTTP phase proved production/dev exact paths, real weekly writer5to6 and Redis429; final added API-stop/separate price HTTP proof remains BLOCKED as described below.
 - Actual hosted PostgreSQL/Redis CI and independent Cody/Shadow/Quinn/Vera review pending; local service skips cannot substitute.
 
 ## Original acceptance dependency — remains blocked
@@ -93,7 +99,7 @@ A separate actual dev probe observed Vite's default unavailable-upstream502 with
 body (RED). Its installed8.3.4 implementation registers `configure` handlers before the
 built-in error handler, which respects `headersSent`/`writableEnded`. An exact-route
 handler therefore supplies the equivalent JSON503/no-store/nosniff without touching the
-GraphQL proxy or CORS. Final affected runtime checks remain pending at this checkpoint.
+GraphQL proxy or CORS. Affected public/nginx/CSRF checks69passed. Actual dev refused-upstream probe changed502RED to503JSON/no-store/nosniffPASS. Final production API-stop proof remains BLOCKED.
 
 These proxy-only changes leave API runtime/SQL source unchanged. Retained full gate:
 **2408passed,54explicitservice skips,57subtests in537.66s, exit0**; system checks and
@@ -116,7 +122,7 @@ did not establish server blocking. The bounded30second HTTP-only observation the
 (production seed1.901s, committed weekly writer next response1.559s, dev7.574s, actual
 Redis outage429 production0.765s/dev9.332s). These are shared-host observations, **not a
 performance/SLA pass**, and no shipping/CI timeout or budget was changed. Final API-stop
-and separately committed price-writer checks are pending below; authenticated admin E2E
+and separately committed price-writer checks remain BLOCKED below; authenticated admin E2E
 remains blocked regardless of these service-writer receipts.
 
 ## Explicit bounded continuation and prerequisite refresh
@@ -133,3 +139,48 @@ recorded, and cleanup completed. No further silent retries or source expansion a
 authorized; remaining failed proof must be handed back honestly. All113 runtime Python
 files were proven byte-identical to the completed native API image; recheck after merge.
 Changed image metadata must be rebuilt and identified honestly.
+
+## Final iteration5 result and immutable evidence
+
+The confirmed parent was normally merged into the child as `838e09532fe55e090225f702b590781dd752ad62`,
+preserving both README changes. Deliberate `make api-install` with exact uv0.13.4 refreshed
+the owned stamp. Install-free stamp verify and affected public/nginx/CSRF suite then
+**69passed,22.37s, exit0** (`/private/tmp/17tnw2b2jvy-parent-focused69.log`).
+
+The final API image was actually rebuilt for the new parent metadata, not treated as
+identical to the old image: `sha256:797160e272048e9dc55f73db850d3dbafc7d537452bbdff50fa00ca2c4adc7cb`,
+build exit0. Final shipping marketing source build exit0, its build step337seconds,
+without changing the15minute CI policy (`/private/tmp/17tnw2b2jvy-marketing-final-source.log`).
+
+Exact parity verification passed for all113 API runtime Python files, current
+`pyproject.toml`/`uv.lock`/`.uv-version`, and all36 Unix-installed registry versions
+against the final image/owned venv. The universal lock contains37 registry packages;
+Windows-only `colorama` is correctly absent on both Unix platforms (verified incoming
+pytest edge `sys_platform == 'win32'`). The initial parity helper incorrectly expected
+every universal-lock package installed; only that verifier was corrected, without
+installing an inappropriate dependency or changing package versions. Receipt:
+`/private/tmp/17tnw2b2jvy-parent-parity-final.log` and runtime hash manifest
+`/private/tmp/17tnw2b2jvy-runtime-parity.json`. This supports retention of the previously
+completed full2408/native67 **unchanged-runtime** evidence, not a claim that those
+complete suites were executed on the new image metadata.
+
+The **single** root-authorized final attempt used final TCP PostgreSQL readiness
+(30seconds/probe,180seconds overall), tmpfs test data and bounded API readiness. It
+terminated with `RuntimeError: API migrations not ready` before executing the final
+HTTP assertions. Last observed migration progress was catalogue0001; database wait-state
+diagnostics showed only the active diagnostic query (zero elapsed), and Redis answered
+PONG. This does not establish a product/runtime failure or an SLA pass. It does mean
+**production API-stop503 and separate-process committed-price/boundary HTTP proof are
+not verified**. Log `/private/tmp/17tnw2b2jvy-iteration5-final-http.log`, exit1. No further
+retry or source expansion followed. The process was reaped; task-labelled containers
+and network read back empty. All other local verifier/build processes also finished.
+
+The actual refused-loopback dev probe did prove503JSON/no-store/nosniff after observing
+502RED, but one prior120second cold-start readiness observation timed out; the diagnostic
+run saw `RemoteDisconnected` during startup before eventual503. Precise earlier host
+causality is unknown; no timeout was silently reclassified as a pass.
+
+Mandatory remaining gates: shipping API-stop/separate price HTTP proof (root bounded
+disposition needed), original admin mutation E2E (`17tnw2az0gg`/real staff sign-in), current
+hosted PostgreSQL/Redis CI and independent Cody/Shadow/Quinn/Vera review. Source draft
+publication is for review with these explicit blockers, never merge or QA authorization.

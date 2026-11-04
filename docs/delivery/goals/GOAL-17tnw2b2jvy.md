@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Read-only current public plan catalogue
 - Role: backend-engineer
-- Status: ACTIVE
+- Status: BLOCKED
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvy
 - Created: 2026-11-04
@@ -58,9 +58,9 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Anonymous GET exact public data and all current offers distinguish unpriced/null/zero | pytest tests/test_public_catalogue.py | Seed, currency, temporal and privacy cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PENDING |
-| C-002 | yes | Bounded cache invalidates for actual writers and scheduled boundaries | pytest tests/test_public_catalogue.py | Writer/query/TTL cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PENDING |
-| C-003 | yes | Missing/malformed/outage data and limiter failures safely refuse; trusted IP/budgets enforced | pytest tests/test_public_catalogue.py tests/test_throttling.py | No invented data or leak; throttle cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PENDING |
+| C-001 | yes | Anonymous GET exact public data and all current offers distinguish unpriced/null/zero | pytest tests/test_public_catalogue.py | Seed, currency, temporal and privacy cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PASS |
+| C-002 | yes | Bounded cache invalidates for actual writers and scheduled boundaries | pytest tests/test_public_catalogue.py | Writer/query/TTL cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | BLOCKED |
+| C-003 | yes | Missing/malformed/outage data and limiter failures safely refuse; trusted IP/budgets enforced | pytest tests/test_public_catalogue.py tests/test_throttling.py | No invented data or leak; throttle cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | BLOCKED |
 | C-004 | yes | Full API migration/check/regression gate and hosted services pass | make api-check and hosted API CI | Local exit0 with service skips explicit; hosted pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PENDING |
 | C-005 | yes | Actual authenticated admin mutation appears next public response | Actual admin mutation E2E after17tnw2az0gg/staff sign-in | Authorized mutation updates next response | Absent prerequisite; root disposition required | BLOCKED |
 | C-006 | yes | Four independent current-source reviews pass | Parent Cody/Shadow/Quinn/Vera reports | All four PASS | Parent review handoff | PENDING |
@@ -120,7 +120,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: after the verified parent uv-compat merge and deliberate venv/image refresh, one final uncompleted HTTP attempt with bounded PostgreSQL readiness can finish the observed proxy/writer proof.
 - Change or investigation: root confirmed prerequisite0d7fbb615fe014d5d246d9ab6534e85bd11075c7 and explicitly extended maximum4to5, preserving the ledger. Normal merge only; preserve both README edits. Readiness30seconds per probe/180seconds outer bounds affect disposable setup only, never shipping/CI timeout policy.
 - Verifier executed: normal parent integration; deliberate exact0.13.4 bootstrap; runtime hash parity and focused guards; source-matching API image rebuild; one final affected HTTP phase with failure diagnostics and cleanup.
-- Result: pending. Existing full2408/native67/nginx12 proof retained only as unchanged-runtime evidence, never claimed as execution on changed image metadata.
+- Result: exact parent merge/bootstrap/image/parity and affected69 checks PASS. Single final setup attempt FAIL: API migrations not ready within180seconds; no final HTTP assertions executed. Process reaped exit1 and task containers/network empty. Existing full2408/native67/nginx12 retained as unchanged-runtime evidence only.
 - New evidence: prior final HTTP attempt failed before API creation because5second pg_isready setup timeout; task cache PONG, PostgreSQL socket not yet ready, no application assertion failure. Both prior setup and response-time observations remain recorded.
 - Decision: final handoff after this one attempt, with honest blocked proof if it still fails. Further retry, source expansion or review remediation requires an explicit bounded disposition from root.
 
@@ -136,8 +136,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/GOAL-17tnw2b2jvy.md
-- Validator result: pending.
-- Independent verification result: pending.
-- Terminal state: pending.
-- Remaining failed or blocked criteria: C-005 BLOCKED; remaining checks pending.
+- Validator result: structural PASS; completion validator intentionally not claimed because mandatory blockers remain.
+- Independent verification result: parent-owned Cody/Shadow/Quinn/Vera and actual current hosted CI pending.
+- Terminal state: BLOCKED (source inspection/draft handoff; no completion/merge/QA claim).
+- Remaining failed or blocked criteria: C-002 separate-process price HTTP proof and C-003 final shipping upstream API-stop proof BLOCKED by bounded setup; C-005 admin E2E BLOCKED by17tnw2az0gg/staff sign-in. C-004 hosted CI and C-006 independent review pending. Maximum5 used; no further silent retry.
 - ClickUp final evidence comment: parent owns UI posting.
