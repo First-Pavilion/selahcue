@@ -1058,7 +1058,9 @@ def main() -> int:
                     page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
                     try:
                         page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
-                        page.wait_for_selector("main *", timeout=10000)
+                        # App now renders a real shell status while the initial route imports.
+                        # Measure the resolved route, retaining every geometry/assertion check below.
+                        page.wait_for_selector("main > :not(.loading)", timeout=10000)
                         page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
                     except Exception as exc:  # noqa: BLE001
                         print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")

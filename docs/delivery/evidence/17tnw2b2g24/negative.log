@@ -1,0 +1,9 @@
+MUTANT missing-reservation
+REJECTED missing-reservation ["/pricing@375 run1: footer visible under fallback", "/pricing@375 run1: loading reservation missing"]
+MUTANT visible-pending-footer
+REJECTED visible-pending-footer ["/pricing@375 run1: pending footer is not hidden"]
+MUTANT missing-rejection-release
+REJECTED missing-rejection-release ["failed import@375: readiness rejection left loading stuck", "failed import@375: footer stays hidden after rejection", "failed import@375: navbar Home navigation did not recover"]
+MUTANT unchanged-shell-baseline
+REJECTED unchanged-shell-baseline ["/pricing@375 run1: actual pending fallback is absent", "/pricing@375 run1: fallback must announce Loading...", "/pricing@375 run1: fallback contrast below4.5", "/pricing@375 run1: pending footer is not hidden", "/pricing@375 run1: footer visible under fallback", "/pricing@375 run1: loading reservation missing"]
+PASS: all4 negative cases rejected by their intended behavioral assertion
