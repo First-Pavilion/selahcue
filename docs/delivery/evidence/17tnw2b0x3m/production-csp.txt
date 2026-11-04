@@ -1,0 +1,10 @@
+chromium: rendered 1/68 routes
+chromium: rendered 21/68 routes
+chromium: rendered 41/68 routes
+chromium: rendered 61/68 routes
+chromium: 68 routes, real fonts, document/asset/error CSP, blocked inline script PASS
+webkit: rendered 1/68 routes
+webkit: rendered 21/68 routes
+webkit: rendered 41/68 routes
+webkit: rendered 61/68 routes
+webkit: 68 routes, real fonts, document/asset/error CSP, blocked inline script PASS
