@@ -2,7 +2,7 @@
 """Export the complete universal uv graph for GitHub dependency submission (Python >=3.12).
 
 No resolution, installation or network. Fail closed on ambiguous versions or missing edges.
-GitHub's static graph currently does not parse uv.lock; the main-only CI job submits this snapshot.
+Native GitHub graph indexing was verified after merge; the main-only job supplies an explicit snapshot too.
 """
 import argparse
 import datetime

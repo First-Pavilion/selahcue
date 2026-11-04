@@ -72,12 +72,21 @@ Verified main c0325d52e809847fac141a605b74a7e6d7de7021. Existing pyproject decla
 
 ### Iteration2
 - Target criterion: C-001 through C-005 local portions.
-- Hypothesis: fresh cached editable reuse must not hide failed builds; main graph requires explicit submission because static graph lacks uv support.
+- Hypothesis: fresh cached editable reuse must not hide failed builds; published matrix omission initially suggested a need for explicit graph submission (postmerge native indexing disproved the unsupported inference).
 - Change or investigation: disable cache for final offline build; real hash-bearing HTTP-wheel corruption test; complete selected-extra graph exporter and least-privilege main-only snapshot job.
 - Verifier executed: full51-case baseline/57-mutation proof, full2330-test API run, Docker build/outside-cwd/health/profile parity, targeted isolated update and graph negative tests.
 - Result: all local exit0;53 intentional service skips await hosted Postgres16/Redis7. Fresh unlocked pip differs by11 newer transitives and six; lock deliberately follows14-day cutoff and all direct pins remain identical.
 - New evidence: evidence document records exact versions/provenance and actual run limits. Real artifact hash mismatch rejected; host/Docker maps identical37 installed distributions.
 - Decision: local implementation ready for parent independent review and hosted gates; no completion/QA claim.
+
+### Iteration3
+- Target criterion: C-005 native dependency automation, plus C-006/C-007 current-source follow-up gates.
+- Hypothesis: project uv compatibility must accept the bot's nonbreaking patch runtime while deliberate bootstrap remains exactly pinned.
+- Change or investigation: actual postmerge updater41759977866 fails on exact0.13.4 versus its embedded0.13.5; exact official source/policy inspected. Use bounded >=0.13.4,<0.14 project requirement, preserve all installation/package/cooldown pins, correct graph/tag provenance wording.
+- Verifier executed: actual0.13.5 RED/0.13.4+0.13.5 GREEN lock checks; unchanged lock/direct declarations; exact native target-update exercises; actual14-day rejection; bootstrap exact-pin negative and range-boundary test; 52/52 guard cases,58/58 mutations, five graph/build/compatibility tests and API startup/migration checks exit0.
+- Result: all focused/local controls pass; all package updates remain isolated/uncommitted and lock unchanged. Full native Dependabot success after follow-up merge remains unverified.
+- New evidence: docs/delivery/evidence/17tnw2az0kw-uv-bot-compat.md; native GraphUpdate indexed all37 versions, contradicting initial unsupported inference; GraphQL advisory duplicate classified separately without pin changes.
+- Decision: bounded remediation3, retain original maximum4; root owns current-head independent reviews/CI/merge and actual native updater success before QA.
 
 ## Risks and rollback
 - Risks: incomplete build graph, resolver drift, accidentally syncing during verification or weakening owned-venv guards.
@@ -90,7 +99,7 @@ Verified main c0325d52e809847fac141a605b74a7e6d7de7021. Existing pyproject decla
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/GOAL-17tnw2az0kw.md
 - Validator result: structural validation exit0.
-- Independent verification result: pending root reviews.
+- Independent verification result: PR351 all four passed and merged b3ae75f8; iteration3 follow-up requires new current-head reviews.
 - Terminal state: ACTIVE.
-- Remaining failed or blocked criteria: local C-001/C-002/C-003 passed; C-004/C-005 local evidence passed with hosted/main ingestion pending; C-006/C-007 external reviews/CI/merge/indexing gates pending.
+- Remaining failed or blocked criteria: PR351 hosted/graph evidence passed; C-005 actual native Dependabot failed and is corrected locally in iteration3; follow-up C-006/C-007 reviews/CI/merge/native updater readback remain pending.
 - ClickUp review handoff evidence comment:1400430000278609; status code review read back. Final integration evidence remains parent-owned.
