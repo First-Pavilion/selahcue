@@ -35,3 +35,23 @@ Supplemental final proof and module logs: `/private/tmp/17tnw2b9dbz-supplement-f
 ## Scope and remaining gates
 
 Native aarch64 macOS Mach-O compilation/linking only. No Windows/MSVC/NSIS/full-installer, model/microphone, provider, signing, deployment or dispatch evidence is claimed. Root owns actual hosted CI, all four independent reviews, merge/QA, and the pending authenticated ClickUp start/status write (implementation exception expressly authorized; no saved status claimed). Iteration3 of max4 performs final artifact proof; iteration4 remains reserved for review remediation.
+
+
+## Integrated main22 refresh — reserved Goal iteration4
+
+Reviewed issue370 merged to main22de62fc32916251a25d9936466161743d30cc5a (also canaryc4). Normal merge8824b03bf8c3a2841109693d82ce68c343950b06 preserves both histories and the five STT authored files. Autolaunch is a compiled input: BOTH real operator binaries were rebuilt, not relabeled historical artifacts.
+
+Current build source commit8824b03b, selector SHA2568bc6b286a98faa05d8238cc6eadf0f5c8e6c2bff4494eb949ecb21c65a0edcc0. New455-entry desktop/toolchain/staged-resource manifests match between both builds and the final tree. Compared with the historicalfd57 manifest, ONLY autolaunch.rs changed; this is a new manifest verification, not reuse of the old455 receipt. Current compiler/cargo absolute paths, executable SHA256 and -vV, exact argv, feature/profile/compilerartifact, raw stdout/stderr and exit0 receipts are in each new build directory.
+
+| Current full operator | Assertions | Bytes | Canonical full-floor scanner | SHA256 |
+|---|---|---|---|---|
+| Normal | false | 39133520 | GREEN/nohits | e302aaf1c8357e632f3c77431114838cd755a97039ecd624a87456e17f1999e1 |
+| Unsafe | true | 36276128 | RED/newSTT UTF8offset16354954 and retainedDeepgram17313760 | 64f7865f5165c45e61e82363eaa596cbfcbc41cf80776086037af3dcf2f63354 |
+
+Both actual Cargo profiles are opt3/debuginfo0 with default/read-encrypted-transcripts/stt, no devkeys/cloud/pilot feature. Direct pinned1.98 cargo/rustc, locked/offline, task-exclusive warm target and existing compile-check resources. No GUI binary execution, model/provider/signing/installer/Windows proof. Raw current builds: `/private/tmp/17tnw2b9dbz-operator-normal-refresh/` and `...-unsafe-refresh/`. Driver `/private/tmp/17tnw2b9dbz-build-operator-refresh.py`; final comparison `/private/tmp/17tnw2b9dbz-refresh-final-parity.json`.
+
+Current scanner selftests47normal and47optimizedPython PASS; direct removal of the declared STT row with required pins retained fails canonical run_scan (meaningful newguard refusal). Source/scanner/profileverifier/toolchain inputs are byte-identical to retained25debug/24release/eightLTO/strip probes, so those completed receipts are explicitly retained, not redundantly rebuilt. Receipt `/private/tmp/17tnw2b9dbz-refresh-retention.json`; scanner logs `/private/tmp/17tnw2b9dbz-refresh-scanner47{,-optimized}.log`. Rustfmt selector/autolaunch PASS.
+
+Focused changed-path source-exact autolaunch harness10/10 real-process tests PASS (`/private/tmp/17tnw2b9dbz-refresh-autolaunch.log`). Its initial outer command then failed only during doc-test compilation because direct pinnedCargo/RUSTC left rustdoc resolving globalstable1.97.1. CapturedE0514 identifies this tool-selection error. Only the unfinished doc-test phase ran with explicitpinnedRUSTDOC1.98 and exited0/zero doctests (`...-autolaunch-doctest.log`); no global state, production source or policy changed. These facts are retained rather than claiming the first outer command passed.
+
+Native STT ticket InProgress was actually saved/read back by root; issue370 backfill17tnw2bcj0p is root-verifiedQA. Root owns current integrated-sourceCI and Cody/Shadow/Quinn/Vera affected refresh. Formal regular scanner PR350 dependency remains unresolved pending its separate exact publication approval; this STT proof does not waive it. All current local subprocesses finished/reaped. Goal original1–3 ledger preserved and reservediteration4 used; no silent fifth iteration.

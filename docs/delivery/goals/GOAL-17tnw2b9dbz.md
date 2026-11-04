@@ -64,7 +64,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | C-003 | yes | Existing guards and new signature encodings/pins remain fail closed without value disclosure | python3 scripts/installer_secret_scan.py --self-test and optimized-Python run | At least47 cases pass, retained guards/targets/encodings/floors and new UTF8/UTF16LE injections | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
 | C-004 | yes | Owning runtime module tests and affected formatting/source guards pass | Actual stt_model_source Rust tests debug/release, formatting and targeted import/release guards | Tests/checks exit0 with scoped native evidence; no installer dispatch | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
 | C-005 | yes | Current hosted CI and all four independent reviews pass frozen source | Parent Cody/Shadow/Quinn/Vera reports and actual CI | All PASS before merge/QA | Parent review handoff | PENDING |
-| C-006 | yes | Pending ClickUp start/evidence/status updates are actually saved/read back | Root authenticated status/comment receipt | In Progress/start/evidence visible; no invented save | Root delivery tracking | PENDING |
+| C-006 | yes | Pending ClickUp start/evidence/status updates are actually saved/read back | Root authenticated status/comment receipt | In Progress/start/evidence visible; no invented save | Root delivery tracking | PASS |
 
 ## Verification plan
 
@@ -105,6 +105,16 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: final actual input manifests and compiler feature/profile receipts retained separately from historical013 baseline.
 - Decision: verify; reserve iteration4 for review remediation.
 
+### Iteration 4 — reserved integrated-source refresh
+
+- Target criterion: C-001 through C-006 freshness after reviewed issue370 merge.
+- Hypothesis: normally integrated main22de62fc retains the STT effect while changed compiled autolaunch inputs require BOTH fulloperator artifacts rebuilt.
+- Change or investigation: root expressly authorizes reservediteration4, preserving1–3; normal merge8824b03b integrates reviewedmain22 (including canaryc4). NativeSTT InProgress actually saved/readback by root. No publicAPIlocaldocs carried in; scanner350 remains separate required dependency, not waived.
+- Verifier executed: pending fresh paired native operator builds/fullcanonicalscans, current47normal/-O/permanentmarkerrefusal,fmt/changedpathchecks and byteidentity of retained module/profileprobe inputs.
+- Result: PASS current paired realoperator builds exit0; new455manifest equal acrossboth/finaltree, onlyautolaunchchanged from historical. Normal39133520GREEN, unsafe36276128REDexplicitnewSTT plusDeepgram. Current47normal/-O/requiredmarkerremovalrefusal/fmtPASS; changedpath10realtestsPASS, initialdoc-toolmismatch captured then onlyunfinisheddoctestphasepinned1.98 exits0. Retain byteidenticalearlier25/24+8 only.
+- New evidence: newcurrenthashes/argv/compilerbinary/profiles/fullscan receipts in evidence; oldpair retainedhistoricalfd57. NativeSTT InProgress readbackrootverified.
+- Decision: freeze after allverifiersfinish; root fouraffectedrefresh/currentCI/merge gates pending; no fifth iteration silently.
+
 ## Risks and rollback
 
 - Risks: unreferenced marker optimized away, marker placed in safe release, scanner false confidence from fake data/too-small artifact, unsupported platform overclaim.
@@ -120,5 +130,5 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator result: structural PASS; completion intentionally pending independent gates.
 - Independent verification result: pending.
 - Terminal state: GATE_REVIEW.
-- Remaining failed or blocked criteria: C-005 hostedCI/four independent reviews and C-006 authenticated ClickUp write remain root-owned pending. C-001 through C-004 local proof PASS.
+- Remaining failed or blocked criteria: C-005 currentintegratedCI/fouraffectedreviews and formalregularscanner350dependency pendingroot. C-001 through C-004 refreshedlocalPASS; C-006 actualnativeInProgress readbackrootverified. Iteration4of4 used; no silentextension.
 - ClickUp final evidence comment: root owns pending authenticated update.
