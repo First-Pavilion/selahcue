@@ -5,7 +5,7 @@
 - Parent goal ID: NONE
 - Title: WAL contention regression asserts busy-handler mechanism instead of runner speed
 - Role: devops-engineer
-- Status: ACTIVE
+- Status: GATE_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b2nxe
 - Created: 2026-11-04
@@ -36,7 +36,7 @@ Verified main6b096771 and PR359be13c756 have identical selahcue-data/test/Cargo.
 - Preserve public deletion, pinned-reader and writer-success checks; mechanism replaces wall-clock correctness gate per existing approved ticket AC, superseding preliminary preserve500ms proposal.
 ### Assumptions and unknowns
 - UNKNOWN exact hosted585ms slow phase; do not label proven environment variance.
-- UNKNOWN actual Windows20 until hosted proof finishes; macOS local evidence is distinct.
+- VERIFIED actual Windows20 in run41828208557 and local macOS20; these are distinct host receipts.
 
 ## Dependencies and approvals
 - Root existing-ticket scope receipt authorizes this fix and bounded host proof; no new ticket.
@@ -45,9 +45,9 @@ Verified main6b096771 and PR359be13c756 have identical selahcue-data/test/Cargo.
 ## Completion predicate
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Mechanism regression catches actual scoped timeout removal without clock gating | real SQLite positive control and actual old-timeout-removal mutation | fixed code green; mutation fails because busy handler invoked | docs/delivery/evidence/17tnw2b2nxe.md | PENDING |
-| C-002 | yes | Public deletion and writer behavior remain checked independently of runner speed; one timing-policy note exists | focused/full data suite plus source review | functional checks pass; timings diagnostic only; no production behavior changes | focused suite and diff | PENDING |
-| C-003 | yes | Twenty consecutive Windows and macOS focused runs pass without retries | bounded host proof on final source and local macOS20 | all20 per host pass; any failure aborts proof | local logs and hosted run URL | PENDING |
+| C-001 | yes | Mechanism regression catches actual scoped timeout removal without clock gating | real SQLite positive control and actual old-timeout-removal mutation | fixed code green; mutation fails because busy handler invoked | docs/delivery/evidence/17tnw2b2nxe.md | PASS |
+| C-002 | yes | Public deletion and writer behavior remain checked independently of runner speed; one timing-policy note exists | focused/full data suite plus source review | functional checks pass; timings diagnostic only; no production behavior changes | focused suite and diff | PASS |
+| C-003 | yes | Twenty consecutive Windows and macOS focused runs pass without retries | bounded host proof on final source and local macOS20 | all20 per host pass; any failure aborts proof | local logs and hosted run URL | PASS |
 | C-004 | yes | Applicable gates, four independent reviews and actual CI pass | cargo fmt/clippy/data tests, workflow controls and Cody/Shadow/Quinn/Vera | checks pass on reviewed head; main verified before QA | root PR/CI/review receipts | PENDING |
 
 ## Verification plan
@@ -84,6 +84,15 @@ Verified main6b096771 and PR359be13c756 have identical selahcue-data/test/Cargo.
 - New evidence: /private/tmp/17tnw2b2nxe-macos20.json; final-rust.json; final-controls.json; encrypted-old-mutant.log; windows-proof-failed.log.
 - Decision: iterate
 
+### Iteration4
+- Target criterion: C-003 host completion and final predicate evaluation.
+- Hypothesis: corrected Windows Perl selection permits the unchanged Rust source to complete the required host proof without retries; exact blob identity permits restoring temporary CI without invalidating that source evidence.
+- Change or investigation: completed Windows proof; restored ci.yml byte-for-byte from main6b096; documented failed setup, real named-test counts and unchanged Rust blobs. No production behavior or Rust-source changes after the original proof commit.
+- Verifier executed: actual run41828208557 log parsed for each START/PASS1..20, exactly one actual completion marker and20 passes for each named test; local macOS20; final187-test encrypted suite, warning-clean clippy/fmt and eight normal policy/toolchain checks. Final structural Goal/diff validation at handoff.
+- Result: C-001 through C-003 PASS. Initial log parser rejected the echoed script literal as a second completion marker; corrected parsing anchors actual timestamped output, no test rerun. Both final Rust blobs equal cb583e073711e7851c9a4e3b93f68364167c1e25. No permanent CI workflow diff remains.
+- New evidence: docs/delivery/evidence/17tnw2b2nxe.md; /private/tmp/17tnw2b2nxe-windows20.json; proof-source-identity.json and final local verifier receipts.
+- Decision: gate-review
+
 ## Risks and rollback
 - Risks: callback cross-test pollution, vacuous pinned-reader control, accidental removal of end-to-end functionality; isolate callback state and require real contention plus uncontended WAL truncate.
 - Rollback or recovery: revert isolated test/docs/proof changes; no persisted product state.
@@ -93,8 +102,8 @@ Verified main6b096771 and PR359be13c756 have identical selahcue-data/test/Cargo.
 
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b2nxe.md
-- Validator result: initial structural validation pending.
+- Validator result: structural validation passed; final structural validation recorded at handoff. Completion intentionally pending C-004.
 - Independent verification result: pending root.
-- Terminal state: ACTIVE
-- Remaining failed or blocked criteria: C-001 through C-004 pending.
+- Terminal state: GATE_REVIEW
+- Remaining failed or blocked criteria: C-001 through C-003 PASS; C-004 local checks pass, root-owned four independent reviews/final-head CI/main/QA pending.
 - ClickUp final evidence comment: root owns authenticated UI; pending write is explicit, not claimed saved.
