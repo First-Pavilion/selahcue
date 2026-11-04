@@ -59,10 +59,10 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Actual reachable override in optimized assertions-on release is rejected, normal release is pinned/clean | Build real operator normal/unsafe profiles; python3 scripts/test_stt_override_artifact.py --normal-operator SAFE --unsafe-operator UNSAFE --output-dir TASK_TMP | Unsafe real binary honors override and scanner rejects marker; safe real binary pinned and full scanner passes | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PENDING |
-| C-002 | yes | Marker survives LTO/stripping when unsafe path exists, no fabricated binary payload/floor relaxation | Actual production-module source hashes and stripped native artifact matcher | Unsafe stripped binary still contains declared marker; safe does not; original full scan byte floor retained | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PENDING |
-| C-003 | yes | Existing guards and new signature encodings/pins remain fail closed without value disclosure | python3 scripts/installer_secret_scan.py --self-test and optimized-Python run | At least47 cases pass, retained guards/targets/encodings/floors and new UTF8/UTF16LE injections | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PENDING |
-| C-004 | yes | Owning runtime module tests and affected formatting/source guards pass | Actual stt_model_source Rust tests debug/release, formatting and targeted import/release guards | Tests/checks exit0 with scoped native evidence; no installer dispatch | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PENDING |
+| C-001 | yes | Actual reachable override in optimized assertions-on release is rejected, normal release is pinned/clean | Build real operator normal/unsafe profiles; python3 scripts/test_stt_override_artifact.py --normal-operator SAFE --unsafe-operator UNSAFE --output-dir TASK_TMP | Unsafe real binary honors override and scanner rejects marker; safe real binary pinned and full scanner passes | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
+| C-002 | yes | Marker survives LTO/stripping when unsafe path exists, no fabricated binary payload/floor relaxation | Actual production-module source hashes and stripped native artifact matcher | Unsafe stripped binary still contains declared marker; safe does not; original full scan byte floor retained | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
+| C-003 | yes | Existing guards and new signature encodings/pins remain fail closed without value disclosure | python3 scripts/installer_secret_scan.py --self-test and optimized-Python run | At least47 cases pass, retained guards/targets/encodings/floors and new UTF8/UTF16LE injections | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
+| C-004 | yes | Owning runtime module tests and affected formatting/source guards pass | Actual stt_model_source Rust tests debug/release, formatting and targeted import/release guards | Tests/checks exit0 with scoped native evidence; no installer dispatch | docs/delivery/evidence/17tnw2b9dbz-stt-effect-guard.md | PASS |
 | C-005 | yes | Current hosted CI and all four independent reviews pass frozen source | Parent Cody/Shadow/Quinn/Vera reports and actual CI | All PASS before merge/QA | Parent review handoff | PENDING |
 | C-006 | yes | Pending ClickUp start/evidence/status updates are actually saved/read back | Root authenticated status/comment receipt | In Progress/start/evidence visible; no invented save | Root delivery tracking | PENDING |
 
@@ -101,7 +101,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Hypothesis: final actual operator artifacts preserve the independently tested marker effect with unchanged full-scanner byte floor.
 - Change or investigation: integrate reviewed main2f4dcc25 (including hygiene1488), checkpoint source; compile real operator normal and assertions-on release from identical desktop/toolchain/resource inputs.
 - Verifier executed: paired full native operator builds and canonical scanner; final compiled-profile/module verifier.
-- Result: pending.
+- Result: PASS. Both final full operator builds exited0; normal38379104bytes full scannerGREEN/nohits, unsafe35546096bytes RED with explicitSTT UTF8hit plus retainedDeepgram hit. All455 recorded inputs match across both builds and final tree. Completed47normal/-O,25debug/24release,eight supplementalLTO/strip and import guard receipts retained; no extra build variants.
 - New evidence: final actual input manifests and compiler feature/profile receipts retained separately from historical013 baseline.
 - Decision: verify; reserve iteration4 for review remediation.
 
@@ -117,8 +117,8 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ## Final evaluation
 
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/GOAL-17tnw2b9dbz.md
-- Validator result: pending.
+- Validator result: structural PASS; completion intentionally pending independent gates.
 - Independent verification result: pending.
-- Terminal state: pending.
-- Remaining failed or blocked criteria: all pending; ClickUp write/root reviews not fabricated.
+- Terminal state: GATE_REVIEW.
+- Remaining failed or blocked criteria: C-005 hostedCI/four independent reviews and C-006 authenticated ClickUp write remain root-owned pending. C-001 through C-004 local proof PASS.
 - ClickUp final evidence comment: root owns pending authenticated update.
