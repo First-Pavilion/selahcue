@@ -31,36 +31,22 @@ caught by human review rather than by any gate; the third (cache saves) and the 
    offending step by name and therefore validated its own labelling rather than an
    independent property.
 
-3. CACHE SAVES COME FROM `main` ONLY (17tnw2b1f24). In a workflow that runs on pull
-   requests, every `Swatinem/rust-cache` step must set `save-if` to the one canonical
-   main-only expression. Without it each pull request saves a private copy of every
-   job's cache (0.3-1.6 GB each); the repository's Actions cache limit (10 GB) is then
-   exceeded, the least recently used entries are evicted -- main's included -- and main's
-   own jobs start cold (a cold Windows operator-native job runs about 35 minutes against
-   about 4 warm). The cache key has no ref in it, so a pull request restores main's entry
-   exactly; it does not need to save its own.
+3. PR-LIKE CACHE SAVES (17tnw2b1f24, extended by17tnw2b1wvd). Rust cache
+   steps reachable from pull_request require the canonical main-ref comparison
+   (balanced outer parentheses allowed), or literal false to disable saving.
+   Flutter cache/pub-cache must stay off: each SDK copy is roughly1.72GB and a
+   pub copy39MB, enough to evict main entries from a10GB cache limit.
 
-   THE COST OF THIS RULE, written here so the failure message is not read as arbitrary: a
-   pull request can only restore what main holds. While main has no entry for a job (the
-   job is red on main -- a red job saves nothing --, the entry was evicted, or a lockfile
-   or toolchain change moved the key), every push of every pull request runs that job
-   cold, where before a PR's first push seeded an entry its later pushes reused. The remedy
-   is to keep main's entries whole (ClickUp 17tnw2b1waw), not to let pull requests save.
+   pull_request_target, workflow_run and issue_comment use the default-branch
+   ref, so the same ref comparison would be true on PR-like runs. Those event
+   paths require Rust save-if:false and Flutter caches off. Split a main-saving
+   workflow from them if needed; this checker does not evaluate arbitrary guards.
 
-   `subosito/flutter-action` is covered too, differently: it has no `save-if`, so the rule
-   is that neither `cache:` nor `pub-cache:` is switched on. Its SDK entry is 1.72 GB (the
-   pub entry 39 MB), the largest single entry in the repo: about 17.6% of a 10 GB limit,
-   and the first entry evicted at the limit (Inferred; mobile runs are rarer). The reason
-   is BYTES, not time -- what the cache saves in time is roughly a wash.
-
-   The rule is deliberately NOT "every rust-cache step in every workflow": a
-   `workflow_dispatch`-only workflow (windows-installer.yml) cannot run on a pull
-   request, historically allowed feature-branch dispatches. Installer workflows now reject
-   non-main dispatches (17tnw2bbhxf), but the cache rule remains PR-scoped. Only the
-   pull-request-reachable class is checked.
-   Exactly ONE spelling is accepted (`github.ref == 'refs/heads/main'`), so an inverted,
-   always-true or literal value cannot pass for a decision. `github.ref_name == 'main'`
-   is refused on purpose: it is also true for a tag named `main`.
+   The CLI follows repository-local reusable workflows and composite actions,
+   retaining the ROOT caller's event context. Diagnostics include the call chain.
+   Missing/malformed targets, path escapes, cycles and excessive graphs fail
+   closed. Manual-only workflows remain exempt because this is a PR-like policy.
+   Existing installer dispatch restrictions remain unchanged.
 
 4. SECRETS AND PROTECTED ENVIRONMENTS (17tnw2b2jqd). The translations publish workflow
    holds the Space's access key behind an environment with a named approver. What follows
@@ -118,23 +104,14 @@ Known gaps, so the boundary is written down rather than assumed:
      their action.yml at the versions ci.yml pins) and their entries are about 26 MB each
      per pull request, so there is no one-line fix worth enforcing. See ClickUp
      17tnw2b1f24.
-   - Check 3 treats `pull_request` and `pull_request_target` as the pull-request triggers
-     (both are pinned by self-test cases). For `pull_request_target` -- and `workflow_run`
-     and `issue_comment` -- GitHub sets `github.ref` to the DEFAULT branch, so the
-     canonical `save-if` is TRUE on every such run: the check accepts it and it protects
-     nothing there. `workflow_run`, `issue_comment`, `merge_group` and `pull_request_review`
-     are not treated as PR triggers at all, and an unfiltered `push:` trigger (which would
-     save from feature branches) is not detected. None of these exists in this repo today
-     (verified when written); ci.yml pushes on `main` only. Not hardened here.
-   - Check 3 reads the `steps:` of the file it is given. A `rust-cache` step inside a
-     reusable workflow (`on: workflow_call`, exempt because it has no PR trigger of its
-     own), a PR-triggered job that CALLS one (`jobs.<id>.uses:` has no steps), a local
-     composite action, or a renamed fork of the action is invisible. None exist
-     (verified when written: no `.github/actions/`, no `workflow_call`). Resolving them is
-     deliberately not attempted.
-   - The expression match is strict, so a legitimate narrower form (`... && matrix.os ==
-     ...`, a parenthesised copy of the canonical one) is rejected; the message names the
-     canonical form to use.
+   - Cache traversal is repository-local only: remote reusable workflows/actions,
+     renamed forks, node/docker action implementation and shell scripts that invoke
+     cache APIs remain review responsibilities. No network fetch or code execution.
+   - Other event classes and unfiltered feature-branch push saves remain outside
+     this PR-like cache policy; this repository pushes normal CI on main only.
+   - Expressions narrower than the canonical comparison remain unsupported unless
+     they differ only by balanced outer parentheses; no expression interpreter is
+     introduced. Literal false always disables Rust saves.
    TODO(86ak5rjh7): a job whose checkout happens inside a remote composite action, a
    reusable-workflow `uses:` call, or a bare `git clone` in a `run:` block is invisible
    to check 1, which matches on `uses: actions/checkout`. None exist in this repo today
@@ -147,7 +124,9 @@ from __future__ import annotations
 
 import argparse
 import glob
+from pathlib import Path
 import re
+import subprocess
 import sys
 
 import yaml
@@ -163,12 +142,9 @@ STATUS_FN = re.compile(r"\b(success|always|failure|cancelled)\s*\(")
 # Check 3. GitHub action names are case-insensitive, so the comparison is on lower().
 RUST_CACHE = "swatinem/rust-cache"
 FLUTTER_ACTION = "subosito/flutter-action"
-PR_TRIGGERS = {"pull_request", "pull_request_target"}
+DEFAULT_REF_PR_EVENTS = {"pull_request_target", "workflow_run", "issue_comment"}
+PR_TRIGGERS = {"pull_request"} | DEFAULT_REF_PR_EVENTS
 SAVE_IF_MAIN = "${{ github.ref == 'refs/heads/main' }}"
-# Exactly ONE main-only spelling, whole-value. A substring test would accept
-# `github.ref != 'refs/heads/main'` (inverted) and `true || github.ref == ...`. The
-# `github.ref_name == 'main'` form is NOT accepted: it is also true for a tag named main.
-MAIN_ONLY = re.compile(r"^\$\{\{\s*github\.ref\s*==\s*'refs/heads/main'\s*\}\}$")
 
 
 def job_uses_checkout(job: dict) -> bool:
@@ -269,59 +245,158 @@ def workflow_triggers(workflow: dict) -> set[str]:
     return set()
 
 
-def cache_save_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
-    """Cache-saving steps, in a pull-request-triggered workflow, that can save from a
-    pull request: `Swatinem/rust-cache` without the main-only `save-if`, and
-    `subosito/flutter-action` with its built-in `cache:` switched on.
+def main_only_comparison(value: str) -> bool:
+    """Only the exact ref comparison, optionally wrapped in balanced outer groups.
 
-    For rust-cache only the canonical main-only `save-if` passes; a missing `with:`, a
-    missing `save-if`, a literal `true`, or an inverted expression is a violation. For
-    flutter-action the action has no `save-if`, so any `cache` or `pub-cache` other than
-    absent or literal false is a violation (`pub-cache: true` re-enables the pub-cache
-    save even with `cache` off). A workflow with no pull-request trigger is exempt (see
-    the module docstring for why).
+    This is a deliberately narrow grammar, not an expression evaluator: operators,
+    substitutions, ref_name and non-outer parentheses remain unsupported.
     """
-    if not (workflow_triggers(workflow) & PR_TRIGGERS):
+    match = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", value, re.S)
+    if not match:
+        return False
+    body = match[1].strip()
+    while body.startswith("(") and body.endswith(")"):
+        body = body[1:-1].strip()
+    return re.fullmatch(r"github\.ref\s*==\s*'refs/heads/main'", body) is not None
+
+
+class WorkflowInputError(ValueError):
+    """An actionable, single-line configuration diagnostic for the CLI."""
+
+
+def read_mapping(path: Path, label: str) -> dict:
+    try:
+        document = yaml.safe_load(path.read_text())
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        location = f" line{mark.line + 1}:{mark.column + 1}" if mark else ""
+        problem = " ".join(str(getattr(error, "problem", None) or "invalid syntax").split())
+        raise WorkflowInputError(f"{label}: YAML{location}: {problem}") from None
+    except (OSError, UnicodeError) as error:
+        raise WorkflowInputError(f"{label}: cannot read configuration ({type(error).__name__})") from None
+    if not isinstance(document, dict):
+        raise WorkflowInputError(f"{label}: expected a YAML mapping")
+    return document
+
+
+def checked_jobs(workflow: dict, label: str):
+    jobs = workflow.get("jobs", {})
+    if not isinstance(jobs, dict):
+        raise WorkflowInputError(f"{label}: jobs must be a mapping")
+    for name, job in jobs.items():
+        if not isinstance(job, dict):
+            raise WorkflowInputError(f"{label}: job `{name}` must be a mapping")
+        checked_steps(job.get("steps", []), f"{label}: job `{name}`")
+    return jobs
+
+
+def checked_steps(steps, label: str):
+    if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+        raise WorkflowInputError(f"{label}: steps must be a list of mappings")
+    for step in steps:
+        if "with" in step and not isinstance(step["with"], dict):
+            raise WorkflowInputError(f"{label}: step with inputs must be a mapping")
+    return steps
+
+
+def cache_step_violations(step: dict, label: str, events: set[str]) -> list[str]:
+    action = str(step.get("uses", "")).split("@")[0].lower()
+    inputs = step.get("with") or {}
+    if action == FLUTTER_ACTION:
+        return [f"{label}: sets `{key}: {inputs[key]}` on subosito/flutter-action "
+                f"reachable from {', '.join(sorted(events))}; remove `{key}` or set it to false "
+                "so PR-like runs cannot save their own large cache (17tnw2b1f24)."
+                for key in ("cache", "pub-cache")
+                if str(inputs.get(key, "")).strip().lower() not in ("", "false")]
+    if action != RUST_CACHE:
+        return []
+    value = str(inputs.get("save-if", "")).strip()
+    if value.lower() == "false":
+        return []
+    if not (events & DEFAULT_REF_PR_EVENTS) and main_only_comparison(value):
+        return []
+    shown = f"`{value}`" if value else "not set (the default is to save)"
+    if events & DEFAULT_REF_PR_EVENTS:
+        correction = "These events use the default-branch ref, so a ref-only guard is unsafe; set `save-if: false`."
+    else:
+        correction = f"Set `save-if: {SAVE_IF_MAIN}` (outer grouping is allowed), or false to disable saving."
+    return [f"{label}: Swatinem/rust-cache `save-if` is {shown}, reachable from "
+            f"{', '.join(sorted(events))}. PR cache copies evict main's cache (17tnw2b1f24). {correction}"]
+
+
+def cache_save_violations(workflow: dict, filename: str = "<workflow>", repo_root: Path | None = None) -> list[str]:
+    """Check cache steps reachable from PR-like events, including local call chains.
+
+    Calls retain the root caller's github/event context. We never fetch remote code
+    or execute any workflow, action or expression. Paths must resolve inside the
+    checkout; cycles and excessive graphs fail closed rather than passing silently.
+    """
+    events = workflow_triggers(workflow) & PR_TRIGGERS
+    if not events:
         return []
     out = []
-    for name, job in (workflow.get("jobs") or {}).items():
-        if not isinstance(job, dict):
-            continue
-        for step in job.get("steps") or []:
-            if not isinstance(step, dict):
-                continue
-            action = str(step.get("uses", "")).split("@")[0].lower()
-            if action == FLUTTER_ACTION:
-                inputs = step.get("with") or {}
-                for key in ("cache", "pub-cache"):
-                    value = str(inputs.get(key, "")).strip().lower()
-                    if value in ("", "false"):
-                        continue
-                    label = step.get("name") or step.get("uses", "<step>")
-                    out.append(
-                        f"{filename}: job `{name}` step `{label}` sets `{key}: {value}` on "
-                        f"subosito/flutter-action in a workflow that runs on pull requests. "
-                        f"The action has no `save-if`, so every pull request would save its "
-                        f"own Flutter SDK copy (1.72 GB) and pub cache (39 MB): about 17.6% "
-                        f"of a 10 GB Actions cache limit, for a time saving that is roughly "
-                        f"a wash (17tnw2b1f24). Remove `cache:` and `pub-cache:`."
-                    )
-                continue
-            if action != RUST_CACHE:
-                continue
-            value = str((step.get("with") or {}).get("save-if", "")).strip()
-            if MAIN_ONLY.match(value):
-                continue
-            label = step.get("name") or step.get("uses", "<step>")
-            shown = f"`{value}`" if value else "not set (the default is to save)"
-            out.append(
-                f"{filename}: job `{name}` step `{label}` runs Swatinem/rust-cache in a "
-                f"workflow that runs on pull requests, but its `save-if` is {shown}. A pull "
-                f"request that saves writes its own private copy of the cache, which pushes "
-                f"the repo over its Actions cache limit (10 GB) and gets main's entries "
-                f"evicted (17tnw2b1f24). Set `save-if: {SAVE_IF_MAIN}` (that exact "
-                f"spelling) so pull requests only restore."
-            )
+    root = repo_root.resolve() if repo_root is not None else None
+    seen = set()
+
+    def local_target(reference, chain, composite):
+        if root is None:
+            # In-memory legacy self-tests inspect direct steps; CLI always supplies root.
+            return None
+        target = (root / reference[2:]).resolve()
+        if not target.is_relative_to(root):
+            raise WorkflowInputError(f"{chain} -> {reference}: local path resolves outside repository")
+        if composite:
+            choices = [target / "action.yml", target / "action.yaml"]
+            existing = [path for path in choices if path.is_file()]
+            if len(existing) != 1:
+                raise WorkflowInputError(f"{chain} -> {reference}: expected exactly one local action.yml/action.yaml")
+            target = existing[0].resolve()
+            if not target.is_relative_to(root):
+                raise WorkflowInputError(f"{chain} -> {reference}: action metadata resolves outside repository")
+        return target
+
+    def visit_target(reference, chain, stack, composite):
+        target = local_target(reference, chain, composite)
+        if target is None:
+            return
+        label = f"{chain} -> {target.relative_to(root)}"
+        if target in stack:
+            raise WorkflowInputError(f"{label}: local call cycle")
+        if target in seen:
+            return
+        if len(stack) >= 32 or len(seen) >= 256:
+            raise WorkflowInputError(f"{label}: local call graph exceeds bounded depth/size")
+        seen.add(target)
+        document = read_mapping(target, label)
+        if composite:
+            runs = document.get("runs")
+            if not isinstance(runs, dict):
+                raise WorkflowInputError(f"{label}: runs must be a mapping")
+            if runs.get("using") == "composite":
+                visit_steps(checked_steps(runs.get("steps", []), label), label, stack + (target,))
+        else:
+            if "workflow_call" not in workflow_triggers(document):
+                raise WorkflowInputError(f"{label}: local reusable workflow must declare workflow_call")
+            visit_workflow(document, label, stack + (target,))
+
+    def visit_steps(steps, chain, stack):
+        for index, step in enumerate(steps):
+            label = f"{chain} step `{step.get('name') or step.get('uses') or index + 1}`"
+            out.extend(cache_step_violations(step, label, events))
+            reference = str(step.get("uses", ""))
+            if reference.startswith("./"):
+                visit_target(reference, label, stack, composite=True)
+
+    def visit_workflow(document, chain, stack):
+        for name, job in checked_jobs(document, chain).items():
+            label = f"{chain}: job `{name}`"
+            reference = str(job.get("uses", ""))
+            if reference.startswith("./"):
+                visit_target(reference, label, stack, composite=False)
+            visit_steps(job.get("steps", []), label, stack)
+
+    stack = ((root / filename).resolve(),) if root is not None else ()
+    visit_workflow(workflow, filename, stack)
     return out
 
 
@@ -532,11 +607,11 @@ jobs:
     return cases
 
 
-def all_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
+def all_violations(workflow: dict, filename: str = "<workflow>", repo_root: Path | None = None) -> list[str]:
     return (
         permission_violations(workflow, filename)
         + gate_ordering_violations(workflow, filename)
-        + cache_save_violations(workflow, filename)
+        + cache_save_violations(workflow, filename, repo_root)
         + secret_violations(workflow, filename)
         + protected_environment_violations(workflow, filename)
         + installer_violations(workflow, filename)
@@ -867,9 +942,8 @@ jobs:
 """), 1),
         # Pins `pull_request_target` as a pull-request trigger. No other case uses it, so
         # dropping it from PR_TRIGGERS used to pass every case (Cody and Quinn, PR #148).
-        # NOTE: this only pins the DETECTION. On pull_request_target `github.ref` is the
-        # default branch, so the canonical save-if is not protective there; see the module
-        # docstring's Known gaps.
+        # Its canonical ref-only guard is also rejected by the on-disk event fixtures:
+        # pull_request_target uses the default ref rather than a PR merge ref.
         ("a pull_request_target-only workflow is a PR trigger: missing save-if is rejected", wf("""
 on: {pull_request_target: {}}
 jobs:
@@ -1054,12 +1128,22 @@ jobs:
             failures.append(f"{label}: expected no violation, got {found}")
         elif needle is not None and not any(needle in v for v in found):
             failures.append(f"{label}: expected {needle!r}, got {found}")
+    # Keep normal checker imports independent of the test harness. Use its real CLI
+    # only for --self-test, so importing this module from other policy tools is safe.
+    graph_check = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("test_workflow_cache_coverage.py")),
+         "--checker", str(Path(__file__).resolve())],
+        capture_output=True, text=True, timeout=120,
+    )
+    if graph_check.returncode:
+        failures.append((graph_check.stdout + graph_check.stderr).strip())
     if failures:
         print("check_workflows self-test FAILED:", file=sys.stderr)
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print(f"check_workflows self-test: {len(cases) + len(cases4) + len(packaging_cases)} cases passed")
+    print(f"check_workflows self-test: {len(cases) + len(cases4) + len(packaging_cases)} legacy cases passed")
+    print(graph_check.stdout.strip())
     return 0
 
 
@@ -1079,11 +1163,14 @@ def main() -> int:
         return 1
 
     found, total_jobs = [], 0
-    for path in paths:
-        with open(path) as fh:
-            workflow = yaml.safe_load(fh) or {}
-        total_jobs += len(workflow.get("jobs") or {})
-        found += all_violations(workflow, path)
+    try:
+        for path in paths:
+            workflow = read_mapping(Path(path), path)
+            total_jobs += len(checked_jobs(workflow, path))
+            found += all_violations(workflow, path, Path.cwd())
+    except WorkflowInputError as error:
+        print("workflow checks FAILED: " + " ".join(str(error).split()), file=sys.stderr)
+        return 1
 
     # A workflow that parses to zero jobs would otherwise pass vacuously.
     if total_jobs == 0:

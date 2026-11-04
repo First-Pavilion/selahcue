@@ -16,6 +16,7 @@ shipped slices each build their own rather than sharing a conftest.py — follow
 from __future__ import annotations
 
 import ast
+import shutil
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -71,8 +72,9 @@ ACCOUNTABLE = {
 
 
 API_ROOT = Path(selahcue_api.__file__).resolve().parent
-SEED_MIGRATION = (
-    API_ROOT / "apps" / "catalogue" / "migrations" / "0002_seed_catalogue_reference_data.py"
+SEED_MIGRATIONS = frozenset(
+    API_ROOT / "apps" / "catalogue" / "migrations" / name
+    for name in ("0002_seed_catalogue_reference_data.py", "0007_weekly_catalogue_reference_data.py")
 )
 
 # Dimension KEYS are a wire contract (FR-545: the client is written against them), so
@@ -80,7 +82,7 @@ SEED_MIGRATION = (
 SEAT_KEY = "device_instances"
 SCREEN_KEY = "screen_outputs"
 NDI_KEY = "ndi_outputs"
-STT_KEY = "stt_minutes_per_period"
+STT_KEY = "cloud_transcript_minutes_per_week"
 WATERMARK_KEY = "watermark"
 
 
@@ -210,7 +212,7 @@ def _string_constants(path: Path) -> set[str]:
     """Every whole string literal in a module, case-folded.
 
     Whole strings, not substrings: a docstring that mentions Platinum in a sentence is
-    documentation, while `== "PLATINUM"` is the branch this test exists to catch.
+    documentation, while `== "CORE"` is the branch this test exists to catch.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     return {
@@ -238,17 +240,14 @@ def test_no_plan_name_is_hardcoded_in_the_api_source():
     # demonstrably able to find a tier name, or "no offenders" means only that the sweep is
     # dead. If the seed migration is renamed or its names change, this fails loudly here
     # rather than silently disarming the sweep below.
-    assert SEED_MIGRATION.exists(), f"{SEED_MIGRATION} is missing; the sweep's control is gone"
-    found_in_seed = plan_names & _string_constants(SEED_MIGRATION)
-    assert found_in_seed, (
-        "the sweep found no seeded plan name inside the seed migration, so it is not "
-        "actually capable of detecting a hardcoded tier name anywhere else"
-    )
+    for seed in SEED_MIGRATIONS:
+        assert seed.exists(), f"{seed} is missing; seed sweep control is gone"
+        assert plan_names & _string_constants(seed), "seed migration control found no catalogue name"
 
     offenders = []
     scanned = set()
     for path in sorted(API_ROOT.rglob("*.py")):
-        if path == SEED_MIGRATION:
+        if path in SEED_MIGRATIONS:
             continue
         scanned.add(path)
         for literal in plan_names & _string_constants(path):
@@ -298,7 +297,7 @@ def test_changing_a_grant_value_takes_effect_without_a_release():
     plan = Plan.objects.get(code="PRO")
     key = _license_key(tag="stt")
     _assign(key, plan)
-    assert resolve_entitlement(key).values[STT_KEY] == 300
+    assert resolve_entitlement(key).values[STT_KEY] == 80
 
     grant = PlanGrant.objects.get(plan=plan, dimension=_dimension(STT_KEY))
     grant.raw_value = "480"
@@ -317,11 +316,11 @@ def test_a_signal_bypassing_edit_still_propagates_once_the_ttl_lapses(monkeypatc
     plan = Plan.objects.get(code="PRO")
     key = _license_key(tag="ttl")
     _assign(key, plan)
-    assert resolve_entitlement(key).values[NDI_KEY] == 5
+    assert resolve_entitlement(key).values[NDI_KEY] == 0
 
     # No signal fires for this, on purpose — that is the blind spot under test.
     PlanGrant.objects.filter(plan=plan, dimension=_dimension(NDI_KEY)).update(raw_value="9")
-    assert resolve_entitlement(key).values[NDI_KEY] == 5, (
+    assert resolve_entitlement(key).values[NDI_KEY] == 0, (
         "the cached entry was not actually being served, so the TTL below proves nothing"
     )
 
@@ -332,11 +331,11 @@ def test_a_signal_bypassing_edit_still_propagates_once_the_ttl_lapses(monkeypatc
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        ("FREE", {SEAT_KEY: 1, SCREEN_KEY: 2, NDI_KEY: 0, STT_KEY: 30, WATERMARK_KEY: True}),
-        ("PRO", {SEAT_KEY: 3, SCREEN_KEY: 5, NDI_KEY: 5, STT_KEY: 300, WATERMARK_KEY: False}),
+        ("FREE", {SEAT_KEY: 1, SCREEN_KEY: 2, NDI_KEY: 0, STT_KEY: 20, "sermon_notes_per_week": 1, WATERMARK_KEY: True}),
+        ("PRO", {SEAT_KEY: 1, SCREEN_KEY: 2, NDI_KEY: 0, STT_KEY: 80, "sermon_notes_per_week": 10, WATERMARK_KEY: False}),
         (
-            "PLATINUM",
-            {SEAT_KEY: 7, SCREEN_KEY: 10, NDI_KEY: 10, STT_KEY: 600, WATERMARK_KEY: False},
+            "CORE",
+            {SEAT_KEY: 1, SCREEN_KEY: 2, NDI_KEY: 0, STT_KEY: 50, "sermon_notes_per_week": 5, WATERMARK_KEY: False},
         ),
     ],
 )
@@ -351,7 +350,7 @@ def test_a_brand_new_tier_is_honoured_with_no_code_change():
     """A tier that did not exist when this code was written resolves correctly, which is
     only possible if nothing enumerates tiers."""
     plan = Plan.objects.create(
-        code="RUBY", display_name="Ruby", sort_order=40, **ACCOUNTABLE
+        code="RUBY", rank=100, display_name="Ruby", sort_order=40, **ACCOUNTABLE
     )
     novel = {SEAT_KEY: "11", SCREEN_KEY: "13", NDI_KEY: "17", STT_KEY: "1999", WATERMARK_KEY: "false"}
     for dimension_key, raw_value in novel.items():
@@ -369,6 +368,7 @@ def test_a_brand_new_tier_is_honoured_with_no_code_change():
         SCREEN_KEY: 13,
         NDI_KEY: 17,
         STT_KEY: 1999,
+        "sermon_notes_per_week": 0,
         WATERMARK_KEY: False,
     }
 
@@ -379,21 +379,27 @@ def test_a_brand_new_tier_is_honoured_with_no_code_change():
 def test_an_explicit_assignment_beats_the_legacy_scope_alias():
     PlanScopeAlias.objects.create(feature_scope="CHURCH", plan=Plan.objects.get(code="FREE"))
     key = _license_key(tag="prec1", feature_scope="CHURCH")
-    _assign(key, Plan.objects.get(code="PLATINUM"))
-    assert resolve_entitlement(key).values[SCREEN_KEY] == 10
+    _assign(key, Plan.objects.get(code="CORE"))
+    assert resolve_entitlement(key).plan.code == "CORE"
+    assert resolve_entitlement(key).values[STT_KEY] == 50
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 2
 
 
 def test_a_scope_alias_beats_the_fallback():
     PlanScopeAlias.objects.create(feature_scope="CHURCH", plan=Plan.objects.get(code="PRO"))
     key = _license_key(tag="prec2", feature_scope="CHURCH")
-    assert resolve_entitlement(key).values[SCREEN_KEY] == 5
+    assert resolve_entitlement(key).plan.code == "PRO"
+    assert resolve_entitlement(key).values[STT_KEY] == 80
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 2
 
 
 def test_the_scope_alias_lookup_is_case_insensitive():
     """Pre-catalogue rows were written by two different paths and are not uniformly cased."""
     PlanScopeAlias.objects.create(feature_scope="CHURCH", plan=Plan.objects.get(code="PRO"))
     key = _license_key(tag="prec3", feature_scope="church")
-    assert resolve_entitlement(key).values[SCREEN_KEY] == 5
+    assert resolve_entitlement(key).plan.code == "PRO"
+    assert resolve_entitlement(key).values[STT_KEY] == 80
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 2
 
 
 def test_an_unmapped_licence_falls_back_to_the_designated_plan():
@@ -410,7 +416,7 @@ def test_a_licence_override_beats_its_plans_value():
     resolved = resolve_entitlement(key)
     assert resolved.values[NDI_KEY] == 9
     # Only the overridden dimension moves.
-    assert resolved.values[SCREEN_KEY] == 5
+    assert resolved.values[SCREEN_KEY] == 2
 
 
 def test_only_one_plan_may_be_the_fallback():
@@ -503,7 +509,7 @@ def test_a_healthy_resolution_does_not_warn_positive_control(caplog):
     assert resolved.plan is not None, (
         "the premise failed - nothing resolved, so 'it did not warn' proves nothing"
     )
-    assert resolved.values[SCREEN_KEY] == 5
+    assert resolved.values[SCREEN_KEY] == 2
     assert not [r for r in caplog.records if "resolved no plan" in r.getMessage()], (
         "a perfectly healthy resolution logged the unseeded-catalogue warning, which makes "
         "the warning useless for alerting"
@@ -520,7 +526,7 @@ def test_an_unreadable_grant_value_degrades_to_the_dimension_default():
 
     resolved = resolve_entitlement(key)
     assert resolved.values[NDI_KEY] == 0, "a typo in one field should cost that field, nothing more"
-    assert resolved.values[SCREEN_KEY] == 5
+    assert resolved.values[SCREEN_KEY] == 2
 
 
 def test_a_deactivated_dimension_simply_disappears():
@@ -533,7 +539,7 @@ def test_a_deactivated_dimension_simply_disappears():
 
     resolved = resolve_entitlement(key)
     assert NDI_KEY not in resolved.values
-    assert resolved.values[SCREEN_KEY] == 5, "removing one grant must not disturb the others"
+    assert resolved.values[SCREEN_KEY] == 2, "removing one grant must not disturb the others"
 
 
 # --- The cap assert, and where it sits (NFR-024) --------------------------------------------
@@ -651,20 +657,18 @@ def test_a_dimension_named_like_a_restricted_field_is_refused_a_place_in_the_pay
     assert "content" not in resolved.values
     # Positive control: the benign dimensions still resolve, so "absent" is not just a
     # dead resolver.
-    assert resolved.values[SCREEN_KEY] == 5
+    assert resolved.values[SCREEN_KEY] == 2
 
 
 def test_unlimited_and_absent_are_different_states_with_different_encodings():
-    """Collapsing them onto one value is how a payload ends up contradicting itself: a
-    client cannot tell "granted without a ceiling" from "the catalogue says nothing"."""
-    key = _license_key(tag="unlimited", feature_scope="NOT-MAPPED", device_limit=4)
+    plan = Plan.objects.create(code="TEST-UNLIMITED", display_name="Test unrestricted fixture", rank=100, **ACCOUNTABLE)
+    for key in (SCREEN_KEY, NDI_KEY):
+        PlanGrant.objects.create(plan=plan, dimension=_dimension(key), raw_value="unlimited", **ACCOUNTABLE)
+    key = _license_key(tag="unlimited", device_limit=4)
+    _assign(key, plan)
     resolved = resolve_entitlement(key)
-
-    # `unlimited` -> present, None. The bridge plan leaves outputs uncapped, exactly as
-    # they were before the catalogue existed.
     assert SCREEN_KEY in resolved.values and resolved.values[SCREEN_KEY] is None
     assert NDI_KEY in resolved.values and resolved.values[NDI_KEY] is None
-    # No grant and no dimension default -> the key is ABSENT, not null.
     assert SEAT_KEY not in resolved.values
 
 
@@ -723,7 +727,7 @@ def test_the_grant_cache_is_bounded_by_entry_count():
     plans = []
     for index in range(MAX_CACHE_ENTRIES + 1):
         plan = Plan.objects.create(
-            code=f"BOUND-{index}", display_name=f"Bound {index}", **ACCOUNTABLE
+            code=f"BOUND-{index}", rank=100+index, display_name=f"Bound {index}", **ACCOUNTABLE
         )
         PlanGrant.objects.create(
             plan=plan, dimension=dimension, raw_value=str(index + 1), **ACCOUNTABLE
@@ -781,7 +785,7 @@ def test_one_cache_entry_cannot_hold_unboundedly_many_dimensions():
     # Positive control: everything inside the cap is still emitted, so "dropped" is not
     # just a resolver that stopped working.
     assert created[0].key in values
-    assert values[SCREEN_KEY] == 5
+    assert values[SCREEN_KEY] == 2
 
 
 # --- The operator lever --------------------------------------------------------------------
@@ -800,7 +804,7 @@ def test_set_plan_grant_changes_the_value_and_audits_it():
         ),
     )
     assert result.grant.raw_value == "480"
-    assert result.previous_raw_value == "300"
+    assert result.previous_raw_value == "80"
     assert AuditEvent.objects.filter(action="catalogue.plan_grant_set").count() == before + 1
 
     key = _license_key(tag="lever")
@@ -861,7 +865,7 @@ def test_set_plan_grant_refuses_a_value_the_dimension_cannot_express():
             ),
         )
     assert caught.value.code == ErrorCode.VALIDATION_FAILED
-    assert PlanGrant.objects.get(plan__code="PRO", dimension__key=NDI_KEY).raw_value == "5"
+    assert PlanGrant.objects.get(plan__code="PRO", dimension__key=NDI_KEY).raw_value == "0"
 
 
 def test_set_plan_grant_reports_an_unknown_plan_as_not_found():
@@ -1156,12 +1160,12 @@ def test_one_licences_override_never_leaks_to_another_on_the_same_plan():
     assert resolve_entitlement(tenant_a).values[NDI_KEY] == 99, (
         "tenant A's override did not apply, so this test cannot detect it leaking"
     )
-    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 5, (
+    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 0, (
         "tenant B inherited tenant A's per-licence override from the shared plan cache"
     )
     # Order-independent: resolving B first must not change the answer for A either.
     GRANT_CACHE.clear()
-    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 5
+    assert resolve_entitlement(tenant_b).values[NDI_KEY] == 0
     assert resolve_entitlement(tenant_a).values[NDI_KEY] == 99
 
 
@@ -1203,7 +1207,7 @@ def test_a_bare_plan_assignment_create_is_refused_without_an_actor_and_reason():
     from django.db import IntegrityError, transaction
 
     key = _license_key(tag="bareassign")
-    plan = Plan.objects.get(code="PLATINUM")
+    plan = Plan.objects.get(code="CORE")
     for kwargs in (
         {"assigned_by_actor_id": "", "reason": "Long enough reason."},
         {"assigned_by_actor_id": "staff_ops_1", "reason": "short"},
@@ -1235,7 +1239,7 @@ def test_a_bare_plan_grant_create_is_refused_without_an_actor_and_reason():
     """
     from django.db import IntegrityError, transaction
 
-    plan = Plan.objects.get(code="PLATINUM")
+    plan = Plan.objects.get(code="CORE")
     dimension = _dimension(NDI_KEY)
     PlanGrant.objects.filter(plan=plan, dimension=dimension).delete()
     for kwargs in (
@@ -1263,7 +1267,7 @@ def test_a_bare_plan_create_is_refused_without_an_actor_and_reason():
     ):
         with pytest.raises(IntegrityError):
             with transaction.atomic():
-                Plan.objects.create(code="ANONYMOUS", display_name="Anonymous", **kwargs)
+                Plan.objects.create(code="ANONYMOUS", rank=100, display_name="Anonymous", **kwargs)
     assert not Plan.objects.filter(code="ANONYMOUS").exists()
 
 
@@ -1275,6 +1279,7 @@ def test_an_attributed_plan_and_plan_grant_write_is_still_accepted():
     """
     plan = Plan.objects.create(
         code="ATTRIBUTED",
+        rank=100,
         display_name="Attributed",
         changed_by_actor_id="staff_ops_1",
         reason="Created for the accountability positive control.",
@@ -1323,14 +1328,14 @@ def test_set_license_plan_assignment_moves_the_plan_and_audits_it():
         SetLicensePlanAssignmentData(
             idempotency_key="catalogue-assign-1",
             license_key_id=str(key.id),
-            plan_code="PLATINUM",
+            plan_code="CORE",
             reason="Upgraded after the pilot concluded.",
         ),
     )
-    assert result.assignment.plan.code == "PLATINUM"
+    assert result.assignment.plan.code == "CORE"
     assert result.assignment.assigned_by_actor_id == "staff_ops_1"
     assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == before + 1
-    assert resolve_entitlement(key).values[SCREEN_KEY] == 10
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 2
 
 
 def test_set_license_plan_assignment_requires_the_entitlement_permission():
@@ -1338,7 +1343,7 @@ def test_set_license_plan_assignment_requires_the_entitlement_permission():
     data = SetLicensePlanAssignmentData(
         idempotency_key="catalogue-assign-2",
         license_key_id=str(key.id),
-        plan_code="PLATINUM",
+        plan_code="CORE",
         reason="Attempted without the permission.",
     )
     with pytest.raises(SafeAPIError) as caught:
@@ -1352,7 +1357,7 @@ def test_set_license_plan_assignment_replays_idempotently():
     data = SetLicensePlanAssignmentData(
         idempotency_key="catalogue-assign-3",
         license_key_id=str(key.id),
-        plan_code="PLATINUM",
+        plan_code="CORE",
         reason="Upgraded after the pilot concluded.",
     )
     actor = _staff(StaffPermission.GRANT_ENTITLEMENT)
@@ -1364,42 +1369,27 @@ def test_set_license_plan_assignment_replays_idempotently():
     assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == audited
 
 
-# --- The fallback is not assignable either --------------------------------------------------
-#
-# Moving a licence ONTO the fallback grants it the catalogue's most permissive values for
-# the rest of its life, signed and cached offline — identical in effect to issuing onto it.
-# Closing only the issuance door would leave the same hole open one function away.
+# --- The least-ranked fallback is explicitly assignable -------------------------------------
 
 
-def test_assigning_a_licence_to_the_designated_fallback_is_refused():
+def test_assigning_a_licence_to_the_lowest_fallback_is_allowed_and_audited():
     key = _license_key(tag="govassignfallback")
     fallback = Plan.objects.get(is_fallback=True)
-    before = LicensePlanAssignment.objects.filter(license_key=key).count()
-
-    with pytest.raises(SafeAPIError) as caught:
-        set_license_plan_assignment(
-            _staff(StaffPermission.GRANT_ENTITLEMENT),
-            SetLicensePlanAssignmentData(
-                idempotency_key="catalogue-assign-fallback",
-                license_key_id=str(key.id),
-                plan_code=fallback.code,
-                reason="Attempted move onto the pre-catalogue plan.",
-            ),
-        )
-
-    assert caught.value.code == ErrorCode.POLICY_DENIED
-    assert "fallback" in str(caught.value).lower()
-    # The ENTITY: no assignment row was written, and none was left half-written.
-    assert LicensePlanAssignment.objects.filter(license_key=key).count() == before
-    assert not LicensePlanAssignment.objects.filter(license_key=key, plan=fallback).exists()
+    assert fallback.rank == Plan.objects.order_by("rank").first().rank
+    before = AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count()
+    result = set_license_plan_assignment(_staff(StaffPermission.GRANT_ENTITLEMENT),
+        SetLicensePlanAssignmentData(idempotency_key="catalogue-assign-fallback", license_key_id=str(key.pk),
+            plan_code=fallback.code, reason="Explicit least-ranked plan assignment."))
+    assert result.assignment.plan_id == fallback.pk
+    assert AuditEvent.objects.filter(action="catalogue.license_plan_assigned").count() == before + 1
 
 
 def test_assigning_a_licence_to_a_sellable_plan_still_works():
     """POSITIVE CONTROL for the refusal above — otherwise a `set_license_plan_assignment`
     that refuses everything would satisfy it just as well."""
     key = _license_key(tag="govassignsellable")
-    plan = Plan.objects.get(code="PLATINUM")
-    assert plan.is_fallback is False, "premise: PLATINUM is the fallback, so this proves nothing"
+    plan = Plan.objects.get(code="CORE")
+    assert plan.is_fallback is False, "premise: the selected plan is the fallback, so this proves nothing"
 
     result = set_license_plan_assignment(
         _staff(StaffPermission.GRANT_ENTITLEMENT),
@@ -1411,7 +1401,7 @@ def test_assigning_a_licence_to_a_sellable_plan_still_works():
         ),
     )
 
-    assert result.assignment.plan.code == "PLATINUM"
+    assert result.assignment.plan.code == "CORE"
     assert LicensePlanAssignment.objects.filter(license_key=key, plan=plan).exists()
 
 
@@ -1517,7 +1507,7 @@ def test_an_upper_case_scope_alias_is_accepted_and_consulted():
     """Positive control for the constraint above."""
     PlanScopeAlias.objects.create(feature_scope="CHURCH", plan=Plan.objects.get(code="PRO"))
     key = _license_key(tag="aliasok", feature_scope="church")
-    assert resolve_entitlement(key).values[SCREEN_KEY] == 5
+    assert resolve_entitlement(key).values[SCREEN_KEY] == 2
 
 
 # --- Value coercion edges ---------------------------------------------------------------------
@@ -1616,3 +1606,16 @@ def test_overrides_cannot_push_the_merged_map_past_the_stated_cap():
     # met by discarding every override.
     assert existing < MAX_GRANT_DIMENSIONS
     assert any(dimension.key in values for dimension in created)
+
+
+def test_core_runtime_branch_mutation_is_detected_by_the_real_tier_sweep(tmp_path, monkeypatch):
+    source_root = API_ROOT
+    clone = tmp_path / "runtime-source"
+    shutil.copytree(source_root, clone, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    monkeypatch.setitem(globals(), "API_ROOT", clone)
+    monkeypatch.setitem(globals(), "SEED_MIGRATIONS", frozenset(clone/p.relative_to(source_root) for p in SEED_MIGRATIONS))
+    test_no_plan_name_is_hardcoded_in_the_api_source()  # unmutated positive control
+    path = clone / "apps/catalogue/services.py"
+    path.write_text(path.read_text()+'\n\ndef forbidden_branch(plan):\n    return plan.code == "CORE"\n')
+    with pytest.raises(AssertionError, match="apps/catalogue/services.py: .core."):
+        test_no_plan_name_is_hardcoded_in_the_api_source()

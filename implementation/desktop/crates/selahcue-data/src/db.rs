@@ -366,3 +366,89 @@ impl Database {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod checkpoint_tests {
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    use rusqlite::Connection;
+
+    use super::Database;
+
+    thread_local! {
+        // SQLite invokes the handler synchronously on this thread. A sibling
+        // test cannot manufacture a positive control or hide a busy attempt.
+        static BUSY_ATTEMPTS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    fn record_busy_attempt(_previous_attempts: i32) -> bool {
+        BUSY_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
+        false // observe the boundary without waiting for a wall-clock timeout
+    }
+
+    fn pinned_wal() -> (tempfile::TempDir, Database, Connection) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("checkpoint.sqlite");
+        let db = Database::open(&path).unwrap();
+        db.conn()
+            .execute_batch("CREATE TABLE checkpoint_probe (value INTEGER); INSERT INTO checkpoint_probe VALUES (1);")
+            .unwrap();
+        let reader = Connection::open(&path).unwrap();
+        reader
+            .execute_batch("BEGIN; SELECT * FROM checkpoint_probe;")
+            .unwrap();
+        db.conn()
+            .execute_batch("INSERT INTO checkpoint_probe VALUES (2);")
+            .unwrap();
+        (directory, db, reader)
+    }
+
+    #[test]
+    fn wal_checkpoint_disables_busy_handler_under_reader_contention() {
+        let (_directory, db, reader) = pinned_wal();
+        db.conn().busy_handler(Some(record_busy_attempt)).unwrap();
+        BUSY_ATTEMPTS.with(|attempts| attempts.set(0));
+
+        // Positive control: this exact pinned reader makes an unguarded
+        // TRUNCATE consult the handler. A vacuous fixture cannot pass.
+        let busy: i64 = db
+            .conn()
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy, 1, "positive control must encounter a pinned WAL");
+        assert!(BUSY_ATTEMPTS.with(Cell::get) > 0);
+
+        BUSY_ATTEMPTS.with(|attempts| attempts.set(0));
+        db.try_checkpoint_truncate();
+        assert_eq!(
+            BUSY_ATTEMPTS.with(Cell::get),
+            0,
+            "best-effort checkpoint must disable the busy handler, not wait for readers"
+        );
+        reader.execute_batch("COMMIT;").unwrap();
+    }
+
+    #[test]
+    fn wal_checkpoint_restores_busy_timeout_and_truncates_after_reader_release() {
+        let (directory, db, reader) = pinned_wal();
+        db.conn().busy_timeout(Duration::from_millis(137)).unwrap();
+        db.try_checkpoint_truncate();
+        let restored_ms: i64 = db
+            .conn()
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            restored_ms, 137,
+            "checkpoint must restore its caller's timeout"
+        );
+        let wal = directory.path().join("checkpoint.sqlite-wal");
+        assert!(std::fs::metadata(&wal).unwrap().len() > 0);
+
+        // A no-op checkpoint must not pass by always skipping truncation.
+        reader.execute_batch("COMMIT;").unwrap();
+        db.try_checkpoint_truncate();
+        assert_eq!(std::fs::metadata(wal).unwrap().len(), 0);
+    }
+}

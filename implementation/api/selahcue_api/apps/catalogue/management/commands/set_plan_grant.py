@@ -1,12 +1,12 @@
 """Change what a plan grants on one dimension, from the command line.
 
-The operator lever behind FR-544: renaming a tier or moving Pro's STT allowance from 5
-hours to 8 is this command, not a release. It is a thin wrapper over
+The operator lever behind FR-544: editing a weekly allowance is a data operation,
+not a release. It is a thin wrapper over
 `catalogue.services.set_plan_grant`, so it inherits the permission check, the idempotency
 handling and the audit record rather than writing rows behind them.
 
-    manage.py set_plan_grant --plan PRO --dimension stt_minutes_per_period \
-        --value 480 --actor staff_ops_1 --reason "AI subscription upgraded to 8h."
+    manage.py set_plan_grant --plan CORE --dimension sermon_notes_per_week \
+        --value 6 --actor staff_ops_1 --reason "Approved weekly note allowance update."
 """
 
 from __future__ import annotations
