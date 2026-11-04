@@ -50,7 +50,7 @@ Fresh main c0325d52e809847fac141a605b74a7e6d7de7021. Marketing checkout persists
 | C-001 | yes | Marketing token is read-only, checkout credentials are not persisted and high advisories fail without waivers | focused hardening tests; actionlint; npm audit --audit-level=high | all exit 0; negative fixtures fail | docs/delivery/evidence/17tnw2b0x3m/results.md | PASS |
 | C-002 | yes | Node 22 production image builds with install scripts disabled | npm ci; make marketing-check; docker build | all exit 0 | docs/delivery/evidence/17tnw2b0x3m/results.md | PASS |
 | C-003 | yes | CSP applies to app, assets and errors; all routes render without CSP violations and injected script is blocked | production CSP browser harness Chromium and WebKit | exits 0; routes and positive/negative probes pass | docs/delivery/evidence/17tnw2b0x3m/results.md | PASS |
-| C-004 | yes | Existing marketing/browser and workflow controls remain passing | required marketing suites and workflow policy scripts | all exit 0 | docs/delivery/evidence/17tnw2b0x3m/results.md | PASS |
+| C-004 | yes | Existing marketing/browser and workflow controls remain passing; notice-only build input reaches CI while ordinary docs stay excluded | required marketing suites and workflow policy scripts | all exit 0 | docs/delivery/evidence/17tnw2b0x3m/results.md | PASS |
 | C-005 | yes | Four independent reviews and actual CI approve current head | root Cody Shadow Quinn Vera and GitHub checks | four PASS and CI green | pending root review | PENDING |
 
 ## Verification plan
@@ -87,6 +87,15 @@ Fresh main c0325d52e809847fac141a605b74a7e6d7de7021. Marketing checkout persists
 - New evidence: docs/delivery/evidence/17tnw2b0x3m/verifier-status.json and results.md.
 - Decision: gate-review
 
+### Iteration 4
+- Target criterion: C-004 and C-005 remediation after all four reviewers requested the same trigger correction.
+- Hypothesis: exact canonical notice exceptions after both event exclusions make the downstream marketing build route reachable without waking ordinary documentation.
+- Change or investigation: added notice-positive and adjacent markdown/JSON/backup-negative ordered path cases before changing workflow; then re-included only docs/release/pilot-registration/notice.json on push and pull_request. Preserve all original20 path cases and browser assertions.
+- Verifier executed: real checker RED exit1 on missing notice push route; GREEN28 path cases; real scratch CLI mutants each remove one event exception and fail with its named notice diagnostic. Full npm test1250 pass, existing118 workflow self-tests, normal workflow/minutes/actionlint and shared visual/audit gate pass. Initial sandbox-only loopback/Vite temporary-file denials were rerun with scoped permission; all final commands exit0 individually.
+- Result: local correction verified; current-source independent review refresh and CI remain root-owned, C-005 PENDING. No product, Docker, CSP, font, browser or tolerance changes in remediation; prior actual browser/image evidence retained for byte-unchanged scope.
+- New evidence: docs/delivery/evidence/17tnw2b0x3m/results.md and trigger-mutations.json. Root posted aggregate PR review6620739326 and UI remediation start comment; ticket In Progress read back.
+- Decision: gate-review; fetch/integrate updated main and rerun affected controls before final immutable handoff.
+
 ## Risks and rollback
 - Risks: overly restrictive CSP could block fonts or Vue styles; require actual-browser checks.
 - Rollback or recovery: revert this ticket commit; no deployment performed.
@@ -97,7 +106,7 @@ Fresh main c0325d52e809847fac141a605b74a7e6d7de7021. Marketing checkout persists
 ## Final evaluation
 - Validator command: python3 /Users/m.oluwole/.agents/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b0x3m.md --completion
 - Validator result: structural exits0; completion intentionally exits1 while mandatory C-005 independent reviews/actual CI remain pending
-- Independent verification result: root to dispatch Cody, Shadow, Quinn and Vera on frozen head; actual GitHub CI pending
+- Independent verification result: first round all four requested the same notice trigger correction; root must refresh all four against corrected head and actual current CI
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-005 pending four independent reviews and actual CI; existing Linux Home harness issue requires separate fix before green CI
+- Remaining failed or blocked criteria: C-005 pending four refreshed independent reviews and actual current-source/target CI; separately tracked Home harness17tnw2bcadw remains outside this correction
 - ClickUp final evidence comment: root handoff comment will link the published PR and this evidence

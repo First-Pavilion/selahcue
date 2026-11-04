@@ -21,5 +21,39 @@
   "secondary": 0,
   "responsive-chromium": 0,
   "auth-states-final": 0,
-  "responsive-webkit-final": 0
+  "responsive-webkit-final": 0,
+  "review-remediation": {
+    "visual-green": {
+      "exit": 0,
+      "elapsed_seconds": 4.151
+    },
+    "workflow-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.193
+    },
+    "workflow": {
+      "exit": 0,
+      "elapsed_seconds": 0.144
+    },
+    "minutes-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.67
+    },
+    "minutes": {
+      "exit": 0,
+      "elapsed_seconds": 0.194
+    },
+    "actionlint": {
+      "exit": 0,
+      "elapsed_seconds": 0.486
+    },
+    "unit-tests": {
+      "exit": 0,
+      "elapsed_seconds": 4.702
+    },
+    "diff": {
+      "exit": 0,
+      "elapsed_seconds": 0.029
+    }
+  }
 }

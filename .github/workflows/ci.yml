@@ -34,8 +34,8 @@ name: ci
 # to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
 # that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
 
-# Docs-only changes skip the whole workflow (saves runner minutes; docs carry no code to
-# verify; not even the lint job runs, which is cheaper than running it). A `changes` job
+# Ordinary docs-only changes skip this workflow. Visual audit data and the canonical
+# marketing privacy notice are executable/build inputs, so their exact paths opt in. A `changes` job
 # (below) further gates the desktop vs mobile jobs by path, so a single-side commit doesn't
 # pay for the other side.
 # NOTE: this gates DOWNSTREAM jobs with `if:`, so a skipped required check would
@@ -49,13 +49,14 @@ on:
     # Release tags run the full tier (Windows included). GitHub does not evaluate path
     # filters for tag pushes, so `paths` below cannot swallow a tag.
     tags: ["v[0-9]*"]
-    # Ordered patterns keep ordinary docs cheap, but visual audit data is a gate input.
+    # Ordered patterns retain only the known visual-audit and marketing notice inputs.
     paths:
       - "**"
       - "!docs/**"
       - "!**.md"
       - "!TODO"
       - "docs/design/visual-parity/**"
+      - "docs/release/pilot-registration/notice.json"
   pull_request:
     # `labeled` is here so that adding `full-ci` to an OPEN pull request starts the Windows
     # legs at once, instead of waiting for the next push (which would cost a run). Every
@@ -63,13 +64,14 @@ on:
     # are all skipped by the guard on `changes` and `lint-workflows`: no runner starts, so it
     # bills nothing, and the concurrency group below keeps it from cancelling a real run.
     types: [opened, synchronize, reopened, labeled]
-    # Ordered patterns keep ordinary docs cheap, but visual audit data is a gate input.
+    # Ordered patterns retain only the known visual-audit and marketing notice inputs.
     paths:
       - "**"
       - "!docs/**"
       - "!**.md"
       - "!TODO"
       - "docs/design/visual-parity/**"
+      - "docs/release/pilot-registration/notice.json"
   # The Windows legs, weekly: the one scheduled run that exercises the OS a trimmed push to
   # `main` no longer tests. Sunday 03:17 UTC (off the Monday 06:00 canary and Dependabot
   # slots, and off the top of the hour). A scheduled run always runs on the default branch.

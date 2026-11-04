@@ -63,3 +63,13 @@ Figma measurement lacks Core/Secondary's measured frame compensation. Local macO
 Home260 checks pass; actual Linux CI remains an independent gate, with a separate
 minimal harness-fix ticket/PR owned by root/Diego. No product CSS or geometry tolerances
 were changed or waived in this hardening ticket.
+
+## Review remediation — iteration4
+
+All four first-round reviews of f76e6a9f identified one root cause: the downstream notice JSON area filter could not run because both top-level events excluded docs/**. The active ticket remained In Progress; root posted the consolidated review and remediation start via authenticated ClickUp UI after connector quota exhaustion.
+
+The regression was added first: the real checker exited1 naming push and the canonical notice. Both event lists now re-include only `docs/release/pilot-registration/notice.json` after their exclusions. The existing checker explicitly recognizes that path and preserves its original20 cases, adding8 cases across push/PR: the notice is included; neighboring markdown, other JSON and a notice backup remain excluded. The complete28-case check passes. In scratch copies, removing either exception makes the actual CLI exit1 naming the corresponding event and notice; compact receipts are in `trigger-mutations.json`. These verify committed ordered configuration, not delivery of a synthetic GitHub event.
+
+Final focused rerun: `npm test`1250 pass/0 fail; workflow118 self-tests and6workflow/19job normal checks; minute self-test/rules; actionlint; shared visual/audit check,28 path cases and browser wiring all exit0. Shared visual gate measured3.968s, below its unchanged10-second cap. Each exit is captured individually under `verifier-status.json` review-remediation. Initial sandbox runs could not open the visual test's loopback listener or write Vite's managed-worktree temporary config (two npm tests); these are explicitly failed attempts. Scoped permission reruns completed all checks successfully.
+
+This correction changes only workflow event routing, its ordered-path regression data and execution evidence. Product source, Docker context/configuration, CSP, fonts, test geometry and browser suites are byte-unchanged from f76e6a9f. Retain that revision's actual author and independent production/browser evidence for those unchanged paths; no new browser execution is claimed here. Root confirmed that revision's hosted marketing job126339030128 succeeded at02:15:40UTC with production build/CSP step02:13:13–02:15:38 (145s), within the unchanged15-minute job budget. Corrected-head CI and four refreshed reviews remain required before merge.
