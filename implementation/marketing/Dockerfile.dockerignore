@@ -1,0 +1,33 @@
+# This image uses repository-root context for the canonical public pilot notice.
+# Allow only the files copied by this Dockerfile: never send the rest of the repo,
+# Git history, credentials, .env files, local dependencies or verification caches.
+**
+!implementation/
+!implementation/marketing/
+!implementation/marketing/package.json
+!implementation/marketing/package-lock.json
+!implementation/marketing/.npmrc
+!implementation/marketing/index.html
+!implementation/marketing/vite.config.ts
+!implementation/marketing/tsconfig*.json
+!implementation/marketing/nginx.conf
+!implementation/marketing/security-headers.conf
+!implementation/marketing/src/
+!implementation/marketing/src/**
+!implementation/marketing/public/
+!implementation/marketing/public/**
+!docs/
+!docs/release/
+!docs/release/pilot-registration/
+!docs/release/pilot-registration/notice.json
+**/.env
+**/.env.*
+**/.git
+**/node_modules
+**/.venv*
+**/__pycache__
+**/.aws
+**/.ssh
+**/credentials
+**/*.pem
+**/*.key

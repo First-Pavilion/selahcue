@@ -1,14 +1,14 @@
 # SelahCue CI — Linux gates + GPU parity + Flutter + dependency audit; Windows on demand.
 #
-# Hosting: GitHub (user decision, 2026-07-24). The repository is PRIVATE on the Team plan, so
-# hosted runners bill minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
-# x10, and with no payment method every job is BLOCKED once the quota is gone. Measured on the 100
+# Hosting: GitHub (user decision, 2026-07-24); repository now public. Historical private
+# Team-plan runs billed minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
+# x10; with no payment method jobs were blocked once quota was gone. Measured on the 100
 # runs of 2026-10-02..05, a three-OS run cost a median 241 billable minutes, 155 of them macOS.
 # Owner decision 2026-10-05:
 #   - macOS is NOT in CI at all. The owner's local `make ci` is the only macOS gate. Do not add a
 #     macos-* runner back (.github/scripts/check_ci_minutes.py refuses it).
-#   - Pull requests and pushes to `main` run the LINUX legs only (about 21 billable minutes a run).
-#   - The WINDOWS legs (about 45 more) run on a weekly schedule, on workflow_dispatch with
+#   - Pull requests and pushes to `main` run the LINUX legs only (historically about 21 billable minutes a run).
+#   - The WINDOWS legs (historically about 45 more) run on a weekly schedule, on workflow_dispatch with
 #     `windows: true`, on a pull request carrying the `full-ci` label, and on release tags `v*`.
 #   Which of those a run is, is decided once, in the `tier` step of the `changes` job below, and
 #   handed to the matrices as `needs.changes.outputs.os`.
@@ -272,6 +272,8 @@ jobs:
             # desktop catch-all is not a substitute.
             marketing:
               - 'implementation/marketing/**'
+              - 'implementation/docker-compose.yml'
+              - 'docs/release/pilot-registration/notice.json'
               - '.github/workflows/ci.yml'
               # NOT a stray path. The marketing job re-derives the client's email rule
               # from the Django the API pins, and installs that Django by READING this
@@ -331,7 +333,7 @@ jobs:
       # Three invariants actionlint does not model. The first two shipped as real
       # defects in this branch and were caught by human review rather than any gate:
       #   - a job declaring `permissions` loses every scope it does not list, so an
-      #     `issues: write`-only job cannot check out a private repo and dies at step 1;
+      #     `issues: write`-only job lacks contents permission; keep checkout explicit;
       #   - a `success()` setup step stranded after the first `!cancelled()` gate gets
       #     skipped by an earlier failure, and the gates after it then fail for the
       #     wrong reason.
@@ -1569,11 +1571,15 @@ jobs:
     if: needs.changes.outputs.marketing == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: implementation/marketing
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -1592,6 +1598,8 @@ jobs:
           python-version: "3.14"
       - name: Install
         run: npm ci
+      - name: Reject high and critical npm advisories
+        run: npm audit --audit-level=high
       # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
       # Calls the SAME Makefile target `make ci` calls, rather than re-listing the npm
       # scripts here, so the local gate and this job cannot drift apart (the marketing
@@ -1673,6 +1681,16 @@ jobs:
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:secondary
+
+      # Build the shipping nginx configuration, then exercise real response headers in
+      # both installed browsers. A preview server cannot verify nginx CSP inheritance.
+      - name: Build and verify production security headers
+        if: ${{ !cancelled() }}
+        run: |
+          docker build --pull -f Dockerfile -t selahcue-marketing-csp ../..
+          docker run --detach --rm --name marketing-csp -p 127.0.0.1:4188:80 selahcue-marketing-csp
+          trap 'docker stop marketing-csp' EXIT
+          python3 scripts/security_headers_headless.py --base-url http://127.0.0.1:4188
 
   audit:
     name: dependency audit (RustSec)
@@ -1756,9 +1774,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The alarm. Nine days without a green run on `main` went unnoticed because a
-  # failure notifies nobody, and branch protection is unavailable for a private repo
-  # on this plan -- so a red commit lands regardless and an alarm is the ONLY control
-  # available. ClickUp 86ak5rc9c.
+  # failure notified nobody. Keep this alarm alongside the public repository checks
+  # so outstanding failures remain visible across path-filtered runs. ClickUp 86ak5rc9c.
   #
   # It tracks WHICH jobs are outstanding, not a single red/green bit, because CI
   # path-filters by area: an api-only push to `main` SKIPS the entire desktop matrix.
@@ -1795,8 +1812,8 @@ jobs:
     runs-on: ubuntu-latest
     # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
     # NOT listed to `none`, so an `issues: write`-only block leaves `contents: none` --
-    # and on a private repo that means actions/checkout cannot clone, the first step
-    # fails, and the alarm never runs at all. A dead alarm shipped next to a CLAUDE.md
+    # keep explicit read access for checkout rather than relying on public anonymous
+    # access. A dead alarm shipped next to a CLAUDE.md
     # that calls it "the only alarm" is this ticket's own worst case. 86ak5rc9c.
     permissions:
       contents: read
