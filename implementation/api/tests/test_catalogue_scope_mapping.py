@@ -41,7 +41,7 @@ pytestmark = pytest.mark.django_db
 SEAT_KEY = "device_instances"
 SCREEN_KEY = "screen_outputs"
 NDI_KEY = "ndi_outputs"
-STT_KEY = "stt_minutes_per_period"
+STT_KEY = "cloud_transcript_minutes_per_week"
 WATERMARK_KEY = "watermark"
 
 MIGRATION_MODULE = "selahcue_api.apps.catalogue.migrations.0003_map_existing_feature_scopes"
@@ -115,28 +115,27 @@ def _run_mapping():
 
 
 @pytest.mark.parametrize(("feature_scope", "device_limit"), PRE_CATALOGUE_LICENSES)
-def test_each_existing_feature_scope_keeps_exactly_what_it_granted(feature_scope, device_limit):
+def test_existing_scope_reaches_conservative_fallback_without_changing_key_seats(feature_scope, device_limit):
     keys = _seed_pre_catalogue_estate()
     _run_mapping()
 
     resolved = resolve_entitlement(keys[feature_scope])
 
-    # The catalogue asserts NOTHING about seats for a legacy licence: absent, not null.
-    # `device_limit` stays the single source for that quantity, untouched by this mapping.
-    assert SEAT_KEY not in resolved.values, (
+    # The fallback private grant stays off the wire; device_limit remains the only
+    # published/enforced seat quantity and is untouched by reference mapping.
+    assert SEAT_KEY not in resolved.published_values, (
         "the catalogue published a seat number for a legacy licence, which can only "
         "disagree with the device_limit the manifest publishes"
     )
     keys[feature_scope].refresh_from_db()
     assert keys[feature_scope].device_limit == device_limit
 
-    # The four dimensions that did not exist before, pinned to the behaviour that did.
-    assert resolved.values[SCREEN_KEY] is None, "outputs were uncapped before the catalogue"
-    assert resolved.values[NDI_KEY] is None, "NDI was uncapped before the catalogue"
-    assert resolved.values[WATERMARK_KEY] is False, "no watermark was drawn before the catalogue"
-    assert resolved.values[STT_KEY] == 0, (
-        "hosted STT did not exist before the catalogue, and with FR-546 metering unbuilt a "
-        "non-zero allowance would be an unmetered one"
+    # Current pre-launch fallback is deliberately restrictive; there is no old paid-tier equivalence.
+    assert resolved.values[SCREEN_KEY] == 2, "the fallback uses its explicit screen cap"
+    assert resolved.values[NDI_KEY] == 0, "the fallback grants no NDI"
+    assert resolved.values[WATERMARK_KEY] is True, "the fallback retains its watermark"
+    assert resolved.values[STT_KEY] == 20, (
+        "the new weekly fallback allowance comes from its data row"
     )
 
 
@@ -155,7 +154,7 @@ def test_the_blank_scope_still_resolves_through_the_fallback():
     _run_mapping()
     resolved = resolve_entitlement(keys[""])
     assert resolved.plan is not None and resolved.plan.is_fallback is True
-    assert resolved.values[WATERMARK_KEY] is False
+    assert resolved.values[WATERMARK_KEY] is True
 
 
 def test_the_mapping_writes_no_per_licence_overrides():
@@ -190,7 +189,8 @@ def test_a_re_run_never_repoints_an_alias_an_operator_has_moved():
 
     alias.refresh_from_db()
     assert alias.plan.code == "PRO"
-    assert resolve_entitlement(keys["CHURCH"]).values[SCREEN_KEY] == 5
+    assert resolve_entitlement(keys["CHURCH"]).plan.pk == alias.plan_id
+    assert resolve_entitlement(keys["CHURCH"]).values[SCREEN_KEY] == 2
 
 
 def test_the_mapping_refuses_to_run_without_its_reference_data():
@@ -222,7 +222,7 @@ def test_the_reverse_leaves_a_repointed_alias_alone():
     _seed_pre_catalogue_estate()
     _run_mapping()
     moved = PlanScopeAlias.objects.get(feature_scope="CHURCH")
-    moved.plan = Plan.objects.get(code="PLATINUM")
+    moved.plan = Plan.objects.get(code="CORE")
     moved.save(update_fields=["plan", "updated_at"])
 
     _migration().unmap_scopes(django_apps, None)
