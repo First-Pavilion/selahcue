@@ -690,11 +690,11 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # desktop developer never gets packages installed by surprise. The venv comes from a deliberate
 # `make api-install` (needs the network; Python 3.14 on PATH, or API_PYTHON=/path/to/python >=3.12), and
 # `api-check` REFUSES, naming `make api-install`, when the venv is missing, was not made by api-install,
-# is a symlink, was built with another Python minor version, or pyproject.toml changed since it was
+# is a symlink, was built with another Python minor version, or a lock/profile/build input changed since it was
 # installed (SHA-256 of the file, so a content-neutral `touch` does not refuse, and neither does a patch
 # update such as 3.14.5 to 3.14.6). If the venv was built with an interpreter other than the default
 # python3.14, keep API_PYTHON exported for api-check too, or it will see the mismatch. A fresh worktree therefore needs
-# `make api-install` once, then again after a pyproject.toml change. The logic lives in
+# `make api-install` once, then again after a lock/profile/build input change. The logic lives in
 # scripts/api_venv.py; its header explains every guard.
 #
 # WHAT IT DOES NOT COVER, stated here, in the target's help text and in CLAUDE.md so the absence is a
@@ -708,7 +708,7 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # The three commands run in a scrubbed environment (`env -i`, plus SQL_DATABASE=:memory:) so a shell that
 # sourced a docker-style .env (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn
 # this into a different, confusing failure, and a developer's own implementation/api/db.sqlite3 cannot
-# leak in. `pip install` in api-install is NOT scrubbed: pip needs HOME, proxy and certificate settings,
+# leak in. `uv sync` in api-install is NOT scrubbed: uv needs HOME, proxy and certificate settings,
 # so the install sees the developer's full environment.
 #
 # THE VENV is `implementation/api/.venv-api-check`: a name only this target uses (a developer's own
@@ -719,11 +719,10 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # test the other checkout's code (the cwd and pytest.ini's `pythonpath = .` win on sys.path); it is
 # because the venv's third-party packages would have been resolved from ANOTHER tree's pyproject.toml.
 #
-# WHAT THE INSTALL IS: direct dependencies are pinned exactly and the build backend is pinned in
-# pyproject.toml's [build-system]; TRANSITIVE dependencies are neither locked nor hashed. The venv holds
-# whatever resolved on the day it was built, while CI re-resolves on every run, so the two can differ.
-# The owner accepted that interim on 2026-10-24 until the hash-locked requirements file of ClickUp
-# 17tnw2az0kw lands.
+# WHAT THE INSTALL IS: uv.lock hash-locks runtime/dev/driver transitives and the explicit
+# build group. Wheel-only dependencies are installed first; the editable API builds offline
+# with that backend and no isolation. Verification never calls uv or changes the environment.
+# The content stamp includes the lock, project, tool pin and installer profile/build flags.
 #
 # Every variable that decides what runs is `override`, so `make api-check API_VPY=/usr/bin/true`,
 # `API_ENV=` or `API=<elsewhere>` cannot weaken the gate. Only API_PYTHON is yours to set; it is passed
@@ -744,7 +743,7 @@ override API_VPY    := $(CURDIR)/$(API_VENV)/bin/python
 override API_HELPER := python3 scripts/api_venv.py
 override API_ENV    := env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:
 
-api-install: ## Build the Django API venv (implementation/api/.venv-api-check) and pip install -e ".[dev]": the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
+api-install: ## Build the Django API venv (implementation/api/.venv-api-check) from uv.lock (dev + build): the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
 	$(API_HELPER) install --api $(API) --venv $(API_VENV)
 
 api-check: ## Django API gate: check + migrations committed + pytest on SQLite; never installs (run `make api-install` first); the Postgres/Redis-only tests SKIP here, CI runs them
