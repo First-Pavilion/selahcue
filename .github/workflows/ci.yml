@@ -334,6 +334,10 @@ jobs:
         with:
           # Fidelity audit commit citations must be checked, not unknown due to shallow history.
           fetch-depth: 0
+      # The tiny installer-scanner-controls workflow also covers ordinary docs that
+      # this workflow excludes. Repeating the stdlib-only control here is cheap.
+      - name: Installer scanner self-test (no installer artifacts)
+        run: python3 scripts/installer_secret_scan.py --self-test
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -359,6 +363,7 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+          python3 .github/scripts/check_installer_scanner_ci.py
           # Offline controls only; installer builds remain manual/main-only.
           python3 scripts/test_linux_installer.py
           # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
