@@ -110,6 +110,16 @@ Verified at main 8a66f0ba: neither visual/audit self-test is in make ci/CI. Exis
 - Marketing src tree is identical to target; no layout/copy/product edits. All local verifiers finished, scratch mutant trees removed, clean immutable WebKit2363/0 exit0. Hosted timing and existing15min marketing job fit are not claimed yet.
 - Root owns independent reviews, hosted CI outcome, freshness and merge/QA.
 
+### Iteration 3 — measured core frame correction
+
+- Target criterion: C-003 and C-007 independent WebKit blocker.
+- Hypothesis: fixed Figma geometry incorrectly treats a nominal1440 browser window as a1440 layout frame when external chrome reserves width. Original failed-run attribution remains UNKNOWN; native classic reservation was not reproduced.
+- Change or investigation: root-approved core-only measured-client1440 compensation for four fixed geometry loads, bounded1..32px/2seconds. Separate nominal overflow loads remain uncompensated and compare scrollWidth to actualclientWidth. No product style/copy or exact oracle/tolerance change. Normal merged main059ed208 (lock/docs only).
+- Verifier executed: real-DOM simulated12px-chrome regression firstRED9 widths604/540/396 thenGREEN610/546/400; all20 nominal windows and20 overflow fixtures. Temporary old-overflow-comparison mutant fails final regression. Actual npm test:core both required engines and make marketing-check completed.
+- Result: core300checks/0failed plus automatically invoked focused regression exit0 (120second child bound, nonzero/timeout propagation). Subsequent fixture-only portability refinement reverified with affected standalone positive/negative; core wiring/oracles unchanged. Focused final regression exit0; old-comparison mutant exit1; marketing1246tests/0fail/0skip plus type/lint/build exit0. All owned processes finished.
+- New evidence: docs/delivery/evidence/17tnw2b2fum-core-frame.md distinguishes controlled mechanism from unrecorded original cause, exact logs, failed setup invocations and remaining root-owned gates.
+- Decision: GATE_REVIEW local new head; root inspects/publishes and refreshes four affected reviews/hosted CI. No footer source/publication action; original failure is not waived.
+
 ## Risks and rollback
 
 - Risks: newly enabled old tests may expose existing failures; preserve assertions and report exact dependency. Path rules must not wake heavy jobs for unrelated docs.
