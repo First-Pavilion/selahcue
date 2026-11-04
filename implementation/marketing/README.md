@@ -31,6 +31,22 @@ From the repository root:
 - `make ci` runs `marketing-check`, and the `marketing (vue spa)` job in `.github/workflows/ci.yml` runs the same target, so the two cannot drift.
 - `test:mirrors` and `test:states` run in CI only, because they need Django and Chrome. `check:legal` and `test:legal-pages` run in the separate `legal-drift` workflow (`.github/workflows/legal-drift.yml`), not in `marketing-check`.
 
+### Home Figma layout viewport regression (17tnw2bcadw)
+
+`npm run test:home` retains all130 strict checks per engine. Only its explicit1440px
+Figma measurement uses Core's existing measured `fit_figma_frame`; nominal responsive
+requests remain exact. Horizontal overflow compares real document scrollWidth/clientWidth,
+because innerWidth may include external scrollbar chrome.
+
+The required both-engine Home gate automatically runs `tests/home_frame_regression.py` with a
+120-second bound. It verifies zero-gap behavior, eight unchanged strict width assertions,
+12px simulated external window chrome (plus any host-native scrollbar), exact nominal
+320/375/768/1024/1440 requests, five zero-overflow controls and15 genuine1px/12px/24px
+overflow rejections through the normal Home assertion path. It never changes product CSS
+or fakes document clientWidth/scrollWidth. Run it directly after a production build with
+`python3 tests/home_frame_regression.py` from `implementation/marketing` using the pinned
+Playwright Chromium and WebKit engines. Hosted Linux CI remains required evidence.
+
 ## Routes
 
 Defined in `src/router/index.ts`; every page except the home page is lazy-loaded.
