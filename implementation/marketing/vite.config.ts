@@ -40,6 +40,29 @@ export default defineConfig({
        *
        * `nginx.conf` carries the production half of the same arrangement.
        */
+      // Exact path (optional query only), matching the production nginx location.
+      '^/v1/catalogue/plans(?:[?].*)?$': {
+        target: API_ORIGIN,
+        changeOrigin: false,
+        configure: (proxy) => {
+          proxy.on('proxyReq', (request) => {
+            request.removeHeader('cookie')
+            request.removeHeader('authorization')
+            request.removeHeader('referer')
+          })
+          // Registered before Vite's fallback handler, which respects headersSent.
+          // Keep API connection failures on this exact route truthful and machine-readable.
+          proxy.on('error', (_error, _request, response) => {
+            if ('writeHead' in response && !response.headersSent && !response.writableEnded) {
+              response.writeHead(503, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store',
+                'X-Content-Type-Options': 'nosniff',
+              }).end(JSON.stringify({ error: { code: 'catalogue_unavailable' } }))
+            }
+          })
+        },
+      },
       '/graphql': {
         target: API_ORIGIN,
         changeOrigin: false,

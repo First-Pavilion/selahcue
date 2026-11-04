@@ -165,3 +165,15 @@ repointed to Free without changing any existing key seat counts. Unexpected cust
 history is protected. Recovery must restore the complete backup and matching old code together; reverse constants cannot
 reconstruct former assignments. See `docs/delivery/evidence/17tnw2az0gd-plan-catalogue.md` for actual migration/recovery,
 concurrency and manifest evidence. No price/currency/interval choice or final paid-plan launch limit is invented by this build.
+
+### Public current plan catalogue
+
+Unauthenticated same-origin `GET /v1/catalogue/plans` returns exact public plan names,
+weekly allowances, watermark and every currently configured currency/interval offer.
+No price rows means explicitly unpriced, not zero. Minor amounts are decimal strings;
+`minor_unit_exponent` is the ISO4217 exponent. Private pending device/output/NDI limits
+are omitted. Responses are no-store, rate-limited with fail-closed store failures,
+and refuse degraded catalogue data. See
+[`17tnw2b2jvy-public-catalogue.md`](../../docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md)
+for exact wire keys, bounds/effective-time caching, proxy tests and the still-blocked
+actual admin-mutation E2E prerequisite (`17tnw2az0gg`/staff sign-in).

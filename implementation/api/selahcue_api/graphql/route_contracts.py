@@ -148,6 +148,13 @@ def pilot_download_grant_contracts() -> tuple[CommandEndpointContract, ...]:
     )
 
 
+def public_catalogue_contracts() -> tuple[CommandEndpointContract, ...]:
+    """Public read only; no account, staff, device or cookie authorization."""
+    return (
+        CommandEndpointContract("public_catalogue", "v1/catalogue/plans", "GET", "none_public_no_cookie"),
+    )
+
+
 def billing_webhook_contract() -> CommandEndpointContract:
     return CommandEndpointContract(
         surface="billing_provider",
