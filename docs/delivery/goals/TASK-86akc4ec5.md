@@ -89,7 +89,7 @@ Verified main c0325d52e809847fac141a605b74a7e6d7de7021. Actual scanner self-test
 - Change or investigation: root explicitly authorizes ONE further implementation/integration iteration for manual reviewcycle3 after automaticrefresh cap2. Existing Goalmax4/iteration1 preserved; this is actualimplementationiteration2, not an invented reset. Normalmerge31f2939f integrates93e5875c andmaina6 without conflict. Exact five-authored-file scope remains.
 - Verifier executed: actual coordinatedold8/45 scanner mutant selftest exits0 before newpolicy (demonstrates missing independentbaseline); current47normal/-O plus wiring/policymutants/currentworkflow/minute/actionlint pending.
 - Result: PASS current47normal/-O,8eventcases/7wiringmutants/9newpolicymutants, actualdisabledscannerexit1 and actualcoordinatedold8/45source rejection. Currentworkflow/cache/minute/visual/supply/canary/Linuxinstaller/actionlint/whitespace allPASS; scanner/Windowsworkflow bytes equal93. Allprocessesfinished.
-- New evidence: no scanner/runtime/Windowsworkflow production change by this ticket; publishedCSP373 must merge main FIRST before350merge.
+- New evidence: no scanner/runtime/Windowsworkflow production change by this ticket; CSP373 actualmergeb5b17f1e nowverified. Normallyintegratedcurrentmain364(menu374only) beforefinalfreeze, allCI/scanner/controlinputbytes unchanged andactualauthoreddiffexactfivefiles.
 - Decision: freeze/handoff after onefocusedset; root allfour manualrefresh3/currentCI/merge owns finalgates.
 
 ## Risks and rollback
