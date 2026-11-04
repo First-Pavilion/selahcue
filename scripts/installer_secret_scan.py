@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Effect-level gate on DEVELOPER AI-PROVIDER KEYS reaching the Windows installer.
+"""Effect-level gate on developer provider keys and the STT override reaching installers.
 
 Sibling of `scripts/dev_key_not_in_release.sh` + `scripts/dev_key_scan.py`, which guard a
 DIFFERENT secret (the development *entitlement* signing key). Read that script's header for the
@@ -16,6 +16,12 @@ WHAT IT GUARDS
 the repo-root `.env` at startup and loads developer provider credentials. A build carrying it
 bakes the build machine's source path into the binary and will pick up a credential from a stray
 `.env` on whatever machine it runs on. It must never be what we hand a church.
+
+`stt_model_source.rs` also emits a fixed public marker through its real DeveloperOverride
+notice writer only when debug assertions are compiled in. This permanently identifies the
+STT override capability even if release assertions were re-enabled by a Cargo profile,
+rustflag, config or environment setting. It is a capability marker, not a credential.
+The existing finding prefix is retained for compatibility; the declared reason explains it.
 
 WHAT IT DOES NOT CLOSE, stated plainly because the sibling script's comment once overclaimed and
 that is how a control gets trusted past its reach:
@@ -107,7 +113,7 @@ import tempfile
 #
 #       1. delete the `api.deepgram.com` row from SIGNATURES (below);
 #       2. delete `"api.deepgram.com"` from REQUIRED_SIGNATURES;
-#       3. decrement REQUIRED_SIGNATURE_COUNT (8 -> 7);
+#       3. decrement REQUIRED_SIGNATURE_COUNT (9 -> 8);
 #       4. lower SELF_TEST_CASE_FLOOR by 2 -- each signature generates one injection case per
 #          encoding, and there are 2 encodings.
 #
@@ -141,6 +147,8 @@ SIGNATURES: tuple[tuple[str, str], ...] = (
     # not assumed, and here that costs one row each.
     (".env.sample", "loader diagnostics point at it — redundant with the prefix, deliberately"),
     ("repo-root .env", "loader diagnostics phrase — substring of the longer variants too"),
+    # PERMANENT: a reachable debug-only STT model override is never a shipping capability.
+    ("SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1", "compiled STT DeveloperOverride notice — debug assertions enabled; permanent"),
 )
 
 # The required floor. Asserted at run time so emptying or trimming SIGNATURES fails loudly
@@ -152,8 +160,9 @@ SIGNATURES: tuple[tuple[str, str], ...] = (
 # original "6/6" error propagated from the ticket into the code in the first place. UPDATE IT
 # WHEN THE SET CHANGES.
 #
-# Measured on real binaries, reproduced independently: a `dev-keys` build carries **6 of these
-# 8**, a default build **0 of 8**. Present: the loader prefix, the `.env` path suffix,
+# Historical measurement before adding the STT marker, reproduced independently: a
+# `dev-keys` build carried **6 of the original8**, a default build **0 of the original8**.
+# Present: the loader prefix, the `.env` path suffix,
 # `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`, `.env.sample`, `repo-root .env`.
 #
 # ABSENT, and PRE-EMPTIVE: the two ENDPOINT strings. They are in no source file **on
@@ -173,6 +182,7 @@ REQUIRED_SIGNATURES: frozenset[str] = frozenset(
         "OPENAI_API_KEY",
         ".env.sample",
         "repo-root .env",
+        "SELAHCUE_UNSAFE_STT_DEVELOPER_OVERRIDE_V1",
     }
 )
 
@@ -222,7 +232,7 @@ ARTEFACT_FLOOR_MINIMUM = 1_000_000
 # from dev_env.rs. Growing a set is free; shrinking one means editing a number that says what it
 # is for. `the_pins_themselves_have_not_shrunk` asserts these at run time too, because `assert`
 # is stripped under `python -O`.
-REQUIRED_SIGNATURE_COUNT = 8
+REQUIRED_SIGNATURE_COUNT = 9
 REQUIRED_ENCODING_COUNT = 2
 REQUIRED_TARGET_COUNT = 4
 # The no_context_leak_around_a_hit self-test case fails if ANY substring of the canary this
@@ -249,7 +259,7 @@ CANARY_LEAK_WINDOW = 8
 # generate cases, then one floor covers all of them, and the last unpinned number is a number
 # whose only effect is to be too low -- which every other case would then have to be deleted to
 # exploit. RAISE THIS when cases are added; it may only ever go up.
-SELF_TEST_CASE_FLOOR = 45
+SELF_TEST_CASE_FLOOR = 47
 
 # The ONLY cases permitted to self-skip. Not a count -- a set of names, so it cannot be widened
 # by lowering a number. `unreadable_file` skips wherever mode 000 is unenforced (Windows, root);
@@ -611,11 +621,11 @@ def run_scan(
 
     if poisoned:
         raise ScanError(
-            "a developer-key signature is present in an artefact "
-            "this workflow ships. A `dev-keys` build reads the repo-root `.env` at startup and "
-            "bakes the build machine's source path into the binary; it must never be "
-            "distributed. Check that no build step added `--features dev-keys` and that no new "
-            "code embeds a provider endpoint. Details above name the artefact and the string."
+            "a developer-key signature is present, or a compiled STT developer-override marker "
+            "is present, in an artefact this workflow ships. Do not distribute it. Check "
+            "developer-key features/provider endpoints and, for the STT marker, the effective "
+            "debug-assertions profile/rustflags/config/environment. Details above name the "
+            "artefact and the public marker, never surrounding bytes."
         )
 
     print(
