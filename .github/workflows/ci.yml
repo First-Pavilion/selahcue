@@ -630,7 +630,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
-            libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+            libvulkan1 mesa-vulkan-drivers libdbus-1-dev libclang-dev
       # A real serif face, so the typography tests can do real work (86ak643rc).
       #
       # `themes_differing_only_in_typography_never_share_a_measurement` (selahcue-present)
@@ -717,6 +717,16 @@ jobs:
       # selahcue-present stayed invisible in this job for two runs while the standing
       # clippy failure held the door shut. One broken gate should cost you one gate's
       # worth of information, not the whole job's. 86ak5rc9c.
+      # 17tnw2b1f2d: real NDI headers + bindgen/types, no SDK/runtime download.
+      # The helper exposes its empty library-selection placeholder only to
+      # link-free check/clippy, removes it afterwards, and proves the gated code
+      # is reached with a temporary type error. Never build/package with it.
+      - name: NDI sidecar type/lint and mutation proof (link-free, Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 scripts/check_ndi.py --self-test
+          python3 scripts/check_ndi.py --mutation-proof
       - name: Clippy (server features)
         if: ${{ !cancelled() }}
         run: |
