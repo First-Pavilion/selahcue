@@ -24,13 +24,13 @@ import 'package:selahcue_controller/models/stored_session.dart';
 import '../support/capture_debug_print.dart';
 
 OperatorStateView _view() => const OperatorStateView(
-      planName: 'Sunday',
-      items: [],
-      liveIndex: null,
-      stagedIndex: null,
-      blackout: false,
-      timer: null,
-    );
+  planName: 'Sunday',
+  items: [],
+  liveIndex: null,
+  stagedIndex: null,
+  blackout: false,
+  timer: null,
+);
 
 /// A session whose every call fails, forcing the controller into `_reconnect`.
 class _DeadSession implements ControllerSession {
@@ -48,6 +48,9 @@ class _DeadSession implements ControllerSession {
 
 /// The healthy replacement a successful reconnect hands back.
 class _LiveSession implements ControllerSession {
+  _LiveSession({this.snapshotGate});
+
+  final Completer<void>? snapshotGate;
   int commands = 0;
   bool closed = false;
 
@@ -60,7 +63,11 @@ class _LiveSession implements ControllerSession {
   }
 
   @override
-  Future<OperatorStateView> operatorState() async => _view();
+  Future<OperatorStateView> operatorState() async {
+    await snapshotGate?.future;
+    return _view();
+  }
+
   @override
   Future<void> close() async => closed = true;
 }
@@ -82,13 +89,20 @@ class _RoleBombSession implements ControllerSession {
   Future<void> close() async => closed = true;
 }
 
-const _stored =
-    StoredSession(host: 'h', port: 1, pinHex: 'ab', deviceId: 'd', token: 't');
+const _stored = StoredSession(
+  host: 'h',
+  port: 1,
+  pinHex: 'ab',
+  deviceId: 'd',
+  token: 't',
+);
 
 /// Poll until [done] holds. The reconnect backoff is a real 2s delay, so a fixed
 /// sleep would either be flaky or slow; this waits exactly as long as it must.
-Future<void> _until(bool Function() done,
-    {Duration timeout = const Duration(seconds: 8)}) async {
+Future<void> _until(
+  bool Function() done, {
+  Duration timeout = const Duration(seconds: 8),
+}) async {
   final deadline = DateTime.now().add(timeout);
   while (!done()) {
     if (DateTime.now().isAfter(deadline)) {
@@ -101,7 +115,11 @@ Future<void> _until(bool Function() done,
 /// Run the scenario shared by both malformed-reply flavours: the first connect
 /// attempt blows up with [firstFailure], the second succeeds.
 Future<void> _recoversAfter(Object firstFailure) async {
-  final replacement = _LiveSession();
+  final snapshotGate = Completer<void>();
+  final replacement = _LiveSession(snapshotGate: snapshotGate);
+  addTearDown(() {
+    if (!snapshotGate.isCompleted) snapshotGate.complete();
+  });
   var attempts = 0;
 
   Future<ControllerSession> connect({
@@ -115,29 +133,63 @@ Future<void> _recoversAfter(Object firstFailure) async {
     return replacement;
   }
 
-  final live =
-      LiveController(session: _DeadSession(), stored: _stored, connect: connect);
+  final live = LiveController(
+    session: _DeadSession(),
+    stored: _stored,
+    connect: connect,
+  );
   addTearDown(live.dispose);
 
   // The constructor's refresh() fails → _reconnect() → attempt 1 throws.
   await _until(() => attempts >= 1);
-  expect(live.reconnecting, isTrue,
-      reason: 'baseline: the banner is up while we are retrying');
+  expect(
+    live.reconnecting,
+    isTrue,
+    reason: 'baseline: the banner is up while we are retrying',
+  );
 
-  // The loop must come back for a second attempt and clear the banner.
+  // A recovered connection is not yet fresh state: keep the replacement
+  // snapshot pending so this boundary cannot depend on event-loop timing.
   await _until(() => !live.reconnecting);
-  expect(attempts, greaterThanOrEqualTo(2),
-      reason: 'a malformed reply is transient: back off, then retry');
+  expect(
+    attempts,
+    greaterThanOrEqualTo(2),
+    reason: 'a malformed reply is transient: back off, then retry',
+  );
   expect(live.reconnecting, isFalse);
   expect(live.revoked, isFalse, reason: 'this is not a revocation');
-  expect(live.error, isNull,
-      reason: 'the "Connection lost" banner must clear once we are back');
+  expect(
+    live.syncing,
+    isTrue,
+    reason: 'the new session has not supplied its fresh snapshot yet',
+  );
+  expect(
+    live.error,
+    contains('Connection lost'),
+    reason: 'the outage notice must remain until fresh state arrives',
+  );
+  expect(await live.act(cmdGoLive()), CommandOutcome.failed);
+  expect(
+    replacement.commands,
+    0,
+    reason: 'controls must not send commands against stale state',
+  );
 
-  // …and controls work again: the re-sync lands, then a command goes through.
+  snapshotGate.complete();
   await _until(() => !live.syncing);
+  expect(
+    live.error,
+    isNull,
+    reason: 'the outage notice clears after the fresh snapshot arrives',
+  );
+
+  // Controls recover only after the re-sync lands.
   expect(await live.act(cmdGoLive()), CommandOutcome.applied);
-  expect(replacement.commands, 1,
-      reason: 'the command must reach the NEW session');
+  expect(
+    replacement.commands,
+    1,
+    reason: 'the command must reach the NEW session',
+  );
 }
 
 // Capture the production diagnostics through the real body, restoring the
@@ -147,84 +199,102 @@ void _quietTest(String name, Future<void> Function() body) {
 }
 
 void main() {
-  _quietTest('a FormatException from connect is retried and the loop recovers',
-      () async {
-    await _recoversAfter(const FormatException('Unexpected character'));
-  });
+  _quietTest(
+    'a FormatException from connect is retried and the loop recovers',
+    () async {
+      await _recoversAfter(const FormatException('Unexpected character'));
+    },
+  );
 
-  _quietTest('a TypeError from connect is retried and the loop recovers', () async {
-    // What `frame as String` throws when the host answers with a binary frame.
-    // Built by a real failing cast so the test throws exactly what production
-    // would, not a hand-made look-alike.
-    Object binaryFrameError() {
-      try {
-        final Object frame = <int>[0, 1, 2];
-        return (frame as String);
-      } on TypeError catch (e) {
-        return e;
+  _quietTest(
+    'a TypeError from connect is retried and the loop recovers',
+    () async {
+      // What `frame as String` throws when the host answers with a binary frame.
+      // Built by a real failing cast so the test throws exactly what production
+      // would, not a hand-made look-alike.
+      Object binaryFrameError() {
+        try {
+          final Object frame = <int>[0, 1, 2];
+          return (frame as String);
+        } on TypeError catch (e) {
+          return e;
+        }
       }
-    }
 
-    await _recoversAfter(binaryFrameError());
-  });
+      await _recoversAfter(binaryFrameError());
+    },
+  );
 
-  _quietTest('the loop keeps retrying across several consecutive malformed replies',
-      () async {
-    // One retry is not the same as "never gives up": a host that stays broken
-    // for a while must keep being retried, with no attempt wedging the loop.
-    var attempts = 0;
-    final replacement = _LiveSession();
-    Future<ControllerSession> connect({
-      required String host,
-      required int port,
-      required String pinHex,
-      required Credentials creds,
-    }) async {
-      attempts++;
-      if (attempts == 1) throw const FormatException('garbage');
-      if (attempts == 2) throw StateError('some other bug');
-      return replacement;
-    }
+  _quietTest(
+    'the loop keeps retrying across several consecutive malformed replies',
+    () async {
+      // One retry is not the same as "never gives up": a host that stays broken
+      // for a while must keep being retried, with no attempt wedging the loop.
+      var attempts = 0;
+      final replacement = _LiveSession();
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) async {
+        attempts++;
+        if (attempts == 1) throw const FormatException('garbage');
+        if (attempts == 2) throw StateError('some other bug');
+        return replacement;
+      }
 
-    final live = LiveController(
-        session: _DeadSession(), stored: _stored, connect: connect);
-    addTearDown(live.dispose);
+      final live = LiveController(
+        session: _DeadSession(),
+        stored: _stored,
+        connect: connect,
+      );
+      addTearDown(live.dispose);
 
-    // `reconnecting` is only true once the constructor's refresh() has failed, so
-    // wait for the first attempt before waiting for the banner to clear.
-    await _until(() => attempts >= 1);
-    await _until(() => !live.reconnecting, timeout: const Duration(seconds: 12));
-    expect(attempts, 3);
-    expect(live.revoked, isFalse);
-  });
+      // `reconnecting` is only true once the constructor's refresh() has failed, so
+      // wait for the first attempt before waiting for the banner to clear.
+      await _until(() => attempts >= 1);
+      await _until(
+        () => !live.reconnecting,
+        timeout: const Duration(seconds: 12),
+      );
+      expect(attempts, 3);
+      expect(live.revoked, isFalse);
+    },
+  );
 
-  _quietTest('SessionRevoked still stops the loop and raises the Access-removed state',
-      () async {
-    // No regression: widening the catch must not swallow the one failure that
-    // retrying can never fix. (`revoked` is what the view renders as "Access
-    // removed" — see test/views/access_removed_test.dart.)
-    var attempts = 0;
-    Future<ControllerSession> connect({
-      required String host,
-      required int port,
-      required String pinHex,
-      required Credentials creds,
-    }) async {
-      attempts++;
-      throw const SessionRevoked('authentication rejected: revoked');
-    }
+  _quietTest(
+    'SessionRevoked still stops the loop and raises the Access-removed state',
+    () async {
+      // No regression: widening the catch must not swallow the one failure that
+      // retrying can never fix. (`revoked` is what the view renders as "Access
+      // removed" — see test/views/access_removed_test.dart.)
+      var attempts = 0;
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) async {
+        attempts++;
+        throw const SessionRevoked('authentication rejected: revoked');
+      }
 
-    final live = LiveController(
-        session: _DeadSession(), stored: _stored, connect: connect);
-    addTearDown(live.dispose);
+      final live = LiveController(
+        session: _DeadSession(),
+        stored: _stored,
+        connect: connect,
+      );
+      addTearDown(live.dispose);
 
-    await _until(() => live.revoked);
-    expect(live.reconnecting, isFalse);
+      await _until(() => live.revoked);
+      expect(live.reconnecting, isFalse);
 
-    // Give a (wrongly) surviving loop time to attempt again: 2s backoff + slack.
-    await Future<void>.delayed(const Duration(milliseconds: 2500));
-    expect(attempts, 1, reason: 'revoked is terminal: exactly one attempt');
-  });
+      // Give a (wrongly) surviving loop time to attempt again: 2s backoff + slack.
+      await Future<void>.delayed(const Duration(milliseconds: 2500));
+      expect(attempts, 1, reason: 'revoked is terminal: exactly one attempt');
+    },
+  );
 
   _quietTest('a connect that always fails is retried once per backoff, never in a '
       'hot loop, and stops when the controller is disposed', () async {
@@ -243,7 +313,10 @@ void main() {
     }
 
     final live = LiveController(
-        session: _DeadSession(), stored: _stored, connect: connect);
+      session: _DeadSession(),
+      stored: _stored,
+      connect: connect,
+    );
     // Disposed by the test body, and again here only if an expectation fails
     // first — a surviving retry loop must not leak into the next test.
     var disposed = false;
@@ -256,9 +329,13 @@ void main() {
 
     await _until(() => attempts >= 1);
     await Future<void>.delayed(const Duration(milliseconds: 800));
-    expect(attempts, 1,
-        reason: 'one attempt, then a backoff: not a retry storm '
-            '(a hot loop would be hundreds by now)');
+    expect(
+      attempts,
+      1,
+      reason:
+          'one attempt, then a backoff: not a retry storm '
+          '(a hot loop would be hundreds by now)',
+    );
 
     disposeOnce();
     // The loop is mid-backoff. It must wake, see it is disposed, and exit
@@ -284,7 +361,10 @@ void main() {
     }
 
     final live = LiveController(
-        session: _DeadSession(), stored: _stored, connect: connect);
+      session: _DeadSession(),
+      stored: _stored,
+      connect: connect,
+    );
     var disposed = false;
     void disposeOnce() {
       if (!disposed) live.dispose();
@@ -329,7 +409,10 @@ void main() {
       }
 
       final live = LiveController(
-          session: _DeadSession(), stored: _stored, connect: connect);
+        session: _DeadSession(),
+        stored: _stored,
+        connect: connect,
+      );
       // Long enough for a (wrongly) retrying loop to come round again: 2s
       // backoff + slack.
       await Future<void>.delayed(const Duration(milliseconds: 2600));
@@ -342,10 +425,16 @@ void main() {
     // Asserted OUTSIDE the guarded zone, so a failed expectation fails the test
     // instead of being swallowed by the zone's error handler.
     expect(attemptsSeen, 1, reason: 'must not loop into a second connect');
-    expect(closedSeen, 0,
-        reason: 'the installed session must not be dropped unclosed');
-    expect(uncaught, hasLength(1),
-        reason: 'the failure surfaces; it is not swallowed as "transient"');
+    expect(
+      closedSeen,
+      0,
+      reason: 'the installed session must not be dropped unclosed',
+    );
+    expect(
+      uncaught,
+      hasLength(1),
+      reason: 'the failure surfaces; it is not swallowed as "transient"',
+    );
     expect(uncaught.single, isA<StateError>());
   });
 }
