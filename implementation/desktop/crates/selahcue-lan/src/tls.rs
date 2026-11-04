@@ -9,7 +9,6 @@ use rustls::{ClientConfig, ServerConfig};
 use std::sync::Arc;
 
 /// Errors from the LAN transport.
-#[derive(Debug)]
 pub enum TransportError {
     /// TLS configuration or handshake error.
     Tls(rustls::Error),
@@ -27,6 +26,22 @@ pub enum TransportError {
     Protocol(String),
     /// The connection closed before the exchange completed.
     Closed,
+}
+
+impl std::fmt::Debug for TransportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tls(e) => f.debug_tuple("Tls").field(e).finish(),
+            Self::Cert(e) => f.debug_tuple("Cert").field(e).finish(),
+            Self::Io(e) => f.debug_tuple("Io").field(e).finish(),
+            // tungstenite's HTTP Debug includes peer headers and body bytes.
+            // Its Display retains the handshake status without either payload.
+            Self::Ws(e) => f.debug_tuple("Ws").field(&format_args!("{e}")).finish(),
+            Self::Json(e) => f.debug_tuple("Json").field(e).finish(),
+            Self::Protocol(e) => f.debug_tuple("Protocol").field(e).finish(),
+            Self::Closed => f.write_str("Closed"),
+        }
+    }
 }
 
 impl std::fmt::Display for TransportError {
