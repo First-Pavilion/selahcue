@@ -251,6 +251,11 @@ jobs:
             # push triggered the workflow and then ran nothing.
             api:
               - 'implementation/api/**'
+              - 'scripts/api_venv.py'
+              - 'scripts/check_api_gate.py'
+              - 'scripts/api_dependency_snapshot.py'
+              - 'scripts/test_api_dependency_snapshot.py'
+              - 'Makefile'
               # tests/test_nginx_forwarded_proto.py reads this file: it is the nginx half of
               # the Django TLS-proxy chain (17tnw2b1wtr), so a change must re-run the api job.
               - 'implementation/marketing/nginx.conf'
@@ -1501,6 +1506,8 @@ jobs:
   # ran the change-detection job and nothing else.
   api:
     name: api (django)
+    permissions:
+      contents: read
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
@@ -1540,12 +1547,26 @@ jobs:
         with:
           # Matches the local dev interpreter. Django 6.1 supports 3.12-3.14.
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: implementation/api/pyproject.toml
-      # The dev extra includes the same PostgreSQL driver for mandatory local deployed-mode
-      # startup controls. Retain the existing explicit bound and hosted service setup here.
-      - name: Install
-        run: pip install -e ".[dev]" "psycopg[binary]>=3.2,<4"
+      # Official setup-uv v7 commit; exact tool version also enforced in pyproject.toml.
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
+        with:
+          version: "0.13.4"
+          enable-cache: true
+          cache-dependency-glob: |
+            implementation/api/uv.lock
+            implementation/api/pyproject.toml
+            implementation/api/.uv-version
+            scripts/api_venv.py
+      - name: Install locked API environment
+        working-directory: .
+        run: |
+          make api-install API_PYTHON=python3.14
+          echo "$GITHUB_WORKSPACE/implementation/api/.venv-api-check/bin" >> "$GITHUB_PATH"
+      - name: Verify install-free gate logic
+        working-directory: .
+        run: |
+          python3 scripts/check_api_gate.py --self-test
+          python3 scripts/test_api_dependency_snapshot.py
       - name: Django system checks
         run: python manage.py check
       # Migrations here are hand-committed, so a model shipped without one is an easy
@@ -1566,6 +1587,37 @@ jobs:
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
         run: python -m pytest tests -q
+
+  api-dependency-graph:
+    name: api dependency graph (main only)
+    needs: [changes, api]
+    if: github.repository == 'First-Pavilion/selahcue' && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Export exact universal API dependency snapshot
+        env:
+          SNAPSHOT_SHA: ${{ github.sha }}
+          SNAPSHOT_REF: ${{ github.ref }}
+          SNAPSHOT_RUN: ${{ github.run_id }}
+        run: >-
+          python scripts/api_dependency_snapshot.py --sha "$SNAPSHOT_SHA"
+          --ref "$SNAPSHOT_REF" --run-id "$SNAPSHOT_RUN" --output api-dependency-snapshot.json
+      - name: Submit API graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input api-dependency-snapshot.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: api-dependency-snapshot
+          path: api-dependency-snapshot.json
+          retention-days: 14
 
   marketing:
     name: marketing (vue spa)

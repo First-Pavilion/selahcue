@@ -76,33 +76,9 @@ updates:
       - "dependencies"
       - "rust"
 
-  # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
-  #
-  # Every dependency DECLARED in pyproject.toml (Django, strawberry-graphql-django,
-  # strawberry-graphql, cryptography, celery and the dev dependencies, including
-  # psycopg[binary] added for deployed-startup tests in17tnw2b9da0)
-  # is now an EXACT pin, not a range — the owner declined to accept an interim gap on
-  # the direct deps that weren't originally in scope for the `cryptography` CVE fix
-  # (17tnw2az07j), so this PR widened to cover all of them. `versioning-strategy:
-  # increase` makes the weekly routine job propose raising each pin to match new
-  # releases as they ship — for an exact `==` pin this is simply "bump the pin," so it
-  # is what keeps these from going stale now that there is no floor left to silently
-  # drift (the "widen ranges" default a library-shaped `pyproject.toml` otherwise gets,
-  # per Sana's dependabot-core source read, does not apply the same way to an exact
-  # pin). This is still weekly, not advisory-triggered, so a routine bump can land up
-  # to a week late and won't be labelled security.
-  #
-  # **What this does NOT close (Sana, PR #110, findings S-5 and S-6; the latter also
-  # independently found by Vera):** every package `implementation/api`'s own code
-  # imports directly is now declared here (verified exhaustively across the whole app,
-  # not just spot-checked — see `pyproject.toml`'s dependency-list comment). What
-  # remains open is the further, purely-transitive packages pulled in underneath those
-  # (e.g. asgiref, sqlparse, kombu): their versions are neither locked nor hashed here.
-  # The database-guard ticket17tnw2b9da0 declares an exact dev-extra psycopg[binary] pin
-  # matching a successful hosted run; that compatibility evidence is not an advisory-free
-  # claim or proof of full transitive coverage. Closing the wider gap needs a real lockfile
-  # the Dockerfile/CI actually install from, tracked as ClickUp17tnw2az0kw, not built here.
-  - package-ecosystem: "pip"
+  # Native uv updates include the universal transitive lock and explicit build group.
+  # Exact direct pins remain reviewable; preserve the 14-day ordinary-release cooldown.
+  - package-ecosystem: "uv"
     directory: "/implementation/api"
     schedule:
       interval: "weekly"
@@ -110,6 +86,8 @@ updates:
       time: "06:00"
       timezone: "UTC"
     versioning-strategy: increase
+    cooldown:
+      default-days: 14
     labels:
       - "dependencies"
       - "api"
