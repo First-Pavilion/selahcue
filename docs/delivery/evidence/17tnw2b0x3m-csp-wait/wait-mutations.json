@@ -1,0 +1,17 @@
+[
+  {
+    "mutated_wait": "wait_for_rendered_app",
+    "exit": 1,
+    "caught": "wait accepted an incomplete condition"
+  },
+  {
+    "mutated_wait": "wait_for_auth_settled",
+    "exit": 1,
+    "caught": "wait accepted an incomplete condition"
+  },
+  {
+    "mutated_wait": "wait_for_csp_violation",
+    "exit": 1,
+    "caught": "wait accepted an incomplete condition"
+  }
+]
