@@ -1088,7 +1088,8 @@ def main() -> int:
                     # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
                     # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
                     # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
-                    # of the scoped containers it replaces; both are right until every page has moved.
+                    # of the old scoped containers. All applicable routes now use the shared container;
+                    # keep the distinct --page-gutter token check above, but reject legacy 24px containers.
                     shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
                     checks += 1
                     if info["gutterToken"] != f"{expected_gutter}px":
@@ -1096,7 +1097,7 @@ def main() -> int:
                     checks += 1
                     # Bare auth/landing pages are exempt: their geometry is the auth handoff's
                     # own (a 92vw card in a 20px-padded page), not the marketing gutter.
-                    allowed_gutters = (expected_gutter, shared_container_gutter)
+                    allowed_gutters = (shared_container_gutter,)
                     wrong = [] if bare else [
                         b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
                     ]

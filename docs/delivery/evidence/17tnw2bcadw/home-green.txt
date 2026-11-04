@@ -1,0 +1,8 @@
+chromium: 130 checks, 0 failed
+webkit: 130 checks, 0 failed
+Home frame/nominal-overflow regression (120s bound)
+ZERO_GAP: unchanged outer1440/client1440, eight strict widths PASS
+UNCOMPENSATED: client1428 rejects all eight original strict assertions
+FRAME_AND_NOMINAL: client1440 strict widths PASS; exact nominal requests [320, 375, 768, 1024, 1440]
+{"zero_gap": "PASS", "strict_frame_assertions": 8, "nominal_widths": [320, 375, 768, 1024, 1440], "overflow_positive_controls": 5, "real_overflow_rejections": 15, "overflow_deltas": [1, 12, 24]}
+{"checks": 260, "failed": 0}
