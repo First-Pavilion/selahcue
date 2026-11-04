@@ -19,7 +19,7 @@
     "test:mirrors": "python3 scripts/service_text_reference.py",
     "test:states": "npm run build && python3 scripts/auth_pages_headless.py",
     "test:responsive": "npm run build && python3 scripts/responsive_sweep.py",
-    "test:components": "python3 scripts/shared_components_headless.py --engine both --require",
+    "test:components": "python3 scripts/shared_components_headless.py --engine both --require && python3 scripts/menu_breakpoint_regression.py --engine both",
     "test:core": "npm run build && python3 tests/core_pages_headless.py --engine both --require && npm run test:catalogue",
     "test:home": "npm run build && python3 tests/home_page_headless.py --engine both",
     "test:secondary": "npm run build && python3 tests/secondary_pages_headless.py --engine both",
