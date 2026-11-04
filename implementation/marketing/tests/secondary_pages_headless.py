@@ -375,7 +375,7 @@ def check_support(page, c: Checks, base: str) -> None:
     page.wait_for_selector("#results-heading")
     c.eq(page.locator(".categories-grid").count(), 0, "support: results replace the category grid")
     c.ok(page.locator(".articles-panel .article-row").count() >= 1, "support: matching articles are listed as whole-row links")
-    c.ok("match" in page.locator("[role=status]").inner_text(), "support: the status region announces the result count")
+    c.ok("match" in page.get_by_role("search").locator("[role=status]").inner_text(), "support: the status region announces the result count")
     # a Start here row is one link: clicking its far-left edge opens the article
     page.fill(".search-input", "")
     page.wait_for_selector(".articles-band .article-row")

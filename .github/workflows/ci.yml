@@ -47,12 +47,15 @@ on:
   push:
     branches: [main]
     # Release tags run the full tier (Windows included). GitHub does not evaluate path
-    # filters for tag pushes, so `paths-ignore` below cannot swallow a tag.
+    # filters for tag pushes, so `paths` below cannot swallow a tag.
     tags: ["v[0-9]*"]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
+    # Ordered patterns keep ordinary docs cheap, but visual audit data is a gate input.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "!TODO"
+      - "docs/design/visual-parity/**"
   pull_request:
     # `labeled` is here so that adding `full-ci` to an OPEN pull request starts the Windows
     # legs at once, instead of waiting for the next push (which would cost a run). Every
@@ -60,10 +63,13 @@ on:
     # are all skipped by the guard on `changes` and `lint-workflows`: no runner starts, so it
     # bills nothing, and the concurrency group below keeps it from cancelling a real run.
     types: [opened, synchronize, reopened, labeled]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
+    # Ordered patterns keep ordinary docs cheap, but visual audit data is a gate input.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "!TODO"
+      - "docs/design/visual-parity/**"
   # The Windows legs, weekly: the one scheduled run that exercises the OS a trimmed push to
   # `main` no longer tests. Sunday 03:17 UTC (off the Monday 06:00 canary and Dependabot
   # slots, and off the top of the hour). A scheduled run always runs on the default branch.
@@ -97,7 +103,7 @@ jobs:
   # the mobile side, so the other side's jobs are pure waste — and Windows runners
   # bill at 2x minutes. Each filter also matches this workflow so
   # a CI change re-runs everything. (Docs-only changes are already skipped at the
-  # trigger's paths-ignore.) This is the cheap fan-out gate for the costly jobs.
+  # trigger's paths exclusions, except visual-audit data.) This fans out costly jobs.
   #
   # It also decides the TIER of the run (17tnw2b2nxk), in the `tier` step: every area runs
   # (no path filter) on a weekly run, a manual dispatch and a release tag, and the matrices
@@ -249,9 +255,8 @@ jobs:
               # tests/test_deployment_env_docs.py (17tnw2b9ab0) checks these two docs against the
               # variables settings.py reads. These lines make the api job run when these docs
               # change TOGETHER WITH a file the triggers do not ignore. They do NOT make a
-              # docs-only edit run CI: both triggers above carry `paths-ignore` for `docs/**` and
-              # `**.md`, so a docs-only commit never starts this workflow (changing that costs
-              # runner minutes and is the owner's call). A docs-only edit is covered by
+              # deployment-docs-only edit run CI: both triggers above exclude ordinary docs,
+              # with a narrow exception for visual-parity audit data. A deployment-docs-only edit is covered by
               # `make api-check` and by the weekly scheduled run, which runs every area. The
               # test's desktop half (deployments.md section 3a against the Rust env reads) is
               # deliberately not triggered by Rust changes either: that would run the Postgres and
@@ -317,6 +322,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Fidelity audit commit citations must be checked, not unknown due to shallow history.
+          fetch-depth: 0
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -356,6 +364,10 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'Pillow==11.3.0'
           python3 scripts/test_pipe_safe_launchers.py
           python3 docs/delivery/goals/17tnw2b1wvh-evidence/test_measure_schedule.py
+      # Existing pinned Pillow above is the only visual-harness dependency.
+      # The same target is called early in make ci; this job runs for every CI event.
+      - name: Visual-parity and fidelity audit (shared Makefile target, no browser)
+        run: python3 .github/scripts/check_visual_audit_ci.py --run
       # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
       # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
       # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`
@@ -1638,6 +1650,29 @@ jobs:
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine webkit
+
+      # Existing page suites need the built bundle and BOTH installed engines.
+      # Keep failures visible even if an earlier browser suite fails.
+      - name: Shared components (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:components
+      - name: Core pages (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:core
+      - name: Home page (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:home
+      - name: Secondary pages (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:secondary
 
   audit:
     name: dependency audit (RustSec)
