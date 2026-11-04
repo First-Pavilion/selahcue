@@ -25,6 +25,11 @@ Makefile defaults to. Not found is an error, never a skip. The script itself is 
 """
 
 import argparse
+import io
+import hashlib
+import functools
+import http.server
+import threading
 import fnmatch
 import os
 import re
@@ -118,6 +123,10 @@ PYPROJECT = textwrap.dedent(
     [project]
     name = "selahcue-api"
     version = "0.0.0"
+    requires-python = ">=3.12"
+
+    [dependency-groups]
+    build = []
 
     [project.optional-dependencies]
     dev = ["extradep"]
@@ -249,6 +258,7 @@ class Repo:
         (self.root / "scripts" / "api_venv.py").write_text(helper_text)
         self.pyproject = self.api / "pyproject.toml"
         self.pyproject.write_text(PYPROJECT)
+        (self.api / ".uv-version").write_text("0.13.4\n")
         (self.api / "fakebackend.py").write_text(BACKEND)
         (self.api / "manage.py").write_text(MANAGE)
         (self.api / "selahcue_api" / "__init__.py").write_text("")
@@ -259,6 +269,12 @@ class Repo:
         self.stamp = self.venv / STAMP_NAME
         self.marker = Path(str(self.venv) + MARKER_SUFFIX)
         self.lock = Path(str(self.venv) + ".lock")
+        locked = subprocess.run(["uv", "--cache-dir", str(Path(parent) / "uv-cache"), "lock", "--python", python, "--offline", "--no-index",
+                                 "--find-links", str(wheelhouse)], cwd=str(self.api),
+                                capture_output=True, text=True)
+        if locked.returncode:
+            raise CaseFailed("fixture uv lock failed: " + locked.stdout + locked.stderr)
+
 
     def log_lines(self):
         log = self.api / "calls.log"
@@ -279,8 +295,10 @@ class Repo:
         e = dict(os.environ)
         for k in ["API_PYTHON", "MAKEFLAGS", "MAKELEVEL", "MFLAGS", "SQL_DATABASE"] + LEAKY:
             e.pop(k, None)
-        e["PIP_NO_INDEX"] = "1"  # pip install runs with the developer's environment: here, offline
-        e["PIP_FIND_LINKS"] = str(self.wheelhouse)
+        e["UV_CACHE_DIR"] = str(self.root.parent / "uv-cache")
+        e["UV_NO_INDEX"] = "1"
+        e["UV_FIND_LINKS"] = str(self.wheelhouse)
+        e["UV_OFFLINE"] = "1"
         e.update(env or {})
         return e
 
@@ -454,6 +472,111 @@ def changed_pyproject_is_refused(ctx):
     check(rc != 0, "a changed pyproject.toml was accepted:\n" + out)
     check("make api-install" in out and "pyproject.toml changed" in out, "the refusal is not actionable:\n" + out)
     check(r.calls() == [], "commands ran against a stale venv: %r" % r.calls())
+
+
+def changed_lock_is_refused(ctx):
+    """Lock-only content change refuses checks without running commands or installing."""
+    r = shared_repo(ctx)
+    lock = r.api / "uv.lock"
+    original = lock.read_text() if lock.exists() else "version = 1\n"
+    try:
+        lock.write_text(original + "\n# lock input changed\n")
+        rc, out = r.check_gate()
+    finally:
+        lock.write_text(original)
+    check(rc != 0 and "make api-install" in out, "lock-only change accepted:\n" + out)
+    check(r.calls() == [], "commands ran with stale lock")
+
+
+def different_uv_patch_is_refused_by_install(ctx):
+    """Compatible bot patches are NOT an implicit local bootstrap upgrade."""
+    r = new_repo(ctx, "differentuvpatch")
+    real_uv = shutil.which("uv")
+    fake = r.root / "fake-tools" / "uv"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'uv 0.13.5'; else exec \"%s\" \"$@\"; fi\n" % real_uv)
+    fake.chmod(0o755)
+    rc, out = r.install(env={"PATH": str(fake.parent) + os.pathsep + os.environ["PATH"]})
+    check(rc != 0 and "uv 0.13.4 is required" in out and "make api-install" in out, out)
+    check(not r.venv.exists(), "wrong bootstrap version modified the environment")
+
+
+def locked_manifest_drift_is_refused(ctx):
+    """Deliberate install refuses stale manifest/lock instead of resolving or rewriting the lock."""
+    r = new_repo(ctx, "manifestdrift")
+    before = (r.api / "uv.lock").read_bytes()
+    r.pyproject.write_text(r.pyproject.read_text().replace('version = "0.0.0"', 'version = "0.0.1"'))
+    rc, out = r.install()
+    check(rc != 0 and "make api-install" in out, "stale lock was accepted:\n" + out)
+    check((r.api / "uv.lock").read_bytes() == before, "install rewrote stale lock")
+    check(not r.stamp.exists(), "stale lock install stamped")
+
+
+def missing_lock_is_refused(ctx):
+    """Missing committed lock refuses install and verification; uv cannot regenerate it."""
+    r = installed_repo(ctx, "missinglock")
+    lock = r.api / "uv.lock"
+    lock.unlink()
+    for run in (r.install, r.check_gate):
+        rc, out = run()
+        check(rc != 0 and "uv.lock" in out and "make api-install" in out, out)
+        check(not lock.exists(), "missing lock regenerated")
+
+
+def touching_lock_does_not_refuse(ctx):
+    """A content-neutral lock touch reuses the environment without installation."""
+    r = shared_repo(ctx)
+    os.utime(str(r.api / "uv.lock"), None)
+    rc, out = r.check_gate()
+    check(rc == 0, out)
+
+
+def corrupt_artifact_is_refused(ctx):
+    """A served wheel changed after locking fails hash verification with an empty cache."""
+    r = new_repo(ctx, "corruptartifact")
+    wheel = next(r.wheelhouse.glob("*.whl"))
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/":
+                body = ('<a href="%s#sha256=%s">wheel</a>' % (wheel.name, digest)).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                super().do_GET()
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+        functools.partial(Handler, directory=str(r.wheelhouse)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    wheel = next(r.wheelhouse.glob("*.whl"))
+    original = wheel.read_bytes()
+    url = "http://127.0.0.1:%d/" % server.server_port
+    try:
+        (r.api / "uv.lock").unlink()
+        env = r.base_env({"UV_FIND_LINKS": url, "UV_OFFLINE": "0", "UV_CACHE_DIR": str(r.root / "lock-cache")})
+        locked = subprocess.run(["uv", "lock", "--python", r.python], cwd=str(r.api), env=env,
+                                capture_output=True, text=True)
+        check(locked.returncode == 0, locked.stdout + locked.stderr)
+        check("sha256:" in (r.api / "uv.lock").read_text(), "fixture must contain remote artifact hash")
+        with zipfile.ZipFile(io.BytesIO(original)) as source:
+            members = {n: source.read(n) for n in source.namelist()}
+        members["extradep.py"] = b"# different valid wheel payload\n"
+        with zipfile.ZipFile(str(wheel), "w") as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+        rc, out = r.install(env={"UV_FIND_LINKS": url, "UV_OFFLINE": "0", "UV_CACHE_DIR": str(r.root / "fresh-cache")})
+    finally:
+        wheel.write_bytes(original)
+        server.shutdown()
+        server.server_close()
+        thread.join()
+    check(rc != 0 and "hash" in out.lower(), "corrupt wheel was accepted or wrong refusal:\n" + out)
+    check(not r.stamp.exists(), "corrupt install was stamped")
 
 
 def touching_pyproject_does_not_refuse(ctx):
@@ -990,6 +1113,12 @@ CASES = [
     system_check_failure_goes_red,
     missing_pytest_fails_loudly,
     changed_pyproject_is_refused,
+    changed_lock_is_refused,
+    different_uv_patch_is_refused_by_install,
+    locked_manifest_drift_is_refused,
+    missing_lock_is_refused,
+    touching_lock_does_not_refuse,
+    corrupt_artifact_is_refused,
     touching_pyproject_does_not_refuse,
     interpreter_changed_in_place_is_refused,
     api_python_of_another_version_is_refused,
@@ -1050,8 +1179,10 @@ def run_cases(makefile_path, helper_path, only=None, quiet=False, gitignore_path
 # proof loudly instead of silently proving nothing.
 M, H, G, D = "Makefile", "scripts/api_venv.py", "implementation/api/.gitignore", "implementation/api/.dockerignore"
 _ENV = 'env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:'
-_STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api)}) + "\\n")'
+_STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api), "inputs": hashes}) + "\\n")'
 MUTATIONS = [
+    ("exact local uv pin check removed", H, [('    if found.stdout.split()[:2] != ["uv", version]:', "    if False:")], "different_uv_patch_is_refused_by_install"),
+    ("locked flag dropped", H, [('"sync", "--locked",', '"sync",')], "locked_manifest_drift_is_refused"),
     ("pytest failure swallowed", M, [("-m pytest tests -q -rfEs", "-m pytest tests -q -rfEs || true")], "failing_test_goes_red"),
     ("migration check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput\n', "")],
      "missing_migration_goes_red"),
@@ -1083,19 +1214,19 @@ MUTATIONS = [
     ("default interpreter exported before it is defined", M, [("API_PYTHON ?= python3.14\nexport API_PYTHON\n", "export API_PYTHON\nAPI_PYTHON ?= python3.14\n")],
      "default_interpreter_is_python3_14"),
     ("stamp written before the install", H, [("        " + _STAMP_LINE + "\n", ""),
-                                             ('        subprocess.run([str(venv_python(venv)), "-m", "pip"',
-                                              "        " + _STAMP_LINE + '\n        subprocess.run([str(venv_python(venv)), "-m", "pip"')],
+                                             ('        subprocess.run(sync + ["--no-install-project"',
+                                              "        " + _STAMP_LINE + '\n        subprocess.run(sync + ["--no-install-project"')],
      "failed_install_leaves_no_stamp_and_retries"),
     ("stamp written before the install (rebuild)", H, [("        " + _STAMP_LINE + "\n", ""),
-                                                       ('        subprocess.run([str(venv_python(venv)), "-m", "pip"',
-                                                        "        " + _STAMP_LINE + '\n        subprocess.run([str(venv_python(venv)), "-m", "pip"')],
+                                                       ('        subprocess.run(sync + ["--no-install-project"',
+                                                        "        " + _STAMP_LINE + '\n        subprocess.run(sync + ["--no-install-project"')],
      "failed_rebuild_from_a_good_venv_is_not_trusted"),
-    ("--clear dropped", H, [('[exe, "-m", "venv", "--clear", str(venv)]', '[exe, "-m", "venv", str(venv)]')], "api_install_rebuilds_cleanly"),
+    ("--clear dropped", H, [('[exe, "-m", "venv", "--clear", "--without-pip", str(venv)]', '[exe, "-m", "venv", "--without-pip", str(venv)]')], "api_install_rebuilds_cleanly"),
     ("marker check before clearing removed", H, [("        if venv.exists() and not (venv.is_dir() and marker.is_file()):", "        if False:")],
      "foreign_directory_is_never_cleared"),
     ("marker written after the venv exists", H, [('        marker.write_text("created by make api-install\\n")  # BEFORE any venv content exists\n', ""),
-                                               ('        subprocess.run([str(venv_python(venv)), "-m", "pip"',
-                                                '        marker.write_text("created by make api-install\\n")\n        subprocess.run([str(venv_python(venv)), "-m", "pip"')],
+                                               ('        subprocess.run(sync + ["--no-install-project"',
+                                                '        marker.write_text("created by make api-install\\n")\n        subprocess.run(sync + ["--no-install-project"')],
      "failed_venv_creation_can_be_retried"),
     ("verify no longer needs the marker", H, [("    if not marker_path(venv).is_file():", "    if False:")], "venv_without_marker_is_refused"),
     ("full interpreter version compared (a patch update refuses)", H,
@@ -1110,6 +1241,7 @@ MUTATIONS = [
     (".gitignore pattern would miss a symlink or the lock", G, [(".venv-api-check*\n", ".venv-api-check/\n")], "ignore_files_cover_the_venv_names"),
     (".dockerignore drops the venv names", D, [(".venv-api-check*\n", "")], "ignore_files_cover_the_venv_names"),
     ("symlink refusal removed", H, [("    if os.path.islink(str(venv)):", "    if False:")], "symlinked_venv_is_refused"),
+    ("lock hash check removed", H, [('    if stamp.get("inputs") != input_hashes(api):', "    if False:")], "changed_lock_is_refused"),
     ("pyproject hash check removed", H, [('    if stamp.get("pyproject_sha256") != pyproject_sha(api):', "    if False:")], "changed_pyproject_is_refused"),
     ("pyproject check refuses every time", H, [('    if stamp.get("pyproject_sha256") != pyproject_sha(api):', "    if True:")],
      "touching_pyproject_does_not_refuse"),
@@ -1119,7 +1251,7 @@ MUTATIONS = [
      "api_python_of_another_version_is_refused"),
     ("missing stamp trusted (a matching one is made up)", H,
      [('        die("%s has no valid install stamp',
-       '        stamp = {"python": interpreter_version(venv_python(venv))[0], "pyproject_sha256": pyproject_sha(api)}\n'
+       '        stamp = {"python": interpreter_version(venv_python(venv))[0], "pyproject_sha256": pyproject_sha(api), "inputs": input_hashes(api)}\n'
        '        (lambda *a: None)("%s has no valid install stamp')],
      "incomplete_install_is_refused"),
     ("wrong-tree assertion neutered", H, [("assert p == root / 'selahcue_api' / '__init__.py', ", "assert 1, ")], "wrong_tree_venv_is_refused"),
@@ -1136,7 +1268,7 @@ MUTATIONS = [
     ("recipe starts with the user's API_PYTHON", M, [("\t$(API_HELPER) install", "\t$(API_PYTHON) -c pass; $(API_HELPER) install")],
      "api_recipes_do_not_start_with_a_user_variable"),
     ("interpreter-gone check removed", H, [("    if actual is None:", "    if False:")], "broken_venv_is_refused_with_the_fix"),
-    ("[dev] extra dropped from the pip install", H, [('"-e", ".[dev]"', '"-e", "."')], "install_then_check_passes"),
+    ("dev extra dropped from locked sync", H, [('"--extra", "dev",', '')], "install_then_check_passes"),
     ("--self-test line removed from ci", M, [("\tpython3 scripts/check_api_gate.py --self-test\n", "")], "ci_target_includes_api_check"),
     ("default interpreter is plain python3", M, [("API_PYTHON ?= python3.14", "API_PYTHON ?= python3")], "default_interpreter_is_python3_14"),
     ("empty API_PYTHON check removed", H, [("    if not raw.strip():", "    if False:")], "empty_interpreter_fails_loudly"),
