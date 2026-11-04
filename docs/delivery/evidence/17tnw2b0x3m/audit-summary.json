@@ -1,0 +1,15 @@
+{
+  "real_registry_counts": {
+    "info": 0,
+    "low": 0,
+    "moderate": 13,
+    "high": 0,
+    "critical": 0,
+    "total": 13
+  },
+  "origin_advisory": "https://github.com/advisories/GHSA-g3hv-75wg-m249",
+  "real_high_threshold_exit": 0,
+  "synthetic_local_high_threshold_exit": 1,
+  "synthetic_fixture_high_package_nodes": 13,
+  "waivers": []
+}
