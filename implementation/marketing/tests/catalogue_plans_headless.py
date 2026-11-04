@@ -24,7 +24,7 @@ def offer(amount, currency="USD", interval="MONTH", exponent=2):
 def navigate(page, target, width):
     if target == "/":
         page.locator(".navbar-header a.brand").click()
-    elif width < 768:
+    elif page.get_by_role("button", name="Menu", exact=True).is_visible():
         page.get_by_role("button", name="Menu", exact=True).click()
         page.locator(f"#mobile-nav-sheet a[href='{target}']").first.click()
     else:

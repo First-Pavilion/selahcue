@@ -10,7 +10,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvz
 - Created: 2026-11-04
 - Updated: 2026-11-04
-- Maximum iterations: 6
+- Maximum iterations: 7
 - Independent verification required: yes
 
 ## Objective
@@ -55,11 +55,11 @@ Verified base main013a84bc70055d63c79c1ba12212e631842fb03d. Home and Pricing cur
 | C-001 | yes | Home and Pricing render response-only names, allowances and exact current offers; distinguish absent/null from configured zero | unit contract/format tests plus real browser fixture states | alternate names/values render, max64-bit exact, no invented currency or private limits | docs/delivery/evidence/17tnw2b2jvz.md | PASS |
 | C-002 | yes | Loading/unavailable/empty/unpriced and retry/navigation changes are honest, cancellable and safe | browser delayed/error/change/escape scenarios and loader tests | no stale fallback, retry updates, unmount abort, no script interpretation; disabled explained CTA | focused runtime receipt | PASS |
 | C-003 | yes | Copy ledgers remain exact and claim controls detect invented data; layout/headings/responsiveness remain valid | updated real SSR and CLI negative controls; core/Home/responsive Chromium and WebKit | all checks pass with no skipped level or weakened claim/geometry controls | unit/browser logs | BLOCKED |
-| C-004 | yes | Existing marketing gate passes on the actual source | make marketing-check | type-check/lint/full node suite/build exit0 | /private/tmp/17tnw2b2jvz-marketing-check-final.log:1256passed0fail0skip plus lint/type/build | PASS |
+| C-004 | yes | Existing marketing gate passes on the actual source | make marketing-check | type-check/lint/full node suite/build exit0 | /private/tmp/17tnw2b2jvz-it7-marketing-check.log:1256passed0fail0skip plus lint/type/build | PASS |
 | C-005 | yes | Public backend dependency and required actual integration acceptance are satisfied | root verifies merged366, runtime/admin E2E and frontend real-stack behavior | current deployed-like API contract and no outstanding mandatory prerequisite | root dependency evidence | BLOCKED |
 | C-006 | yes | Cody, Shadow, Quinn, Vera and actual current CI pass before merge/QA | root independent reviews/CI/main/ClickUp readback | four passes, CI success, verified main before QA | root receipts | PENDING |
 | C-007 | yes | The legal harness supplies only exact public catalogue GET JSON, waits readiness and still rejects real unrelated failed requests | actual legal419check gate and browser negative control through the existing guard |419pass; inserted unrelatedrequest fails the unchanged navigation console assertion | docs/delivery/evidence/17tnw2b2jvz.md | PENDING |
-| C-008 | yes | Matrix navigation follows visible native controls rather than nominal viewport width | actual WebKit768 old-helper negative/current-helper positive and one full matrix | oldnominalhelper fails hidden desktop link; correctedvisiblehelper passes nativeclicks, matrix complete bothengines | iteration6 navigation proof receipts | FAIL |
+| C-008 | yes | Matrix navigation follows visible native controls rather than nominal viewport width | actual WebKit768 old-helper negative/current-helper positive and one full matrix | oldnominalhelper fails hidden desktop link; correctedvisiblehelper passes nativeclicks, matrix complete bothengines | iteration7-navigation/matrix JSON and retained negative logs | PASS |
 
 ## Verification plan
 - Focused verification: real contract parser/decimal display tests, request/cancellation and Vue/browser fixture states with adverse responses and changed values.
@@ -156,3 +156,26 @@ Deterministic pre-fix response probe reproduced exact catalogue GET200/text-html
 - Root explicitly disposed cleanup, NOT a new iteration: revert ONLY own unverified helper conditional to the prior source and exclude failed new navigation proof from the public patch. Copies/failure receipts stay in /private/tmp/17tnw2b2jvz-unverified-visible-helper.patch, -unverified-navigation-proof.py and -it6-navigation* files. Successful legal fixture/proof is retained. All219 iteration5 source/test inputs match their frozen manifest again after this rollback; no application/bundle change or additional test/build occurred.
 - Current actual target2f App.vue remains unchanged from reviewed main and responsive resolved-childwait remains combined with API fixtures/order checks. Verified currenttarget gates: make1256/lint/type/build, legal419, actual unrelatedERR_ABORTED guard rejection, Home262+frame, core304+frame, Chromium2379 PASS. Current fullmatrix remains7partial; fullWebKit375/affiliates/payouts20s failure remains UNKNOWN; backendC005 remains blocked. C008 FAIL, not silently deferred or markedpassed. Root will track observed nativeWebKit768 menu issue separately after dedup and own all4 final source reviews/currentCI.
 - Maximum6 exhausted with full1–6 ledger retained. All local processes were reaped; Otto notified to resume his owned paused Cargo work. No merge, QA, provider, deploy or installer action. Completion validator must remain non-green while mandatory criteria are unresolved.
+
+
+### Iteration7 — explicit LOCAL affected remediation, same Goal
+- Target criterion: C008 corrected native navigation/current matrix, with C003/C005/C006 remaining independently gated.
+- Hypothesis: normally integrating the separately reviewed exact menu commit ec0e82923dea88303ce071c723117f9049b59445 and selecting actually rendered controls fixes the evidenced current WebKit768 helper failure without changing product contracts.
+- Change or investigation: coordinator explicitly extends maximum6to7 only for this PRIVATE worktree from exactpublished8bf09ded. Normally merge actualmain a6cbd07dd4684621ffb8bb8d6f08f790fa6946d3 then local exactmenu ec0. Resolve only adjacent package-script conflict by retaining menu test:components and cards test:core/test:catalogue chains; menu source/verification/docs stay byte-exact. Correct only navigate helper nominalwidth condition to actualMenu visibility. All iterations1–6 and failed receipts remain unchanged.
+- Verifier executed: structural validator; ONE make/build; actualoldhelpernegative at nativeWebKit768 with currentmenufix, correctedhelperpositive, then ONCE full both-engine12scenario matrix. No full responsive sweep retry, forced click, skip, CSS/breakpoint/tolerance/deadline change.
+- Result: pending. Oldhosted2379each belongs oldNavbar8bf and is not current combined fullresponsive evidence.
+- New evidence: pending local receipts17tnw2b2jvz-it7-* and source/bundle input manifests.
+- Decision: stop after this bounded set on any runtime/verifier failure; no iteration8 without new explicit disposition.
+
+#### Iteration7 publication and dependency boundaries
+- Exactmenu ec0 public push was actually rejected before execution; specific public publication approval question is pending without answer. This private combined branch MUST NOT be pushed, published through another branch, or presented as publicPR/CI/main. Localfouraffectedreviews only until root explicitly authorizes publication after exactmenu approval.
+- Native17tnw2b2jvz is now In Progress, saved/read back by coordinator. Prior failed status attempts remain historical.
+- PR366/C005 actualbackend/adminmutation E2E remains BLOCKED; syntheticHTTP fixtures/servicewrites do not substitute. No backendauthscope expansion or publicAPI localdraft carryover.
+
+
+## Private iteration7 final outcome
+- The authorized set completed once: actual oldnominalhelper negative exit1/WebKitHome768 hiddenDesktop; actualvisiblehelper positive39checksPASS; fullbothengine catalogue matrix476checks/12scenariosPASS on the exact combinedbundle. All238frozen source/test/script/public/configuration map entries and117bundlefiles match after the entire set. No browser/server/subprocess remains running.
+- Sole make marketing-check completes1256passed0failed0skipped pluslint/type/build. The initial npmci command used repo-root rather than marketingCWD and failedbeforeinstall; corrected isolated offlineinstall succeeded. No test/setup failure was presented as green.
+- Published8bf source tree remains clean/exact8bf. Maina6 and exactreviewedmenu ec0 are real normal localmerge ancestors. The package conflict was only adjacent scriptlines; both independentchains retained. Navbar/menuverifier/docs remain byte-exact ec0. Own new change is the one visible-control condition plus its oldnegative/currentpositive verification driver and evidence.
+- C008 PASS on current private source; C001/C002 currentruntime reaffirmed. C004 currentmake PASS. C003 remainsBLOCKED without currentcombined fullresponsive evidence/authorizedretention disposition; old2379each is not currentNavbarwholepass. C005 backend/admin E2E BLOCKED, C006 allfouraffectedreviews/currenthostedCI/main/QA pending. C007 originallegal fixture/guard evidence remains historical scoped8bf, not a new wholelegal pass on this privatebundle.
+- Maximum7 consumed, original1–6 retained. Root owns fouraffectedreviews, exactpublicapprovalboundary and futureintegration. No push, alternativepublication, publicPR/CI, mainmerge or QA action was attempted for this combinedsource. Terminalstate BLOCKED for those externalgates, not VERIFIED_COMPLETE.
