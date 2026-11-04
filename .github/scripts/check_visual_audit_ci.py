@@ -21,7 +21,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 TARGET = "visual-audit-check"
-PATTERNS = {"**", "!docs/**", "!**.md", "!TODO", "docs/design/visual-parity/**"}
+PATTERNS = {"**", "!docs/**", "!**.md", "!TODO", "docs/design/visual-parity/**",
+            "docs/release/pilot-registration/notice.json"}
 CASES = {
     "scripts/vp_selftest.py": True,
     "scripts/vp_compare.py": True,
@@ -29,6 +30,10 @@ CASES = {
     "docs/design/visual-parity/README.md": True,
     "docs/ops/DEPLOYMENT.md": False,
     "docs/elsewhere/data.json": False,
+    "docs/release/pilot-registration/notice.json": True,
+    "docs/release/pilot-registration/notice.md": False,
+    "docs/release/pilot-registration/other.json": False,
+    "docs/release/pilot-registration/notice.json.backup": False,
     "README.md": False,
     "implementation/desktop/README.md": False,
     "TODO": False,
