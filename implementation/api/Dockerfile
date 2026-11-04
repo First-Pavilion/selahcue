@@ -1,7 +1,12 @@
+FROM ghcr.io/astral-sh/uv:0.13.4@sha256:9f130421e930bfbdc563c00740466603f8723158e90297d07957c2294640262b AS uv
 FROM python:3.14-slim
+COPY --from=uv /uv /usr/local/bin/uv
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /usr/src/app
 
@@ -11,33 +16,18 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential libpq-dev curl \
  && rm -rf /var/lib/apt/lists/*
 
-# --- Dependency layer: cached on pyproject.toml alone ------------------------
-# No source is present yet, so setuptools' auto-discovery finds no packages and
-# this installs the third-party dependencies plus an EMPTY selahcue-api
-# distribution. The empty distribution is fine and expected here: the only thing
-# this layer is meant to cache is the slow dependency resolve/build, so that
-# editing application code does not re-run it. The install is completed below,
-# once the package actually exists.
-# The dev extra also supplies the Postgres driver for mandatory deployed-mode test controls.
-# Keep the existing explicit driver bound below aligned with that extra and hosted CI.
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir --upgrade pip \
- && pip install --no-cache-dir -e ".[dev]" "psycopg[binary]>=3.2,<4"
+# Hash-locked dependency/build layer. Only wheels: no untracked PEP517 build downloads.
+COPY pyproject.toml uv.lock .uv-version ./
+RUN uv sync --locked --extra dev --group build --no-install-project --no-build --no-python-downloads
 
 # --- Source layer ------------------------------------------------------------
 # .dockerignore — not .gitignore — is what keeps .env and db.sqlite3 out of this
 # layer. See the comments there before changing this line.
 COPY . .
 
-# Re-run the editable install now that selahcue_api is on disk, so the installed
-# distribution really points at the package. Without this the import only
-# resolves by accident: WORKDIR happens to be sys.path[0] for manage.py, and
-# Celery's find_app happens to insert the cwd. Anything invoked from another
-# working directory (a one-off `docker compose run`, a cron/exec shell) would
-# fail to import selahcue_api.
-# --no-deps scopes this to the package itself — every dependency is already
-# installed in the cached layer above, so nothing is re-resolved or re-fetched.
-RUN pip install --no-cache-dir --no-deps -e .
+# Install the actual application after source exists, with the locked backend and no network.
+# /opt/venv is outside the compose source bind mount; imports work from any cwd.
+RUN uv sync --locked --extra dev --group build --offline --no-build-isolation --no-cache --no-python-downloads
 
 EXPOSE 8000
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

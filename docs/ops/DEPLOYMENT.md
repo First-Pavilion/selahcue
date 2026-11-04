@@ -829,3 +829,14 @@ does not work, because of the `NOT NULL` point above.
 If a signing credential leaks, revoke the certificate at
 [developer.apple.com](https://developer.apple.com/account/resources/certificates/list) immediately —
 anything signed with it is attributed to you.
+
+
+### API dependency installation (17tnw2az0kw)
+
+The API Docker image installs the committed `implementation/api/uv.lock` with pinned uv0.13.4.
+The dependency layer is wheel-only and includes the explicit locked setuptools build group; after
+copying source, the final editable application build runs offline without build isolation.
+`/opt/venv/bin` is on PATH, outside the compose source bind mount, so API and Celery imports work
+from another working directory. Startup performs no dependency download. Do not add a pip install,
+floating psycopg range or isolated build command to deployment/startup scripts. See the API README
+for deliberate bootstrap, targeted updates, rollback and post-merge dependency graph verification.
