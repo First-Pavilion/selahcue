@@ -15,6 +15,7 @@ const route = useRoute()
 
 const isScrolled = ref(false)
 const isMobileMenuOpen = ref(false)
+let menuViewportWidth = 0
 
 const sentinelEl = ref<HTMLElement | null>(null)
 const toggleEl = ref<HTMLButtonElement | null>(null)
@@ -93,6 +94,7 @@ const handleSheetKeydown = (event: KeyboardEvent) => {
 
 const openMobileMenu = () => {
   if (isMobileMenuOpen.value) return
+  menuViewportWidth = window.innerWidth
   isMobileMenuOpen.value = true
   releaseScrollLock = pageScrollLock.acquire()
   releaseInert = pageInertLock.acquire()
@@ -108,6 +110,7 @@ const closeMobileMenu = ({ restoreFocus = true }: { restoreFocus?: boolean } = {
   document.removeEventListener('keydown', handleSheetKeydown)
   if (!isMobileMenuOpen.value) return
   isMobileMenuOpen.value = false
+  menuViewportWidth = 0
   if (restoreFocus) void nextTick(() => toggleEl.value?.focus())
 }
 
@@ -125,9 +128,15 @@ watch(
 
 let mobileQuery: MediaQueryList | null = null
 const handleBreakpointChange = (event: MediaQueryListEvent) => {
-  // Rotating a tablet or resizing a window past 768px hides the sheet with CSS; without
-  // this the lock would stay held under a page that no longer shows a reason for it.
-  if (!event.matches) closeMobileMenu({ restoreFocus: false })
+  // WebKit can change this query when our scroll lock removes its scrollbar without
+  // resizing the viewport. Keep the already-open modal through that self-induced change.
+  if (!event.matches && window.innerWidth !== menuViewportWidth) closeMobileMenu({ restoreFocus: false })
+}
+const handleViewportResize = () => {
+  // The query may already be false under the lock, so a real resize need not fire it again.
+  if (isMobileMenuOpen.value && window.innerWidth !== menuViewportWidth && !mobileQuery?.matches) {
+    closeMobileMenu({ restoreFocus: false })
+  }
 }
 
 const handlePageHide = () => closeMobileMenu({ restoreFocus: false })
@@ -144,6 +153,7 @@ onMounted(() => {
   window.addEventListener('pagehide', handlePageHide)
   mobileQuery = window.matchMedia(MOBILE_QUERY)
   mobileQuery.addEventListener('change', handleBreakpointChange)
+  window.addEventListener('resize', handleViewportResize)
 })
 
 onBeforeUnmount(() => {
@@ -152,6 +162,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', handleScroll)
   window.removeEventListener('pagehide', handlePageHide)
   mobileQuery?.removeEventListener('change', handleBreakpointChange)
+  window.removeEventListener('resize', handleViewportResize)
   mobileQuery = null
   closeMobileMenu({ restoreFocus: false })
 })
@@ -482,8 +493,8 @@ onBeforeUnmount(() => {
 
 /* ---- Mobile sheet ------------------------------------------------------------------
    Slides in from the right (design 8b): --sc-surface, full viewport height, scrim behind
-   it. It only exists below 768px; the v-if never renders it above that, and the media
-   rule below is the belt to that pair of braces for a resize mid-open. */
+   it. Its v-if owns the modal lifetime: a scroll-lock-induced media-query change must
+   not hide the open sheet. Actual viewport growth closes it through the resize handler. */
 .mobile-layer {
   position: fixed;
   inset: 0;
@@ -654,8 +665,7 @@ onBeforeUnmount(() => {
   .right-group {
     display: flex;
   }
-  .mobile-toggle,
-  .mobile-layer {
+  .mobile-toggle {
     display: none;
   }
 }
