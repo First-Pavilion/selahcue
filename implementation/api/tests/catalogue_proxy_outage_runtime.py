@@ -57,12 +57,14 @@ class SilentDNS(socketserver.ThreadingUDPServer):
 
 class DropDNS(socketserver.BaseRequestHandler):
     def handle(self):
-        pass  # Controlled resolver outage: receive a packet and deliberately never reply.
+        self.server.received.set()
+        # Controlled resolver outage: receive a packet and deliberately never reply.
 
 
 class StalledHTTP(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.recv(8192)
+        self.server.received.set()
         time.sleep(7)
 
 
@@ -74,6 +76,8 @@ def main():
     dns = SilentDNS(('0.0.0.0', 0), DropDNS)
     stalled = socketserver.ThreadingTCPServer(('0.0.0.0', 0), StalledHTTP)
     dns.daemon_threads = stalled.daemon_threads = True
+    dns.received = threading.Event()
+    stalled.received = threading.Event()
     for server in (dns, stalled):
         threading.Thread(target=server.serve_forever, daemon=True).start()
     original = CONFIG.read_text()
@@ -130,9 +134,12 @@ def main():
             _, old_url = start('old-dns', old)
             results['old_dns_control'] = fetch(old_url, timeout=30)
             assert results['old_dns_control']['elapsed'] >= 29, results['old_dns_control']
+            assert dns.received.is_set(), 'Old DNS fixture never received a query'
+            dns.received.clear()
             _, fixed_url = start('fixed-dns', silent)
             results['fixed_dns'] = fetch(fixed_url)
             assert_unavailable(results['fixed_dns'])
+            assert dns.received.is_set(), 'Current DNS fixture never received a query'
 
             # A real TCP server accepts the upstream request but withholds its response.
             assert original.count('http://api:8000') == 2
@@ -140,6 +147,9 @@ def main():
             _, slow_url = start('stalled-read', slow)
             results['stalled_read'] = fetch(slow_url)
             assert_unavailable(results['stalled_read'])
+            assert stalled.received.is_set(), 'Stalled upstream never accepted the request'
+            assert results['stalled_read']['elapsed'] >= 4, results['stalled_read']
+            results['fixture_acceptance'] = {'old_dns': True, 'current_dns': True, 'stalled_tcp': True}
         print(json.dumps(results, indent=2), flush=True)
     finally:
         cleanup_errors = []
