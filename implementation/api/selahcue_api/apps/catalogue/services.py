@@ -495,7 +495,10 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
     This is a DATA edit — no migration, no deploy. `plan_code` and `dimension_key` arrive
     from the caller and are looked up; they are never matched against a literal.
     """
-    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    permission = (StaffPermission.MANAGE_PLAN_PRICING
+                  if actor is not None and StaffPermission.MANAGE_PLAN_PRICING in actor.staff_permissions
+                  else StaffPermission.GRANT_ENTITLEMENT)
+    staff = require_staff_permission(actor, permission)
     idempotency_key = validate_idempotency_key(data.idempotency_key)
     reason = require_reason(data.reason)
 

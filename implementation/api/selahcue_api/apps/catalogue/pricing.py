@@ -1,6 +1,6 @@
 """Internal accountable append-only price versions; no staff/public endpoint.
 
-Callers select an explicit effective timestamp (not in the past). A repeated timestamp
+Callers select an explicit future timestamp, or None for an immediate server-timed price. A repeated timestamp
 conflicts rather than creating another version; no update/delete service exists.
 """
 from dataclasses import dataclass
@@ -25,7 +25,7 @@ class AppendPlanPriceData:
     currency: str
     interval: str
     amount_minor: int | None
-    effective_from: datetime
+    effective_from: datetime | None
     reason: str
     idempotency_key: str
 
@@ -52,13 +52,17 @@ def append_plan_price(actor: ActorContext | None, data: AppendPlanPriceData) -> 
     request_id = validate_idempotency_key(data.idempotency_key)
     if (not isinstance(data.plan_code, str) or not data.plan_code.strip() or has_control_characters(data.plan_code)):
         raise SafeAPIError(ErrorCode.NOT_FOUND)
-    if (not isinstance(data.effective_from, datetime) or timezone.is_naive(data.effective_from)
-            or data.effective_from < timezone.now()):
-        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+    now = timezone.now()
+    effective_from = now if data.effective_from is None else data.effective_from
+    if (not isinstance(effective_from, datetime) or timezone.is_naive(effective_from)
+            or effective_from < now):
+        error = SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        error.extensions['field'] = 'effectiveFrom'
+        raise error
     # Validate typed scalar fields BEFORE any lookup using them. PostgreSQL refuses NUL
     # text at the driver boundary; SQLite would otherwise defer that case until save.
     price = PlanPrice(currency=data.currency, interval=data.interval, amount_minor=data.amount_minor,
-                      effective_from=data.effective_from, changed_by_actor_id=staff.actor_id, reason=reason)
+                      effective_from=effective_from, changed_by_actor_id=staff.actor_id, reason=reason)
     try:
         price.full_clean(exclude=["plan"], validate_unique=False, validate_constraints=False)
     except ValidationError as error:
@@ -71,7 +75,7 @@ def append_plan_price(actor: ActorContext | None, data: AppendPlanPriceData) -> 
         identity = dict(plan=plan, currency=price.currency, interval=price.interval, effective_from=price.effective_from)
         if PlanPrice.objects.filter(**identity).exists():
             raise SafeAPIError(ErrorCode.CONFLICT)
-        previous = current_plan_price(plan, data.currency, data.interval, at=data.effective_from)
+        previous = current_plan_price(plan, data.currency, data.interval, at=effective_from)
         try:
             with transaction.atomic():
                 price.save()
