@@ -1,7 +1,7 @@
 """Admin mutation boundary; dev identity fixtures are not a production sign-in."""
 from selahcue_api.apps.catalogue.admin import rename_admin_plan
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Event, Thread, current_thread
 from django.db import connection,close_old_connections
 from selahcue_api.apps.catalogue.models import CatalogueAdminMutation
 from test_deployment_guards import _fresh_settings,CONFIGURED_POSTGRES
@@ -12,12 +12,15 @@ from selahcue_api.apps.entitlements.signing import verify_envelope,load_signing_
 import base64
 from datetime import timedelta
 import json
+import time
 
 import pytest
 from django.utils import timezone
 from selahcue_api.apps.audit.models import AuditEvent
-from selahcue_api.apps.catalogue.models import Plan, PlanPrice
-from selahcue_api.apps.catalogue.services import current_revision, resolve_entitlement
+from selahcue_api.apps.catalogue import signals as catalogue_signals
+from selahcue_api.apps.catalogue.pricing import AppendPlanPriceData, append_plan_price
+from selahcue_api.apps.catalogue.models import Plan, PlanPrice, PlanGrant
+from selahcue_api.apps.catalogue.services import current_revision, set_plan_grant, SetPlanGrantData
 from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
 from selahcue_api.graphql.errors import SafeAPIError
 from selahcue_api.apps.catalogue.admin import read_admin_catalogue, set_admin_price, set_admin_grant
@@ -177,3 +180,92 @@ def test_actual_admin_http_grant_reaches_next_signed_manifest(client,settings):
     response=client.post('/graphql/admin',data=json.dumps({'query':query,'variables':variables}),content_type='application/json',HTTP_X_SELAHCUE_ACTOR_KIND='staff',HTTP_X_SELAHCUE_ACTOR_ID='fixture_admin',HTTP_X_SELAHCUE_STAFF_PERMISSIONS='manage_plan_pricing')
     assert 'errors' not in response.json(),response.json()
     assert manifest()['grants']['sermon_notes_per_week']==6
+
+
+@pytest.mark.parametrize('name',['   ','Invalid\nname','Invalid\x00name','\u200b'])
+def test_http_rename_invalid_name_rolls_back_everything(client,settings,name):
+    settings.SELAHCUE_TRUST_ACTOR_HEADERS=True
+    plan=Plan.objects.order_by('id').first();previous=plan.display_name
+    revision=current_revision();audit_count=AuditEvent.objects.count()
+    mutation='mutation($input:AdminRenamePlanInput!){adminRenamePlan(input:$input){revision name replayed}}'
+    body={'query':mutation,'variables':{'input':dict(planCode=plan.code,name=name,reason='Approved rename request',idempotencyKey='invalid-name-http-0001',expectedRevision=revision)}}
+    response=client.post('/graphql/admin',data=json.dumps(body),content_type='application/json',HTTP_X_SELAHCUE_ACTOR_KIND='staff',HTTP_X_SELAHCUE_ACTOR_ID='rename-fixture',HTTP_X_SELAHCUE_STAFF_PERMISSIONS='manage_plan_pricing')
+    assert response.json()['errors'][0]['extensions']=={'code':'VALIDATION_FAILED','field':'name'}
+    plan.refresh_from_db()
+    assert plan.display_name==previous and current_revision()==revision
+    assert AuditEvent.objects.count()==audit_count
+    assert not CatalogueAdminMutation.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize('operation',['grant','price'])
+def test_postgres_legacy_writer_locks_revision_before_data(monkeypatch,operation):
+    if connection.vendor!='postgresql':pytest.skip('Requires actual PostgreSQL lock inspection in hosted API CI')
+    ready=Event(); release=Event(); admin_started=Event(); admin_completed_cas=Event()
+    results={}; pids={}
+    original_bump=catalogue_signals.bump_catalogue_revision
+    plan=Plan.objects.order_by('id').first();revision=current_revision()
+    def paused_bump():
+        if current_thread().name=='legacy-catalogue-writer':
+            ready.set()
+            assert release.wait(10),'Legacy write was not released'
+        original_bump()
+    monkeypatch.setattr(catalogue_signals,'bump_catalogue_revision',paused_bump)
+    def legacy():
+        close_old_connections()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT pg_backend_pid()');pids['legacy']=cursor.fetchone()[0]
+            if operation=='grant':
+                set_plan_grant(staff(StaffPermission.GRANT_ENTITLEMENT),SetPlanGrantData(plan_code=plan.code,dimension_key='sermon_notes_per_week',raw_value='42',reason='Concurrent management edit',idempotency_key='legacy-admin-lock-0001'))
+            else:
+                append_plan_price(staff(),AppendPlanPriceData(plan_code=plan.code,currency='USD',interval='MONTH',amount_minor=42,effective_from=None,reason='Concurrent management edit',idempotency_key='legacy-admin-price-0001'))
+            results['legacy']='success'
+        except Exception as error:results['legacy']=repr(error)
+        finally:close_old_connections()
+    def observe(execute,sql,params,many,context):
+        cas=sql.startswith('UPDATE') and 'selahcue_catalogue_cataloguerevision' in sql
+        if cas:admin_started.set()
+        result=execute(sql,params,many,context)
+        if cas:admin_completed_cas.set()
+        return result
+    def admin():
+        close_old_connections()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT pg_backend_pid()');pids['admin']=cursor.fetchone()[0]
+            with connection.execute_wrapper(observe):
+                if operation=='grant':
+                    set_admin_grant(staff(),plan_code=plan.code,dimension_key='sermon_notes_per_week',raw_value='43',reason='Concurrent admin edit',idempotency_key='legacy-admin-lock-0002',expected_revision=revision)
+                else:
+                    set_admin_price(staff(),plan_code=plan.code,currency='USD',interval='MONTH',amount_minor=43,effective_from=None,reason='Concurrent admin edit',idempotency_key='legacy-admin-price-0002',expected_revision=revision)
+            results['admin']='unexpected success'
+        except SafeAPIError as error:results['admin']=error.extensions['code']
+        except Exception as error:results['admin']=repr(error)
+        finally:close_old_connections()
+    legacy_thread=Thread(target=legacy,name='legacy-catalogue-writer')
+    admin_thread=Thread(target=admin,name='admin-catalogue-writer')
+    legacy_thread.start()
+    try:
+        assert ready.wait(10),results
+        admin_thread.start();assert admin_started.wait(10),results
+        deadline=time.monotonic()+5;blockers=[]
+        while time.monotonic()<deadline:
+            with connection.cursor() as cursor:
+                cursor.execute('SELECT pg_blocking_pids(%s)',[pids['admin']]);blockers=cursor.fetchone()[0]
+            if blockers or admin_completed_cas.is_set():break
+            Event().wait(0.01)
+        assert pids['legacy'] in blockers and not admin_completed_cas.is_set(),(blockers,results)
+    finally:
+        release.set()
+        legacy_thread.join(10)
+        if admin_thread.ident is not None:admin_thread.join(10)
+    assert not legacy_thread.is_alive() and not admin_thread.is_alive()
+    assert results=={'legacy':'success','admin':'CONFLICT'},results
+    if operation=='grant':
+        assert PlanGrant.objects.get(plan=plan,dimension__key='sermon_notes_per_week').raw_value=='42'
+        assert AuditEvent.objects.filter(action='catalogue.plan_grant_set').count()==1
+    else:
+        assert PlanPrice.objects.get(plan=plan).amount_minor==42
+        assert AuditEvent.objects.filter(action='catalogue.plan_price_added').count()==1
+    assert CatalogueAdminMutation.objects.count()==0

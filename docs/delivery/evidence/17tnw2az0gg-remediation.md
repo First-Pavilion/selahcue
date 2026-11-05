@@ -34,3 +34,11 @@ Cody, Shadow, Quinn and Vera must independently review the frozen source. Hosted
 ## Rollback
 
 Revert this PR to remove the gated GraphQL operations. Preserve audit and price history. Do not drop retry receipts in a live enabled system: a client retry could otherwise apply again. No production system or data was changed here.
+
+## Review remediation — iteration3
+
+Cody confirmed that whitespace/control-only display names could poison the public catalogue. Four actual HTTP negative cases first failed, then pass after trimming valid names and requiring visible non-control text. Rejection rolls back the optimistic revision and leaves plan, audit and receipt unchanged.
+
+Vera confirmed a lock-order inversion: admin CAS locked revision before grant/plan data, but the existing management writers locked data before the post-save revision bump. The common writer helper now acquires CatalogueRevision before either shared writer touches plan/grant/price data. Price writes also bump the same optimistic revision. Two deterministic PostgreSQL tests pause the real legacy grant/price writer before its signal bump, inspect actual pg_blocking_pids to prove the admin waits on the legacy revision lock, then require legacy success and a coded admin stale refusal. These are explicitly unexecuted on local SQLite and mandatory on hosted PostgreSQL. Arbitrary external ORM writes are not a supported concurrent writer interface; managed commands and admin operations use the shared services.
+
+The first permitted-socket full check finished with2388pass/56explicitservice skips/57subtests and one failure: the new configuration variable lacked its required registry row. That failure is retained, not called green. Added the deployment registry/runbook row and the admin API contract in README. Expanded final focused admin/price/catalogue/cache/deployment checks:443pass/6explicitservice/PG skips in15.67s. Migration consistency and structural Goal checks pass. Current source still requires complete API CI, actual PostgreSQL cases and four current independent review verdicts before merge.

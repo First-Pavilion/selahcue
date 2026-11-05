@@ -14,6 +14,7 @@ from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.models import Plan, PlanPrice
+from selahcue_api.apps.catalogue.write_lock import lock_catalogue_revision
 from selahcue_api.graphql.context import (ActorContext, StaffPermission, require_staff_permission,
     require_reason, validate_idempotency_key, has_control_characters)
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
@@ -68,6 +69,7 @@ def append_plan_price(actor: ActorContext | None, data: AppendPlanPriceData) -> 
     except ValidationError as error:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED) from error
     with transaction.atomic():
+        lock_catalogue_revision()
         plan = Plan.objects.select_for_update().filter(code=data.plan_code).first()
         if plan is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
