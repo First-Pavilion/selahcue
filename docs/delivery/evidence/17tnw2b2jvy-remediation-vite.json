@@ -1,0 +1,26 @@
+{
+  "old_stalled_control": {
+    "error": "timeout",
+    "elapsed": 10.016873499999999
+  },
+  "current_stalled": {
+    "status": 503,
+    "elapsed": 5.301600084,
+    "headers": {
+      "Vary": "Origin",
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Date": "Thu, 05 Nov 2026 05:41:36 GMT",
+      "Connection": "close",
+      "Transfer-Encoding": "chunked"
+    },
+    "body": "{\"error\":{\"code\":\"catalogue_unavailable\"}}"
+  },
+  "source_inputs": {
+    "implementation/marketing/vite.config.ts": "db338841399f094fdb4c14483a648746ef1db5c1457e48d51334a5fafaea094c",
+    "implementation/marketing/nginx.conf": "5f17d634b8e262835318b0e944efe1f2c50af1134048f9811386e6c71cfd0196",
+    "implementation/marketing/scripts/catalogue_proxy_outage.py": "0d80dfaa748063e30d3de1a3addc9d177168cf9beff7ea169cae930e730e79f3"
+  },
+  "backend_dependency": "16eca1d43cb036dcf227420419bb221347bd716b"
+}

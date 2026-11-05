@@ -1,4 +1,8 @@
 """Public read contract: exercise real rows/writers and HTTP, never admin mutations."""
+import json
+import urllib.request
+from http.cookies import SimpleCookie
+from selahcue_api.apps.audit.models import AuditEvent
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -305,3 +309,47 @@ def test_real_csrf_middleware_rejects_unsafe_post_without_writes():
     assert response.status_code == 403
     assert response.headers["Content-Type"].startswith("text/html")
     assert (Plan.objects.count(), PlanGrant.objects.count(), PlanPrice.objects.count()) == before
+
+
+def test_exact_public_proxy_has_finite_outage_timeouts_below_client_deadline():
+    location=next(b for b in guard._blocks() if b['header']=='location = /v1/catalogue/plans')
+    own=guard._statements(location['body'])
+    for directive,value in [('resolver_timeout','2s'),('proxy_connect_timeout','2s'),('proxy_send_timeout','5s'),('proxy_read_timeout','5s')]:
+        assert (directive,value) in own
+
+
+@pytest.mark.django_db(transaction=True)
+def test_real_http_admin_mutations_reach_next_public_response_without_restart(live_server,settings):
+    # Explicit exact-dev identity fixture; this proves HTTP/schema/service/DB/cache,
+    # not the separately gated production staff authenticator.
+    settings.ENVIRONMENT='dev'
+    settings.SELAHCUE_ENABLE_ADMIN_CATALOGUE=True
+    settings.SELAHCUE_TRUST_ACTOR_HEADERS=True
+    base=live_server.url
+    bootstrap=urllib.request.urlopen(base+'/graphql/csrf',timeout=10)
+    cookies=SimpleCookie();cookies.load(bootstrap.headers['Set-Cookie']);bootstrap.close()
+    csrf=cookies['csrftoken'].value
+    def request(path,body=None):
+        headers={'Accept':'application/json'}
+        if body is not None:
+            headers.update({'Content-Type':'application/json','Cookie':'csrftoken='+csrf,'X-CSRFToken':csrf,
+                'X-SelahCue-Actor-Kind':'staff','X-SelahCue-Actor-Id':'catalogue-http-fixture','X-SelahCue-Staff-Permissions':'manage_plan_pricing'})
+        req=urllib.request.Request(base+path,data=None if body is None else json.dumps(body).encode(),headers=headers)
+        with urllib.request.urlopen(req,timeout=10) as response:
+            assert response.status==200
+            return json.load(response)
+    def core():return next(plan for plan in request(URL)['plans'] if plan['key']=='CORE')
+    initial=core();assert initial['sermon_notes_per_week']==5 and initial['price_state']=='unpriced'
+    query='{adminPlanCatalogue{revision}}'
+    revision=request('/graphql/admin',{'query':query})['data']['adminPlanCatalogue']['revision']
+    mutation='mutation($input:AdminSetPlanGrantInput!){adminSetPlanGrant(input:$input){revision rawValue replayed}}'
+    data={'query':mutation,'variables':{'input':dict(planCode='CORE',dimensionKey='sermon_notes_per_week',rawValue='6',reason='Approved HTTP propagation',idempotencyKey='public-http-grant-0001',expectedRevision=revision)}}
+    grant=request('/graphql/admin',data)['data']['adminSetPlanGrant']
+    assert core()['sermon_notes_per_week']==6
+    price='mutation($input:AdminSetPlanPriceInput!){adminSetPlanPrice(input:$input){revision amountMinor replayed}}'
+    body={'query':price,'variables':{'input':dict(planCode='CORE',currency='USD',interval='MONTH',amountMinor='0',reason='Approved HTTP propagation',idempotencyKey='public-http-price-0001',expectedRevision=grant['revision'])}}
+    result=request('/graphql/admin',body)['data']['adminSetPlanPrice']
+    assert result['amountMinor']=='0' and result['replayed'] is False
+    projected=core();assert projected['price_state']=='priced' and projected['offers'][0]['amount_minor']=='0'
+    assert request('/graphql/admin',body)['data']['adminSetPlanPrice']['replayed'] is True
+    assert AuditEvent.objects.filter(actor_id='catalogue-http-fixture').count()==2

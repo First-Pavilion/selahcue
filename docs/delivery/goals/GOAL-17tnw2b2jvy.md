@@ -11,7 +11,7 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvy
 - Created: 2026-11-04
 - Updated: 2026-11-04
-- Maximum iterations: 5
+- Maximum iterations: 8
 - Independent verification required: yes
 
 ## Objective
@@ -59,7 +59,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
 | C-001 | yes | Anonymous GET exact public data and all current offers distinguish unpriced/null/zero | pytest tests/test_public_catalogue.py | Seed, currency, temporal and privacy cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PASS |
-| C-002 | yes | Bounded cache invalidates for actual writers and scheduled boundaries | pytest tests/test_public_catalogue.py | Writer/query/TTL cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | BLOCKED |
+| C-002 | yes | Bounded cache invalidates for actual writers and scheduled boundaries | pytest tests/test_public_catalogue.py | Writer/query/TTL cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PASS |
 | C-003 | yes | Missing/malformed/outage data and limiter failures safely refuse; trusted IP/budgets enforced | pytest tests/test_public_catalogue.py tests/test_throttling.py | No invented data or leak; throttle cases pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | BLOCKED |
 | C-004 | yes | Full API migration/check/regression gate and hosted services pass | make api-check and hosted API CI | Local exit0 with service skips explicit; hosted pass | docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md | PENDING |
 | C-005 | yes | Actual authenticated admin mutation appears next public response | Actual admin mutation E2E after17tnw2az0gg/staff sign-in | Authorized mutation updates next response | Absent prerequisite; root disposition required | BLOCKED |
@@ -124,6 +124,36 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - New evidence: prior final HTTP attempt failed before API creation because5second pg_isready setup timeout; task cache PONG, PostgreSQL socket not yet ready, no application assertion failure. Both prior setup and response-time observations remain recorded.
 - Decision: final handoff after this one attempt, with honest blocked proof if it still fails. Further retry, source expansion or review remediation requires an explicit bounded disposition from root.
 
+### Iteration 6 — root-authorized evidence runner observability
+
+- Target criterion: C-002/C-003 evidence reliability only.
+- Hypothesis: strict Docker receipts and explicit markers distinguish absent readiness from failed execution, preserving full migration/status/exit/OOM evidence before cleanup.
+- Change or investigation: root explicitly extends SAME Goal5to7 retaining all1-5; only task-owned private runner observability plus nonzero/missing-marker shim checks. Product/API/proxy/auth/budget frozen439ca56f.
+- Verifier executed: actual subprocess Docker shim17 with fullstdout/stderr, missing-marker/migration-nonzero negatives and pending/ready controls.
+- Result: observer controls PASS, but embedded writer scripts were not compile-checked; iteration7 exposed an introduced indentation regression.
+- New evidence: read full setup diagnosis and all four reports; no established source defect.
+- Decision: iterate once to7 after checks.
+
+### Iteration 7 — single instrumented original-bound attempt
+
+- Target criterion: separate-process price/boundary HTTP and API-stop503/header proof.
+- Hypothesis: observable shipping-image attempt proves journeys or retains exact blocker.
+- Change or investigation: ORIGINAL180second setup/30second probes and requests/frozen images; no product/budget change, no eighth retry. Root owns publication disposition.
+- Verifier executed: ONE shipping-image HTTP attempt, original deadlines, full observer receipts.
+- Result: FAIL exit1/reaped. Migration exit0/marker observed; production seed200/security/POST403HTML/neighborsHTML/query400 completed. First grant writer command0041 exited1 IndentationError introduced by wrapping driver in main and indenting embedded multiline Python. Price/boundary/API-stop never executed; no retry.
+- New evidence: full migrationstdout/stderr/exit and APIrunning/exit0/OOMfalse state captured before cleanup, plus all command/probe/HTTP receipts. Task containers/network read back empty.
+- Decision: handoff after one attempt; C-005 admin E2E remains blocked separately.
+
+### Iteration 8 — explicit correction of known runner regression
+
+- Target criterion: C-002/C-003 remaining HTTP evidence, unchanged product scope.
+- Hypothesis: restoring exact original embedded Python payload values removes the known runner-only indentation error, without deadline/source changes.
+- Change or investigation: root explicitly extends SAME Goal7to8, all1–7 retained. New private runner retains oldfailedfile/receipts; AST extracts EVERY actual Docker Python-c payload, restores exact original values and compiles both. Both oldbroken payloads fail IndentationError line2 as meaningful negatives. Diff only two payload values and new receipt directory.
+- Verifier executed: both actual payloads compile/equal original; both oldbroken negatives fail. Root inspected full diff/payloads then authorized ONE originaldeadline shipping attempt.
+- Result: actual attempt exit1/reaped. Setup/migration0; actual separate service grant5to6 and scheduledUSD/MONTH0 price afterboundary HTTP PASS. Production/devnormalroutes/query400/Redis429 PASS. After actualAPIstop firstproductionGET timedout30.002647seconds; no503/header response, devstop proof not reached. No retry.
+- New evidence: preflight payload/diff/checks plus /private/tmp/17tnw2b2jvy-iteration8-evidence fullcommand/HTTP/migration/state receipts; APIexplicitstop observedexit137/OOMfalse, not startup failure. Cleanup independently empty. Frozen product439 unchanged.
+- Decision: final honest blocked handoff; no ninth iteration, staffE2E substitution or publication.
+
 ## Risks and rollback
 
 - Risks: misleading commercial data if missing grants defaulted; stale scheduled prices if TTL alone used.
@@ -139,5 +169,9 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Validator result: structural PASS; completion validator intentionally not claimed because mandatory blockers remain.
 - Independent verification result: parent-owned Cody/Shadow/Quinn/Vera and actual current hosted CI pending.
 - Terminal state: BLOCKED (source inspection/draft handoff; no completion/merge/QA claim).
-- Remaining failed or blocked criteria: C-002 separate-process price HTTP proof and C-003 final shipping upstream API-stop proof BLOCKED by bounded setup; C-005 admin E2E BLOCKED by17tnw2az0gg/staff sign-in. C-004 hosted CI and C-006 independent review pending. Maximum5 used; no further silent retry.
+- Remaining failed or blocked criteria: C-003 actualAPIstop productionGET timedout30seconds; devstop not reached. C-005 authenticatedadmin E2E remains blocked on17gg/staffsignin; C-006 fourrefreshreviews pending. C-002 separatelycommittedprice/boundary HTTP nowPASS; current exact439hostedCI independentlyverifiedPASS. Maximum8 used under explicit5to7to8extensions; no ninth.
 - ClickUp final evidence comment: parent owns UI posting.
+
+## 2026-11-05 remediation continuation
+
+The iterations1–8 above remain historical outcomes of their recorded source/runtime. The user explicitly requested fixes and re-review. Current work is tracked by REMEDIATION-17tnw2b2jvy-20261105.md with a new finite budget4. The prior claim that production staff login blocks merging is corrected against the actual task/ADR: actual dev-fixture admin GraphQL HTTP propagation meets this task's mutation criterion; real staff sign-in remains a production enablement gate. See current remediation evidence for actual results and still-pending CI/reviews. No historical failure is erased or retroactively passed.

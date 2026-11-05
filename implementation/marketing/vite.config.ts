@@ -43,6 +43,7 @@ export default defineConfig({
       // Exact path (optional query only), matching the production nginx location.
       '^/v1/catalogue/plans(?:[?].*)?$': {
         target: API_ORIGIN,
+        proxyTimeout: 5000,
         changeOrigin: false,
         configure: (proxy) => {
           proxy.on('proxyReq', (request) => {
