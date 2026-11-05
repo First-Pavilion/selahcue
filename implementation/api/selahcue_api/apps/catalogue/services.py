@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
+from selahcue_api.apps.catalogue.write_lock import lock_catalogue_revision
 from selahcue_api.apps.catalogue.models import (
     UNLIMITED,
     CatalogueRevision,
@@ -495,7 +496,10 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
     This is a DATA edit — no migration, no deploy. `plan_code` and `dimension_key` arrive
     from the caller and are looked up; they are never matched against a literal.
     """
-    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    permission = (StaffPermission.MANAGE_PLAN_PRICING
+                  if actor is not None and StaffPermission.MANAGE_PLAN_PRICING in actor.staff_permissions
+                  else StaffPermission.GRANT_ENTITLEMENT)
+    staff = require_staff_permission(actor, permission)
     idempotency_key = validate_idempotency_key(data.idempotency_key)
     reason = require_reason(data.reason)
 
@@ -524,6 +528,9 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
         raise SafeAPIError(ErrorCode.NOT_FOUND)
 
     with transaction.atomic():
+        # Shared management/admin writers must lock the revision before grant rows;
+        # the post-save revision bump otherwise inverts the admin CAS lock order.
+        lock_catalogue_revision()
         plan = Plan.objects.filter(code=plan_code).first()
         dimension = GrantDimension.objects.filter(key=dimension_key).first()
         if plan is None or dimension is None:
