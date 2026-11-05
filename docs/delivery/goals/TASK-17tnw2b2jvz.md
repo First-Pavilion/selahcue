@@ -9,8 +9,8 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b2jvz
 - Created: 2026-11-04
-- Updated: 2026-11-04
-- Maximum iterations: 8
+- Updated: 2026-11-05
+- Maximum iterations: 12
 - Independent verification required: yes
 
 ## Objective
@@ -207,3 +207,20 @@ Deterministic pre-fix response probe reproduced exact catalogue GET200/text-html
 - Following the explicit stopifunknown boundary, no production/harness/guard correction, old/fixedremediationproof, unrelatedabort rerun, full419, fullmatrix/responsive rerun, CIrerun or sourcepush was attempted. There is no automaticiteration9. Original1–7/private/rejection/publication/failurehistory remains unchanged.
 - Normalmain7f6dbcbb4782854cbb0fea14a3bb5a9ffcf7fcd0 integration succeeded locally. Incomingfivefiles are installerCIchecker/workflows/deliverydocs only; marketing subtree unchanged. All239currentselectedfrontendinputs and117bundlefiles remain byte-identical to publication-retention.json. Diagnostic rawpy/json/log remains /private/tmp/367-it8-legal-lifecycle-diagnostic.*.
 - Terminalstate BLOCKED unknownhostedfailurecause. Smallestnextunblocker: targeted evidence from an actualfailinghosted lifecycle (route/frame/requestfinished/requestfailed/signal-order), under a separately explicit boundeddiagnostic disposition; do not add unproved waits or suppress aborted-request guards. Root owns furtherdisposition/manualreviewcycle3/currentCI/status. The publicPR367 remains1fa; this localdiagnosis-only commit must not be pushed merely to rerun unchangedruntimeCI.
+
+
+## Explicit user-authorized remediation round, 2026-11-05
+- User requests fixes, four independent re-reviews and merge after passing. Root authorizes four additional material iterations9–12; all actual1–8 history and UNKNOWN failures remain. This is an explicit extension, not a reset.
+- Target C007: capture failing request lifecycle with focused passive observation in the actual harness/environment; no guessed wait or aborted-request suppression. A controlled reproduction must precede any correction.
+- Iteration9: inspect hosted log/current source; enrich passive failed-request lifecycle evidence and run the original navigation group under representative conditions. No production change without causal evidence.
+- Subsequent iterations may implement one evidenced correction, prove original negative/fixed positive/unrelated failure rejection and execute affected full gates once on frozen inputs. Stop after three materially different unsupported attempts or max12.
+- Backend/admin acceptance remains separately owned by Kenji, never substituted by fixture results. Root owns allfour reviews/currentCI/merge/QA.
+
+### Iteration9 outcome — targeted timing observation
+- Six original navigation groups alternating Privacy and Terms under Chromium CDP6xCPU passed42/42; browser156.0.8078.80, zero failed catalogue requests or signal aborts. The original fixture, console guard, clicks and deadlines were unchanged. This does not reproduce or explain the historical hosted failure. Raw observations remain /private/tmp/367-it9-legal-lifecycle-diagnostic.{py,json,log}.
+- Decision: use the next expressly authorized observation phase to capture actual hosted lifecycle, not infer a fix from local passes.
+
+### Iteration10 — explicit hosted lifecycle observation
+- Root inspected the passive harness diff and authorized one existing required419check hostedrun with SELAHCUE_LEGAL_NAV_DIAGNOSTIC=1. Original workflow command, fixture, console guard, deadlines and all checks stay intact. No new workflow or nav-only selector bypass.
+- Passive test-only fetch/signal and request/frame/navigation timestamps identify which request aborts; diagnostics do not remove errors or decide assertions. Playwright init-script instrumentation is test-only, not a production CSP-policy claim. Browser version is emitted with traces, including when navigation succeeds.
+- Local original14navigation checks and real unrelated aborted-request rejection validate instrumentation without substituting for hosted acceptance. Root retains allfour review, sourcefreshness and backend acceptance gates. A hosted pass alone is not proof the historical cause was fixed.

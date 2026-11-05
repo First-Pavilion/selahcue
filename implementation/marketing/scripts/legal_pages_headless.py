@@ -62,6 +62,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -505,11 +506,57 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         run_navigation(browser, base, key, all_exp)
 
 
+def navigation_trace(ctx, page):
+    """Passive evidence for a failed navigation; never decides whether errors pass."""
+    events = []
+    started = time.monotonic()
+    request_ids = {}
+
+    def record(kind, request):
+        if urlsplit(request.url).path != "/v1/catalogue/plans":
+            return
+        request_id = request_ids.setdefault(request, len(request_ids) + 1)
+        events.append({"event": kind, "request_id": request_id,
+                       "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+                       "url": request.url, "frame_url": request.frame.url,
+                       "failure": request.failure})
+
+    ctx.add_init_script("""(() => {
+      window.__legalCatalogueLifecycle = [];
+      const original = window.fetch;
+      const record = (event, id, detail = {}) => window.__legalCatalogueLifecycle.push({
+        event, id, time_ms: performance.now(), path: location.pathname, ...detail
+      });
+      let nextId = 0;
+      window.fetch = function(...args) {
+        const url = String(args[0]?.url ?? args[0]);
+        if (new URL(url, location.href).pathname !== '/v1/catalogue/plans') {
+          return original.apply(this, args);
+        }
+        const id = ++nextId;
+        record('fetch', id);
+        args[1]?.signal?.addEventListener('abort', () => record('signal-abort', id), { once: true });
+        const promise = original.apply(this, args);
+        promise.then(response => record('response', id, { status: response.status }),
+                     error => record('rejection', id, { name: error.name }));
+        return promise;
+      };
+    })()""")
+    page.on("request", lambda request: record("request", request))
+    page.on("requestfinished", lambda request: record("finished", request))
+    page.on("requestfailed", lambda request: record("failed", request))
+    page.on("framenavigated", lambda frame: events.append({
+        "event": "navigation", "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+        "url": frame.url}))
+    return events
+
+
 def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
     path = f"/{key}"
     # Navigation: noindex follows the page, including across Privacy -> Terms.
     errors = []
     ctx, page = new_page(browser, 1440, 900, errors)
+    trace = navigation_trace(ctx, page)
     # Baseline: observers a NON-legal page (pricing) holds, so the legal page's own can be isolated.
     ctx_b, page_b = new_page(browser, 1440, 900, [])
     page_b.goto(base + "/pricing", wait_until="networkidle")
@@ -542,6 +589,12 @@ def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
     default_title = page.title()
     check(f"{key}->pricing: title is no longer a legal title", all_exp["privacy"]["title"] not in default_title and all_exp["terms"]["title"] not in default_title, default_title)
     check(f"{key}: navigation console clean", not errors, "; ".join(errors[:3]))
+    # Keep the original guard strict. Emit evidence on failure or explicit diagnosis,
+    # including the browser build that a hosted runner actually selected.
+    if errors or os.environ.get("SELAHCUE_LEGAL_NAV_DIAGNOSTIC") == "1":
+        print("LEGAL_NAV_DIAGNOSTIC " + json.dumps({"key": key, "browser": browser.version,
+              "network": trace, "lifecycle": page.evaluate("window.__legalCatalogueLifecycle"),
+              "errors": errors}), flush=True)
     ctx.close()
 
 
