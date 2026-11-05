@@ -831,3 +831,8 @@ ACCOUNT_RESET_REQUEST_MIN_SECONDS = float(os.getenv("ACCOUNT_RESET_REQUEST_MIN_S
 # Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
 # the emails minted here link to live token-landing pages.
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
+
+# Merge-safe catalogue admin slice: no production enablement before real staff auth.
+SELAHCUE_ENABLE_ADMIN_CATALOGUE = env_bool("SELAHCUE_ENABLE_ADMIN_CATALOGUE", False)
+if SELAHCUE_ENABLE_ADMIN_CATALOGUE and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured("Admin catalogue mutations require the real staff authenticator before production enablement.")
