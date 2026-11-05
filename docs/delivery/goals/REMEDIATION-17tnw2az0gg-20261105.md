@@ -20,7 +20,7 @@ Audited optimistic admin catalogue mutations, with measurable runtime evidence a
 
 ## Baseline
 
-Remote main7f6dbcbb; public PR366439ca56. Prior API iterations1–8 remain historical, not reset. This explicit user-requested remediation has a new finite budget4. Catalogue internal writers exist; admin mutations do not. Nginx public route has default DNS/connect/read timeouts exceeding the30second client deadline. Real staff login remains undecided and is not implemented here.
+Remote main7f6dbcbb; public PR366439ca56. Prior API iterations1–8 remain historical, not reset. This explicit user-requested remediation has a new finite budget4. Catalogue internal writers exist; admin mutations do not. Real staff login remains undecided and is not implemented here.
 
 ## Inputs and evidence sources
 
@@ -31,7 +31,7 @@ Remote main7f6dbcbb; public PR366439ca56. Prior API iterations1–8 remain histo
 
 ### In scope
 
-- Task-specific backend service, GraphQL, tests, required exact public proxy controls, docs and runtime evidence.
+- Task-specific backend service, GraphQL, tests, docs and runtime evidence.
 
 ### Non-goals
 
@@ -73,7 +73,7 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 ### Iteration 1
 
 - Target criterion: C-001.
-- Hypothesis: existing service writers can serve audited mutations while a finite exact-route timeout bounds upstream outage.
+- Hypothesis: existing service writers can serve audited admin catalogue mutations while preserving their validation.
 - Change or investigation: live requirements and code tracing; no production change yet.
 - Verifier executed: contract validator before code.
 - Result: focused20 passed/2 explicit PostgreSQL skips before final accountability assertion; final focused and full checks recorded in handoff.
@@ -106,4 +106,14 @@ All mandatory rows must be PASS for VERIFIED_COMPLETE.
 - Verifier executed: focused tests, migration generation; full API verification started with actual local socket permissions after sandbox refusal.
 - Result: local focused passes; required PostgreSQL/hosted and independent reviews pending.
 - New evidence: real dev-fixture GraphQL operation changes next signed manifest, not a mocked service response.
+- Decision: handoff.
+
+### Iteration 3
+
+- Target criterion: C-001 through C-004.
+- Hypothesis: meaningful non-control names prevent catalogue poisoning, and all managed writers acquiring revision before data eliminate the verified lock-order inversion.
+- Change or investigation: fixed both reviewer findings; added HTTP rollback negatives and actual PostgreSQL lock-boundary tests; documented the new environment flag and API contract.
+- Verifier executed: expanded focused443pass/6explicitPG/service skips; prior full check2388pass/56skip/57subtests plus one now-focused-corrected environment-doc failure; current full and hosted verification required.
+- Result: local focused passes; actual PostgreSQL and four-reviewer final gates remain pending.
+- New evidence: four name negatives failed before the fix; actual PostgreSQL lock inspection is encoded, not falsely credited from SQLite.
 - Decision: handoff.

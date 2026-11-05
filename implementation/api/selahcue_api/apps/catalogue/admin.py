@@ -1,6 +1,7 @@
 """Gated admin catalogue operations; real staff sign-in remains a release dependency."""
 import hashlib
 import json
+import unicodedata
 from datetime import datetime
 
 from django.conf import settings
@@ -17,7 +18,7 @@ from selahcue_api.apps.catalogue.models import (
 from selahcue_api.apps.catalogue.pricing import AppendPlanPriceData, append_plan_price
 from selahcue_api.apps.catalogue.services import SetPlanGrantData, current_revision, set_plan_grant
 from selahcue_api.graphql.context import (
-    StaffPermission, require_reason, require_staff_permission, validate_idempotency_key,
+    StaffPermission, has_control_characters, require_reason, require_staff_permission, validate_idempotency_key,
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -170,7 +171,11 @@ def rename_admin_plan(actor, **data):
         if plan is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
         previous = plan.display_name
-        plan.display_name = data['name']
+        name = data['name']
+        if (not isinstance(name, str) or has_control_characters(name)
+                or not any(unicodedata.category(character)[0] in 'LNPS' for character in name)):
+            raise _invalid('name')
+        plan.display_name = name.strip()
         plan.changed_by_actor_id = staff.actor_id
         plan.reason = reason
         try:

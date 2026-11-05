@@ -33,9 +33,9 @@ from selahcue_api.apps.catalogue.models import (
 
 logger = logging.getLogger(__name__)
 
-# Models held by the grant cache and/or the public catalogue projection. The public
-# projection also holds price versions, so those writes invalidate it immediately. The
-# grant cache stores one resolved map per plan; aliases, assignments and per-licence overrides are all read fresh on
+# Grant and price writes share the optimistic revision and invalidate the public
+# catalogue projection. The grant cache stores one resolved map per plan;
+# aliases, assignments and per-licence overrides are all read fresh on
 # every resolution and are never cached, so bumping the counter for them would discard
 # every plan's map for a write that cannot have changed any of them. Assigning one licence
 # to a plan would then cold-start the cache for every other licence on it — under a billing
