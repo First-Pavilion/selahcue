@@ -262,14 +262,9 @@ PAGE_JS = r"""
       }
     }
   }
-  // PRO FIRST (design 8d): below 1200px the pricing cards are one column with the popular plan
-  // leading. Compared in visual order, not DOM order.
-  const cards = [...document.querySelectorAll('.pricing-card')].filter((c) => c.getBoundingClientRect().height > 0);
-  out.pricingFirstIsPopular = null;
-  if (cards.length) {
-    const ordered = cards.slice().sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-    out.pricingFirstIsPopular = ordered[0].classList.contains('popular');
-  }
+  // Visual order follows the public API; it has no popularity flag. Never hardcode a tier.
+  const cards = [...document.querySelectorAll('.pricing-card')].filter(c => c.getBoundingClientRect().height > 0);
+  out.pricingOrder = cards.length ? [...cards].sort((a,b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left).map(c => c.querySelector('.plan-name').textContent.trim()) : null;
 
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
@@ -460,6 +455,11 @@ def install_stubs(context) -> None:
           else new MutationObserver((_, o) => { if (document.documentElement) { o.disconnect(); add(); } }).observe(document, { childList: true });
         })();"""
     )
+    context.route("**/v1/catalogue/plans", lambda route: route.fulfill(status=200, content_type="application/json", body=json.dumps({"plans": [
+        {"key": "HARBOUR", "name": "Harbour", "price_state": "unpriced", "offers": [], "cloud_transcript_minutes_per_week": 7, "sermon_notes_per_week": 11, "watermark": True},
+        {"key": "GATHER", "name": "Gather", "price_state": "unpriced", "offers": [], "cloud_transcript_minutes_per_week": 13, "sermon_notes_per_week": 17, "watermark": False},
+        {"key": "BEACON", "name": "Beacon", "price_state": "unpriced", "offers": [], "cloud_transcript_minutes_per_week": 19, "sermon_notes_per_week": 23, "watermark": False},
+    ]})))
     context.route("**/graphql/**", graphql)
     context.route("**/fonts.googleapis.com/**", lambda r: r.abort())
     context.route("**/fonts.gstatic.com/**", lambda r: r.abort())
@@ -1112,10 +1112,10 @@ def main() -> int:
                     checks += 1
                     if info["unfocusableScrollers"]:
                         failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
-                    if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
+                    if info["pricingOrder"] is not None and info["mode"] != "desktop":
                         checks += 1
-                        if not info["pricingFirstIsPopular"]:
-                            failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
+                        if info["pricingOrder"] != ["Harbour", "Gather", "Beacon"]:
+                            failures.append(f"{tag}: pricing cards do not preserve public API order below1200px")
 
                     checks += 1
                     if info["mainTextLength"] < 20:

@@ -127,4 +127,5 @@ jobs:
       - name: Legal pages in a real browser
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
+          SELAHCUE_LEGAL_NAV_DIAGNOSTIC: "1"
         run: npm run test:legal-pages

@@ -48,6 +48,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core_pages_headless import fit_figma_frame
+import catalogue_browser_fixture as catalogue
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -163,7 +164,7 @@ MEASURE_JS = r"""
   const steps = sec('steps-section');
   out.steps = { id: steps.id, pad: pad(steps), cards: qa('.step-card', steps).map((c) => box(c)), marker: font(q('.step-marker', steps)), markerBg: cs(q('.step-marker', steps)).backgroundColor, markerR: cs(q('.step-marker', steps)).borderRadius, title: font(q('.step-title', steps)), body: font(q('.step-body', steps)) };
   const pr = sec('pricing-section');
-  out.pricing = { pad: pad(pr), cards: qa('.pricing-card', pr).length, h2: font(q('h2', pr)), sub: q('.section-subtitle', pr) ? q('.section-subtitle', pr).textContent.trim() : null };
+  out.pricing = { pad: pad(pr), cards: qa('.pricing-card', pr).length, names: qa('.plan-name', pr).map(e => e.textContent.trim()), h2: font(q('h2', pr)), unpriced: qa('.catalogue-unpriced', pr).map(e => e.textContent.trim()) };
   const faq = sec('faq-section');
   out.faq = { pad: pad(faq), h2: font(q('h2', faq)), list: box(q('.faq-wrapper', faq)), q: font(q('.faq-question', faq)), a: font(q('.faq-answer p', faq)) };
   const cta = sec('final-cta-section');
@@ -309,6 +310,7 @@ def run_engine(p, engine_name: str) -> Run:
             return route.abort()
 
         context.route("**/*", hermetic)
+        catalogue.install(context)
         page_errors: list[str] = []
         page = context.new_page()
         page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -404,8 +406,9 @@ def run_engine(p, engine_name: str) -> Run:
         # section is its heading and one honest line. The testimonials section is gone too: its quotes were invented.
         pr = m["pricing"]
         r.eq(pr["pad"], {"top": 90, "bottom": 90}, "Pricing padding 90 (477:124)")
-        r.eq(pr["cards"], 0, "the pricing section draws no plan card")
-        r.eq(pr["sub"], "Plans and prices have not been published yet.", "the pricing section says plans and prices are not published yet")
+        r.eq(pr["cards"], len(catalogue.PLANS["plans"]), "the pricing section draws one card per API plan")
+        r.eq(pr["names"], [p["name"] for p in catalogue.PLANS["plans"]], "plan names follow API data")
+        r.eq(pr["unpriced"], ["Price not announced yet"] * len(catalogue.PLANS["plans"]), "each API-unpriced plan says so")
 
         # 478:153: padding 90; title 38; the list 780 wide.
         q = m["faq"]

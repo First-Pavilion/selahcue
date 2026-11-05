@@ -33,6 +33,7 @@ const noteId = `${useId()}-cta-note`
     </div>
 
     <div class="plan-price-box">
+      <slot name="price">
       <template v-if="typeof price === 'number'">
         <span class="price-val">${{ price }}</span>
         <span class="price-period">/ {{ period }}</span>
@@ -40,9 +41,10 @@ const noteId = `${useId()}-cta-note`
       <template v-else>
         <span class="price-val">{{ price }}</span>
       </template>
+      </slot>
     </div>
 
-    <p class="plan-desc">{{ description }}</p>
+    <p v-if="description" class="plan-desc">{{ description }}</p>
 
     <div class="cta-wrapper">
       <UiButton
@@ -114,6 +116,8 @@ const noteId = `${useId()}-cta-note`
 }
 
 .plan-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 17px;
   font-weight: 600;
   line-height: 21px;

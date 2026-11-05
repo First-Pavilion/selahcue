@@ -1,0 +1,31 @@
+{
+  "negative": {
+    "result": "EXPECTED_REJECTION",
+    "exit": 1,
+    "scenario": "webkit / 768px",
+    "reason": "restored nominal-width helper selects hidden desktop link after actual API cards are ready"
+  },
+  "positive": {
+    "result": "PASS",
+    "checks": 39,
+    "scenarios": [
+      {
+        "engine": "webkit",
+        "path": "/",
+        "width": 768,
+        "states": [
+          "loading",
+          "unpriced",
+          "changed",
+          "multi-offer",
+          "escaped",
+          "unavailable",
+          "retry",
+          "empty"
+        ],
+        "result": "PASS"
+      }
+    ]
+  },
+  "scope": "real unchanged production bundle/native UI; no force click, viewport/CSS/breakpoint/tolerance change"
+}

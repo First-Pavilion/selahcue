@@ -1,0 +1,21 @@
+{
+  "target": "2f4dcc25dfe401ceff7cabb7eafb584e9d2eb194",
+  "iterations": "1\u20136 retained; maximum6 exhausted",
+  "current_completed": {
+    "make": "1256/0fail/0skip +lint/type/build",
+    "legal": "419/0fail",
+    "legal_negative": "actual unrelatedERR_ABORTED rejected by original guard",
+    "home": "262+framePASS",
+    "core": "304+framePASS",
+    "chromium_responsive": "2379/0fail"
+  },
+  "incomplete": {
+    "matrix": "7scenarios; WebKitHome768 hidden desktop click30s",
+    "webkit_responsive": "375/affiliates/payouts Page.goto20s exit2 UNKNOWN",
+    "visible_helper_attempt": "oldnegativeexpectedfail; newpositive outsideviewport/detached sheetclick30s; explicitlyrolledback",
+    "backend": "PR366 shippingHTTP/adminE2E remainsblocked"
+  },
+  "cleanup": "no additionaltests/build/prodchange; only owned unverifiedhelper reverted and failedproof excluded; preservedtmpreceipts",
+  "frozen_inputs_restored": 219,
+  "all_processes_finished": true
+}
