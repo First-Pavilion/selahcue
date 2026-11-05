@@ -844,6 +844,9 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the R
 	# no matching audit step in .github/workflows/ci.yml.
 	python3 scripts/check_dependency_audit_coverage.py --self-test
 	python3 scripts/check_dependency_audit_coverage.py
+	# Actual Cargo aliases cannot replace the CI Rust security tools (17tnw2b9dbf).
+	python3 scripts/check_rust_supply_ci.py --self-test
+	python3 scripts/check_rust_supply_ci.py
 	# 17tnw2b2jfy: the translation-mirror converter turns eBible USFM into the pinned assets users
 	# download. Its self-test needs no network (synthetic USFM fixtures) and takes about a second; it
 	# also validates the COMMITTED allowlist (scripts/translation_allowlist.json) against every licence
@@ -1077,8 +1080,8 @@ clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
 
-# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). It runs the same plain `cargo audit`
-# that the `dependency audit (RustSec)` job in .github/workflows/ci.yml runs in each root, so the
+# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). CI invokes cargo-audit directly;
+# this local wrapper instead refuses Cargo alias identity/shadow warnings before auditing, so the
 # check no longer lives only in a CI job that goes dark when CI is billing-blocked -- that is how
 # 12, 12 and 6 RustSec vulnerabilities sat on `main` unseen. The roots are derived from the
 # Cargo.lock files git lists (scripts/cargo_audit_all.sh), not listed here, so a further root is

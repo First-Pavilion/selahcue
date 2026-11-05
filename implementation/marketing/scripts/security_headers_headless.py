@@ -12,9 +12,34 @@ import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+# Keep the previous 30-second wait budget, using CSP-safe locator assertions.
+WAIT_TIMEOUT_MS = 30_000
+CSP_OBSERVER = """window.cspViolations = [];
+    document.addEventListener('securitypolicyviolation', e => {
+        window.cspViolations.push({directive:e.effectiveDirective, uri:e.blockedURI});
+        document.documentElement.setAttribute('data-csp-violation-count', String(window.cspViolations.length));
+    });"""
+
+
+def wait_for_rendered_app(page, *, timeout=WAIT_TIMEOUT_MS):
+    # Exactly innerText.trim().length >20; regex executes in the locator engine,
+    # without the main-world globalThis.eval used by wait_for_function.
+    expect(page.locator('#app')).to_have_text(
+        re.compile(r"^\s*\S[\s\S]{19,}\S\s*$"), use_inner_text=True, timeout=timeout)
+
+
+def wait_for_auth_settled(page, *, timeout=WAIT_TIMEOUT_MS):
+    expect(page.locator('form')).to_have_attribute('aria-busy', 'false', timeout=timeout)
+
+
+def wait_for_csp_violation(page, *, timeout=WAIT_TIMEOUT_MS):
+    # Observe the real securitypolicyviolation listener through a DOM marker.
+    # Existing array/directive and script-not-executed assertions still verify it.
+    expect(page.locator('html')).to_have_attribute(
+        'data-csp-violation-count', re.compile(r'^[1-9][0-9]*$'), timeout=timeout)
 
 def routes():
     paths = re.findall(r"path: '([^']+)'", (ROOT / 'src/router/index.ts').read_text())
@@ -58,8 +83,7 @@ def main():
             browser = getattr(pw, name).launch(headless=True)
             context = browser.new_context()
             context.route('**/graphql/**', graphql)
-            context.add_init_script("""window.cspViolations = [];
-                document.addEventListener('securitypolicyviolation', e => window.cspViolations.push({directive:e.effectiveDirective, uri:e.blockedURI}));""")
+            context.add_init_script(CSP_OBSERVER)
             page = context.new_page()
             font_responses = []
             page.on('response', lambda response: font_responses.append(response.status) if response.url.startswith('https://fonts.gstatic.com/') else None)
@@ -67,7 +91,7 @@ def main():
                 response = page.goto(base + path, wait_until='networkidle')
                 assert response and response.status == 200, (name, path, 'SPA response')
                 assert response.headers.get('content-security-policy') == policy, (name, path, 'CSP')
-                page.wait_for_function("document.querySelector('#app')?.innerText.trim().length > 20")
+                wait_for_rendered_app(page)
                 page.evaluate('document.fonts.ready')
                 if index % 20 == 0:
                     print(f'{name}: rendered {index + 1}/{len(all_routes)} routes', flush=True)
@@ -82,7 +106,7 @@ def main():
             page.get_by_label('Password', exact=True).fill('TestPassword123!')
             with page.expect_request('**/graphql/**'):
                 page.get_by_role('button', name='Sign in', exact=True).click()
-            page.wait_for_function("document.querySelector('form')?.getAttribute('aria-busy') === 'false'")
+            wait_for_auth_settled(page)
             assert not page.evaluate('window.cspViolations'), (name, 'auth submit CSP')
             page.set_viewport_size({'width': 375, 'height': 812})
             page.goto(base + '/features', wait_until='networkidle')
@@ -97,7 +121,7 @@ def main():
             # Real enforcement probe: execution must be refused, and the browser must emit
             # the violation. Merely finding a header would not establish protection.
             page.evaluate("""() => { const s=document.createElement('script'); s.textContent='window.cspProbeExecuted=true'; document.head.append(s); }""")
-            page.wait_for_function('window.cspViolations.length > 0')
+            wait_for_csp_violation(page)
             assert page.evaluate('window.cspProbeExecuted !== true')
             assert any(v['directive'] == 'script-src-elem' and v['uri'] == 'inline' for v in page.evaluate('window.cspViolations'))
             print(f'{name}: {len(all_routes)} routes, real fonts, document/asset/error CSP, blocked inline script PASS', flush=True)

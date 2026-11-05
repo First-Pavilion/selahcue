@@ -1,0 +1,48 @@
+{
+  "docker_build": 0,
+  "api_proxy_guard": {
+    "exit": 0,
+    "passed": 28
+  },
+  "controlled_regression": {
+    "exit": 0,
+    "engines": 2,
+    "positive_per_engine": 3,
+    "negative_per_engine": 4
+  },
+  "visual_initial": {
+    "exit": 1,
+    "content_checks": "206 visual +97 audit cases and report checks pass",
+    "elapsed_seconds": 11.383,
+    "limit_seconds": 10
+  },
+  "visual_serial": {
+    "exit": 0,
+    "elapsed_seconds": 9.257,
+    "limit_seconds": 10
+  },
+  "production": {
+    "container_start": 0,
+    "nginx_config": 0,
+    "image_policy_matches_unchanged_source": 0,
+    "production": {
+      "exit": 0,
+      "elapsed_seconds": 240.205
+    },
+    "container_stop": 0
+  },
+  "initial_controls": {
+    "workflows": 0,
+    "workflow-selftest": 0,
+    "minutes": 0,
+    "visual": 1,
+    "syntax": 0
+  },
+  "final_controls": {
+    "workflows": 0,
+    "workflow-selftest": 0,
+    "minutes": 0,
+    "visual": 0,
+    "syntax": 0
+  }
+}
