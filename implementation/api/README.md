@@ -167,3 +167,56 @@ repointed to Free without changing any existing key seat counts. Unexpected cust
 history is protected. Recovery must restore the complete backup and matching old code together; reverse constants cannot
 reconstruct former assignments. See `docs/delivery/evidence/17tnw2az0gd-plan-catalogue.md` for actual migration/recovery,
 concurrency and manifest evidence. No price/currency/interval choice or final paid-plan launch limit is invented by this build.
+
+### Public current plan catalogue
+
+Unauthenticated same-origin `GET /v1/catalogue/plans` returns exact public plan names,
+weekly allowances, watermark and every currently configured currency/interval offer.
+No price rows means explicitly unpriced, not zero. Minor amounts are decimal strings;
+`minor_unit_exponent` is the ISO4217 exponent. Private pending device/output/NDI limits
+are omitted. Responses are no-store, rate-limited with fail-closed store failures,
+and refuse degraded catalogue data. See
+[`17tnw2b2jvy-public-catalogue.md`](../../docs/delivery/evidence/17tnw2b2jvy-public-catalogue.md)
+for exact wire keys and retained historical verification. Current remediation verifies
+actual GraphQL mutation to the next public HTTP response using an explicit dev identity
+fixture. This does not enable or prove the separately gated production staff sign-in.
+
+### Gated admin catalogue API (17tnw2az0gg)
+
+This slice is disabled by default. For an isolated exact-dev test environment only,
+set `SELAHCUE_ENABLE_ADMIN_CATALOGUE=1`. Shared deployments must leave it false/unset:
+settings and services refuse enablement outside exact dev. The current dev actor-header
+bridge is an identity fixture, never production sign-in. Real staff authentication remains
+a separate release gate; merging this code does not clear it.
+
+All operations use `/graphql/admin` and require `MANAGE_PLAN_PRICING` in the service layer.
+Bootstrap the CSRF cookie with `GET /graphql/csrf`; unsafe requests must send that cookie and
+`X-CSRFToken`. `adminPlanCatalogue { revision plans { code name grants { key rawValue }
+prices { amountMinor currency interval effectiveFrom } } }` returns all plans, current
+prices per currency/interval and grant values. Previous price versions stay in history.
+
+Mutations and inputs:
+
+- `adminSetPlanPrice(input: AdminSetPlanPriceInput!)`: planCode, currency, interval,
+  amountMinor, expectedRevision, reason, idempotencyKey; optional effectiveFrom.
+  amountMinor is a nonnegative decimal string within the database range, `null` means
+  explicitly unpriced, and `"0"` is a configured zero price. Omit effectiveFrom for an
+  immediate server-timed version, or pass an aware future timestamp. Return fields:
+  revision, amountMinor, replayed.
+- `adminSetPlanGrant(input: AdminSetPlanGrantInput!)`: planCode, dimensionKey, rawValue,
+  expectedRevision, reason, idempotencyKey. Returns revision, rawValue, replayed. Dimension
+  keys and the existing typed raw-value vocabulary are data; no tier-name branch is used.
+- `adminRenamePlan(input: AdminRenamePlanInput!)`: planCode, name, expectedRevision,
+  reason, idempotencyKey. Returns revision, name, replayed. Display names are trimmed,
+  must contain visible text and cannot contain control characters. Stable codes do not change.
+
+Use the revision from the last read. CONFLICT with the reload message means another catalogue
+edit committed first; reload before a new intent. Each intent needs a fresh 12–128-character
+idempotency key; retry identical input with the original key to recover its original result
+without a second write/audit event. Reusing a key for different input conflicts. Reasons use
+the existing minimum-eight-visible-character policy. Invalid values return VALIDATION_FAILED
+with an allowlisted `extensions.field`; permissions retain standard coded refusals.
+
+Admin and management-command writers lock the shared revision before plan/grant/price rows,
+so their transactions use one lock order. Audit, data, revision and retry receipt are atomic.
+Plan values affect newly issued manifests; this is not a change to existing billing charges.

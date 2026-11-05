@@ -63,10 +63,18 @@ def safe_graphql_error(error: GraphQLError) -> dict:
     except ValueError:
         code = ErrorCode.VALIDATION_FAILED
 
-    return {
-        "message": SAFE_MESSAGES[code],
-        "extensions": {"code": code.value},
-    }
+    extensions = {"code": code.value}
+    # Only catalogue's fixed public input names may accompany a validation failure.
+    # Do not copy arbitrary exception extensions, values or database error text.
+    field = (getattr(error, "extensions", None) or {}).get("field")
+    if code is ErrorCode.VALIDATION_FAILED and field in {
+        "amountMinor", "currency", "interval", "effectiveFrom", "reason",
+        "expectedRevision", "rawValue", "dimensionKey", "name", "idempotencyKey",
+    }:
+        extensions["field"] = field
+    if code is ErrorCode.CONFLICT and (getattr(error, "extensions", None) or {}).get("catalogueChanged") is True:
+        return {"message": "The catalogue changed since you loaded it. Reload before editing.", "extensions": extensions}
+    return {"message": SAFE_MESSAGES[code], "extensions": extensions}
 
 
 def safe_error_payload(code: ErrorCode) -> dict:

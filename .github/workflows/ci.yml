@@ -1598,6 +1598,9 @@ jobs:
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
         run: python -m pytest tests -q
+      - name: Public catalogue proxy outage controls (actual nginx)
+        working-directory: .
+        run: python3 implementation/api/tests/catalogue_proxy_outage_runtime.py
 
   api-dependency-graph:
     name: api dependency graph (main only)
@@ -1690,6 +1693,8 @@ jobs:
           test -n "$pin" || { echo "no Django pin found in the API pyproject"; exit 1; }
           echo "installing $pin"
           python3 -m pip install --quiet "$pin"
+      - name: Public catalogue Vite outage control
+        run: python3 scripts/catalogue_proxy_outage.py
       - name: Client/server mirrors
         env:
           SELAHCUE_MIRRORS_REQUIRE: "1"
