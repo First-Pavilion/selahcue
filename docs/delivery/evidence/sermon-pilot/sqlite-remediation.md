@@ -221,7 +221,9 @@ exemption cannot mask the result. It does not modify any upstream manifest or
 repository lock. Both reviewed-package positive controls failed before the
 exception (exit 4); the complete 14-case run passes afterward, including with
 `CARGO_TERM_COLOR=always` as used by CI. The harness requests uncolored output
-for deterministic diagnostics and never suppresses policy warnings.
+for deterministic diagnostics. It captures checker output, prints full diagnostics
+for unexpected results, and summarizes successful probes with their exit codes;
+the separate three-root command logs preserve the actual policy warnings.
 
 Each policy now demonstrably:
 
