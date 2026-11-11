@@ -84,10 +84,68 @@ including the real `cloud-live` URL consumer and its child-process probes.
 passed. Verification is focused on all four consumers of the shared test helper;
 no workspace-wide or GUI/runtime claim is made.
 
+## Native Windows evidence received after the fixture commit
+
+Independent native QA reviewed [run 43005029634, Windows job 130470327997](https://github.com/First-Pavilion/selahcue/actions/runs/43005029634/job/130470327997)
+against exact fixture commit `dab726e14390070e0dfcd3da59a2d1b218ed3e9e`.
+The retained job log identifies Windows Server 2025 / `windows-2025-vs2026`,
+`rustc 1.98.0`, and `x86_64-pc-windows-msvc`.
+
+- Debug admission: **8 passed, 0 failed, 0 ignored, 0 filtered** (log lines
+  5320–5330), within `cargo test --workspace --no-fail-fast`.
+- Release admission: **8 passed, 0 failed, 0 ignored, 0 filtered** (lines
+  6384–6396), within `cargo test -p selahcue-licensing --release --no-fail-fast`.
+- Both executions include the forced nonblocking/fragmented-body regression,
+  scoped loopback constructor, real receiver body/bearer positive control,
+  HTTP-refusal siblings, and redaction control.
+
+These are two native complete-file executions in different profiles. The log
+contains no explicit `--test-threads`, `RUST_TEST_THREADS`, or bounded focused
+repeat, so it does **not** establish three native parallel-8 repetitions.
+Overall CI failed on the separate A1 desktop endpoint permission test; native
+licensing GREEN is not an overall CI GREEN claim.
+
+## Fix round 1: explicit bounded Windows scheduling gate
+
+The existing `rust` matrix job now has step `windows-licensing-parallel` after
+the workspace/debug tests. The existing debug and release sibling runs remain.
+Its condition is `${{ !cancelled() && runner.os == 'Windows' }}`, so a separate
+earlier workspace failure does not skip this evidence, and that earlier failure
+remains a failed job outcome. The Bash loop has exactly three iterations:
+
+```sh
+for repetition in 1 2 3; do
+  echo "Windows licensing admission parallel run ${repetition}/3 (8 threads)"
+  cargo test -p selahcue-licensing --test test_https_admission -- --nocapture --test-threads=8 || exit $?
+done
+```
+
+Any failed repetition exits the step with its failure status immediately; a later
+passing repetition cannot overwrite it. No runner, matrix leg, schedule, provider,
+production code, fixture timeout, or fixture source changes accompany this round.
+The only added Windows workload is three focused admission-file invocations in
+an already-scheduled job, reusing the just-built debug target.
+
+The existing `check_ci_minutes.py` validator executes that actual workflow loop
+with a synthetic Cargo executable. It verifies three exact complete-file calls
+with eight harness threads when all pass, and preserves exit 7 with immediate
+termination when repetition 1, 2, or 3 fails. Its self-test rejects eleven
+mutations covering skipped-after-failure and Linux conditions, wrong shell,
+continue-on-error, wrong workspace, missing/two/four repetitions, wrong thread
+count, a filtered test, and swallowed failure. This adds no new CI job.
+
+Round-1 checks passed: `check_ci_minutes.py --self-test` and its real-workflow
+check; `check_workflows.py --self-test` (118 legacy cases and 39 CLI fixtures) and
+its real-workflow check; `actionlint -color`; `ci_alarm.py --self-test`; and
+`git diff --check`. Executing the actual workflow loop locally with
+`CARGO_TARGET_DIR=/private/tmp/selahcue-pilot-a1-target` passed **8/8 × 3** on macOS.
+These checks prove loop wiring and local behavior, not a future native run.
+
 ## Remaining gates
 
-A current native Windows run of the complete licensing admission file and its
-bounded parallel-scheduling repetitions remains required. Historical Windows RED
-and a local synthetic socket-mode reproduction do not establish Windows GREEN.
-The controller owns that run, independent reviews, hosted CI, and PR handling.
-No merge, release, deployment, or ticket completion is claimed here.
+The controller must dispatch and review a native Windows run of the new head,
+including all three explicit parallel-8 repetitions. The prior debug/release
+Windows GREEN is verified for the unchanged fixture commit; the new explicit
+parallel-repeat Windows result is **pending**. Independent re-review and hosted
+CI remain controller-owned. No merge, release, deployment, push, or ticket
+completion is claimed here.
