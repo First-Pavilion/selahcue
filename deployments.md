@@ -120,7 +120,7 @@ These server-only n8n callbacks are separate from licensed-device downloads. No 
 
 #### Pilot private-download grant (P12 — disabled, real signer pending P10)
 
-No grant is live by adding these settings. Registration policy, complete verified P11 manifest, P10 real signer and private-read proof remain mandatory. The service has no production fake signer. See `docs/release/pilot-download-grants.md`.
+No grant is live by adding these settings. Registration policy, exact server-declared verified P11 manifest, P10 real signer and private-read proof remain mandatory. The service has no production fake signer. See `docs/release/pilot-download-grants.md`.
 
 | Key | Required | Secret | Default | Purpose |
 |---|---|---|---|---|
@@ -133,7 +133,8 @@ No grant is live by adding these settings. Registration policy, complete verifie
 | `SELAHCUE_PILOT_GRANT_MANIFEST_SHA256` | when enabled | no | empty | SHA256 of exact consumed promoted manifest bytes. |
 | `SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS` | when enabled | no | empty | Explicit integer1–300 seconds, further limited by anchored receipt/artifact/cohort expiry. |
 | `SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS` | when enabled | no | empty | Space/comma-separated provider signature field allowlist; no PII/receipt/redirect fields. |
-| `SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS` | when enabled | no | empty | Strict JSON object of approved Windows, Ubuntu and macOS signing states; Mac requires Developer ID/notarized/stapled. |
+| `SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS` | no | no | `Windows Ubuntu macOS` | Server-only space/comma-separated exact platform set: full Windows/Ubuntu/macOS or explicit Windows-only. Blank, duplicate, unknown and all other partial sets refuse. |
+| `SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS` | when enabled | no | empty | Strict JSON object with exactly the declared required platform keys and approved signing states. Windows requires explicit `authenticode_verified` or `unsigned_pilot_approved`; macOS requires Developer ID/notarized/stapled. No unsigned default. |
 
 ---
 
