@@ -94,6 +94,49 @@ rows only. Tuning/held-out summaries are separate; the aggregate includes both. 
 sample row retains its split, unknown metrics and missing-metric list. Reports contain
 hashes, pseudonymous IDs and numeric observations, never reference/recognized speech.
 
+## Enforced evaluator workload limits
+
+These are conservative engineering guards for a small offline evaluation batch, **not**
+recognition quality, automatic-output or measured Windows memory thresholds. Oversized
+input is refused with a content-free error before report output. No speech, segment,
+model or sample is silently dropped or truncated. Split larger experiments into explicit
+batches with declared model/sample matrices and preserve every batch's result for review.
+
+| Guard | Inclusive limit |
+| --- | --- |
+| Each corpus/run JSON file | 4 MiB; regular file, opened-descriptor size check plus read capped at 4 MiB + 1 byte |
+| Samples / expected profiles / runs | 128 / 4 / 256 |
+| Declared profile × sample matrix | 256 entries, including entirely missing runs |
+| Segments per run | 128, including interims |
+| Each reference, segment or metadata string | 4,096 Unicode characters; sample/profile/speaker IDs 128 |
+| Combined segment text in one run | 16,384 characters, including interims |
+| All reference + segment text in a batch | 262,144 characters, including interims |
+| Normalized tokens | 512 per reference, per segment, and per combined final hypothesis |
+| All normalized reference + segment tokens | 32,768, including interims |
+| Aggregate word-alignment work | 1,000,000 reference-token × final-hypothesis-token cells across the entire batch |
+| Generic JSON/direct-call structure | Depth 12, 50,000 nodes, 256 entries/container, 524,288 string/key characters total |
+| Numeric parsing/direct-call values | 64-character numeric lexemes; finite numbers; integer magnitude at most 256 bits |
+| Expected passage identifiers | 32/sample, at most 256 characters each |
+
+The 128-sample/four-profile ceiling allows small four-language/switch/silence rounds; the
+256-entry matrix ceiling bounds report/index growth independently of missing runs. The
+512-word ceiling permits bounded speech clips, while a one-million-cell whole-batch budget
+caps quadratic alignment even when every individual clip fits. Character, segment and
+aggregate text/token caps include interim hypotheses, which are not scored as finals but
+still consume resources. Generic structure/key/string limits also cover arbitrary model
+configuration metadata and unknown fields before schema validation can serialize anything.
+
+The 4 MiB file cap bounds buffered parsing; a size check alone would miss a growing input,
+so the read itself is capped. Numeric lexemes are bounded before conversion, non-regular
+inputs are refused, and parser recursion failures produce a content-free CLI error.
+Direct `evaluate` callers have equivalent collection/text/tree/token/work guards; their
+already allocated caller-owned input is not copied or normalized before length refusal.
+All input/schema checks and the entire batch's token/work preflight finish before the first
+alignment loop. Exact-limit batches remain intact; exceeding any guard yields no score.
+`corpus.schema.json` exposes applicable cardinality/string bounds; cross-field, token,
+file and whole-batch work budgets are enforced by the evaluator. Local tracemalloc
+regressions test refusal allocations; they establish no whole-process or Windows 4 GB fit.
+
 ## Existing production decoder replay
 
 `examples/sermon_pilot_eval.rs` loads the current hardware selector's pinned existing model
@@ -127,9 +170,11 @@ cargo build --offline --manifest-path implementation/desktop/crates/selahcue-stt
 is false. Actual replay refuses missing/mismatched assets and nonfinite/partial PCM.
 Output is a private one-run JSON array (merge such arrays privately for the evaluator).
 The output file must not exist; Unix creation mode is 0600. On Windows use a private
-user-controlled directory/ACL. Partial failed output is removed. Errors do not echo private
-paths/IDs or speech. JSON escaping is independently round-tripped through Python in Rust
-tests with control characters, quotes, backslashes and Yoruba/Igbo/Hausa Unicode.
+user-controlled directory/ACL. Partial failed output is removed. The example's own failure
+line is content-free; native Whisper initialization may print model paths in local diagnostic
+streams. Keep raw native diagnostics private and redact them before sharing. The evaluator's
+redacted report never copies speech. JSON escaping is independently round-tripped through
+Python in Rust tests with control characters, quotes, backslashes and Yoruba/Igbo/Hausa Unicode.
 
 Engine hash is length-prefixed SHA-256 over the actual STT source files, Cargo manifest
 and STT lockfile; it is a source/lock identity, **not** an installed operator binary hash.

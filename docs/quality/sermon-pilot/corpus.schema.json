@@ -11,28 +11,32 @@
         "properties": {
           "id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128
           },
           "engine_sha256": {
             "type": [
               "string",
               "null"
             ],
-            "pattern": "^[0-9a-f]{64}$"
+            "pattern": "^[0-9a-f]{64}$",
+            "maxLength": 64
           },
           "model_sha256": {
             "type": [
               "string",
               "null"
             ],
-            "pattern": "^[0-9a-f]{64}$"
+            "pattern": "^[0-9a-f]{64}$",
+            "maxLength": 64
           },
           "config_sha256": {
             "type": [
               "string",
               "null"
             ],
-            "pattern": "^[0-9a-f]{64}$"
+            "pattern": "^[0-9a-f]{64}$",
+            "maxLength": 64
           },
           "languages": {
             "type": "array",
@@ -46,13 +50,15 @@
               ]
             },
             "uniqueItems": true,
-            "minItems": 1
+            "minItems": 1,
+            "maxItems": 4
           },
           "rights_source": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "maxLength": 4096
           },
           "configuration": {
             "type": "object"
@@ -75,7 +81,8 @@
           "role"
         ],
         "additionalProperties": false
-      }
+      },
+      "maxItems": 4
     },
     "samples": {
       "type": "array",
@@ -84,15 +91,18 @@
         "properties": {
           "id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128
           },
           "audio_sha256": {
             "type": "string",
-            "pattern": "^[0-9a-f]{64}$"
+            "pattern": "^[0-9a-f]{64}$",
+            "maxLength": 64
           },
           "speaker_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "maxLength": 128
           },
           "languages": {
             "type": "array",
@@ -106,7 +116,8 @@
               ]
             },
             "uniqueItems": true,
-            "minItems": 1
+            "minItems": 1,
+            "maxItems": 4
           },
           "split": {
             "enum": [
@@ -119,14 +130,17 @@
             "minimum": 1
           },
           "reference_text": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 4096
           },
           "expected_references": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 256
             },
-            "uniqueItems": true
+            "uniqueItems": true,
+            "maxItems": 32
           },
           "authorized_use": {
             "const": true
@@ -154,7 +168,8 @@
           "scenario"
         ],
         "additionalProperties": false
-      }
+      },
+      "maxItems": 128
     },
     "evidence_kind": {
       "enum": [
@@ -173,5 +188,6 @@
   "additionalProperties": false,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "corpus.schema.json",
-  "title": "Private authorized pilot corpus; never commit speech/transcripts"
+  "title": "Private authorized pilot corpus; never commit speech/transcripts",
+  "description": "Private bounded tooling batch: <=128 samples, <=4 profiles, <=256 matrix entries; 4096 characters/text. Evaluator also enforces file/tree/segment/token/aggregate alignment-work guards documented in README. These are workload guards, not quality thresholds."
 }

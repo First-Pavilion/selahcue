@@ -3,6 +3,8 @@
 import argparse
 import json
 import math
+import os
+import stat
 from pathlib import Path
 import re
 import unicodedata
@@ -12,6 +14,143 @@ SCENARIOS = ("silence", "ordinary_speech", "ambiguous_scripture", "language_swit
 HASHES = ("engine_sha256", "model_sha256", "config_sha256")
 METRICS = ("omission_count", "error_count", "latency_ms", "peak_process_tree_memory_bytes", "dropped_audio_count")
 SCHEMA_DIR = Path(__file__).resolve().parents[1] / "docs/quality/sermon-pilot"
+
+
+# Engineering batch guards, not accuracy/projection thresholds or measured Windows budgets.
+MAX_INPUT_BYTES = 4 * 1024 * 1024  # each JSON file, checked on the opened fd AND capped read
+MAX_SAMPLES = 128
+MAX_PROFILES = 4
+MAX_RUNS = 256
+MAX_MATRIX_ENTRIES = 256
+MAX_SEGMENTS_PER_RUN = 128
+MAX_TEXT_CHARS = 4096  # each reference, segment, or metadata string
+MAX_RUN_TEXT_CHARS = 16_384  # all interim/final segment text combined
+MAX_TOTAL_TEXT_CHARS = 262_144  # references plus all segment text, including interims
+MAX_WORDS_PER_TEXT = 512  # each reference/segment AND the combined final hypothesis
+MAX_TOTAL_TOKENS = 32_768  # references plus all segments, including interim hypotheses
+MAX_ALIGNMENT_CELLS = 1_000_000  # sum(reference_words * final_hypothesis_words), whole batch
+MAX_TREE_NODES = 50_000
+MAX_TREE_DEPTH = 12
+MAX_CONTAINER_ITEMS = 256
+MAX_TOTAL_STRING_CHARS = 524_288  # metadata/keys included, before schema serialization
+MAX_NUMERIC_LITERAL_CHARS = 64
+RESOURCE_ERROR = "evaluation resource limit exceeded"
+
+
+def _within(condition):
+    if not condition:
+        raise ValueError(RESOURCE_ERROR)
+
+
+def load_input(path):
+    """Read only a bounded regular file, including when it grows after fstat.
+
+    Nonblocking open avoids waiting on a FIFO substituted for the intended file. JSON numeric
+    lexemes are capped before conversion; parser recursion errors are content-free failures.
+    """
+    def integer(value):
+        _within(len(value) <= MAX_NUMERIC_LITERAL_CHARS)
+        return int(value)
+
+    def real(value):
+        _within(len(value) <= MAX_NUMERIC_LITERAL_CHARS)
+        result = float(value)
+        _within(math.isfinite(result))
+        return result
+
+    def constant(_value):
+        raise ValueError("invalid evaluation input")
+
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    with os.fdopen(os.open(path, flags), "rb") as file:
+        info = os.fstat(file.fileno())
+        _within(stat.S_ISREG(info.st_mode) and info.st_size <= MAX_INPUT_BYTES)
+        data = file.read(MAX_INPUT_BYTES + 1)
+        _within(len(data) <= MAX_INPUT_BYTES)
+    try:
+        return json.loads(data, parse_int=integer, parse_float=real, parse_constant=constant)
+    except (UnicodeError, RecursionError, json.JSONDecodeError):
+        raise ValueError("invalid evaluation input") from None
+
+
+def _bound_tree(corpus, runs):
+    """Bound all metadata/unknown fields too, without serializing or copying containers."""
+    pending = [(corpus, 0), (runs, 0)]
+    nodes = string_chars = 0
+    while pending:
+        value, depth = pending.pop()
+        nodes += 1
+        _within(nodes <= MAX_TREE_NODES and depth <= MAX_TREE_DEPTH)
+        if isinstance(value, str):
+            _within(len(value) <= MAX_TEXT_CHARS)
+            string_chars += len(value)
+            _within(string_chars <= MAX_TOTAL_STRING_CHARS)
+        elif isinstance(value, (dict, list)):
+            _within(len(value) <= MAX_CONTAINER_ITEMS)
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if not isinstance(key, str): raise ValueError("invalid evaluation input")
+                    pending.append((key, depth + 1))
+                    pending.append((child, depth + 1))
+            else:
+                pending.extend((child, depth + 1) for child in value)
+        elif type(value) is int:
+            _within(value.bit_length() <= 256)
+        elif type(value) is float:
+            _within(math.isfinite(value))
+        elif value is not None and type(value) is not bool:
+            raise ValueError("invalid evaluation input")
+
+
+def _bound_inputs(corpus, runs):
+    """Length/accounting preflight runs before schema validation or text normalization."""
+    if not isinstance(corpus, dict) or not isinstance(runs, list):
+        raise ValueError("invalid evaluation input")
+    samples, profiles = corpus.get("samples"), corpus.get("expected_profiles")
+    if not isinstance(samples, list) or not isinstance(profiles, list):
+        raise ValueError("invalid evaluation input")
+    _within(len(samples) <= MAX_SAMPLES and len(profiles) <= MAX_PROFILES and len(runs) <= MAX_RUNS)
+    _within(len(samples) * len(profiles) <= MAX_MATRIX_ENTRIES)
+    _bound_tree(corpus, runs)
+    total_chars = 0
+    for sample in samples:
+        if isinstance(sample, dict) and isinstance(sample.get("reference_text"), str):
+            total_chars += len(sample["reference_text"])
+            _within(total_chars <= MAX_TOTAL_TEXT_CHARS)
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("segments"), list):
+            raise ValueError("invalid evaluation input")
+        _within(len(run["segments"]) <= MAX_SEGMENTS_PER_RUN)
+        run_chars = 0
+        for segment in run["segments"]:
+            if isinstance(segment, dict) and isinstance(segment.get("text"), str):
+                run_chars += len(segment["text"])
+                total_chars += len(segment["text"])
+                _within(run_chars <= MAX_RUN_TEXT_CHARS and total_chars <= MAX_TOTAL_TEXT_CHARS)
+
+
+def _bound_alignment(samples, indexed):
+    """Preflight the WHOLE batch before the first DP row allocation or score call."""
+    counts = {}
+    tokens = work = 0
+    for sid, sample in samples.items():
+        count = len(words(sample["reference_text"]))
+        _within(count <= MAX_WORDS_PER_TEXT)
+        counts[sid] = count
+        tokens += count
+        _within(tokens <= MAX_TOTAL_TOKENS)
+    for (_profile, sid), run in indexed.items():
+        hypothesis_count = 0
+        for segment in run["segments"]:
+            count = len(words(segment["text"]))
+            _within(count <= MAX_WORDS_PER_TEXT)
+            tokens += count
+            _within(tokens <= MAX_TOTAL_TOKENS)
+            if segment["is_final"]:
+                hypothesis_count += count
+                _within(hypothesis_count <= MAX_WORDS_PER_TEXT)
+        work += counts[sid] * hypothesis_count
+        _within(work <= MAX_ALIGNMENT_CELLS)
 
 
 def load_schema(name):
@@ -34,7 +173,7 @@ def validate_schema(value, schema, path="$", root=None):
         return validate_schema(value, definition, path, root)
     supported = {"$schema", "$id", "$defs", "title", "description", "type", "properties", "required",
                  "additionalProperties", "items", "uniqueItems", "minItems", "minLength",
-                 "minimum", "pattern", "enum", "const"}
+                 "minimum", "pattern", "enum", "const", "maxItems", "maxLength"}
     if set(schema) - supported:
         raise ValueError("unsupported schema keyword")
     types = {"object": lambda v: isinstance(v, dict), "array": lambda v: isinstance(v, list),
@@ -59,12 +198,16 @@ def validate_schema(value, schema, path="$", root=None):
         for key, sub in props.items():
             if key in value: validate_schema(value[key], sub, f"{path}.{key}", root)
     if isinstance(value, list):
+        if len(value) > schema.get("maxItems", MAX_CONTAINER_ITEMS):
+            raise ValueError("invalid evaluation input")
         if len(value) < schema.get("minItems", 0): raise ValueError(f"{path}: too few items")
         if schema.get("uniqueItems") and len({json.dumps(v, sort_keys=True) for v in value}) != len(value):
             raise ValueError(f"{path}: duplicate items")
         for i, item in enumerate(value):
             if "items" in schema: validate_schema(item, schema["items"], f"{path}[{i}]", root)
     if isinstance(value, str):
+        if len(value) > schema.get("maxLength", MAX_TEXT_CHARS):
+            raise ValueError("invalid evaluation input")
         if len(value) < schema.get("minLength", 0): raise ValueError(f"{path}: empty string")
         if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
             raise ValueError(f"{path}: invalid pattern")
@@ -175,6 +318,7 @@ def summarize(rows, monolingual_only=False):
 
 
 def evaluate(corpus: dict, runs: list[dict]) -> dict:
+    _bound_inputs(corpus, runs)
     validate_schema(corpus, load_schema("corpus.schema.json"))
     if not isinstance(runs, list): raise ValueError("runs must be a list")
     samples, profiles, speakers = {}, {}, {}
@@ -194,6 +338,7 @@ def evaluate(corpus: dict, runs: list[dict]) -> dict:
         key = run["profile_id"], run["corpus_id"]
         if key in indexed: raise ValueError("duplicate run")
         indexed[key] = run
+    _bound_alignment(samples, indexed)
     represented = {lang for s in samples.values() for lang in s["languages"]}
     held_out = {lang for s in samples.values() if s["split"] == "held_out" for lang in s["languages"]}
     coverage = {"required_languages": list(LANGUAGES), "missing_languages": sorted(set(LANGUAGES) - represented),
@@ -237,8 +382,8 @@ def main():
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
     try:
-        corpus = json.loads(Path(args.corpus).read_text(encoding="utf-8"))
-        runs = json.loads(Path(args.runs).read_text(encoding="utf-8"))
+        corpus = load_input(args.corpus)
+        runs = load_input(args.runs)
         report = evaluate(corpus, runs)
         Path(args.out).write_text(json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
     except (ValueError, OSError):
