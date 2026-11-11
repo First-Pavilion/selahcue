@@ -237,6 +237,7 @@ SELAHCUE_PILOT_DOWNLOAD_GRANTS = {
     "max_ttl_seconds": os.getenv("SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS", ""),
     "signed_query_keys": env_list("SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS"),
     "signing_requirements": os.getenv("SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS", ""),
+    "required_platforms": env_list("SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS", "Windows Ubuntu macOS"),
 }
 SELAHCUE_THROTTLE_PILOT_DOWNLOAD_GRANT = (30, 60)
 

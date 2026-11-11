@@ -4,7 +4,7 @@ Ticket: https://app.clickup.com/t/17tnw2bbhxm . This source increment is disable
 
 `POST /v1/pilot/downloads:grant` is n8n server-to-server only. Its dedicated Bearer token must differ from all three registration keys. Customer cookies, device tokens and public form fields confer no authority. Authentication occurs before reading/parsing the body or querying registration. An authenticated IP has a separate30-per60-second fail-closed budget. There is no CORS grant or cookie issuance.
 
-The exact JSON body is `{ "schema_version": 1, "receipt": "<P13 server receipt>", "artifact_id": "<opaque allowlisted ID>" }`. Bodies over8192bytes, duplicate keys, malformed/deep JSON, extra fields or caller-supplied paths/URLs/TTL/platform are rejected. The P13 verifier remains the authority for receipt signature/audience, actual confirmed ledger row, retention, platform and original expiry. A failed Sheet write has no valid receipt and cannot obtain a grant.
+The exact JSON body is `{ "schema_version": 1, "receipt": "<P13 server receipt>", "artifact_id": "<opaque allowlisted ID>" }`. Bodies over8192bytes, duplicate keys, malformed/deep JSON, extra fields or caller-supplied paths/URLs/TTL/platform/required_platforms/signing_requirements are rejected. The P13 verifier remains the authority for receipt signature/audience, actual confirmed ledger row, retention, platform and original expiry. A failed Sheet write has no valid receipt and cannot obtain a grant.
 
 Successful source contract: schema_version, artifact_id, release_id, platform, architectures, sha256, size_bytes, download_url, expires_at. No registration/contact/church fields, receipt or provider keys are returned. URLs and signer exceptions must never be logged. The URL is bearer authority until its short expiry; previously issued links are not promised immediate individual revocation.
 
@@ -16,15 +16,15 @@ Root object has exactly these fields:
 
 - `schema_version`: integer1, `manifest_id`, `release_id`, `cohort_id`, `version`: nonempty ASCII identifiers, each≤80chars. `cohort_id` equals the configured approved cohort.
 - `source_sha`:40lowercase hex; `promoted`:true; `promoted_at`:positive epoch UTC seconds≤now; `expires_at`:epoch UTC seconds>now and≤1809129599.
-- `artifacts`: exactly three verified available entries: Windows x86_64, Ubuntu x86_64, and macOS x86_64+aarch64 in that order within the architectures array. Entry order in artifacts does not matter. IDs/platforms cannot duplicate. Unavailable, expired or missing entries prevent a complete promoted release from being consumed.
+- `artifacts`: exactly the server-declared required set of verified available entries. Omitted `SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS` retains the three-platform default: Windows x86_64, Ubuntu x86_64, and macOS x86_64+aarch64 in that order within the architectures array. Explicit `Windows` permits exactly one Windows x86_64 entry for a private pilot. No other partial set, blank, duplicate or unknown platform configuration is accepted. Entry order in artifacts does not matter. IDs/platforms cannot duplicate. Missing declared or extra undeclared entries refuse. Payloads, receipts and marketing metadata cannot choose this policy.
 
 Each artifact has exactly: `artifact_id`, `platform`, `architectures`, `object_key`, `sha256`, `size_bytes`, `available`, `verified`, `credentials_expires_at`, `signing`.
 
 - Artifact ID is an opaque ASCII identifier≤80chars; SHA256 is64lowercase hex; size is a positive integer≤20GiB; `available` and `verified` must be literaltrue; expiry is actual provider/build upper bound>now and≤fixed cutoff.
 - Object key is exactly `pilot/<release_id>/<sha256>/<filename>`. Filename is an ASCII identifier≤160chars, with no slash, percent encoding or traversal. P10 must enforce immutable/no-overwrite delivery at this content-addressed key. The API does not fetch/inspect storage bytes; P11 owns actual byte/hash/package/signature verification before promoting. No arbitrary key or object URL is accepted from n8n/browser.
-- Signing equals the configured approved per-platform policy. Allowed Windows policies are `authenticode_verified` or explicitly `unsigned_pilot_approved`; neither is silently selected. Ubuntu is `not_required`; macOS must be `developer_id_notarized_stapled`, preserving the existing Universal signed/notarized/stapled requirement. Unknown/missing policy refuses configuration.
+- Signing policy keys must exactly equal the server-declared required platform set, and each artifact signing state equals its configured approved per-platform policy. Allowed Windows policies are `authenticode_verified` or explicitly `unsigned_pilot_approved`; neither is silently selected. Ubuntu is `not_required`; macOS must be `developer_id_notarized_stapled`, preserving the existing Universal signed/notarized/stapled requirement. Unknown/missing policy refuses configuration.
 
-This schema is a strict consumer handoff, not a populated manifest or proof that all platforms are ready. Rollout/promotion must coordinate the immutable file and digest; intermediate mismatches refuse grants. Rollback must select an unrevoked, still-unexpired complete snapshot; never revive expired credentials/releases.
+This schema is a strict consumer handoff, not a populated manifest or proof that all platforms are ready. Rollout/promotion must coordinate the immutable file and digest; intermediate mismatches refuse grants. Rollback must select an unrevoked, still-unexpired snapshot matching its approved required platform and signing policy; never revive expired credentials/releases.
 
 ## P10 signer port
 
@@ -36,13 +36,13 @@ It returns `SignedRead(url, expires_at)`. The service validates exact configured
 
 ## Time, retries and concurrency
 
-Fixed cohort cutoff is **2027-04-30T23:59:59Z**, not six months from download. URL deadline is min(original receipt expiry, configured pilot expiry, fixed cutoff, complete manifest expiry, artifact/provider expiry, now+explicit read TTL). Configured TTL is1–300seconds, rounded down to epoch seconds; equality fails. The clock is rechecked after signing, and a slow/invalid/overlong signer result is refused. A manifest digest/configuration change or revoked/retired registration prevents new grants. Already issued URLs can remain valid until their expiry, as determined by the eventual provider.
+Fixed cohort cutoff is **2027-04-30T23:59:59Z**, not six months from download. URL deadline is min(original receipt expiry, configured pilot expiry, fixed cutoff, approved manifest expiry, artifact/provider expiry, now+explicit read TTL). Configured TTL is1–300seconds, rounded down to epoch seconds; equality fails. The clock is rechecked after signing, and a slow/invalid/overlong signer result is refused. A manifest digest/configuration change or revoked/retired registration prevents new grants. Already issued URLs can remain valid until their expiry, as determined by the eventual provider.
 
 A valid receipt can retry until its **original** expiry. Each retry revalidates the live ledger and current manifest, may request any available artifact on the registered OS, and cannot extend confirmation time/deadline or switch platform. Concurrent retries may obtain several links to the same approved artifact within that window. There is no one-use grant table, new registration allocation or remote call under a DB row lock.
 
 ## Configuration and safe failure
 
-All10`SELAHCUE_PILOT_GRANT_*` fields are documented in `deployments.md`. Disabled returns404. Missing/invalid configuration, manifest or real signer returns503. Unauthorized server/invalid receipt returns403; malformed input400, unsupported media415, oversized413, method405withAllow:POST, selection/platform mismatch409, expiry410, limiter/store refusal429withRetry-After. Existing P13 pending/unknown/retired receipt errors remain intact. Errors use fixed codes without raw bodies, URL, exceptions or secret values. All responses have no-store/no-referrer/nosniff headers.
+All11`SELAHCUE_PILOT_GRANT_*` fields are documented in `deployments.md`. Disabled returns404. Missing/invalid configuration, manifest or real signer returns503. Unauthorized server/invalid receipt returns403; malformed input400, unsupported media415, oversized413, method405withAllow:POST, selection/platform mismatch409, expiry410, limiter/store refusal429withRetry-After. Existing P13 pending/unknown/retired receipt errors remain intact. Errors use fixed codes without raw bodies, URL, exceptions or secret values. All responses have no-store/no-referrer/nosniff headers.
 
 ## Integration and remaining evidence
 
