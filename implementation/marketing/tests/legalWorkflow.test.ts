@@ -51,12 +51,14 @@ describe('legal-drift workflow', { skip: !PRESENT && 'repository workflows are n
 
   test('Playwright is pinned, to the version ci.yml pins, and never installed unpinned', () => {
     const ci = readFileSync(`${REPO}.github/workflows/ci.yml`, 'utf8')
-    const pins = new Set([...ci.matchAll(/playwright==(\d+\.\d+\.\d+)/g)].map((m) => m[1]))
+    const ciPins = [...ci.matchAll(/playwright==(\d+\.\d+\.\d+)/g)].map((m) => m[1])
+    const pins = new Set(ciPins)
     const mine = [...text.matchAll(/playwright==(\d+\.\d+\.\d+)/g)].map((m) => m[1])
-    assert.ok(pins.size >= 1, 'ci.yml pins Playwright (this is the version to follow)')
+    assert.equal(ciPins.length, 2, 'ci.yml pins both the operator and marketing browser installs')
+    assert.equal(pins.size, 1, 'operator and marketing must pin the same Playwright version')
     assert.equal(mine.length, 1, 'exactly one pinned install in this workflow')
     assert.ok(pins.has(mine[0]), `legal-drift pins playwright==${mine[0]} but ci.yml pins ${[...pins].join(', ')}`)
-    for (const line of text.split('\n')) {
+    for (const line of `${ci}\n${text}`.split('\n')) {
       if (/pip install/.test(line) && /playwright/.test(line)) assert.match(line, /playwright==\d/, `unpinned: ${line.trim()}`)
     }
   })

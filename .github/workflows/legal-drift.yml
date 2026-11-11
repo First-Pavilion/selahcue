@@ -122,7 +122,7 @@ jobs:
       # an externally-managed system Python, so no `--break-system-packages` is needed here.
       - name: Install Playwright and Chromium
         run: |
-          python3 -m pip install --quiet playwright==1.60.0
+          python3 -m pip install --quiet playwright==1.61.0
           python3 -m playwright install --with-deps chromium
       - name: Legal pages in a real browser
         env:
