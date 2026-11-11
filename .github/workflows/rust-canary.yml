@@ -137,10 +137,11 @@ jobs:
           cargo clippy --features dev-keys,openai-notes --release --all-targets -- -D warnings || fail=1
           cargo clippy --features stt,cloud-stt --all-targets -- -D warnings || fail=1
           cargo clippy --features stt --all-targets -- -D warnings || fail=1
+          cargo clippy --release --features pilot-credentials,cloud-live --all-targets -- -D warnings || fail=1
           cargo clippy --features stt --release --all-targets -- -D warnings || fail=1
-          # cloud-live remains opt-in/not shipped; --no-default-features would drop
-          # shipping encryption defaults. Neither replaces the actual CI/installer
-          # configurations above. See the central evidence disposition for source refs.
+          # The pilot tuple covers synthetic CI only; it selects no shipping package.
+          # --no-default-features would drop shipping encryption defaults and remains
+          # refused. Other opt-in tuples require an actual CI disposition.
           exit $fail
 
       - name: Report
