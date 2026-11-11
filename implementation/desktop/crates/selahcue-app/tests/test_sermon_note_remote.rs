@@ -227,7 +227,7 @@ fn record_to_view(
 /// Real store, real server, real client — the desktop's own production wiring shape, minus
 /// only the Tauri/winit process boundary. Returns the addr/pin/database (for direct-file
 /// assertions) alongside the connected `RemoteOperator`.
-async fn setup() -> (RemoteOperator, Database) {
+async fn setup() -> (RemoteOperator, Database, selahcue_app::TranscriptCompletion) {
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
 
@@ -237,8 +237,8 @@ async fn setup() -> (RemoteOperator, Database) {
     // ONE real on-disk SQLite file — a genuine tempdir path, exactly like the desktop's
     // `data_dir()/selahcue.db3`, opened TWICE (the pattern `SessionStore::open_transcript_sink`
     // documents: WAL supports multiple connections to one file with no shared Rust-level lock,
-    // because every call into either connection is already serialized by `LiveController`'s own
-    // `Arc<Mutex<_>>`).
+    // with one owner per connection: transcript writes run on the background worker, while
+    // note commands retain their existing controller path).
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("selahcue.db3");
     let transcript_db = Database::open(&db_path).unwrap();
@@ -246,9 +246,10 @@ async fn setup() -> (RemoteOperator, Database) {
     let assertion_db = Database::open(&db_path).unwrap();
 
     let mut controller = LiveController::new(plan, 320, 180, Theme::dark());
-    controller.set_transcript_sink(Box::new(selahcue_app::BatchingTranscriptWriter::new(
-        RealTranscriptStore { db: transcript_db },
-    )));
+    let sink =
+        selahcue_app::BackgroundTranscriptWriter::new(RealTranscriptStore { db: transcript_db });
+    let completion = sink.completion();
+    controller.set_transcript_sink(Box::new(sink));
     controller.set_sermon_note_store(Box::new(RealSermonNoteStore { db: sermon_note_db }));
     let controller = Arc::new(Mutex::new(controller));
 
@@ -278,12 +279,12 @@ async fn setup() -> (RemoteOperator, Database) {
     let op = RemoteOperator::connect(addr, "localhost", pin, "operator", "tok-op")
         .await
         .unwrap();
-    (op, assertion_db)
+    (op, assertion_db, completion)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_loaded_draft() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
 
     // Before StartTranscript: no transcript exists yet anywhere in the real store.
     let before = op.active_transcript_id().await.unwrap();
@@ -297,6 +298,8 @@ async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_lo
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
 
     // Ask the host, over the REAL LAN wire, which transcript new AI content should attach to.
     let real_id = op
@@ -407,10 +410,12 @@ async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_lo
 /// turns this RED with exactly that symptom (see the PR description's verification section).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draft_at_every_data_layer_maximum_with_realistic_content_persists_over_the_real_wire() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -493,10 +498,12 @@ async fn a_draft_at_every_data_layer_maximum_with_realistic_content_persists_ove
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_without_dropping_the_connection(
 ) {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -709,10 +716,12 @@ async fn an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_tod
         }
     }
 
-    let (mut op, _assertion_db) = setup().await;
+    let (mut op, _assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -793,10 +802,12 @@ async fn an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_tod
 /// controller test of the same name never had this bug — it does not model "no row exists").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discarding_with_no_draft_ever_generated_is_a_harmless_success_over_the_real_wire() {
-    let (mut op, _assertion_db) = setup().await;
+    let (mut op, _assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -826,11 +837,15 @@ async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_rea
     // "Stop Listening" would), and confirm the host STILL resolves it as the active transcript
     // for a generate/edit call that happens afterward — the real-world "generate notes right
     // after the sermon, listening already stopped" sequence.
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     op.end_transcript().await.unwrap();
+    // End ACK is queued closure, not durable completion.
+    assert!(completion.wait_closed(1, Duration::from_secs(10)));
 
     let real_id = op
         .active_transcript_id()
@@ -852,10 +867,12 @@ async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_rea
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staging_over_the_real_wire_leaves_the_accepted_draft_retrievable_until_confirmed() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     let original = SermonNoteDraftInput {
@@ -922,10 +939,12 @@ async fn staging_over_the_real_wire_leaves_the_accepted_draft_retrievable_until_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discarding_over_the_real_wire_leaves_the_accepted_draft_exactly_as_it_was() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     let original = SermonNoteDraftInput {
@@ -977,10 +996,12 @@ async fn confirming_a_downgrading_regeneration_is_denied_over_the_real_wire_and_
     // "Once AI-generated, always AI-generated" (PR #33 review, Sana N2), proven end-to-end:
     // a degraded regenerate's pending draft cannot be confirmed over an AI-generated
     // accepted draft, but it STAYS staged (visible, discardable) rather than vanishing.
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     op.save_sermon_note_draft(

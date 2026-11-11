@@ -26,9 +26,11 @@ pub use operator::{ItemView, OperatorShell, OperatorView};
 pub use sermon_note_store::{NullSermonNoteStore, RegenerationSlot, SermonNoteStore};
 pub use transcript_pump::pump_transcript;
 pub use transcript_sink::{
-    BatchingTranscriptWriter, EpochClock, MonotonicClock, NullTranscriptSink, SystemEpochClock,
-    SystemMonotonicClock, TranscriptSink, TranscriptStoreWriter, FLUSH_INTERVAL,
-    FLUSH_SEGMENT_THRESHOLD, MAX_PENDING_SEGMENTS, MAX_PENDING_SEGMENT_TEXT_LEN,
+    BackgroundTranscriptWriter, BatchingTranscriptWriter, EpochClock, MonotonicClock,
+    NullTranscriptSink, SystemEpochClock, SystemMonotonicClock, TranscriptCompletion,
+    TranscriptSessionStatus, TranscriptSink, TranscriptStorageHealth, TranscriptStoreWriter,
+    FLUSH_INTERVAL, FLUSH_SEGMENT_THRESHOLD, MAX_PENDING_SEGMENTS, MAX_PENDING_SEGMENT_TEXT_LEN,
+    MAX_PENDING_SESSIONS, MAX_SESSION_METADATA_BYTES,
 };
 
 #[cfg(feature = "server")]

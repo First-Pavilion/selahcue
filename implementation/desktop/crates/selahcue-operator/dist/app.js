@@ -4502,7 +4502,39 @@
       // (2x the host tail, generous headroom) BEFORE the prune/append so the DOM can never
       // grow 1:1 with the sermon. The prune below drops rows not in this sliced set.
       const MAX_TRANSCRIPT_ROWS = 120;
+      function syncTranscriptStorageHealth(health) {
+        const log = document.getElementById("transcript-log");
+        if (!log) return;
+        let status = document.getElementById("transcript-storage-health");
+        if (!status) {
+          status = document.createElement("div");
+          status.id = "transcript-storage-health";
+          status.className = "stream-note";
+          status.setAttribute("role", "status");
+          status.setAttribute("aria-live", "polite");
+          status.setAttribute("aria-atomic", "true");
+          log.parentNode.classList.add("has-storage-health");
+          log.parentNode.insertBefore(status, log);
+        }
+        let message = "Transcript storage status unknown.";
+        if (health && typeof health.available === "boolean") {
+          const lost = Number.isFinite(health.dropped_segments) ? health.dropped_segments : 0;
+          const truncated = Number.isFinite(health.truncated_segments) ? health.truncated_segments : 0;
+          const pending = Number.isFinite(health.pending_segments) ? health.pending_segments : 0;
+          if (!health.available || lost > 0 || truncated > 0) {
+            message = "⚠ Transcript not safely saved. " + lost + " lost, " + truncated +
+              " truncated; " + pending + " pending.";
+          } else if (pending > 0) {
+            message = "Saving transcript — " + pending + " segments pending.";
+          } else {
+            message = "Transcript saved.";
+          }
+        }
+        // Do not reannounce unchanged warnings on every poll. This runs before tail dedup.
+        if (status.textContent !== message) status.textContent = message;
+      }
       function syncTranscript(view) {
+        syncTranscriptStorageHealth(view.transcript_storage_health);
         const all = Array.isArray(view.transcript) ? view.transcript : [];
         const segs =
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;

@@ -290,6 +290,7 @@ pub struct LiveController {
     /// [`ingest_transcript`](Self::ingest_transcript), never told which
     /// [`TranscriptProvider`](selahcue_core::transcript::TranscriptProvider) produced them.
     transcript_sink: Box<dyn TranscriptSink>,
+    transcript_requested: bool,
     /// The durable sermon-note draft store (86akgqdv0; PR #33 review, Sana F1
     /// remediation) — a sibling seam to `transcript_sink` above, for the identical
     /// reason: `selahcue-app` must not depend on `selahcue-data`, so the operator's LAN
@@ -1122,6 +1123,7 @@ impl LiveController {
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
             transcript_sink: Box::new(NullTranscriptSink),
+            transcript_requested: false,
             sermon_notes: Box::new(NullSermonNoteStore),
             autosave_store: Box::new(NullAutosaveStore),
             pending_crash_decision: None,
@@ -1191,11 +1193,12 @@ impl LiveController {
     /// [`end_transcript_session`](Self::end_transcript_session). Delegates straight to the
     /// injected [`TranscriptSink`]; a no-op sink (the default) makes this a no-op too.
     pub fn start_transcript_session(&mut self, label: &str, provider: &str) {
+        self.transcript_requested = true;
         self.transcript_sink.start(label, provider);
     }
 
-    /// Close the current durable transcript session, if one is open (a no-op otherwise).
-    /// Delegates straight to the injected [`TranscriptSink`].
+    /// Request closure of the current durable session. Production returns after enqueueing;
+    /// durable completion is observed outside this controller through `TranscriptCompletion`.
     pub fn end_transcript_session(&mut self) {
         self.transcript_sink.end();
     }
@@ -1223,8 +1226,8 @@ impl LiveController {
         // sink, BEFORE the ring below can evict anything, with the ORIGINAL untruncated text
         // (the ring's own `MAX_SEGMENT_TEXT_LEN` truncation is a live-view bound only — the
         // persisted copy must not inherit it). A no-op sink (the default) costs one vtable
-        // call; a real sink batches/bounds its own writes (see `transcript_sink`), so this
-        // call is never a synchronous disk write on this path.
+        // call; the production BackgroundTranscriptWriter only admits bounded memory here.
+        // Its single worker performs every store call outside this controller's lock.
         self.transcript_sink.ingest(start_ms, end_ms, text);
         // Exact reference detection PLUS the fuzzy quote/paraphrase rung (R4): the corpus
         // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
@@ -2689,6 +2692,15 @@ impl LiveController {
                 })
                 .collect(),
             // The live in-progress line (streaming interim), shown below the finalised tail.
+            transcript_storage_health: Some({
+                let h = self.transcript_sink.health();
+                selahcue_lan::protocol::TranscriptStorageHealthView {
+                    available: h.available,
+                    pending_segments: h.pending_segments,
+                    dropped_segments: h.dropped_segments,
+                    truncated_segments: h.truncated_segments,
+                }
+            }),
             partial_transcript: self.partial.clone(),
             // The pending detection queue, each with its verse text (default translation)
             // so the operator sees WHAT they would stage before approving.
@@ -3492,7 +3504,11 @@ impl LiveController {
             // `SermonNoteStore` (a no-op unless a real store is wired in) — the operator never
             // opens `selahcue-data`'s file itself for this feature, mirroring how the transcript
             // commands just above delegate to `TranscriptSink`. ---
-            Command::GetActiveTranscriptId => match self.sermon_notes.active_transcript_id() {
+            Command::GetActiveTranscriptId => match if self.transcript_requested {
+                Ok(self.transcript_sink.session_status().confirmed_id)
+            } else {
+                self.sermon_notes.active_transcript_id()
+            } {
                 Ok(transcript_id) => {
                     ControllerReply::Message(ServerMessage::ActiveTranscriptId { transcript_id })
                 }
