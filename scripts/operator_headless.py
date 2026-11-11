@@ -2068,6 +2068,8 @@ EXPECTED_MIN_CHECKS = 2906
 EXPECTED_MIN_CHECKS = 2948
 # C3: measured full retained-notes/retry/fresh-UI replay ran 2973 checks.
 EXPECTED_MIN_CHECKS = 2973
+# C4: measured production saved-note PDF action/IPC, edit/busy/error and pending-view checks.
+EXPECTED_MIN_CHECKS = 2987
 
 
 def find_chrome():
@@ -3728,6 +3730,11 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
       return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count,
         // mirrors the real TranscriptSummaryView (17tnw2b0ntd): drives the list row's "Notes generated" pill
         notes_generated: !!(TR.detail[t.id] && TR.detail[t.id].notes_generated)}; }));
+    }
+    if (cmd === "export_sermon_notes_pdf") {
+      if (window.__pdfDeferred) return new Promise(function(resolve) { window.__pdfResolve = resolve; });
+      if (window.__pdfError) return Promise.reject(window.__pdfError);
+      return Promise.resolve({transcript_id: args.transcriptId, saved_edited_at_ms: 3000, bytes: 1234});
     }
     if (cmd === "transcript_get") {
       if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
@@ -8686,6 +8693,36 @@ DRIVER = r"""
       ok(!!trOkLast && trOkLast.args.id === 1,
          "TR generate: Confirm sends the transcript's id, not its text — the command re-reads the store itself");
       var trOkResult = el("tr-gen-result");
+      ok(!!el("tr-export-pdf"), "C4 saved notes expose Export PDF through production JS");
+      var c4SavedBefore = JSON.stringify(window.__TR.detail[1]);
+      var c4Calls = function() { return window.__calls.filter(function(c) { return c.cmd === "export_sermon_notes_pdf"; }); };
+      var c4Before = c4Calls().length;
+      window.__pdfDeferred = true;
+      el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4Before + 1 && JSON.stringify(c4Calls()[c4Before].args) === JSON.stringify({transcriptId: 1}),
+         "C4 export IPC contains only transcript ID, never current draft text or destination");
+      ok(el("tr-export-pdf").disabled, "C4 export is disabled during one native export");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click();
+      ok(c4Calls().length === c4Before + 1, "C4 busy defense rejects a forced duplicate click");
+      window.__pdfResolve({transcript_id:1,saved_edited_at_ms:3000,bytes:1234}); window.__pdfDeferred = false;
+      await sleep(20);
+      ok(/PDF exported/.test(el("tr-export-pdf-status").textContent) && !el("tr-export-pdf").disabled,
+         "C4 successful native receipt produces recoverable ready UI");
+      for (var c4Error of ["Cancelled","Io","TooLarge","InvalidDraft","NoSavedDraft"]) {
+        window.__pdfError = c4Error; el("tr-export-pdf").click(); await sleep(20);
+        ok(!el("tr-export-pdf").disabled && !!el("tr-export-pdf-status").textContent && JSON.stringify(window.__TR.detail[1]) === c4SavedBefore,
+           "C4 " + c4Error + " leaves exact saved/source state and permits retry");
+      }
+      window.__pdfError = null;
+      el("tr-gen-edit").click(); el("tr-edit-title").value = "UNSAVED_C_MUST_NEVER_EXPORT";
+      var c4BeforeEdit = c4Calls().length;
+      ok(el("tr-export-pdf").disabled && /Save your edits to export them/.test(el("tr-export-pdf-status").textContent),
+         "C4 unsaved edit disables export with explicit save guidance");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4BeforeEdit && el("tr-edit-title").value === "UNSAVED_C_MUST_NEVER_EXPORT",
+         "C4 forced export click cannot send unsaved C or discard its form");
+      el("tr-gen-edit-cancel").click();
+
       ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
       ok(!!trOkResult.querySelector(".pp-gen-edit-btn") && !!document.getElementById("tr-gen-edit"),
          "TR generate (86akgqdxr): the from-history draft now renders WITH an Edit affordance — the id is tr-gen-edit, never pp-gen-edit, since both panels' markup coexists in one document");
@@ -8788,6 +8825,12 @@ DRIVER = r"""
          "TR REGEN-1: the banner names the STILL-SAVED prior draft's own title");
       ok(!document.getElementById("tr-gen-edit"),
          "TR REGEN-1: Edit is hidden while a regeneration is pending, on this surface too");
+      var c4PendingBefore = JSON.stringify(window.__TR.detail[1]);
+      ok(/Export saved notes as PDF/.test(el("tr-export-pdf").textContent) && /accepted saved notes/.test(el("tr-export-pdf-status").textContent),
+         "C4 pending B view explicitly labels the accepted saved A export");
+      el("tr-export-pdf").click(); await sleep(20);
+      ok(JSON.stringify(window.__TR.detail[1]) === c4PendingBefore && !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+         "C4 export from pending view preserves A/B and confirmation controls");
       var trPriorStillSaved = window.__TR.detail[1].draft;
       ok(!!trPriorStillSaved && trPriorStillSaved.title === "From-History Sermon",
          "TR REGEN-1 (AC): the prior draft is retrievable and UNCHANGED on the host immediately " +

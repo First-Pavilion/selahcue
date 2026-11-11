@@ -85,6 +85,9 @@ mod media_store;
 /// magic-byte type allowlist, ahead of and separate from `selahcue_engine`'s own decode hardening.
 mod safe_import;
 
+mod notes_export;
+#[cfg(test)]
+mod notes_export_tests;
 /// Requested-but-empty caveats on the persisted sermon-note draft (86akmfn54).
 mod sermon_note_caveats;
 
@@ -2028,6 +2031,37 @@ enum PickImageOutcome {
     Picked { path: String },
     Cancelled,
     Rejected { reason: String },
+}
+
+/// PDF export has ID-only WebView input. Load accepted A once before any blocking work;
+/// the single permit moves into the worker so caller cancellation cannot admit a second job.
+#[tauri::command]
+async fn export_sermon_notes_pdf(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    transcript_id: i64,
+) -> Result<notes_export::ExportReceipt, notes_export::ExportError> {
+    use tauri_plugin_dialog::DialogExt;
+    let permit = notes_export::ExportPermit::acquire()?;
+    let draft = notes_export::load_snapshot(&state.backend, transcript_id).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        notes_export::export_snapshot(draft, transcript_id, || {
+            app.dialog()
+                .file()
+                .add_filter("PDF document", &["pdf"])
+                .set_file_name("sermon-notes.pdf")
+                .blocking_save_file()
+                .map(|selected| {
+                    selected
+                        .into_path()
+                        .map_err(|_| notes_export::ExportError::Io)
+                })
+                .transpose()
+        })
+    })
+    .await
+    .map_err(|_| notes_export::ExportError::Io)?
 }
 
 /// Open the native OS file picker for a PNG image and return the chosen path, validated
@@ -9520,7 +9554,7 @@ mod regenerate_with_retention_tests {
     /// `LiveController` in `Backend::Local`) with one ended transcript already in it —
     /// `listening.rs`'s `tauri::test::mock_app()` pattern is the established way this crate
     /// builds a full Tauri `State` in a unit test without a running window; reused verbatim.
-    fn state_with_transcript(
+    pub(crate) fn state_with_transcript(
         consent_cloud_notes: bool,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
         state_with_wrapped_store(consent_cloud_notes, |store| Box::new(store))
@@ -10352,14 +10386,14 @@ mod regenerate_with_retention_tests {
 
     /// What reached the store (or the host) underneath, and whether reads currently fail.
     #[derive(Default)]
-    struct StoreGate {
+    pub(crate) struct StoreGate {
         fail_loads: std::sync::atomic::AtomicBool,
         saves: std::sync::atomic::AtomicUsize,
         stages: std::sync::atomic::AtomicUsize,
     }
 
     impl StoreGate {
-        fn fail_loads(&self, fail: bool) {
+        pub(crate) fn fail_loads(&self, fail: bool) {
             self.fail_loads
                 .store(fail, std::sync::atomic::Ordering::SeqCst);
         }
@@ -10433,7 +10467,7 @@ mod regenerate_with_retention_tests {
         }
     }
 
-    fn flaky_state(
+    pub(crate) fn flaky_state(
         consent_cloud_notes: bool,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64, Arc<StoreGate>) {
         let gate = Arc::new(StoreGate::default());
@@ -11662,6 +11696,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            export_sermon_notes_pdf,
             remote_snapshot,
             remote_approve,
             remote_deny,

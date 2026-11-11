@@ -1794,12 +1794,56 @@
 
   // Renders `currentDraft` (view or edit mode) into `#tr-gen-result` — the ONLY place either mode
   // is drawn, so view <-> edit is always a full re-render from the same state.
+  var exportingPdf = false;
+  function renderPdfExport(r) {
+    if (!currentDraft || currentDraft.notSaved || currentDraft.transcriptId == null) return;
+    var owner = currentDraft;
+    var row = el("div", "pp-gen-actions");
+    var button = el("button", "pp-gen-edit-btn", owner.pendingConfirmation ? "Export saved notes as PDF" : "Export PDF");
+    button.type = "button";
+    button.id = "tr-export-pdf";
+    button.disabled = editingDraft || exportingPdf;
+    var status = el("p", "pp-gen-note", editingDraft ? "Save your edits to export them" :
+      (owner.pendingConfirmation ? "Exports your accepted saved notes, not the pending regeneration shown above." : ""));
+    status.id = "tr-export-pdf-status";
+    status.setAttribute("role", "status");
+    button.addEventListener("click", function () {
+      if (editingDraft || exportingPdf || currentDraft !== owner || owner.notSaved) return;
+      exportingPdf = true;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      status.textContent = "Preparing saved notes PDF...";
+      invoke("export_sermon_notes_pdf", { transcriptId: owner.transcriptId }).then(function (receipt) {
+        if (!receipt || receipt.transcript_id !== owner.transcriptId || !(receipt.bytes > 0)) throw "Io";
+        if (currentDraft === owner && status.isConnected) status.textContent = "PDF exported.";
+      }).catch(function (error) {
+        if (currentDraft !== owner || !status.isConnected) return;
+        var messages = {
+          Cancelled: "PDF export cancelled. Your saved notes are unchanged.",
+          NoSavedDraft: "No saved notes are available to export. Reopen this transcript and try again.",
+          InvalidDraft: "These saved notes could not be rendered safely. Review the text and supported characters before retrying.",
+          TooLarge: "These notes exceed the PDF export limit. Your saved notes are unchanged.",
+          Io: "The PDF could not be saved. Check the destination or try another local folder."
+        };
+        status.textContent = typeof error === "string" && messages[error] ? messages[error] : messages.Io;
+      }).then(function () {
+        exportingPdf = false;
+        var active = document.getElementById("tr-export-pdf");
+        if (active) { active.disabled = editingDraft; active.removeAttribute("aria-busy"); }
+      });
+    });
+    row.appendChild(button);
+    r.appendChild(row);
+    r.appendChild(status);
+  }
+
   function renderCurrentDraft() {
     var r = genResultEl();
     if (!r || !currentDraft) return;
     r.className = "pp-gen-result pp-gen-ok";
     r.setAttribute("role", "status");
     if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+    renderPdfExport(r);
     draftRendered = true;
     syncGenerateControls();
   }
