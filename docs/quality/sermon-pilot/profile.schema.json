@@ -1,0 +1,579 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "outcome": {
+      "enum": [
+        "accepted",
+        "insufficient",
+        "infeasible"
+      ]
+    },
+    "selected_profile": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "engine_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "model_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "config_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "English",
+              "Yoruba",
+              "Igbo",
+              "Hausa"
+            ]
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        },
+        "rights_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "configuration": {
+          "type": "object"
+        },
+        "role": {
+          "enum": [
+            "production_baseline",
+            "experimental"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "engine_sha256",
+        "model_sha256",
+        "config_sha256",
+        "languages",
+        "rights_source",
+        "configuration",
+        "role"
+      ],
+      "additionalProperties": false,
+      "description": "Only a separately reviewed acceptance record can populate a selected production profile. Configuration records measured settings and exact asset identities."
+    },
+    "evidence_kind": {
+      "enum": [
+        "synthetic",
+        "authorized_real",
+        "unavailable"
+      ]
+    },
+    "normalization": {
+      "type": "string"
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "required_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "held_out_missing_languages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_scenarios": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "required_languages",
+        "missing_languages",
+        "held_out_missing_languages",
+        "missing_scenarios",
+        "sample_count"
+      ],
+      "additionalProperties": false
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "per_profile": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "profile_id": {
+            "type": "string"
+          },
+          "engine_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "model_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "config_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "English",
+                "Yoruba",
+                "Igbo",
+                "Hausa"
+              ]
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "role": {
+            "enum": [
+              "production_baseline",
+              "experimental"
+            ]
+          },
+          "rights_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_runs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "missing_run_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "corpus_id": {
+                  "type": "string"
+                },
+                "split": {
+                  "type": "string"
+                },
+                "languages": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "English",
+                      "Yoruba",
+                      "Igbo",
+                      "Hausa"
+                    ]
+                  },
+                  "uniqueItems": true,
+                  "minItems": 1
+                },
+                "reference_words": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "substitutions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "deletions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "insertions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "silence_hallucination_words": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "omission_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "error_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "peak_process_tree_memory_bytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "dropped_audio_count": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "word_error_rate": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "latency_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "switch_recovery_ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "retrieval_recall_at_5": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "retrieval_mrr": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "false_passage_suggestions": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "retrieval_query_source": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "enum": [
+                    "asr",
+                    "clean",
+                    null
+                  ]
+                },
+                "missing_metrics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "corpus_id",
+                "split",
+                "languages",
+                "reference_words",
+                "substitutions",
+                "deletions",
+                "insertions",
+                "silence_hallucination_words",
+                "omission_count",
+                "error_count",
+                "peak_process_tree_memory_bytes",
+                "dropped_audio_count",
+                "word_error_rate",
+                "latency_ms",
+                "switch_recovery_ms",
+                "retrieval_recall_at_5",
+                "retrieval_mrr",
+                "false_passage_suggestions",
+                "retrieval_query_source",
+                "missing_metrics"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "per_language": {
+            "type": "object",
+            "properties": {
+              "English": {
+                "$ref": "#/$defs/summary"
+              },
+              "Yoruba": {
+                "$ref": "#/$defs/summary"
+              },
+              "Igbo": {
+                "$ref": "#/$defs/summary"
+              },
+              "Hausa": {
+                "$ref": "#/$defs/summary"
+              }
+            },
+            "required": [
+              "English",
+              "Yoruba",
+              "Igbo",
+              "Hausa"
+            ],
+            "additionalProperties": false
+          },
+          "mixed_language": {
+            "type": "object",
+            "properties": {
+              "scored_samples": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reference_words": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "word_error_rate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              }
+            },
+            "required": [
+              "scored_samples",
+              "reference_words",
+              "word_error_rate"
+            ],
+            "additionalProperties": false
+          },
+          "aggregate": {
+            "$ref": "#/$defs/summary"
+          },
+          "per_split": {
+            "type": "object",
+            "properties": {
+              "tuning": {
+                "$ref": "#/$defs/summary"
+              },
+              "held_out": {
+                "$ref": "#/$defs/summary"
+              }
+            },
+            "required": [
+              "tuning",
+              "held_out"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "profile_id",
+          "engine_sha256",
+          "model_sha256",
+          "config_sha256",
+          "languages",
+          "role",
+          "rights_source",
+          "completed_runs",
+          "complete",
+          "missing_run_ids",
+          "samples",
+          "per_language",
+          "mixed_language",
+          "aggregate",
+          "per_split"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "outcome",
+    "selected_profile",
+    "evidence_kind",
+    "normalization",
+    "coverage",
+    "missing_evidence",
+    "per_profile"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "profile.schema.json",
+  "title": "Redacted profile observations and explicit decision; no acceptance thresholds implied",
+  "description": "accepted/infeasible are reserved for separately reviewed decisions. The evaluator emits insufficient and no selected profile because owner thresholds and device acceptance are outside this tooling.",
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "properties": {
+        "represented_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "scored_monolingual_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mixed_language_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reference_words": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "substitutions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deletions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "insertions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "silence_hallucination_words": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retrieval_evaluated_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "false_passage_suggestions": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "word_error_rate": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "retrieval_recall_at_5": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "retrieval_mrr": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "represented_samples",
+        "scored_monolingual_samples",
+        "mixed_language_samples",
+        "reference_words",
+        "substitutions",
+        "deletions",
+        "insertions",
+        "silence_hallucination_words",
+        "retrieval_evaluated_samples",
+        "false_passage_suggestions",
+        "word_error_rate",
+        "retrieval_recall_at_5",
+        "retrieval_mrr"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
