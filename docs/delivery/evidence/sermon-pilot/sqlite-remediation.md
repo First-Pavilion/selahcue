@@ -169,3 +169,131 @@ crafted hostile DB/WAL. No new exploit/ASan/Valgrind regression was executed.
 Native Windows, Linux runtime, Windows 10/4 GB/128 GB constraints, installer,
 real-provider and full exact-head hosted CI/release gates are unproven here.
 The controller owns the four independent reviews, CI and any external PR action.
+
+## Fix round 1: package-scoped license exception
+
+The source `62c9e1ea5eefeaac46765806df20e87258d9c439` reached the hosted
+supply-chain job [130481899479 in run 43008461665](https://github.com/First-Pavilion/selahcue/actions/runs/43008461665/job/130481899479).
+Its cargo-deny 0.20.2 check rejected the newly declared expression
+`MIT AND BSD-3-Clause AND blessing AND WTFPL` from sqlcipher-src 420.0.0.
+This was a real policy failure, separate from the passing RustSec audit.
+The identical desktop command locally reproduced exit 4 with
+`bans ok, licenses FAILED, sources ok` before the correction.
+
+The fetched crate retains its MIT wrapper notice (Luca Cappelletti), SQLCipher's
+BSD-3-Clause ZETETIC notice and source/binary redistribution conditions, and the
+LibTomCrypt dual public-domain/WTFPL notice. These upstream files and the declared
+conjunctive SPDX expression were not rewritten or omitted because the runtime
+selects OpenSSL. The exception changes policy matching only; all existing
+copyright and redistribution notice requirements remain.
+
+The desktop and operator `deny.toml` now each add only:
+
+```toml
+[[licenses.exceptions]]
+crate = "sqlcipher-src@420.0.0"
+allow = ["blessing", "WTFPL"]
+```
+
+This uses cargo-deny's documented [per-package exceptions](https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html#exceptions)
+and [exact-version package specification](https://embarkstudios.github.io/cargo-deny/checks/cfg.html#exact).
+It adds these two identifiers only for the named package at SemVer `=420.0.0`;
+MIT and BSD-3-Clause continue to come from the unchanged global allowlist.
+The STT policy is unchanged because its graph has no SQLCipher dependency.
+No global license allowance, dependency/source exclusion, build-dependency
+omission, upstream metadata clarification, audit suppression or other source/bans
+policy change was added. The existing all-features graph selection is intact.
+
+Exact scope limit: Cargo-deny uses SemVer requirements, whose comparisons
+[ignore build metadata](https://docs.rs/semver/latest/semver/struct.VersionReq.html#syntax).
+This exception is not a checksum or arbitrary-file identity check. Both unchanged
+locks retain the full reviewed `420.0.0+sqlcipher-4.20.0-sqlite-3.54.1-libtomcrypt-1.18.2`
+registry version and archive checksum recorded above. A different major/minor/patch
+release needs fresh policy review; source identity remains governed by the lock
+and unchanged source controls.
+
+### Focused policy regression
+
+`python3 scripts/check_sqlcipher_license_exception.py` invokes the actual
+cargo-deny executable against each real policy and disposable synthetic Cargo
+path dependencies. The dependencies are publishable so the existing private-crate
+exemption cannot mask the result. It does not modify any upstream manifest or
+repository lock. Both reviewed-package positive controls failed before the
+exception (exit 4); the complete 14-case run passes afterward, including with
+`CARGO_TERM_COLOR=always` as used by CI. The harness requests uncolored output
+for deterministic diagnostics and never suppresses policy warnings.
+
+Each policy now demonstrably:
+
+- accepts sqlcipher-src 420.0.0 with the complete reviewed expression;
+- rejects each new license separately on a different package (exit 4);
+- rejects each new license separately on sqlcipher-src 420.0.1 (exit 4),
+  so an accidental caret/range allowance is detected;
+- rejects GPL-3.0-only even on the reviewed package/version (exit 4);
+- still accepts an ordinary MIT dependency (exit 0).
+
+### Actual CI policy commands and warnings
+
+`cargo-deny check licenses sources bans` was run from each existing Cargo root
+with the same cargo-deny 0.20.2 as the hosted job. All three returned exit 0 and
+`bans ok, licenses ok, sources ok`:
+
+| Root | Duplicate warnings | Wildcard warnings | Unencountered license warnings |
+| --- | ---: | ---: | ---: |
+| `implementation/desktop` | 36 | 11 | 5 |
+| `implementation/desktop/crates/selahcue-operator` | 42 | 9 | 3 |
+| `implementation/desktop/crates/selahcue-stt` | 6 | 1 | 5 |
+
+These existing warning classes remain visible under the unchanged policy;
+a pass does not mean warning-free output. No full functional Rust suites were
+repeated for this policy-only change. The pinned-toolchain check and
+`git diff --check` also passed.
+
+### SBOM generation and coverage
+
+CI's cargo-cyclonedx 0.5.9 was installed into a temporary tool directory and
+used for the existing commands:
+
+```sh
+# In implementation/desktop:
+cargo cyclonedx --format json
+# In implementation/desktop/crates/selahcue-operator:
+cargo cyclonedx --format json --features stt --target all
+# From repository root, before retaining the artifacts under /private/tmp:
+python3 scripts/check_operator_sbom.py --self-test
+python3 scripts/check_operator_sbom.py implementation/desktop/crates/selahcue-operator/selahcue-operator.cdx.json
+```
+
+Both generation commands returned exit 0. The existing guard's 11 self-tests
+passed, and its actual operator-SBOM check found cpal, selahcue-stt, ureq,
+whisper-rs and whisper-rs-sys. Additional traversal from each desktop/operator
+SBOM root verified rusqlite 0.42.0, libsqlite3-sys 0.40.0 and the full reviewed
+sqlcipher-src 420.0.0 version are reachable dependency components. The source
+package retains the complete `MIT AND BSD-3-Clause AND blessing AND WTFPL`
+license expression in both SBOMs, including the build dependency.
+
+Generation printed 38 desktop and 11 operator warnings converting the existing
+private crates' non-SPDX `Proprietary` label into named licenses; none concerned
+sqlcipher-src. Fourteen generated SBOMs were retained under
+`/private/tmp/sqlite-sbom-round1/`; no generated SBOM was added to Git, and no
+pre-existing SBOM or ignored native artifact was replaced. This is metadata
+inventory evidence, not installer notice/packaging verification.
+
+### Subsequent native evidence and remaining gates
+
+The controller's separately verified `sqlite-native-verification.md` records
+native Linux and Windows encrypted-runtime assertions and retained legacy-backup
+compatibility passing at source 62c9e1ea in the run linked above. Windows operator
+encrypted-read/key behavior also passed. These are scoped passes in a run whose
+Windows Rust job failed on separate A1/A2 endpoint/HTTP-test issues and whose
+Linux browser gates also failed. Successful harness captures do not expose the
+exact queried source/version strings; the exact strings above remain local
+macOS observations.
+
+The isolated ordinary bundled-SQLite runtime on Linux/Windows is still missing;
+the two hosted data invocations both selected encryption. The original local-only
+boundary above describes the initial verification, not a denial of this later
+controller evidence. Independent fix re-review and exact-head hosted CI remain
+pending; this local policy/SBOM pass does not promise a future all-jobs or release
+pass and does not change provider, installer, device-resource or hostile-WAL
+memory-check boundaries.
