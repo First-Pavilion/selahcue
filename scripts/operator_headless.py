@@ -2063,7 +2063,7 @@ EXPECTED_MIN_CHECKS = 2831
 # 17tnw2b13y0 corrected hosted fixture replay41210918334 actually measured
 # 2906/0: all2831 existing and75 real-host fixture/modal assertions PASS.
 # Only the stale2831 count failed. No assertions or runtime budgets change here.
-EXPECTED_MIN_CHECKS = 2906
+EXPECTED_MIN_CHECKS = 2912  # B1: measured six durable-storage status checks
 
 
 def find_chrome():
@@ -5300,6 +5300,32 @@ DRIVER = r"""
       ok(rows2.length === 2 && rows2[0] !== row0,
          "M1 an items delta DOES rebuild the plan (2 fresh rows)");
       render(baseView); // restore so the trailing 1s poll stays consistent
+
+      // B1: health changes must render even when the transcript tail has not changed.
+      var storageView = JSON.parse(JSON.stringify(baseView));
+      delete storageView.transcript_storage_health;
+      render(storageView);
+      ok(!!el("transcript-storage-health") && /unknown/i.test(el("transcript-storage-health").textContent),
+         "B1: older host storage is unknown, never saved");
+      storageView.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(storageView);
+      var storageWarning = el("transcript-storage-health");
+      ok(!!storageWarning && storageWarning.getAttribute("role")==="status" && storageWarning.getAttribute("aria-live")==="polite",
+         "B1: persistent storage warning is accessible");
+      ok(!!storageWarning && /not safely saved/i.test(storageWarning.textContent) && /1 lost/.test(storageWarning.textContent),
+         "B1: actual host save loss is visible");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /1 lost/.test(storageWarning.textContent) && /not safely saved/i.test(storageWarning.textContent),
+         "B1: recovered writes do not erase lost-speech warning");
+      storageView.transcript_storage_health = {available:true,pending_segments:2,dropped_segments:0,truncated_segments:0};
+      render(storageView);
+      ok(!!storageWarning && /saving/i.test(storageWarning.textContent) && !/Transcript saved/.test(storageWarning.textContent),
+         "B1: pending speech is saving, never saved");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /Transcript saved/.test(storageWarning.textContent), "B1: confirmed healthy drained storage is saved");
+      render(baseView);
 
       // === audit M4: the transcript DOM is client-capped even if the host over-sends ===
       var many = [];
@@ -17695,6 +17721,8 @@ DRIVER = r"""
       // collapse under ~1100px, far below the 1400px product minimum) so the panel starts UNDER the
       // GO LIVE controls instead — either way it never covers them.
       NT.geometry = async function(F, tag, mode, shrinkTo){
+        // B1: run the unchanged emergency hit tests with real loss warning content too.
+        F.w.V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:2};
         var tCards = {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]};
         // The top bar fits in each of its states, widest last: all clear; two cards + the badge; plus the timer chip
         // (and the LIVE chip, which is on whenever something is live — it is on here). Then the same under a ~6% wider

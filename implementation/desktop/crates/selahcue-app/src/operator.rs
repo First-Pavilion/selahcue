@@ -114,6 +114,7 @@ pub struct OperatorView {
     /// The recent live-transcript segments (bounded tail, oldest first) — the transcript
     /// panel (R3).
     pub transcript: Vec<TranscriptSegmentView>,
+    pub transcript_storage_health: Option<selahcue_lan::protocol::TranscriptStorageHealthView>,
     /// The current streaming interim line (words for the utterance still being spoken), shown
     /// live below the finalised transcript; `None` when nothing is mid-utterance.
     pub partial_transcript: Option<String>,
@@ -918,6 +919,7 @@ impl From<OperatorView> for OperatorStateView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            transcript_storage_health: v.transcript_storage_health,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
             stage_template: v.stage_template,
@@ -956,6 +958,7 @@ impl From<OperatorStateView> for OperatorView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            transcript_storage_health: v.transcript_storage_health,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
             stage_template: v.stage_template,

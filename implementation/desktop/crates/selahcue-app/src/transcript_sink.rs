@@ -40,10 +40,18 @@ pub trait TranscriptSink: Send {
     /// pushed onto the live ring — to persist durably. Never called for a streaming interim (an
     /// interim never reaches the ring either; see `ingest_transcript`'s `is_final` guard).
     fn ingest(&mut self, start_ms: u64, end_ms: u64, text: &str);
-    /// The listening session ended (normal Stop Listening). Closes the transcript's `ended_at`.
+    /// The listening session ended (normal Stop Listening). Production queues final flush/close;
+    /// an ACK is not durable completion. Observe `TranscriptCompletion` outside control locks.
     /// A crash that skips this call is handled separately, by a startup sweep over transcripts
     /// left with no `ended_at` (see the desktop binary's wiring) — not by anything in this trait.
     fn end(&mut self);
+    /// Memory-only status; unavailable is the safe default for custom/no-op sinks.
+    fn health(&self) -> TranscriptStorageHealth {
+        TranscriptStorageHealth::default()
+    }
+    fn session_status(&self) -> TranscriptSessionStatus {
+        TranscriptSessionStatus::default()
+    }
 }
 
 /// The default, no-op sink. Matches today's behaviour exactly.
@@ -180,11 +188,13 @@ pub struct BatchingTranscriptWriter<S, M = SystemMonotonicClock, E = SystemEpoch
     pending: VecDeque<PendingSegment>,
     last_flush_at: Option<Instant>,
     dropped_segment_count: u64,
+    truncated_segment_count: u64,
+    session_status: TranscriptSessionStatus,
     last_error: Option<String>,
 }
 
 impl<S: TranscriptStoreWriter> BatchingTranscriptWriter<S, SystemMonotonicClock, SystemEpochClock> {
-    /// Construct with the real OS clocks (production wiring).
+    /// Construct the synchronous policy helper with real OS clocks. Production uses the worker.
     pub fn new(store: S) -> Self {
         Self::with_clocks(store, SystemMonotonicClock, SystemEpochClock)
     }
@@ -201,6 +211,8 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
             pending: VecDeque::new(),
             last_flush_at: None,
             dropped_segment_count: 0,
+            truncated_segment_count: 0,
+            session_status: TranscriptSessionStatus::default(),
             last_error: None,
         }
     }
@@ -266,8 +278,8 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
                     self.pending.pop_front();
                     self.last_error = None;
                 }
-                Err(e) => {
-                    self.last_error = Some(e);
+                Err(_) => {
+                    self.last_error = Some("transcript storage unavailable".into());
                     break; // keep the rest buffered; retry on the next flush trigger
                 }
             }
@@ -281,7 +293,7 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
     fn enforce_bound(&mut self) {
         while self.pending.len() > MAX_PENDING_SEGMENTS {
             self.pending.pop_front();
-            self.dropped_segment_count += 1;
+            self.dropped_segment_count = self.dropped_segment_count.saturating_add(1);
         }
     }
 }
@@ -301,15 +313,17 @@ impl<S: TranscriptStoreWriter, M: MonotonicClock, E: EpochClock> BatchingTranscr
         self.flush();
         self.enforce_bound();
         if let Some(id) = self.transcript_id.take() {
-            if let Err(e) = self.store.end_transcript(id, self.epoch.now_ms()) {
-                self.last_error = Some(e);
+            if self.store.end_transcript(id, self.epoch.now_ms()).is_err() {
+                self.last_error = Some("transcript storage unavailable".into());
             }
         }
         // Anything still buffered here means the store kept refusing it even through the
         // flush above (a persistently failing store) — count it as dropped, never silently
         // discard it, mirroring `enforce_bound`'s own count-on-drop discipline. Under a
         // healthy store this is always empty already.
-        self.dropped_segment_count += self.pending.len() as u64;
+        self.dropped_segment_count = self
+            .dropped_segment_count
+            .saturating_add(self.pending.len() as u64);
         self.pending.clear();
     }
 }
@@ -322,6 +336,8 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
         // PR #31 F1) — close it out properly first: flush its pending segments, end it, and
         // count anything that still could not be flushed. See `close_current`'s own doc.
         self.close_current();
+        self.session_status.generation = self.session_status.generation.saturating_add(1);
+        self.session_status.confirmed_id = None;
         // Deliberately NOT clearing `last_error` or `dropped_segment_count`: `close_current()`
         // just above may have set/incremented either (the previous session's close failed to
         // flush or end cleanly), and that is exactly the moment a caller most needs to still
@@ -334,10 +350,13 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
             .store
             .open_transcript(label, provider, self.epoch.now_ms())
         {
-            Ok(id) => self.transcript_id = Some(id),
-            Err(e) => {
+            Ok(id) => {
+                self.transcript_id = Some(id);
+                self.session_status.confirmed_id = Some(id);
+            }
+            Err(_) => {
                 self.transcript_id = None;
-                self.last_error = Some(e);
+                self.last_error = Some("transcript storage unavailable".into());
             }
         }
     }
@@ -350,8 +369,11 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
             // that session's own `start()`/`close_current()` cleared the buffer first (Sana,
             // PR #31 F1, probe B). Counting it as dropped makes the loss honest and visible
             // instead of a queue nothing is actually consuming.
-            self.dropped_segment_count += 1;
+            self.dropped_segment_count = self.dropped_segment_count.saturating_add(1);
             return;
+        }
+        if text.len() > MAX_PENDING_SEGMENT_TEXT_LEN {
+            self.truncated_segment_count = self.truncated_segment_count.saturating_add(1);
         }
         self.pending.push_back(PendingSegment {
             start_ms,
@@ -367,6 +389,446 @@ impl<S: TranscriptStoreWriter + Send, M: MonotonicClock, E: EpochClock> Transcri
 
     fn end(&mut self) {
         self.close_current();
+    }
+    fn health(&self) -> TranscriptStorageHealth {
+        TranscriptStorageHealth {
+            available: self.session_status.confirmed_id.is_some()
+                && self.last_error.is_none()
+                && self.dropped_segment_count == 0
+                && self.truncated_segment_count == 0,
+            pending_segments: self.pending.len(),
+            dropped_segments: self.dropped_segment_count,
+            truncated_segments: self.truncated_segment_count,
+        }
+    }
+    fn session_status(&self) -> TranscriptSessionStatus {
+        self.session_status
+    }
+}
+
+/// Content-free, memory-only lifetime health. Pending includes the in-flight append.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptStorageHealth {
+    pub available: bool,
+    pub pending_segments: usize,
+    pub dropped_segments: u64,
+    pub truncated_segments: u64,
+}
+
+/// The last requested generation, including an opening/failed (unconfirmed) session.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptSessionStatus {
+    pub generation: u64,
+    pub confirmed_id: Option<i64>,
+}
+
+/// Bounded metadata per admitted session, independent of the global segment budget.
+pub const MAX_PENDING_SESSIONS: usize = 64;
+pub const MAX_SESSION_METADATA_BYTES: usize = 1024;
+
+struct Session {
+    generation: u64,
+    label: String,
+    provider: String,
+    started_at: i64,
+    ended_at: Option<i64>,
+    opened: bool,
+    id: Option<i64>,
+    last_attempt: Instant,
+    retry: bool,
+    flushing: bool,
+}
+
+struct WorkerState {
+    sessions: VecDeque<Session>,
+    pending: VecDeque<(u64, PendingSegment)>,
+    in_flight: bool,
+    busy: bool,
+    current: TranscriptSessionStatus,
+    active: Option<u64>,
+    io_available: bool,
+    dropped: u64,
+    truncated: u64,
+    alive: bool,
+    stop: bool,
+    monotonic: Box<dyn MonotonicClock>,
+    epoch: Box<dyn EpochClock>,
+}
+impl WorkerState {
+    fn health(&self) -> TranscriptStorageHealth {
+        TranscriptStorageHealth {
+            available: self.alive
+                && self.io_available
+                && self.current.confirmed_id.is_some()
+                && !self.sessions.iter().any(|session| {
+                    session.generation == self.current.generation && session.ended_at.is_some()
+                })
+                && self.dropped == 0
+                && self.truncated == 0,
+            pending_segments: self.pending.len() + usize::from(self.in_flight),
+            dropped_segments: self.dropped,
+            truncated_segments: self.truncated,
+        }
+    }
+    fn discard(&mut self, generation: u64) {
+        let before = self.pending.len();
+        self.pending.retain(|(g, _)| *g != generation);
+        self.dropped = self
+            .dropped
+            .saturating_add((before - self.pending.len()) as u64);
+    }
+    fn end_active(&mut self) {
+        if let Some(generation) = self.active.take() {
+            let now = self.epoch.now_ms();
+            if let Some(s) = self
+                .sessions
+                .iter_mut()
+                .find(|s| s.generation == generation)
+            {
+                s.ended_at = Some(now);
+            }
+        }
+    }
+}
+struct WorkerShared {
+    state: std::sync::Mutex<WorkerState>,
+    changed: std::sync::Condvar,
+}
+impl WorkerShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, WorkerState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Observation for clean shutdown/tests OUTSIDE the controller lock. An End ACK only queues
+/// closure. A timeout is an observation, never cancellation or a claim of durable completion.
+#[derive(Clone)]
+pub struct TranscriptCompletion(std::sync::Arc<WorkerShared>);
+impl TranscriptCompletion {
+    pub fn wait_closed(&self, generation: u64, timeout: Duration) -> bool {
+        self.wait(timeout, |s| {
+            !s.sessions.iter().any(|v| v.generation <= generation)
+        })
+    }
+    /// Wait for all admitted speech and opening work. Does not force a premature batch flush.
+    pub fn wait_idle(&self, timeout: Duration) -> bool {
+        self.wait(timeout, |s| {
+            !s.busy && s.pending.is_empty() && s.sessions.iter().all(|v| v.opened)
+        })
+    }
+    fn wait(&self, timeout: Duration, done: impl Fn(&WorkerState) -> bool) -> bool {
+        let state = self.0.lock();
+        let (state, _) = self
+            .0
+            .changed
+            .wait_timeout_while(state, timeout, |s| s.alive && !done(s))
+            .unwrap_or_else(|e| e.into_inner());
+        done(&state)
+    }
+    /// Wake the deadline evaluator after an injected monotonic clock advances.
+    pub fn wake(&self) {
+        self.0.changed.notify_all();
+    }
+    pub fn health(&self) -> TranscriptStorageHealth {
+        self.0.lock().health()
+    }
+}
+
+/// One persistent store worker. The only transcript text queue is in `WorkerState`; moving a
+/// segment into a store call retains its permit. No sink method/Drop waits for disk or joins.
+pub struct BackgroundTranscriptWriter {
+    shared: std::sync::Arc<WorkerShared>,
+}
+impl BackgroundTranscriptWriter {
+    pub fn new<S: TranscriptStoreWriter + Send + 'static>(store: S) -> Self {
+        Self::from_factory(move || Ok(store))
+    }
+    /// The factory (including connection open/orphan sweep) runs on the storage worker.
+    pub fn from_factory<S, F>(factory: F) -> Self
+    where
+        S: TranscriptStoreWriter + Send + 'static,
+        F: FnOnce() -> Result<S, String> + Send + 'static,
+    {
+        Self::with_clocks(factory, SystemMonotonicClock, SystemEpochClock)
+    }
+    pub fn with_clocks<S, F, M, E>(factory: F, monotonic: M, epoch: E) -> Self
+    where
+        S: TranscriptStoreWriter + Send + 'static,
+        F: FnOnce() -> Result<S, String> + Send + 'static,
+        M: MonotonicClock + 'static,
+        E: EpochClock + 'static,
+    {
+        let shared = std::sync::Arc::new(WorkerShared {
+            state: std::sync::Mutex::new(WorkerState {
+                sessions: VecDeque::new(),
+                pending: VecDeque::new(),
+                in_flight: false,
+                busy: false,
+                current: TranscriptSessionStatus::default(),
+                active: None,
+                io_available: false,
+                dropped: 0,
+                truncated: 0,
+                alive: true,
+                stop: false,
+                monotonic: Box::new(monotonic),
+                epoch: Box::new(epoch),
+            }),
+            changed: std::sync::Condvar::new(),
+        });
+        let worker = shared.clone();
+        let result = std::thread::Builder::new()
+            .name("transcript-storage".into())
+            .spawn(move || {
+                // A panicking adapter must not leave a forever-healthy snapshot or hanging barrier.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Ok(mut store) = factory() {
+                        run_transcript_worker(&worker, &mut store);
+                    }
+                }));
+                let mut s = worker.lock();
+                s.dropped = s
+                    .dropped
+                    .saturating_add(s.pending.len() as u64 + u64::from(s.in_flight));
+                s.pending.clear();
+                s.sessions.clear();
+                s.in_flight = false;
+                s.busy = false;
+                s.alive = false;
+                s.io_available = false;
+                s.active = None;
+                worker.changed.notify_all();
+            });
+        if result.is_err() {
+            shared.lock().alive = false;
+        }
+        Self { shared }
+    }
+    pub fn completion(&self) -> TranscriptCompletion {
+        TranscriptCompletion(self.shared.clone())
+    }
+}
+impl TranscriptSink for BackgroundTranscriptWriter {
+    fn start(&mut self, label: &str, provider: &str) {
+        let mut s = self.shared.lock();
+        s.end_active();
+        s.current.confirmed_id = None;
+        let next = s.current.generation.checked_add(1);
+        if let Some(next) = next {
+            s.current.generation = next;
+        }
+        if next.is_none()
+            || !s.alive
+            || s.stop
+            || s.sessions.len() >= MAX_PENDING_SESSIONS
+            || label.len() > MAX_SESSION_METADATA_BYTES
+            || provider.len() > MAX_SESSION_METADATA_BYTES
+        {
+            s.io_available = false;
+        } else {
+            let generation = s.current.generation;
+            let started_at = s.epoch.now_ms();
+            let last_attempt = s.monotonic.now();
+            s.sessions.push_back(Session {
+                generation,
+                label: label.to_owned(),
+                provider: provider.to_owned(),
+                started_at,
+                ended_at: None,
+                opened: false,
+                id: None,
+                last_attempt,
+                retry: false,
+                flushing: false,
+            });
+            s.active = Some(generation);
+        }
+        self.shared.changed.notify_all();
+    }
+    fn ingest(&mut self, start_ms: u64, end_ms: u64, text: &str) {
+        let mut s = self.shared.lock();
+        let generation = s
+            .active
+            .filter(|g| s.alive && s.sessions.iter().any(|v| v.generation == *g));
+        let Some(generation) = generation else {
+            s.dropped = s.dropped.saturating_add(1);
+            return;
+        };
+        if s.pending.len() + usize::from(s.in_flight) >= MAX_PENDING_SEGMENTS {
+            s.dropped = s.dropped.saturating_add(1);
+            if s.pending.pop_front().is_none() {
+                return;
+            }
+        }
+        if text.len() > MAX_PENDING_SEGMENT_TEXT_LEN {
+            s.truncated = s.truncated.saturating_add(1);
+        }
+        s.pending.push_back((
+            generation,
+            PendingSegment {
+                start_ms,
+                end_ms,
+                text: bounded_text(text, MAX_PENDING_SEGMENT_TEXT_LEN),
+            },
+        ));
+        self.shared.changed.notify_all();
+    }
+    fn end(&mut self) {
+        self.shared.lock().end_active();
+        self.shared.changed.notify_all();
+    }
+    fn health(&self) -> TranscriptStorageHealth {
+        self.shared.lock().health()
+    }
+    fn session_status(&self) -> TranscriptSessionStatus {
+        self.shared.lock().current
+    }
+}
+impl Drop for BackgroundTranscriptWriter {
+    fn drop(&mut self) {
+        let mut s = self.shared.lock();
+        s.end_active();
+        s.stop = true;
+        self.shared.changed.notify_all();
+    }
+}
+
+enum StoreOperation {
+    Open(u64, String, String, i64),
+    Append(u64, i64, PendingSegment),
+    End(u64, i64, i64),
+}
+fn run_transcript_worker(shared: &WorkerShared, store: &mut impl TranscriptStoreWriter) {
+    loop {
+        let op = {
+            let mut s = shared.lock();
+            loop {
+                let now = s.monotonic.now();
+                let mut wait = FLUSH_INTERVAL;
+                if let Some(front) = s.sessions.front() {
+                    let generation = front.generation;
+                    if !front.opened {
+                        let op = StoreOperation::Open(
+                            generation,
+                            front.label.clone(),
+                            front.provider.clone(),
+                            front.started_at,
+                        );
+                        if let Some(v) = s.sessions.front_mut() {
+                            v.opened = true;
+                        }
+                        s.busy = true;
+                        break op;
+                    }
+                    let count = s
+                        .pending
+                        .iter()
+                        .take_while(|(g, _)| *g == generation)
+                        .count();
+                    let due = now.saturating_duration_since(front.last_attempt) >= FLUSH_INTERVAL;
+                    let closing = front.ended_at.is_some();
+                    let flush = closing
+                        || due
+                        || (!front.retry && (front.flushing || count >= FLUSH_SEGMENT_THRESHOLD));
+                    if let Some(id) = front.id {
+                        if count > 0 && flush {
+                            let (_, segment) =
+                                s.pending.pop_front().expect("counted pending segment");
+                            s.in_flight = true;
+                            s.busy = true;
+                            if let Some(v) = s.sessions.front_mut() {
+                                v.flushing = true;
+                            }
+                            break StoreOperation::Append(generation, id, segment);
+                        }
+                        if count == 0 && closing {
+                            let end = front.ended_at.expect("closing session");
+                            s.busy = true;
+                            break StoreOperation::End(generation, id, end);
+                        }
+                    }
+                    if count > 0 {
+                        wait = FLUSH_INTERVAL
+                            .saturating_sub(now.saturating_duration_since(front.last_attempt));
+                    }
+                } else if s.stop {
+                    return;
+                }
+                s = shared
+                    .changed
+                    .wait_timeout(s, wait)
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+        };
+        // Deliberately outside ALL shared locks, including factory, open, append and end.
+        match op {
+            StoreOperation::Open(generation, label, provider, start) => {
+                let result = store.open_transcript(&label, &provider, start);
+                let mut s = shared.lock();
+                s.busy = false;
+                match result {
+                    Ok(id) => {
+                        if let Some(front) = s.sessions.front_mut() {
+                            front.id = Some(id);
+                        }
+                        if s.current.generation == generation {
+                            s.current.confirmed_id = Some(id);
+                        }
+                        s.io_available = true;
+                    }
+                    Err(_) => {
+                        s.io_available = false;
+                        s.discard(generation);
+                        s.sessions.pop_front();
+                        if s.active == Some(generation) {
+                            s.active = None;
+                        }
+                    }
+                }
+            }
+            StoreOperation::Append(generation, id, segment) => {
+                let result =
+                    store.append_segment(id, segment.start_ms, segment.end_ms, &segment.text);
+                let mut s = shared.lock();
+                s.busy = false;
+                s.in_flight = false;
+                let now = s.monotonic.now();
+                let closing = s.sessions.front().is_some_and(|v| v.ended_at.is_some());
+                match result {
+                    Ok(_) => {
+                        s.io_available = true;
+                    }
+                    Err(_) => {
+                        s.io_available = false;
+                        if closing {
+                            s.dropped = s.dropped.saturating_add(1);
+                            s.discard(generation);
+                        } else {
+                            s.pending.push_front((generation, segment));
+                        }
+                    }
+                }
+                let remaining = s.pending.front().is_some_and(|(g, _)| *g == generation);
+                let success = s.io_available;
+                if let Some(front) = s.sessions.front_mut() {
+                    front.last_attempt = now;
+                    front.retry = !success;
+                    front.flushing = success && remaining;
+                }
+            }
+            StoreOperation::End(_generation, id, end) => {
+                let result = store.end_transcript(id, end);
+                let mut s = shared.lock();
+                s.busy = false;
+                // A successful end cannot erase a preceding failed append's I/O state.
+                if result.is_err() {
+                    s.io_available = false;
+                }
+                s.sessions.pop_front();
+            }
+        }
+        shared.changed.notify_all();
     }
 }
 

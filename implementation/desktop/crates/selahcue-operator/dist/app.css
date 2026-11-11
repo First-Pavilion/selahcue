@@ -9061,3 +9061,18 @@
                           notes panels below it on a short, narrow window */
   }
 }
+
+/* B1: the warning owns its overflow inside the bounded transcript card. A long loss
+   counter must never push the listening status over the emergency controls. */
+#transcript.has-storage-health {
+  overflow: auto;
+}
+#transcript-storage-health {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sc-surface);
+  max-height: 28px;
+  overflow: auto;
+  line-height: 14px;
+}
