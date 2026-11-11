@@ -1,0 +1,199 @@
+{
+  "checks": 476,
+  "scenarios": [
+    {
+      "engine": "chromium",
+      "path": "/",
+      "width": 320,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "chromium",
+      "path": "/",
+      "width": 768,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "chromium",
+      "path": "/",
+      "width": 1440,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "chromium",
+      "path": "/pricing",
+      "width": 320,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "chromium",
+      "path": "/pricing",
+      "width": 768,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "chromium",
+      "path": "/pricing",
+      "width": 1440,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/",
+      "width": 320,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/",
+      "width": 768,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/",
+      "width": 1440,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/pricing",
+      "width": 320,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/pricing",
+      "width": 768,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    },
+    {
+      "engine": "webkit",
+      "path": "/pricing",
+      "width": 1440,
+      "states": [
+        "loading",
+        "unpriced",
+        "changed",
+        "multi-offer",
+        "escaped",
+        "unavailable",
+        "retry",
+        "empty"
+      ],
+      "result": "PASS"
+    }
+  ],
+  "result": "PASS",
+  "scope": "frontend synthetic HTTP boundary, not backend/admin E2E"
+}

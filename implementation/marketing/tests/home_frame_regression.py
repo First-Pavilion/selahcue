@@ -52,6 +52,7 @@ def main():
             browser = pw.chromium.launch()
             try:
                 page = ChromeWindow(browser.new_page(), 0)
+                home.catalogue.install(page.context)
                 m = home.measure(page, 1440, figma_frame=True)
                 assert page.evaluate('document.documentElement.clientWidth') == 1440
                 assert page.requested_widths == [1440], page.requested_widths
@@ -62,6 +63,7 @@ def main():
             browser = pw.webkit.launch()
             try:
                 context = browser.new_context(viewport={'width': 1440, 'height': 900})
+                home.catalogue.install(context)
                 raw = context.new_page()
                 # Same external-window adapter as Core: reserve12 real viewport pixels.
                 # A host's own native scrollbar may reserve up to12 additional pixels.

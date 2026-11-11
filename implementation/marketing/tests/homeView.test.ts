@@ -508,7 +508,7 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.equal(findAll(pricing, (e) => hasClass(e, 'ui-button')).length, 0, 'no plan button')
     assert.equal(findAll(pricing, (e) => e.tag === 'a').length, 0, 'and nothing in the section links anywhere')
     assert.deepEqual(findAll(pricing, (e) => e.tag === 'h3'), [], 'no plan name')
-    assert.match(textOf(pricing), /Plans and prices have not been published yet\./)
+    assert.match(textOf(pricing), /Loading plans…/)
     assert.doesNotMatch(textOf(pricing), /\$|\bFree\b|\bPro\b|\bChurch\b|month|year|forever/i, 'no price, tier name or billing period')
     assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '/contact').length, 0, 'nothing on Home sends a visitor to the contact form')
   })
@@ -666,7 +666,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   'pricing-section': [
     'PRICING',
     'Plans and pricing',
-    'Plans and prices have not been published yet.',
+    'Loading plans…',
   ],
   'faq-section': [
     'Questions, answered',
@@ -681,7 +681,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'What is NDI, and do I need it?',
     "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
     'How does billing work?',
-    'Plans and prices have not been published yet.',
+    'Current plan availability and pricing are shown above.',
   ],
   'final-cta-section': [
     'Ready to run your best service yet?',
@@ -862,7 +862,7 @@ describe('no unbacked claim is added', () => {
 
   test('CONTROL: the list catches a planted claim of each kind, and passes the honest wording', () => {
     for (const { re, why, sample } of FORBIDDEN) assert.ok(re.test(sample), `${re} does not catch "${sample}" (${why})`)
-    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. Plans and prices have not been published yet.'
+    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. Loading plans…'
     assert.deepEqual(FORBIDDEN.filter(({ re }) => re.test(honest)), [])
   })
 })

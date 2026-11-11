@@ -1,0 +1,219 @@
+{
+  "scope": "ONE unchanged original privacy navigation diagnostic; passive request/signal observations, original fixture/guards/waits/clicks unchanged",
+  "browser_version": "156.0.8078.80",
+  "results": [
+    [
+      "privacy: exactly one IntersectionObserver is live while the page is mounted",
+      true,
+      "delta=1 {'IntersectionObserver': [2, 2], 'ResizeObserver': [3, 3]} vs {'IntersectionObserver': [1, 1], 'ResizeObserver': [0, 0]}"
+    ],
+    [
+      "privacy->terms: noindex survives the navigation",
+      true,
+      "1"
+    ],
+    [
+      "privacy->terms: title is the new page's",
+      true,
+      "SelahCue Terms of Service"
+    ],
+    [
+      "privacy->pricing: noindex is removed on leaving the legal pages",
+      true,
+      "0"
+    ],
+    [
+      "privacy->pricing: every observer the legal pages created is disconnected after leaving",
+      true,
+      "{'IntersectionObserver': 0, 'ResizeObserver': 0} (after={'IntersectionObserver': [3, 1], 'ResizeObserver': [3, 0]}, baseline={'IntersectionObserver': [1, 1], 'ResizeObserver': [0, 0]})"
+    ],
+    [
+      "privacy->pricing: title is no longer a legal title",
+      true,
+      "SelahCue \u2014 Church presentation, reengineered"
+    ],
+    [
+      "privacy: navigation console clean",
+      true,
+      ""
+    ]
+  ],
+  "network": [
+    {
+      "t": 9.874266833,
+      "page": "baseline",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "t": 9.9256345,
+      "page": "baseline",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "t": 9.941041125,
+      "page": "baseline",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "t": 9.943908083,
+      "page": "baseline",
+      "event": "request",
+      "url": "http://127.0.0.1:64621/v1/catalogue/plans",
+      "frame_url": "http://127.0.0.1:64621/pricing",
+      "failure": null
+    },
+    {
+      "t": 9.950721125,
+      "page": "baseline",
+      "event": "finished",
+      "url": "http://127.0.0.1:64621/v1/catalogue/plans",
+      "frame_url": "http://127.0.0.1:64621/pricing",
+      "failure": null
+    },
+    {
+      "t": 11.028252583,
+      "page": "baseline",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "t": 11.078885458,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/privacy"
+    },
+    {
+      "t": 11.099502583,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/privacy"
+    },
+    {
+      "t": 11.114829625,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/privacy"
+    },
+    {
+      "t": 12.22655325,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/privacy"
+    },
+    {
+      "t": 12.242124958,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/terms"
+    },
+    {
+      "t": 15.632301917,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/terms"
+    },
+    {
+      "t": 15.634258958,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "t": 15.635821833,
+      "page": "navigation",
+      "event": "request",
+      "url": "http://127.0.0.1:64621/v1/catalogue/plans",
+      "frame_url": "http://127.0.0.1:64621/pricing",
+      "failure": null
+    },
+    {
+      "t": 15.642294292,
+      "page": "navigation",
+      "event": "finished",
+      "url": "http://127.0.0.1:64621/v1/catalogue/plans",
+      "frame_url": "http://127.0.0.1:64621/pricing",
+      "failure": null
+    },
+    {
+      "t": 15.977996667000001,
+      "page": "navigation",
+      "event": "navigation",
+      "url": "http://127.0.0.1:64621/pricing"
+    }
+  ],
+  "pages": [
+    {
+      "label": "navigation",
+      "errors": [],
+      "lifecycle": [
+        {
+          "kind": "fetch",
+          "t": 4563.399999976158,
+          "path": "/pricing",
+          "legal": false,
+          "home": false,
+          "pricing": true,
+          "busy": "true"
+        },
+        {
+          "kind": "response",
+          "t": 4572.799999982119,
+          "path": "/pricing",
+          "legal": false,
+          "home": false,
+          "pricing": true,
+          "busy": "true",
+          "status": 200
+        }
+      ],
+      "url": "http://127.0.0.1:64621/pricing"
+    },
+    {
+      "label": "baseline",
+      "errors": [],
+      "lifecycle": [
+        {
+          "kind": "fetch",
+          "t": 115.59999999403954,
+          "path": "/pricing",
+          "legal": false,
+          "home": false,
+          "pricing": true,
+          "busy": "true"
+        },
+        {
+          "kind": "response",
+          "t": 124,
+          "path": "/pricing",
+          "legal": false,
+          "home": false,
+          "pricing": true,
+          "busy": "true",
+          "status": 200
+        }
+      ],
+      "url": "http://127.0.0.1:64621/pricing"
+    }
+  ],
+  "verdict": "UNKNOWN hosted failure cause; no narrow harness correction justified by this diagnostic",
+  "source_ci_failure": {
+    "head": "1fa28e659a958756edefc5e2a919607368b1920b",
+    "run": 41893172544,
+    "result": "FAILURE418pass1fail419checks;privacy navigation consoleclean ownedcatalogue ERR_ABORTED",
+    "full_log": "/private/tmp/367-1fa-legal-failed.log"
+  },
+  "unchanged_scope": {
+    "selected_frontend_source_map_entries": 239,
+    "bundle_files": 117,
+    "hashes_equal_publication_retention": true,
+    "main_integrated": "7f6dbcbb4782854cbb0fea14a3bb5a9ffcf7fcd0",
+    "main_delta": "OnlyinstallerCIchecker/workflows/deliverydocs; no marketing subtree delta",
+    "production_harness_changes": false,
+    "full419_rerun": false,
+    "full_matrix_or_responsive_rerun": false,
+    "ci_rerun_or_source_publication": false
+  }
+}

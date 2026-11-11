@@ -8,13 +8,14 @@ import FeatureCard from '@/components/FeatureCard.vue'
 import ReliabilityPillar from '@/components/ReliabilityPillar.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import HomeIcon from '@/components/home/HomeIcon.vue'
+import CataloguePlans from '@/components/CataloguePlans.vue'
 
 /*
  * COPY. Figma frame 468:125 is the wording wherever the repo backs it. Where Figma claims more than the
  * repo can show, the backed part is what ships (the ledger in docs/delivery/goals/17tnw2b2cex-figma-home.md
  * lists each line and why; tests/homeView.test.ts pins it). Nothing on this page may state a price, a plan, a billing
  * term, a testimonial, an OS version or a capability the repo does not back (ClickUp 17tnw2b0x3h): plan names and prices
- * come from the API once it serves them, and until then the pricing section says so.
+ * come from the public API through CataloguePlans; no commercial defaults are typed into this view.
  */
 
 /** Ties the disabled demo button to the sentence that says why (read after it in the page). */
@@ -115,7 +116,7 @@ const faqItems = [
   },
   {
     question: 'How does billing work?',
-    answer: 'Plans and prices have not been published yet.'
+    answer: 'Current plan availability and pricing are shown above.'
   }
 ]
 </script>
@@ -259,15 +260,14 @@ const faqItems = [
       </div>
     </section>
 
-    <!-- Section 6: Pricing. No plan, price or billing term is shown: none is decided, and the names and prices will come from the
-         API (ClickUp 17tnw2b0x3h). Until it serves them the section says so and draws nothing else. -->
+    <!-- Section 6: Current public catalogue; no hardcoded commercial data. -->
     <section class="pricing-section">
       <div class="container">
         <div class="section-header">
           <UiBadge variant="eyebrow">PRICING</UiBadge>
           <h2 class="section-title">Plans and pricing</h2>
-          <p class="section-subtitle">Plans and prices have not been published yet.</p>
         </div>
+        <CataloguePlans />
       </div>
     </section>
 
@@ -632,12 +632,11 @@ const faqItems = [
   color: var(--sc-text-secondary);
 }
 
-/* Section 6: Pricing (Figma 477:124: 90px). The three plan cards are gone (ClickUp 17tnw2b0x3h), so the header has nothing under
-   it to leave a gap for. */
+/* Section 6: Pricing keeps its existing section padding; shared API cards follow the heading. */
 .pricing-section {
   padding-block: calc(var(--section-pad) + 2px);
   --title-lh: 48px;
-  --header-gap: 0px;
+  --header-gap: 24px;
   --sub-width: 620px;
 }
 
