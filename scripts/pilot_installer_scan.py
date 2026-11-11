@@ -58,7 +58,7 @@ def filesystem_boundary(function):
 def source_root(module_file: str) -> Path:
     """Path.resolve's documented loop RuntimeError is confined to this operation."""
     try:
-        return Path(module_file).resolve().parents[1]
+        return Path(module_file).resolve(strict=True).parents[1]
     except (OSError, RuntimeError):
         raise PolicyError('source-root-refused') from None
 

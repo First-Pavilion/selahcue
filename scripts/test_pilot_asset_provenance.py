@@ -120,12 +120,13 @@ class AssetTests(unittest.TestCase):
     counts.append(len(opened))
    self.assertEqual(counts[0],counts[1])
 
- def assert_private_refusal(self,call,private):
+ def assert_private_refusal(self,call,private,expected_code=None):
   output = io.StringIO(); logger = logging.Logger('p04-final-boundary')
   logger.addHandler(logging.StreamHandler(output))
   try: call()
   except Exception as error:
    self.assertIsInstance(error,assets.PolicyError)
+   if expected_code is not None: self.assertEqual(str(error),expected_code)
    output.write(''.join(traceback.format_exception(type(error),error,error.__traceback__)))
    logger.exception('public filesystem refusal')
   else: self.fail('expected fixed policy refusal')
@@ -151,10 +152,23 @@ class AssetTests(unittest.TestCase):
   try: self.assert_private_refusal(lambda:core.scan_component(target),private)
   finally: locked.chmod(0o700)
 
+ def test_actual_existing_module_source_root_resolves_public_inventory(self):
+  root = core.source_root(core.__file__)
+  self.assertEqual(root, Path(__file__).resolve(strict=True).parents[1])
+  self.assertEqual(tuple(map(len, core.development_inventory(root))), (32, 32))
+
+ def test_source_root_missing_or_broken_module_has_fixed_diagnostics(self):
+  private = 'private-missing-module-canary-692a'
+  missing = self.root / private / 'module.py'
+  broken = self.root / 'broken-module.py'; broken.symlink_to(missing)
+  for module in (missing, broken):
+   with self.subTest(module=module.name):
+    self.assert_private_refusal(lambda:core.source_root(str(module)),private,'source-root-refused')
+
  def test_actual_source_resolve_symlink_loop_has_fixed_diagnostics(self):
   private = 'private-resolve-loop-canary-6ed2'
   loop = self.root / private; loop.symlink_to(loop.name)
-  self.assert_private_refusal(lambda:core.source_root(str(loop / 'module.py')),private)
+  self.assert_private_refusal(lambda:core.source_root(str(loop / 'module.py')),private,'source-root-refused')
  def test_boundary_does_not_hide_programming_runtime_errors(self):
   target = self.root / 'regular'; target.write_bytes(bytes(1000000))
   with patch.object(Path,'is_file',side_effect=RuntimeError('programming-error-control')):

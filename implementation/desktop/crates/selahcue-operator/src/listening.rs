@@ -4005,16 +4005,12 @@ mod tests {
             queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push_chunk(AudioChunk::new(
-                    vec![0.2_f32, -0.2].repeat(56_000),
-                    16_000,
-                    1,
-                ));
+                .push_chunk(AudioChunk::new([0.2_f32, -0.2].repeat(56_000), 16_000, 1));
             std::thread::sleep(Duration::from_millis(1_200));
             queue
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .push_chunk(AudioChunk::new(vec![0.2_f32, -0.2].repeat(160), 16_000, 1));
+                .push_chunk(AudioChunk::new([0.2_f32, -0.2].repeat(160), 16_000, 1));
         }
         let interim = runtime
             .block_on(async { tokio::time::timeout(Duration::from_secs(5), seg_rx.recv()).await });

@@ -87,3 +87,12 @@ credential/provider/congregation operation or corpus operation was performed.
 ## Separately attributed marketing job budget
 
 Task 3 applies the approved 20→25 minute marketing timeout, based on exact source20368c7f / CI43085580106 / job130749079236: all22 steps and browser/CSP assertions succeeded, but the job was cancelled at1,201s with the explicit20m0s timeout annotation. Required work finished at1,196s; Node post was a cache hit/rounded0s. No cache stall or historical WebKit cause is established. The bounded change adds at most five Linux runner-minutes and no deliberate routine work, retaining every assertion, cache, step and other budget. Current integrated-head hosted success remains unproven until root's reviewed combined publication. See browser-ci.md and Task3 report for exact semantic-diff/policy evidence and separate Flutter/audit observations.
+
+
+## Final grouped required-gate fixes
+
+The final review/Task4 pass at957cbda0 found two required-gate failures. SHADOW-INTEGRATION-01 is addressed by making only `source_root` resolution strict, preserving its operation-local OSError/RuntimeError refusal, fixed `source-root-refused` code and suppressed private diagnostic context. Real loop/missing/broken paths refuse; a real existing module resolves to this repository and validates its committed public development inventory. CPython3.14.5 and3.12.13 each pass17 provenance tests,34 scanner tests and47 unchanged ordinary-deny controls. The original15-test/one-failure receipt and the new failing-before-fix controls remain preserved.
+
+The required Rust1.98 release pilot/cloud all-target Clippy gate is addressed with12 descriptive `expect` assertions confined to the stopped-store combination test and two equivalent PCM array repeats confined to the capture-cadence test. Imports, barriers, PCM values/lengths, timeouts and assertions remain. Exact release/pilot/cloud all-target Clippy passes with `-D warnings`; both affected named native tests pass individually. No lint allowance, lock/workflow/browser/renderer or application-runtime behavior changed.
+
+Detailed commands, RED/GREEN receipts, scanner before/after hashes and final source binding are in the local `final-fix-report.md` and `final-fix-*` artifacts under `.superpowers/sdd/2026-11-11-sermon-pilot-reviewed-integration/`. Four independent scoped re-reviews and the remaining Task4 validation are still required. These focused corrections establish no full-matrix, hosted, device/resource, real-provider/profile, corpus, package or release acceptance.

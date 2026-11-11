@@ -11517,8 +11517,12 @@ mod regenerate_with_retention_tests {
                 text: &str,
             ) -> Result<i64, String> {
                 if let Some(released) = self.released.take() {
-                    self.entered.send(()).unwrap();
-                    released.recv().unwrap();
+                    self.entered
+                        .send(())
+                        .expect("append barrier observer remains connected");
+                    released
+                        .recv()
+                        .expect("stalled append receives the explicit release");
                 }
                 transcript_repo::append_segment(&self.db, id, start, end, text)
                     .map_err(|_| "synthetic store failure".into())
@@ -11527,15 +11531,21 @@ mod regenerate_with_retention_tests {
                 transcript_repo::end(&self.db, id, at).map_err(|_| "synthetic store failure".into())
             }
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("temporary SQLite fixture directory is created");
         let path = dir.path().join("stopped-store.db3");
         let (app, _) = state_with_transcript(true);
         let state = app.state::<AppState>();
-        *state.transcript_db.as_ref().unwrap().lock().unwrap() = Database::open(&path).unwrap();
+        *state
+            .transcript_db
+            .as_ref()
+            .expect("fixture state has its transcript database")
+            .lock()
+            .expect("fixture transcript database lock is healthy") =
+            Database::open(&path).expect("transcript reader opens the shared SQLite fixture");
         let (entered, observed) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let sink = selahcue_app::BackgroundTranscriptWriter::new(Stalled {
-            db: Database::open(&path).unwrap(),
+            db: Database::open(&path).expect("background writer opens the shared SQLite fixture"),
             entered,
             released: Some(released),
         });
@@ -11562,7 +11572,7 @@ mod regenerate_with_retention_tests {
         }
         observed
             .recv_timeout(std::time::Duration::from_secs(10))
-            .unwrap();
+            .expect("background writer reaches the append barrier");
         assert_eq!(c.apply(&Command::EndTranscript), ControllerReply::Ack);
         let ControllerReply::Message(ServerMessage::ActiveTranscriptId {
             transcript_id: Some(id),
@@ -11576,14 +11586,18 @@ mod regenerate_with_retention_tests {
             std::future::ready(Err(selahcue_core::providers::NoteError::NotConfigured))
         })
         .await
-        .unwrap();
-        release.send(()).unwrap();
+        .expect("native generation command returns its refusal JSON");
+        release
+            .send(())
+            .expect("append barrier receives the explicit release");
         assert_eq!(requested, 0);
         assert_eq!(reply["error"], "transcript_not_ended");
         assert!(completion.wait_closed(1, std::time::Duration::from_secs(10)));
         drop(c);
-        let reopened = Database::open(&path).unwrap();
-        let stored = transcript_repo::load(&reopened, id).unwrap();
+        let reopened =
+            Database::open(&path).expect("durable SQLite fixture reopens after completion");
+        let stored = transcript_repo::load(&reopened, id)
+            .expect("completed transcript loads from the reopened store");
         assert!(stored.ended_at_ms.is_some());
         assert_eq!(
             stored
