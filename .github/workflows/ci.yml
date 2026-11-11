@@ -788,6 +788,18 @@ jobs:
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
         run: cargo test --workspace --no-fail-fast
+      # A2: deliberate bounded Windows scheduling evidence, even if an unrelated
+      # workspace test failed. The existing workspace/debug and licensing/release
+      # runs remain; each failed repetition exits this step immediately.
+      - name: Test (Windows licensing admission, three parallel-8 repetitions)
+        id: windows-licensing-parallel
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          for repetition in 1 2 3; do
+            echo "Windows licensing admission parallel run ${repetition}/3 (8 threads)"
+            cargo test -p selahcue-licensing --test test_https_admission -- --nocapture --test-threads=8 || exit $?
+          done
       - name: Disk space after the workspace tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
