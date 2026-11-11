@@ -4,10 +4,12 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_app::{pump_transcript, LiveController};
+use selahcue_app::{pump_transcript, ControllerReply, LiveController};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_core::transcript::ManualProvider;
+use selahcue_lan::protocol::{Command, DenyReason};
 use selahcue_present::Theme;
+use std::time::{Duration, Instant};
 
 fn controller() -> LiveController {
     let mut plan = ServicePlan::new("Sunday Service");
@@ -90,4 +92,166 @@ fn pump_transcript_forwards_nothing_from_an_empty_provider() {
     let mut provider = ManualProvider::new();
     assert_eq!(pump_transcript(&mut c, &mut provider), 0);
     assert!(pending_refs(&c).is_empty());
+}
+
+// Exercise the real dispatcher, including action-side marking and dedup expiry.
+fn actioned_reference_expires(approve: bool, churn: bool, quoted: bool) {
+    let mut c = controller();
+    let now = Instant::now();
+    c.tick(now);
+    let text = if quoted {
+        "for God so loved the world that he gave his only begotten Son, that whosoever believeth in him should not perish but have everlasting life"
+    } else {
+        "John 3:16"
+    };
+    c.ingest_transcript_at(text, 0, 1_000, true, now);
+    let id = c.operator_view().detections[0].id;
+    let command = if approve {
+        Command::ApproveDetection { detection_id: id }
+    } else {
+        Command::DismissDetection { detection_id: id }
+    };
+    // Cooldown starts at the action, not at the earlier detection or last tick.
+    let action_time = now + Duration::from_secs(10);
+    assert_eq!(c.apply_at(&command, action_time), ControllerReply::Ack);
+    if approve {
+        assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+        assert_eq!(
+            c.apply(&Command::FollowScripture {
+                reference: "John 3:17".into(),
+                translation: None
+            }),
+            ControllerReply::Ack
+        );
+        assert_eq!(
+            c.operator_view().live_scripture.as_deref(),
+            Some("John 3:17")
+        );
+    }
+    let staged = c.operator_view().staged_scripture;
+    let live = c.operator_view().live_scripture;
+    let generation = c.live_generation();
+    if churn {
+        // Expel John from the old 16-entry dedup ring without actioning it again.
+        for chapter in 1..=17 {
+            c.ingest_transcript_at(&format!("Psalms {chapter}"), 0, 1_000, true, action_time);
+        }
+    }
+    // Deliberately no tick: detection time cannot depend on render progress.
+    // Transcript timestamps are unrelated to host monotonic cooldown time.
+    c.ingest_transcript_at(
+        text,
+        90_000,
+        91_000,
+        true,
+        action_time + Duration::from_secs(19),
+    );
+    assert!(
+        !pending_refs(&c).contains(&"John 3:16".to_string()),
+        "19s must suppress the actioned reference even after dedup-ring churn"
+    );
+    c.ingest_transcript_at(
+        "Romans 8:28",
+        0,
+        1_000,
+        true,
+        action_time + Duration::from_secs(19),
+    );
+    assert!(
+        pending_refs(&c).contains(&"Romans 8:28".to_string()),
+        "different references remain eligible"
+    );
+    assert_eq!(c.operator_view().staged_scripture, staged);
+    assert_eq!(c.operator_view().live_scripture, live);
+    assert_eq!(
+        c.live_generation(),
+        generation,
+        "repetition must not reset the displayed passage"
+    );
+
+    assert_eq!(
+        c.apply_at(&command, action_time + Duration::from_secs(19)),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "a stale action must not restart cooldown"
+    );
+    // Denied approve may conservatively increment the host's dirty generation.
+    let generation = c.live_generation();
+    assert_eq!(
+        c.apply_at(
+            &Command::IngestTranscript {
+                text: text.into(),
+                start_ms: None,
+                end_ms: None,
+                is_final: true
+            },
+            action_time + Duration::from_secs(20)
+        ),
+        ControllerReply::Ack
+    );
+    assert!(
+        pending_refs(&c).contains(&"John 3:16".to_string()),
+        "exactly 20s re-enables the reference without a dedup-ring wait"
+    );
+    assert_eq!(c.operator_view().staged_scripture, staged);
+    assert_eq!(c.operator_view().live_scripture, live);
+    assert_eq!(c.live_generation(), generation);
+}
+
+#[test]
+fn approved_reference_cooldown_expires_at_twenty_seconds() {
+    actioned_reference_expires(true, false, false);
+}
+
+#[test]
+fn dismissed_reference_cooldown_expires_at_twenty_seconds() {
+    actioned_reference_expires(false, false, false);
+}
+
+#[test]
+fn approved_reference_stays_suppressed_after_dedup_ring_churn() {
+    actioned_reference_expires(true, true, false);
+}
+
+#[test]
+fn dismissed_reference_stays_suppressed_after_dedup_ring_churn() {
+    actioned_reference_expires(false, true, false);
+}
+
+#[test]
+fn new_transcript_session_clears_actioned_and_pending_references() {
+    let mut c = controller();
+    c.tick(Instant::now());
+    c.ingest_transcript("John 3:16", 0, 1_000, true);
+    let id = c.operator_view().detections[0].id;
+    assert_eq!(
+        c.apply(&Command::DismissDetection { detection_id: id }),
+        ControllerReply::Ack
+    );
+    c.ingest_transcript("Romans 8:28", 0, 1_000, true);
+    assert_eq!(
+        c.apply(&Command::StartTranscript {
+            label: "New sermon".into(),
+            provider: "manual".into()
+        }),
+        ControllerReply::Ack
+    );
+    assert!(
+        pending_refs(&c).is_empty(),
+        "a new session clears the old queue"
+    );
+    c.ingest_transcript("John 3:16", 0, 1_000, true);
+    assert!(
+        pending_refs(&c).contains(&"John 3:16".to_string()),
+        "a new session does not inherit cooldown"
+    );
+}
+
+#[test]
+fn approved_quote_cooldown_expires_at_twenty_seconds() {
+    actioned_reference_expires(true, false, true);
+}
+
+#[test]
+fn dismissed_quote_cooldown_expires_at_twenty_seconds() {
+    actioned_reference_expires(false, false, true);
 }
