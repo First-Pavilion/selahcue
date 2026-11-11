@@ -41,9 +41,7 @@ use std::time::Duration;
 use selahcue_core::transcript::{ProviderSegment, TranscriptProvider};
 use selahcue_stt::audio::{AudioSource, CpalSource};
 use selahcue_stt::recognizer::{WhisperContext, WhisperRecognizer};
-use selahcue_stt::{
-    pump, EnergyVad, EngineConfig, FeedbackGuard, HardwareProbe, Recognizer, SttEngine,
-};
+use selahcue_stt::{pump, EnergyVad, FeedbackGuard, HardwareProbe, Recognizer, SttEngine};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::capture_handoff::AudioHandoff;
@@ -103,11 +101,6 @@ const CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often the RECOGNITION thread polls the hand-off for new audio to transcribe.
 const RECOG_INTERVAL: Duration = Duration::from_millis(30);
-
-/// Sliding-window bound (16 kHz mono samples) for an INTERIM decode — each interim re-decodes at
-/// most the last ~6 s, so the live line stays near real time no matter how long the speaker talks
-/// (the final on close still decodes the whole utterance for accuracy).
-const INTERIM_WINDOW_SAMPLES: usize = 6 * 16_000;
 
 /// A fixed reference capacity for the source→recognition hand-off — **no longer the value
 /// `run_on_device_with_recognizer` actually builds `AudioHandoff` with (86akcfp8w)**. It has
@@ -1169,11 +1162,7 @@ fn run_on_device_with_recognizer<S: DeviceCaptureSource, R: tauri::Runtime>(
         // direct, honest consequence of correctly closing 86akcfpbj's feedback loop, deliberately
         // chosen over a hybrid stamp that would preserve a flat cadence at the cost of
         // reintroducing conditional complexity for a marginal latency win.
-        EngineConfig {
-            interim_interval: Duration::from_millis(800),
-            interim_max_samples: INTERIM_WINDOW_SAMPLES,
-            ..EngineConfig::default()
-        },
+        selahcue_stt::engine::production_engine_config(),
         Box::new(EnergyVad::new()),
         recognizer,
         FeedbackGuard::new(),
@@ -3632,6 +3621,132 @@ mod tests {
             "a genuine, post-ready, real-time-outrunning overload must still trip the drop \
              notice — got {note:?} (if this is None, the on-device drop-notice mechanism may be \
              dead, not merely quiet)"
+        );
+    }
+
+    /// Exercises the actual capture producer, not just the shared factory in isolation.
+    /// Substituting EngineConfig::default at the producer disables interims and fails this
+    /// test; widening the interim window changes the recognizer's observed sample count.
+    /// Real time here opens the existing wall-clock gate; this is not a latency benchmark.
+    #[test]
+    fn capture_producer_uses_shared_six_second_interim_configuration() {
+        let _guard = state_locked();
+        struct QueuedSource(Arc<Mutex<selahcue_stt::FakeAudioSource>>);
+        impl AudioSource for QueuedSource {
+            fn label(&self) -> &str {
+                "synthetic-config-parity"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_chunk()
+            }
+        }
+        impl CaptureSource for QueuedSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        impl DeviceCaptureSource for QueuedSource {
+            fn sample_rate(&self) -> u32 {
+                16_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
+        struct RecordingRecognizer(Arc<Mutex<Vec<usize>>>);
+        impl Recognizer for RecordingRecognizer {
+            fn label(&self) -> &str {
+                "synthetic-config-parity"
+            }
+            fn transcribe(
+                &mut self,
+                samples: &[f32],
+                start_ms: u64,
+                end_ms: u64,
+            ) -> Vec<selahcue_stt::RecognizedSegment> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(samples.len());
+                vec![selahcue_stt::RecognizedSegment::final_text(
+                    "Àlàáfíà Ìgbò ƙ",
+                    start_ms,
+                    end_ms,
+                )]
+            }
+        }
+        let queue = Arc::new(Mutex::new(selahcue_stt::FakeAudioSource::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        handle.manage(crate::AppState {
+            backend: crate::Backend::Local(crate::demo_shell()),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: crate::make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
+            media_store: None,
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let (seg_tx, mut seg_rx) = tokio::sync::mpsc::channel(64);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let worker_stop = Arc::clone(&stop);
+        let source = QueuedSource(Arc::clone(&queue));
+        let recognizer = RecordingRecognizer(Arc::clone(&observed));
+        let worker = std::thread::spawn(move || {
+            run_on_device_with_recognizer(
+                handle,
+                source,
+                worker_stop,
+                seg_tx,
+                Some(ready_tx),
+                None,
+                Box::new(recognizer),
+            )
+        });
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let ready = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), ready_rx).await });
+        if matches!(ready, Ok(Ok(Ok(())))) {
+            // One retained chunk (not a backlog flood) starts seven seconds of continuous speech.
+            queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_chunk(AudioChunk::new(
+                    vec![0.2_f32, -0.2].repeat(56_000),
+                    16_000,
+                    1,
+                ));
+            std::thread::sleep(Duration::from_millis(1_200));
+            queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_chunk(AudioChunk::new(vec![0.2_f32, -0.2].repeat(160), 16_000, 1));
+        }
+        let interim = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), seg_rx.recv()).await });
+        stop.store(true, Ordering::Relaxed);
+        worker.join().expect("capture producer joins");
+        *status_lock(&ENGINE_NOTE) = None;
+        *status_lock(&PROVIDER_LABEL) = None;
+        clear_failure();
+        assert!(matches!(ready, Ok(Ok(Ok(())))), "capture ready: {ready:?}");
+        let segment = interim
+            .expect("shared production cadence must emit an interim")
+            .expect("capture stream must be open");
+        assert!(!segment.is_final, "producer must enable streaming interims");
+        assert_eq!(segment.text, "Àlàáfíà Ìgbò ƙ", "saved words are unchanged");
+        assert_eq!(
+            observed.lock().unwrap_or_else(|e| e.into_inner())[0],
+            96_000,
+            "actual capture producer must use the shared six-second sliding window"
         );
     }
 

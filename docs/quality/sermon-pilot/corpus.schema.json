@@ -1,0 +1,177 @@
+{
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "expected_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "engine_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "model_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "config_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "English",
+                "Yoruba",
+                "Igbo",
+                "Hausa"
+              ]
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "rights_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "configuration": {
+            "type": "object"
+          },
+          "role": {
+            "enum": [
+              "production_baseline",
+              "experimental"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "engine_sha256",
+          "model_sha256",
+          "config_sha256",
+          "languages",
+          "rights_source",
+          "configuration",
+          "role"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "samples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "audio_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "speaker_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "languages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "English",
+                "Yoruba",
+                "Igbo",
+                "Hausa"
+              ]
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "split": {
+            "enum": [
+              "tuning",
+              "held_out"
+            ]
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reference_text": {
+            "type": "string"
+          },
+          "expected_references": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "authorized_use": {
+            "const": true
+          },
+          "scenario": {
+            "enum": [
+              "ordinary_speech",
+              "silence",
+              "ambiguous_scripture",
+              "language_switch",
+              "interpreter_alternation"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "audio_sha256",
+          "speaker_id",
+          "languages",
+          "split",
+          "duration_ms",
+          "reference_text",
+          "expected_references",
+          "authorized_use",
+          "scenario"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "evidence_kind": {
+      "enum": [
+        "synthetic",
+        "authorized_real",
+        "unavailable"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "expected_profiles",
+    "samples",
+    "evidence_kind"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "corpus.schema.json",
+  "title": "Private authorized pilot corpus; never commit speech/transcripts"
+}
