@@ -70,7 +70,9 @@ import os
 import socketserver
 import sys
 import threading
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -476,6 +478,247 @@ def sheet_state(page):
 SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
   (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
 )"""
+
+# Diagnostic only: the original settlement predicate above remains the gate. The init
+# script observes the top-level target document and sends snapshots before a timeout;
+# reporting never evaluates a possibly stalled renderer.
+SETTLE_DIAGNOSTIC_JS = r"""(() => {
+  if (window !== window.top || location.pathname !== '/admin/customers/cus_001') return;
+  const predicate = (__SETTLE_PREDICATE__);
+  const text = (v) => String(v == null ? '' : v).slice(0, 96);
+  const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
+  const ids = new WeakMap();
+  let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  const start = performance.now();
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    if (raf !== null) cancelAnimationFrame(raf);
+    raf = null;
+  };
+  const deadline = setTimeout(stop, 12000);
+  addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
+  const sample = () => {
+    if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
+    sampleCount++;
+    try {
+      const animations = document.getAnimations({ subtree: true });
+      const snapshot = {
+        sample: sampleCount, elapsedMs: number(performance.now() - start),
+        readyState: text(document.readyState), visibilityState: text(document.visibilityState),
+        contentPresent: !!document.querySelector('main > :not(.loading)'),
+        loadingPresent: !!document.querySelector('.loading'),
+        adminShellPresent: !!document.querySelector('.admin-shell'),
+        detailPresent: !!document.querySelector('.detail-layout'),
+        headingPresent: !!document.querySelector('h1'), predicate: predicate(),
+        rafCompleted: frames, rafPending: raf !== null,
+        animationCount: animations.length, animationsDropped: Math.max(0, animations.length - 12),
+        animations: animations.slice(0, 12).map((a) => {
+          if (!ids.has(a)) ids.set(a, nextId++);
+          const effect = a.effect, target = effect && effect.target;
+          const timing = effect ? effect.getComputedTiming() : null;
+          const computed = {};
+          if (timing) for (const key of ['duration', 'delay', 'endDelay', 'iterations', 'iterationStart',
+                                        'activeDuration', 'endTime', 'localTime', 'progress', 'currentIteration']) {
+            computed[key] = number(timing[key]);
+          }
+          return {
+            id: ids.get(a), type: text(a.constructor && a.constructor.name),
+            animationName: text(a.animationName), transitionProperty: text(a.transitionProperty),
+            target: { tag: text(target && target.tagName), id: text(target && target.id),
+                      classes: text(target && target.getAttribute && target.getAttribute('class')),
+                      pseudoElement: text(effect && effect.pseudoElement) },
+            playState: text(a.playState), pending: !!a.pending,
+            currentTime: number(a.currentTime), startTime: number(a.startTime),
+            playbackRate: number(a.playbackRate), timelineTime: number(a.timeline && a.timeline.currentTime),
+            timing: computed,
+          };
+        }),
+      };
+      console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
+    } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
+    // One heartbeat per sample, with no second request while the previous is pending.
+    if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
+    if (sampleCount < 13) timer = setTimeout(sample, 1000);
+  };
+  sample();
+})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+
+
+def valid_settle_sample(value):
+    """Treat console input as untrusted, even when it has the observer prefix."""
+    def fields(record, required, optional=()):
+        return type(record) is dict and set(required) <= record.keys() <= set(required) | set(optional)
+
+    def integer(value, low=0, high=2**53 - 1):
+        return type(value) is int and low <= value <= high
+
+    def number(value, nullable=False):
+        return (
+            (value is None and nullable)
+            or (type(value) in (int, float) and -sys.float_info.max <= value <= sys.float_info.max)
+            or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
+        )
+
+    def text(value):
+        return type(value) is str and len(value) <= 96
+
+    if type(value) is dict and set(value) == {"observerError"}:
+        return value["observerError"] is True
+    if not fields(value, (
+        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
+        "animationCount", "animationsDropped", "animations",
+    )):
+        return False
+    if not (
+        integer(value["sample"], 1, 13)
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and value["readyState"] in ("loading", "interactive", "complete")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
+        and integer(value["rafCompleted"], 0, 13)
+        and integer(value["animationCount"]) and integer(value["animationsDropped"])
+        and type(value["animations"]) is list and len(value["animations"]) <= 12
+    ):
+        return False
+    if any(type(value[key]) is not bool for key in (
+        "contentPresent", "loadingPresent", "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafPending",
+    )):
+        return False
+    if (len(value["animations"]) != min(value["animationCount"], 12)
+            or value["animationsDropped"] != max(0, value["animationCount"] - 12)):
+        return False
+    for animation in value["animations"]:
+        if not fields(animation, (
+            "id", "type", "animationName", "transitionProperty", "target", "playState", "pending",
+            "currentTime", "startTime", "playbackRate", "timelineTime", "timing",
+        )):
+            return False
+        if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
+                and animation["playState"] in ("idle", "running", "paused", "finished")
+                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
+                and number(animation["playbackRate"])):
+            return False
+        target = animation["target"]
+        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+            return False
+        timing = animation["timing"]
+        # Undefined computed-timing properties are omitted by JSON.stringify; a null
+        # effect produces an empty record. No other nested field is accepted.
+        if not fields(timing, (), (
+            "duration", "delay", "endDelay", "iterations", "iterationStart", "activeDuration",
+            "endTime", "localTime", "progress", "currentIteration",
+        )):
+            return False
+        if any(not (number(item, nullable=key in ("localTime", "progress", "currentIteration"))
+                    or (key == "duration" and item == "auto")) for key, item in timing.items()):
+            return False
+    return True
+
+
+class SettleDiagnostic:
+    """Small, target-only bounded ledger; callbacks must never change sweep outcomes."""
+
+    def __init__(self, page):
+        self.started = time.monotonic()
+        self.closed = False
+        self.events: list[dict] = []
+        self.samples: list[dict] = []
+        self.stages: list[dict] = []
+        self.dropped = {"events": 0, "samples": 0, "observerErrors": 0}
+        try:
+            for category in ("request", "requestfinished", "requestfailed"):
+                page.on(category, lambda req, category=category: self.observe(category, req))
+            page.on("response", lambda response: self.observe("response", response.request, response))
+            page.on("pageerror", lambda _: self.observe("pageerror"))
+            page.on("crash", lambda: self.observe("crash"))
+            page.on("close", lambda: self.observe("close"))
+            page.on("console", self.console)
+            page.add_init_script(SETTLE_DIAGNOSTIC_JS)
+        except Exception:  # observation setup must not replace the original result
+            self.dropped["observerErrors"] += 1
+
+    def observe(self, category, request=None, response=None):
+        try:
+            if self.closed or time.monotonic() - self.started > 12:
+                return
+            event = {"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)}
+            if request is not None:
+                event.update(pathname=urlsplit(request.url).path[:96], method=request.method[:96],
+                             resourceType=request.resource_type[:96])
+            if response is not None:
+                event.update(status=response.status, contentType=response.headers.get("content-type", "")[:96])
+            if len(self.events) == 24:
+                self.events.pop(0)
+                self.dropped["events"] += 1
+            self.events.append(event)
+            if category == "close":
+                self.closed = True
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def console(self, message):
+        try:
+            if self.closed or time.monotonic() - self.started > 12:
+                return
+            prefix = "WEBKIT_SETTLE_SAMPLE "
+            if message.type == "debug" and message.text.startswith(prefix):
+                # The observer's payload is fixed-schema, but reject oversized/extra records.
+                if len(message.text) > 24576 or len(self.samples) == 13:
+                    self.dropped["samples"] += 1
+                    return
+                try:
+                    sample = json.loads(message.text[len(prefix):])
+                except ValueError:
+                    self.dropped["samples"] += 1
+                    return
+                if not valid_settle_sample(sample):
+                    self.dropped["samples"] += 1
+                    return
+                self.samples.append(sample)
+            elif message.type in ("warning", "error"):
+                self.observe("console-" + message.type)  # no arbitrary console text
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def stage(self, category):
+        try:
+            if len(self.stages) < 6:
+                self.stages.append({"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)})
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def render(self, outcome, page_error_count):
+        payload = {"outcome": outcome, "pageErrorCount": page_error_count,
+                   "events": self.events[:], "samples": self.samples[:], "stages": self.stages[:],
+                   "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
+        while True:
+            encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+            if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
+                return encoded
+            payload["truncated"] = True
+            # Preserve the newest animation state and all bounded stage/event observations.
+            if payload["samples"]:
+                payload["samples"].pop(0)
+                payload["dropped"]["samples"] += 1
+            else:
+                return '{"truncated":true,"observerError":true}'
+
+    def emit(self, outcome, page_error_count):
+        try:
+            print("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
+        except Exception:
+            print('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
+
+
+def emit_browser_identity(browser):
+    try:
+        print("BROWSER_IDENTITY " + json.dumps({"engine": browser.browser_type.name[:16],
+                                               "version": browser.version[:64]}, ensure_ascii=True))
+    except Exception:
+        print('BROWSER_IDENTITY {"observerError":true}')
+
 
 # A cancelable Escape keydown dispatched on <body> AFTER the sheet is gone. The sheet's
 # document-level handler calls preventDefault() on Escape, so if it is still attached the
@@ -1045,6 +1288,8 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 -- any launch failure is "engine unavailable"
                 return skip_or_fail(f"{args.engine} could not launch ({str(exc).splitlines()[0]})")
 
+            emit_browser_identity(browser)
+
             for width in widths:
                 context = browser.new_context(
                     viewport={"width": width, "height": HEIGHT},
@@ -1056,13 +1301,31 @@ def main() -> int:
                     page = context.new_page()
                     errors: list[str] = []
                     page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
+                    diagnostic = (
+                        SettleDiagnostic(page)
+                        if args.engine == "webkit" and width == 320 and path == "/admin/customers/cus_001"
+                        else None
+                    )
                     try:
+                        if diagnostic:
+                            diagnostic.stage("navigation-start")
                         page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
+                        if diagnostic:
+                            diagnostic.stage("navigation-end")
+                            diagnostic.stage("visible-content-start")
                         # App now renders a real shell status while the initial route imports.
                         # Measure the resolved route, retaining every geometry/assertion check below.
                         page.wait_for_selector("main > :not(.loading)", timeout=10000)
+                        if diagnostic:
+                            diagnostic.stage("visible-content-end")
+                            diagnostic.stage("settle-start")
                         page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
+                        if diagnostic:
+                            diagnostic.stage("settle-end")
+                            diagnostic.emit("settled", len(errors))
                     except Exception as exc:  # noqa: BLE001
+                        if diagnostic:
+                            diagnostic.emit("infra", len(errors))
                         print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")
                         return 2
 

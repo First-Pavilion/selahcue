@@ -1242,7 +1242,7 @@ jobs:
         # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
         # where a plain `pip install --user` would otherwise refuse (audit #11 review).
         run: |
-          python3 -m pip install --user --break-system-packages playwright==1.60.0
+          python3 -m pip install --user --break-system-packages playwright==1.61.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
@@ -1688,7 +1688,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.marketing == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     defaults:
@@ -1765,7 +1765,7 @@ jobs:
       # engine a hard failure instead of a silent skip that reads as a pass.
       - name: Install Playwright (Chromium + WebKit)
         run: |
-          python3 -m pip install --quiet playwright==1.60.0
+          python3 -m pip install --quiet playwright==1.61.0
           python3 -m playwright install --with-deps chromium webkit
       - name: Responsive sweep (Chromium)
         env:

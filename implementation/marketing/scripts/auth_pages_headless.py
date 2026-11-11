@@ -150,7 +150,10 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # 77 production-browser scenarios: first-invalid focus/glyph progression, busy effective
 # opacity and labels on both cards, and disabled signup reveal controls. The focused
 # responsive companion exercises true375px as well as desktop without changing this count.
-EXPECTED_MIN_CHECKS = 2765
+# 2765 -> 2817 in bounded initial verify-resend readiness: the complete local
+# 78-scenario run measured this count with zero behavioral failures; the added
+# delayed case shares the original 52 checks. Keep the exact equality guard.
+EXPECTED_MIN_CHECKS = 2817
 
 
 def find_chrome() -> str | None:
@@ -668,6 +671,13 @@ DRIVER = r"""
     },
     'session-refresh-signout-race': refreshRaceReply(false),
     'session-refresh-signout-failure': refreshRaceReply(true)
+  };
+
+  // Same fixture and Response as verify-resend; only initial fulfillment is late.
+  REPLIES['verify-resend-delayed'] = function (op) {
+    var response = REPLIES['verify-resend'](op);
+    if (op !== 'VerifyEmail') return response;
+    return new Promise(function (resolve) { setTimeout(function () { resolve(response); }, 800); });
   };
 
   window.fetch = function (url, init) {
@@ -1941,7 +1951,8 @@ DRIVER = r"""
 
     'verify-resend': async function () {
       await wait(600);
-      check('starts on the merged failure state', has(cardText(), "This verification link didn't work"));
+      var initialReady = await settle("This verification link didn't work");
+      check('starts on the merged failure state', initialReady && has(cardText(), "This verification link didn't work"));
       check('typed an email', type('input[type="email"]', 'pastor@yourchurch.org'));
       await wait(50);
       check('submitted the resend form', submit());
@@ -3830,6 +3841,9 @@ DRIVER = r"""
     'session-refresh-signout-failure': async function () { await exerciseRefreshSignOut(true); }
   };
 
+  // Exercise the original interactions/assertions under delayed initial readiness.
+  SCENARIOS['verify-resend-delayed'] = SCENARIOS['verify-resend'];
+
   async function run() {
     if (SCENARIO.endsWith('-narrow')) check('narrow viewport is exactly 375 CSS pixels', innerWidth === 375, 'innerWidth=' + innerWidth);
     var fn = SCENARIOS[SCENARIO.replace(/-narrow$/, '')];
@@ -3902,6 +3916,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("verify-missing", "/verify"),
     ("verify-unreachable", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-resend", f"/verify?token={VERIFY_TOKEN}"),
+    ("verify-resend-delayed", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-rate-limited", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-resend-fails", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-bad-email", f"/verify?token={VERIFY_TOKEN}"),
