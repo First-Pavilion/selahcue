@@ -15,7 +15,7 @@ The [tagged 1.61.0 browser manifest](https://github.com/microsoft/playwright/blo
 | Chromium and Chromium headless shell | 149.0.7827.55 | 1228 |
 | WebKit | 26.5 | 2311 |
 
-These are package/source identities, not browser versions observed in a new Ubuntu run. The [tagged download registry](https://github.com/microsoft/playwright/blob/v1.61.0/packages/playwright-core/src/server/registry/index.ts) includes Ubuntu 26.04 download entries for Chromium, its headless shell and WebKit.
+These identities were initially verified from package/source metadata; the subsequent Ubuntu 26 installer observations below confirm them for the reviewed source head. The [tagged download registry](https://github.com/microsoft/playwright/blob/v1.61.0/packages/playwright-core/src/server/registry/index.ts) includes Ubuntu 26.04 download entries for Chromium, its headless shell and WebKit.
 
 ## Change and regression coverage
 
@@ -41,13 +41,39 @@ Host: macOS 26.3 / arm64; Node `v22.23.4`; validation interpreter Python 3.14. L
 
 The full marketing-gate log is retained locally at `/private/tmp/sermon-pilot-browser-marketing-check.log`. Node emitted its MockTimers experimental warning and the malformed-URL fixture emitted Vue Router decoding diagnostics; the suite still reported zero failures. Installation reported 11 moderate npm audit findings in the existing dependency tree; no dependency remediation is part of this pin change.
 
-## Required hosted evidence remains pending
+## Native verification of the pin update
 
-The implementation handoff has **not** executed new browser suites on Ubuntu 26.04. No local browser suite, full cross-platform `make ci`, shipping-container CSP run or hosted check is claimed here. The controller must attach run/head and runner-image evidence from the reviewed commit, actual installed browser versions, suite counts and any failures for:
+Independent Quinn verification inspected the completed logs and authenticated metadata for reviewed source head `9b1f58b58929b7303e6726c677c64e173b1c68a1`, base `7f6dbcbb4782854cbb0fea14a3bb5a9ffcf7fcd0`, [PR 384](https://github.com/First-Pavilion/selahcue/pull/384). These jobs executed PR merge checkout `4928496` combining that source and base, on Ubuntu `26.04`, image `20261101.186.1`, Python `3.14.10`.
 
-- Operator required WebKit installation and smoke (`SELAHCUE_WEBKIT_REQUIRE=1`).
-- Marketing Chromium/WebKit installation, both responsive sweeps, shared components/menu, core, home and secondary page suites, with their existing required flags.
-- Marketing shipping-image security-header/CSP checks in both engines.
-- Legal-drift Chromium installation and required legal-page browser check.
+- [Legal-drift run 43021502436](https://github.com/First-Pavilion/selahcue/actions/runs/43021502436), job `130525563475`: successful pinned installation and Chromium/headless-shell **149.0.7827.55, build 1228** downloads; required legal-page browser suite **419 passed, 0 failed**.
+- [CI run 43021502286](https://github.com/First-Pavilion/selahcue/actions/runs/43021502286), operator job `130525654339`: installed package output explicitly reports `playwright-1.61.0`; Ubuntu 26 WebKit **26.5, build 2311** download succeeded; required operator headless script **2,906 checks, 0 FAIL**, and required WebKit smoke **44 checks, 0 FAIL**. The headless script count includes its static/fake-browser controls, not 2,906 separate end-to-end journeys.
+- Same CI run, marketing job `130525654194`: successful pinned installation and both Chromium/headless-shell **149.0.7827.55 / build 1228** and Ubuntu 26 WebKit **26.5 / build 2311** downloads. These are observed installer identities; no separate browser-process version query is logged. Quiet pip in marketing/legal does not print a separate installed-package listing.
 
-A hosted installation or geometry/content/CSP failure remains an unresolved gate; do not adjust baselines merely to turn it green. Independent review and hosted verification are controller-owned follow-up work. This evidence establishes a scoped source correction and local checks, not merge, release or QA completion.
+Completed marketing results before timeout:
+
+| Required execution | Observed result |
+| --- | --- |
+| Auth states, before Playwright installation | 77 scenarios / 2,765 checks, 0 FAIL; does not establish the new bundled engines |
+| Responsive Chromium | 2,363 checks over 41 routes × 5 widths, 0 failed |
+| Responsive WebKit | 2,363 checks over 41 routes × 5 widths, 0 failed |
+| Shared components, both engines | 324 Chromium + 322 WebKit checks, 0 failure lines; WebKit forced-colors box-shadow assertion explicitly skipped because unsupported, not passed |
+| Menu breakpoint regression, both engines | PASS, 93 checks across Chromium/WebKit at widths 320/768 |
+| Core pages, both engines | 300 checks, 0 failed |
+| Core frame/overflow regression | PASS: exact geometry, 20 nominal widths, 20 overflow negatives |
+| Home, both engines | Interrupted by timeout; no completed result or count |
+| Secondary pages, both engines | Skipped after cancellation; no execution/count |
+| Shipping-image security headers/CSP, both engines | Skipped after cancellation; no execution/count |
+
+Marketing started `12:34:40Z` and completed/cancelled at `12:49:56Z`. The check annotation explicitly states that the job exceeded its **15m0s** maximum. Cancellation occurred at `12:49:53.3276062Z` while home was running. This is incomplete required coverage, not an observed failed product assertion or evidence that the pin update caused a slowdown. The full CI run completed/failure; its separate RustSec audit job also failed, with cause/provenance outside this browser investigation.
+
+Completed logs: `/private/tmp/selahcue-browser-legal-9b1f58b5.log`, `/private/tmp/selahcue-browser-operator-9b1f58b5.log`, `/private/tmp/selahcue-browser-marketing-9b1f58b5.log`. Independent review records: `browser-native-verification.md` and `browser-ci-timing-followup.md` under the session artifact directory `/Users/m.oluwole/.codex/visualizations/2026/11/11/01a1c999-1923-7970-83c1-650fe3817d16/`.
+
+## Fix round 1: finite marketing measurement window
+
+Vera's timestamp analysis measured approximately **52s installation, 84s Chromium sweep, 228s WebKit sweep, 94s components/menu and 118s core**. Home began **14m17s** into the job. The observed duplicate builds cost about 38s total; removing them does not establish sufficient tail headroom. No comparable successful baseline establishes a pin-induced performance change.
+
+The controller approved one functional change from reviewed head `9b1f58b5`: marketing job `timeout-minutes` **15 → 20**. Every serial command, engine, required flag, assertion, build, output, job/runner/trigger/matrix and other timeout remains unchanged. This adds at most **five configured Linux runner-minutes of exposure per marketing execution**; actual billed rounding/cleanup can differ. Twenty minutes is a finite measurement cap, not a prediction that home, secondary and shipping-image CSP will complete.
+
+Fix-round local checks: workflow self-test (118 legacy cases, 39 cache CLI fixtures), workflow validation (7 workflows / 21 jobs), runner-policy self-test/validation (7 workflows), actionlint, and existing legal/security workflow contracts (13 tests, 0 failures/skips) passed. Semantic comparison against `9b1f58b5` confirmed that only the marketing job timeout changed in parsed workflow data. The 1,250-test Node gate was not repeated for this timeout/documentation-only change; its earlier result remains scoped to `9b1f58b5`.
+
+The controller owns four-role re-review and **one** exact-new-head hosted measurement. Full marketing browser/CSP completion remains **blocked pending that execution**. Record actual head, runner image, step durations/counts/outcomes and installed engine identities. If the twenty-minute cap is exhausted or any required suite remains incomplete, retain the block and report the measured tail; do not retry blindly, increase the cap automatically or adjust visual baselines. Legal/operator native passes above remain explicitly scoped to their reviewed head's PR merge. No merge, release, QA completion or overall green CI is claimed.
