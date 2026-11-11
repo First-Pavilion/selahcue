@@ -532,6 +532,24 @@ import pypdf, pdfplumber, unicodedata, json, hashlib, sys
 p=Path(sys.argv[1])
 e=json.loads((p/'expected.json').read_text())
 def normal(t): return ' '.join(unicodedata.normalize('NFC',t).split())
+def body_matches(actual, expected): return normal(actual) == normal(' '.join(expected))
+def negative_controls(body, expected, first, second):
+    t=normal(body); a=normal(first); b=normal(second)
+    assert t.count(a)==1 and t.count(b)==1, 'unique mutation anchors'
+    mutations={
+        'missing': t.replace(a, '', 1),
+        'duplicate': t.replace(a, a+' '+a, 1),
+        'reordered': t.replace(a, '__SWAP__', 1).replace(b, a, 1).replace('__SWAP__', b, 1),
+        'unexpected': t.replace(a, a+' UNEXPECTED BODY PARAGRAPH', 1),
+        'body_page_label': t.replace(a, a+' Page 1', 1),
+    }
+    if 'Accepted summary line.' in t:
+        mutations['missing_summary']=t.replace('Accepted summary line.', '', 1)
+        mutations['duplicate_summary']=t.replace('Accepted summary line.', 'Accepted summary line. Accepted summary line.', 1)
+    for label, changed in mutations.items():
+        assert changed != t and not body_matches(changed, expected), ('negative control accepted', label)
+    return {label:'REJECT' for label in mutations}
+verification='Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.'
 results=[]
 for name in ['saved-a-unicode.pdf','saved-long.pdf']:
     path=p/name; r=PdfReader(path)
@@ -543,34 +561,50 @@ for name in ['saved-a-unicode.pdf','saved-long.pdf']:
     for required in ['Saved English notes','AI-generated draft','Synthetic disclosure: review before use.','Verified means the reference address exists','does not confirm that any words','John 999:1 - UNVERIFIED']:
         assert required in t,(name,required)
     assert 'transcript 1' not in t and 'Sermon date' not in t
-    font_ids=set()
+    font_ids=set(); body_pages=[]
     for index,page in enumerate(r.pages):
-        assert f'Page {index+1}' in page.extract_text()
+        # Classify furniture by actual per-page coordinates, never by body text.
+        body=[]; footer=[]
+        def collect(text, cm, tm, font, size):
+            if text.strip():
+                assert cm == [1,0,0,1,0,0], 'fixture uses page coordinates'
+                (footer if tm[5] < 40 else body).append(text)
+        page.extract_text(visitor_text=collect)
+        assert normal(' '.join(footer)) == f'Page {index+1}'
+        body_pages.append(' '.join(body))
         fonts=page['/Resources']['/Font']; assert len(fonts)==1
         for f in fonts.values():
             font_ids.add(f.idnum)
             descriptor=f.get_object()['/DescendantFonts'][0].get_object()['/FontDescriptor']
             assert '/FontFile2' in descriptor
     assert len(font_ids)==1, 'one font reused across document'
+    title=e['a_title'] if name=='saved-a-unicode.pdf' else 'SYNTHETIC long saved notes'
+    expected=['SELAHCUE / SAVED SERMON NOTES',title,'Saved English notes','AI-generated draft',
+        'Review these notes before use. Scripture checks verify addresses only, not quotations or interpretation.',
+        'Synthetic disclosure: review before use.','Summary']
+    references=['Referenced passages','Psalm 23:1 - Verified address',
+        'John 999:1 - UNVERIFIED - check this reference','References found in the notes']
     if name=='saved-a-unicode.pdf':
         assert len(r.pages)==1 and e['a_title'] in t
-        ordered=[e['a_title'],'SYNTHETIC TEST MATERIAL','NFC: '+e['names'],'NFD: '+e['names'],'Outline','FIRST_A John 3:16','CHILD_A with care','Application','Warning: Application was requested but returned empty. Review the source transcript.','Referenced passages','Psalm 23:1 - Verified address','John 999:1 - UNVERIFIED','References found in the notes','John 3:16 - Verified address']
+        expected += ['SYNTHETIC TEST MATERIAL','NFC: '+e['names'],'NFD: '+e['names'],
+            'Outline','1. FIRST_A John 3:16','- CHILD_A with care','Application',
+            'Warning: Application was requested but returned empty. Review the source transcript.']
+        expected += references + ['John 3:16 - Verified address',verification]
+        anchors=['1. FIRST_A John 3:16','- CHILD_A with care']
     else:
-        assert len(r.pages)>1 and e['last'] in t
-        assert 'scripture verification is incomplete' in t
-        # Remove only known page furniture before comparing every entire source paragraph.
-        for i in range(len(r.pages)): t=t.replace(f'Page {i+1}', '')
-        t=normal(t)
-        ordered=e['long_items']
-    cursor=0
-    for item in ordered:
-        pos=t.find(normal(item),cursor)
-        assert pos>=0,(name,'missing or unordered full content',item)
-        cursor=pos+len(normal(item))
+        assert len(r.pages)==8 and e['last'] in t and len(e['long_items'])==72
+        expected += ['Accepted summary line. '*180,'Long accepted notes']
+        expected += ['- '+item for item in e['long_items']]
+        expected += references + [f'Psalms {i}:1 - Verified address' for i in range(1,65)]
+        expected += [verification,'Warning: scripture verification is incomplete. Some references were not checked; review all references against the actual Bible text.']
+        anchors=['- '+item for item in e['long_items'][:2]]
+    body=' '.join(body_pages)
+    assert body_matches(body, expected), (name,'full normalized body differs')
+    controls=negative_controls(body, expected, *anchors)
     with pdfplumber.open(path) as doc:
         for i,page in enumerate(doc.pages):
             for c in page.chars:
                 assert c['x0']>=44 and c['x1']<=552 and c['top']>=20 and c['bottom']<=825,(name,i,c)
-    results.append({'file':name,'pages':len(r.pages),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'ordered_full_items':len(ordered),'font_resources':len(font_ids),'parser':f'pypdf {pypdf.__version__} + pdfplumber {pdfplumber.__version__}','result':'PASS'})
+    results.append({'file':name,'pages':len(r.pages),'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'full_body_parts':len(expected),'negative_controls':controls,'font_resources':len(font_ids),'parser':f'pypdf {pypdf.__version__} + pdfplumber {pdfplumber.__version__}','result':'PASS'})
 print(json.dumps(results,indent=2));(p/'inspection.json').write_text(json.dumps(results,indent=2))
 "##;
