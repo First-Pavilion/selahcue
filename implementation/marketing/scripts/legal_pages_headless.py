@@ -176,6 +176,12 @@ def launch(pw):
         return pw.chromium.launch(headless=True)
 
 
+def emit_browser_identity(browser) -> None:
+    """Selected process identity only; no launch paths, environment or page data."""
+    identity = {"engine": browser.browser_type.name[:16], "version": browser.version[:64]}
+    print("BROWSER_IDENTITY " + json.dumps(identity, separators=(",", ":"), ensure_ascii=True), flush=True)
+
+
 OBSERVER_TRACKER = """
 (() => {
   const track = (name) => {
@@ -713,6 +719,7 @@ def main() -> int:
                     return 1
                 print(f"SKIP: could not launch Chrome: {e}")
                 return 0
+            emit_browser_identity(browser)
             for key in ("privacy", "terms"):
                 run_page(browser, base, key, exp, args.shots, args.only, [int(w) for w in args.widths.split(',')] if args.widths else None)
                 if args.only in ('all', 'anchors'):
