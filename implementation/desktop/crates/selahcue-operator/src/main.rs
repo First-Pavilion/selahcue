@@ -9815,11 +9815,10 @@ mod regenerate_with_retention_tests {
         }
     }
 
-    /// A configured real provider/parser over the existing counting HTTP seam. The synthetic
-    /// token is passed directly; this fixture never reads environment or pilot credentials.
+    /// A synthetic counting HTTP seam: the real provider/parser consumes this response.
     #[cfg(feature = "openai-notes")]
-    fn counting_notes_provider() -> (
-        selahcue_cloud::OpenAiNoteProvider<selahcue_cloud::MockTransport>,
+    fn counting_notes_transport() -> (
+        selahcue_cloud::MockTransport,
         Arc<Mutex<Vec<selahcue_cloud::mock::RecordedRequest>>>,
     ) {
         let draft = serde_json::json!({
@@ -9836,14 +9835,25 @@ mod regenerate_with_retention_tests {
             .to_string(),
         );
         let requests = transport.requests_handle();
-        (
-            selahcue_cloud::OpenAiNoteProvider::new(
-                transport,
-                selahcue_cloud::Token::new("synthetic-unused-provider-token"),
-                "synthetic-preflight-model",
-            ),
-            requests,
-        )
+        (transport, requests)
+    }
+
+    #[cfg(feature = "openai-notes")]
+    fn counting_notes_provider() -> (
+        selahcue_cloud::OpenAiNoteProvider<selahcue_cloud::MockTransport>,
+        Arc<Mutex<Vec<selahcue_cloud::mock::RecordedRequest>>>,
+    ) {
+        let (transport, requests) = counting_notes_transport();
+        #[cfg(feature = "pilot-credentials")]
+        let provider =
+            provider_source::openai(transport).expect("committed ready synthetic pilot fixture");
+        #[cfg(not(feature = "pilot-credentials"))]
+        let provider = selahcue_cloud::OpenAiNoteProvider::new(
+            transport,
+            selahcue_cloud::Token::new("synthetic-unused-provider-token"),
+            "synthetic-preflight-model",
+        );
+        (provider, requests)
     }
 
     #[cfg(feature = "openai-notes")]
@@ -9868,6 +9878,11 @@ mod regenerate_with_retention_tests {
             .expect("transcript loads");
         let (saves, stages) = (gate.saves(), gate.stages());
         let (provider, requests) = counting_notes_provider();
+        #[cfg(feature = "pilot-credentials")]
+        assert!(
+            selected_notes_route(&state).uses_pilot(),
+            "C1 preflight must compose with the configured synthetic pilot route"
+        );
         gate.fail_loads(true);
         let mut replies = Vec::new();
         for _ in 0..3 {
@@ -9944,8 +9959,110 @@ mod regenerate_with_retention_tests {
         assert_eq!(provider_requests.len(), 1);
         let body: serde_json::Value =
             serde_json::from_str(&provider_requests[0].body).expect("provider request is JSON");
+        #[cfg(not(feature = "pilot-credentials"))]
         assert_eq!(body["model"], "synthetic-preflight-model");
+        #[cfg(feature = "pilot-credentials")]
+        assert_eq!(body["model"], "approved-fixture-model");
         assert!(provider_requests[0].body.contains("Good morning, church."));
+    }
+
+    // Run in separate test processes with the committed synthetic payload and before/equality/
+    // after cutoff epochs: NativeClock's immutable monotonic anchor must never be reset.
+    #[cfg(all(feature = "openai-notes", feature = "pilot-credentials"))]
+    #[tokio::test]
+    #[ignore = "requires an explicit isolated before/equality/after pilot epoch recipe"]
+    async fn pilot_combined_generation_expiry_preserves_accepted_pending_and_counts_requests() {
+        let mode =
+            std::env::var("PILOT_INTEGRATION_EXPECT").expect("explicit synthetic expiry recipe");
+        assert!(["expired", "late", "rejected"].contains(&mode.as_str()));
+        if mode == "rejected" {
+            // Publish the same sticky lane observer supplied to the real pilot transport.
+            provider_source::pilot_notes_transport_with(|_, rejected| {
+                rejected.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .expect("ready synthetic source publishes prior provider rejection");
+        }
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        assert!(selected_notes_route(&state).uses_pilot());
+        let accepted = seed_edited_accepted_draft(&state, id).await;
+        let pending = state
+            .backend
+            .stage_sermon_note_regeneration_admitted(
+                id,
+                sample_draft("Earlier pending — Ẹ ṣeun", true),
+                || true,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .pending
+            .unwrap();
+        let source = with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap();
+        let mutations = (gate.saves(), gate.stages());
+        let (transport, requests) = counting_notes_transport();
+        let mut transport = Some(transport);
+        for _ in 0..3 {
+            let reply = transcript_generate_notes_with(id, &state, |cfg, text, route| {
+                let transport = transport.take();
+                let mode = &mode;
+                async move {
+                    assert!(route.uses_pilot());
+                    let provider =
+                        provider_source::openai(transport.expect("one admitted attempt"))
+                            .expect("before-expiry pilot source");
+                    let outcome = selahcue_cloud::generate_sermon_notes(
+                        &cfg,
+                        &text,
+                        true,
+                        &provider,
+                        &selahcue_cloud::LocalNoteProvider::new(),
+                    );
+                    if mode == "late" {
+                        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+                    }
+                    outcome
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                reply["error"],
+                if mode == "rejected" {
+                    "pilot_access_rejected"
+                } else {
+                    "pilot_expired"
+                }
+            );
+            assert_eq!(reply["ok"], false);
+            assert!(reply.get("draft").is_none());
+        }
+        assert_eq!(
+            requests.lock().unwrap().len(),
+            if mode == "late" { 1 } else { 0 }
+        );
+        assert_eq!((gate.saves(), gate.stages()), mutations);
+        assert_eq!(
+            state
+                .backend
+                .load_sermon_note_draft(id)
+                .await
+                .unwrap()
+                .unwrap(),
+            accepted
+        );
+        assert_eq!(
+            with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap(),
+            source
+        );
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(promoted.current.unwrap(), pending);
     }
 
     #[cfg(feature = "openai-notes")]
@@ -11363,6 +11480,119 @@ mod regenerate_with_retention_tests {
 
         assert_a_failed_check_changes_nothing(&state, id, &gate).await;
         host.shutdown_background();
+    }
+
+    #[tokio::test]
+    async fn stopped_stalled_store_confirmed_id_does_not_admit_generation() {
+        use selahcue_app::{ControllerReply, TranscriptStoreWriter};
+        use selahcue_lan::protocol::{Command, ServerMessage};
+        struct Stalled {
+            db: Database,
+            entered: std::sync::mpsc::Sender<()>,
+            released: Option<std::sync::mpsc::Receiver<()>>,
+        }
+        impl TranscriptStoreWriter for Stalled {
+            fn open_transcript(
+                &mut self,
+                label: &str,
+                provider: &str,
+                at: i64,
+            ) -> Result<i64, String> {
+                transcript_repo::create(
+                    &self.db,
+                    &transcript_repo::NewTranscript {
+                        label: label.into(),
+                        provider: provider.into(),
+                        started_at_ms: at,
+                        plan_id: None,
+                    },
+                )
+                .map_err(|_| "synthetic store failure".into())
+            }
+            fn append_segment(
+                &mut self,
+                id: i64,
+                start: u64,
+                end: u64,
+                text: &str,
+            ) -> Result<i64, String> {
+                if let Some(released) = self.released.take() {
+                    self.entered.send(()).unwrap();
+                    released.recv().unwrap();
+                }
+                transcript_repo::append_segment(&self.db, id, start, end, text)
+                    .map_err(|_| "synthetic store failure".into())
+            }
+            fn end_transcript(&mut self, id: i64, at: i64) -> Result<(), String> {
+                transcript_repo::end(&self.db, id, at).map_err(|_| "synthetic store failure".into())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stopped-store.db3");
+        let (app, _) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        *state.transcript_db.as_ref().unwrap().lock().unwrap() = Database::open(&path).unwrap();
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let sink = selahcue_app::BackgroundTranscriptWriter::new(Stalled {
+            db: Database::open(&path).unwrap(),
+            entered,
+            released: Some(released),
+        });
+        let completion = sink.completion();
+        let mut c = LiveController::new(
+            ServicePlan::new("Synthetic stalled service"),
+            320,
+            180,
+            Theme::dark(),
+        );
+        c.set_transcript_sink(Box::new(sink));
+        c.apply(&Command::StartTranscript {
+            label: "Synthetic current sermon".into(),
+            provider: "manual".into(),
+        });
+        assert!(completion.wait_idle(std::time::Duration::from_secs(10)));
+        for i in 0..8 {
+            c.apply(&Command::IngestTranscript {
+                text: format!("Final {i}"),
+                start_ms: Some(0),
+                end_ms: Some(1),
+                is_final: true,
+            });
+        }
+        observed
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        assert_eq!(c.apply(&Command::EndTranscript), ControllerReply::Ack);
+        let ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+            transcript_id: Some(id),
+        }) = c.apply(&Command::GetActiveTranscriptId)
+        else {
+            panic!("confirmed partial ID");
+        };
+        let mut requested = 0;
+        let reply = transcript_generate_notes_with(id, &state, |_, _, _| {
+            requested += 1;
+            std::future::ready(Err(selahcue_core::providers::NoteError::NotConfigured))
+        })
+        .await
+        .unwrap();
+        release.send(()).unwrap();
+        assert_eq!(requested, 0);
+        assert_eq!(reply["error"], "transcript_not_ended");
+        assert!(completion.wait_closed(1, std::time::Duration::from_secs(10)));
+        drop(c);
+        let reopened = Database::open(&path).unwrap();
+        let stored = transcript_repo::load(&reopened, id).unwrap();
+        assert!(stored.ended_at_ms.is_some());
+        assert_eq!(
+            stored
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            (0..8).map(|i| format!("Final {i}")).collect::<Vec<_>>()
+        );
     }
 
     /// AC5 / privacy gate (17tnw2b0ntd): a DIRECT call on a transcript that is still being recorded

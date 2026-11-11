@@ -877,12 +877,58 @@ fn queued_end_does_not_make_stored_history_eligible_before_final_append_complete
         c.ingest_transcript(&format!("final {i}"), 0, 1, true);
     }
     observed.recv_timeout(WATCHDOG).unwrap();
+    // The first append is in flight; fill the SAME budget through the actual command wrapper.
+    for i in 8..65 {
+        c.apply(&Command::IngestTranscript {
+            text: format!("final {i}"),
+            start_ms: Some(0),
+            end_ms: Some(1),
+            is_final: true,
+        });
+    }
+    let health = c.operator_view().transcript_storage_health.unwrap();
     let ack = c.apply(&Command::EndTranscript);
+    let active = c.apply(&Command::GetActiveTranscriptId);
+    // Stop is an admission acknowledgement: live controls remain independent of drain.
+    let now = Instant::now();
+    assert_eq!(
+        c.apply(&Command::StartTimer { seconds: 1 }),
+        selahcue_app::ControllerReply::Ack
+    );
+    c.tick(now);
+    c.tick(now + Duration::from_secs(2));
+    assert!(c.operator_view().timer.unwrap().time_up);
+    assert_eq!(c.apply(&Command::Next), selahcue_app::ControllerReply::Ack);
+    assert_eq!(
+        c.apply(&Command::GoLive),
+        selahcue_app::ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::Blackout { on: true }),
+        selahcue_app::ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::Blackout { on: false }),
+        selahcue_app::ControllerReply::Ack
+    );
     let rows = selahcue_data::transcript_repo::list(&read).unwrap();
     let before = selahcue_data::transcript_repo::load(&read, rows[0].id).unwrap();
-    for _ in 0..8 {
+    for _ in 0..64 {
         release.send(()).unwrap();
     }
+    assert_eq!(
+        health.pending_segments, 64,
+        "in-flight append is inside the cap"
+    );
+    assert_eq!(health.dropped_segments, 1);
+    assert_eq!(
+        active,
+        selahcue_app::ControllerReply::Message(
+            selahcue_lan::protocol::ServerMessage::ActiveTranscriptId {
+                transcript_id: Some(rows[0].id)
+            }
+        )
+    );
     assert_eq!(ack, selahcue_app::ControllerReply::Ack);
     assert!(
         before.ended_at_ms.is_none(),
@@ -893,10 +939,19 @@ fn queued_end_does_not_make_stored_history_eligible_before_final_append_complete
         "append really was held inside the store"
     );
     assert!(done.wait_closed(1, WATCHDOG));
-    let after = selahcue_data::transcript_repo::load(&read, rows[0].id).unwrap();
+    drop(c);
+    drop(read);
+    let reopened = selahcue_data::Database::open(&path).unwrap();
+    let after = selahcue_data::transcript_repo::load(&reopened, rows[0].id).unwrap();
     assert!(after.ended_at_ms.is_some());
-    assert_eq!(after.segments.len(), 8);
-    assert_eq!(after.segments[7].text, "final 7");
+    let texts: Vec<_> = after.segments.iter().map(|s| s.text.clone()).collect();
+    assert_eq!(
+        texts,
+        (0..65)
+            .filter(|i| *i != 1)
+            .map(|i| format!("final {i}"))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

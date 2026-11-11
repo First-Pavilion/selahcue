@@ -1074,11 +1074,50 @@ fn ended_multilingual_source_and_accepted_pending_notes_survive_controller_datab
         let db = Database::open(&path).unwrap();
         let mut controller =
             LiveController::new(ServicePlan::new("Offline Sunday"), 320, 180, Theme::dark());
-        controller.set_transcript_sink(Box::new(selahcue_app::BatchingTranscriptWriter::new(
-            RealTranscriptStore {
+        // Stall inside the real SQLite-backed store before its first final write. Stop may
+        // acknowledge, but neither the confirmed ID nor notes may turn that row into history.
+        struct GatedStore {
+            inner: RealTranscriptStore,
+            entered: std::sync::mpsc::Sender<()>,
+            released: Option<std::sync::mpsc::Receiver<()>>,
+        }
+        impl selahcue_app::TranscriptStoreWriter for GatedStore {
+            fn open_transcript(
+                &mut self,
+                label: &str,
+                provider: &str,
+                at: i64,
+            ) -> Result<i64, String> {
+                self.inner.open_transcript(label, provider, at)
+            }
+            fn append_segment(
+                &mut self,
+                id: i64,
+                start: u64,
+                end: u64,
+                text: &str,
+            ) -> Result<i64, String> {
+                if let Some(released) = self.released.take() {
+                    self.entered.send(()).unwrap();
+                    released.recv().unwrap();
+                }
+                self.inner.append_segment(id, start, end, text)
+            }
+            fn end_transcript(&mut self, id: i64, at: i64) -> Result<(), String> {
+                self.inner.end_transcript(id, at)
+            }
+        }
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let sink = selahcue_app::BackgroundTranscriptWriter::new(GatedStore {
+            inner: RealTranscriptStore {
                 db: Database::open(&path).unwrap(),
             },
-        )));
+            entered,
+            released: Some(released),
+        });
+        let completion = sink.completion();
+        controller.set_transcript_sink(Box::new(sink));
         controller.set_sermon_note_store(Box::new(RealSermonNoteStore {
             db: Database::open(&path).unwrap(),
         }));
@@ -1091,8 +1130,21 @@ fn ended_multilingual_source_and_accepted_pending_notes_survive_controller_datab
                 true,
             );
         }
-        controller.end_transcript_session();
+        controller.apply(&Command::EndTranscript);
+        observed.recv_timeout(Duration::from_secs(10)).unwrap();
         let id = transcript_repo::most_recent_id(&db).unwrap().unwrap();
+        let partial = transcript_repo::load(&db, id).unwrap();
+        let confirmed = controller.apply(&Command::GetActiveTranscriptId);
+        release.send(()).unwrap();
+        assert!(partial.ended_at_ms.is_none());
+        assert!(partial.segments.is_empty());
+        assert_eq!(
+            confirmed,
+            selahcue_app::ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+                transcript_id: Some(id)
+            })
+        );
+        assert!(completion.wait_closed(1, Duration::from_secs(10)));
         let accepted = SermonNoteDraftInput {
             title: "Accepted English notes — operator edit".into(),
             summary: Some("Serve your neighbour.".into()),
@@ -1166,4 +1218,21 @@ fn ended_multilingual_source_and_accepted_pending_notes_survive_controller_datab
         }
         other => panic!("expected accepted notes through fresh controller, got {other:?}"),
     }
+    // Even with a real previous sermon in the notes store, a newly requested session whose
+    // storage is unavailable must never fall back to that older sermon.
+    fresh.set_transcript_sink(Box::new(
+        selahcue_app::BackgroundTranscriptWriter::from_factory(
+            || -> Result<RealTranscriptStore, String> { Err("synthetic unavailable store".into()) },
+        ),
+    ));
+    fresh.apply(&Command::StartTranscript {
+        label: "New unavailable sermon".into(),
+        provider: "manual".into(),
+    });
+    assert_eq!(
+        fresh.apply(&Command::GetActiveTranscriptId),
+        selahcue_app::ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+            transcript_id: None
+        })
+    );
 }

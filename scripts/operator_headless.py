@@ -2074,7 +2074,7 @@ EXPECTED_MIN_CHECKS = 2973
 EXPECTED_MIN_CHECKS = 2987
 # Reviewed native integration: actual combined run measured 2993 checks, 0 FAIL.
 # Includes the retained storage status and complete notes/PDF scenarios.
-EXPECTED_MIN_CHECKS = 2993
+EXPECTED_MIN_CHECKS = 2997  # Task3 actual combined run: 2997 checks, 0 FAIL (four storage+expiry premises)
 
 
 def find_chrome():
@@ -2963,6 +2963,7 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
     P.notes_available = !!P.notes_provider;
     // Same invariant, transcription side.
     P.transcription_available = !!P.transcription_provider;
+    P.pilot_access = window.__task3PilotStatus || null;
     return JSON.parse(JSON.stringify(P));
   };
   window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
@@ -4106,6 +4107,7 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
       return Promise.resolve(vRm);
     }
     // --- Providers & Privacy (Settings 338:124) ---
+    if (cmd === "pilot_access_status") return Promise.resolve(window.__task3PilotStatus || null);
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
     // exercise the "host rejected a setting" path — the optimistic control must revert to the
@@ -8765,12 +8767,19 @@ DRIVER = r"""
       window.__pdfError = null;
       el("tr-gen-edit").click(); el("tr-edit-title").value = "UNSAVED_C_MUST_NEVER_EXPORT";
       var c4BeforeEdit = c4Calls().length;
+      // A host may stage B while this window still holds unsaved C. The actual edit/export
+      // handlers must retain C and refuse a forced click; only a saved snapshot crosses IPC.
+      var c4PriorPending = window.__TR.detail[1].pending;
+      window.__TR.detail[1].pending = {draft:{title:"PENDING_B_MUST_NEVER_EXPORT",summary:null,sections:[],scriptures:[]}};
+      var c4ConcurrentSaved = JSON.stringify(window.__TR.detail[1]);
       ok(el("tr-export-pdf").disabled && /Save your edits to export them/.test(el("tr-export-pdf-status").textContent),
          "C4 unsaved edit disables export with explicit save guidance");
       el("tr-export-pdf").disabled = false; el("tr-export-pdf").click(); await sleep(10);
-      ok(c4Calls().length === c4BeforeEdit && el("tr-edit-title").value === "UNSAVED_C_MUST_NEVER_EXPORT",
-         "C4 forced export click cannot send unsaved C or discard its form");
+      ok(c4Calls().length === c4BeforeEdit && el("tr-edit-title").value === "UNSAVED_C_MUST_NEVER_EXPORT" &&
+         JSON.stringify(window.__TR.detail[1]) === c4ConcurrentSaved,
+         "C4 A+B+C: forced export sends nothing while unsaved C and pending B coexist; accepted A, B and C stay exact");
       el("tr-gen-edit-cancel").click();
+      window.__TR.detail[1].pending = c4PriorPending;
 
       ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
       ok(!!trOkResult.querySelector(".pp-gen-edit-btn") && !!document.getElementById("tr-gen-edit"),
@@ -9299,6 +9308,12 @@ DRIVER = r"""
       // C2 / 17tnw2bawx7: fail the real Save IPC after editing every supported text shape.
       // Keep production DOM/handlers; only the host response is controlled here.
       var c2Original = JSON.stringify(window.__TR.detail[1]);
+      var c2Storage = V.transcript_storage_health, c2Pilot = window.__task3PilotStatus;
+      V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(V);
+      window.__task3PilotStatus = {state:"expired",notes_state:"expired",transcription_state:"expired",notes_uses_pilot:true,
+        effective_expiry_unix_seconds:1809129599,replacement_required:true};
+      window.scPilotAccess.accept(window.__task3PilotStatus, window.scPilotAccess.revision());
       var c2Defer = window.__rcDeferCommand, c2Deferred = window.__rcDeferred;
       var c2Calls = function(){ return window.__calls.filter(function(c){ return c.cmd === "update_sermon_note_draft"; }); };
       var c2Reopen = async function(){
@@ -9322,6 +9337,9 @@ DRIVER = r"""
             sections:[{heading:"Outline", items:[], points:[{text:"Saved point", sub_points:["Saved sub-point"]}]},
               {heading:"Prayer", items:["Saved prayer"], points:[]}]};
           await c2Reopen();
+          ok(/not safely saved/i.test(el("transcript-storage-health").textContent) &&
+             /expired/i.test(el("tr-pilot-access").textContent) && !!el("tr-gen-edit"),
+             "Integration B1+C2+pilot/" + c2Mode + ": storage loss and expired pilot remain visible beside editable accepted notes");
           el("tr-gen-edit").click();
           var c2Form = el("tr-gen-result").querySelector(".pp-gen-edit-form");
           var c2Fields = c2Selectors.map(function(s){ return c2Form.querySelector(s); });
@@ -9394,6 +9412,9 @@ DRIVER = r"""
            "C2 navigation: leaving and reopening retains existing discard behavior without an implicit Save");
       } finally {
         window.__rcDeferCommand = c2Defer; window.__rcDeferred = c2Deferred;
+        V.transcript_storage_health = c2Storage; render(V);
+        window.__task3PilotStatus = c2Pilot;
+        window.scPilotAccess.accept(c2Pilot || null, window.scPilotAccess.revision());
         window.__TR.detail[1] = JSON.parse(c2Original);
         await c2Reopen();
       }

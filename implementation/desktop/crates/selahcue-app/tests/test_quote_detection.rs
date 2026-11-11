@@ -97,8 +97,49 @@ fn pump_transcript_forwards_nothing_from_an_empty_provider() {
 // Exercise the real dispatcher, including action-side marking and dedup expiry.
 fn actioned_reference_expires(approve: bool, churn: bool, quoted: bool) {
     let mut c = controller();
+    // Hold the B1 writer INSIDE its append call while reusing all B5 deadline/action assertions.
+    struct StalledStore(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+    impl selahcue_app::TranscriptStoreWriter for StalledStore {
+        fn open_transcript(&mut self, _: &str, _: &str, _: i64) -> Result<i64, String> {
+            Ok(1)
+        }
+        fn append_segment(&mut self, _: i64, _: u64, _: u64, _: &str) -> Result<i64, String> {
+            self.0.send(()).unwrap();
+            self.1.recv().unwrap();
+            Ok(1)
+        }
+        fn end_transcript(&mut self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let (entered, observed) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let sink = selahcue_app::BackgroundTranscriptWriter::new(StalledStore(entered, released));
+    let completion = sink.completion();
+    c.set_transcript_sink(Box::new(sink));
+    c.apply(&Command::StartTranscript {
+        label: "B1+B5 synthetic".into(),
+        provider: "manual".into(),
+    });
+    for i in 0..8 {
+        c.ingest_transcript(&format!("ordinary speech {i}"), 0, 1, true);
+    }
+    observed.recv_timeout(Duration::from_secs(10)).unwrap();
     let now = Instant::now();
+    c.apply(&Command::StartTimer { seconds: 1 });
     c.tick(now);
+    c.tick(now + Duration::from_secs(2));
+    assert!(c.operator_view().timer.unwrap().time_up);
+    assert_eq!(c.apply(&Command::Next), ControllerReply::Ack);
+    assert_eq!(c.apply(&Command::GoLive), ControllerReply::Ack);
+    assert_eq!(
+        c.apply(&Command::Blackout { on: true }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.apply(&Command::Blackout { on: false }),
+        ControllerReply::Ack
+    );
     let text = if quoted {
         "for God so loved the world that he gave his only begotten Son, that whosoever believeth in him should not perish but have everlasting life"
     } else {
@@ -195,6 +236,18 @@ fn actioned_reference_expires(approve: bool, churn: bool, quoted: bool) {
     assert_eq!(c.operator_view().staged_scripture, staged);
     assert_eq!(c.operator_view().live_scripture, live);
     assert_eq!(c.live_generation(), generation);
+    assert!(
+        c.operator_view()
+            .transcript_storage_health
+            .unwrap()
+            .pending_segments
+            > 0
+    );
+    c.apply(&Command::EndTranscript);
+    for _ in 0..64 {
+        let _ = release.send(());
+    }
+    assert!(completion.wait_closed(1, Duration::from_secs(10)));
 }
 
 #[test]
