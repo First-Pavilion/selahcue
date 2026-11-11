@@ -1398,6 +1398,40 @@ jobs:
       - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
+      # P03: actual pilot-only native/status/admission paths, with synthetic keys
+      # and a cfg(test)-only monotonic fixture clock. No installer or real secret.
+      - name: Focused pilot expiry (release, synthetic only)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809125999'
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: |
+          set -euo pipefail
+          run_pilot_tests() {
+            phase="$1"; shift
+            log="$(mktemp)"
+            "$@" 2>&1 | tee "$log"
+            case "$phase" in
+              before-bin) required=(pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
+              before-sources) required=(real_notes_rejection_observer selected_source_drives_both observed_transcription_rejection release_executable_does_not_contain_the_test_clock) ;;
+              mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
+              *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;
+            esac
+            python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"pilot check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"pilot checks not reached: "+str(missing); print("verified pilot tests:",passed)' "$log" "${required[@]}"
+            rm "$log"
+          }
+          cargo clippy --release --features pilot-credentials,cloud-live --all-targets -- -D warnings
+          run_pilot_tests before-bin cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_
+          run_pilot_tests before-sources cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --test test_pilot_note_rejection --test test_pilot_stt_rejection --no-fail-fast
+          # Runtime clock changes do not rebuild or change the compiled fixture.
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129599 PILOT_TEST_EXPECT_READY=0 PILOT_MIXED_EXPECT_EXPIRED=1
+          run_pilot_tests mixed-cutoff cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_mixed_tests
+          run_pilot_tests source-cutoff cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129600
+          run_pilot_tests source-after cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
       # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
       # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
       # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),

@@ -57,6 +57,12 @@ impl PilotConfig {
     /// All-or-nothing source admission. Epoch seconds are UTC; missing/bad clocks fail
     /// closed at the caller. No provider can outlive the cohort or its partner's expiry.
     pub fn parse(input: Option<&str>, now: u64) -> Option<Self> {
+        Self::inspect(input).filter(|config| config.available(now))
+    }
+
+    /// Validate configuration without admitting credentials, retaining safe expiry
+    /// metadata for an expired/replacement UI. Credential exits still check time.
+    pub fn inspect(input: Option<&str>) -> Option<Self> {
         let input = input.filter(|s| !s.is_empty() && s.len() <= MAX_CONFIG_BYTES)?;
         let config: ConfigInput = serde_json::from_str(input).ok()?;
         if config.schema != 1
@@ -68,7 +74,8 @@ impl PilotConfig {
             || !valid_key(&config.deepgram.key)
             || config.openai.expires_at > config.cutoff
             || config.deepgram.expires_at > config.cutoff
-            || now >= config.effective_expiry()
+            || config.openai.expires_at == 0
+            || config.deepgram.expires_at == 0
         {
             return None;
         }

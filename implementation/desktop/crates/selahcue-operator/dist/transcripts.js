@@ -38,6 +38,16 @@
   "use strict";
   var root = document.getElementById("surface-transcripts");
   if (!root) return;
+  var pilotUI = window.scPilotAccess || null;
+  function pilotNotesBlocked() {
+    var status = pilotUI && pilotUI.current();
+    return !!status && status.notes_uses_pilot && status.notes_state !== "available";
+  }
+  function pilotErrorCode() {
+    var status = pilotUI && pilotUI.current();
+    return status && status.notes_state === "expired" ? "pilot_expired"
+      : status && status.notes_state === "rejected" ? "pilot_access_rejected" : "pilot_unavailable";
+  }
 
   // Tauri IPC (absent when opened outside the shell — every call then rejects, read by the error
   // states below; same guarded shape as preservice.js/settings.js).
@@ -958,10 +968,13 @@
   // silently replaced by a Confirm — Quinn D8).
   function syncGenerateControls() {
     var previewOpen = !!(genPreviewBox && !genPreviewBox.hidden);
-    if (generateBtn) generateBtn.hidden = draftRendered || previewOpen || generating;
+    if (generateBtn) {
+      generateBtn.hidden = draftRendered || previewOpen || generating;
+      generateBtn.disabled = !generateAllowed || pilotNotesBlocked() || generating;
+    }
     var rb = document.getElementById("tr-regenerate");
     if (rb) {
-      rb.disabled = !generateAllowed || previewOpen || generating;
+      rb.disabled = !generateAllowed || previewOpen || generating || pilotNotesBlocked();
       if (generating) rb.setAttribute("aria-busy", "true"); else rb.removeAttribute("aria-busy");
     }
     // Quinn/Cody D8: "Edit draft" is unavailable while the consent preview is open or a generation
@@ -1081,13 +1094,39 @@
     return fallback;
   }
   function showGenError(code, message, operationLabel) {
+    var fixedPilotMessage = pilotUI && pilotUI.errorMessage(code);
+    if (fixedPilotMessage) {
+      var status = pilotUI.current() || {state: "unavailable", notes_state: "unavailable",
+        transcription_state: "unavailable", notes_uses_pilot: true, effective_expiry_unix_seconds: null, replacement_required: true};
+      if (status.notes_uses_pilot) status.notes_state = code === "pilot_expired" ? "expired"
+        : code === "pilot_access_rejected" ? "rejected" : "unavailable";
+      if (code === "pilot_expired") status.transcription_state = "expired";
+      if (status.notes_uses_pilot || code === "pilot_expired") pilotUI.accept(status, pilotUI.revision());
+    }
     showGenErrorInner(code, message, operationLabel);
+    if (fixedPilotMessage) {
+      var requestNotice = document.getElementById("tr-pilot-access");
+      if (requestNotice) { requestNotice.hidden = false; requestNotice.textContent = fixedPilotMessage; }
+      if (genLiveEl) genLiveEl.textContent = fixedPilotMessage;
+      syncGenerateControls();
+      return;
+    }
     if (genLiveEl) genLiveEl.textContent = code === "consent_required" || code === "not_configured" ? "" : (operationLabel || "Couldn’t generate notes") + ".";
     syncGenerateControls();
   }
   function showGenErrorInner(code, message, operationLabel) {
+    var fixedPilotMessage = pilotUI && pilotUI.errorMessage(code);
+    // A pilot refusal never removes an existing draft from its editable workspace.
+    // The persistent pilot status + live region explain it beside the unchanged draft.
+    if (fixedPilotMessage && currentDraft && draftRendered) return;
     var r = genResultEl();
     if (!r) return;
+    if (fixedPilotMessage) {
+      r.className = "pp-gen-result pp-gen-err";
+      r.setAttribute("role", "alert");
+      r.appendChild(el("span", null, fixedPilotMessage));
+      return;
+    }
     if (code === "not_configured") {
       r.className = "pp-gen-result pp-gen-info";
       r.setAttribute("role", "status");
@@ -1434,7 +1473,7 @@
         var regenBtn = el("button", "pp-gen-edit-btn tr-ready-secondary", "Regenerate");
         regenBtn.type = "button";
         regenBtn.id = "tr-regenerate";
-        regenBtn.disabled = !generateAllowed || generating;
+        regenBtn.disabled = !generateAllowed || generating || pilotNotesBlocked();
         regenBtn.addEventListener("click", onGenerate);
         actions.appendChild(regenBtn);
       }
@@ -1895,6 +1934,12 @@
   // authoritative source and avoids shipping a (potentially 400k-character) string over IPC
   // twice for no benefit.
   function confirmGenerate(id) {
+    if (pilotNotesBlocked()) {
+      closeGenPreview(false);
+      showGenError(pilotErrorCode());
+      return;
+    }
+    if (pilotUI) syncPilotAccess(pilotUI.current());
     generating = true;
     closeGenPreview(false);
     if (generateBtn) { generateBtn.setAttribute("aria-busy", "true"); generateBtn.disabled = true; }
@@ -1922,7 +1967,7 @@
         // deliberately disabled because the NOW-open transcript is still recording).
         if (openId === id && generateBtn) {
           generateBtn.removeAttribute("aria-busy");
-          generateBtn.disabled = !generateAllowed;
+          generateBtn.disabled = !generateAllowed || pilotNotesBlocked();
         }
         syncGenerateControls();
       });
@@ -1964,6 +2009,12 @@
     heading.tabIndex = -1;
     box.appendChild(heading);
 
+    var pilot = pilotUI && pilotUI.current();
+    if (pilot && pilot.notes_uses_pilot) {
+      var pilotPreview = el("p", "pp-gen-preview-desc", pilotUI.message(pilot, "notes"));
+      pilotPreview.id = "tr-gen-preview-pilot";
+      box.appendChild(pilotPreview);
+    }
     var totalChars = unicodeLength(transcript);
     var willClamp = typeof limit === "number" && totalChars > limit;
     var sentText = willClamp ? firstUnicodeChars(transcript, limit) : transcript;
@@ -2043,6 +2094,7 @@
     // one place that actually decides whether to open the review step, so it re-checks rather
     // than trusting only the button's own attribute.
     if (!generateAllowed) return;
+    if (pilotNotesBlocked()) { showGenError(pilotErrorCode()); return; }
     var transcript = fullTranscriptText();
     var trimmed = transcript.trim();
     if (trimmed.length === 0) {
@@ -2061,6 +2113,7 @@
     var forId = openId;
     loadNoteCharLimit().then(function (limit) {
       if (openId !== forId || generating || (genPreviewBox && !genPreviewBox.hidden)) return;
+      if (pilotNotesBlocked()) { showGenError(pilotErrorCode()); return; }
       openGenPreview(transcript, limit);
     });
   }
@@ -2068,7 +2121,29 @@
 
   // Exposed for app.js's showSurface() activation hook — reloads the list every time the surface
   // is opened (a fresh read from the shared store, never a stale cache from a prior visit).
+  function syncPilotAccess(status) {
+    var notice = document.getElementById("tr-pilot-access");
+    if (notice) {
+      notice.hidden = !status || !status.notes_uses_pilot;
+      notice.textContent = status && status.notes_uses_pilot ? pilotUI.message(status, "notes") : "";
+    }
+    var previewNote = document.getElementById("tr-gen-preview-pilot");
+    if (previewNote) {
+      previewNote.hidden = !status || !status.notes_uses_pilot;
+      previewNote.textContent = status && status.notes_uses_pilot ? pilotUI.message(status, "notes") : "";
+    }
+    var confirm = document.getElementById("tr-gen-preview-confirm");
+    if (confirm) {
+      confirm.disabled = pilotNotesBlocked();
+      if (confirm.disabled && document.activeElement === confirm && notice) {
+        notice.tabIndex = -1; notice.focus();
+      }
+    }
+    syncGenerateControls();
+  }
+  if (pilotUI) pilotUI.watch(function () { return root.classList.contains("active"); }, syncPilotAccess);
   window.trActivate = function () {
+    if (pilotUI) pilotUI.visibilityChanged();
     showList();
     loadList();
   };
