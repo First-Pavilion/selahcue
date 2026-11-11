@@ -28,11 +28,12 @@ from selahcue_api.apps.catalogue.models import (
     GrantDimension,
     Plan,
     PlanGrant,
+    PlanPrice,
 )
 
 logger = logging.getLogger(__name__)
 
-# Exactly the models the CACHE holds, and nothing else. The cache stores one resolved
+# Grant and price writers share this optimistic revision. The grant cache stores one resolved
 # grant map per plan; aliases, assignments and per-licence overrides are all read fresh on
 # every resolution and are never cached, so bumping the counter for them would discard
 # every plan's map for a write that cannot have changed any of them. Assigning one licence
@@ -45,6 +46,7 @@ WATCHED_MODELS = (
     Plan,
     GrantDimension,
     PlanGrant,
+    PlanPrice,
 )
 
 _DISPATCH_UID = "selahcue_catalogue.bump_revision"
