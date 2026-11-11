@@ -59,6 +59,8 @@ pub enum DeepgramError {
     /// No credential is available. `variable` names the environment variable the developer
     /// path reads, so the message can tell the operator exactly what to set.
     MissingCredential { variable: &'static str },
+    /// An explicitly injected credential is absent; no environment lookup is implied.
+    MissingInjectedCredential,
     /// A credential was supplied but cannot be used as-is.
     MalformedCredential(MalformedCredential),
     /// Streaming live audio is not permitted by the operator's settings. The core's
@@ -122,7 +124,9 @@ impl DeepgramError {
     /// What the operator should do about this.
     pub fn operator_action(&self) -> OperatorAction {
         match self {
-            DeepgramError::MissingCredential { .. } => OperatorAction::SupplyCredential,
+            DeepgramError::MissingCredential { .. } | DeepgramError::MissingInjectedCredential => {
+                OperatorAction::SupplyCredential
+            }
             DeepgramError::MalformedCredential(_) | DeepgramError::CredentialRejected { .. } => {
                 OperatorAction::ReplaceCredential
             }
@@ -153,6 +157,9 @@ impl std::fmt::Display for DeepgramError {
                 f,
                 "no Deepgram credential: set {variable} in the repository-root .env file"
             ),
+            DeepgramError::MissingInjectedCredential => {
+                write!(f, "no injected Deepgram credential is available")
+            }
             DeepgramError::MalformedCredential(reason) => {
                 write!(
                     f,

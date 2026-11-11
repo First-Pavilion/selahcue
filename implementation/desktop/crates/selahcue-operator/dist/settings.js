@@ -103,13 +103,22 @@
 
   // Latest known view (source of truth for re-render). Never accumulates — replaced, never appended.
   var view = defaultView();
+  var pilotUI = window.scPilotAccess || null;
+  var viewRequest = 0;
+  function pilotStatus() { return pilotUI ? pilotUI.current() : null; }
   // The last Generate result region content is transient and lives inside #pp-ai (cleared on every
   // re-render), so nothing here grows without bound.
 
   // Apply a fresh ProvidersView returned by a mutation and re-render, preserving keyboard focus on
   // the acting control (re-render replaces the DOM subtree).
-  function apply(next) {
-    if (next && typeof next === "object" && "transcription_mode" in next) view = next;
+  function apply(next, pilotRevision) {
+    if (next && typeof next === "object" && "transcription_mode" in next) {
+      view = next;
+      if (pilotUI && "pilot_access" in next) pilotUI.accept(next.pilot_access, pilotRevision);
+    }
+    redraw();
+  }
+  function redraw() {
     var focusId = document.activeElement && document.activeElement.id;
     render();
     if (focusId) {
@@ -121,7 +130,8 @@
   // Run a mutation command: optimistic focus is restored by apply(); a host rejection re-reads the
   // authoritative view so the UI never shows a state the backend didn't confirm (no silent lie).
   function mutate(cmd, args) {
-    return invoke(cmd, args).then(apply).catch(function () {
+    var revision = pilotUI && pilotUI.revision();
+    return invoke(cmd, args).then(function (next) { apply(next, revision); }).catch(function () {
       resync();
     });
   }
@@ -129,7 +139,10 @@
   // Re-read the authoritative view and re-render — the "no silent lie" recovery: the card can only
   // ever show a state the backend confirmed.
   function resync() {
-    invoke("providers_view").then(apply).catch(function () {});
+    var request = ++viewRequest, revision = pilotUI && pilotUI.revision();
+    return invoke("providers_view").then(function (next) {
+      if (request === viewRequest) apply(next, revision);
+    }).catch(function () {});
   }
 
   // ---------- badges / pills ----------
@@ -237,7 +250,9 @@
     // provider" once a real Deepgram socket is what would open, and never a claim of
     // availability the backend has not confirmed.
     var tp = view.transcription_provider;
-    var ta = !!view.transcription_available;
+    var pilot = pilotStatus();
+    var pilotBlocked = pilot && pilot.transcription_state !== "available";
+    var ta = !!view.transcription_available && !pilotBlocked;
     var cloudProviderName = tp && tp.name ? tp.name : "a cloud speech service";
 
     var warn = el("div", "pp-warn");
@@ -255,6 +270,7 @@
       // detail without a running session, so it states its OWN honest scope: not ready to start.
       cloudFootText += " · not available right now on this machine";
     }
+    if (pilot) cloudFootText = pilotUI.message(pilot, "transcription");
     var cloudFoot = el("p", "pp-radio-foot", cloudFootText);
 
     var cloud = transcriptionCard({
@@ -269,6 +285,7 @@
       warnNode: warn,
       footNode: cloudFoot,
       onSelect: function () {
+        if (pilotBlocked) return;
         // Opt in (grant consent) THEN switch mode — the only path that ungates cloud audio.
         // If the host REJECTS the consent grant, do NOT switch to cloud: resync to the last
         // backend-confirmed state so the card never shows a cloud posture the backend didn't
@@ -279,6 +296,7 @@
       },
     });
 
+    if (pilotBlocked) cloud.setAttribute("aria-disabled", "true");
     transEl.appendChild(onDevice);
     transEl.appendChild(cloud);
   }
@@ -316,24 +334,36 @@
     // The provider is NAMED (FR-132), from the backend's own descriptor. Hardcoding "SelahCue AI"
     // stopped being true the moment OpenAI generated the notes, and so did "no accounts, keys or
     // billing to manage" — a developer key is an account, a key and a bill.
+    var sourceStatus = pilotStatus();
+    var pilot = sourceStatus && sourceStatus.notes_uses_pilot ? sourceStatus : null;
+    var hostedSnapshot = sourceStatus && !sourceStatus.notes_uses_pilot;
     var np = view.notes_provider || null;
-    var status = view.cloud_status || "not_configured";
+    // Applicability comes only from the same native status snapshot. A descriptor
+    // from an older view must not name the prior direct provider as the hosted route.
+    if (hostedSnapshot && np && np.kind !== "selahcue_hosted") np = null;
+    var status = hostedSnapshot ? "hosted" : view.cloud_status || "not_configured";
     titlerow.appendChild(el("span", "pp-ai-title", np && np.name ? np.name : "AI sermon notes"));
-    if (np && np.developer_key) {
+    if (pilot) {
+      titlerow.appendChild(badge("pp-badge-optin", "PILOT"));
+    } else if (np && np.developer_key) {
       titlerow.appendChild(badge("pp-badge-dev", "DEVELOPER KEY"));
     } else if (status === "hosted") {
       titlerow.appendChild(badge("pp-badge-included", "INCLUDED"));
     }
     idcol.appendChild(titlerow);
-    idcol.appendChild(el("span", "pp-ai-sub", providerSubtitle(status, np)));
+    idcol.appendChild(el("span", "pp-ai-sub", pilot ? pilotUI.message(pilot, "notes") : hostedSnapshot && !np
+      ? "Sermon notes use your configured hosted service." : providerSubtitle(status, np)));
     id.appendChild(idcol);
     head.appendChild(id);
 
     var statusEl = el("div", "pp-ai-status");
-    if (view.notes_available && np) {
+    if (pilot) {
+      statusEl.appendChild(pill(pilot.notes_state === "available" ? "pp-pill-ok" : "pp-pill-muted",
+        "Pilot access " + pilot.notes_state));
+    } else if (hostedSnapshot || (view.notes_available && np)) {
       // ONLY when the backend confirms notes can actually be generated AND says by whom.
       statusEl.appendChild(pill("pp-pill-ok", "Available"));
-      if (np.developer_key) {
+      if (np && np.developer_key) {
         var dev = pill("pp-pill-info", np.name + (np.model ? " · " + np.model : ""));
         dev.title = "Notes are generated by " + np.name +
           " using a developer key on this machine. This is not the shipping configuration.";
@@ -513,13 +543,17 @@
   // apparatus — Generate, preview, result, edit, regenerate — moved to transcripts.js, D1). A
   // draft is never fetched or redrawn here; render() is now just the consent/provider settings.
   window.settingsActivate = function () {
-    invoke("providers_view")
-      .then(function (v) {
-        view = v || defaultView();
-        render();
-      })
-      .catch(function () { view = defaultView(); render(); });
+    resync();
+    if (pilotUI) pilotUI.visibilityChanged();
   };
+  if (pilotUI) pilotUI.watch(function () {
+    var page = document.getElementById("set-page-providers");
+    return root.classList.contains("active") && (!page || !page.hidden);
+  }, function (status) {
+    redraw();
+    var live = document.getElementById("pp-pilot-live");
+    if (live) live.textContent = status ? pilotUI.message(status, "notes") + " " + pilotUI.message(status, "transcription") : "";
+  });
 
   // APG radiogroup keyboard (attached ONCE — Arrow keys move + select; Space/Enter selects). The
   // group container (#pp-trans) persists across re-renders, so a single delegated listener suffices

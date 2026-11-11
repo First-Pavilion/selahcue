@@ -1242,6 +1242,7 @@
               <section class="pp-section" aria-labelledby="pp-ai-h">
                 <h2 id="pp-ai-h" class="pp-seclabel">SELAHCUE AI · SERMON NOTES</h2>
                 <div id="pp-ai" class="pp-card pp-ai-card"></div>
+                <p id="pp-pilot-live" class="sr-only" role="status" aria-live="polite"></p>
               </section>
             </div>
           </div>
@@ -2330,6 +2331,7 @@
           <div id="tr-gen-result" class="pp-gen-result" hidden></div>
         </div>
         <p id="tr-gen-live" class="sr-only" role="status" aria-live="polite"></p>
+        <p id="tr-pilot-access" class="pp-gen-info" role="status" aria-live="polite" hidden></p>
         <p id="tr-detail-live" class="sr-only" role="status" aria-live="polite"></p>
       </div>
     </section>
@@ -2622,6 +2624,7 @@
   </div>
   <!-- Background pill: shown when the modal is hidden but a download keeps running; re-opens it. -->
   <button id="dl-pill" class="dl-pill" type="button" hidden></button>
+  <script src="pilot-access.js" defer></script>
   <script src="app.js" defer></script>
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>

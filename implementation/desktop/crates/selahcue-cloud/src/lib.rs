@@ -155,3 +155,6 @@ pub trait CloudNoteProvider: NoteProvider {
 
 #[cfg(feature = "openai")]
 pub mod pilot;
+
+#[cfg(feature = "http")]
+pub mod deadline_transport;
