@@ -60,16 +60,26 @@ pub fn transcription_fault() -> Option<PilotFault> {
 }
 
 #[cfg(feature = "pilot-credentials")]
+#[allow(dead_code)] // The encoder is consumed by build generation, not the operator.
+#[path = "provider_source/payload.rs"]
+mod payload;
+
+#[cfg(feature = "pilot-credentials")]
+#[used]
+static PILOT_PAYLOAD: [u8; include_bytes!(concat!(env!("OUT_DIR"), "/pilot-config.bin")).len()] =
+    *include_bytes!(concat!(env!("OUT_DIR"), "/pilot-config.bin"));
+
+#[cfg(feature = "pilot-credentials")]
+fn payload_json() -> Option<&'static str> {
+    payload::json_from_frame(&PILOT_PAYLOAD)
+}
+
+#[cfg(feature = "pilot-credentials")]
 fn configuration() -> Option<&'static selahcue_cloud::pilot::PilotConfig> {
     static CONFIG: std::sync::OnceLock<Option<selahcue_cloud::pilot::PilotConfig>> =
         std::sync::OnceLock::new();
     CONFIG
-        .get_or_init(|| {
-            selahcue_cloud::pilot::PilotConfig::inspect(Some(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/pilot-config.json"
-            ))))
-        })
+        .get_or_init(|| selahcue_cloud::pilot::PilotConfig::inspect(payload_json()))
         .as_ref()
 }
 #[cfg(feature = "pilot-credentials")]

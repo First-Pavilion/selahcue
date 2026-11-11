@@ -59,6 +59,14 @@ class PolicyTests(unittest.TestCase):
         return scan.scan_component(p, profile='pilot', operator=True, expected=self.expected,
                                    evidence=self.evidence(p), expected_source_sha='a' * 40, **kwargs)
 
+    def test_native_canonical_fixture_matches_frozen_frame(self):
+        fixtures = (Path(__file__).resolve().parent.parent / 'implementation/desktop/crates/'
+                    'selahcue-operator/tests/fixtures')
+        raw = (fixtures / 'pilot-canonical.json').read_bytes()
+        scan.admit_payload(raw, cohort='field-test-2026-10',
+                           openai_model='approved-fixture-model', now=1809125999)
+        self.assertEqual(scan.frame_payload(raw), (fixtures / 'pilot-frame-v1.bin').read_bytes())
+
     def test_valid_two_spans_allow_only_intended_entries(self):
         result = self.run_pilot(scan.frame_payload(payload()))
         self.assertEqual(result.envelopes, 1)

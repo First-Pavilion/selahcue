@@ -42,6 +42,19 @@ fn selected_source_drives_both_readiness_and_real_authorization() {
     let ready = std::env::var("PILOT_TEST_EXPECT_READY").as_deref() == Ok("1");
     assert_eq!(provider_source::notes_model().is_some(), ready);
     assert_eq!(provider_source::transcription_readiness().is_ready(), ready);
+    if let Ok(expected) = std::env::var("PILOT_TEST_EXPECT_EXPIRY") {
+        let expected = if expected == "none" {
+            None
+        } else {
+            Some(expected.parse::<u64>().expect("integer expiry expectation"))
+        };
+        assert_eq!(
+            provider_source::access_status()
+                .expect("pilot access status")
+                .effective_expiry_unix_seconds,
+            expected
+        );
+    }
     let status = provider_source::transcription_status();
     assert_eq!(status.ready, ready);
     assert_eq!(status.provider.is_some(), ready);
