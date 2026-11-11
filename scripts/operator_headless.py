@@ -2063,6 +2063,9 @@ EXPECTED_MIN_CHECKS = 2831
 # 2906/0: all2831 existing and75 real-host fixture/modal assertions PASS.
 # Only the stale2831 count failed. No assertions or runtime budgets change here.
 EXPECTED_MIN_CHECKS = 2906
+# C2 / 17tnw2bawx7: measured full browser replay 2948 checks, 0 FAIL;
+# exact Unicode edits, failed-Save retention/retry and explicit discard paths.
+EXPECTED_MIN_CHECKS = 2948
 
 
 def find_chrome():
@@ -9078,7 +9081,7 @@ DRIVER = r"""
               ok(!el("tr-gen-regen-confirm") && !!el("tr-gen-edit") && !window.__TR.detail[1].pending,
                  "AXPP3 success control/" + axPath[0] + "/" + axMode + ": the same real operation can be retried successfully");
             } else {
-              // Existing failed-save form clearing is bawx7, NOT fixed or claimed here.
+              // Reopen remains a supported recovery path; C2 below checks in-place retry too.
               // Reopen follows today's recovery flow, then prove editing/saving still works.
               await axReopen();
               el("tr-gen-edit").click();
@@ -9100,6 +9103,108 @@ DRIVER = r"""
         window.__rcDeferCommand = axOriginalDefer; window.__rcDeferred = axOriginalDeferred;
         window.__TR.detail[1] = JSON.parse(axOriginalDetail); window.__trGen = axOriginalMode;
         await axReopen();
+      }
+
+      // C2 / 17tnw2bawx7: fail the real Save IPC after editing every supported text shape.
+      // Keep production DOM/handlers; only the host response is controlled here.
+      var c2Original = JSON.stringify(window.__TR.detail[1]);
+      var c2Defer = window.__rcDeferCommand, c2Deferred = window.__rcDeferred;
+      var c2Calls = function(){ return window.__calls.filter(function(c){ return c.cmd === "update_sermon_note_draft"; }); };
+      var c2Reopen = async function(){
+        if (!el("tr-detail-view").hidden) el("tr-detail-back").click();
+        document.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function(){ return !!el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open'); });
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await settleMicro(function(){ return !!el("tr-gen-edit"); });
+      };
+      var c2Bytes = function(v){ return Array.from(new TextEncoder().encode(JSON.stringify(v))).join(","); };
+      var c2Selectors = ["#tr-edit-title", "#tr-edit-summary", ".pp-edit-section-heading[data-si='0']",
+        ".pp-edit-point-text", ".pp-edit-subpoint-text", ".pp-edit-section-heading[data-si='1']", ".pp-edit-item-text"];
+      // Deliberately mix precomposed diacritics with a decomposed combining sequence.
+      var c2Values = ["  Ọlámídé / Chịdị / A’isha  ", "Bọ́lá met Chịọma and Mu’azu.\nKeep every word.  ",
+        "Àkọlé — Ọdịnala — Ƙauna", "Ọlámídé teaches Chịdị", "A’isha: ƙarfi, ɗan’uwa, ẹ\u0301",
+        "Àdúrà / Ekpere / Addu’a", "Chịọma prays with Bọ́lá"];
+      try {
+        for (var c2Mode of ["reject", "refused", "too_large", "malformed"]) {
+          window.__TR.detail[1] = JSON.parse(c2Original);
+          window.__TR.detail[1].draft = {title:"Saved C2 title", summary:"Saved C2 summary", scriptures:[],
+            sections:[{heading:"Outline", items:[], points:[{text:"Saved point", sub_points:["Saved sub-point"]}]},
+              {heading:"Prayer", items:["Saved prayer"], points:[]}]};
+          await c2Reopen();
+          el("tr-gen-edit").click();
+          var c2Form = el("tr-gen-result").querySelector(".pp-gen-edit-form");
+          var c2Fields = c2Selectors.map(function(s){ return c2Form.querySelector(s); });
+          c2Fields.forEach(function(n,i){ n.value = c2Values[i]; n.dispatchEvent(new Event("input", {bubbles:true})); });
+          var c2Saved = JSON.stringify(window.__TR.detail[1]);
+          var c2Before = c2Calls().length;
+          window.__rcDeferCommand = "update_sermon_note_draft";
+          el("tr-gen-save").click();
+          var c2Pending = window.__rcDeferred;
+          var c2Payload = JSON.parse(JSON.stringify(c2Calls().slice(-1)[0].args));
+          var c2Expected = {transcriptId:1, title:c2Values[0], summary:c2Values[1],
+            sections:[{heading:c2Values[2], items:[], points:[{text:c2Values[3], sub_points:[c2Values[4]]}]},
+              {heading:c2Values[5], items:[c2Values[6]], points:[]}], scriptures:[], requestedEmpty:[]};
+          ok(c2Bytes(c2Payload) === c2Bytes(c2Expected),
+             "C2 payload/" + c2Mode + ": Save sends exactly the edited Unicode title, summary, headings, point, sub-point and item");
+          ok(c2Calls().length === c2Before + 1 && el("tr-gen-save").disabled && el("tr-gen-save").getAttribute("aria-busy") === "true",
+             "C2 pending/" + c2Mode + ": one actual Save request is held with its busy control");
+          window.__rcDeferCommand = null;
+          if (c2Mode === "reject") c2Pending.reject(new Error("private host detail"));
+          else c2Pending.resolve(c2Mode === "malformed" ? null : {ok:false, error:c2Mode, message:"private host detail"});
+          for (var c2Hop = 0; c2Hop < 16; c2Hop++) await Promise.resolve();
+          var c2Alert = el("tr-gen-result").querySelector('[role="alert"]');
+          var c2Retained = c2Form.isConnected && c2Selectors.every(function(s,i){ return c2Form.querySelector(s) === c2Fields[i]; });
+          ok(c2Retained && c2Bytes(c2Fields.map(function(n){ return n.value; })) === c2Bytes(c2Values),
+             "C2 retain/" + c2Mode + ": the same form retains every Unicode edit byte for byte");
+          ok(c2Retained && c2Fields.every(function(n){ return !n.disabled && !n.readOnly && n.getClientRects().length > 0 && getComputedStyle(n).visibility === "visible"; }),
+             "C2 editable/" + c2Mode + ": all retained fields remain visible and editable");
+          ok(!!c2Alert && c2Alert.getClientRects().length > 0 && /Couldn.t save edits/.test(c2Alert.textContent) && /try again/i.test(c2Alert.textContent) &&
+             !/private host detail/.test(c2Alert.textContent) && /save edits/i.test(el("tr-gen-live").textContent),
+             "C2 error/" + c2Mode + ": a visible alert and live announcement explain Save failure and retry safely");
+          ok(c2Retained && !!el("tr-gen-save") && !el("tr-gen-save").disabled && !el("tr-gen-save").hasAttribute("aria-busy") &&
+             (!el("tr-regenerate") || el("tr-regenerate").disabled) && getComputedStyle(el("tr-generate")).display === "none",
+             "C2 recovery/" + c2Mode + ": Save is usable again and generation cannot replace unsaved edits");
+          ok(JSON.stringify(window.__TR.detail[1]) === c2Saved,
+             "C2 accepted/" + c2Mode + ": failure changes neither accepted notes nor pending/provenance data");
+          if (c2Retained && el("tr-gen-save")) {
+            c2Fields[0].focus(); c2Fields[0].setSelectionRange(0,0); c2Fields[0].setRangeText("x"); c2Fields[0].setRangeText("",0,1);
+            ok(c2Fields[0].value === c2Values[0], "C2 typing/" + c2Mode + ": retained input accepts another edit");
+            el("tr-gen-save").click();
+            await settleMicro(function(){ return !!el("tr-gen-edit"); });
+            var c2Retry = c2Calls().slice(-1)[0];
+            ok(c2Calls().length === c2Before + 2 && c2Bytes(c2Retry.args) === c2Bytes(c2Payload),
+               "C2 retry/" + c2Mode + ": successful retry sends exactly the failed edited payload");
+            var c2Persisted = window.__TR.detail[1].draft;
+            ok(!c2Form.isConnected && !!el("tr-gen-edit") && c2Bytes([c2Persisted.title, c2Persisted.summary,
+               c2Persisted.sections[0].heading, c2Persisted.sections[0].points[0].text,
+               c2Persisted.sections[0].points[0].sub_points[0], c2Persisted.sections[1].heading,
+               c2Persisted.sections[1].items[0]]) === c2Bytes(c2Values) &&
+               el("tr-gen-result").textContent.indexOf(c2Values[3]) !== -1 && el("tr-gen-result").textContent.indexOf(c2Values[4]) !== -1 &&
+               !el("tr-gen-result").querySelector('[role="alert"]') && !/Couldn.t save edits/.test(el("tr-gen-live").textContent),
+               "C2 success/" + c2Mode + ": saved response replaces the form and clears its error");
+          }
+        }
+        // Existing explicit discard paths still discard only unsaved edits.
+        await c2Reopen(); el("tr-gen-edit").click();
+        var c2BeforeCancel = c2Calls().length, c2BeforeDiscard = JSON.stringify(window.__TR.detail[1]);
+        el("tr-edit-title").value = "Unsaved cancel";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2CancelHop = 0; c2CancelHop < 16; c2CancelHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        el("tr-gen-edit-cancel").click();
+        ok(!el("tr-edit-title") && !!el("tr-gen-edit") && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 cancel: explicit Cancel closes editing without saving or changing accepted notes");
+        el("tr-gen-edit").click(); el("tr-edit-title").value = "Unsaved navigation";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2NavHop = 0; c2NavHop < 16; c2NavHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        await c2Reopen(); el("tr-gen-edit").click();
+        ok(el("tr-edit-title").value === window.__TR.detail[1].draft.title && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 navigation: leaving and reopening retains existing discard behavior without an implicit Save");
+      } finally {
+        window.__rcDeferCommand = c2Defer; window.__rcDeferred = c2Deferred;
+        window.__TR.detail[1] = JSON.parse(c2Original);
+        await c2Reopen();
       }
 
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven

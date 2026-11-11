@@ -1601,8 +1601,24 @@
     return out;
   }
 
+  // A Save error belongs to the active edit form. The generation error renderer clears
+  // the result region, which would destroy the operator's unsaved input nodes and values.
+  function showDraftSaveError(form, code, message) {
+    if (!form.isConnected) return; // Cancel/navigation already discarded this form.
+    var error = el("div", "pp-gen-result pp-gen-err pp-gen-save-error");
+    error.setAttribute("role", "alert");
+    error.appendChild(el("span", "pp-gen-err-t", "Couldn’t save edits — "));
+    error.appendChild(el("span", null, noteErrorText(code, message,
+      "Please try again. Your edits are still here.")));
+    form.insertBefore(error, form.lastChild);
+    if (genLiveEl) genLiveEl.textContent = "Couldn’t save edits. Your edits are still here. Try Save again.";
+  }
+
   function saveDraftEdit(form) {
     if (!canEditCurrentDraft()) return;
+    var previousError = form.querySelector(".pp-gen-save-error");
+    if (previousError) previousError.remove();
+    if (genLiveEl) genLiveEl.textContent = "";
     var d = currentDraft.draft || {};
     var titleEl = document.getElementById("tr-edit-title");
     var summaryEl = document.getElementById("tr-edit-summary");
@@ -1627,7 +1643,7 @@
     }).then(function (res) {
       if (!res || res.ok !== true) {
         var err = res || {};
-        showGenError(err.error || "malformed", err.message, "Couldn’t save edits");
+        showDraftSaveError(form, err.error || "malformed", err.message);
         return;
       }
       // Re-read the label/disclosure/provider FROM the backend response — the guarantee that
@@ -1650,7 +1666,7 @@
       editingDraft = false;
       renderCurrentDraft();
     }).catch(function () {
-      showGenError("transport", null, "Couldn’t save edits");
+      showDraftSaveError(form, "transport", null);
     }).then(function () {
       var b = document.getElementById("tr-gen-save");
       if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
