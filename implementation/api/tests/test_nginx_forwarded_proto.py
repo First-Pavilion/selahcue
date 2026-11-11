@@ -289,9 +289,18 @@ def test_no_set_override_or_uninspected_server_include_can_bypass_the_map():
 # 17tnw2b9adv: these are valid nginx configurations, not arbitrary corrupt
 # text. The bounded hosted diagnostic additionally runs nginx -t on every
 # fixture before interpreting a guard failure as meaningful sensitivity.
-def _bypass_config(original: str, case: str) -> str:
+def _bypass_config(original: str, case: str, location: str = "location /graphql/") -> str:
     assert original.count("server {") == 1
-    assert original.count(HEADER_LINE) == 1
+    # Fixture selection only: each protected flat location has its OWN mapped setter.
+    # Select a real location boundary rather than counting a line across the whole file;
+    # a second legitimate proxy must not break or bypass the GraphQL mutation exercise.
+    matches = list(re.finditer(r"(?ms)^    " + re.escape(location) + r" \{\n(?P<body>.*?)^    \}", original))
+    assert len(matches) == 1, "expected one protected fixture location"
+    match = matches[0]
+    body = match.group("body")
+    uncommented_lines = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    assert not any(structural and token in {"{", "}"} for token, _, structural in _tokens(uncommented_lines)), "fixture location must remain flat"
+    assert body.count(HEADER_LINE) == 1, "fixture location needs exactly one mapped setter"
     if case == "quoted-hash":
         return original.replace("server {", """server {
     location /unguarded/ {
@@ -299,7 +308,8 @@ def _bypass_config(original: str, case: str) -> str:
     }
 """, 1)
     if case == "quoted-header":
-        return original.replace(HEADER_LINE, f'set $note "; {HEADER_LINE} ";', 1)
+        changed = body.replace(HEADER_LINE, f'set $note "; {HEADER_LINE} ";', 1)
+        return original[:match.start("body")] + changed + original[match.end("body"):]
     if case in {"map-override", "uppercase-map-override", "mixed-case-map-override"}:
         variable = {
             "map-override": "$selahcue_client_proto",
@@ -329,10 +339,11 @@ def _assert_proxy_guard():
 
 
 @pytest.mark.parametrize("case", BYPASS_CASES)
-def test_guard_refuses_each_valid_nginx_trust_bypass(case, monkeypatch, tmp_path):
+@pytest.mark.parametrize("location", ["location /graphql/", "location = /v1/catalogue/plans"])
+def test_guard_refuses_each_valid_nginx_trust_bypass(case, location, monkeypatch, tmp_path):
     original = NGINX_CONF.read_text(encoding="utf-8")
     fixture = tmp_path / "nginx.conf"
-    fixture.write_text(_bypass_config(original, case), encoding="utf-8")
+    fixture.write_text(_bypass_config(original, case, location), encoding="utf-8")
     monkeypatch.setitem(globals(), "NGINX_CONF", fixture)
     expected = {
         "quoted-hash": "proxies without",

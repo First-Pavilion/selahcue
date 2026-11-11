@@ -5,6 +5,7 @@ from selahcue_api.graphql.account_schema import schema as account_schema
 from selahcue_api.graphql.admin_schema import schema as admin_schema
 from selahcue_api.graphql.views import AccountGraphQLView, AdminGraphQLView, csrf_bootstrap
 from selahcue_api.platform.views import billing_webhook_not_implemented
+from selahcue_api.apps.catalogue.views import plans as public_catalogue_plans
 from selahcue_api.apps.pilot_downloads import views as pilot_registration_views
 from selahcue_api.apps.pilot_downloads import grant_views as pilot_grant_views
 
@@ -16,6 +17,7 @@ graphql_view_options = {
 }
 
 urlpatterns = [
+    path("v1/catalogue/plans", public_catalogue_plans, name="public-catalogue-plans"),
     path(
         "graphql/admin",
         AdminGraphQLView.as_view(schema=admin_schema, **graphql_view_options),
