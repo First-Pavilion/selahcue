@@ -545,6 +545,78 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
 })();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
 
 
+def valid_settle_sample(value):
+    """Treat console input as untrusted, even when it has the observer prefix."""
+    def fields(record, required, optional=()):
+        return type(record) is dict and set(required) <= record.keys() <= set(required) | set(optional)
+
+    def integer(value, low=0, high=2**53 - 1):
+        return type(value) is int and low <= value <= high
+
+    def number(value, nullable=False):
+        return (
+            (value is None and nullable)
+            or (type(value) in (int, float) and -sys.float_info.max <= value <= sys.float_info.max)
+            or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
+        )
+
+    def text(value):
+        return type(value) is str and len(value) <= 96
+
+    if type(value) is dict and set(value) == {"observerError"}:
+        return value["observerError"] is True
+    if not fields(value, (
+        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
+        "animationCount", "animationsDropped", "animations",
+    )):
+        return False
+    if not (
+        integer(value["sample"], 1, 13)
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and value["readyState"] in ("loading", "interactive", "complete")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
+        and integer(value["rafCompleted"], 0, 13)
+        and integer(value["animationCount"]) and integer(value["animationsDropped"])
+        and type(value["animations"]) is list and len(value["animations"]) <= 12
+    ):
+        return False
+    if any(type(value[key]) is not bool for key in (
+        "contentPresent", "loadingPresent", "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafPending",
+    )):
+        return False
+    if (len(value["animations"]) != min(value["animationCount"], 12)
+            or value["animationsDropped"] != max(0, value["animationCount"] - 12)):
+        return False
+    for animation in value["animations"]:
+        if not fields(animation, (
+            "id", "type", "animationName", "transitionProperty", "target", "playState", "pending",
+            "currentTime", "startTime", "playbackRate", "timelineTime", "timing",
+        )):
+            return False
+        if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
+                and animation["playState"] in ("idle", "running", "paused", "finished")
+                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
+                and number(animation["playbackRate"])):
+            return False
+        target = animation["target"]
+        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+            return False
+        timing = animation["timing"]
+        # Undefined computed-timing properties are omitted by JSON.stringify; a null
+        # effect produces an empty record. No other nested field is accepted.
+        if not fields(timing, (), (
+            "duration", "delay", "endDelay", "iterations", "iterationStart", "activeDuration",
+            "endTime", "localTime", "progress", "currentIteration",
+        )):
+            return False
+        if any(not (number(item, nullable=key in ("localTime", "progress", "currentIteration"))
+                    or (key == "duration" and item == "auto")) for key, item in timing.items()):
+            return False
+    return True
+
+
 class SettleDiagnostic:
     """Small, target-only bounded ledger; callbacks must never change sweep outcomes."""
 
@@ -596,7 +668,15 @@ class SettleDiagnostic:
                 if len(message.text) > 24576 or len(self.samples) == 13:
                     self.dropped["samples"] += 1
                     return
-                self.samples.append(json.loads(message.text[len(prefix):]))
+                try:
+                    sample = json.loads(message.text[len(prefix):])
+                except ValueError:
+                    self.dropped["samples"] += 1
+                    return
+                if not valid_settle_sample(sample):
+                    self.dropped["samples"] += 1
+                    return
+                self.samples.append(sample)
             elif message.type in ("warning", "error"):
                 self.observe("console-" + message.type)  # no arbitrary console text
         except Exception:
