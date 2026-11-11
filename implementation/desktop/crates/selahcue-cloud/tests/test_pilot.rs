@@ -100,3 +100,33 @@ fn required_fields_unknown_fields_and_bounds_fail_closed() {
     );
     assert!(PilotConfig::parse(Some(&oversized), 1).is_none());
 }
+
+/// Construction-time admission only. An already-built provider's active/in-flight
+/// deadline is owned by PR330 and is deliberately not claimed by this test.
+#[test]
+fn construction_cutoff_refuses_egress_with_an_admitted_provider_positive_control() {
+    use selahcue_core::providers::{NoteOptions, NoteProvider, NoteRequest, ProvidersSettings};
+    let mut value = fixture();
+    value["deepgram"]["expires_at"] = APPROVED_CUTOFF.into();
+    let config = PilotConfig::parse(Some(&value.to_string()), 1).unwrap();
+    let request = NoteRequest {
+        transcript: "Synthetic completed sermon: love your neighbour.".into(),
+        options: NoteOptions::from_settings(&ProvidersSettings::default()),
+    };
+    for (now, admitted, expected_requests) in [
+        (APPROVED_CUTOFF - 1, true, 1),
+        (APPROVED_CUTOFF, false, 0),
+        (APPROVED_CUTOFF + 1, false, 0),
+    ] {
+        let transport = selahcue_cloud::MockTransport::failing();
+        let requests = transport.requests_handle();
+        let provider = config.openai(transport, now);
+        assert_eq!(provider.is_some(), admitted);
+        if let Some(provider) = provider {
+            // A real serialized request reaches only the in-memory transport; there is
+            // no credential lookup, socket, provider endpoint call or hosted-route change.
+            assert!(provider.generate(&request).is_err());
+        }
+        assert_eq!(requests.lock().unwrap().len(), expected_requests);
+    }
+}

@@ -1034,3 +1034,115 @@ async fn confirming_a_downgrading_regeneration_is_denied_over_the_real_wire_and_
         "the refused pending draft must remain staged, not be silently dropped"
     );
 }
+
+// C3 durability sibling: real SQLite close/reopen, separate from browser fixture reloads
+// and configured-provider request counters. No provider is wired into this test.
+#[test]
+fn ended_multilingual_source_and_accepted_pending_notes_survive_controller_database_reopen() {
+    use selahcue_lan::protocol::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("offline-sermon.db3");
+    let source = [
+        "English: Love your neighbour.",
+        "Yorùbá: Ẹ fẹ́ràn aládùúgbò yín.",
+        "Igbo: Hụ onye agbata obi gị n’anya.",
+        "Hausa: Ku ƙaunaci maƙwabcinku.",
+        "Ẹ ṣeun — now serve one another.",
+    ];
+    let (id, transcript_before, notes_before) = {
+        let db = Database::open(&path).unwrap();
+        let mut controller =
+            LiveController::new(ServicePlan::new("Offline Sunday"), 320, 180, Theme::dark());
+        controller.set_transcript_sink(Box::new(selahcue_app::BatchingTranscriptWriter::new(
+            RealTranscriptStore {
+                db: Database::open(&path).unwrap(),
+            },
+        )));
+        controller.set_sermon_note_store(Box::new(RealSermonNoteStore {
+            db: Database::open(&path).unwrap(),
+        }));
+        controller.start_transcript_session("Multilingual Sunday", "manual");
+        for (index, text) in source.iter().enumerate() {
+            controller.ingest_transcript(
+                text,
+                index as u64 * 1_000,
+                (index as u64 + 1) * 1_000,
+                true,
+            );
+        }
+        controller.end_transcript_session();
+        let id = transcript_repo::most_recent_id(&db).unwrap().unwrap();
+        let accepted = SermonNoteDraftInput {
+            title: "Accepted English notes — operator edit".into(),
+            summary: Some("Serve your neighbour.".into()),
+            sections_json:
+                r#"[{"heading":"Application","items":["Keep accepted wording"],"points":[]}]"#
+                    .into(),
+            scriptures_json: "[]".into(),
+            ai_generated: true,
+            disclosure: Some("AI-generated. Verify every reference and quotation.".into()),
+            provider: "Synthetic fixture".into(),
+            model: Some("synthetic-only".into()),
+        };
+        let saved = controller.apply(&Command::SaveSermonNoteDraft {
+            transcript_id: id,
+            draft: accepted.clone(),
+        });
+        assert!(matches!(
+            saved,
+            selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                draft: Some(_),
+                ..
+            })
+        ));
+        let mut pending = accepted;
+        pending.title = "Pending English notes — review required".into();
+        pending.summary = Some("A distinct pending summary.".into());
+        let staged = controller.apply(&Command::StageSermonNoteRegeneration {
+            transcript_id: id,
+            draft: pending,
+        });
+        assert!(matches!(staged, selahcue_app::ControllerReply::Message(_)));
+        let transcript = transcript_repo::load(&db, id).unwrap();
+        assert!(transcript.ended_at_ms.is_some());
+        assert_eq!(
+            transcript
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            source
+        );
+        let notes = sermon_note_repo::find_by_transcript(&db, id)
+            .unwrap()
+            .unwrap();
+        assert!(notes.pending.is_some());
+        (id, transcript, notes)
+        // All controller/store/database handles are dropped at the end of this block.
+    };
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        transcript_repo::load(&reopened, id).unwrap(),
+        transcript_before
+    );
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&reopened, id)
+            .unwrap()
+            .unwrap(),
+        notes_before
+    );
+    let mut fresh =
+        LiveController::new(ServicePlan::new("Reopened Sunday"), 320, 180, Theme::dark());
+    fresh.set_sermon_note_store(Box::new(RealSermonNoteStore {
+        db: Database::open(&path).unwrap(),
+    }));
+    match fresh.apply(&Command::LoadSermonNoteDraft { transcript_id: id }) {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => {
+            assert_eq!(view, record_to_view(&notes_before));
+        }
+        other => panic!("expected accepted notes through fresh controller, got {other:?}"),
+    }
+}

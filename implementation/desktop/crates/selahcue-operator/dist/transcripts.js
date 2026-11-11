@@ -944,8 +944,8 @@
   var generateAllowed = false;
   var generateHasExistingDraft = false;
   // 17tnw2b0ntd (Figma 1133:36 / 1132:2): the in-flight status card + its polite live region, and
-  // whether a saved/generated draft is currently RENDERED in #tr-gen-result (not merely held in
-  // `currentDraft`: an error replaces the region, and then the primary Generate must come back).
+  // whether a saved/generated draft is currently RENDERED in #tr-gen-result. Terminal
+  // generation errors stay alongside it so Regenerate and pending review remain reachable.
   var genProgressEl = document.getElementById("tr-gen-progress");
   var genLiveEl = document.getElementById("tr-gen-live");
   var genBoxEl = document.getElementById("tr-gen");
@@ -1065,8 +1065,7 @@
     return r;
   }
 
-  // Announce the outcome in the polite live region, then re-sync which generate control is shown
-  // (an error replaces the result region, so the primary Generate must come back).
+  // Announce the outcome in the polite live region, then re-sync the explicit generate control.
   // The existing fixed quota/consent/build copy is the trust boundary for note errors too.
   // IPC rejection text and backend messages may quote transcript/peer content (FR-082).
   // Select known codes or an EXACT existing safe literal; never scrub/echo arbitrary text.
@@ -1086,17 +1085,27 @@
     syncGenerateControls();
   }
   function showGenErrorInner(code, message, operationLabel) {
-    var r = genResultEl();
+    var r;
+    if (currentDraft && draftRendered && genResultBox) {
+      // Keep the existing DOM, including pending Confirm/Discard and its disclosures.
+      // Retry uses Regenerate -> review -> Confirm; an error never queues another call.
+      var previousError = genResultBox.querySelector(".tr-generation-error");
+      if (previousError) previousError.remove();
+      r = el("div", "tr-generation-error");
+      genResultBox.appendChild(r);
+    } else {
+      r = genResultEl();
+    }
     if (!r) return;
     if (code === "not_configured") {
-      r.className = "pp-gen-result pp-gen-info";
+      r.className = "pp-gen-result pp-gen-info tr-generation-error";
       r.setAttribute("role", "status");
       r.appendChild(el("span", "pp-gen-info-ico", "☁"));
       r.appendChild(el("span", null, "Sermon-note generation isn’t available in this build yet."));
       return;
     }
     if (code === "consent_required") {
-      r.className = "pp-gen-result pp-gen-err";
+      r.className = "pp-gen-result pp-gen-err tr-generation-error";
       r.setAttribute("role", "alert");
       r.appendChild(el("span", null,
         "Turn on cloud processing in Settings → Providers & Privacy to generate sermon notes."));
@@ -1114,7 +1123,7 @@
     }
     // The two local validation codes never reach here from a network response — onGenerate refuses
     // before any call is made — so their label says exactly that: nothing was sent.
-    r.className = "pp-gen-result pp-gen-err";
+    r.className = "pp-gen-result pp-gen-err tr-generation-error";
     r.setAttribute("role", "alert");
     var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"

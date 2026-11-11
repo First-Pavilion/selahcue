@@ -2066,6 +2066,8 @@ EXPECTED_MIN_CHECKS = 2906
 # C2 / 17tnw2bawx7: measured full browser replay 2948 checks, 0 FAIL;
 # exact Unicode edits, failed-Save retention/retry and explicit discard paths.
 EXPECTED_MIN_CHECKS = 2948
+# C3: measured full retained-notes/retry/fresh-UI replay ran 2973 checks.
+EXPECTED_MIN_CHECKS = 2973
 
 
 def find_chrome():
@@ -8871,15 +8873,15 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenConsentOffResult = el("tr-gen-result");
-      ok(trRegenConsentOffResult.getAttribute("role") === "alert" &&
+      ok(!!trRegenConsentOffResult.querySelector('[role="alert"]') &&
          /Turn on cloud processing/.test(trRegenConsentOffResult.textContent),
          "TR REGEN-5: with consent OFF, regenerating a transcript that already has a saved " +
          "draft is STILL gated exactly like a first-time generate (consent_required)");
       ok(trCall("transcript_generate_notes").length === trRegenConsentGenCallsBefore + 1,
          "TR REGEN-5 (sanity): the call reached the backend and was gated there — the client " +
          "did not merely refuse locally");
-      ok(!/regenerated/.test(trRegenConsentOffResult.textContent),
-         "TR REGEN-5: no draft content of any kind leaked into view — nothing was generated");
+      ok(/From-History Sermon \(regenerated\)/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: prior accepted content remains visible after consent refusal");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-5: the saved draft from REGEN-3 is completely unaffected by the refused " +
@@ -8892,12 +8894,109 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenTransportResult = el("tr-gen-result");
-      ok(trRegenTransportResult.getAttribute("role") === "alert",
+      ok(!!trRegenTransportResult.querySelector('[role="alert"]'),
          "TR REGEN-6: a transport failure during regenerate surfaces as an alert, same as a first-time generate");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
+
+      // C3: terminal refusals and rejected IPC preserve the rendered accepted/pending notes.
+      // This stub's rejected promise is a terminal IPC failure, NOT the cloud provider's
+      // real transport-error degraded-success fallback (covered separately below/native).
+      var c3AcceptedSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3Mode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3Mode;
+        trEntry().click(); await sleep(40);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent),
+           "C3 accepted notes remain visible after terminal " + c3Mode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]'),
+           "C3 terminal " + c3Mode + " has an inline alert beside prior notes");
+        ok(JSON.stringify(window.__TR.detail[1]) === c3AcceptedSnapshot,
+           "C3 terminal " + c3Mode + " preserves exact accepted/source state");
+      }
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40); el("tr-gen-preview-confirm").click(); await sleep(60);
+      var c3PendingSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3PendingMode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3PendingMode;
+        var c3Calls = trCall("transcript_generate_notes").length;
+        trEntry().click(); await sleep(40);
+        ok(trCall("transcript_generate_notes").length === c3Calls,
+           "C3 retry review sends nothing before Confirm: " + c3PendingMode);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 retry Confirm sends exactly once: " + c3PendingMode);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent) &&
+           !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+           "C3 pending content and Confirm/Discard survive terminal " + c3PendingMode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]') &&
+           JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+           "C3 pending/source state stays exact with visible terminal " + c3PendingMode);
+        window.dispatchEvent(new Event("offline")); window.dispatchEvent(new Event("online"));
+        await sleep(1100);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 reconnect and idle never retry terminal " + c3PendingMode);
+      }
+      var c3BeforeReopen = trCall("transcript_generate_notes").length;
+      el("tr-detail-back").click(); await sleep(40);
+      el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(80);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen &&
+         JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+         "C3 navigation/reopen does not retry or change accepted/pending/source state");
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen,
+         "C3 successful retry still waits for explicit review Confirm");
+      el("tr-gen-preview-confirm").click(); await sleep(60);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen + 1 &&
+         !!el("tr-gen-regen-confirm"), "C3 explicit successful retry stages ordinary confirmation");
+      el("tr-gen-regen-discard").click(); await sleep(60);
+
+      // C3 fresh UI lifecycle with a persisted synthetic snapshot. Native close/reopen
+      // durability is tested separately in test_sermon_note_remote.rs; this is DOM/IPC only.
+      var c3Source = "English: Love your neighbour.\nYorùbá: Ẹ fẹ́ràn aládùúgbò yín.\nIgbo: Hụ onye agbata obi gị n’anya.\nHausa: Ku ƙaunaci maƙwabcinku.\nẸ ṣeun — now serve one another.";
+      var c3Saved = {list:[{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,segment_count:1}],
+        detail:{1:{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,
+          notes_generated:false,segments:[{id:101,start_ms:0,end_ms:5000,text:c3Source}],detections:[],corrections:[],
+          draft:null,ai_generated:null,ai_label:null,disclosure:null,notes_provider:null,scripture_verification_note:null}}};
+      async function c3BootSaved(snapshot) {
+        var frame = document.createElement("iframe");
+        frame.setAttribute("aria-hidden", "true"); frame.tabIndex = -1;
+        frame.style.cssText = "position:fixed;left:-20000px;top:0;width:1280px;height:720px;border:0";
+        var seed = "<script>window.__TR=" + JSON.stringify(snapshot) + ";window.__trGen='ok';window.__pp.cloud_notes_consent=true;<" + "/script>";
+        frame.srcdoc = window.__NOTIF_FRAME_HTML.replace("</head>", seed + "</head>");
+        document.body.appendChild(frame);
+        await waitFor(function () { return frame.contentWindow.__calls && frame.contentWindow.__calls.length > 2; }, 400);
+        var w = frame.contentWindow, d = w.document;
+        d.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function () { return !!d.querySelector('.tr-card[data-id="1"] .tr-card-open'); }, 400);
+        d.querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(100);
+        return {frame:frame,w:w,d:d,count:function () {return w.__calls.filter(function(c){return c.cmd === "transcript_generate_notes";}).length;}};
+      }
+      var c3Fresh = null;
+      try {
+        c3Fresh = await c3BootSaved(c3Saved);
+        c3Fresh.w.dispatchEvent(new Event("offline")); await sleep(100);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 ended offline snapshot opens with exact multilingual source and zero generation commands");
+        var c3Snapshot = JSON.parse(JSON.stringify(c3Fresh.w.__TR));
+        c3Fresh.frame.remove(); c3Fresh = await c3BootSaved(c3Snapshot);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 a fresh UI reopens exact saved multilingual source without generating");
+        c3Fresh.w.dispatchEvent(new Event("online")); await sleep(1100);
+        ok(c3Fresh.count() === 0, "C3 fresh UI reconnect and idle send zero generation commands");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(50);
+        ok(c3Fresh.count() === 0 && c3Fresh.d.querySelector('.pp-gen-preview-text').textContent === c3Source,
+           "C3 fresh UI explicit preview shows all language changes without sending");
+        c3Fresh.d.getElementById("tr-gen-preview-cancel").click(); await sleep(40);
+        ok(c3Fresh.count() === 0, "C3 fresh UI cancelling the review sends nothing");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(40);
+        c3Fresh.d.getElementById("tr-gen-preview-confirm").click(); await sleep(80);
+        ok(c3Fresh.count() === 1 && /From-History Sermon/.test(c3Fresh.d.getElementById("tr-gen-result").textContent),
+           "C3 fresh UI exactly one confirmed action displays the synthetic English response");
+      } finally { if (c3Fresh) c3Fresh.frame.remove(); }
 
       // 17tnw2b9dq6: a generated but UNSAVED reply must never inherit openId's accepted
       // draft identity. Exercise the real Edit/Save buttons if the bug exposes them, so
@@ -9254,12 +9353,12 @@ DRIVER = r"""
          "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
       // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
       var trQuotaRes = await trGenOnce("quota_exceeded");
-      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent) &&
+      ok(!!trQuotaRes.querySelector('[role="alert"]') && /Generation limit reached/.test(trQuotaRes.textContent) &&
          !/month|week|daily|annual/i.test(trQuotaRes.textContent),
          "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert) and, even when the backend sends its REAL monthly text (selahcue-core providers.rs), names no allowance period (D7)");
       // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
       var trFailRes = await trGenOnce("transport");
-      ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
+      ok(!!trFailRes.querySelector('[role="alert"]') && /Couldn.t generate notes/.test(trFailRes.textContent),
          "TR: a transport failure surfaces 'Couldn’t generate notes' (role=alert)");
       var trOkRes = await trGenOnce("ok");
       var trSub = trOkRes.querySelector(".pp-gen-sublist");
@@ -9282,7 +9381,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = false;
       var trConsentRes = await trGenOnce("ok");
       var trToSettings = el("tr-open-settings");
-      ok(trConsentRes.getAttribute("role") === "alert" && !!trToSettings && trToSettings.tagName === "BUTTON",
+      ok(!!trConsentRes.querySelector('[role="alert"]') && !!trToSettings && trToSettings.tagName === "BUTTON",
          "TR: consent_required offers a one-click 'Open Settings' route, not a dead end");
       trToSettings.click();
       ok(el("surface-settings").classList.contains("active"), "TR: 'Open Settings' actually opens Settings");
