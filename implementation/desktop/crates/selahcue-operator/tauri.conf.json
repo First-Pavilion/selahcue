@@ -28,7 +28,9 @@
     "targets": ["nsis"],
     "externalBin": ["binaries/selahcue-output"],
     "resources": {
-      "binaries/Processing.NDI.Lib.x64.dll": "Processing.NDI.Lib.x64.dll"
+      "binaries/Processing.NDI.Lib.x64.dll": "Processing.NDI.Lib.x64.dll",
+      "assets/notes-pdf/LICENSE": "licenses/notes-pdf/OFL.txt",
+      "assets/notes-pdf/README.md": "licenses/notes-pdf/README.md"
     },
     "icon": [
       "icons/32x32.png",

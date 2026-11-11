@@ -954,8 +954,8 @@
   var generateAllowed = false;
   var generateHasExistingDraft = false;
   // 17tnw2b0ntd (Figma 1133:36 / 1132:2): the in-flight status card + its polite live region, and
-  // whether a saved/generated draft is currently RENDERED in #tr-gen-result (not merely held in
-  // `currentDraft`: an error replaces the region, and then the primary Generate must come back).
+  // whether a saved/generated draft is currently RENDERED in #tr-gen-result. Terminal
+  // generation errors stay alongside it so Regenerate and pending review remain reachable.
   var genProgressEl = document.getElementById("tr-gen-progress");
   var genLiveEl = document.getElementById("tr-gen-live");
   var genBoxEl = document.getElementById("tr-gen");
@@ -1078,8 +1078,7 @@
     return r;
   }
 
-  // Announce the outcome in the polite live region, then re-sync which generate control is shown
-  // (an error replaces the result region, so the primary Generate must come back).
+  // Announce the outcome in the polite live region, then re-sync the explicit generate control.
   // The existing fixed quota/consent/build copy is the trust boundary for note errors too.
   // IPC rejection text and backend messages may quote transcript/peer content (FR-082).
   // Select known codes or an EXACT existing safe literal; never scrub/echo arbitrary text.
@@ -1119,7 +1118,17 @@
     // A pilot refusal never removes an existing draft from its editable workspace.
     // The persistent pilot status + live region explain it beside the unchanged draft.
     if (fixedPilotMessage && currentDraft && draftRendered) return;
-    var r = genResultEl();
+    var r;
+    if (currentDraft && draftRendered && genResultBox) {
+      // Keep the existing DOM, including pending Confirm/Discard and its disclosures.
+      // Retry uses Regenerate -> review -> Confirm; an error never queues another call.
+      var previousError = genResultBox.querySelector(".tr-generation-error");
+      if (previousError) previousError.remove();
+      r = el("div", "tr-generation-error");
+      genResultBox.appendChild(r);
+    } else {
+      r = genResultEl();
+    }
     if (!r) return;
     if (fixedPilotMessage) {
       r.className = "pp-gen-result pp-gen-err";
@@ -1128,14 +1137,14 @@
       return;
     }
     if (code === "not_configured") {
-      r.className = "pp-gen-result pp-gen-info";
+      r.className = "pp-gen-result pp-gen-info tr-generation-error";
       r.setAttribute("role", "status");
       r.appendChild(el("span", "pp-gen-info-ico", "☁"));
       r.appendChild(el("span", null, "Sermon-note generation isn’t available in this build yet."));
       return;
     }
     if (code === "consent_required") {
-      r.className = "pp-gen-result pp-gen-err";
+      r.className = "pp-gen-result pp-gen-err tr-generation-error";
       r.setAttribute("role", "alert");
       r.appendChild(el("span", null,
         "Turn on cloud processing in Settings → Providers & Privacy to generate sermon notes."));
@@ -1153,7 +1162,7 @@
     }
     // The two local validation codes never reach here from a network response — onGenerate refuses
     // before any call is made — so their label says exactly that: nothing was sent.
-    r.className = "pp-gen-result pp-gen-err";
+    r.className = "pp-gen-result pp-gen-err tr-generation-error";
     r.setAttribute("role", "alert");
     var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"
@@ -1640,8 +1649,24 @@
     return out;
   }
 
+  // A Save error belongs to the active edit form. The generation error renderer clears
+  // the result region, which would destroy the operator's unsaved input nodes and values.
+  function showDraftSaveError(form, code, message) {
+    if (!form.isConnected) return; // Cancel/navigation already discarded this form.
+    var error = el("div", "pp-gen-result pp-gen-err pp-gen-save-error");
+    error.setAttribute("role", "alert");
+    error.appendChild(el("span", "pp-gen-err-t", "Couldn’t save edits — "));
+    error.appendChild(el("span", null, noteErrorText(code, message,
+      "Please try again. Your edits are still here.")));
+    form.insertBefore(error, form.lastChild);
+    if (genLiveEl) genLiveEl.textContent = "Couldn’t save edits. Your edits are still here. Try Save again.";
+  }
+
   function saveDraftEdit(form) {
     if (!canEditCurrentDraft()) return;
+    var previousError = form.querySelector(".pp-gen-save-error");
+    if (previousError) previousError.remove();
+    if (genLiveEl) genLiveEl.textContent = "";
     var d = currentDraft.draft || {};
     var titleEl = document.getElementById("tr-edit-title");
     var summaryEl = document.getElementById("tr-edit-summary");
@@ -1666,7 +1691,7 @@
     }).then(function (res) {
       if (!res || res.ok !== true) {
         var err = res || {};
-        showGenError(err.error || "malformed", err.message, "Couldn’t save edits");
+        showDraftSaveError(form, err.error || "malformed", err.message);
         return;
       }
       // Re-read the label/disclosure/provider FROM the backend response — the guarantee that
@@ -1689,7 +1714,7 @@
       editingDraft = false;
       renderCurrentDraft();
     }).catch(function () {
-      showGenError("transport", null, "Couldn’t save edits");
+      showDraftSaveError(form, "transport", null);
     }).then(function () {
       var b = document.getElementById("tr-gen-save");
       if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
@@ -1808,12 +1833,56 @@
 
   // Renders `currentDraft` (view or edit mode) into `#tr-gen-result` — the ONLY place either mode
   // is drawn, so view <-> edit is always a full re-render from the same state.
+  var exportingPdf = false;
+  function renderPdfExport(r) {
+    if (!currentDraft || currentDraft.notSaved || currentDraft.transcriptId == null) return;
+    var owner = currentDraft;
+    var row = el("div", "pp-gen-actions");
+    var button = el("button", "pp-gen-edit-btn", owner.pendingConfirmation ? "Export saved notes as PDF" : "Export PDF");
+    button.type = "button";
+    button.id = "tr-export-pdf";
+    button.disabled = editingDraft || exportingPdf;
+    var status = el("p", "pp-gen-note", editingDraft ? "Save your edits to export them" :
+      (owner.pendingConfirmation ? "Exports your accepted saved notes, not the pending regeneration shown above." : ""));
+    status.id = "tr-export-pdf-status";
+    status.setAttribute("role", "status");
+    button.addEventListener("click", function () {
+      if (editingDraft || exportingPdf || currentDraft !== owner || owner.notSaved) return;
+      exportingPdf = true;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      status.textContent = "Preparing saved notes PDF...";
+      invoke("export_sermon_notes_pdf", { transcriptId: owner.transcriptId }).then(function (receipt) {
+        if (!receipt || receipt.transcript_id !== owner.transcriptId || !(receipt.bytes > 0)) throw "Io";
+        if (currentDraft === owner && status.isConnected) status.textContent = "PDF exported.";
+      }).catch(function (error) {
+        if (currentDraft !== owner || !status.isConnected) return;
+        var messages = {
+          Cancelled: "PDF export cancelled. Your saved notes are unchanged.",
+          NoSavedDraft: "No saved notes are available to export. Reopen this transcript and try again.",
+          InvalidDraft: "These saved notes could not be rendered safely. Review the text and supported characters before retrying.",
+          TooLarge: "These notes exceed the PDF export limit. Your saved notes are unchanged.",
+          Io: "The PDF could not be saved. Check the destination or try another local folder."
+        };
+        status.textContent = typeof error === "string" && messages[error] ? messages[error] : messages.Io;
+      }).then(function () {
+        exportingPdf = false;
+        var active = document.getElementById("tr-export-pdf");
+        if (active) { active.disabled = editingDraft; active.removeAttribute("aria-busy"); }
+      });
+    });
+    row.appendChild(button);
+    r.appendChild(row);
+    r.appendChild(status);
+  }
+
   function renderCurrentDraft() {
     var r = genResultEl();
     if (!r || !currentDraft) return;
     r.className = "pp-gen-result pp-gen-ok";
     r.setAttribute("role", "status");
     if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+    renderPdfExport(r);
     draftRendered = true;
     syncGenerateControls();
   }
