@@ -9764,11 +9764,12 @@ mod regenerate_with_retention_tests {
                 sample_draft("Pending multilingual notes — Ẹ ṣeun", true),
             )
             .await
-            .unwrap()
-            .unwrap()
+            .expect("pending staging request succeeds")
+            .expect("accepted draft slot exists")
             .pending
-            .unwrap();
-        let before = with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap();
+            .expect("pending draft exists before denied attempts");
+        let before = with_transcript_db(&state, |db| transcript_repo::load(db, id))
+            .expect("transcript loads before denied attempts");
         let (provider, requests) = counting_notes_provider();
         for _ in 0..3 {
             let reply = transcript_generate_notes_with(id, &state, |cfg, text| {
@@ -9781,16 +9782,17 @@ mod regenerate_with_retention_tests {
                 ))
             })
             .await
-            .unwrap();
+            .expect("denied native command returns JSON");
             assert_eq!(reply["ok"], false);
             assert_eq!(reply["error"], "consent_required");
         }
         assert!(
-            requests.lock().unwrap().is_empty(),
+            requests.lock().expect("request recording lock").is_empty(),
             "configured provider must receive no request without consent"
         );
         assert_eq!(
-            with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap(),
+            with_transcript_db(&state, |db| transcript_repo::load(db, id))
+                .expect("transcript loads after denied attempts"),
             before
         );
         assert_eq!(
@@ -9798,8 +9800,8 @@ mod regenerate_with_retention_tests {
                 .backend
                 .load_sermon_note_draft(id)
                 .await
-                .unwrap()
-                .unwrap(),
+                .expect("accepted draft read succeeds after denied attempts")
+                .expect("accepted draft remains after denied attempts"),
             accepted
         );
         // The command's read API exposes accepted notes only. Promote after all refusals
@@ -9808,10 +9810,20 @@ mod regenerate_with_retention_tests {
             .backend
             .confirm_sermon_note_regeneration(id)
             .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(promoted.current.unwrap(), pending);
-        state.providers.lock().unwrap().consent.cloud_notes = true;
+            .expect("pending confirmation request succeeds")
+            .expect("pending confirmation returns a slot");
+        assert_eq!(
+            promoted
+                .current
+                .expect("pending payload is promoted for comparison"),
+            pending
+        );
+        state
+            .providers
+            .lock()
+            .expect("provider configuration lock")
+            .consent
+            .cloud_notes = true;
         let reply = transcript_generate_notes_with(id, &state, |cfg, text| {
             std::future::ready(selahcue_cloud::generate_sermon_notes(
                 &cfg,
@@ -9822,22 +9834,24 @@ mod regenerate_with_retention_tests {
             ))
         })
         .await
-        .unwrap();
+        .expect("consented native command returns JSON");
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["pending_confirmation"], true);
-        let sent = requests.lock().unwrap();
+        let sent = requests.lock().expect("request recording lock");
         assert_eq!(
             sent.len(),
             1,
             "same configured native route sends once after explicit consent/action"
         );
-        let body: serde_json::Value = serde_json::from_str(&sent[0].body).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(&sent[0].body).expect("serialized provider request is valid JSON");
         assert_eq!(
             body["input"][1]["content"],
             format!("Sermon transcript:\n\nGood morning, church.\n{source}")
         );
         assert_eq!(
-            with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap(),
+            with_transcript_db(&state, |db| transcript_repo::load(db, id))
+                .expect("transcript loads after positive control"),
             before
         );
     }
@@ -9856,11 +9870,12 @@ mod regenerate_with_retention_tests {
                 sample_draft("Earlier pending notes — Ẹ ṣeun", true),
             )
             .await
-            .unwrap()
-            .unwrap()
+            .expect("pending staging request succeeds")
+            .expect("accepted draft slot exists")
             .pending
-            .unwrap();
-        let source = with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap();
+            .expect("pending draft exists before provider failure");
+        let source = with_transcript_db(&state, |db| transcript_repo::load(db, id))
+            .expect("transcript loads before provider failure");
         let mutations = (gate.saves(), gate.stages());
         let transport = selahcue_cloud::MockTransport::responding(
             429,
@@ -9882,13 +9897,20 @@ mod regenerate_with_retention_tests {
             ))
         })
         .await
-        .unwrap();
+        .expect("failed provider native command returns JSON");
         assert_eq!(reply["ok"], false);
         assert_eq!(reply["error"], "quota_exceeded");
-        assert_eq!(failed_requests.lock().unwrap().len(), 1);
+        assert_eq!(
+            failed_requests
+                .lock()
+                .expect("failed request recording lock")
+                .len(),
+            1
+        );
         assert_eq!((gate.saves(), gate.stages()), mutations);
         assert_eq!(
-            with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap(),
+            with_transcript_db(&state, |db| transcript_repo::load(db, id))
+                .expect("transcript loads after provider failure"),
             source
         );
         assert_eq!(
@@ -9896,8 +9918,8 @@ mod regenerate_with_retention_tests {
                 .backend
                 .load_sermon_note_draft(id)
                 .await
-                .unwrap()
-                .unwrap(),
+                .expect("accepted draft read succeeds after provider failure")
+                .expect("accepted draft remains after provider failure"),
             accepted
         );
         assert_eq!(
@@ -9905,14 +9927,17 @@ mod regenerate_with_retention_tests {
                 .backend
                 .confirm_sermon_note_regeneration(id)
                 .await
-                .unwrap()
-                .unwrap()
+                .expect("pending confirmation request succeeds")
+                .expect("pending confirmation returns a slot")
                 .current
-                .unwrap(),
+                .expect("pending payload survives provider failure"),
             pending
         );
         let (provider, retry_requests) = counting_notes_provider();
-        assert!(retry_requests.lock().unwrap().is_empty());
+        assert!(retry_requests
+            .lock()
+            .expect("retry request recording lock")
+            .is_empty());
         let retried = transcript_generate_notes_with(id, &state, |cfg, text| {
             std::future::ready(selahcue_cloud::generate_sermon_notes(
                 &cfg,
@@ -9923,12 +9948,19 @@ mod regenerate_with_retention_tests {
             ))
         })
         .await
-        .unwrap();
+        .expect("explicit retry native command returns JSON");
         assert_eq!(retried["ok"], true);
         assert_eq!(retried["pending_confirmation"], true);
-        assert_eq!(retry_requests.lock().unwrap().len(), 1);
         assert_eq!(
-            with_transcript_db(&state, |db| transcript_repo::load(db, id)).unwrap(),
+            retry_requests
+                .lock()
+                .expect("retry request recording lock")
+                .len(),
+            1
+        );
+        assert_eq!(
+            with_transcript_db(&state, |db| transcript_repo::load(db, id))
+                .expect("transcript loads after explicit retry"),
             source
         );
     }
