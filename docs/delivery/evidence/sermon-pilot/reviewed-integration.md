@@ -82,3 +82,8 @@ package, deployment or release acceptance. The pilot cutoff remains
 
 No main merge, push, PR, external status update, workflow dispatch, release,
 credential/provider/congregation operation or corpus operation was performed.
+
+
+## Separately attributed marketing job budget
+
+Task 3 applies the approved 20→25 minute marketing timeout, based on exact source20368c7f / CI43085580106 / job130749079236: all22 steps and browser/CSP assertions succeeded, but the job was cancelled at1,201s with the explicit20m0s timeout annotation. Required work finished at1,196s; Node post was a cache hit/rounded0s. No cache stall or historical WebKit cause is established. The bounded change adds at most five Linux runner-minutes and no deliberate routine work, retaining every assertion, cache, step and other budget. Current integrated-head hosted success remains unproven until root's reviewed combined publication. See browser-ci.md and Task3 report for exact semantic-diff/policy evidence and separate Flutter/audit observations.
