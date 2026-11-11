@@ -58,7 +58,24 @@ fn selected_source_drives_both_readiness_and_real_authorization() {
     let status = provider_source::transcription_status();
     assert_eq!(status.ready, ready);
     assert_eq!(status.provider.is_some(), ready);
-    assert!(!status.detail.contains(".env"));
+    assert_eq!(status.key_variable, "");
+    assert_eq!(status.state, if ready { "ready" } else { "key_missing" });
+    assert_eq!(
+        status.provider_status,
+        if ready {
+            "direct_provider"
+        } else {
+            "key_missing"
+        }
+    );
+    assert_eq!(
+        status.detail,
+        if ready {
+            "Cloud transcription uses the restricted pilot package configuration"
+        } else {
+            "Pilot cloud transcription is unavailable: package configuration is missing, invalid or expired"
+        }
+    );
     let client = provider_source::openai(InspectTransport);
     assert_eq!(client.is_some(), ready);
     let credential = provider_source::deepgram();
