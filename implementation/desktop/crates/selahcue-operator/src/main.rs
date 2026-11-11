@@ -8544,7 +8544,27 @@ async fn transcript_generate_notes(
     id: i64,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let before = with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id))?;
+    transcript_generate_notes_with(id, &state, |cfg, transcript| {
+        run_note_generation(cfg, transcript, &state)
+    })
+    .await
+}
+
+/// The native command's orchestration, with only the provider operation injected. Production
+/// keeps its selected-provider/credential routing; tests can count real transport requests
+/// without environment credentials or a live service.
+async fn transcript_generate_notes_with<F, Fut>(
+    id: i64,
+    state: &State<'_, AppState>,
+    generate: F,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce(selahcue_core::providers::ProvidersConfig, String) -> Fut,
+    Fut: std::future::Future<
+        Output = Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError>,
+    >,
+{
+    let before = with_transcript_db(state, |db| selahcue_data::transcript_repo::load(db, id))?;
     if !transcript_is_eligible_for_generate(&before) {
         return Ok(serde_json::json!({
             "ok": false,
@@ -8564,9 +8584,25 @@ async fn transcript_generate_notes(
             .clone()
     };
 
+    // Refuse before spending a generation if the authoritative host cannot check the saved
+    // draft. Do not retain its diagnostic text (FR-082), or treat an unreadable draft as absent.
+    // This is only a preflight: persist_generated_draft must check AGAIN after the request,
+    // because accepted/pending notes may change while the provider is running.
+    if matches!(
+        ExistingDraft::from_load(state.backend.load_sermon_note_draft(id).await),
+        ExistingDraft::CheckFailed
+    ) {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "transport",
+            "message": "Could not check the saved draft, so no generation was requested. Your current notes are unchanged.",
+            "clamp": clamp,
+        }));
+    }
+
     // Captured before `cfg` moves into `run_note_generation` below (86akby820).
     let scripture_extraction_on = cfg.settings.include.scripture_extraction;
-    match run_note_generation(cfg, transcript, &state).await {
+    match generate(cfg, transcript).await {
         Ok(mut outcome) => {
             // 86akby820 (FR-125/FR-128), ported from the removed live-tail command (17tnw2b0ntd):
             // every scripture reference this draft carries — in the extracted list AND embedded in
@@ -8581,7 +8617,7 @@ async fn transcript_generate_notes(
             // actually sent. See `source_transcript_is_unchanged_by_generation` for the direct
             // test of the comparison this leans on.
             let after =
-                with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id))?;
+                with_transcript_db(state, |db| selahcue_data::transcript_repo::load(db, id))?;
             if after.segments != before.segments {
                 return Err(
                     "the source transcript changed while generating notes; refusing to persist \
@@ -8597,7 +8633,7 @@ async fn transcript_generate_notes(
             // (17tnw2b0ntd) but the linking behaviour is unchanged.
             link_note_timestamps(&mut outcome.draft, &after.segments);
 
-            Ok(save_and_describe_generated_notes(&state, id, &outcome, &clamp).await)
+            Ok(save_and_describe_generated_notes(state, id, &outcome, &clamp).await)
         }
         Err(e) => Ok(serde_json::json!({
             "ok": false,
@@ -9578,6 +9614,257 @@ mod regenerate_with_retention_tests {
         }
     }
 
+    /// A configured real provider/parser over the existing counting HTTP seam. The synthetic
+    /// token is passed directly; this fixture never reads environment or pilot credentials.
+    #[cfg(feature = "openai-notes")]
+    fn counting_notes_provider() -> (
+        selahcue_cloud::OpenAiNoteProvider<selahcue_cloud::MockTransport>,
+        Arc<Mutex<Vec<selahcue_cloud::mock::RecordedRequest>>>,
+    ) {
+        let draft = serde_json::json!({
+            "title": "Synthetic generated notes", "main_scripture": "",
+            "supporting_scriptures": [], "introduction": ["Good morning, church."],
+            "points": [], "illustrations": [], "quotes": [], "prayer_points": [],
+            "calls_to_action": [], "key_lessons": [], "chapter_markers": [],
+            "podcast_show_notes": [], "short_description": [], "summary": "Synthetic summary"
+        });
+        let transport = selahcue_cloud::MockTransport::responding(
+            200,
+            serde_json::json!({"output": [{"type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": draft.to_string()}]}]})
+            .to_string(),
+        );
+        let requests = transport.requests_handle();
+        (
+            selahcue_cloud::OpenAiNoteProvider::new(
+                transport,
+                selahcue_cloud::Token::new("synthetic-unused-provider-token"),
+                "synthetic-preflight-model",
+            ),
+            requests,
+        )
+    }
+
+    #[cfg(feature = "openai-notes")]
+    #[tokio::test]
+    async fn failed_draft_preflight_makes_zero_provider_calls() {
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        let accepted_before = seed_edited_accepted_draft(&state, id).await;
+        let pending_before = state
+            .backend
+            .stage_sermon_note_regeneration(
+                id,
+                sample_draft("Earlier pending notes — Olúwọlé", true),
+            )
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists")
+            .pending
+            .expect("pending draft exists");
+        let transcript_before = with_transcript_db(&state, |db| transcript_repo::load(db, id))
+            .expect("transcript loads");
+        let (saves, stages) = (gate.saves(), gate.stages());
+        let (provider, requests) = counting_notes_provider();
+        gate.fail_loads(true);
+        let mut replies = Vec::new();
+        for _ in 0..3 {
+            replies.push(
+                transcript_generate_notes_with(id, &state, |cfg, text| {
+                    std::future::ready(selahcue_cloud::generate_sermon_notes(
+                        &cfg,
+                        &text,
+                        true,
+                        &provider,
+                        &selahcue_cloud::LocalNoteProvider::new(),
+                    ))
+                })
+                .await
+                .expect("native command returns JSON"),
+            );
+        }
+        let provider_requests = requests.lock().expect("request recording lock").clone();
+        assert_eq!(
+            provider_requests.len(),
+            0,
+            "three refused attempts must spend no generations"
+        );
+        for reply in replies {
+            assert_eq!(reply["ok"], false);
+            assert_eq!(reply["error"], "transport");
+            assert_eq!(reply["message"], "Could not check the saved draft, so no generation was requested. Your current notes are unchanged.");
+            assert!(reply.get("draft").is_none());
+            assert!(!reply.to_string().contains("PRIVATE_STORE_DIAGNOSTIC"));
+        }
+        assert_eq!((gate.saves(), gate.stages()), (saves, stages));
+        assert_eq!(
+            with_transcript_db(&state, |db| transcript_repo::load(db, id))
+                .expect("transcript loads"),
+            transcript_before
+        );
+        gate.fail_loads(false);
+        let accepted_after = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists");
+        assert_eq!(accepted_after, accepted_before);
+        // Promoting the real repository's pending slot proves its entire payload survived.
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists");
+        assert_eq!(
+            promoted.current.expect("accepted draft after confirmation"),
+            pending_before
+        );
+
+        // Positive control: exactly the same native orchestration and configured provider now
+        // send one request and stage the parsed response when the failed read recovers.
+        let reply = transcript_generate_notes_with(id, &state, |cfg, text| {
+            std::future::ready(selahcue_cloud::generate_sermon_notes(
+                &cfg,
+                &text,
+                true,
+                &provider,
+                &selahcue_cloud::LocalNoteProvider::new(),
+            ))
+        })
+        .await
+        .expect("native command returns JSON");
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["pending_confirmation"], true);
+        assert_eq!(reply["draft"]["title"], "Synthetic generated notes");
+        let provider_requests = requests.lock().expect("request recording lock");
+        assert_eq!(provider_requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_str(&provider_requests[0].body).expect("provider request is JSON");
+        assert_eq!(body["model"], "synthetic-preflight-model");
+        assert!(provider_requests[0].body.contains("Good morning, church."));
+    }
+
+    /// Reusing an earlier "absent" result would overwrite notes saved during the request.
+    #[cfg(feature = "openai-notes")]
+    #[tokio::test]
+    async fn draft_created_after_preflight_is_staged_against_instead_of_overwritten() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let (provider, requests) = counting_notes_provider();
+        let mut accepted_during_request = None;
+        let reply = transcript_generate_notes_with(id, &state, |cfg, text| {
+            let outcome = selahcue_cloud::generate_sermon_notes(
+                &cfg,
+                &text,
+                true,
+                &provider,
+                &selahcue_cloud::LocalNoteProvider::new(),
+            );
+            let state = &state;
+            let accepted = &mut accepted_during_request;
+            async move {
+                *accepted = state
+                    .backend
+                    .save_sermon_note_draft(
+                        id,
+                        sample_draft("Saved while the provider was running", true),
+                    )
+                    .await
+                    .expect("concurrent save succeeds");
+                outcome
+            }
+        })
+        .await
+        .expect("native command returns JSON");
+        assert_eq!(requests.lock().expect("request recording lock").len(), 1);
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["pending_confirmation"], true);
+        assert_eq!(
+            state
+                .backend
+                .load_sermon_note_draft(id)
+                .await
+                .expect("backend draft read succeeds"),
+            accepted_during_request
+        );
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists");
+        assert_eq!(
+            promoted
+                .current
+                .expect("accepted draft after confirmation")
+                .title,
+            "Synthetic generated notes"
+        );
+    }
+
+    /// The early check must not remove the save-time refusal if reads fail during a request.
+    #[cfg(feature = "openai-notes")]
+    #[tokio::test]
+    async fn draft_check_failure_after_preflight_preserves_accepted_and_pending() {
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        let accepted_before = seed_edited_accepted_draft(&state, id).await;
+        let pending_before = state
+            .backend
+            .stage_sermon_note_regeneration(id, sample_draft("Earlier pending notes", true))
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists")
+            .pending
+            .expect("pending draft exists");
+        let (saves, stages) = (gate.saves(), gate.stages());
+        let (provider, requests) = counting_notes_provider();
+        let reply = transcript_generate_notes_with(id, &state, |cfg, text| {
+            let outcome = selahcue_cloud::generate_sermon_notes(
+                &cfg,
+                &text,
+                true,
+                &provider,
+                &selahcue_cloud::LocalNoteProvider::new(),
+            );
+            gate.fail_loads(true);
+            std::future::ready(outcome)
+        })
+        .await
+        .expect("native command returns JSON");
+        assert_eq!(
+            requests.lock().expect("request recording lock").len(),
+            1,
+            "preflight succeeded before the request"
+        );
+        assert_eq!(reply["ok"], false);
+        assert_eq!(reply["error"], "transport");
+        assert_eq!(reply["message"], EXISTING_DRAFT_CHECK_FAILED_MESSAGE);
+        assert_eq!((gate.saves(), gate.stages()), (saves, stages));
+        gate.fail_loads(false);
+        assert_eq!(
+            state
+                .backend
+                .load_sermon_note_draft(id)
+                .await
+                .expect("backend request succeeds")
+                .expect("accepted draft exists"),
+            accepted_before
+        );
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .expect("backend request succeeds")
+            .expect("saved draft or slot exists");
+        assert_eq!(
+            promoted.current.expect("accepted draft after confirmation"),
+            pending_before
+        );
+    }
+
     // Regression: putting sermon_note_draft_json back inline must fail this test.
     // A current-thread runtime keeps the caller on this OS thread across await; the
     // codec observer counts real executions, without timing thresholds or fake work.
@@ -9840,9 +10127,9 @@ mod regenerate_with_retention_tests {
     // reaches the operator, so asserting its absence would pass whatever the operator did).
     // ---------------------------------------------------------------------------------------
 
-    /// The text a store that can no longer read its rows returns. It is realistic, not a marker:
-    /// nothing asserts on it.
-    const STORE_READ_ERROR: &str = "could not decode the stored row";
+    /// Synthetic content-bearing diagnostic. The preflight response must be content-free;
+    /// the real host also drops this text before it reaches the operator's backend.
+    const STORE_READ_ERROR: &str = "could not decode the stored row: PRIVATE_STORE_DIAGNOSTIC";
 
     /// What reached the store (or the host) underneath, and whether reads currently fail.
     #[derive(Default)]
