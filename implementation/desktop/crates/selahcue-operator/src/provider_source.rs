@@ -330,21 +330,38 @@ pub fn transcription_readiness() -> selahcue_stt_cloud::CloudSttReadiness {
 }
 
 pub fn transcription_status() -> selahcue_stt_cloud::CloudSttStatus {
-    #[allow(unused_mut)]
-    let mut status = transcription_readiness().status();
     #[cfg(feature = "pilot-credentials")]
     {
-        status.key_variable = "";
-        status.detail = if status.ready {
+        pilot_transcription_status(transcription_readiness())
+    }
+    #[cfg(not(feature = "pilot-credentials"))]
+    {
+        transcription_readiness().status()
+    }
+}
+
+#[cfg(feature = "pilot-credentials")]
+fn pilot_transcription_status(
+    readiness: selahcue_stt_cloud::CloudSttReadiness,
+) -> selahcue_stt_cloud::CloudSttStatus {
+    use selahcue_stt_cloud::{readiness::DEFAULT_MODEL, CloudSttStatus, SttProviderView};
+    CloudSttStatus {
+        ready: readiness.is_ready(),
+        state: readiness.state(),
+        provider_status: readiness.provider_status(),
+        provider: readiness.is_ready().then_some(SttProviderView {
+            kind: "deepgram",
+            name: "Deepgram",
+            model: DEFAULT_MODEL,
+            developer_key: false,
+        }),
+        detail: if readiness.is_ready() {
             "Cloud transcription uses the restricted pilot package configuration"
         } else {
             "Pilot cloud transcription is unavailable: package configuration is missing, invalid or expired"
-        };
-        if let Some(ref mut provider) = status.provider {
-            provider.developer_key = false;
-        }
+        },
+        key_variable: "",
     }
-    status
 }
 
 #[cfg(any(feature = "pilot-credentials", feature = "openai-notes"))]
@@ -453,5 +470,37 @@ mod access_tests {
         let value = serde_json::to_value(s).expect("safe status");
         assert_eq!(value.as_object().expect("status").len(), 6);
         assert_eq!(value["effective_expiry_unix_seconds"], 1_809_129_599u64);
+    }
+}
+
+#[cfg(all(test, feature = "pilot-credentials"))]
+mod pilot_status_tests {
+    use super::pilot_transcription_status;
+    use selahcue_stt_cloud::CloudSttReadiness;
+
+    #[test]
+    fn pilot_formatter_preserves_all_readiness_states_without_developer_metadata() {
+        for (readiness, ready, state, provider_status, detail) in [
+            (CloudSttReadiness::Ready, true, "ready", "direct_provider",
+             "Cloud transcription uses the restricted pilot package configuration"),
+            (CloudSttReadiness::KeyMissing, false, "key_missing", "key_missing",
+             "Pilot cloud transcription is unavailable: package configuration is missing, invalid or expired"),
+            (CloudSttReadiness::NotInBuild, false, "not_in_build", "not_configured",
+             "Pilot cloud transcription is unavailable: package configuration is missing, invalid or expired"),
+        ] {
+            let status = pilot_transcription_status(readiness);
+            assert_eq!(status.ready, ready);
+            assert_eq!(status.state, state);
+            assert_eq!(status.provider_status, provider_status);
+            assert_eq!(status.detail, detail);
+            assert_eq!(status.key_variable, "");
+            assert_eq!(status.provider.is_some(), ready);
+            if let Some(provider) = status.provider {
+                assert_eq!(provider.kind, "deepgram");
+                assert_eq!(provider.name, "Deepgram");
+                assert_eq!(provider.model, "nova-3");
+                assert!(!provider.developer_key);
+            }
+        }
     }
 }
