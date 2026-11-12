@@ -563,7 +563,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Get-Command perl -CommandType Application -ErrorAction Stop
+          # Application lookup can return several PATH matches; select one before reading Source.
+          $p = Get-Command perl -CommandType Application -ErrorAction Stop | Select-Object -First 1
           $perl = $p.Source.Replace('\', '/')
           & $perl -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
           if ($LASTEXITCODE -ne 0) {
