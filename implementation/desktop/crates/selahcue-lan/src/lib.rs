@@ -24,6 +24,8 @@ pub use session::{DeviceId, PairingError, Session, SessionRegistry, SessionToken
 
 // The TLS-pinned WebSocket transport (async) — only with the `server` feature.
 #[cfg(feature = "server")]
+pub mod admission;
+#[cfg(feature = "server")]
 pub mod client;
 #[cfg(feature = "server")]
 pub mod pinning;

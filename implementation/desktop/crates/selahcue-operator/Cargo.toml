@@ -148,6 +148,11 @@ cloud-stt = ["stt", "selahcue-stt-cloud/deepgram"]
 pilot-credentials = ["stt", "selahcue-cloud/openai", "selahcue-cloud/http", "selahcue-stt-cloud/deepgram"]
 
 [dependencies]
+# Offline PDF serialization and OpenType shaping; no HTML/browser renderer.
+printpdf = { version = "=0.12.8", default-features = false }
+harfrust = "=0.5.2"
+unicode-normalization = "=0.1.25"
+unicode-segmentation = "=1.13.3"
 tauri = { version = "2", features = [] }
 # Native OS file picker for the Add-Image flow (86ajq6j4p/86ajq6j49) — the official
 # Tauri v2 dialog plugin (permissive-licensed, same org as tauri). Used ONLY host-side
@@ -203,6 +208,15 @@ selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "do
 # when the `stt` feature enables the optional dep.
 [target.'cfg(target_os = "macos")'.dependencies]
 selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.4", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+# Safe, exact-source-reviewed handle observations and Kernel32 volume/move APIs.
+winapi-util = "=0.1.11"
+winsafe = { version = "=0.0.27", default-features = false, features = ["kernel"] }
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 # Test-only. `tauri`'s `test` feature adds `tauri::test::mock_app`/`MockRuntime` — a REAL
 # `App`/`AppHandle` with no window, no webview, and no OS integration — used by

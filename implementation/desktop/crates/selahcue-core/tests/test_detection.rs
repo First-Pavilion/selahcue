@@ -903,3 +903,97 @@ fn trailing_oh_at_absolute_end_of_input_is_not_rescued_by_rule_4() {
     assert_eq!(detect("psalm eight oh"), vec!["Psalms 8"]);
     assert_eq!(detect("first corinthians one oh"), vec!["1 Corinthians 1"]);
 }
+
+// Host-time cooldown must be independent of segment timestamps and dedup churn.
+#[test]
+fn actioned_reference_uses_exact_host_deadline_and_does_not_refresh_on_repetition() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut q = DetectionQueue::new();
+    q.mark_actioned("John 3:16", now);
+    assert!(q
+        .enqueue_at("John 3:16".into(), 0, 95, now + Duration::from_secs(19))
+        .is_none());
+    assert!(q
+        .enqueue_at("Romans 8:28".into(), 0, 95, now + Duration::from_secs(19))
+        .is_some());
+    assert!(q
+        .enqueue_at("John 3:16".into(), 0, 95, now + Duration::from_secs(20))
+        .is_some());
+}
+
+#[test]
+fn action_ring_is_bounded_and_evicts_the_oldest_reference() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut q = DetectionQueue::new();
+    for i in 0..(MAX_DETECTIONS * 20) {
+        q.mark_actioned(&format!("Psalms {}", i + 1), now);
+        assert!(q.recent_actioned_len() <= MAX_DETECTIONS);
+    }
+    assert_eq!(q.recent_actioned_len(), MAX_DETECTIONS);
+    assert!(
+        q.enqueue_at("Psalms 1".into(), 0, 95, now).is_some(),
+        "the oldest action is evicted"
+    );
+    assert!(
+        q.enqueue_at(format!("Psalms {}", MAX_DETECTIONS * 20), 0, 95, now)
+            .is_none(),
+        "the newest action remains suppressed"
+    );
+    // Expiry prunes retained state without needing another action or timer task.
+    q.enqueue_at("John 3:16".into(), 0, 95, now + Duration::from_secs(20));
+    assert_eq!(q.recent_actioned_len(), 0);
+}
+
+#[test]
+fn action_ring_refreshes_an_existing_reference_without_evicting_an_unrelated_one() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    let mut q = DetectionQueue::new();
+    for i in 1..=MAX_DETECTIONS {
+        q.mark_actioned(&format!("Psalms {i}"), now);
+    }
+    q.mark_actioned("Psalms 1", now + Duration::from_secs(10));
+    assert_eq!(q.recent_actioned_len(), MAX_DETECTIONS);
+    assert!(q
+        .enqueue_at("Psalms 2".into(), 0, 95, now + Duration::from_secs(19))
+        .is_none());
+    assert!(q
+        .enqueue_at("Psalms 1".into(), 0, 95, now + Duration::from_secs(20))
+        .is_none());
+    assert!(q
+        .enqueue_at("Psalms 1".into(), 0, 95, now + Duration::from_secs(30))
+        .is_some());
+}
+
+#[test]
+fn clearing_queue_clears_recent_actions() {
+    use std::time::Instant;
+    let now = Instant::now();
+    let mut q = DetectionQueue::new();
+    q.mark_actioned("John 3:16", now);
+    q.clear();
+    assert_eq!(q.recent_actioned_len(), 0);
+    assert!(q.enqueue_at("John 3:16".into(), 0, 95, now).is_some());
+}
+
+#[test]
+fn actioning_one_reference_preserves_unrelated_recent_dedup() {
+    use std::time::Instant;
+    let now = Instant::now();
+    let mut e = TranscriptEngine::new();
+    let ids = e.ingest_with_quotes_at("John 3:16 and Romans 8:28", 0, 1_000, &[], now);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(e.recent_dedup_len(), 2);
+    assert_eq!(e.approve_at(ids[0], now).unwrap().reference, "John 3:16");
+    assert_eq!(
+        e.recent_dedup_len(),
+        1,
+        "only the actioned key leaves the recent ring"
+    );
+    assert_eq!(
+        e.detections().pending().next().unwrap().reference,
+        "Romans 8:28"
+    );
+}

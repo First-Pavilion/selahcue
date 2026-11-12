@@ -227,7 +227,7 @@ fn record_to_view(
 /// Real store, real server, real client — the desktop's own production wiring shape, minus
 /// only the Tauri/winit process boundary. Returns the addr/pin/database (for direct-file
 /// assertions) alongside the connected `RemoteOperator`.
-async fn setup() -> (RemoteOperator, Database) {
+async fn setup() -> (RemoteOperator, Database, selahcue_app::TranscriptCompletion) {
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
 
@@ -237,8 +237,8 @@ async fn setup() -> (RemoteOperator, Database) {
     // ONE real on-disk SQLite file — a genuine tempdir path, exactly like the desktop's
     // `data_dir()/selahcue.db3`, opened TWICE (the pattern `SessionStore::open_transcript_sink`
     // documents: WAL supports multiple connections to one file with no shared Rust-level lock,
-    // because every call into either connection is already serialized by `LiveController`'s own
-    // `Arc<Mutex<_>>`).
+    // with one owner per connection: transcript writes run on the background worker, while
+    // note commands retain their existing controller path).
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("selahcue.db3");
     let transcript_db = Database::open(&db_path).unwrap();
@@ -246,9 +246,10 @@ async fn setup() -> (RemoteOperator, Database) {
     let assertion_db = Database::open(&db_path).unwrap();
 
     let mut controller = LiveController::new(plan, 320, 180, Theme::dark());
-    controller.set_transcript_sink(Box::new(selahcue_app::BatchingTranscriptWriter::new(
-        RealTranscriptStore { db: transcript_db },
-    )));
+    let sink =
+        selahcue_app::BackgroundTranscriptWriter::new(RealTranscriptStore { db: transcript_db });
+    let completion = sink.completion();
+    controller.set_transcript_sink(Box::new(sink));
     controller.set_sermon_note_store(Box::new(RealSermonNoteStore { db: sermon_note_db }));
     let controller = Arc::new(Mutex::new(controller));
 
@@ -278,12 +279,12 @@ async fn setup() -> (RemoteOperator, Database) {
     let op = RemoteOperator::connect(addr, "localhost", pin, "operator", "tok-op")
         .await
         .unwrap();
-    (op, assertion_db)
+    (op, assertion_db, completion)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_loaded_draft() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
 
     // Before StartTranscript: no transcript exists yet anywhere in the real store.
     let before = op.active_transcript_id().await.unwrap();
@@ -297,6 +298,8 @@ async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_lo
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
 
     // Ask the host, over the REAL LAN wire, which transcript new AI content should attach to.
     let real_id = op
@@ -407,10 +410,12 @@ async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_lo
 /// turns this RED with exactly that symptom (see the PR description's verification section).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draft_at_every_data_layer_maximum_with_realistic_content_persists_over_the_real_wire() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -493,10 +498,12 @@ async fn a_draft_at_every_data_layer_maximum_with_realistic_content_persists_ove
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_without_dropping_the_connection(
 ) {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -709,10 +716,12 @@ async fn an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_tod
         }
     }
 
-    let (mut op, _assertion_db) = setup().await;
+    let (mut op, _assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -793,10 +802,12 @@ async fn an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_tod
 /// controller test of the same name never had this bug — it does not model "no row exists").
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discarding_with_no_draft_ever_generated_is_a_harmless_success_over_the_real_wire() {
-    let (mut op, _assertion_db) = setup().await;
+    let (mut op, _assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op
         .active_transcript_id()
         .await
@@ -826,11 +837,15 @@ async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_rea
     // "Stop Listening" would), and confirm the host STILL resolves it as the active transcript
     // for a generate/edit call that happens afterward — the real-world "generate notes right
     // after the sermon, listening already stopped" sequence.
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     op.end_transcript().await.unwrap();
+    // End ACK is queued closure, not durable completion.
+    assert!(completion.wait_closed(1, Duration::from_secs(10)));
 
     let real_id = op
         .active_transcript_id()
@@ -852,10 +867,12 @@ async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_rea
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn staging_over_the_real_wire_leaves_the_accepted_draft_retrievable_until_confirmed() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     let original = SermonNoteDraftInput {
@@ -922,10 +939,12 @@ async fn staging_over_the_real_wire_leaves_the_accepted_draft_retrievable_until_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn discarding_over_the_real_wire_leaves_the_accepted_draft_exactly_as_it_was() {
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     let original = SermonNoteDraftInput {
@@ -977,10 +996,12 @@ async fn confirming_a_downgrading_regeneration_is_denied_over_the_real_wire_and_
     // "Once AI-generated, always AI-generated" (PR #33 review, Sana N2), proven end-to-end:
     // a degraded regenerate's pending draft cannot be confirmed over an AI-generated
     // accepted draft, but it STAYS staged (visible, discardable) rather than vanishing.
-    let (mut op, assertion_db) = setup().await;
+    let (mut op, assertion_db, completion) = setup().await;
     op.start_transcript("Sunday Service", "on-device-whisper")
         .await
         .unwrap();
+    // Explicit observation outside the controller lock; Start ACK only admits the session.
+    assert!(completion.wait_idle(Duration::from_secs(10)));
     let real_id = op.active_transcript_id().await.unwrap().unwrap();
 
     op.save_sermon_note_draft(
@@ -1032,5 +1053,186 @@ async fn confirming_a_downgrading_regeneration_is_denied_over_the_real_wire_and_
     assert!(
         on_disk.pending.is_some(),
         "the refused pending draft must remain staged, not be silently dropped"
+    );
+}
+
+// C3 durability sibling: real SQLite close/reopen, separate from browser fixture reloads
+// and configured-provider request counters. No provider is wired into this test.
+#[test]
+fn ended_multilingual_source_and_accepted_pending_notes_survive_controller_database_reopen() {
+    use selahcue_lan::protocol::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("offline-sermon.db3");
+    let source = [
+        "English: Love your neighbour.",
+        "Yorùbá: Ẹ fẹ́ràn aládùúgbò yín.",
+        "Igbo: Hụ onye agbata obi gị n’anya.",
+        "Hausa: Ku ƙaunaci maƙwabcinku.",
+        "Ẹ ṣeun — now serve one another.",
+    ];
+    let (id, transcript_before, notes_before) = {
+        let db = Database::open(&path).unwrap();
+        let mut controller =
+            LiveController::new(ServicePlan::new("Offline Sunday"), 320, 180, Theme::dark());
+        // Stall inside the real SQLite-backed store before its first final write. Stop may
+        // acknowledge, but neither the confirmed ID nor notes may turn that row into history.
+        struct GatedStore {
+            inner: RealTranscriptStore,
+            entered: std::sync::mpsc::Sender<()>,
+            released: Option<std::sync::mpsc::Receiver<()>>,
+        }
+        impl selahcue_app::TranscriptStoreWriter for GatedStore {
+            fn open_transcript(
+                &mut self,
+                label: &str,
+                provider: &str,
+                at: i64,
+            ) -> Result<i64, String> {
+                self.inner.open_transcript(label, provider, at)
+            }
+            fn append_segment(
+                &mut self,
+                id: i64,
+                start: u64,
+                end: u64,
+                text: &str,
+            ) -> Result<i64, String> {
+                if let Some(released) = self.released.take() {
+                    self.entered.send(()).unwrap();
+                    released.recv().unwrap();
+                }
+                self.inner.append_segment(id, start, end, text)
+            }
+            fn end_transcript(&mut self, id: i64, at: i64) -> Result<(), String> {
+                self.inner.end_transcript(id, at)
+            }
+        }
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let sink = selahcue_app::BackgroundTranscriptWriter::new(GatedStore {
+            inner: RealTranscriptStore {
+                db: Database::open(&path).unwrap(),
+            },
+            entered,
+            released: Some(released),
+        });
+        let completion = sink.completion();
+        controller.set_transcript_sink(Box::new(sink));
+        controller.set_sermon_note_store(Box::new(RealSermonNoteStore {
+            db: Database::open(&path).unwrap(),
+        }));
+        controller.start_transcript_session("Multilingual Sunday", "manual");
+        for (index, text) in source.iter().enumerate() {
+            controller.ingest_transcript(
+                text,
+                index as u64 * 1_000,
+                (index as u64 + 1) * 1_000,
+                true,
+            );
+        }
+        controller.apply(&Command::EndTranscript);
+        observed.recv_timeout(Duration::from_secs(10)).unwrap();
+        let id = transcript_repo::most_recent_id(&db).unwrap().unwrap();
+        let partial = transcript_repo::load(&db, id).unwrap();
+        let confirmed = controller.apply(&Command::GetActiveTranscriptId);
+        release.send(()).unwrap();
+        assert!(partial.ended_at_ms.is_none());
+        assert!(partial.segments.is_empty());
+        assert_eq!(
+            confirmed,
+            selahcue_app::ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+                transcript_id: Some(id)
+            })
+        );
+        assert!(completion.wait_closed(1, Duration::from_secs(10)));
+        let accepted = SermonNoteDraftInput {
+            title: "Accepted English notes — operator edit".into(),
+            summary: Some("Serve your neighbour.".into()),
+            sections_json:
+                r#"[{"heading":"Application","items":["Keep accepted wording"],"points":[]}]"#
+                    .into(),
+            scriptures_json: "[]".into(),
+            ai_generated: true,
+            disclosure: Some("AI-generated. Verify every reference and quotation.".into()),
+            provider: "Synthetic fixture".into(),
+            model: Some("synthetic-only".into()),
+        };
+        let saved = controller.apply(&Command::SaveSermonNoteDraft {
+            transcript_id: id,
+            draft: accepted.clone(),
+        });
+        assert!(matches!(
+            saved,
+            selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                draft: Some(_),
+                ..
+            })
+        ));
+        let mut pending = accepted;
+        pending.title = "Pending English notes — review required".into();
+        pending.summary = Some("A distinct pending summary.".into());
+        let staged = controller.apply(&Command::StageSermonNoteRegeneration {
+            transcript_id: id,
+            draft: pending,
+        });
+        assert!(matches!(staged, selahcue_app::ControllerReply::Message(_)));
+        let transcript = transcript_repo::load(&db, id).unwrap();
+        assert!(transcript.ended_at_ms.is_some());
+        assert_eq!(
+            transcript
+                .segments
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>(),
+            source
+        );
+        let notes = sermon_note_repo::find_by_transcript(&db, id)
+            .unwrap()
+            .unwrap();
+        assert!(notes.pending.is_some());
+        (id, transcript, notes)
+        // All controller/store/database handles are dropped at the end of this block.
+    };
+    let reopened = Database::open(&path).unwrap();
+    assert_eq!(
+        transcript_repo::load(&reopened, id).unwrap(),
+        transcript_before
+    );
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&reopened, id)
+            .unwrap()
+            .unwrap(),
+        notes_before
+    );
+    let mut fresh =
+        LiveController::new(ServicePlan::new("Reopened Sunday"), 320, 180, Theme::dark());
+    fresh.set_sermon_note_store(Box::new(RealSermonNoteStore {
+        db: Database::open(&path).unwrap(),
+    }));
+    match fresh.apply(&Command::LoadSermonNoteDraft { transcript_id: id }) {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => {
+            assert_eq!(view, record_to_view(&notes_before));
+        }
+        other => panic!("expected accepted notes through fresh controller, got {other:?}"),
+    }
+    // Even with a real previous sermon in the notes store, a newly requested session whose
+    // storage is unavailable must never fall back to that older sermon.
+    fresh.set_transcript_sink(Box::new(
+        selahcue_app::BackgroundTranscriptWriter::from_factory(
+            || -> Result<RealTranscriptStore, String> { Err("synthetic unavailable store".into()) },
+        ),
+    ));
+    fresh.apply(&Command::StartTranscript {
+        label: "New unavailable sermon".into(),
+        provider: "manual".into(),
+    });
+    assert_eq!(
+        fresh.apply(&Command::GetActiveTranscriptId),
+        selahcue_app::ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+            transcript_id: None
+        })
     );
 }

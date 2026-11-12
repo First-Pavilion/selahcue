@@ -28,6 +28,7 @@ driven smoke would be a stronger fidelity check; tracked as an audit follow-up. 
 Tauri webview stays owner-run / dev-time.
 """
 import hashlib
+import subprocess
 import json
 import shutil
 import os, re, sys
@@ -2062,7 +2063,18 @@ EXPECTED_MIN_CHECKS = 2831
 # 17tnw2b13y0 corrected hosted fixture replay41210918334 actually measured
 # 2906/0: all2831 existing and75 real-host fixture/modal assertions PASS.
 # Only the stale2831 count failed. No assertions or runtime budgets change here.
+EXPECTED_MIN_CHECKS = 2912  # B1: measured six durable-storage status checks
 EXPECTED_MIN_CHECKS = 2906
+# C2 / 17tnw2bawx7: measured full browser replay 2948 checks, 0 FAIL;
+# exact Unicode edits, failed-Save retention/retry and explicit discard paths.
+EXPECTED_MIN_CHECKS = 2948
+# C3: measured full retained-notes/retry/fresh-UI replay ran 2973 checks.
+EXPECTED_MIN_CHECKS = 2973
+# C4: measured production saved-note PDF action/IPC, edit/busy/error and pending-view checks.
+EXPECTED_MIN_CHECKS = 2987
+# Reviewed native integration: actual combined run measured 2993 checks, 0 FAIL.
+# Includes the retained storage status and complete notes/PDF scenarios.
+EXPECTED_MIN_CHECKS = 2997  # Task3 actual combined run: 2997 checks, 0 FAIL (four storage+expiry premises)
 
 
 def find_chrome():
@@ -2201,6 +2213,24 @@ def check_headless_launch_contract():
         "SIGINT unwind cleanly, including one that lands mid-launch or mid-cleanup"
     )
     return True
+
+
+# P03: exercise the same safe status client and actual settings/transcript modules
+# before browser discovery. DIST is explicit so staged/mutated gate runs test their own JS.
+try:
+    pilot_ui = subprocess.run(
+        ["node", "--test", os.path.join(_REPO, "scripts", "test_pilot_access.js")],
+        env=dict(os.environ, PILOT_TEST_DIST=DIST),
+        capture_output=True, text=True, timeout=60,
+    )
+except (OSError, subprocess.TimeoutExpired):
+    print("FAIL: pilot access JavaScript tests could not run (Node required, bounded60s)")
+    sys.exit(2)
+if pilot_ui.returncode != 0:
+    print("FAIL: pilot access JavaScript behavior")
+    print((pilot_ui.stdout + pilot_ui.stderr)[-8000:])
+    sys.exit(1 if pilot_ui.returncode == 1 else 2)
+print("PASS: pilot access JavaScript behavior — status, real panels, expiry and recovery controls")
 
 
 try:
@@ -2933,6 +2963,7 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
     P.notes_available = !!P.notes_provider;
     // Same invariant, transcription side.
     P.transcription_available = !!P.transcription_provider;
+    P.pilot_access = window.__task3PilotStatus || null;
     return JSON.parse(JSON.stringify(P));
   };
   window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
@@ -3724,6 +3755,11 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
         // mirrors the real TranscriptSummaryView (17tnw2b0ntd): drives the list row's "Notes generated" pill
         notes_generated: !!(TR.detail[t.id] && TR.detail[t.id].notes_generated)}; }));
     }
+    if (cmd === "export_sermon_notes_pdf") {
+      if (window.__pdfDeferred) return new Promise(function(resolve) { window.__pdfResolve = resolve; });
+      if (window.__pdfError) return Promise.reject(window.__pdfError);
+      return Promise.resolve({transcript_id: args.transcriptId, saved_edited_at_ms: 3000, bytes: 1234});
+    }
     if (cmd === "transcript_get") {
       if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
       var td = TR.detail[args.id];
@@ -4071,6 +4107,7 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
       return Promise.resolve(vRm);
     }
     // --- Providers & Privacy (Settings 338:124) ---
+    if (cmd === "pilot_access_status") return Promise.resolve(window.__task3PilotStatus || null);
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
     // exercise the "host rejected a setting" path — the optimistic control must revert to the
@@ -5281,6 +5318,32 @@ DRIVER = r"""
       ok(rows2.length === 2 && rows2[0] !== row0,
          "M1 an items delta DOES rebuild the plan (2 fresh rows)");
       render(baseView); // restore so the trailing 1s poll stays consistent
+
+      // B1: health changes must render even when the transcript tail has not changed.
+      var storageView = JSON.parse(JSON.stringify(baseView));
+      delete storageView.transcript_storage_health;
+      render(storageView);
+      ok(!!el("transcript-storage-health") && /unknown/i.test(el("transcript-storage-health").textContent),
+         "B1: older host storage is unknown, never saved");
+      storageView.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(storageView);
+      var storageWarning = el("transcript-storage-health");
+      ok(!!storageWarning && storageWarning.getAttribute("role")==="status" && storageWarning.getAttribute("aria-live")==="polite",
+         "B1: persistent storage warning is accessible");
+      ok(!!storageWarning && /not safely saved/i.test(storageWarning.textContent) && /1 lost/.test(storageWarning.textContent),
+         "B1: actual host save loss is visible");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /1 lost/.test(storageWarning.textContent) && /not safely saved/i.test(storageWarning.textContent),
+         "B1: recovered writes do not erase lost-speech warning");
+      storageView.transcript_storage_health = {available:true,pending_segments:2,dropped_segments:0,truncated_segments:0};
+      render(storageView);
+      ok(!!storageWarning && /saving/i.test(storageWarning.textContent) && !/Transcript saved/.test(storageWarning.textContent),
+         "B1: pending speech is saving, never saved");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /Transcript saved/.test(storageWarning.textContent), "B1: confirmed healthy drained storage is saved");
+      render(baseView);
 
       // === audit M4: the transcript DOM is client-capped even if the host over-sends ===
       var many = [];
@@ -8681,6 +8744,43 @@ DRIVER = r"""
       ok(!!trOkLast && trOkLast.args.id === 1,
          "TR generate: Confirm sends the transcript's id, not its text — the command re-reads the store itself");
       var trOkResult = el("tr-gen-result");
+      ok(!!el("tr-export-pdf"), "C4 saved notes expose Export PDF through production JS");
+      var c4SavedBefore = JSON.stringify(window.__TR.detail[1]);
+      var c4Calls = function() { return window.__calls.filter(function(c) { return c.cmd === "export_sermon_notes_pdf"; }); };
+      var c4Before = c4Calls().length;
+      window.__pdfDeferred = true;
+      el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4Before + 1 && JSON.stringify(c4Calls()[c4Before].args) === JSON.stringify({transcriptId: 1}),
+         "C4 export IPC contains only transcript ID, never current draft text or destination");
+      ok(el("tr-export-pdf").disabled, "C4 export is disabled during one native export");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click();
+      ok(c4Calls().length === c4Before + 1, "C4 busy defense rejects a forced duplicate click");
+      window.__pdfResolve({transcript_id:1,saved_edited_at_ms:3000,bytes:1234}); window.__pdfDeferred = false;
+      await sleep(20);
+      ok(/PDF exported/.test(el("tr-export-pdf-status").textContent) && !el("tr-export-pdf").disabled,
+         "C4 successful native receipt produces recoverable ready UI");
+      for (var c4Error of ["Cancelled","Io","TooLarge","InvalidDraft","NoSavedDraft"]) {
+        window.__pdfError = c4Error; el("tr-export-pdf").click(); await sleep(20);
+        ok(!el("tr-export-pdf").disabled && !!el("tr-export-pdf-status").textContent && JSON.stringify(window.__TR.detail[1]) === c4SavedBefore,
+           "C4 " + c4Error + " leaves exact saved/source state and permits retry");
+      }
+      window.__pdfError = null;
+      el("tr-gen-edit").click(); el("tr-edit-title").value = "UNSAVED_C_MUST_NEVER_EXPORT";
+      var c4BeforeEdit = c4Calls().length;
+      // A host may stage B while this window still holds unsaved C. The actual edit/export
+      // handlers must retain C and refuse a forced click; only a saved snapshot crosses IPC.
+      var c4PriorPending = window.__TR.detail[1].pending;
+      window.__TR.detail[1].pending = {draft:{title:"PENDING_B_MUST_NEVER_EXPORT",summary:null,sections:[],scriptures:[]}};
+      var c4ConcurrentSaved = JSON.stringify(window.__TR.detail[1]);
+      ok(el("tr-export-pdf").disabled && /Save your edits to export them/.test(el("tr-export-pdf-status").textContent),
+         "C4 unsaved edit disables export with explicit save guidance");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4BeforeEdit && el("tr-edit-title").value === "UNSAVED_C_MUST_NEVER_EXPORT" &&
+         JSON.stringify(window.__TR.detail[1]) === c4ConcurrentSaved,
+         "C4 A+B+C: forced export sends nothing while unsaved C and pending B coexist; accepted A, B and C stay exact");
+      el("tr-gen-edit-cancel").click();
+      window.__TR.detail[1].pending = c4PriorPending;
+
       ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
       ok(!!trOkResult.querySelector(".pp-gen-edit-btn") && !!document.getElementById("tr-gen-edit"),
          "TR generate (86akgqdxr): the from-history draft now renders WITH an Edit affordance — the id is tr-gen-edit, never pp-gen-edit, since both panels' markup coexists in one document");
@@ -8783,6 +8883,12 @@ DRIVER = r"""
          "TR REGEN-1: the banner names the STILL-SAVED prior draft's own title");
       ok(!document.getElementById("tr-gen-edit"),
          "TR REGEN-1: Edit is hidden while a regeneration is pending, on this surface too");
+      var c4PendingBefore = JSON.stringify(window.__TR.detail[1]);
+      ok(/Export saved notes as PDF/.test(el("tr-export-pdf").textContent) && /accepted saved notes/.test(el("tr-export-pdf-status").textContent),
+         "C4 pending B view explicitly labels the accepted saved A export");
+      el("tr-export-pdf").click(); await sleep(20);
+      ok(JSON.stringify(window.__TR.detail[1]) === c4PendingBefore && !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+         "C4 export from pending view preserves A/B and confirmation controls");
       var trPriorStillSaved = window.__TR.detail[1].draft;
       ok(!!trPriorStillSaved && trPriorStillSaved.title === "From-History Sermon",
          "TR REGEN-1 (AC): the prior draft is retrievable and UNCHANGED on the host immediately " +
@@ -8868,15 +8974,15 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenConsentOffResult = el("tr-gen-result");
-      ok(trRegenConsentOffResult.getAttribute("role") === "alert" &&
+      ok(!!trRegenConsentOffResult.querySelector('[role="alert"]') &&
          /Turn on cloud processing/.test(trRegenConsentOffResult.textContent),
          "TR REGEN-5: with consent OFF, regenerating a transcript that already has a saved " +
          "draft is STILL gated exactly like a first-time generate (consent_required)");
       ok(trCall("transcript_generate_notes").length === trRegenConsentGenCallsBefore + 1,
          "TR REGEN-5 (sanity): the call reached the backend and was gated there — the client " +
          "did not merely refuse locally");
-      ok(!/regenerated/.test(trRegenConsentOffResult.textContent),
-         "TR REGEN-5: no draft content of any kind leaked into view — nothing was generated");
+      ok(/From-History Sermon \(regenerated\)/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: prior accepted content remains visible after consent refusal");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-5: the saved draft from REGEN-3 is completely unaffected by the refused " +
@@ -8889,12 +8995,109 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenTransportResult = el("tr-gen-result");
-      ok(trRegenTransportResult.getAttribute("role") === "alert",
+      ok(!!trRegenTransportResult.querySelector('[role="alert"]'),
          "TR REGEN-6: a transport failure during regenerate surfaces as an alert, same as a first-time generate");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
+
+      // C3: terminal refusals and rejected IPC preserve the rendered accepted/pending notes.
+      // This stub's rejected promise is a terminal IPC failure, NOT the cloud provider's
+      // real transport-error degraded-success fallback (covered separately below/native).
+      var c3AcceptedSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3Mode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3Mode;
+        trEntry().click(); await sleep(40);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent),
+           "C3 accepted notes remain visible after terminal " + c3Mode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]'),
+           "C3 terminal " + c3Mode + " has an inline alert beside prior notes");
+        ok(JSON.stringify(window.__TR.detail[1]) === c3AcceptedSnapshot,
+           "C3 terminal " + c3Mode + " preserves exact accepted/source state");
+      }
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40); el("tr-gen-preview-confirm").click(); await sleep(60);
+      var c3PendingSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3PendingMode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3PendingMode;
+        var c3Calls = trCall("transcript_generate_notes").length;
+        trEntry().click(); await sleep(40);
+        ok(trCall("transcript_generate_notes").length === c3Calls,
+           "C3 retry review sends nothing before Confirm: " + c3PendingMode);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 retry Confirm sends exactly once: " + c3PendingMode);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent) &&
+           !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+           "C3 pending content and Confirm/Discard survive terminal " + c3PendingMode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]') &&
+           JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+           "C3 pending/source state stays exact with visible terminal " + c3PendingMode);
+        window.dispatchEvent(new Event("offline")); window.dispatchEvent(new Event("online"));
+        await sleep(1100);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 reconnect and idle never retry terminal " + c3PendingMode);
+      }
+      var c3BeforeReopen = trCall("transcript_generate_notes").length;
+      el("tr-detail-back").click(); await sleep(40);
+      el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(80);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen &&
+         JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+         "C3 navigation/reopen does not retry or change accepted/pending/source state");
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen,
+         "C3 successful retry still waits for explicit review Confirm");
+      el("tr-gen-preview-confirm").click(); await sleep(60);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen + 1 &&
+         !!el("tr-gen-regen-confirm"), "C3 explicit successful retry stages ordinary confirmation");
+      el("tr-gen-regen-discard").click(); await sleep(60);
+
+      // C3 fresh UI lifecycle with a persisted synthetic snapshot. Native close/reopen
+      // durability is tested separately in test_sermon_note_remote.rs; this is DOM/IPC only.
+      var c3Source = "English: Love your neighbour.\nYorùbá: Ẹ fẹ́ràn aládùúgbò yín.\nIgbo: Hụ onye agbata obi gị n’anya.\nHausa: Ku ƙaunaci maƙwabcinku.\nẸ ṣeun — now serve one another.";
+      var c3Saved = {list:[{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,segment_count:1}],
+        detail:{1:{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,
+          notes_generated:false,segments:[{id:101,start_ms:0,end_ms:5000,text:c3Source}],detections:[],corrections:[],
+          draft:null,ai_generated:null,ai_label:null,disclosure:null,notes_provider:null,scripture_verification_note:null}}};
+      async function c3BootSaved(snapshot) {
+        var frame = document.createElement("iframe");
+        frame.setAttribute("aria-hidden", "true"); frame.tabIndex = -1;
+        frame.style.cssText = "position:fixed;left:-20000px;top:0;width:1280px;height:720px;border:0";
+        var seed = "<script>window.__TR=" + JSON.stringify(snapshot) + ";window.__trGen='ok';window.__pp.cloud_notes_consent=true;<" + "/script>";
+        frame.srcdoc = window.__NOTIF_FRAME_HTML.replace("</head>", seed + "</head>");
+        document.body.appendChild(frame);
+        await waitFor(function () { return frame.contentWindow.__calls && frame.contentWindow.__calls.length > 2; }, 400);
+        var w = frame.contentWindow, d = w.document;
+        d.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function () { return !!d.querySelector('.tr-card[data-id="1"] .tr-card-open'); }, 400);
+        d.querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(100);
+        return {frame:frame,w:w,d:d,count:function () {return w.__calls.filter(function(c){return c.cmd === "transcript_generate_notes";}).length;}};
+      }
+      var c3Fresh = null;
+      try {
+        c3Fresh = await c3BootSaved(c3Saved);
+        c3Fresh.w.dispatchEvent(new Event("offline")); await sleep(100);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 ended offline snapshot opens with exact multilingual source and zero generation commands");
+        var c3Snapshot = JSON.parse(JSON.stringify(c3Fresh.w.__TR));
+        c3Fresh.frame.remove(); c3Fresh = await c3BootSaved(c3Snapshot);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 a fresh UI reopens exact saved multilingual source without generating");
+        c3Fresh.w.dispatchEvent(new Event("online")); await sleep(1100);
+        ok(c3Fresh.count() === 0, "C3 fresh UI reconnect and idle send zero generation commands");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(50);
+        ok(c3Fresh.count() === 0 && c3Fresh.d.querySelector('.pp-gen-preview-text').textContent === c3Source,
+           "C3 fresh UI explicit preview shows all language changes without sending");
+        c3Fresh.d.getElementById("tr-gen-preview-cancel").click(); await sleep(40);
+        ok(c3Fresh.count() === 0, "C3 fresh UI cancelling the review sends nothing");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(40);
+        c3Fresh.d.getElementById("tr-gen-preview-confirm").click(); await sleep(80);
+        ok(c3Fresh.count() === 1 && /From-History Sermon/.test(c3Fresh.d.getElementById("tr-gen-result").textContent),
+           "C3 fresh UI exactly one confirmed action displays the synthetic English response");
+      } finally { if (c3Fresh) c3Fresh.frame.remove(); }
 
       // 17tnw2b9dq6: a generated but UNSAVED reply must never inherit openId's accepted
       // draft identity. Exercise the real Edit/Save buttons if the bug exposes them, so
@@ -9078,7 +9281,7 @@ DRIVER = r"""
               ok(!el("tr-gen-regen-confirm") && !!el("tr-gen-edit") && !window.__TR.detail[1].pending,
                  "AXPP3 success control/" + axPath[0] + "/" + axMode + ": the same real operation can be retried successfully");
             } else {
-              // Existing failed-save form clearing is bawx7, NOT fixed or claimed here.
+              // Reopen remains a supported recovery path; C2 below checks in-place retry too.
               // Reopen follows today's recovery flow, then prove editing/saving still works.
               await axReopen();
               el("tr-gen-edit").click();
@@ -9100,6 +9303,120 @@ DRIVER = r"""
         window.__rcDeferCommand = axOriginalDefer; window.__rcDeferred = axOriginalDeferred;
         window.__TR.detail[1] = JSON.parse(axOriginalDetail); window.__trGen = axOriginalMode;
         await axReopen();
+      }
+
+      // C2 / 17tnw2bawx7: fail the real Save IPC after editing every supported text shape.
+      // Keep production DOM/handlers; only the host response is controlled here.
+      var c2Original = JSON.stringify(window.__TR.detail[1]);
+      var c2Storage = V.transcript_storage_health, c2Pilot = window.__task3PilotStatus;
+      V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(V);
+      window.__task3PilotStatus = {state:"expired",notes_state:"expired",transcription_state:"expired",notes_uses_pilot:true,
+        effective_expiry_unix_seconds:1809129599,replacement_required:true};
+      window.scPilotAccess.accept(window.__task3PilotStatus, window.scPilotAccess.revision());
+      var c2Defer = window.__rcDeferCommand, c2Deferred = window.__rcDeferred;
+      var c2Calls = function(){ return window.__calls.filter(function(c){ return c.cmd === "update_sermon_note_draft"; }); };
+      var c2Reopen = async function(){
+        if (!el("tr-detail-view").hidden) el("tr-detail-back").click();
+        document.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function(){ return !!el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open'); });
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await settleMicro(function(){ return !!el("tr-gen-edit"); });
+      };
+      var c2Bytes = function(v){ return Array.from(new TextEncoder().encode(JSON.stringify(v))).join(","); };
+      var c2Selectors = ["#tr-edit-title", "#tr-edit-summary", ".pp-edit-section-heading[data-si='0']",
+        ".pp-edit-point-text", ".pp-edit-subpoint-text", ".pp-edit-section-heading[data-si='1']", ".pp-edit-item-text"];
+      // Deliberately mix precomposed diacritics with a decomposed combining sequence.
+      var c2Values = ["  Ọlámídé / Chịdị / A’isha  ", "Bọ́lá met Chịọma and Mu’azu.\nKeep every word.  ",
+        "Àkọlé — Ọdịnala — Ƙauna", "Ọlámídé teaches Chịdị", "A’isha: ƙarfi, ɗan’uwa, ẹ\u0301",
+        "Àdúrà / Ekpere / Addu’a", "Chịọma prays with Bọ́lá"];
+      try {
+        for (var c2Mode of ["reject", "refused", "too_large", "malformed"]) {
+          window.__TR.detail[1] = JSON.parse(c2Original);
+          window.__TR.detail[1].draft = {title:"Saved C2 title", summary:"Saved C2 summary", scriptures:[],
+            sections:[{heading:"Outline", items:[], points:[{text:"Saved point", sub_points:["Saved sub-point"]}]},
+              {heading:"Prayer", items:["Saved prayer"], points:[]}]};
+          await c2Reopen();
+          ok(/not safely saved/i.test(el("transcript-storage-health").textContent) &&
+             /expired/i.test(el("tr-pilot-access").textContent) && !!el("tr-gen-edit"),
+             "Integration B1+C2+pilot/" + c2Mode + ": storage loss and expired pilot remain visible beside editable accepted notes");
+          el("tr-gen-edit").click();
+          var c2Form = el("tr-gen-result").querySelector(".pp-gen-edit-form");
+          var c2Fields = c2Selectors.map(function(s){ return c2Form.querySelector(s); });
+          c2Fields.forEach(function(n,i){ n.value = c2Values[i]; n.dispatchEvent(new Event("input", {bubbles:true})); });
+          var c2Saved = JSON.stringify(window.__TR.detail[1]);
+          var c2Before = c2Calls().length;
+          window.__rcDeferCommand = "update_sermon_note_draft";
+          el("tr-gen-save").click();
+          var c2Pending = window.__rcDeferred;
+          var c2Payload = JSON.parse(JSON.stringify(c2Calls().slice(-1)[0].args));
+          var c2Expected = {transcriptId:1, title:c2Values[0], summary:c2Values[1],
+            sections:[{heading:c2Values[2], items:[], points:[{text:c2Values[3], sub_points:[c2Values[4]]}]},
+              {heading:c2Values[5], items:[c2Values[6]], points:[]}], scriptures:[], requestedEmpty:[]};
+          ok(c2Bytes(c2Payload) === c2Bytes(c2Expected),
+             "C2 payload/" + c2Mode + ": Save sends exactly the edited Unicode title, summary, headings, point, sub-point and item");
+          ok(c2Calls().length === c2Before + 1 && el("tr-gen-save").disabled && el("tr-gen-save").getAttribute("aria-busy") === "true",
+             "C2 pending/" + c2Mode + ": one actual Save request is held with its busy control");
+          window.__rcDeferCommand = null;
+          if (c2Mode === "reject") c2Pending.reject(new Error("private host detail"));
+          else c2Pending.resolve(c2Mode === "malformed" ? null : {ok:false, error:c2Mode, message:"private host detail"});
+          for (var c2Hop = 0; c2Hop < 16; c2Hop++) await Promise.resolve();
+          var c2Alert = el("tr-gen-result").querySelector('[role="alert"]');
+          var c2Retained = c2Form.isConnected && c2Selectors.every(function(s,i){ return c2Form.querySelector(s) === c2Fields[i]; });
+          ok(c2Retained && c2Bytes(c2Fields.map(function(n){ return n.value; })) === c2Bytes(c2Values),
+             "C2 retain/" + c2Mode + ": the same form retains every Unicode edit byte for byte");
+          ok(c2Retained && c2Fields.every(function(n){ return !n.disabled && !n.readOnly && n.getClientRects().length > 0 && getComputedStyle(n).visibility === "visible"; }),
+             "C2 editable/" + c2Mode + ": all retained fields remain visible and editable");
+          ok(!!c2Alert && c2Alert.getClientRects().length > 0 && /Couldn.t save edits/.test(c2Alert.textContent) && /try again/i.test(c2Alert.textContent) &&
+             !/private host detail/.test(c2Alert.textContent) && /save edits/i.test(el("tr-gen-live").textContent),
+             "C2 error/" + c2Mode + ": a visible alert and live announcement explain Save failure and retry safely");
+          ok(c2Retained && !!el("tr-gen-save") && !el("tr-gen-save").disabled && !el("tr-gen-save").hasAttribute("aria-busy") &&
+             (!el("tr-regenerate") || el("tr-regenerate").disabled) && getComputedStyle(el("tr-generate")).display === "none",
+             "C2 recovery/" + c2Mode + ": Save is usable again and generation cannot replace unsaved edits");
+          ok(JSON.stringify(window.__TR.detail[1]) === c2Saved,
+             "C2 accepted/" + c2Mode + ": failure changes neither accepted notes nor pending/provenance data");
+          if (c2Retained && el("tr-gen-save")) {
+            c2Fields[0].focus(); c2Fields[0].setSelectionRange(0,0); c2Fields[0].setRangeText("x"); c2Fields[0].setRangeText("",0,1);
+            ok(c2Fields[0].value === c2Values[0], "C2 typing/" + c2Mode + ": retained input accepts another edit");
+            el("tr-gen-save").click();
+            await settleMicro(function(){ return !!el("tr-gen-edit"); });
+            var c2Retry = c2Calls().slice(-1)[0];
+            ok(c2Calls().length === c2Before + 2 && c2Bytes(c2Retry.args) === c2Bytes(c2Payload),
+               "C2 retry/" + c2Mode + ": successful retry sends exactly the failed edited payload");
+            var c2Persisted = window.__TR.detail[1].draft;
+            ok(!c2Form.isConnected && !!el("tr-gen-edit") && c2Bytes([c2Persisted.title, c2Persisted.summary,
+               c2Persisted.sections[0].heading, c2Persisted.sections[0].points[0].text,
+               c2Persisted.sections[0].points[0].sub_points[0], c2Persisted.sections[1].heading,
+               c2Persisted.sections[1].items[0]]) === c2Bytes(c2Values) &&
+               el("tr-gen-result").textContent.indexOf(c2Values[3]) !== -1 && el("tr-gen-result").textContent.indexOf(c2Values[4]) !== -1 &&
+               !el("tr-gen-result").querySelector('[role="alert"]') && !/Couldn.t save edits/.test(el("tr-gen-live").textContent),
+               "C2 success/" + c2Mode + ": saved response replaces the form and clears its error");
+          }
+        }
+        // Existing explicit discard paths still discard only unsaved edits.
+        await c2Reopen(); el("tr-gen-edit").click();
+        var c2BeforeCancel = c2Calls().length, c2BeforeDiscard = JSON.stringify(window.__TR.detail[1]);
+        el("tr-edit-title").value = "Unsaved cancel";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2CancelHop = 0; c2CancelHop < 16; c2CancelHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        el("tr-gen-edit-cancel").click();
+        ok(!el("tr-edit-title") && !!el("tr-gen-edit") && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 cancel: explicit Cancel closes editing without saving or changing accepted notes");
+        el("tr-gen-edit").click(); el("tr-edit-title").value = "Unsaved navigation";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2NavHop = 0; c2NavHop < 16; c2NavHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        await c2Reopen(); el("tr-gen-edit").click();
+        ok(el("tr-edit-title").value === window.__TR.detail[1].draft.title && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 navigation: leaving and reopening retains existing discard behavior without an implicit Save");
+      } finally {
+        window.__rcDeferCommand = c2Defer; window.__rcDeferred = c2Deferred;
+        V.transcript_storage_health = c2Storage; render(V);
+        window.__task3PilotStatus = c2Pilot;
+        window.scPilotAccess.accept(c2Pilot || null, window.scPilotAccess.revision());
+        window.__TR.detail[1] = JSON.parse(c2Original);
+        await c2Reopen();
       }
 
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
@@ -9149,12 +9466,12 @@ DRIVER = r"""
          "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
       // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
       var trQuotaRes = await trGenOnce("quota_exceeded");
-      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent) &&
+      ok(!!trQuotaRes.querySelector('[role="alert"]') && /Generation limit reached/.test(trQuotaRes.textContent) &&
          !/month|week|daily|annual/i.test(trQuotaRes.textContent),
          "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert) and, even when the backend sends its REAL monthly text (selahcue-core providers.rs), names no allowance period (D7)");
       // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
       var trFailRes = await trGenOnce("transport");
-      ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
+      ok(!!trFailRes.querySelector('[role="alert"]') && /Couldn.t generate notes/.test(trFailRes.textContent),
          "TR: a transport failure surfaces 'Couldn’t generate notes' (role=alert)");
       var trOkRes = await trGenOnce("ok");
       var trSub = trOkRes.querySelector(".pp-gen-sublist");
@@ -9177,7 +9494,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = false;
       var trConsentRes = await trGenOnce("ok");
       var trToSettings = el("tr-open-settings");
-      ok(trConsentRes.getAttribute("role") === "alert" && !!trToSettings && trToSettings.tagName === "BUTTON",
+      ok(!!trConsentRes.querySelector('[role="alert"]') && !!trToSettings && trToSettings.tagName === "BUTTON",
          "TR: consent_required offers a one-click 'Open Settings' route, not a dead end");
       trToSettings.click();
       ok(el("surface-settings").classList.contains("active"), "TR: 'Open Settings' actually opens Settings");
@@ -17676,6 +17993,8 @@ DRIVER = r"""
       // collapse under ~1100px, far below the 1400px product minimum) so the panel starts UNDER the
       // GO LIVE controls instead — either way it never covers them.
       NT.geometry = async function(F, tag, mode, shrinkTo){
+        // B1: run the unchanged emergency hit tests with real loss warning content too.
+        F.w.V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:2};
         var tCards = {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]};
         // The top bar fits in each of its states, widest last: all clear; two cards + the badge; plus the timer chip
         // (and the LIVE chip, which is on whenever something is live — it is on here). Then the same under a ~6% wider

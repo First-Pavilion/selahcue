@@ -1601,6 +1601,7 @@
         // Transcripts (86akcffvt) reloads the list every time the surface is opened — a fresh read
         // from the shared store each visit, never a stale in-memory cache from a prior visit.
         if (name === "transcripts" && typeof trActivate === "function") trActivate();
+        if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
       }
       // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
       // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
@@ -1646,6 +1647,7 @@
           if (page === "outputs" && typeof settingsOutputsActivate === "function") settingsOutputsActivate();
           if (page === "security" && typeof settingsSecurityActivate === "function") settingsSecurityActivate();
           if (page === "storage" && typeof settingsStorageActivate === "function") settingsStorageActivate();
+          if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";
@@ -4502,7 +4504,39 @@
       // (2x the host tail, generous headroom) BEFORE the prune/append so the DOM can never
       // grow 1:1 with the sermon. The prune below drops rows not in this sliced set.
       const MAX_TRANSCRIPT_ROWS = 120;
+      function syncTranscriptStorageHealth(health) {
+        const log = document.getElementById("transcript-log");
+        if (!log) return;
+        let status = document.getElementById("transcript-storage-health");
+        if (!status) {
+          status = document.createElement("div");
+          status.id = "transcript-storage-health";
+          status.className = "stream-note";
+          status.setAttribute("role", "status");
+          status.setAttribute("aria-live", "polite");
+          status.setAttribute("aria-atomic", "true");
+          log.parentNode.classList.add("has-storage-health");
+          log.parentNode.insertBefore(status, log);
+        }
+        let message = "Transcript storage status unknown.";
+        if (health && typeof health.available === "boolean") {
+          const lost = Number.isFinite(health.dropped_segments) ? health.dropped_segments : 0;
+          const truncated = Number.isFinite(health.truncated_segments) ? health.truncated_segments : 0;
+          const pending = Number.isFinite(health.pending_segments) ? health.pending_segments : 0;
+          if (!health.available || lost > 0 || truncated > 0) {
+            message = "⚠ Transcript not safely saved. " + lost + " lost, " + truncated +
+              " truncated; " + pending + " pending.";
+          } else if (pending > 0) {
+            message = "Saving transcript — " + pending + " segments pending.";
+          } else {
+            message = "Transcript saved.";
+          }
+        }
+        // Do not reannounce unchanged warnings on every poll. This runs before tail dedup.
+        if (status.textContent !== message) status.textContent = message;
+      }
       function syncTranscript(view) {
+        syncTranscriptStorageHealth(view.transcript_storage_health);
         const all = Array.isArray(view.transcript) ? view.transcript : [];
         const segs =
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
@@ -4605,29 +4639,11 @@
       // remembers what the operator already did with a reference. Every collection here is
       // bounded (repo convention: no unbounded queues/caches).
       //
-      // CON-137 REDESIGN (Sana's security review, PR #61): the original build here was an
-      // AUTOMATIC client-side "you already saw this" cooldown — a de-emphasised card, a
-      // countdown, "Show anyway" — triggered whenever the SAME reference reappeared shortly
-      // after being Staged/Approved/Dismissed. The PR's own justification for building it
-      // ("no dedup signal exists anywhere in the wire protocol") was WRONG: the host already
-      // dedupes at the source. selahcue-core::TranscriptEngine keeps a bounded ring
-      // (RECENT_DEDUP_WINDOW = 16, detection.rs) of recently-enqueued reference STRINGS and
-      // silently drops a re-detection of one still in that ring — BEFORE it is ever enqueued,
-      // so it never reaches view.detections at all. For the exact scenario this UI was built
-      // for (a preacher re-quoting a verse shortly after first saying it), the host has almost
-      // always already suppressed the second detection by the time it would have reached this
-      // client — the automatic client-side cooldown was therefore near-unreachable in normal
-      // production use, reachable mainly via a harness that bypasses the host or a busy service
-      // that cycles 16+ other distinct references through the ring in between. Shipping it
-      // added real bug surface (the mute-loop below) for a case the host already owns, so the
-      // automatic half of CON-137 is REMOVED here, not just relabelled.
-      //
-      // What stays, because it is NOT redundant with the host: "Mute this verse" is
-      // OPERATOR-DIRECTED, not automatic — an explicit "never show me this reference again this
-      // service" the host has no concept of (its ring is a blind, short, automatic eviction
-      // window with no operator control and no persistence). That is real, distinct value, so
-      // it now lives directly on every normal detection card instead of being gated behind the
-      // removed auto-duplicate state.
+      // The host owns automatic suppression: pending dedup plus a bounded 20-second
+      // cooldown after approve/dismiss (rehearsal timing, not confidence policy).
+      // Re-detection does not refresh it; eligible references return through the host
+      // view after expiry. No client countdown or automatic duplicate state is needed.
+      // "Mute this verse" remains a distinct, operator-directed per-console choice.
       const DET_HISTORY_MAX = 50;    // bounded session audit trail
       const DET_MUTED_MAX = 200;     // defence-in-depth cap against a pathological reference set
       let onAirDetection = null;        // {reference, translation, text, approvedAtMs} | null

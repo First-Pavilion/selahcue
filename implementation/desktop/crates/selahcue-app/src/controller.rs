@@ -290,6 +290,7 @@ pub struct LiveController {
     /// [`ingest_transcript`](Self::ingest_transcript), never told which
     /// [`TranscriptProvider`](selahcue_core::transcript::TranscriptProvider) produced them.
     transcript_sink: Box<dyn TranscriptSink>,
+    transcript_requested: bool,
     /// The durable sermon-note draft store (86akgqdv0; PR #33 review, Sana F1
     /// remediation) — a sibling seam to `transcript_sink` above, for the identical
     /// reason: `selahcue-app` must not depend on `selahcue-data`, so the operator's LAN
@@ -1122,6 +1123,7 @@ impl LiveController {
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
             transcript_sink: Box::new(NullTranscriptSink),
+            transcript_requested: false,
             sermon_notes: Box::new(NullSermonNoteStore),
             autosave_store: Box::new(NullAutosaveStore),
             pending_crash_decision: None,
@@ -1189,13 +1191,17 @@ impl LiveController {
 
     /// Open a new durable transcript session (86akcfftu) — the counterpart of
     /// [`end_transcript_session`](Self::end_transcript_session). Delegates straight to the
-    /// injected [`TranscriptSink`]; a no-op sink (the default) makes this a no-op too.
+    /// injected [`TranscriptSink`] and resets the in-memory detection session.
     pub fn start_transcript_session(&mut self, label: &str, provider: &str) {
+        self.transcript_requested = true;
+        self.transcript.clear();
+        self.recent_texts.clear();
+        self.partial = None;
         self.transcript_sink.start(label, provider);
     }
 
-    /// Close the current durable transcript session, if one is open (a no-op otherwise).
-    /// Delegates straight to the injected [`TranscriptSink`].
+    /// Request closure of the current durable session. Production returns after enqueueing;
+    /// durable completion is observed outside this controller through `TranscriptCompletion`.
     pub fn end_transcript_session(&mut self) {
         self.transcript_sink.end();
     }
@@ -1211,6 +1217,19 @@ impl LiveController {
         end_ms: u64,
         is_final: bool,
     ) -> usize {
+        self.ingest_transcript_at(text, start_ms, end_ms, is_final, Instant::now())
+    }
+
+    /// Ingest using one host monotonic instant, independent of render/timer ticks
+    /// and transcript timestamps. Shares the production provider/command path.
+    pub fn ingest_transcript_at(
+        &mut self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+        is_final: bool,
+        now: Instant,
+    ) -> usize {
         if !is_final {
             // Streaming interim (R3): show the live in-progress line, but do NOT log it or run
             // detection — a later final for the same utterance supersedes it.
@@ -1223,8 +1242,8 @@ impl LiveController {
         // sink, BEFORE the ring below can evict anything, with the ORIGINAL untruncated text
         // (the ring's own `MAX_SEGMENT_TEXT_LEN` truncation is a live-view bound only — the
         // persisted copy must not inherit it). A no-op sink (the default) costs one vtable
-        // call; a real sink batches/bounds its own writes (see `transcript_sink`), so this
-        // call is never a synchronous disk write on this path.
+        // call; the production BackgroundTranscriptWriter only admits bounded memory here.
+        // Its single worker performs every store call outside this controller's lock.
         self.transcript_sink.ingest(start_ms, end_ms, text);
         // Exact reference detection PLUS the fuzzy quote/paraphrase rung (R4): the corpus
         // matcher lives in selahcue-scripture (the pure core cannot see the corpus), so its
@@ -1246,7 +1265,7 @@ impl LiveController {
             .join(" ");
         let quotes = selahcue_scripture::match_quote_scored(&window);
         self.transcript
-            .ingest_with_quotes(text, start_ms, end_ms, &quotes)
+            .ingest_with_quotes_at(text, start_ms, end_ms, &quotes, now)
             .len()
     }
 
@@ -2689,6 +2708,15 @@ impl LiveController {
                 })
                 .collect(),
             // The live in-progress line (streaming interim), shown below the finalised tail.
+            transcript_storage_health: Some({
+                let h = self.transcript_sink.health();
+                selahcue_lan::protocol::TranscriptStorageHealthView {
+                    available: h.available,
+                    pending_segments: h.pending_segments,
+                    dropped_segments: h.dropped_segments,
+                    truncated_segments: h.truncated_segments,
+                }
+            }),
             partial_transcript: self.partial.clone(),
             // The pending detection queue, each with its verse text (default translation)
             // so the operator sees WHAT they would stage before approving.
@@ -2787,6 +2815,12 @@ impl LiveController {
 
     /// Apply one (already RBAC-authorized) command, returning the reply.
     pub fn apply(&mut self, command: &Command) -> ControllerReply {
+        self.apply_at(command, Instant::now())
+    }
+
+    /// Execute the same authorized command path with injected host monotonic time.
+    /// Only detection decisions use this instant; timer tick semantics are unchanged.
+    pub fn apply_at(&mut self, command: &Command, now: Instant) -> ControllerReply {
         // Any command may change what the confidence monitor should show; refresh it on
         // the next tick (gated there, so a read just costs one recompose).
         self.stage_dirty = true;
@@ -3472,7 +3506,7 @@ impl LiveController {
                 // window), not just exact — this is the wire path a remote/mobile controller and
                 // the STT worker feed, so paraphrases must resolve here too. A streaming interim
                 // (`is_final == false`) only updates the live partial line.
-                self.ingest_transcript(text, start, end, *is_final);
+                self.ingest_transcript_at(text, start, end, *is_final, now);
                 ControllerReply::Ack
             }
             // Durable transcript session boundaries (86akcfftu) — a sibling of
@@ -3492,7 +3526,11 @@ impl LiveController {
             // `SermonNoteStore` (a no-op unless a real store is wired in) — the operator never
             // opens `selahcue-data`'s file itself for this feature, mirroring how the transcript
             // commands just above delegate to `TranscriptSink`. ---
-            Command::GetActiveTranscriptId => match self.sermon_notes.active_transcript_id() {
+            Command::GetActiveTranscriptId => match if self.transcript_requested {
+                Ok(self.transcript_sink.session_status().confirmed_id)
+            } else {
+                self.sermon_notes.active_transcript_id()
+            } {
                 Ok(transcript_id) => {
                     ControllerReply::Message(ServerMessage::ActiveTranscriptId { transcript_id })
                 }
@@ -3625,7 +3663,7 @@ impl LiveController {
                 // Approving stages the detected verse in Preview (never auto-live,
                 // FR-115) exactly as a manual StageScripture would, then drops it from
                 // the queue. An unknown/stale id is a bad request.
-                match self.transcript.approve(*detection_id) {
+                match self.transcript.approve_at(*detection_id, now) {
                     Some(detected) => {
                         // A whole-chapter or range detection stages just its first verse (never
                         // a wall of text on one slide); a single verse stages as-is.
@@ -3642,7 +3680,7 @@ impl LiveController {
                 }
             }
             Command::DismissDetection { detection_id } => {
-                if self.transcript.dismiss(*detection_id) {
+                if self.transcript.dismiss_at(*detection_id, now) {
                     ControllerReply::Ack
                 } else {
                     ControllerReply::Deny(DenyReason::BadRequest)

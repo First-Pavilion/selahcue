@@ -292,3 +292,100 @@ fn reading_the_environment_when_a_key_is_set_produces_a_credential_iff_this_is_a
         }
     }
 }
+
+#[test]
+fn blank_pilot_credential_has_neutral_missing_input_diagnostics() {
+    // A pilot package cannot be repaired by setting a developer environment variable.
+    for blank in ["", "   ", "\t\n", "\r\n\t "] {
+        let error = Credential::pilot_key(blank).expect_err("blank injected credential");
+        assert_eq!(error, DeepgramError::MissingInjectedCredential);
+        assert_eq!(format!("{error:?}"), "MissingInjectedCredential");
+        assert_eq!(
+            error.to_string(),
+            "no injected Deepgram credential is available"
+        );
+        assert_eq!(
+            error.operator_action(),
+            selahcue_stt_cloud::OperatorAction::SupplyCredential
+        );
+        assert!(!error.is_retryable());
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            assert!(!rendered.contains(DEEPGRAM_API_KEY_VAR));
+            assert!(!rendered.contains(".env"));
+            assert!(!rendered.contains(TEST_SECRET));
+        }
+    }
+}
+
+#[test]
+fn pilot_credentials_preserve_header_validation_authorization_and_redaction() {
+    for valid in ["a".repeat(MIN_SECRET_LEN), TEST_SECRET.to_owned()] {
+        let credential = Credential::pilot_key(&valid).expect("valid injected key");
+        assert_eq!(credential.scheme(), CredentialScheme::Token);
+        assert_eq!(
+            credential.authorization_header_value(),
+            format!("Token {valid}")
+        );
+        assert!(!format!("{credential:?}").contains(&valid));
+        assert!(format!("{credential:?}").contains("<redacted>"));
+    }
+    for (invalid, expected) in [
+        ("xyz".to_owned(), MalformedCredential::TooShort),
+        (
+            format!("Token {TEST_SECRET}"),
+            MalformedCredential::ContainsWhitespace,
+        ),
+        (
+            format!(" {TEST_SECRET}"),
+            MalformedCredential::ContainsWhitespace,
+        ),
+        (
+            format!("{TEST_SECRET} "),
+            MalformedCredential::ContainsWhitespace,
+        ),
+        (
+            format!("{TEST_SECRET}\r"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+        (
+            format!("{TEST_SECRET}\n"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+        (
+            format!("{TEST_SECRET}\0"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+        (
+            format!("{TEST_SECRET}\t"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+        (
+            format!("{TEST_SECRET}é"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+        (
+            format!("{TEST_SECRET}\u{7f}"),
+            MalformedCredential::IllegalHeaderCharacter,
+        ),
+    ] {
+        let pilot = Credential::pilot_key(&invalid).expect_err("unsafe injected key");
+        assert_eq!(pilot, DeepgramError::MalformedCredential(expected));
+        assert_eq!(
+            pilot,
+            Credential::developer_key(&invalid).expect_err("unsafe developer key")
+        );
+        assert!(!format!("{pilot:?} {pilot}").contains(&invalid));
+    }
+}
+
+#[test]
+fn blank_grant_preserves_developer_diagnostic_contract() {
+    for blank in ["", "   ", "\t\n"] {
+        assert_eq!(
+            Credential::grant_token(blank).err(),
+            Some(DeepgramError::MissingCredential {
+                variable: DEEPGRAM_API_KEY_VAR,
+            })
+        );
+    }
+}

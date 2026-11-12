@@ -563,15 +563,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Get-Command perl -ErrorAction SilentlyContinue
-          if (-not $p) {
-            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
-              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
-              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
-              "runner image changed and perl must be installed explicitly (e.g. " + `
-              "'choco install strawberryperl')."
+          # Application lookup can return several PATH matches; select one before reading Source.
+          $p = Get-Command perl -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $perl = $p.Source.Replace('\', '/')
+          & $perl -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native Windows Perl or required OpenSSL Configure modules failed validation"
           }
-          perl -v
+          "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
       # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
@@ -788,6 +787,18 @@ jobs:
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
         run: cargo test --workspace --no-fail-fast
+      # A2: deliberate bounded Windows scheduling evidence, even if an unrelated
+      # workspace test failed. The existing workspace/debug and licensing/release
+      # runs remain; each failed repetition exits this step immediately.
+      - name: Test (Windows licensing admission, three parallel-8 repetitions)
+        id: windows-licensing-parallel
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          for repetition in 1 2 3; do
+            echo "Windows licensing admission parallel run ${repetition}/3 (8 threads)"
+            cargo test -p selahcue-licensing --test test_https_admission -- --nocapture --test-threads=8 || exit $?
+          done
       - name: Disk space after the workspace tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
@@ -955,6 +966,28 @@ jobs:
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
+      # Keep plain SQLite isolated from encrypted workspace feature unification.
+      - name: Test (Windows plain SQLite — full data suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test -p selahcue-data --no-default-features --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"plain SQLite check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"plain SQLite checks not reached: "+str(missing); print("verified plain SQLite tests:",passed)' "$log" linked_runtime_meets_patched_sqlite_baseline
+          rm "$log"
+      # The real desktop release binary exercises the endpoint publisher's release siblings.
+      - name: Test (Windows desktop RELEASE — full output binary suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${OPENSSL_SRC_PERL:?validated native Windows Perl was not exported}"
+          "$OPENSSL_SRC_PERL" -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
+          log="$(mktemp)"
+          cargo test -p selahcue-desktop --release --bin selahcue-output --features encryption --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"desktop release check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"desktop release checks not reached: "+str(missing); print("verified desktop release tests:",passed)' "$log" the_production_rename_policy_retries_on_windows_only the_windows_rename_budget_is_five_attempts_and_a_few_hundred_milliseconds
+          rm "$log"
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
       # ended up. Runs before the cache's post step, which on main tars `target` up. It never
       # fails the job: below 10 GB free it emits a warning (an early notice that holds in a
@@ -1230,7 +1263,7 @@ jobs:
         # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
         # where a plain `pip install --user` would otherwise refuse (audit #11 review).
         run: |
-          python3 -m pip install --user --break-system-packages playwright==1.60.0
+          python3 -m pip install --user --break-system-packages playwright==1.61.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
@@ -1398,6 +1431,47 @@ jobs:
       - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
+      # P03: actual pilot-only native/status/admission paths, with synthetic keys
+      # and a cfg(test)-only monotonic fixture clock. No installer or real secret.
+      - name: Clippy (pilot-credentials,cloud-live, RELEASE — synthetic only)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809125999'
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: cargo clippy --release --features pilot-credentials,cloud-live --all-targets -- -D warnings
+      - name: Focused pilot expiry (release, synthetic only)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809125999'
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: |
+          set -euo pipefail
+          run_pilot_tests() {
+            phase="$1"; shift
+            log="$(mktemp)"
+            "$@" 2>&1 | tee "$log"
+            case "$phase" in
+              before-bin) required=(pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
+              before-sources) required=(real_notes_rejection_observer selected_source_drives_both observed_transcription_rejection release_executable_does_not_contain_the_test_clock) ;;
+              mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
+              *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;
+            esac
+            python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"pilot check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"pilot checks not reached: "+str(missing); print("verified pilot tests:",passed)' "$log" "${required[@]}"
+            rm "$log"
+          }
+          run_pilot_tests before-bin cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_
+          run_pilot_tests before-sources cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --test test_pilot_note_rejection --test test_pilot_stt_rejection --no-fail-fast
+          # Runtime clock changes do not rebuild or change the compiled fixture.
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129599 PILOT_TEST_EXPECT_READY=0 PILOT_MIXED_EXPECT_EXPIRED=1
+          run_pilot_tests mixed-cutoff cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_mixed_tests
+          run_pilot_tests source-cutoff cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129600
+          run_pilot_tests source-after cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
       # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
       # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
       # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
@@ -1483,6 +1557,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: '3.47.5'
           # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
           # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
           # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
@@ -1494,9 +1569,10 @@ jobs:
           # actions/cache/restore, the real action, and a main-only actions/cache/save.
           # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
           # action in a pull-request workflow.
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter --version
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
       # Compile-verify the Android host (Kotlin MulticastLock channel, 86ajp0b0t)
       # — the ubuntu runner ships the Android SDK; a debug build exercises the
       # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
@@ -1509,7 +1585,7 @@ jobs:
           java-version: "17"
       - name: Android host compile-check (apk --debug)
         if: needs.changes.outputs.android == 'true'
-        run: flutter build apk --debug
+        run: flutter build apk --debug --no-pub
 
   # The Django Platform API (implementation/api). Until this job existed the API had
   # NO automated verification at all — it matched no path filter, so an API-only push
@@ -1635,7 +1711,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.marketing == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     defaults:
@@ -1712,7 +1788,7 @@ jobs:
       # engine a hard failure instead of a silent skip that reads as a pass.
       - name: Install Playwright (Chromium + WebKit)
         run: |
-          python3 -m pip install --quiet playwright==1.60.0
+          python3 -m pip install --quiet playwright==1.61.0
           python3 -m playwright install --with-deps chromium webkit
       - name: Responsive sweep (Chromium)
         env:

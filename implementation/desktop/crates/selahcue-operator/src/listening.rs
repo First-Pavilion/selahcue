@@ -41,9 +41,7 @@ use std::time::Duration;
 use selahcue_core::transcript::{ProviderSegment, TranscriptProvider};
 use selahcue_stt::audio::{AudioSource, CpalSource};
 use selahcue_stt::recognizer::{WhisperContext, WhisperRecognizer};
-use selahcue_stt::{
-    pump, EnergyVad, EngineConfig, FeedbackGuard, HardwareProbe, Recognizer, SttEngine,
-};
+use selahcue_stt::{pump, EnergyVad, FeedbackGuard, HardwareProbe, Recognizer, SttEngine};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::capture_handoff::AudioHandoff;
@@ -103,11 +101,6 @@ const CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
 
 /// How often the RECOGNITION thread polls the hand-off for new audio to transcribe.
 const RECOG_INTERVAL: Duration = Duration::from_millis(30);
-
-/// Sliding-window bound (16 kHz mono samples) for an INTERIM decode — each interim re-decodes at
-/// most the last ~6 s, so the live line stays near real time no matter how long the speaker talks
-/// (the final on close still decodes the whole utterance for accuracy).
-const INTERIM_WINDOW_SAMPLES: usize = 6 * 16_000;
 
 /// A fixed reference capacity for the source→recognition hand-off — **no longer the value
 /// `run_on_device_with_recognizer` actually builds `AudioHandoff` with (86akcfp8w)**. It has
@@ -1169,11 +1162,7 @@ fn run_on_device_with_recognizer<S: DeviceCaptureSource, R: tauri::Runtime>(
         // direct, honest consequence of correctly closing 86akcfpbj's feedback loop, deliberately
         // chosen over a hybrid stamp that would preserve a flat cadence at the cost of
         // reintroducing conditional complexity for a marginal latency win.
-        EngineConfig {
-            interim_interval: Duration::from_millis(800),
-            interim_max_samples: INTERIM_WINDOW_SAMPLES,
-            ..EngineConfig::default()
-        },
+        selahcue_stt::engine::production_engine_config(),
         Box::new(EnergyVad::new()),
         recognizer,
         FeedbackGuard::new(),
@@ -1291,6 +1280,20 @@ const CONSENT_REVOKED_NOTICE: &str = "Cloud transcription was turned off (consen
      On-device was selected) while a session was active. The transcript below is coming from \
      the on-device engine instead.";
 
+/// Pilot expiry/rejection closes the worker without sending CloseStream or
+/// flushing pending cloud audio. A failed join is not reported as completed.
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+fn close_cloud_session_immediately(slot: &SharedCloudSession) {
+    let session = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(session) = session {
+        if !session.stop_immediately() {
+            record_failure(
+                "pilot cloud worker did not acknowledge hard shutdown within 500ms".to_owned(),
+            );
+        }
+    }
+}
+
 /// The `CloudSttSession`'s wire configuration — real Deepgram in production, and in a TEST
 /// build only, an optional override so a test can point `run_cloud` at a local stub instead
 /// (`SELAHCUE_STT_CLOUD_TEST_ENDPOINT`, e.g. `ws://127.0.0.1:PORT/v1/listen`).
@@ -1341,7 +1344,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 ) {
     use selahcue_stt_cloud::session::{StreamAuthorization, StreamParams};
     use selahcue_stt_cloud::transport::CloudSttSession;
-    use selahcue_stt_cloud::{AudioRing, CloudTranscriptProvider, SegmentQueue, SessionStatus};
+    use selahcue_stt_cloud::{AudioRing, CloudTranscriptProvider, SegmentQueue};
 
     // Size the shared capture hand-off from THIS device's real configuration — never a literal
     // (see `capture_handoff.rs` / `selahcue_core::audio_capacity`). `None` means the device
@@ -1414,13 +1417,30 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     let params = StreamParams::default();
     let audio_ring = AudioRing::new();
     let queue = SegmentQueue::new();
-    let status = SessionStatus::new();
+    let status = crate::provider_source::transcription_session_status();
     // `SessionConfig::default()` is the crate's own validated baseline (it is a compile-time-
     // pinned invariant of that crate that its defaults satisfy `SessionConfig::validate`) —
     // built through the validated path rather than hand-rolled, per the review note that this
     // guard is what stands between this branch and an unbounded reconnect loop (V-2). See
     // `cloud_session_config` for why a TEST build can reach a different endpoint here.
-    let config = cloud_session_config();
+    let mut config = cloud_session_config();
+    config.access_deadline = match crate::provider_source::transcription_deadline() {
+        Ok(deadline) => deadline,
+        Err(fault) => {
+            run_on_device(
+                app_worker,
+                source,
+                stop_worker,
+                seg_tx,
+                Some(ready_tx),
+                Some(FallbackContext {
+                    prior_failure: fault.message().to_owned(),
+                    note: fault.message(),
+                }),
+            );
+            return;
+        }
+    };
 
     let session = match CloudSttSession::start(
         &authorization,
@@ -1472,7 +1492,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     // handoff block here previously left the whole suite green).
     let app_for_level = app_worker.clone();
     let app_for_check = app_worker.clone();
-    run_cloud_stream_loop(
+    run_cloud_stream_loop_with_access(
         source,
         stop_worker,
         seg_tx,
@@ -1497,7 +1517,11 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
             // developer credential for as long as capture runs (86akby7th PR #22 remediation
             // round 2, Cody High / Vera High: the previous `on_fallback` never touched `session`
             // at all). See `close_cloud_session`.
-            close_cloud_session(&session_for_fallback);
+            if crate::provider_source::transcription_fault().is_some() {
+                close_cloud_session_immediately(&session_for_fallback);
+            } else {
+                close_cloud_session(&session_for_fallback);
+            }
             run_on_device(
                 app_worker,
                 source,
@@ -1510,6 +1534,7 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
                 }),
             );
         },
+        crate::provider_source::transcription_fault,
     );
 }
 
@@ -1532,8 +1557,46 @@ fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
 /// [`selahcue_stt_cloud::DEGRADED_FALLBACK_NOTICE`]) — never loops forever once any of the three
 /// fires.
 #[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn run_cloud_stream_loop<S: CaptureSource>(
+    source: S,
+    stop_worker: Arc<AtomicBool>,
+    seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
+    handoff: &AudioHandoff,
+    audio_ring: &selahcue_stt_cloud::AudioRing,
+    provider: selahcue_stt_cloud::CloudTranscriptProvider,
+    status: &selahcue_stt_cloud::SessionStatus,
+    emit_level_cb: impl FnMut(&mut S),
+    may_stream_now: impl FnMut() -> bool,
+    on_clean_stop: impl FnOnce(),
+    on_fallback: impl FnOnce(
+        S,
+        Arc<AtomicBool>,
+        tokio::sync::mpsc::Sender<ProviderSegment>,
+        String,
+        &'static str,
+    ),
+) {
+    run_cloud_stream_loop_with_access(
+        source,
+        stop_worker,
+        seg_tx,
+        handoff,
+        audio_ring,
+        provider,
+        status,
+        emit_level_cb,
+        may_stream_now,
+        on_clean_stop,
+        on_fallback,
+        || None,
+    )
+}
+
+#[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
+#[allow(clippy::too_many_arguments)]
+fn run_cloud_stream_loop_with_access<S: CaptureSource>(
     mut source: S,
     stop_worker: Arc<AtomicBool>,
     seg_tx: tokio::sync::mpsc::Sender<ProviderSegment>,
@@ -1551,6 +1614,7 @@ fn run_cloud_stream_loop<S: CaptureSource>(
         String,
         &'static str,
     ),
+    mut pilot_access: impl FnMut() -> Option<crate::provider_source::PilotFault>,
 ) {
     use selahcue_stt_cloud::{AudioChunk as CloudAudioChunk, DEGRADED_FALLBACK_NOTICE};
 
@@ -1569,6 +1633,23 @@ fn run_cloud_stream_loop<S: CaptureSource>(
     loop {
         if stop_worker.load(Ordering::Relaxed) {
             on_clean_stop();
+            return;
+        }
+
+        if let Some(fault) = pilot_access() {
+            audio_ring.drain();
+            // Preserve already accepted final transcript segments; do not capture
+            // or enqueue another cloud audio frame after the admission retires.
+            pump(&mut provider, |seg| {
+                let _ = seg_tx.try_send(seg);
+            });
+            on_fallback(
+                source,
+                stop_worker,
+                seg_tx,
+                fault.message().to_owned(),
+                fault.message(),
+            );
             return;
         }
 
@@ -2062,7 +2143,7 @@ mod tests {
         clear_failure();
     }
 
-    #[cfg(feature = "cloud-stt")]
+    #[cfg(any(feature = "cloud-stt", feature = "pilot-credentials"))]
     mod cloud_stt {
         use super::super::*;
         use selahcue_stt::audio::{AudioChunk, AudioSource, FakeAudioSource};
@@ -2154,6 +2235,200 @@ mod tests {
 
         /// Generous enough that no test below trips the hand-off's OWN drop-oldest bound by
         /// accident — each test isolates ONE specific exit path or drop/refusal source.
+        #[test]
+        fn pilot_cutoff_precedes_next_audio_push_and_retains_the_same_local_source() {
+            use crate::provider_source::PilotFault;
+            for fault in [
+                PilotFault::Expired,
+                PilotFault::Rejected,
+                PilotFault::Unavailable,
+            ] {
+                let audio = AudioRing::new();
+                let observe = audio.clone();
+                let source = TestSource::with_one_chunk(AudioChunk::new(vec![0.2; 320], 16_000, 1));
+                let (tx, _rx) = tokio::sync::mpsc::channel(8);
+                let fell_back = Arc::new(AtomicBool::new(false));
+                let seen = fell_back.clone();
+                assert_loop_returns_within(move || {
+                    run_cloud_stream_loop_with_access(
+                        source,
+                        Arc::new(AtomicBool::new(false)),
+                        tx,
+                        &generous_handoff(),
+                        &audio,
+                        empty_provider(),
+                        &SessionStatus::new(),
+                        |_| panic!("must not capture after retirement"),
+                        || true,
+                        || panic!("expiry/rejection is not clean stop"),
+                        move |mut source, _, _, message, note| {
+                            assert_eq!(message, fault.message());
+                            assert_eq!(note, fault.message());
+                            assert!(
+                                source.next_chunk().is_some(),
+                                "same unconsumed microphone source remains available locally"
+                            );
+                            seen.store(true, Ordering::SeqCst);
+                        },
+                        || Some(fault),
+                    )
+                });
+                assert!(
+                    observe.drain().is_empty(),
+                    "no next cloud audio frame is admitted"
+                );
+                assert!(fell_back.load(Ordering::SeqCst));
+            }
+        }
+
+        #[cfg(feature = "pilot-credentials")]
+        #[test]
+        fn pilot_clean_stop_retains_real_worker_rejection() {
+            if std::env::var("PILOT_TEST_EXPECT_READY").as_deref() != Ok("1") {
+                return;
+            }
+            if std::env::var("P03_CLEAN_STOP_CHILD").as_deref() != Ok("1") {
+                let result = std::process::Command::new(
+                    std::env::current_exe().expect("test executable"),
+                )
+                .args([
+                    "--exact",
+                    "listening::tests::cloud_stt::pilot_clean_stop_retains_real_worker_rejection",
+                    "--nocapture",
+                ])
+                .env("P03_CLEAN_STOP_CHILD", "1")
+                .output()
+                .expect("isolated source process");
+                assert!(
+                    result.status.success(),
+                    "{}{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                return;
+            }
+            let _env = crate::env_locked();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback");
+            std::env::set_var(
+                "SELAHCUE_STT_CLOUD_TEST_ENDPOINT",
+                format!("ws://{}/", listener.local_addr().expect("address")),
+            );
+            let (connected_tx, connected_rx) = std::sync::mpsc::channel();
+            let (reject_tx, reject_rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut socket, _) = listener.accept().expect("accept");
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("timeout");
+                let mut bytes = [0; 4096];
+                assert!(socket.read(&mut bytes).expect("handshake") > 0);
+                connected_tx.send(()).expect("connected");
+                reject_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("release response");
+                socket.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").expect("reject");
+            });
+            let mut providers = selahcue_core::providers::ProvidersConfig::default();
+            providers.settings.transcription_mode =
+                selahcue_core::providers::TranscriptionMode::Cloud;
+            providers.consent.cloud_transcription = true;
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            handle.manage(crate::AppState {
+                backend: crate::Backend::Local(crate::demo_shell()),
+                deck: Mutex::new(crate::DeckWorkspace::demo()),
+                library: Mutex::new(crate::DeckLibrary::load(None)),
+                providers: Mutex::new(providers),
+                providers_db: None,
+                transcript_db: None,
+                secrets: crate::make_secret_store(),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
+                media_store: None,
+            });
+            let stop = Arc::new(AtomicBool::new(false));
+            let (stop_pending_tx, stop_pending_rx) = std::sync::mpsc::channel();
+            // run_cloud calls label AFTER starting the real provider worker and
+            // BEFORE entering its capture loop. Hold that exact boundary until
+            // the handshake is real, then make clean-stop win before any poll.
+            struct StopAtLoopEntry {
+                connected: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+                stop: Arc<AtomicBool>,
+                pending: std::sync::mpsc::Sender<()>,
+            }
+            impl AudioSource for StopAtLoopEntry {
+                fn label(&self) -> &str {
+                    if let Some(rx) = self.connected.lock().expect("gate").take() {
+                        rx.recv_timeout(Duration::from_secs(2))
+                            .expect("actual handshake before capture loop");
+                        self.stop.store(true, Ordering::SeqCst);
+                        self.pending.send(()).expect("stop pending");
+                    }
+                    "synthetic source"
+                }
+                fn next_chunk(&mut self) -> Option<AudioChunk> {
+                    None
+                }
+            }
+            impl CaptureSource for StopAtLoopEntry {
+                fn peak_level(&self) -> f32 {
+                    0.0
+                }
+            }
+            impl DeviceCaptureSource for StopAtLoopEntry {
+                fn sample_rate(&self) -> u32 {
+                    16_000
+                }
+                fn channels(&self) -> u16 {
+                    1
+                }
+            }
+            let source = StopAtLoopEntry {
+                connected: Mutex::new(Some(connected_rx)),
+                stop: stop.clone(),
+                pending: stop_pending_tx,
+            };
+            let (segments, _rx) = tokio::sync::mpsc::channel(8);
+            let (ready_tx, _ready_rx) = tokio::sync::oneshot::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                run_cloud(handle, source, stop, segments, ready_tx);
+                done_tx.send(()).expect("finished run_cloud");
+            });
+            stop_pending_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("clean stop pending before first access poll");
+            assert!(
+                matches!(
+                    done_rx.recv_timeout(Duration::from_millis(30)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ),
+                "clean exit waits for real provider handshake"
+            );
+            reject_tx.send(()).expect("reject during clean stop");
+            done_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("clean exit completes");
+            worker.join().expect("capture worker");
+            server.join().expect("provider fixture");
+            let view = crate::provider_source::access_status().expect("pilot status");
+            assert_eq!(
+                view.transcription_state,
+                crate::provider_source::PilotState::Rejected
+            );
+            assert_eq!(
+                view.notes_state,
+                crate::provider_source::PilotState::Available
+            );
+            assert!(!crate::provider_source::transcription_readiness().is_ready());
+            assert!(
+                crate::provider_source::deepgram().is_err(),
+                "subsequent Start refuses rejected credential"
+            );
+            assert!(crate::provider_source::notes_model().is_some());
+        }
+
         fn generous_handoff() -> AudioHandoff {
             AudioHandoff::new(NonZeroUsize::new(10_000_000).expect("nonzero"))
         }
@@ -3632,6 +3907,128 @@ mod tests {
             "a genuine, post-ready, real-time-outrunning overload must still trip the drop \
              notice — got {note:?} (if this is None, the on-device drop-notice mechanism may be \
              dead, not merely quiet)"
+        );
+    }
+
+    /// Exercises the actual capture producer, not just the shared factory in isolation.
+    /// Substituting EngineConfig::default at the producer disables interims and fails this
+    /// test; widening the interim window changes the recognizer's observed sample count.
+    /// Real time here opens the existing wall-clock gate; this is not a latency benchmark.
+    #[test]
+    fn capture_producer_uses_shared_six_second_interim_configuration() {
+        let _guard = state_locked();
+        struct QueuedSource(Arc<Mutex<selahcue_stt::FakeAudioSource>>);
+        impl AudioSource for QueuedSource {
+            fn label(&self) -> &str {
+                "synthetic-config-parity"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_chunk()
+            }
+        }
+        impl CaptureSource for QueuedSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        impl DeviceCaptureSource for QueuedSource {
+            fn sample_rate(&self) -> u32 {
+                16_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
+        struct RecordingRecognizer(Arc<Mutex<Vec<usize>>>);
+        impl Recognizer for RecordingRecognizer {
+            fn label(&self) -> &str {
+                "synthetic-config-parity"
+            }
+            fn transcribe(
+                &mut self,
+                samples: &[f32],
+                start_ms: u64,
+                end_ms: u64,
+            ) -> Vec<selahcue_stt::RecognizedSegment> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(samples.len());
+                vec![selahcue_stt::RecognizedSegment::final_text(
+                    "Àlàáfíà Ìgbò ƙ",
+                    start_ms,
+                    end_ms,
+                )]
+            }
+        }
+        let queue = Arc::new(Mutex::new(selahcue_stt::FakeAudioSource::new()));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        handle.manage(crate::AppState {
+            backend: crate::Backend::Local(crate::demo_shell()),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: crate::make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
+            media_store: None,
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let (seg_tx, mut seg_rx) = tokio::sync::mpsc::channel(64);
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let worker_stop = Arc::clone(&stop);
+        let source = QueuedSource(Arc::clone(&queue));
+        let recognizer = RecordingRecognizer(Arc::clone(&observed));
+        let worker = std::thread::spawn(move || {
+            run_on_device_with_recognizer(
+                handle,
+                source,
+                worker_stop,
+                seg_tx,
+                Some(ready_tx),
+                None,
+                Box::new(recognizer),
+            )
+        });
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let ready = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), ready_rx).await });
+        if matches!(ready, Ok(Ok(Ok(())))) {
+            // One retained chunk (not a backlog flood) starts seven seconds of continuous speech.
+            queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_chunk(AudioChunk::new([0.2_f32, -0.2].repeat(56_000), 16_000, 1));
+            std::thread::sleep(Duration::from_millis(1_200));
+            queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_chunk(AudioChunk::new([0.2_f32, -0.2].repeat(160), 16_000, 1));
+        }
+        let interim = runtime
+            .block_on(async { tokio::time::timeout(Duration::from_secs(5), seg_rx.recv()).await });
+        stop.store(true, Ordering::Relaxed);
+        worker.join().expect("capture producer joins");
+        *status_lock(&ENGINE_NOTE) = None;
+        *status_lock(&PROVIDER_LABEL) = None;
+        clear_failure();
+        assert!(matches!(ready, Ok(Ok(Ok(())))), "capture ready: {ready:?}");
+        let segment = interim
+            .expect("shared production cadence must emit an interim")
+            .expect("capture stream must be open");
+        assert!(!segment.is_final, "producer must enable streaming interims");
+        assert_eq!(segment.text, "Àlàáfíà Ìgbò ƙ", "saved words are unchanged");
+        assert_eq!(
+            observed.lock().unwrap_or_else(|e| e.into_inner())[0],
+            96_000,
+            "actual capture producer must use the shared six-second sliding window"
         );
     }
 

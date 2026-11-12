@@ -228,9 +228,10 @@ fn publish_with(
     published
 }
 
-/// Create a staging file that did not exist, owner-only (on Unix) from the first instant. Only
-/// "already exists" moves on to the next name; any other failure (no permission, no such
-/// directory, ...) is returned at once and as it was.
+/// Create a staging file that did not exist, owner-only (on Unix) from the first instant.
+/// Taken names move on to the next name; any other failure (no permission, no such directory,
+/// ...) is returned at once and as it was. Windows reports an existing directory as access
+/// denied, so only that error with a confirmed directory is also treated as a collision.
 fn create_staging(
     next_staging: &mut dyn FnMut() -> PathBuf,
 ) -> std::io::Result<(PathBuf, std::fs::File)> {
@@ -248,6 +249,16 @@ fn create_staging(
             Ok(file) => return Ok((tmp, file)),
             // Taken by something else: leave it exactly as it is and try the next name.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => taken = Some(e),
+            // Windows' create-new file open reports ERROR_ACCESS_DENIED for a directory.
+            // Inspect only after the failed open, without following a planted symlink. A
+            // permission failure on a free name (or an unreadable path) still fails at once.
+            Err(e)
+                if cfg!(windows)
+                    && e.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_dir()) =>
+            {
+                taken = Some(e);
+            }
             Err(e) => return Err(e),
         }
     }
@@ -948,17 +959,43 @@ mod tests {
         let path = scratch.descriptor();
         let dir = scratch.0.join(format!("{STAGING_PREFIX}.1.0.tmp"));
         std::fs::create_dir_all(dir.join("sub")).expect("plant dir");
+        let sentinel = dir.join("sub").join("sentinel.txt");
+        std::fs::write(&sentinel, "someone else's directory contents").expect("plant sentinel");
 
-        let (result, _) = publish_after(&path, std::slice::from_ref(&dir));
+        let json = "{\"addr\":\"127.0.0.1:4242\",\"pin\":\"ab12\",\"device\":\"operator-shell\",\"token\":\"fresh\"}";
+        let mut asked = 0;
+        let result = publish_with(&path, json.as_bytes(), &mut || {
+            asked += 1;
+            if asked == 1 {
+                dir.clone()
+            } else {
+                staging_path(&path)
+            }
+        });
 
         result.expect("publish must succeed on a fresh name");
+        assert_eq!(asked, 2, "one directory collision, then a fresh name");
         assert!(
             dir.join("sub").is_dir(),
             "the planted directory must be untouched"
         );
         assert_eq!(
-            std::fs::read_to_string(&path).expect("descriptor"),
-            "{\"complete\":\"yes\"}"
+            std::fs::read_to_string(&sentinel).expect("competing directory sentinel"),
+            "someone else's directory contents",
+            "the competing directory's contents must be untouched"
+        );
+        let body = selahcue_lan::local_endpoint::read_descriptor_as(
+            &path,
+            4096,
+            selahcue_lan::local_endpoint::current_uid(),
+        )
+        .expect("the existing hardened reader must accept the published descriptor");
+        assert_eq!(body, json);
+        assert!(is_complete_descriptor(&body), "{body:?}");
+        assert_eq!(
+            scratch.entries(),
+            2,
+            "descriptor + competing directory only"
         );
     }
 

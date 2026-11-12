@@ -70,7 +70,9 @@ import os
 import socketserver
 import sys
 import threading
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -476,6 +478,263 @@ def sheet_state(page):
 SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
   (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
 )"""
+
+# Diagnostic only: the original settlement predicate above remains the gate. The init
+# script observes the top-level target document and sends snapshots before a timeout;
+# reporting never evaluates a possibly stalled renderer.
+SETTLE_DIAGNOSTIC_JS = r"""(() => {
+  if (window !== window.top) return;
+  const predicate = (__SETTLE_PREDICATE__);
+  const text = (v) => String(v == null ? '' : v).slice(0, 96);
+  const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
+  const ids = new WeakMap();
+  let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  const start = performance.now();
+  const stop = () => {
+    stopped = true;
+    clearTimeout(timer);
+    if (raf !== null) cancelAnimationFrame(raf);
+    raf = null;
+  };
+  const deadline = setTimeout(stop, 12000);
+  addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
+  const sample = () => {
+    if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
+    sampleCount++;
+    try {
+      const animations = document.getAnimations({ subtree: true });
+      const snapshot = {
+        sample: sampleCount, elapsedMs: number(performance.now() - start),
+        readyState: text(document.readyState), visibilityState: text(document.visibilityState),
+        contentPresent: !!document.querySelector('main > :not(.loading)'),
+        loadingPresent: !!document.querySelector('.loading'),
+        adminShellPresent: !!document.querySelector('.admin-shell'),
+        detailPresent: !!document.querySelector('.detail-layout'),
+        headingPresent: !!document.querySelector('h1'), predicate: predicate(),
+        rafCompleted: frames, rafPending: raf !== null,
+        animationCount: animations.length, animationsDropped: Math.max(0, animations.length - 12),
+        animations: animations.slice(0, 12).map((a) => {
+          if (!ids.has(a)) ids.set(a, nextId++);
+          const effect = a.effect, target = effect && effect.target;
+          const timing = effect ? effect.getComputedTiming() : null;
+          const computed = {};
+          if (timing) for (const key of ['duration', 'delay', 'endDelay', 'iterations', 'iterationStart',
+                                        'activeDuration', 'endTime', 'localTime', 'progress', 'currentIteration']) {
+            computed[key] = number(timing[key]);
+          }
+          return {
+            id: ids.get(a), type: text(a.constructor && a.constructor.name),
+            animationName: text(a.animationName), transitionProperty: text(a.transitionProperty),
+            target: { tag: text(target && target.tagName), id: text(target && target.id),
+                      classes: text(target && target.getAttribute && target.getAttribute('class')),
+                      pseudoElement: text(effect && effect.pseudoElement) },
+            playState: text(a.playState), pending: !!a.pending,
+            currentTime: number(a.currentTime), startTime: number(a.startTime),
+            playbackRate: number(a.playbackRate), timelineTime: number(a.timeline && a.timeline.currentTime),
+            timing: computed,
+          };
+        }),
+      };
+      console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
+    } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
+    // One heartbeat per sample, with no second request while the previous is pending.
+    if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
+    if (sampleCount < 13) timer = setTimeout(sample, 1000);
+  };
+  sample();
+})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+
+
+def valid_settle_sample(value):
+    """Treat console input as untrusted, even when it has the observer prefix."""
+    def fields(record, required, optional=()):
+        return type(record) is dict and set(required) <= record.keys() <= set(required) | set(optional)
+
+    def integer(value, low=0, high=2**53 - 1):
+        return type(value) is int and low <= value <= high
+
+    def number(value, nullable=False):
+        return (
+            (value is None and nullable)
+            or (type(value) in (int, float) and -sys.float_info.max <= value <= sys.float_info.max)
+            or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
+        )
+
+    def text(value):
+        return type(value) is str and len(value) <= 96
+
+    if type(value) is dict and set(value) == {"observerError"}:
+        return value["observerError"] is True
+    if not fields(value, (
+        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
+        "animationCount", "animationsDropped", "animations",
+    )):
+        return False
+    if not (
+        integer(value["sample"], 1, 13)
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and value["readyState"] in ("loading", "interactive", "complete")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
+        and integer(value["rafCompleted"], 0, 13)
+        and integer(value["animationCount"]) and integer(value["animationsDropped"])
+        and type(value["animations"]) is list and len(value["animations"]) <= 12
+    ):
+        return False
+    if any(type(value[key]) is not bool for key in (
+        "contentPresent", "loadingPresent", "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafPending",
+    )):
+        return False
+    if (len(value["animations"]) != min(value["animationCount"], 12)
+            or value["animationsDropped"] != max(0, value["animationCount"] - 12)):
+        return False
+    for animation in value["animations"]:
+        if not fields(animation, (
+            "id", "type", "animationName", "transitionProperty", "target", "playState", "pending",
+            "currentTime", "startTime", "playbackRate", "timelineTime", "timing",
+        )):
+            return False
+        if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
+                and animation["playState"] in ("idle", "running", "paused", "finished")
+                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
+                and number(animation["playbackRate"])):
+            return False
+        target = animation["target"]
+        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+            return False
+        timing = animation["timing"]
+        # Undefined computed-timing properties are omitted by JSON.stringify; a null
+        # effect produces an empty record. No other nested field is accepted.
+        if not fields(timing, (), (
+            "duration", "delay", "endDelay", "iterations", "iterationStart", "activeDuration",
+            "endTime", "localTime", "progress", "currentIteration",
+        )):
+            return False
+        if any(not (number(item, nullable=key in ("localTime", "progress", "currentIteration"))
+                    or (key == "duration" and item == "auto")) for key, item in timing.items()):
+            return False
+    return True
+
+
+class SettleDiagnostic:
+    """Bounded per-cell ledger; callbacks must never change sweep outcomes."""
+
+    def __init__(self, page, path, width):
+        self.path = path.split("?", 1)[0].split("#", 1)[0][:96]
+        self.viewport = {"width": width, "height": HEIGHT}
+        self.started = time.monotonic()
+        self.closed = False
+        self.events: list[dict] = []
+        self.samples: list[dict] = []
+        self.stages: list[dict] = []
+        self.current_stage = "created"
+        self.dropped = {"events": 0, "samples": 0, "observerErrors": 0}
+        try:
+            for category in ("request", "requestfinished", "requestfailed"):
+                page.on(category, lambda req, category=category: self.observe(category, req))
+            page.on("response", lambda response: self.observe("response", response.request, response))
+            page.on("pageerror", lambda _: self.observe("pageerror"))
+            page.on("crash", lambda: self.observe("crash"))
+            page.on("close", lambda: self.observe("close"))
+            page.on("domcontentloaded", lambda: self.observe("domcontentloaded"))
+            page.on("load", lambda: self.observe("load"))
+            page.on("console", self.console)
+            page.add_init_script(SETTLE_DIAGNOSTIC_JS)
+        except Exception:  # observation setup must not replace the original result
+            self.dropped["observerErrors"] += 1
+
+    def observe(self, category, request=None, response=None):
+        try:
+            if self.closed or time.monotonic() - self.started > 12:
+                return
+            event = {"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)}
+            if request is not None:
+                event.update(pathname=urlsplit(request.url).path[:96], method=request.method[:96],
+                             resourceType=request.resource_type[:96])
+            if response is not None:
+                event.update(status=response.status, contentType=response.headers.get("content-type", "")[:96])
+            if len(self.events) == 24:
+                self.events.pop(0)
+                self.dropped["events"] += 1
+            self.events.append(event)
+            if category == "close":
+                self.closed = True
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def console(self, message):
+        try:
+            if self.closed or time.monotonic() - self.started > 12:
+                return
+            prefix = "WEBKIT_SETTLE_SAMPLE "
+            if message.type == "debug" and message.text.startswith(prefix):
+                # The observer's payload is fixed-schema, but reject oversized/extra records.
+                if len(message.text) > 24576 or len(self.samples) == 13:
+                    self.dropped["samples"] += 1
+                    return
+                try:
+                    sample = json.loads(message.text[len(prefix):])
+                except ValueError:
+                    self.dropped["samples"] += 1
+                    return
+                if not valid_settle_sample(sample):
+                    self.dropped["samples"] += 1
+                    return
+                self.samples.append(sample)
+            elif message.type in ("warning", "error"):
+                self.observe("console-" + message.type)  # no arbitrary console text
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def stage(self, category):
+        try:
+            self.current_stage = category
+            if len(self.stages) < 6:
+                self.stages.append({"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)})
+        except Exception:
+            self.dropped["observerErrors"] += 1
+
+    def render(self, outcome, page_error_count):
+        payload = {"route": self.path, "viewport": self.viewport,
+                   "stage": self.current_stage,
+                   "outcome": outcome, "pageErrorCount": page_error_count,
+                   "events": self.events[:], "samples": self.samples[:], "stages": self.stages[:],
+                   "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
+        while True:
+            encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+            if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
+                return encoded
+            payload["truncated"] = True
+            # Preserve the newest animation state and all bounded stage/event observations.
+            if payload["samples"]:
+                payload["samples"].pop(0)
+                payload["dropped"]["samples"] += 1
+            else:
+                return '{"truncated":true,"observerError":true}'
+
+    def emit(self, outcome, page_error_count):
+        try:
+            print("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
+        except Exception:
+            print('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
+
+    def finish(self, page_error_count, failed=False):
+        # Successful cells are quiet except the original detail control and the actual
+        # hosted failing list cell. Every failed WebKit cell retains its own evidence.
+        if failed or (self.path, self.viewport["width"]) in (
+            ("/admin/customers/cus_001", 320), ("/admin/customers", 768),
+        ):
+            self.emit("assertion-failed" if failed else "settled", page_error_count)
+
+
+def emit_browser_identity(browser):
+    try:
+        print("BROWSER_IDENTITY " + json.dumps({"engine": browser.browser_type.name[:16],
+                                               "version": browser.version[:64]}, ensure_ascii=True))
+    except Exception:
+        print('BROWSER_IDENTITY {"observerError":true}')
+
 
 # A cancelable Escape keydown dispatched on <body> AFTER the sheet is gone. The sheet's
 # document-level handler calls preventDefault() on Escape, so if it is still attached the
@@ -1045,6 +1304,8 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 -- any launch failure is "engine unavailable"
                 return skip_or_fail(f"{args.engine} could not launch ({str(exc).splitlines()[0]})")
 
+            emit_browser_identity(browser)
+
             for width in widths:
                 context = browser.new_context(
                     viewport={"width": width, "height": HEIGHT},
@@ -1056,122 +1317,150 @@ def main() -> int:
                     page = context.new_page()
                     errors: list[str] = []
                     page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
+                    diagnostic = (
+                        SettleDiagnostic(page, path, width)
+                        if args.engine == "webkit"
+                        else None
+                    )
                     try:
+                        if diagnostic:
+                            diagnostic.stage("navigation-start")
                         page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
+                        if diagnostic:
+                            diagnostic.stage("navigation-end")
+                            diagnostic.stage("visible-content-start")
                         # App now renders a real shell status while the initial route imports.
                         # Measure the resolved route, retaining every geometry/assertion check below.
                         page.wait_for_selector("main > :not(.loading)", timeout=10000)
+                        if diagnostic:
+                            diagnostic.stage("visible-content-end")
+                            diagnostic.stage("settle-start")
                         page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
+                        if diagnostic:
+                            diagnostic.stage("settle-end")
                     except Exception as exc:  # noqa: BLE001
+                        if diagnostic:
+                            diagnostic.emit("infra", len(errors))
                         print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")
                         return 2
 
-                    info = page.evaluate(PAGE_JS)
-                    tag = f"{args.engine} {width:>4}px {path}"
+                    if diagnostic:
+                        diagnostic.stage("geometry-start")
+                    try:
+                        failures_before = len(failures)
+                        info = page.evaluate(PAGE_JS)
+                        tag = f"{args.engine} {width:>4}px {path}"
 
-                    checks += 1
-                    if info["scrollWidth"] > info["vw"]:
-                        failures.append(
-                            f"{tag}: horizontal scroll, scrollWidth {info['scrollWidth']} > {info['vw']}; "
-                            f"offenders: {'; '.join(info['offenders']) or '(none found outside scroll containers)'}"
-                        )
-
-                    checks += 1
-                    if info["clipped"]:
-                        failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
-
-                    checks += 1
-                    if info["edge"]:
-                        failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
-
-                    expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
-                    # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
-                    # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
-                    # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
-                    # of the old scoped containers. All applicable routes now use the shared container;
-                    # keep the distinct --page-gutter token check above, but reject legacy 24px containers.
-                    shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
-                    checks += 1
-                    if info["gutterToken"] != f"{expected_gutter}px":
-                        failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
-                    checks += 1
-                    # Bare auth/landing pages are exempt: their geometry is the auth handoff's
-                    # own (a 92vw card in a 20px-padded page), not the marketing gutter.
-                    allowed_gutters = (shared_container_gutter,)
-                    wrong = [] if bare else [
-                        b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
-                    ]
-                    if wrong:
-                        failures.append(
-                            f"{tag}: page container padding is not the {' or '.join(sorted(set(allowed_gutters)))}px {info['mode']} gutter: "
-                            f"{'; '.join(wrong[:4])}"
-                        )
-                    checks += 1
-                    if info["smallInputs"]:
-                        failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
-                    checks += 1
-                    if info["unfocusableScrollers"]:
-                        failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
-                    if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
                         checks += 1
-                        if not info["pricingFirstIsPopular"]:
-                            failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
-
-                    checks += 1
-                    if info["mainTextLength"] < 20:
-                        failures.append(f"{tag}: rendered (almost) nothing, main text length {info['mainTextLength']}")
-
-                    checks += 1
-                    if errors:
-                        failures.append(f"{tag}: uncaught page error: {errors[0][:160]}")
-
-                    is_mobile = page.evaluate(IS_MOBILE_JS)
-                    if not bare:
-                        nav = page.evaluate(NAV_STATE_JS)
-                        checks += 1
-                        if not nav["hasHeader"]:
-                            failures.append(f"{tag}: no navbar rendered on a non-bare route")
-                        else:
-                            if nav["toggleVisible"] != is_mobile or nav["desktopNavVisible"] == is_mobile:
-                                failures.append(
-                                    f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
-                                    f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
-                                )
-                        if path == "/":
-                            checks += 1
-                            hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
-                            if hiw is None:
-                                failures.append(f"{tag}: the navbar has no How it works link")
-                            elif hiw[0] is not None:
-                                failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
-                    else:
-                        # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
-                        # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
-                        # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
-                        # The non-bare branch above is the positive control: the same selectors find the chrome there.
-                        chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
-                        checks += 1
-                        if chrome["header"] or chrome["footer"]:
-                            failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
-
-                    if is_mobile:
-                        checks += 1
-                        bad = page.evaluate(TOUCH_JS, TOUCH_SCOPES)
-                        if bad:
-                            failures.append(f"{tag}: touch targets < 44px: {'; '.join(bad)}")
-
-                    if shots:
-                        safe = path.strip("/").replace("/", "_").split("?")[0] or "home"
-                        # Tall pages are cut into viewport-friendly tiles: a 12,000px strip
-                        # scaled to fit a screen is unreadable, which defeats looking at it.
-                        total_h = page.evaluate("document.documentElement.scrollHeight")
-                        tile = 1400
-                        for i, top in enumerate(range(0, total_h, tile)):
-                            page.screenshot(
-                                path=str(shots / f"{safe}-{width}-{i:02d}.png"),
-                                full_page=True,
-                                clip={"x": 0, "y": top, "width": width, "height": min(tile, total_h - top)},
+                        if info["scrollWidth"] > info["vw"]:
+                            failures.append(
+                                f"{tag}: horizontal scroll, scrollWidth {info['scrollWidth']} > {info['vw']}; "
+                                f"offenders: {'; '.join(info['offenders']) or '(none found outside scroll containers)'}"
                             )
+
+                        checks += 1
+                        if info["clipped"]:
+                            failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
+
+                        checks += 1
+                        if info["edge"]:
+                            failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
+
+                        expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
+                        # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
+                        # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
+                        # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
+                        # of the old scoped containers. All applicable routes now use the shared container;
+                        # keep the distinct --page-gutter token check above, but reject legacy 24px containers.
+                        shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
+                        checks += 1
+                        if info["gutterToken"] != f"{expected_gutter}px":
+                            failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
+                        checks += 1
+                        # Bare auth/landing pages are exempt: their geometry is the auth handoff's
+                        # own (a 92vw card in a 20px-padded page), not the marketing gutter.
+                        allowed_gutters = (shared_container_gutter,)
+                        wrong = [] if bare else [
+                            b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
+                        ]
+                        if wrong:
+                            failures.append(
+                                f"{tag}: page container padding is not the {' or '.join(sorted(set(allowed_gutters)))}px {info['mode']} gutter: "
+                                f"{'; '.join(wrong[:4])}"
+                            )
+                        checks += 1
+                        if info["smallInputs"]:
+                            failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
+                        checks += 1
+                        if info["unfocusableScrollers"]:
+                            failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
+                        if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
+                            checks += 1
+                            if not info["pricingFirstIsPopular"]:
+                                failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
+
+                        checks += 1
+                        if info["mainTextLength"] < 20:
+                            failures.append(f"{tag}: rendered (almost) nothing, main text length {info['mainTextLength']}")
+
+                        checks += 1
+                        if errors:
+                            failures.append(f"{tag}: uncaught page error: {errors[0][:160]}")
+
+                        is_mobile = page.evaluate(IS_MOBILE_JS)
+                        if not bare:
+                            nav = page.evaluate(NAV_STATE_JS)
+                            checks += 1
+                            if not nav["hasHeader"]:
+                                failures.append(f"{tag}: no navbar rendered on a non-bare route")
+                            else:
+                                if nav["toggleVisible"] != is_mobile or nav["desktopNavVisible"] == is_mobile:
+                                    failures.append(
+                                        f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
+                                        f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
+                                    )
+                            if path == "/":
+                                checks += 1
+                                hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+                                if hiw is None:
+                                    failures.append(f"{tag}: the navbar has no How it works link")
+                                elif hiw[0] is not None:
+                                    failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
+                        else:
+                            # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
+                            # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
+                            # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
+                            # The non-bare branch above is the positive control: the same selectors find the chrome there.
+                            chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
+                            checks += 1
+                            if chrome["header"] or chrome["footer"]:
+                                failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
+
+                        if is_mobile:
+                            checks += 1
+                            bad = page.evaluate(TOUCH_JS, TOUCH_SCOPES)
+                            if bad:
+                                failures.append(f"{tag}: touch targets < 44px: {'; '.join(bad)}")
+
+                        if shots:
+                            safe = path.strip("/").replace("/", "_").split("?")[0] or "home"
+                            # Tall pages are cut into viewport-friendly tiles: a 12,000px strip
+                            # scaled to fit a screen is unreadable, which defeats looking at it.
+                            total_h = page.evaluate("document.documentElement.scrollHeight")
+                            tile = 1400
+                            for i, top in enumerate(range(0, total_h, tile)):
+                                page.screenshot(
+                                    path=str(shots / f"{safe}-{width}-{i:02d}.png"),
+                                    full_page=True,
+                                    clip={"x": 0, "y": top, "width": width, "height": min(tile, total_h - top)},
+                                )
+                    except Exception:
+                        if diagnostic:
+                            diagnostic.emit("exception", len(errors))
+                        raise
+                    if diagnostic:
+                        diagnostic.stage("geometry-end")
+                        diagnostic.finish(len(errors), len(failures) > failures_before)
                     page.close()
                 context.close()
 

@@ -3,9 +3,10 @@
 //! The preacher speaks references aloud — "John chapter 3 verse 16", "First
 //! Corinthians 13", "Romans eight twenty-eight" — and this module surfaces them as
 //! **candidates the operator confirms** (operator-confirmation default, FR-115;
-//! precision over recall, FR-121). It is pure and deterministic (NFR-014): the same
-//! transcript text always yields the same detections, with no clock or ordering
-//! nondeterminism.
+//! precision over recall, FR-121). Parsing is pure and deterministic (NFR-014):
+//! the same transcript text always yields the same reference candidates.
+//! Stateful queue decisions take host monotonic time through
+//! `*_at` methods; convenience wrappers read it once per invocation.
 //!
 //! **Reuse, not reinvention.** Reference parsing is delegated wholesale to
 //! [`selahcue_core::scripture::parse_one`](crate::scripture::parse_one) — that parser
@@ -20,11 +21,15 @@
 use crate::scripture::parse_one;
 use crate::transcript::TranscriptLog;
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 /// Upper bound on queued (un-actioned) detections. Older un-actioned candidates are
 /// evicted once the cap is reached, so a flood of spoken references cannot grow memory
 /// without limit (no-leak; asserted by the bounded-memory tests).
 pub const MAX_DETECTIONS: usize = 32;
+
+/// Initial rehearsal timing for recently actioned references, not an accuracy threshold.
+pub const DETECTION_COOLDOWN: Duration = Duration::from_secs(20);
 
 /// How many recently-detected references are remembered to suppress duplicates across
 /// segments (a preacher repeating "John 3:16" should surface once, not on every breath —
@@ -609,6 +614,7 @@ fn take_digit_run(tokens: &[&str]) -> Option<(u16, usize)> {
 pub struct DetectionQueue {
     items: VecDeque<DetectedReference>,
     next_id: u64,
+    recent_actioned: VecDeque<(String, Instant)>,
 }
 
 impl DetectionQueue {
@@ -616,18 +622,36 @@ impl DetectionQueue {
         DetectionQueue {
             items: VecDeque::new(),
             next_id: 0,
+            recent_actioned: VecDeque::new(),
         }
     }
 
     /// Enqueue a detected reference from `source_segment`. Returns the new id, or `None`
-    /// if an identical reference is already pending (dedup). Evicts the oldest pending
-    /// candidate when at capacity.
+    /// if an identical reference is pending or recently actioned. Evicts the oldest
+    /// pending candidate when at capacity. Reads host monotonic time once.
     pub fn enqueue(
         &mut self,
         reference: String,
         source_segment: u64,
         confidence: u8,
     ) -> Option<u64> {
+        self.enqueue_at(reference, source_segment, confidence, Instant::now())
+    }
+
+    /// Enqueue using the host monotonic time. Repetition during cooldown does not
+    /// refresh its deadline; at the exact expiry the reference is eligible again.
+    pub fn enqueue_at(
+        &mut self,
+        reference: String,
+        source_segment: u64,
+        confidence: u8,
+        now: Instant,
+    ) -> Option<u64> {
+        self.recent_actioned
+            .retain(|(_, expires_at)| now < *expires_at);
+        if self.recent_actioned.iter().any(|(r, _)| r == &reference) {
+            return None;
+        }
         if self.items.iter().any(|d| d.reference == reference) {
             return None;
         }
@@ -645,7 +669,26 @@ impl DetectionQueue {
         Some(id)
     }
 
+    /// Remember an approved, dismissed, or later automatically projected reference.
+    /// At most MAX_DETECTIONS actions are retained; refreshes replace the same key.
+    /// The caller owns the action itself and supplies its host monotonic time.
+    pub fn mark_actioned(&mut self, reference: &str, now: Instant) {
+        self.recent_actioned
+            .retain(|(r, expires_at)| r != reference && now < *expires_at);
+        if self.recent_actioned.len() == MAX_DETECTIONS {
+            self.recent_actioned.pop_front();
+        }
+        self.recent_actioned
+            .push_back((reference.to_string(), now + DETECTION_COOLDOWN));
+    }
+
+    /// Retained action entries, for bounded-state diagnostics.
+    pub fn recent_actioned_len(&self) -> usize {
+        self.recent_actioned.len()
+    }
+
     /// Remove and return the detection with `id` (the operator approved it).
+    /// The host must also mark the resolved reference with its action time.
     pub fn approve(&mut self, id: u64) -> Option<DetectedReference> {
         let pos = self.items.iter().position(|d| d.id == id)?;
         self.items.remove(pos)
@@ -674,12 +717,13 @@ impl DetectionQueue {
 
     pub fn clear(&mut self) {
         self.items.clear();
+        self.recent_actioned.clear();
     }
 }
 
 /// The transcript + detection engine: composes the bounded [`TranscriptLog`] with the
 /// pure [`detect`] pass and the bounded [`DetectionQueue`], plus a small cross-segment
-/// dedup ring. Pure and deterministic — the host feeds it segments (from any
+/// dedup ring. Deterministic with injected host time — the host feeds it segments (from any
 /// [`TranscriptProvider`](crate::transcript::TranscriptProvider)) out-of-band and reads
 /// back the bounded transcript + queue for the operator view.
 #[derive(Debug, Clone, Default)]
@@ -720,6 +764,18 @@ impl TranscriptEngine {
         end_ms: u64,
         quote_refs: &[(String, u8)],
     ) -> Vec<u64> {
+        self.ingest_with_quotes_at(text, start_ms, end_ms, quote_refs, Instant::now())
+    }
+
+    /// Host-clock variant of [`ingest_with_quotes`](Self::ingest_with_quotes).
+    pub fn ingest_with_quotes_at(
+        &mut self,
+        text: &str,
+        start_ms: u64,
+        end_ms: u64,
+        quote_refs: &[(String, u8)],
+        now: Instant,
+    ) -> Vec<u64> {
         let segment_id = self.log.push(text, start_ms, end_ms);
         let mut new_ids = Vec::new();
         // Explicit references first (high confidence), so an explicitly-spoken "John 3:16"
@@ -730,10 +786,17 @@ impl TranscriptEngine {
                 segment_id,
                 NAMED_REFERENCE_CONFIDENCE,
                 &mut new_ids,
+                now,
             );
         }
         for (reference, confidence) in quote_refs {
-            self.try_enqueue(reference.clone(), segment_id, *confidence, &mut new_ids);
+            self.try_enqueue(
+                reference.clone(),
+                segment_id,
+                *confidence,
+                &mut new_ids,
+                now,
+            );
         }
         new_ids
     }
@@ -746,13 +809,14 @@ impl TranscriptEngine {
         segment_id: u64,
         confidence: u8,
         new_ids: &mut Vec<u64>,
+        now: Instant,
     ) {
         if self.recent_refs.iter().any(|r| r == &reference) {
             return;
         }
         if let Some(id) = self
             .queue
-            .enqueue(reference.clone(), segment_id, confidence)
+            .enqueue_at(reference.clone(), segment_id, confidence, now)
         {
             self.remember(reference);
             new_ids.push(id);
@@ -775,12 +839,31 @@ impl TranscriptEngine {
 
     /// Approve a queued detection (the operator staged it): removes and returns it.
     pub fn approve(&mut self, id: u64) -> Option<DetectedReference> {
-        self.queue.approve(id)
+        self.approve_at(id, Instant::now())
+    }
+
+    /// Approve at the host action time, starting bounded suppression.
+    pub fn approve_at(&mut self, id: u64, now: Instant) -> Option<DetectedReference> {
+        let detected = self.queue.approve(id)?;
+        self.mark_actioned(&detected.reference, now);
+        Some(detected)
+    }
+
+    /// Shared action seam for host producers, including later automatic projection.
+    /// Remove only this key from count-based dedup so expiry can re-enable it.
+    pub fn mark_actioned(&mut self, reference: &str, now: Instant) {
+        self.recent_refs.retain(|r| r != reference);
+        self.queue.mark_actioned(reference, now);
     }
 
     /// Dismiss a queued detection without acting on it. Returns whether one was removed.
     pub fn dismiss(&mut self, id: u64) -> bool {
-        self.queue.dismiss(id)
+        self.dismiss_at(id, Instant::now())
+    }
+
+    /// Dismiss at the host action time, with the same suppression as approval.
+    pub fn dismiss_at(&mut self, id: u64, now: Instant) -> bool {
+        self.approve_at(id, now).is_some()
     }
 
     /// The bounded transcript log (for the operator view).
