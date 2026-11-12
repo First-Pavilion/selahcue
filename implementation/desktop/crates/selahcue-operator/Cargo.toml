@@ -213,6 +213,9 @@ selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true
 rustix = { version = "=1.1.4", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
+# Safe, exact-source-reviewed handle observations and Kernel32 volume/move APIs.
+winapi-util = "=0.1.11"
+winsafe = { version = "=0.0.27", default-features = false, features = ["kernel"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 # Test-only. `tauri`'s `test` feature adds `tauri::test::mock_app`/`MockRuntime` — a REAL

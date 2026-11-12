@@ -281,6 +281,183 @@ fn symlinks_hardlinks_and_parent_move_are_refused() {
     assert_eq!(std::fs::read(&sentinel).expect("read"), b"original");
 }
 
+// Windows-only filesystem cases execute on the hosted NTFS runner. These never
+// substitute a synthetic drive classification for acceptance by the real volume gate.
+#[cfg(windows)]
+#[test]
+fn windows_hardlinked_destination_is_refused_before_staging() {
+    let dir = fixture_dir();
+    let sentinel = dir.path().join("sentinel");
+    let target = dir.path().join("notes.pdf");
+    std::fs::write(&sentinel, b"sentinel").expect("write");
+    std::fs::hard_link(&sentinel, &target).expect("NTFS hardlink");
+    assert_eq!(
+        save::with_hook(
+            |_, _, _| panic!("hardlink refusal precedes staging"),
+            || save::save_pdf(&target, b"new")
+        ),
+        Err(ExportError::Io)
+    );
+    assert_eq!(std::fs::read(&sentinel).expect("read"), b"sentinel");
+    assert_eq!(std::fs::read(&target).expect("read"), b"sentinel");
+    assert_eq!(std::fs::read_dir(dir.path()).expect("list").count(), 2);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_publication_sharing_violation_preserves_sentinel_and_cleans_owned_stage() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let dir = fixture_dir();
+    let target = dir.path().join("notes.pdf");
+    std::fs::write(&target, b"sentinel").expect("write");
+    // Permit reads/writes, but deny delete sharing so the actual MoveFileEx fails.
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(&target)
+        .expect("lock target against rename");
+    let reached = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = reached.clone();
+    let result = save::with_hook(
+        move |event, _, _| {
+            if event == save::Event::Rename {
+                seen.set(true);
+            }
+            Ok(())
+        },
+        || save::save_pdf(&target, b"complete new PDF"),
+    );
+    assert!(reached.get(), "must reach the real publication API");
+    assert_eq!(result, Err(ExportError::Io));
+    assert_eq!(std::fs::read(&target).expect("read"), b"sentinel");
+    assert_eq!(std::fs::read_dir(dir.path()).expect("list").count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_full_filename_and_parent_invalid_encoding_and_nul_refuse_before_staging() {
+    use std::{
+        ffi::OsString,
+        os::windows::ffi::{OsStrExt, OsStringExt},
+    };
+    let dir = fixture_dir();
+    let sentinel = dir.path().join("sentinel.pdf");
+    std::fs::write(&sentinel, b"sentinel").expect("write");
+    let invalid_name = OsString::from_wide(&[b'n' as u16, 0xd800, b'.' as u16, b'p' as u16]);
+    let mut nul: Vec<_> = sentinel.as_os_str().encode_wide().collect();
+    nul.extend([0, b'x' as u16]);
+    for target in [
+        dir.path().join(&invalid_name),
+        dir.path().join(&invalid_name).join("notes.pdf"),
+        std::path::PathBuf::from(OsString::from_wide(&nul)),
+    ] {
+        assert_eq!(
+            save::with_hook(
+                |_, _, _| panic!("invalid full path must refuse before staging"),
+                || save::save_pdf(&target, b"new")
+            ),
+            Err(ExportError::Io)
+        );
+        assert_eq!(std::fs::read(&sentinel).expect("read"), b"sentinel");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("list").count(), 1);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_unsupported_namespaces_refuse_before_staging() {
+    for target in [
+        r"\\server\share\notes.pdf",
+        r"\\?\UNC\server\share\notes.pdf",
+        r"\\.\C:\notes.pdf",
+        r"\\?\GLOBALROOT\Device\HarddiskVolume1\notes.pdf",
+        r"notes.pdf",
+        r"C:notes.pdf",
+        r"\notes.pdf",
+    ] {
+        assert_eq!(
+            save::with_hook(
+                |_, _, _| panic!("unsupported namespace must refuse before staging"),
+                || save::save_pdf(std::path::Path::new(target), b"new")
+            ),
+            Err(ExportError::Io),
+            "{target}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_exact_unicode_and_verbatim_disk_names_publish_complete_bytes() {
+    let dir = fixture_dir();
+    let canonical = dir.path().canonicalize().expect("verbatim disk path");
+    assert!(canonical
+        .to_str()
+        .expect("Unicode fixture")
+        .starts_with(r"\\?\"));
+    for parent in [dir.path(), canonical.as_path()] {
+        for name in [
+            "Olúwáfẹ́mi-🦄.pdf",
+            "Olu\u{0301}wa\u{0301}fe\u{0323}\u{0301}mi-🦄.pdf",
+        ] {
+            let target = parent.join(name);
+            assert_eq!(save::save_pdf(&target, b"complete Unicode PDF"), Ok(()));
+            assert_eq!(
+                std::fs::read(&target).expect("exact name"),
+                b"complete Unicode PDF"
+            );
+        }
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).expect("list").count(), 2);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_long_verbatim_descendant_with_short_volume_root_saves() {
+    let dir = fixture_dir();
+    let mut parent = dir.path().canonicalize().expect("verbatim root");
+    for _ in 0..6 {
+        parent.push("long-Unicode-🦄-descendant-component-0123456789");
+    }
+    std::fs::create_dir_all(&parent).expect("verbatim long directory");
+    let target = parent.join("notes.pdf");
+    assert!(target.as_os_str().len() > 260);
+    assert_eq!(save::save_pdf(&target, b"long path PDF"), Ok(()));
+    assert_eq!(
+        std::fs::read(&target).expect("exact long name"),
+        b"long path PDF"
+    );
+    assert_eq!(std::fs::read_dir(&parent).expect("list").count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_junction_parent_is_refused_before_staging() {
+    let dir = fixture_dir();
+    let real = dir.path().join("real");
+    let junction = dir.path().join("junction");
+    std::fs::create_dir(&real).expect("real parent");
+    let target = real.join("notes.pdf");
+    std::fs::write(&target, b"sentinel").expect("write");
+    // Directory junctions need no symlink privilege. Fail if fixture construction
+    // is unavailable, rather than silently skipping the reparse-point assertion.
+    let fixture = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junction)
+        .arg(&real)
+        .output()
+        .expect("junction command");
+    assert!(fixture.status.success(), "junction fixture: {fixture:?}");
+    let result = save::with_hook(
+        |_, _, _| panic!("reparse refusal precedes staging"),
+        || save::save_pdf(&junction.join("notes.pdf"), b"new"),
+    );
+    assert_eq!(result, Err(ExportError::Io));
+    assert_eq!(std::fs::read(&target).expect("read"), b"sentinel");
+    assert_eq!(std::fs::read_dir(&real).expect("list").count(), 1);
+    std::fs::remove_dir(&junction).expect("remove only junction");
+}
+
 fn fixture_dir() -> tempfile::TempDir {
     #[cfg(target_os = "macos")]
     {

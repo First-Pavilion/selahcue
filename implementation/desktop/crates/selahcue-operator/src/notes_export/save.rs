@@ -1,7 +1,9 @@
 //! Practical local-file publication. Native Save authorizes the selected name, not an
 //! inode CAS. Refuse observed changes; same-user namespace/content races, hardware and
 //! crash durability remain outside the pre-commit preservation guarantee. No fallback
-//! ever deletes/truncates the target. Windows is limited to local fixed NTFS.
+//! ever deletes/truncates the target. Windows is limited to local fixed NTFS and
+//! valid Unicode paths (unpaired UTF-16 is refused before I/O). Very long mounted
+//! volume roots may be conservatively refused by the safe volume-query buffer.
 use super::{ExportError, MAX_PDF_BYTES};
 use std::{
     fs::{self, File},
@@ -37,31 +39,25 @@ fn observe(path: &Path) -> io::Result<Observation> {
 }
 #[cfg(windows)]
 fn observe(path: &Path) -> io::Result<Observation> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::*;
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)?;
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: live file handle and writable correctly-sized output; File owns closure.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let directory = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0;
-    if info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE) != 0
-        || (!directory && info.nNumberOfLinks != 1)
+    let info = winapi_util::file::information(&file)?;
+    let attributes = info.file_attributes();
+    let directory = attributes & u64::from(FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if attributes & u64::from(FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE) != 0
+        || (!directory && info.number_of_links() != 1)
     {
         return Err(refused());
     }
     Ok(Observation {
-        identity: (
-            info.dwVolumeSerialNumber as u64,
-            ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
-        ),
-        size: ((info.nFileSizeHigh as u64) << 32) | info.nFileSizeLow as u64,
-        modified: ((info.ftLastWriteTime.dwHighDateTime as u128) << 32)
-            | info.ftLastWriteTime.dwLowDateTime as u128,
+        identity: (info.volume_serial_number(), info.file_index()),
+        size: info.file_size(),
+        // The safe wrapper represents an all-zero FILETIME as None; preserve zero.
+        modified: u128::from(info.last_write_time().unwrap_or(0)),
         directory,
     })
 }
@@ -73,17 +69,8 @@ fn file_identity(file: &File) -> io::Result<(u64, u64)> {
 }
 #[cfg(windows)]
 fn file_identity(file: &File) -> io::Result<(u64, u64)> {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::*;
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    // SAFETY: File owns a live handle and info is a valid writable output.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok((
-        info.dwVolumeSerialNumber as u64,
-        ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64,
-    ))
+    let info = winapi_util::file::information(file)?;
+    Ok((info.volume_serial_number(), info.file_index()))
 }
 fn optional_target(path: &Path) -> io::Result<Option<Observation>> {
     match observe(path) {
@@ -240,27 +227,19 @@ impl Parent {
         }
         #[cfg(windows)]
         {
-            use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
             let _ = (old, new);
-            let old = wide(stage);
-            let new = wide(target);
-            // SAFETY: terminated native paths, no copy/delayed/remove fallback flags.
-            if unsafe {
-                MoveFileExW(
-                    old.as_ptr(),
-                    new.as_ptr(),
-                    if replace {
-                        MOVEFILE_REPLACE_EXISTING
-                    } else {
-                        0
-                    },
-                )
-            } == 0
-            {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
+            // Exactly one move: no copy, delayed-delete, attribute change or fallback.
+            winsafe::MoveFileEx(
+                windows_path(stage)?,
+                Some(windows_path(target)?),
+                if replace {
+                    winsafe::co::MOVEFILE::REPLACE_EXISTING
+                } else {
+                    // This exact WinSafe release derives Default as zero flags.
+                    winsafe::co::MOVEFILE::default()
+                },
+            )
+            .map_err(|e| io::Error::from_raw_os_error(e.raw() as i32))
         }
     }
 }
@@ -292,6 +271,9 @@ pub(crate) fn save_pdf(path: &Path, bytes: &[u8]) -> Result<(), ExportError> {
     save(path, bytes).map_err(|_| ExportError::Io)
 }
 fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    // Validate the FULL selected name before any volume query, open or staging.
+    #[cfg(windows)]
+    windows_path(path)?;
     let mut parent = Parent::open(path.parent().ok_or_else(refused)?)?;
     if path.file_name().is_none() {
         return Err(refused());
@@ -359,45 +341,50 @@ fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-fn wide(path: &Path) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    path.as_os_str().encode_wide().chain(Some(0)).collect()
+fn windows_path(path: &Path) -> io::Result<&str> {
+    let text = path.to_str().ok_or_else(refused)?;
+    if text.contains('\0') {
+        return Err(refused());
+    }
+    Ok(text)
 }
 #[cfg(windows)]
-fn check_volume(path: &Path) -> io::Result<()> {
+fn validate_disk_path(path: &Path) -> io::Result<()> {
     use std::path::Prefix;
-    use windows_sys::Win32::Storage::FileSystem::*;
-    use windows_sys::Win32::System::WindowsProgramming::DRIVE_FIXED;
-    if !matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+    if !path.is_absolute()
+        || !matches!(path.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)))
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
     {
         return Err(refused());
     }
-    let path = wide(path);
-    let mut root = vec![0u16; 32768];
-    let mut format = [0u16; 32];
-    // SAFETY: all pointers refer to appropriately-sized buffers for the duration of calls.
-    unsafe {
-        if GetVolumePathNameW(path.as_ptr(), root.as_mut_ptr(), root.len() as u32) == 0
-            || GetDriveTypeW(root.as_ptr()) != DRIVE_FIXED
-        {
-            return Err(refused());
-        }
-        if GetVolumeInformationW(
-            root.as_ptr(),
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            format.as_mut_ptr(),
-            format.len() as u32,
-        ) == 0
-        {
-            return Err(refused());
-        }
+    Ok(())
+}
+#[cfg(windows)]
+fn validate_volume_root(root: &str) -> io::Result<()> {
+    // WinSafe's checked UTF-16 decoding exposes a diagnostic String on malformed
+    // output. Accept only a rooted disk path before passing it to further APIs.
+    windows_path(Path::new(root))?;
+    validate_disk_path(Path::new(root))?;
+    if !root.ends_with('\\') {
+        return Err(refused());
     }
-    let end = format.iter().position(|&c| c == 0).ok_or_else(refused)?;
-    if String::from_utf16_lossy(&format[..end]) != "NTFS" {
+    Ok(())
+}
+#[cfg(windows)]
+fn check_volume(path: &Path) -> io::Result<()> {
+    validate_disk_path(path)?;
+    // Query this destination, including mapped/mounted volumes; never assume C:.
+    let root = winsafe::GetVolumePathName(windows_path(path)?).map_err(|_| refused())?;
+    validate_volume_root(&root)?;
+    if winsafe::GetDriveType(Some(&root)) != winsafe::co::DRIVE::FIXED {
+        return Err(refused());
+    }
+    let mut format = String::new();
+    winsafe::GetVolumeInformation(Some(&root), None, None, None, None, Some(&mut format))
+        .map_err(|_| refused())?;
+    if format != "NTFS" {
         return Err(refused());
     }
     Ok(())
@@ -440,4 +427,71 @@ pub(crate) fn with_hook<T>(
     HOOK.with_borrow_mut(|h| *h = Some(Box::new(f)));
     let _reset = Reset;
     run()
+}
+
+#[cfg(all(test, windows))]
+mod windows_notes_export_tests {
+    use super::*;
+
+    #[test]
+    fn queried_root_must_be_absolute_disk_terminated_and_without_traversal() {
+        for root in [r"C:\", r"C:\mounted\", r"\\?\C:\", r"\\?\C:\mounted\"] {
+            assert!(validate_volume_root(root).is_ok(), "{root}");
+        }
+        for root in [
+            "",
+            "PARSING ERROR: invalid UTF-16",
+            "C:",
+            r"C:\mounted",
+            r"\\server\share\",
+            r"\\?\UNC\server\share\",
+            r"\\.\C:\",
+            r"C:\mounted\..\",
+            "C:\\\0",
+            r"relative\",
+            r"\",
+        ] {
+            assert!(validate_volume_root(root).is_err(), "{root:?}");
+        }
+    }
+
+    #[test]
+    fn opened_file_identity_matches_reopened_path_and_detects_same_size_time_substitute() {
+        let dir = tempfile::tempdir().expect("NTFS fixture");
+        let path = dir.path().join("observed");
+        fs::write(&path, b"original").expect("write");
+        let file = File::open(&path).expect("open");
+        let before = observe(&path).expect("observe");
+        assert_eq!(
+            file_identity(&file).expect("handle identity"),
+            before.identity
+        );
+        let modified = file
+            .metadata()
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
+        drop(file);
+        fs::rename(&path, path.with_extension("held")).expect("hold original");
+        fs::write(&path, b"replaced").expect("same-size replacement");
+        let replacement = fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open replacement");
+        replacement
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .expect("restore mtime");
+        drop(replacement);
+        let after = observe(&path).expect("observe replacement");
+        assert_eq!(before.size, after.size);
+        assert_eq!(before.modified, after.modified);
+        assert_ne!(
+            before.identity, after.identity,
+            "size/time are not identity"
+        );
+        assert_eq!(
+            file_identity(&File::open(&path).expect("reopen")).expect("new identity"),
+            after.identity
+        );
+    }
 }
