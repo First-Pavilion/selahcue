@@ -150,7 +150,7 @@ pilot-credentials = ["stt", "selahcue-cloud/openai", "selahcue-cloud/http", "sel
 [dependencies]
 # Offline PDF serialization and OpenType shaping; no HTML/browser renderer.
 printpdf = { version = "=0.12.8", default-features = false }
-harfrust = "=0.5.2"
+harfrust = "=0.13.3"
 unicode-normalization = "=0.1.25"
 unicode-segmentation = "=1.13.3"
 tauri = { version = "2", features = [] }
@@ -215,7 +215,7 @@ rustix = { version = "=1.1.4", features = ["fs"] }
 [target.'cfg(windows)'.dependencies]
 # Safe, exact-source-reviewed handle observations and Kernel32 volume/move APIs.
 winapi-util = "=0.1.11"
-winsafe = { version = "=0.0.27", default-features = false, features = ["kernel"] }
+winsafe = { version = "=0.0.29", default-features = false, features = ["kernel"] }
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_WindowsProgramming"] }
 
 # Test-only. `tauri`'s `test` feature adds `tauri::test::mock_app`/`MockRuntime` — a REAL
