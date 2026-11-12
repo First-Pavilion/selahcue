@@ -318,10 +318,15 @@ fn save(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(test)]
     hook(Event::Sync, &stage.path, path)?;
     file.sync_all()?;
+    // Windows guarantees final last-write timestamps only after the writer closes.
+    // Capture that baseline afterwards; the original open-file identity still guards it.
+    #[cfg(windows)]
+    drop(file); // sync_all reports errors; Rust drop is not a checked close.
     let complete = observe(&stage.path)?;
     if complete.identity != identity || complete.size != bytes.len() as u64 {
         return Err(refused());
     }
+    #[cfg(not(windows))]
     drop(file); // sync_all reports errors; Rust drop is not a checked close.
     #[cfg(test)]
     hook(Event::Validate, &stage.path, path)?;
