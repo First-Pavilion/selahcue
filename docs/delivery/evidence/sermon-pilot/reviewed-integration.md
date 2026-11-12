@@ -197,3 +197,35 @@ compile disposition are retained locally in
 Current local source verification does not supply equivalent hosted evidence,
 Windows 10 / 4 GB / 128 GB device, four-language corpus, real-provider, installer
 or release acceptance. Independent review and final hosted gates remain root-owned.
+
+## Windows release Perl environment checkpoint — 2026-11-12
+
+The earlier Windows release-output failure reached OpenSSL Configure through
+Git's `/usr` Perl/module tree before release tests ran. The Rust job now resolves
+an application executable in PowerShell, normalizes its absolute native Windows
+path to forward slashes, probes that exact executable for `IPC::Cmd`,
+`Params::Check`, `Locale::Maketext::Simple` and `MSWin32`, explicitly rejects a
+nonzero native exit, and exports its unquoted value as `OPENSSL_SRC_PERL`.
+The existing release Bash step requires and probes that same executable before
+Cargo. Installed pinned `openssl-src 300.6.1+3.6.3` source confirms that variable
+wins over `PERL` and bare `perl`; no dependency or module installation changed.
+
+Actionlint 1.7.12, workflow self-tests/checks (118 legacy cases; 39 cache CLI
+fixtures; 7 workflows / 21 jobs), nine cache-handler mutation controls, minute
+self-tests/checks, alarm self-tests and diff whitespace checks pass locally.
+Disposable macOS Bash controls reject absent/empty variables, a nonexistent
+executable, an explicit exit-23 executable and actual Darwin Perl before the
+Cargo sentinel. A path-with-spaces positive stub reaches the sentinel and
+checks the exact module/native-OS probe arguments. These are shell-contract
+checks, not native Windows acceptance. All other workflow mappings are unchanged;
+the release body is byte-identical after removing the two added preflight lines.
+Encryption, full binary suite, timeout, named tests, nonzero receipt, pipefail
+and matrix remain intact.
+
+The original hosted failure remains evidence. No Windows or PowerShell runtime,
+release compilation, hosted retry, provider/device, installer or release
+acceptance is claimed by this YAML-only correction. The next reviewed hosted
+run must print the same native path/OS/version in setup and release preflight,
+then pass the complete encrypted release-output suite and its existing receipt.
+Exact commands, RED/GREEN shell controls and limitations are retained locally in
+`.superpowers/sdd/2026-11-12-pilot-windows-webkit-remediation/task-1-report.md`.
