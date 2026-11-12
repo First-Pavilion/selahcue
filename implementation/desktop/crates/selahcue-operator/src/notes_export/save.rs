@@ -101,6 +101,12 @@ impl Parent {
         for component in path.components() {
             match component {
                 Component::ParentDir | Component::CurDir => return Err(refused()),
+                Component::Prefix(prefix) => {
+                    // A verbatim disk prefix can be absolute without its root separator.
+                    // Accumulate the prefix, then observe only after RootDir.
+                    current.push(prefix.as_os_str());
+                    continue;
+                }
                 Component::Normal(name) => {
                     #[cfg(unix)]
                     {
@@ -119,7 +125,7 @@ impl Parent {
                 }
                 _ => current.push(component.as_os_str()),
             }
-            // A Windows prefix alone isn't a rooted directory; inspect after RootDir.
+            // Only rooted directory spellings may reach observation.
             if !current.is_absolute() {
                 continue;
             }

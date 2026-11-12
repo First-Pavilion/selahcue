@@ -401,7 +401,11 @@ fn windows_exact_unicode_and_verbatim_disk_names_publish_complete_bytes() {
             "Olu\u{0301}wa\u{0301}fe\u{0323}\u{0301}mi-🦄.pdf",
         ] {
             let target = parent.join(name);
-            assert_eq!(save::save_pdf(&target, b"complete Unicode PDF"), Ok(()));
+            assert_eq!(
+                save::save_pdf(&target, b"complete Unicode PDF"),
+                Ok(()),
+                "target: {target:?}"
+            );
             assert_eq!(
                 std::fs::read(&target).expect("exact name"),
                 b"complete Unicode PDF"
@@ -422,7 +426,11 @@ fn windows_long_verbatim_descendant_with_short_volume_root_saves() {
     std::fs::create_dir_all(&parent).expect("verbatim long directory");
     let target = parent.join("notes.pdf");
     assert!(target.as_os_str().len() > 260);
-    assert_eq!(save::save_pdf(&target, b"long path PDF"), Ok(()));
+    assert_eq!(
+        save::save_pdf(&target, b"long path PDF"),
+        Ok(()),
+        "target: {target:?}"
+    );
     assert_eq!(
         std::fs::read(&target).expect("exact long name"),
         b"long path PDF"
