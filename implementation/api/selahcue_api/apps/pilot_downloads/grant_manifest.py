@@ -1,6 +1,7 @@
 """Bounded promoted-release consumer. P11 owns real publication and promotion.
 
-Only a complete, verified three-platform set is grantable. An object key is
+Only the exact verified server-declared platform set is grantable: the full
+three-platform release, or an explicitly configured Windows-only private pilot. An object key is
 content addressed; P10 must enforce no overwrite of those immutable keys.
 """
 
@@ -21,6 +22,25 @@ SIGNING_STATES = {
     "Windows": {"authenticode_verified", "unsigned_pilot_approved"},
     "Ubuntu": {"not_required"}, "macOS": {"developer_id_notarized_stapled"},
 }
+
+
+DEFAULT_REQUIRED_PLATFORMS = ("Windows", "Ubuntu", "macOS")
+
+
+def manifest_policy_platforms(required_platforms, signing_requirements) -> tuple[str, ...]:
+    """Validate server policy, including the direct policy injection boundary."""
+    if (not isinstance(required_platforms, (tuple, list)) or
+            any(not isinstance(platform, str) for platform in required_platforms) or
+            len(set(required_platforms)) != len(required_platforms)):
+        raise ValueError
+    required = set(required_platforms)
+    if required != {"Windows"} and required != set(DEFAULT_REQUIRED_PLATFORMS):
+        raise ValueError
+    if (not isinstance(signing_requirements, dict) or set(signing_requirements) != required or
+            any(not isinstance(signing_requirements[platform], str) or
+                signing_requirements[platform] not in SIGNING_STATES[platform] for platform in required)):
+        raise ValueError
+    return tuple(platform for platform in DEFAULT_REQUIRED_PLATFORMS if platform in required)
 
 
 def unique_object(pairs):
@@ -61,6 +81,7 @@ class Manifest:
 def load_manifest(policy, now: int) -> Manifest:
     """Hash the exact bounded bytes consumed; no remote fetch, append or cache."""
     try:
+        required = set(manifest_policy_platforms(policy.required_platforms, policy.signing_requirements))
         descriptor = os.open(policy.manifest_path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         with os.fdopen(descriptor, "rb") as source:
             if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
@@ -79,7 +100,7 @@ def load_manifest(policy, now: int) -> Manifest:
                 not integer(value["expires_at"]) or not now < value["expires_at"] <= COHORT_CUTOFF):
             raise ValueError
         entries = value["artifacts"]
-        if not isinstance(entries, list) or len(entries) != 3:
+        if not isinstance(entries, list) or len(entries) != len(required):
             raise ValueError
         artifacts = []
         ids = set()
@@ -89,7 +110,7 @@ def load_manifest(policy, now: int) -> Manifest:
             if not isinstance(entry, dict) or set(entry) != artifact_keys:
                 raise ValueError
             name, platform = entry["artifact_id"], entry["platform"]
-            if (not identifier(name) or name in ids or not isinstance(platform, str) or platform not in PLATFORMS or platform in platforms or
+            if (not identifier(name) or name in ids or not isinstance(platform, str) or platform not in required or platform in platforms or
                     entry["architectures"] != list(PLATFORMS[platform]) or
                     entry["available"] is not True or entry["verified"] is not True or
                     entry["signing"] != policy.signing_requirements[platform] or
@@ -104,6 +125,8 @@ def load_manifest(policy, now: int) -> Manifest:
             artifacts.append(Artifact(name, platform, tuple(entry["architectures"]), key, entry["sha256"], entry["size_bytes"], entry["credentials_expires_at"]))
             ids.add(name)
             platforms.add(platform)
+        if platforms != required:
+            raise ValueError
         return Manifest(value["release_id"], value["expires_at"], tuple(artifacts))
     except (OSError, ValueError, UnicodeError, TypeError, KeyError, RecursionError, OverflowError):
         raise PilotRegistrationError("download_manifest_unavailable", 503) from None

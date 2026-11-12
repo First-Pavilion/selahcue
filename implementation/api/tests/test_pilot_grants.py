@@ -1,6 +1,10 @@
 import copy
 import hashlib
 import json
+import os
+import subprocess
+import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 
@@ -369,3 +373,208 @@ def test_postgres_concurrent_replay_preserves_ledger_without_locking_signer(gran
     assert PilotRegistrationRecord.objects.count() == 1
     assert PilotSheetDestination.objects.get().next_row == 3
     assert PilotRegistrationRecord.objects.get().confirmed_at == confirmed_at
+
+
+@pytest.fixture
+def windows_grant_config(grant_config):
+    config, value, path = grant_config
+    config["required_platforms"] = ["Windows"]
+    config["signing_requirements"] = {"Windows": "authenticode_verified"}
+    value["artifacts"] = value["artifacts"][:1]
+    write_manifest(config, value, path)
+    return config, value, path
+
+
+def windows_body(**changes):
+    return grant_body(receipt_for("Windows"), artifact_id="windows", **changes)
+
+
+def test_explicit_windows_only_grants_exact_verified_package(windows_grant_config):
+    signer = SyntheticSigner()
+    result = grant_download(windows_body(), signer=signer)
+    assert result["platform"] == "Windows"
+    assert result["architectures"] == ["x86_64"]
+    assert result["artifact_id"] == "windows"
+    assert result["sha256"] == "a" * 64
+    assert result["size_bytes"] == 123456
+    assert urlsplit(result["download_url"]).path == f"/pilot/release-1/{'a' * 64}/windows.bin"
+    assert len(signer.requests) == 1
+    assert signer.requests[0].storage_target == "test-private-storage"
+
+
+@pytest.mark.parametrize("explicit_full", [False, True])
+def test_windows_only_manifest_requires_explicit_windows_policy(grant_config, explicit_full):
+    config, value, path = grant_config
+    if explicit_full:
+        config["required_platforms"] = ["Windows", "Ubuntu", "macOS"]
+    value["artifacts"] = value["artifacts"][:1]
+    write_manifest(config, value, path)
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError, match="download_manifest_unavailable"):
+        grant_download(windows_body(), signer=signer)
+    assert not signer.requests
+
+
+@pytest.mark.parametrize("platforms", [
+    None, "Windows", "", [], ["Windows", "Windows"], ["Windows", "Ubuntu"],
+    ["Windows", "macOS"], ["Ubuntu", "macOS"], ["Ubuntu"], ["macOS"], ["Other"],
+    ["Windows", "Ubuntu", "Other"], ["Windows", None], [True], {},
+])
+def test_invalid_server_platform_sets_never_sign(grant_config, platforms):
+    config, _, _ = grant_config
+    config["required_platforms"] = platforms
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError, match="download_configuration_required"):
+        grant_download(grant_body(), signer=signer)
+    assert not signer.requests
+
+
+@pytest.mark.parametrize("signing", [
+    {}, None, {"Ubuntu": "not_required"},
+    {"Windows": "authenticode_verified", "Ubuntu": "not_required"},
+    {"Windows": "not_required"}, {"Windows": "unsigned"}, {"Windows": None},
+])
+def test_windows_signing_policy_is_explicit_and_exact(windows_grant_config, signing):
+    config, _, _ = windows_grant_config
+    config["signing_requirements"] = signing
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError, match="download_configuration_required"):
+        grant_download(windows_body(), signer=signer)
+    assert not signer.requests
+
+
+@pytest.mark.parametrize("unsigned_approved", [False, True])
+def test_unsigned_windows_requires_explicit_signing_approval(windows_grant_config, unsigned_approved):
+    config, value, path = windows_grant_config
+    value["artifacts"][0]["signing"] = "unsigned_pilot_approved"
+    write_manifest(config, value, path)
+    if unsigned_approved:
+        config["signing_requirements"]["Windows"] = "unsigned_pilot_approved"
+    signer = SyntheticSigner()
+    if unsigned_approved:
+        assert grant_download(windows_body(), signer=signer)["artifact_id"] == "windows"
+    else:
+        with pytest.raises(PilotRegistrationError, match="download_manifest_unavailable"):
+            grant_download(windows_body(), signer=signer)
+        assert not signer.requests
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "extra_ubuntu", "extra_macos", "unknown", "duplicate", "substitute_ubuntu",
+    "architecture", "hash", "object_key", "signing", "expired", "credentials_expired",
+    "unverified", "unavailable", "digest",
+])
+def test_windows_manifest_refuses_inexact_or_unverified_artifacts(windows_grant_config, mutation):
+    config, value, path = windows_grant_config
+    artifact = value["artifacts"][0]
+    now = int(timezone.now().timestamp())
+    if mutation == "missing": value["artifacts"] = []
+    elif mutation == "extra_ubuntu": value["artifacts"].append(manifest_value(timezone.now())["artifacts"][1])
+    elif mutation == "extra_macos": value["artifacts"].append(manifest_value(timezone.now())["artifacts"][2])
+    elif mutation == "unknown": artifact["platform"] = "Other"
+    elif mutation == "duplicate": value["artifacts"].append(copy.deepcopy(artifact))
+    elif mutation == "substitute_ubuntu": value["artifacts"] = manifest_value(timezone.now())["artifacts"][1:2]
+    elif mutation == "architecture": artifact["architectures"] = ["aarch64"]
+    elif mutation == "hash": artifact["sha256"] = "bad"
+    elif mutation == "object_key": artifact["object_key"] = "pilot/release-1/wrong/windows.bin"
+    elif mutation == "signing": artifact["signing"] = "unsigned_pilot_approved"
+    elif mutation == "expired": value["expires_at"] = now
+    elif mutation == "credentials_expired": artifact["credentials_expires_at"] = now
+    elif mutation == "unverified": artifact["verified"] = False
+    elif mutation == "unavailable": artifact["available"] = False
+    write_manifest(config, value, path)
+    if mutation == "digest": config["manifest_sha256"] = "0" * 64
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError, match="download_manifest_unavailable"):
+        grant_download(windows_body(), signer=signer)
+    assert not signer.requests
+
+
+@pytest.mark.parametrize("mutation", ["forged", "ubuntu", "required_platforms", "signing_requirements"])
+def test_windows_receipt_and_request_cannot_choose_policy(windows_grant_config, mutation):
+    body = windows_body()
+    if mutation == "forged": body["receipt"] = "untrusted"
+    elif mutation == "ubuntu": body["receipt"] = receipt_for("Ubuntu")
+    elif mutation == "required_platforms": body["required_platforms"] = ["Windows"]
+    elif mutation == "signing_requirements": body["signing_requirements"] = {"Windows": "unsigned_pilot_approved"}
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError):
+        grant_download(body, signer=signer)
+    assert not signer.requests
+
+
+def test_legacy_positional_policy_constructor_preserves_full_set(grant_config):
+    config, _, _ = grant_config
+    policy = grants.GrantPolicy(
+        config["n8n_token"], config["storage_target"], config["download_origin"],
+        config["manifest_path"], config["manifest_sha256"], 300,
+        ("signature", "expires"), config["signing_requirements"], config["cohort_id"],
+    )
+    assert grant_download(grant_body(), policy=policy, signer=SyntheticSigner())["platform"] == "Ubuntu"
+
+
+@pytest.mark.parametrize("changes", [
+    {"required_platforms": None}, {"required_platforms": ()},
+    {"required_platforms": ("Ubuntu",)}, {"required_platforms": ("Windows", "Ubuntu")},
+    {"required_platforms": ("Windows", "Windows")}, {"required_platforms": ("Other",)},
+    {"signing_requirements": {}}, {"signing_requirements": {"Windows": "not_required"}},
+    {"signing_requirements": {"Windows": "authenticode_verified", "Ubuntu": "not_required"}},
+])
+def test_direct_policy_injection_cannot_weaken_platform_or_signing_checks(windows_grant_config, changes):
+    policy = replace(grants.load_grant_policy(), **changes)
+    signer = SyntheticSigner()
+    with pytest.raises(PilotRegistrationError):
+        grant_download(windows_body(), policy=policy, signer=signer)
+    assert not signer.requests
+
+
+@pytest.mark.parametrize("required_env,expected", [
+    (None, ["Windows", "Ubuntu", "macOS"]), ("Windows", ["Windows"]),
+    ("macOS, Windows Ubuntu", ["Windows", "Ubuntu", "macOS"]),
+    ("", None), ("Windows Windows", None), ("Windows Ubuntu", None),
+    ("Ubuntu", None), ("Other", None),
+])
+def test_actual_environment_settings_loader_and_manifest(grant_config, required_env, expected):
+    config, value, path = grant_config
+    if expected == ["Windows"]:
+        value["artifacts"] = value["artifacts"][:1]
+        config["signing_requirements"] = {"Windows": "authenticode_verified"}
+        write_manifest(config, value, path)
+    # A fresh, minimal environment prevents host deployment settings from
+    # selecting a database, cache, provider or policy for this bounded process.
+    env = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL") if key in os.environ}
+    env.update({"SQL_DATABASE": ":memory:", "DJANGO_SETTINGS_MODULE": "selahcue_api.settings"})
+    for field, suffix in (
+        ("enabled", "ENABLED"), ("n8n_token", "N8N_TOKEN"), ("storage_target", "STORAGE_TARGET"),
+        ("download_origin", "DOWNLOAD_ORIGIN"), ("cohort_id", "COHORT_ID"),
+        ("manifest_path", "MANIFEST_PATH"), ("manifest_sha256", "MANIFEST_SHA256"),
+        ("max_ttl_seconds", "MAX_TTL_SECONDS"),
+    ):
+        env["SELAHCUE_PILOT_GRANT_" + suffix] = str(config[field])
+    env["SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS"] = "signature,expires"
+    env["SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS"] = json.dumps(config["signing_requirements"])
+    if required_env is not None:
+        env["SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS"] = required_env
+    program = """
+import json
+from types import SimpleNamespace
+import django
+django.setup()
+from django.conf import settings
+from selahcue_api.apps.pilot_downloads.grants import load_grant_policy
+from selahcue_api.apps.pilot_downloads.grant_manifest import load_manifest
+from selahcue_api.apps.pilot_downloads.policy import PilotRegistrationError
+registration = SimpleNamespace(n8n_token='t'*48, signing_key='s'*48, fingerprint_key='f'*48)
+try:
+    policy = load_grant_policy(registration)
+    manifest = load_manifest(policy, 1793534400)
+    print(json.dumps({'required': list(policy.required_platforms), 'artifacts': [a.platform for a in manifest.artifacts]}))
+except PilotRegistrationError as error:
+    print(json.dumps({'error': error.code}))
+"""
+    result = subprocess.run([sys.executable, "-c", program], env=env, capture_output=True, text=True, timeout=10, check=True)
+    actual = json.loads(result.stdout)
+    if expected is None:
+        assert actual == {"error": "download_configuration_required"}
+    else:
+        assert actual == {"required": expected, "artifacts": expected}
