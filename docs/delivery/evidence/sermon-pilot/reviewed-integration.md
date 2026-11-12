@@ -96,3 +96,46 @@ The final review/Task4 pass at957cbda0 found two required-gate failures. SHADOW-
 The required Rust1.98 release pilot/cloud all-target Clippy gate is addressed with12 descriptive `expect` assertions confined to the stopped-store combination test and two equivalent PCM array repeats confined to the capture-cadence test. Imports, barriers, PCM values/lengths, timeouts and assertions remain. Exact release/pilot/cloud all-target Clippy passes with `-D warnings`; both affected named native tests pass individually. No lint allowance, lock/workflow/browser/renderer or application-runtime behavior changed.
 
 Detailed commands, RED/GREEN receipts, scanner before/after hashes and final source binding are in the local `final-fix-report.md` and `final-fix-*` artifacts under `.superpowers/sdd/2026-11-11-sermon-pilot-reviewed-integration/`. Four independent scoped re-reviews and the remaining Task4 validation are still required. These focused corrections establish no full-matrix, hosted, device/resource, real-provider/profile, corpus, package or release acceptance.
+
+## HTTP deadline diagnostic checkpoint — 2026-11-12
+
+Verified main `97699bc1b75ade6fc37ed5236f33df1b550a3e8d` was merged normally
+into the reviewed integration as `77ffbee67b35dd2693e153cbde741adb4dc8ca45`,
+with prior integration `3ecb46be714453fcc0fcc840ff2f5427d0d6a0d9` as first
+parent. All fourteen incoming main paths were disjoint from cloud/core.
+
+The original PR394 Linux workspace failure remains unresolved: the endpoint EOF
+receipt timed out, while its later separate HTTP invocation passed. A local
+baseline passed once after a separately retained sandbox bind refusal. Test-only
+receipts now distinguish listener setup, admission/client construction, request
+entry/return, complete bounded synthetic authenticated request, response write,
+actual EOF and receipt/join. Accept/read/write cleanup is bounded and the server
+is joined on assertion failures. Cleanup and pre-dispatch refusal cannot count as
+in-flight cancellation. The original 120 ms admission, 60 ms response delay,
+500 ms receipt watchdog and `<620 ms` actual-EOF assertion remain unchanged;
+client construction still consumes the same admission. The accepted-request
+forward-clock-jump control retains its original 500 ms read bound, and the
+20/30 ms expired-dispatch control is retained.
+
+On macOS arm64/Rust 1.98.0 with locked offline dependencies, one fixed diagnostic
+pair passed: exact case **1/0**, then owning HTTP binary with three test threads
+**4/0**. The new forced-setup-expiry case refused with no accepted socket or bytes
+through the observer window. A disposable authenticated raw client held open past
+the original 500 ms watchdog produced the expected no-EOF failure; EOF appeared
+only after explicitly dropping that client, and cleanup joined. Removing the
+forced setup delay also made its refusal assertion fail on an actual accepted
+request. Both mutations were removed. Self-review retained explicit error-phase
+receipts and the original forward-jump bound; final owning verification **4/0**,
+workspace format and affected cloud HTTP all-target Clippy with `-D warnings`
+passed. One invalid initial observer calibration exposed and corrected only the
+new fixture's inherited nonblocking accepted-socket mode; it is not evidence
+about the old blocking fixture or Linux cause.
+
+No production transport/policy, dependency, CI or cancellation-design correction
+is claimed. External receipts do not identify internal future-drop/shutdown
+phases or prove what happened in the original hosted workspace binary. The
+causal/runtime gate remains open pending equivalent hosted Linux/workspace
+evidence and independent review. These local synthetic checks establish no
+Windows 10 / 4 GB / 128 GB, four-language corpus, real-provider, installer or
+release acceptance. Full commands, controls, raw output and limits are retained
+locally in `.superpowers/sdd/2026-11-12-pilot-http-deadline-remediation/task-1-report.md`.
