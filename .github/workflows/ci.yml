@@ -967,6 +967,26 @@ jobs:
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
+      # Keep plain SQLite isolated from encrypted workspace feature unification.
+      - name: Test (Windows plain SQLite — full data suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test -p selahcue-data --no-default-features --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"plain SQLite check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"plain SQLite checks not reached: "+str(missing); print("verified plain SQLite tests:",passed)' "$log" linked_runtime_meets_patched_sqlite_baseline
+          rm "$log"
+      # The real desktop release binary exercises the endpoint publisher's release siblings.
+      - name: Test (Windows desktop RELEASE — full output binary suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test -p selahcue-desktop --release --bin selahcue-output --features encryption --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"desktop release check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"desktop release checks not reached: "+str(missing); print("verified desktop release tests:",passed)' "$log" the_production_rename_policy_retries_on_windows_only the_windows_rename_budget_is_five_attempts_and_a_few_hundred_milliseconds
+          rm "$log"
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
       # ended up. Runs before the cache's post step, which on main tars `target` up. It never
       # fails the job: below 10 GB free it emits a warning (an early notice that holds in a
@@ -1536,6 +1556,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: '3.47.5'
           # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
           # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
           # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
@@ -1547,9 +1568,10 @@ jobs:
           # actions/cache/restore, the real action, and a main-only actions/cache/save.
           # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
           # action in a pull-request workflow.
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter --version
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
       # Compile-verify the Android host (Kotlin MulticastLock channel, 86ajp0b0t)
       # — the ubuntu runner ships the Android SDK; a debug build exercises the
       # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
@@ -1562,7 +1584,7 @@ jobs:
           java-version: "17"
       - name: Android host compile-check (apk --debug)
         if: needs.changes.outputs.android == 'true'
-        run: flutter build apk --debug
+        run: flutter build apk --debug --no-pub
 
   # The Django Platform API (implementation/api). Until this job existed the API had
   # NO automated verification at all — it matched no path filter, so an API-only push
