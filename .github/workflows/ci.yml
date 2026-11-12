@@ -974,7 +974,7 @@ jobs:
           set -euo pipefail
           log="$(mktemp)"
           cargo test -p selahcue-data --no-default-features --no-fail-fast -- --nocapture 2>&1 | tee "$log"
-          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"plain SQLite check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"plain SQLite checks not reached: "+str(missing); print("verified plain SQLite tests:",passed)' "$log" linked_runtime_meets_patched_sqlite_baseline
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"plain SQLite check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"plain SQLite checks not reached: "+str(missing); print("verified plain SQLite tests:",passed)' "$log" linked_runtime_meets_patched_sqlite_baseline
           rm "$log"
       # The real desktop release binary exercises the endpoint publisher's release siblings.
       - name: Test (Windows desktop RELEASE — full output binary suite)
@@ -986,7 +986,7 @@ jobs:
           "$OPENSSL_SRC_PERL" -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
           log="$(mktemp)"
           cargo test -p selahcue-desktop --release --bin selahcue-output --features encryption --no-fail-fast -- --nocapture 2>&1 | tee "$log"
-          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"desktop release check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"desktop release checks not reached: "+str(missing); print("verified desktop release tests:",passed)' "$log" the_production_rename_policy_retries_on_windows_only the_windows_rename_budget_is_five_attempts_and_a_few_hundred_milliseconds
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"desktop release check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"desktop release checks not reached: "+str(missing); print("verified desktop release tests:",passed)' "$log" the_production_rename_policy_retries_on_windows_only the_windows_rename_budget_is_five_attempts_and_a_few_hundred_milliseconds
           rm "$log"
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
       # ended up. Runs before the cache's post step, which on main tars `target` up. It never
@@ -1461,7 +1461,7 @@ jobs:
               mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
               *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;
             esac
-            python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"pilot check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"pilot checks not reached: "+str(missing); print("verified pilot tests:",passed)' "$log" "${required[@]}"
+            python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"pilot check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"pilot checks not reached: "+str(missing); print("verified pilot tests:",passed)' "$log" "${required[@]}"
             rm "$log"
           }
           run_pilot_tests before-bin cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_
