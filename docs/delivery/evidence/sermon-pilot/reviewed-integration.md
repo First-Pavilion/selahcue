@@ -139,3 +139,61 @@ evidence and independent review. These local synthetic checks establish no
 Windows 10 / 4 GB / 128 GB, four-language corpus, real-provider, installer or
 release acceptance. Full commands, controls, raw output and limits are retained
 locally in `.superpowers/sdd/2026-11-12-pilot-http-deadline-remediation/task-1-report.md`.
+
+## Mobile pairing timing checkpoint — 2026-11-12
+
+On clean `0aad17b9c098cc34eec6441fb84fbf00cb6b492c`, the selected actual
+Flutter 3.47.5 / Dart 3.13.4 and existing locked resolution produced one focused
+internal diagnostic **1/0**, followed by three deliberate RED controls, then one
+full mobile run **515/0** at unchanged default concurrency. All commands consumed
+that resolution with `--no-pub`. The full run used the committable test fixture
+and byte-identical original production `session.dart`, without internal tracing.
+Final analysis and the changed test's Dart format check pass. The existing
+Android debug APK compile also passed locally with task-owned Gradle/Android-user
+caches; no install, emulator/device execution or release signing was performed.
+
+The fixture retains at most 32 ordinary interval events, reserved terminal
+summaries, and aggregate heartbeat count/max lateness. It records pair/hello,
+parked schedule/due/fire, frame receipt, close entry/completion and caller/matcher
+completion. Receipts are dumped after the measured interval, including assertion
+failures; timers and stream controllers are cleaned up. No frame payloads,
+credentials or arbitrary exception text are logged. Disposable internal tracing
+only observed the already computed real remaining budget, requested read and
+refusal phases; no extra policy decision or substitute clock was added.
+
+The focused diagnostic requested about 148 ms for its second read and delivered
+the timeout to the caller at 1.006 s. Controls distinguish three explanations:
+same-isolate stall from 0.902 to 2.502 s retained a shrinking 148 ms second wait,
+showed 1.551 s heartbeat lateness and failed the original elapsed bound at
+2.504114 s; a 1.5 s close delay reached refusal/close entry at 1.003 s, completed
+close at 2.505 s with only 2.725 ms max heartbeat lateness, and failed at
+2.507036 s; a disposable full-budget-per-read mutant requested a second full
+1 s and failed at 1.862262 s. Each reached the correct timeout matcher and failed
+the unchanged `<1.5 s` assertion, leaving its subsequent close-count assertion
+unreached. All mutations were restored; patches, hashes and outputs are retained.
+These controls prove diagnostic sensitivity, not the historical cause.
+
+In the final broad run the parked frame fired at 852.428 ms, close entered at
+1003.274 ms and completed at 1003.442 ms, and the caller received the timeout at
+1003.451 ms from the fixture's monotonic origin. The measured caller interval was
+1003.275 ms; both the strict elapsed and close-count assertions passed. Aggregate
+heartbeat max lateness was 2.110 ms. Broad receipts do not expose internal budget
+decisions; the separate scratch diagnostic does. Immediate grant, rejection,
+malformed/disconnect, buffered zero-budget grant refusal, silent-host and honest
+120/150 scaled parking controls remain in the passing suite.
+
+The original full **514/1**, actual **2.504491 s**, and unreached close-count
+assertion remain separate from the later historical isolated **1/0** and these
+new observations. Historical attribution remains unresolved; no production
+pairing behavior or test contract correction is claimed. One initial sandbox
+attempt failed before loading the case because Flutter's local runner socket was
+refused; its separately retained loopback-enabled execution supplies the actual
+focused result. Production 150 s, host 120 s, test 1 s, parked 850 ms, strict
+`<1.5 s` and outer 3 s remain unchanged, along with timer/manual/protocol behavior.
+
+Full commands, exact source/SDK/lock bindings, all control outputs and Android
+compile disposition are retained locally in
+`.superpowers/sdd/2026-11-12-pilot-mobile-ci-remediation/task-2-report.md`.
+Current local source verification does not supply equivalent hosted evidence,
+Windows 10 / 4 GB / 128 GB device, four-language corpus, real-provider, installer
+or release acceptance. Independent review and final hosted gates remain root-owned.
