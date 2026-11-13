@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::params;
 use selahcue_core::plan::ServicePlan;
+use selahcue_core::providers::MAX_LINK_SEGMENTS;
 use selahcue_core::transcript::{MAX_SEGMENT_TEXT_LEN, MAX_TRANSCRIPT_SEGMENTS};
 use selahcue_data::sermon_note_repo::{self, NewSermonNote};
 use selahcue_data::transcript_repo::{self, NewTranscript, RetentionSettings};
@@ -94,6 +95,112 @@ fn creates_appends_across_many_calls_and_reads_back_in_order_unmodified() {
             "segment {i} order must be preserved"
         );
     }
+}
+
+fn seed_sparse_segments(db: &Database, transcript_id: i64, count: usize) {
+    // Descending insert order gives the smallest ord the largest row ID.
+    db.conn()
+        .execute(
+            "WITH RECURSIVE indices(i) AS (
+                 SELECT ?2 - 1 UNION ALL SELECT i - 1 FROM indices WHERE i > 0
+             )
+             INSERT INTO transcript_segment (transcript_id, ord, start_ms, end_ms, text)
+             SELECT ?1, i * 2, i * 1000, i * 1000 + 900, 'segment number ' || i
+             FROM indices",
+            params![transcript_id, i64::try_from(count).unwrap()],
+        )
+        .unwrap();
+}
+
+#[test]
+fn segment_prefix_matches_full_order_with_sparse_ord_and_handles_limits() {
+    const STORED_SEGMENTS: usize = 20_001;
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    seed_sparse_segments(&db, transcript_id, STORED_SEGMENTS);
+    let other_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    transcript_repo::append_segment(&db, other_id, 0, 1, "different transcript").unwrap();
+
+    let full = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(full.segments.len(), STORED_SEGMENTS);
+    let prefix =
+        transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS).unwrap();
+    assert_eq!(prefix.as_slice(), &full.segments[..MAX_LINK_SEGMENTS]);
+    assert_eq!(prefix[0].start_ms, 0);
+    assert_eq!(prefix[1].start_ms, 1000);
+    assert!(prefix[0].id > prefix[1].id);
+
+    assert_eq!(
+        transcript_repo::load_segments_prefix(&db, transcript_id, 2).unwrap(),
+        full.segments[..2]
+    );
+    assert_eq!(
+        transcript_repo::load_segments_prefix(&db, transcript_id, usize::MAX).unwrap(),
+        full.segments
+    );
+    assert!(transcript_repo::load_segments_prefix(&db, transcript_id, 0)
+        .unwrap()
+        .is_empty());
+    assert!(transcript_repo::load_segments_prefix(&db, other_id + 1, 1)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn segment_prefix_skips_malformed_tail_and_keeps_in_range_errors_private() {
+    const MARKER: &str = "FR082_SENSITIVE_TRANSCRIPT_SEGMENT_Confession";
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    seed_sparse_segments(&db, transcript_id, MAX_LINK_SEGMENTS + 1);
+    let tail_ord = i64::try_from(2 * MAX_LINK_SEGMENTS).unwrap();
+    assert_eq!(
+        db.conn()
+            .execute(
+                "UPDATE transcript_segment SET text = CAST(?1 AS BLOB)
+                 WHERE transcript_id = ?2 AND ord = ?3",
+                params![MARKER, transcript_id, tail_ord],
+            )
+            .unwrap(),
+        1
+    );
+
+    let prefix = transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS)
+        .expect("the malformed tail row must not be decoded");
+    assert_eq!(prefix.len(), MAX_LINK_SEGMENTS);
+    assert_is_sqlite_variant(
+        &transcript_repo::load(&db, transcript_id).unwrap_err(),
+        "full load with malformed tail",
+    );
+    // Raising the limit by one includes that same row and must surface a redacted error.
+    let error = transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS + 1)
+        .unwrap_err();
+    assert_is_sqlite_variant(&error, "prefix with malformed text");
+    assert!(!contains_a_leak_window_of(
+        &format!("{error} {error:?}"),
+        MARKER
+    ));
+}
+
+#[test]
+fn segment_prefix_reads_without_decoding_related_transcript_data() {
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    let segment_id = transcript_repo::append_segment(&db, transcript_id, 0, 1, "raw").unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_correction (segment_id, corrected_text, corrected_at)
+             VALUES (?1, CAST('malformed correction' AS BLOB), 0)",
+            params![segment_id],
+        )
+        .unwrap();
+
+    let prefix = transcript_repo::load_segments_prefix(&db, transcript_id, 1).unwrap();
+    assert_eq!(prefix.len(), 1);
+    assert_eq!(prefix[0].text, "raw");
+    assert_is_sqlite_variant(
+        &transcript_repo::load(&db, transcript_id).unwrap_err(),
+        "full load with malformed correction",
+    );
 }
 
 #[test]

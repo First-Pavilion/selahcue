@@ -7800,22 +7800,20 @@ fn link_note_timestamps(
     draft.timestamps = selahcue_core::providers::link_timestamps(&draft.sections, segments);
 }
 
-/// Best-effort read of transcript `id`'s segments, for re-linking timestamps on a
-/// persisted-draft reload/edit-save (`sermon_note_draft_json`'s `timestamps` field,
-/// 86akgqdw0). Any failure (no transcript store configured, no such transcript, a lock
-/// error) degrades to an empty slice — mirroring `notes_generated_for`'s existing "must
-/// never be the reason an otherwise-successful read fails" contract: a persisted draft
-/// still loads and displays correctly with no timestamps at all, which the console already
-/// has to tolerate (a draft generated with chapter markers off, or from the live-tail path,
-/// carries none either).
+/// Best-effort read of the ordered raw segment prefix used to re-link timestamps
+/// on persisted drafts (86akgqdw0). An unavailable store, a missing transcript or a
+/// failed read yields no segments, so the draft still loads without timestamps.
 fn transcript_segments_for(
     state: &State<'_, AppState>,
     transcript_id: i64,
 ) -> Vec<selahcue_core::transcript::TranscriptSegment> {
     with_transcript_db(state, |db| {
-        selahcue_data::transcript_repo::load(db, transcript_id)
+        selahcue_data::transcript_repo::load_segments_prefix(
+            db,
+            transcript_id,
+            selahcue_core::providers::MAX_LINK_SEGMENTS,
+        )
     })
-    .map(|t| t.segments)
     .unwrap_or_default()
 }
 
@@ -9724,13 +9722,14 @@ mod regenerate_with_retention_tests {
     pub(crate) fn state_with_transcript(
         consent_cloud_notes: bool,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
-        state_with_wrapped_store(consent_cloud_notes, |store| Box::new(store))
+        state_with_wrapped_store(consent_cloud_notes, true, |store| Box::new(store))
     }
 
     /// [`state_with_transcript`] with the sermon-note store wrapped by `wrap` before the
     /// controller gets it, so a test can make the store misbehave (17tnw2b9af5).
     fn state_with_wrapped_store(
         consent_cloud_notes: bool,
+        with_transcript_store: bool,
         wrap: impl FnOnce(DbStore) -> Box<dyn SermonNoteStore>,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
         // 17tnw2b0ntd: `transcript_generate_notes` reads the stored transcript through
@@ -9790,7 +9789,7 @@ mod regenerate_with_retention_tests {
             library: Mutex::new(crate::DeckLibrary::load(None)),
             providers: Mutex::new(providers),
             providers_db: None,
-            transcript_db: Some(Mutex::new(tdb)),
+            transcript_db: with_transcript_store.then_some(Mutex::new(tdb)),
             secrets: make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
@@ -10473,6 +10472,77 @@ mod regenerate_with_retention_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn persisted_timestamp_read_preserves_full_input_matches_and_positional_fallback() {
+        use selahcue_core::providers::MAX_LINK_SEGMENTS;
+
+        let (app, id) = state_with_transcript(false);
+        let state = app.state::<AppState>();
+        let full = with_transcript_db(&state, |db| {
+            // The existing fixture contributes ord 0. A partial match sits at the last
+            // eligible row, and the exact match is one row past the cap.
+            db.conn().execute(
+                "WITH RECURSIVE indices(i) AS (
+                     SELECT 1 UNION ALL SELECT i + 1 FROM indices WHERE i < ?2
+                 )
+                 INSERT INTO transcript_segment (transcript_id, ord, start_ms, end_ms, text)
+                 SELECT ?1, i, i * 1000, i * 1000 + 900,
+                        CASE i WHEN ?2 - 1 THEN 'prayer'
+                               WHEN ?2 THEN 'opening prayer' ELSE 'filler' END
+                 FROM indices",
+                (id, MAX_LINK_SEGMENTS as i64),
+            )?;
+            transcript_repo::load(db, id)
+        })
+        .expect("seed and read the full transcript");
+        assert_eq!(full.segments.len(), MAX_LINK_SEGMENTS + 1);
+
+        let mut input = sample_draft("Saved notes", true);
+        input.sections_json =
+            r#"[{"heading":"Chapter markers","items":["Unmatched prelude","Opening prayer","Unmatched closing"]}]"#
+                .into();
+        let draft = state
+            .backend
+            .save_sermon_note_draft(id, input)
+            .await
+            .expect("save")
+            .expect("saved draft");
+        let (full_json, _) = sermon_note_draft_json(&draft, &full.segments);
+        let expected = serde_json::json!([
+            {"heading":"Chapter markers", "text":"Unmatched prelude", "offset_ms":2_499_500},
+            {"heading":"Chapter markers", "text":"Opening prayer", "offset_ms":4_999_000},
+            {"heading":"Chapter markers", "text":"Unmatched closing", "offset_ms":4_999_000}
+        ]);
+        assert_eq!(full_json["timestamps"], expected);
+
+        let reply = load_sermon_note_draft(state.clone())
+            .await
+            .expect("load persisted draft");
+        assert_eq!(reply["draft"]["timestamps"], full_json["timestamps"]);
+        assert_eq!(transcript_segments_for(&state, id).len(), MAX_LINK_SEGMENTS);
+    }
+
+    #[test]
+    fn persisted_timestamp_read_falls_back_for_unavailable_missing_or_unreadable_data() {
+        let (no_store_app, id) = state_with_wrapped_store(false, false, |store| Box::new(store));
+        let no_store = no_store_app.state::<AppState>();
+        assert!(transcript_segments_for(&no_store, id).is_empty());
+
+        let (app, id) = state_with_transcript(false);
+        let state = app.state::<AppState>();
+        assert!(transcript_segments_for(&state, id + 1).is_empty());
+
+        with_transcript_db(&state, |db| {
+            db.conn().execute(
+                "UPDATE transcript_segment SET text = CAST(text AS BLOB) WHERE transcript_id = ?1",
+                [id],
+            )?;
+            Ok(())
+        })
+        .expect("make stored segment text unreadable");
+        assert!(transcript_segments_for(&state, id).is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn loaded_draft_absence_and_read_failure_allow_a_later_retry() {
         let (app, id, gate) = flaky_state(true);
         let state = app.state::<AppState>();
@@ -10775,7 +10845,7 @@ mod regenerate_with_retention_tests {
     ) -> (tauri::App<tauri::test::MockRuntime>, i64, Arc<StoreGate>) {
         let gate = Arc::new(StoreGate::default());
         let wrap_gate = gate.clone();
-        let (app, id) = state_with_wrapped_store(consent_cloud_notes, move |inner| {
+        let (app, id) = state_with_wrapped_store(consent_cloud_notes, true, move |inner| {
             Box::new(FlakyLoadStore {
                 inner,
                 gate: wrap_gate,
