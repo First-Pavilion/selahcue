@@ -100,6 +100,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - New evidence: local source-implementation report and `cloud-evidence/fallback-red.log`.
 - Decision: independent source review and runtime verification pending; do not advance any completion criterion on the static checks alone.
 
+### Iteration 3
+
+- Target criteria: C-002, C-004 and C-005.
+- Change: replaced the linted mutex-fixture unwrap with a descriptive expectation. Extended the isolated pilot command fixture to observe the admitted clock cross cutoff inside a failing Direct builder and to assert the resulting local fallback is refused before save or stage. Corrected the external headless recipe to require Chrome and both named fallback assertions.
+- Verifier executed: standalone Rust formatting, Git whitespace, and external Python runner syntax. Each exited 0.
+- Result: remediated source is ready for independent re-review. Strict feature Clippy, the focused pilot fixture, and Chrome execution remain pending due to active host paging. The next executed browser run must record the actual assertion count so the headless suite's exact-count expectation can be reconciled if needed.
+- New evidence: round 1 section in the local implementation report, `cloud-evidence/run-focused-host-round1.diff`, and `cloud-evidence/run-focused-host-round1.sha256`.
+
 ## Risks and rollback
 
 - Risks: erasing pilot/configuration errors, weakening TLS or leaking diagnostic data; explicit error enum, fixed copy and guard tests cover these boundaries.

@@ -10217,8 +10217,11 @@ mod regenerate_with_retention_tests {
     #[tokio::test]
     #[allow(clippy::unwrap_used)] // Synthetic fixture setup must succeed.
     async fn pilot_construction_fallback_preserves_terminal_policy() {
-        use selahcue_core::providers::NoteError;
-        use std::sync::atomic::Ordering;
+        use selahcue_core::{deadline::DeadlineError, providers::NoteError};
+        use std::{
+            sync::atomic::Ordering,
+            time::{Duration, Instant},
+        };
 
         // Sticky rejection and the fixture clock belong to the child alone.
         const CASE: &str = "SELAHCUE_PILOT_CONSTRUCTION_TEST_CASE";
@@ -10234,6 +10237,7 @@ mod regenerate_with_retention_tests {
                 ("terminal", cutoff - 3600),
                 ("admitted", cutoff - 3600),
                 ("build-rejected", cutoff - 3600),
+                ("build-expired", cutoff - 3),
                 ("late", cutoff - 3600),
             ] {
                 let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -10286,8 +10290,29 @@ mod regenerate_with_retention_tests {
                     builds += 1;
                     return Err::<selahcue_cloud::MockTransport, _>(NoteError::NotConfigured);
                 }
-                provider_source::pilot_notes_transport_with(|_, rejected| {
+                provider_source::pilot_notes_transport_with(|deadline, rejected| {
                     builds += 1;
+                    if case == "build-expired" {
+                        assert_eq!(provider_source::notes_fault(), None);
+                        let mut remaining =
+                            deadline.remaining().expect("builder starts before cutoff");
+                        let stop_at = Instant::now() + Duration::from_secs(5);
+                        loop {
+                            assert!(Instant::now() < stop_at, "pilot cutoff was never observed");
+                            std::thread::sleep(remaining.min(Duration::from_millis(50)));
+                            match deadline.remaining() {
+                                Ok(time) => remaining = time,
+                                Err(DeadlineError::Expired) => break,
+                                Err(other) => {
+                                    panic!("expected expiry inside the builder: {other:?}")
+                                }
+                            }
+                        }
+                        assert_eq!(
+                            provider_source::notes_fault(),
+                            Some(provider_source::PilotFault::Expired),
+                        );
+                    }
                     if case == "build-rejected" {
                         rejected.store(true, Ordering::SeqCst);
                     }
@@ -10297,6 +10322,15 @@ mod regenerate_with_retention_tests {
                     ))
                 })
             });
+            if case == "build-expired" {
+                let fallback = outcome
+                    .as_ref()
+                    .expect("failed build still produced a local fallback");
+                assert_eq!(
+                    fallback.degraded_reason,
+                    Some(selahcue_cloud::DegradedNoteReason::NoTrustedCertificates)
+                );
+            }
             if case == "late" {
                 assert!(outcome.as_ref().expect("local fallback produced").degraded);
                 observer
@@ -10335,7 +10369,7 @@ mod regenerate_with_retention_tests {
         }
 
         let expected = match case.as_str() {
-            "expired" => "pilot_expired",
+            "expired" | "build-expired" => "pilot_expired",
             "terminal" => "not_configured",
             _ => "pilot_access_rejected",
         };
@@ -11599,7 +11633,7 @@ mod regenerate_with_retention_tests {
                     ))
                 },
             )
-            .unwrap();
+            .expect("the failing Hosted builder produces a local outline for the mutex fixture");
             assert!(fallback.degraded);
             sermon_note_caveats::draft_input_for(&fallback)
         };
