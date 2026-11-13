@@ -40,6 +40,51 @@ impl core::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// Closed categories that may add fixed text to the immediate local fallback notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradedNoteReason {
+    TransportUnavailable,
+    ClientSetupFailed,
+    NoTrustedCertificates,
+    CertificateRejected,
+}
+
+impl DegradedNoteReason {
+    pub fn canonical_message(self) -> &'static str {
+        match self {
+            Self::TransportUnavailable => "cloud transport unavailable",
+            Self::ClientSetupFailed => "cloud HTTP client setup failed",
+            Self::NoTrustedCertificates => "cloud TLS trust store empty",
+            Self::CertificateRejected => "cloud TLS certificate rejected",
+        }
+    }
+
+    /// Only complete canonical messages may select a more specific reason.
+    pub fn from_transport_message(message: &str) -> Self {
+        for reason in [
+            Self::ClientSetupFailed,
+            Self::NoTrustedCertificates,
+            Self::CertificateRejected,
+        ] {
+            if message == reason.canonical_message() {
+                return reason;
+            }
+        }
+        Self::TransportUnavailable
+    }
+
+    pub fn notice_reason(self) -> Option<&'static str> {
+        match self {
+            Self::TransportUnavailable => None,
+            Self::ClientSetupFailed => Some("The cloud connection could not be initialized."),
+            Self::NoTrustedCertificates => {
+                Some("No trusted certificates could be loaded from this computer.")
+            }
+            Self::CertificateRejected => Some("The cloud service's TLS certificate was rejected."),
+        }
+    }
+}
+
 /// Refuse an invalid or non-HTTPS hosted endpoint without retaining or quoting its input.
 /// Used at both the operator configuration and licensing construction boundaries.
 pub fn require_https_base_url(base_url: &str) -> Result<(), TransportError> {
@@ -127,8 +172,8 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 ///   built before a provider is installed panics, so every constructor goes through it.
 /// - **A machine with no usable roots fails closed.** On Linux the verifier reads the CA bundle
 ///   through `rustls-native-certs`; when it finds none, building the client fails with
-///   "No CA certificates were loaded from the system", and [`ReqwestTransport::new`] returns a
-///   [`TransportError`] saying so. It never falls back to trusting everything, and the message
+///   a typed no-roots error, and [`ReqwestTransport::new`] returns the fixed empty-store
+///   [`TransportError`]. It never falls back to trusting everything, and the message
 ///   carries no request data. Run: on a macOS host and in a Debian bookworm arm64 container
 ///   (`tests/test_tls_system_store_linux.rs`). Not run: Windows and the ubuntu CI runner. macOS
 ///   and Windows use the system verifier APIs, which have no such load step. A consequence for
@@ -264,49 +309,62 @@ pub fn ensure_crypto_provider() -> CryptoProviderInstall {
     )
 }
 
-/// How many causes of an error [`cause_chain`] will print. A rustls or hyper chain is two or
-/// three deep; the bound only keeps a pathological chain from producing an unbounded message.
 #[cfg(feature = "http")]
-const MAX_CAUSES: usize = 8;
+pub(crate) enum HttpFailurePhase {
+    Build,
+    Send,
+}
 
-/// The causes of `e` (not `e` itself), each preceded by ": ", at most [`MAX_CAUSES`] of them.
-///
-/// reqwest's own `Display` stops at the top of the chain: a builder error reads only "builder
-/// error" and a send error only "error sending request for url (...)", so an operator whose note
-/// generation fails cannot tell "the certificate is for another name" from "the network is down".
-/// The causes of a *builder* error come from TLS set-up and the causes of a *send* error from the
-/// connection and the TLS handshake (for example "invalid peer certificate: UnknownIssuer" or
-/// "Revoked"); none of them carries a request header, a request body or a credential (the bearer
-/// is a header, and a header is not part of an error). The URL in the top-level text is as it
-/// always was.
 #[cfg(feature = "http")]
-fn cause_chain(e: &(dyn std::error::Error + 'static)) -> String {
-    let mut text = String::new();
-    let mut cause = e.source();
-    let mut shown = 0;
-    while let Some(c) = cause {
-        if shown == MAX_CAUSES {
-            text.push_str(": ...");
+pub(crate) fn reqwest_transport_error(
+    error: &reqwest::Error,
+    phase: HttpFailurePhase,
+) -> TransportError {
+    TransportError(
+        classify_http_failure(error, phase)
+            .canonical_message()
+            .into(),
+    )
+}
+
+#[cfg(feature = "http")]
+fn classify_http_failure(
+    error: &(dyn std::error::Error + 'static),
+    phase: HttpFailurePhase,
+) -> DegradedNoteReason {
+    let mut node = error;
+    // Bound source inspection and never format the underlying error or its causes.
+    for depth in 0..8 {
+        match node.downcast_ref::<rustls::Error>() {
+            Some(rustls::Error::InvalidCertificate(_)) => {
+                return DegradedNoteReason::CertificateRejected;
+            }
+            // The locked rustls-platform-verifier reports empty native roots this way.
+            Some(rustls::Error::General(message))
+                if message == "No CA certificates were loaded from the system" =>
+            {
+                return DegradedNoteReason::NoTrustedCertificates;
+            }
+            _ => {}
+        }
+        if depth == 7 {
             break;
         }
-        text.push_str(": ");
-        text.push_str(&c.to_string());
-        cause = c.source();
-        shown += 1;
+        // io::Error::source can skip the actual error wrapped by io::Error::new.
+        let next = node
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|inner| inner as &(dyn std::error::Error + 'static))
+            .or_else(|| node.source());
+        match next {
+            Some(source) => node = source,
+            None => break,
+        }
     }
-    text
-}
-
-/// The reason a client could not be built, from reqwest's error and its causes.
-#[cfg(feature = "http")]
-fn describe_build_error(e: &reqwest::Error) -> String {
-    format!("could not set up TLS{}", cause_chain(e))
-}
-
-/// A failed send: reqwest's one-line text (with the URL, as before) plus the causes.
-#[cfg(feature = "http")]
-fn describe_send_error(e: &reqwest::Error) -> String {
-    format!("{e}{}", cause_chain(e))
+    match phase {
+        HttpFailurePhase::Build => DegradedNoteReason::ClientSetupFailed,
+        HttpFailurePhase::Send => DegradedNoteReason::TransportUnavailable,
+    }
 }
 
 #[cfg(feature = "http")]
@@ -382,7 +440,7 @@ impl ReqwestTransport {
         ensure_crypto_provider();
         let client = builder
             .build()
-            .map_err(|e| TransportError(describe_build_error(&e)))?;
+            .map_err(|e| reqwest_transport_error(&e, HttpFailurePhase::Build))?;
         Ok(ReqwestTransport {
             client,
             loopback_http_for_tests: false,
@@ -520,7 +578,7 @@ impl HttpTransport for ReqwestTransport {
         }
         let resp = req
             .send()
-            .map_err(|e| TransportError(describe_send_error(&e)))?;
+            .map_err(|e| reqwest_transport_error(&e, HttpFailurePhase::Send))?;
         read_bounded(resp)
     }
 
@@ -532,7 +590,87 @@ impl HttpTransport for ReqwestTransport {
         }
         let resp = req
             .send()
-            .map_err(|e| TransportError(describe_send_error(&e)))?;
+            .map_err(|e| reqwest_transport_error(&e, HttpFailurePhase::Send))?;
         read_bounded(resp)
+    }
+}
+
+#[cfg(all(test, feature = "http"))]
+mod failure_classifier_tests {
+    use super::*;
+
+    const EMPTY_ROOTS: &str = "No CA certificates were loaded from the system";
+    const HOSTILE: &str = "https://user:password@probe.invalid/?key=QUERY-CANARY Bearer TOKEN-CANARY TRANSCRIPT-CANARY subject=CERT-CANARY\r\n<img src=x>";
+
+    #[test]
+    fn typed_tls_errors_map_to_fixed_messages_without_rendering_diagnostics() {
+        use std::io::{Error, ErrorKind};
+
+        let rejected = Error::new(
+            ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        let empty = Error::other(rustls::Error::General(EMPTY_ROOTS.into()));
+        let unrelated = rustls::Error::General(format!("{EMPTY_ROOTS} {HOSTILE}"));
+        let fake = Error::other(format!("invalid peer certificate: {HOSTILE}"));
+
+        for (error, phase, expected) in [
+            (
+                &rejected as &dyn std::error::Error,
+                HttpFailurePhase::Send,
+                "cloud TLS certificate rejected",
+            ),
+            (
+                &empty,
+                HttpFailurePhase::Build,
+                "cloud TLS trust store empty",
+            ),
+            (
+                &unrelated,
+                HttpFailurePhase::Build,
+                "cloud HTTP client setup failed",
+            ),
+            (&fake, HttpFailurePhase::Send, "cloud transport unavailable"),
+        ] {
+            let reason = classify_http_failure(error, phase);
+            assert_eq!(reason.canonical_message(), expected);
+            assert_eq!(DegradedNoteReason::from_transport_message(expected), reason);
+        }
+        assert_eq!(
+            DegradedNoteReason::from_transport_message(&format!(
+                "cloud TLS certificate rejected {HOSTILE}"
+            )),
+            DegradedNoteReason::TransportUnavailable
+        );
+    }
+
+    #[derive(Debug)]
+    struct Link(Box<dyn std::error::Error>);
+
+    impl std::fmt::Display for Link {
+        fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            panic!("transport errors must not format the underlying cause")
+        }
+    }
+
+    impl std::error::Error for Link {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    #[test]
+    fn typed_cause_inspection_stops_after_eight_nodes_including_root() {
+        let tls =
+            || Box::new(rustls::Error::General(EMPTY_ROOTS.into())) as Box<dyn std::error::Error>;
+        let eighth = (0..7).fold(tls(), |inner, _| Box::new(Link(inner)));
+        assert_eq!(
+            classify_http_failure(eighth.as_ref(), HttpFailurePhase::Build),
+            DegradedNoteReason::NoTrustedCertificates,
+        );
+        assert_eq!(
+            classify_http_failure(&Link(eighth), HttpFailurePhase::Build),
+            DegradedNoteReason::ClientSetupFailed,
+        );
     }
 }

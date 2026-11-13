@@ -8276,37 +8276,67 @@ async fn run_note_generation(
     transcript: String,
     route: NotesRoute,
 ) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let local = selahcue_cloud::LocalNoteProvider::new();
-        match route {
-            #[cfg(feature = "cloud-live")]
-            NotesRoute::Hosted { base, token } => {
-                let transport = selahcue_cloud::transport::ReqwestTransport::new()
-                    .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
-                let client = selahcue_cloud::SelahCueCloudClient::new(transport, base, token);
-                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
-            }
-            #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
-            NotesRoute::Direct => {
-                let transport = provider_source::notes_transport()?;
-                let Some(client) = provider_source::openai(transport) else {
-                    cfg.build_note_request(&transcript, true)?;
-                    return Err(selahcue_core::providers::NoteError::NotConfigured);
-                };
-                selahcue_cloud::generate_sermon_notes(&cfg, &transcript, true, &client, &local)
-            }
-            #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
-            NotesRoute::Offline => {
-                let _ = local;
-                cfg.build_note_request(&transcript, true)?;
-                Err(selahcue_core::providers::NoteError::NotConfigured)
-            }
+    tauri::async_runtime::spawn_blocking(move || match route {
+        #[cfg(feature = "cloud-live")]
+        NotesRoute::Hosted { base, token } => generate_hosted_notes_with(
+            &cfg,
+            &transcript,
+            base,
+            token,
+            selahcue_cloud::transport::ReqwestTransport::new,
+        ),
+        #[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
+        NotesRoute::Direct => {
+            generate_direct_notes_with(&cfg, &transcript, provider_source::notes_transport)
+        }
+        #[cfg(not(any(feature = "openai-notes", feature = "pilot-credentials")))]
+        NotesRoute::Offline => {
+            cfg.build_note_request(&transcript, true)?;
+            Err(selahcue_core::providers::NoteError::NotConfigured)
         }
     })
     .await
     .map_err(|_| {
         selahcue_core::providers::NoteError::Transport("notes worker stopped unexpectedly".into())
     })?
+}
+
+#[cfg(feature = "cloud-live")]
+fn generate_hosted_notes_with<T: selahcue_cloud::HttpTransport>(
+    cfg: &selahcue_core::providers::ProvidersConfig,
+    transcript: &str,
+    base: String,
+    token: selahcue_cloud::Token,
+    build: impl FnOnce() -> Result<T, selahcue_cloud::TransportError>,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    selahcue_cloud::generate_sermon_notes_with_factory(
+        cfg,
+        transcript,
+        true,
+        || {
+            let transport = build()
+                .map_err(|e| selahcue_core::providers::NoteError::Transport(e.to_string()))?;
+            Ok(selahcue_cloud::SelahCueCloudClient::new(
+                transport, base, token,
+            ))
+        },
+        &selahcue_cloud::LocalNoteProvider::new(),
+    )
+}
+
+#[cfg(any(feature = "openai-notes", feature = "pilot-credentials"))]
+fn generate_direct_notes_with<T: selahcue_cloud::HttpTransport>(
+    cfg: &selahcue_core::providers::ProvidersConfig,
+    transcript: &str,
+    build: impl FnOnce() -> Result<T, selahcue_core::providers::NoteError>,
+) -> Result<selahcue_cloud::GenerationOutcome, selahcue_core::providers::NoteError> {
+    selahcue_cloud::generate_sermon_notes_with_factory(
+        cfg,
+        transcript,
+        true,
+        || provider_source::openai_with_transport(build),
+        &selahcue_cloud::LocalNoteProvider::new(),
+    )
 }
 
 /// Generate AI sermon notes from a COMPLETED transcript. Consent-gated end-to-end: with cloud-notes
@@ -8838,6 +8868,20 @@ async fn save_and_describe_generated_notes(
     let admission = GeneratedAdmission::new(|| Ok(()));
     save_and_describe_generated_notes_admitted(state, id, outcome, clamp, &admission).await
 }
+fn degraded_note_notice(outcome: &selahcue_cloud::GenerationOutcome) -> Option<String> {
+    use selahcue_core::providers::DEGRADED_FALLBACK_NOTICE;
+
+    outcome.degraded.then(|| {
+        match outcome
+            .degraded_reason
+            .and_then(|reason| reason.notice_reason())
+        {
+            Some(reason) => format!("{DEGRADED_FALLBACK_NOTICE} {reason}"),
+            None => DEGRADED_FALLBACK_NOTICE.to_owned(),
+        }
+    })
+}
+
 async fn save_and_describe_generated_notes_admitted(
     state: &State<'_, AppState>,
     id: i64,
@@ -8883,8 +8927,7 @@ async fn save_and_describe_generated_notes_admitted(
         "ai_generated": outcome.ai_generated,
         "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
         "disclosure": outcome.disclosure,
-        "degraded_notice": outcome.degraded
-            .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
+        "degraded_notice": degraded_note_notice(outcome),
         "scripture_verification_note": (!outcome.draft.scripture_verdicts.is_empty())
             .then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING),
         "draft": draft_json(&outcome.draft),
@@ -9732,10 +9775,24 @@ mod regenerate_with_retention_tests {
         with_transcript_store: bool,
         wrap: impl FnOnce(DbStore) -> Box<dyn SermonNoteStore>,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
+        state_with_wrapped_store_at(consent_cloud_notes, with_transcript_store, None, wrap)
+    }
+
+    fn state_with_wrapped_store_at(
+        consent_cloud_notes: bool,
+        with_transcript_store: bool,
+        path: Option<&std::path::Path>,
+        wrap: impl FnOnce(DbStore) -> Box<dyn SermonNoteStore>,
+    ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
         // 17tnw2b0ntd: `transcript_generate_notes` reads the stored transcript through
         // `AppState::transcript_db` (a different handle from the sermon-note store below), so the
-        // same ended transcript is seeded into BOTH — fresh in-memory DBs hand out the same id.
-        let tdb = Database::open_in_memory().expect("in-memory transcript db opens");
+        // same ended transcript is seeded into BOTH; file-backed fixtures open the seeded DB
+        // again for the authoritative note store.
+        let tdb = match path {
+            Some(path) => Database::open(path),
+            None => Database::open_in_memory(),
+        }
+        .expect("fixture transcript db opens");
         transcript_repo::create(
             &tdb,
             &transcript_repo::NewTranscript {
@@ -9750,20 +9807,25 @@ mod regenerate_with_retention_tests {
             .expect("append segment (transcript_db)");
         transcript_repo::end(&tdb, 1, 1_000).expect("end transcript (transcript_db)");
 
-        let db = Database::open_in_memory().expect("in-memory db opens");
-        let id = transcript_repo::create(
-            &db,
-            &transcript_repo::NewTranscript {
-                label: "Sunday Service".to_string(),
-                provider: "manual".to_string(),
-                plan_id: None,
-                started_at_ms: 1_000,
-            },
-        )
-        .expect("create transcript");
-        transcript_repo::append_segment(&db, id, 0, 1_000, "Good morning, church.")
-            .expect("append segment");
-        transcript_repo::end(&db, id, 1_000).expect("end transcript");
+        let (db, id) = if let Some(path) = path {
+            (Database::open(path).expect("open authoritative store"), 1)
+        } else {
+            let db = Database::open_in_memory().expect("in-memory db opens");
+            let id = transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Sunday Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_000,
+                },
+            )
+            .expect("create transcript");
+            transcript_repo::append_segment(&db, id, 0, 1_000, "Good morning, church.")
+                .expect("append segment");
+            transcript_repo::end(&db, id, 1_000).expect("end transcript");
+            (db, id)
+        };
 
         let mut plan = ServicePlan::new("Test Service");
         plan.add_item(ItemKind::Section, "Sermon");
@@ -9963,6 +10025,336 @@ mod regenerate_with_retention_tests {
         #[cfg(feature = "pilot-credentials")]
         assert_eq!(body["model"], "approved-fixture-model");
         assert!(provider_requests[0].body.contains("Good morning, church."));
+    }
+
+    #[cfg(feature = "cloud-live")]
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // Synthetic fixture setup must succeed.
+    async fn hosted_construction_fallback_respects_preflight_and_saves_or_stages() {
+        use selahcue_core::providers::DEGRADED_FALLBACK_NOTICE;
+
+        // The same synthetic process fixtures also work when a pilot build is expired:
+        // Hosted must remain the selected route and never consult pilot policy.
+        const CHILD: &str = "SELAHCUE_HOSTED_CONSTRUCTION_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "regenerate_with_retention_tests::hosted_construction_fallback_respects_preflight_and_saves_or_stages",
+                ])
+                .env(CHILD, "1")
+                .env("SELAHCUE_CLOUD_URL", "https://fixture.invalid")
+                .output()
+                .expect("start isolated synthetic Hosted fixture");
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.sqlite3");
+        let gate = Arc::new(StoreGate::default());
+        let wrapped = gate.clone();
+        let (app, id) = state_with_wrapped_store_at(false, true, Some(&path), move |inner| {
+            Box::new(FlakyLoadStore {
+                inner,
+                gate: wrapped,
+            })
+        });
+        let state = app.state::<AppState>();
+        let mut builds = 0;
+        const HOSTILE: &str = "cloud TLS certificate rejected https://user:secret@fixture.invalid/?key=QUERY-CANARY Bearer TOKEN-CANARY subject=CERT-CANARY TRANSCRIPT-CANARY\r\n<img src=x>";
+        let token = selahcue_cloud::Token::new("synthetic-hosted-fallback-account");
+
+        for (consent, failed_read, diagnostic, expected_error, notice) in [
+            (
+                false,
+                false,
+                "cloud HTTP client setup failed",
+                Some("consent_required"),
+                None,
+            ),
+            (
+                true,
+                true,
+                "cloud HTTP client setup failed",
+                Some("transport"),
+                None,
+            ),
+            (
+                true,
+                false,
+                "cloud HTTP client setup failed",
+                None,
+                Some("The cloud connection could not be initialized."),
+            ),
+            (
+                true,
+                false,
+                "cloud TLS trust store empty",
+                None,
+                Some("No trusted certificates could be loaded from this computer."),
+            ),
+            (
+                true,
+                false,
+                "cloud TLS certificate rejected",
+                None,
+                Some("The cloud service's TLS certificate was rejected."),
+            ),
+            (true, false, HOSTILE, None, None),
+        ] {
+            state.secrets.set(ACCOUNT_TOKEN_NAME, &token).unwrap();
+            state.providers.lock().unwrap().consent.cloud_notes = consent;
+            gate.fail_loads(failed_read);
+            let before = builds;
+            let reply = transcript_generate_notes_with(id, &state, |cfg, text, route| {
+                let NotesRoute::Hosted { base, token } = route else {
+                    panic!("eligible Hosted must take precedence");
+                };
+                state.secrets.remove(ACCOUNT_TOKEN_NAME).unwrap();
+                std::future::ready(generate_hosted_notes_with(&cfg, &text, base, token, || {
+                    builds += 1;
+                    Err::<selahcue_cloud::MockTransport, _>(selahcue_cloud::TransportError(
+                        diagnostic.into(),
+                    ))
+                }))
+            })
+            .await
+            .unwrap();
+            gate.fail_loads(false);
+
+            let stored = Database::open(&path).unwrap();
+            let accepted = sermon_note_repo::find_by_transcript(&stored, id).unwrap();
+            if let Some(error) = expected_error {
+                assert_eq!(reply["error"], error);
+                assert_eq!(builds, before);
+                assert!(accepted.is_none());
+                assert_eq!((gate.saves(), gate.stages()), (0, 0));
+                continue;
+            }
+            assert_eq!(builds, before + 1);
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["degraded"], true);
+            assert_eq!(reply["provider"], "Local (offline)");
+            assert_eq!(reply["ai_generated"], false);
+            assert!(reply["disclosure"].is_null());
+            assert!(reply["quota"].is_null());
+            assert_eq!(reply["draft"]["title"], "Good morning, church");
+            let added = notice.unwrap_or_default();
+            assert!(added.len() <= 160);
+            let expected = if added.is_empty() {
+                DEGRADED_FALLBACK_NOTICE.to_owned()
+            } else {
+                format!("{DEGRADED_FALLBACK_NOTICE} {added}")
+            };
+            assert_eq!(reply["degraded_notice"], expected);
+            let text = reply["degraded_notice"].as_str().unwrap();
+            for forbidden in [
+                "user:secret",
+                "QUERY-CANARY",
+                "TOKEN-CANARY",
+                "CERT-CANARY",
+                "TRANSCRIPT-CANARY",
+                "<",
+                ">",
+                "\r",
+                "\n",
+            ] {
+                assert!(!text.contains(forbidden));
+            }
+            assert_eq!(reply["transcript_id"], id);
+            assert_eq!(reply["not_saved"], false);
+            assert_eq!(reply["pending_confirmation"], builds > 1);
+            let accepted = accepted.expect("accepted draft persisted on disk");
+            assert_eq!(
+                accepted.title,
+                if builds == 1 {
+                    "Good morning, church"
+                } else {
+                    "Edited by the operator"
+                }
+            );
+            assert_eq!(gate.saves(), 1);
+            assert_eq!(gate.stages(), builds - 1);
+            if builds == 1 {
+                state
+                    .backend
+                    .update_sermon_note_draft(
+                        id,
+                        selahcue_lan::protocol::SermonNoteEditInput {
+                            title: "Edited by the operator".into(),
+                            summary: Some("The operator's own summary".into()),
+                            sections_json: "[]".into(),
+                            scriptures_json: "[]".into(),
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+            } else {
+                assert_eq!(reply["previous_draft"]["title"], "Edited by the operator");
+            }
+        }
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .unwrap()
+            .unwrap();
+        let promoted = promoted
+            .current
+            .expect("the fallback was staged in the pending slot");
+        assert_eq!(promoted.title, "Good morning, church");
+        assert!(!promoted.ai_generated);
+    }
+
+    #[cfg(feature = "pilot-credentials")]
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)] // Synthetic fixture setup must succeed.
+    async fn pilot_construction_fallback_preserves_terminal_policy() {
+        use selahcue_core::providers::NoteError;
+        use std::sync::atomic::Ordering;
+
+        // Sticky rejection and the fixture clock belong to the child alone.
+        const CASE: &str = "SELAHCUE_PILOT_CONSTRUCTION_TEST_CASE";
+        let Ok(case) = std::env::var(CASE) else {
+            // The pilot-only package can compile without credentials; the focused fixture
+            // matrix supplies the checked-in synthetic package and an admitted clock.
+            if std::env::var("PILOT_TEST_EXPECT_READY").as_deref() != Ok("1") {
+                return;
+            }
+            let cutoff = selahcue_cloud::pilot::COHORT_CUTOFF;
+            for (case, epoch) in [
+                ("expired", cutoff),
+                ("terminal", cutoff - 3600),
+                ("admitted", cutoff - 3600),
+                ("build-rejected", cutoff - 3600),
+                ("late", cutoff - 3600),
+            ] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "regenerate_with_retention_tests::pilot_construction_fallback_preserves_terminal_policy",
+                    ])
+                    .env(CASE, case)
+                    .env("SELAHCUE_PILOT_TEST_EPOCH", epoch.to_string())
+                    .env_remove("SELAHCUE_CLOUD_URL")
+                    .output().unwrap();
+                assert!(
+                    output.status.success()
+                        && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                    "{case}: {}",
+                    String::from_utf8_lossy(&output.stdout)
+                );
+            }
+            return;
+        };
+
+        let (app, id, gate) = flaky_state(true);
+        let state = app.state::<AppState>();
+        let accepted = state
+            .backend
+            .save_sermon_note_draft(id, sample_draft("Operator's accepted draft", false))
+            .await
+            .unwrap()
+            .unwrap();
+        let pending = state
+            .backend
+            .stage_sermon_note_regeneration_admitted(
+                id,
+                sample_draft("Earlier pending regeneration", false),
+                || true,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .pending
+            .unwrap();
+        let writes = (gate.saves(), gate.stages());
+        let mut builds = 0;
+        let reply = transcript_generate_notes_with(id, &state, |cfg, text, route| {
+            assert!(route.uses_pilot());
+            let mut observer = None;
+            let outcome = generate_direct_notes_with(&cfg, &text, || {
+                if case == "terminal" {
+                    // Model a terminal refusal from the transport's own late admission check.
+                    builds += 1;
+                    return Err::<selahcue_cloud::MockTransport, _>(NoteError::NotConfigured);
+                }
+                provider_source::pilot_notes_transport_with(|_, rejected| {
+                    builds += 1;
+                    if case == "build-rejected" {
+                        rejected.store(true, Ordering::SeqCst);
+                    }
+                    observer = Some(rejected);
+                    Err(selahcue_cloud::TransportError(
+                        "cloud TLS trust store empty".into(),
+                    ))
+                })
+            });
+            if case == "late" {
+                assert!(outcome.as_ref().expect("local fallback produced").degraded);
+                observer
+                    .expect("transport lane was admitted")
+                    .store(true, Ordering::SeqCst);
+            }
+            std::future::ready(outcome)
+        })
+        .await
+        .unwrap();
+        if case == "admitted" {
+            assert_eq!(reply["ok"], true);
+            assert_eq!(reply["pending_confirmation"], true);
+            assert_eq!(reply["draft"]["title"], "Good morning, church");
+            assert_eq!(
+                reply["degraded_notice"],
+                format!(
+                    "{} No trusted certificates could be loaded from this computer.",
+                    selahcue_core::providers::DEGRADED_FALLBACK_NOTICE,
+                )
+            );
+            assert_eq!(builds, 1);
+            assert_eq!((gate.saves(), gate.stages()), (writes.0, writes.1 + 1));
+            assert_eq!(
+                state.backend.load_sermon_note_draft(id).await.unwrap(),
+                Some(accepted)
+            );
+            let promoted = state
+                .backend
+                .confirm_sermon_note_regeneration(id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(promoted.current.unwrap().title, "Good morning, church");
+            return;
+        }
+
+        let expected = match case.as_str() {
+            "expired" => "pilot_expired",
+            "terminal" => "not_configured",
+            _ => "pilot_access_rejected",
+        };
+        assert_eq!(reply["error"], expected);
+        assert_eq!(reply["ok"], false);
+        assert!(reply.get("draft").is_none());
+        assert_eq!(builds, usize::from(case != "expired"));
+        assert_eq!((gate.saves(), gate.stages()), writes);
+        assert_eq!(
+            state.backend.load_sermon_note_draft(id).await.unwrap(),
+            Some(accepted)
+        );
+        let promoted = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(promoted.current, Some(pending));
     }
 
     // Run in separate test processes with the committed synthetic payload and before/equality/
@@ -11192,6 +11584,27 @@ mod regenerate_with_retention_tests {
         let Backend::Remote(m) = &state.backend else {
             panic!("remote fixture")
         };
+        #[cfg(feature = "cloud-live")]
+        let draft = {
+            let mut config = selahcue_core::providers::ProvidersConfig::default();
+            config.consent.cloud_notes = true;
+            let fallback = generate_hosted_notes_with(
+                &config,
+                "Fallback outline.",
+                "https://fixture.invalid".into(),
+                selahcue_cloud::Token::new("synthetic-mutex-fixture"),
+                || {
+                    Err::<selahcue_cloud::MockTransport, _>(selahcue_cloud::TransportError(
+                        "cloud HTTP client setup failed".into(),
+                    ))
+                },
+            )
+            .unwrap();
+            assert!(fallback.degraded);
+            sermon_note_caveats::draft_input_for(&fallback)
+        };
+        #[cfg(not(feature = "cloud-live"))]
+        let draft = sample_draft("late", true);
         for stage in [false, true] {
             let held = m.lock().await;
             let expired = Arc::new(AtomicBool::new(false));
@@ -11207,19 +11620,15 @@ mod regenerate_with_retention_tests {
                 if stage {
                     state
                         .backend
-                        .stage_sermon_note_regeneration_admitted(
-                            1,
-                            sample_draft("late", true),
-                            || admission.admit(),
-                        )
+                        .stage_sermon_note_regeneration_admitted(1, draft.clone(), || {
+                            admission.admit()
+                        })
                         .await
                         .map(|_| ())
                 } else {
                     state
                         .backend
-                        .save_sermon_note_draft_admitted(1, sample_draft("late", true), || {
-                            admission.admit()
-                        })
+                        .save_sermon_note_draft_admitted(1, draft.clone(), || admission.admit())
                         .await
                         .map(|_| ())
                 }
@@ -11948,6 +12357,7 @@ mod regenerate_with_retention_tests {
             },
             provider_label: "SelahCue AI".to_string(),
             degraded: false,
+            degraded_reason: None,
             quota: None,
             ai_generated: true,
             disclosure: Some("AI-generated. Verify before use."),

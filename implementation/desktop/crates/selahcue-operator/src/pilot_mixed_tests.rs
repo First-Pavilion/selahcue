@@ -57,6 +57,32 @@ fn configured_hosted_route_is_captured_without_pilot_restrictions() {
         admitted.ensure().is_ok(),
         "captured hosted work must never be retargeted to pilot guards"
     );
+    let NotesRoute::Hosted { base, token } = captured else {
+        panic!("the captured route must stay Hosted");
+    };
+    let transport = selahcue_cloud::MockTransport::responding(
+        200,
+        r#"{"draft":{"title":"Hosted fixture","summary":null,"introduction":[],"illustrations":[],
+             "quotes":[],"prayer_points":[],"calls_to_action":[],"key_lessons":[],
+             "chapter_markers":[],"social_excerpts":[],"points":[]},
+           "quota":{"used":0,"limit":10,"resets_label":"in 30 days"}}"#,
+    );
+    let requests = transport.requests_handle();
+    let mut config = selahcue_core::providers::ProvidersConfig::default();
+    config.consent.cloud_notes = true;
+    let outcome =
+        generate_hosted_notes_with(&config, "Completed fixture sermon.", base, token, || {
+            Ok(transport)
+        })
+        .unwrap();
+    assert!(!outcome.degraded);
+    assert_eq!(outcome.draft.title, "Hosted fixture");
+    let recorded = requests.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0]
+        .url
+        .starts_with("https://127.0.0.1:1/fixture-only/"));
+    assert!(recorded[0].had_bearer);
     if expect_expired {
         let direct = GeneratedAdmission::for_route(true);
         assert_eq!(direct.ensure(), Err(provider_source::PilotFault::Expired));

@@ -497,30 +497,65 @@ fn a_debug_profile_input_still_permits_the_direct_key() {
 /// `dev_env::load()` wiring test and `selahcue-licensing`'s `..._iff_it_is_a_debug_build`: one
 /// test, run once per profile by `make ci`/CI (`cargo test -p selahcue-cloud --features openai`
 /// and the `--release` sibling added alongside this fix), asserting whichever branch that
-/// profile actually compiled. Only this test touches `API_KEY_ENV`; the lock keeps that true if
-/// another ever does.
+/// profile actually compiled. Each case supplies credentials only to its own test process.
 #[test]
 fn from_env_permits_the_direct_key_iff_this_is_a_debug_build() {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _guard = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    use std::{cell::Cell, process::Command};
 
-    std::env::set_var(API_KEY_ENV, "sk-proj-test-key");
-    let built = OpenAiNoteProvider::from_env(MockTransport::responding(200, "{}"));
-    std::env::remove_var(API_KEY_ENV);
+    const CHILD: &str = "SELAHCUE_OPENAI_FACTORY_TEST_CASE";
+    let Ok(case) = std::env::var(CHILD) else {
+        for (case, key) in [
+            ("absent", None),
+            ("blank", Some("  ")),
+            ("configured", Some("sk-proj-synthetic-factory-test")),
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "from_env_permits_the_direct_key_iff_this_is_a_debug_build",
+                ])
+                .env(CHILD, case)
+                .env(MODEL_ENV, "synthetic-factory-model")
+                .env_remove(API_KEY_ENV);
+            if let Some(key) = key {
+                child.env(API_KEY_ENV, key);
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "{case}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        return;
+    };
 
-    if cfg!(debug_assertions) {
-        assert!(
-            built.is_some(),
-            "a debug build must build a provider from an exported OPENAI_API_KEY, or \
-             openai-notes stops working in ordinary development"
-        );
-    } else {
-        assert!(
-            built.is_none(),
-            "a RELEASE build built a working OpenAI provider from an exported OPENAI_API_KEY — \
-             direct_key_permitted stopped being wired into from_env (inverted, hardcoded, or the \
-             early return was removed)"
-        );
+    let allowed = cfg!(debug_assertions) && case == "configured";
+    let calls = Cell::new(0);
+    let failure = NoteError::Transport("cloud HTTP client setup failed".into());
+    let built = OpenAiNoteProvider::<MockTransport>::from_env_with_transport(|| {
+        calls.set(calls.get() + 1);
+        Err(failure.clone())
+    });
+    assert_eq!(calls.get(), usize::from(allowed));
+    assert_eq!(
+        built.err(),
+        Some(if allowed {
+            failure
+        } else {
+            NoteError::NotConfigured
+        })
+    );
+
+    let old = OpenAiNoteProvider::from_env(MockTransport::failing());
+    let new = OpenAiNoteProvider::from_env_with_transport(|| Ok(MockTransport::failing()));
+    assert_eq!(old.is_some(), allowed);
+    assert_eq!(new.is_ok(), allowed);
+    if let (Some(old), Ok(new)) = (old, new) {
+        assert_eq!(new.model(), "synthetic-factory-model");
+        assert_eq!(old.model(), new.model());
     }
 }
 

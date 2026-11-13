@@ -3868,10 +3868,12 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
             scripture_verdicts:[{reference:"John 3:16", verified:true}, {reference:"3Jn 4:12", verified:true},
               {reference:"Hezekiah 99:1", verified:false}]}});
       }
-      if (tg === "degraded") {
+      if (tg === "degraded" || tg === "degraded_certificate") {
+        var offlineNotice = "The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.";
         return Promise.resolve({ok:true, degraded:true, provider:"Local (offline)", ai_generated:false,
           ai_label:"AI-generated draft", disclosure:null, transcript_id: args.id, quota:null, clamp: null,
-          degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
+          degraded_notice: offlineNotice + (tg === "degraded_certificate"
+            ? " The cloud service's TLS certificate was rejected." : ""),
           draft:{title:"Offline outline", summary:null,
             sections:[{heading:"Outline", items:["point one"], points:[]},
               {heading:"Prayer points", items:[], points:[], empty_requested:true}],
@@ -9464,6 +9466,18 @@ DRIVER = r"""
       ok(/not AI-generated notes/.test(trDegRes.textContent), "TR FR-135: the degraded notice says IN WORDS that this is not the AI draft asked for");
       ok(trDegRes.querySelectorAll(".pp-gen-empty").length === 0 && !trDegRes.querySelector(".pp-gen-empty-explainer"),
          "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
+      var trGenericNotice = trDegRes.querySelector(".pp-gen-degraded").textContent;
+      var trCertRes = await trGenOnce("degraded_certificate");
+      var trCertNotice = trCertRes.querySelector(".pp-gen-degraded");
+      var trCertificateReason = " The cloud service's TLS certificate was rejected.";
+      ok(!!trCertNotice && trCertNotice.childElementCount === 0 &&
+         trCertNotice.textContent === trGenericNotice + trCertificateReason &&
+         new TextEncoder().encode(trCertificateReason.trim()).length <= 160,
+         "TR cloud fallback: the fixed certificate reason renders as immediate plain text");
+      var trGenericRes = await trGenOnce("degraded");
+      ok(trGenericRes.querySelector(".pp-gen-degraded").textContent === trGenericNotice &&
+         !/TLS|certificate/.test(trGenericNotice),
+         "TR cloud fallback: an unclassified transport failure keeps the generic notice");
       // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
       var trQuotaRes = await trGenOnce("quota_exceeded");
       ok(!!trQuotaRes.querySelector('[role="alert"]') && /Generation limit reached/.test(trQuotaRes.textContent) &&
