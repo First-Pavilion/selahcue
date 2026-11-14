@@ -78,6 +78,22 @@ fn selected_source_drives_both_readiness_and_real_authorization() {
     );
     let client = provider_source::openai(InspectTransport);
     assert_eq!(client.is_some(), ready);
+    let builds = std::cell::Cell::new(0);
+    let fallible = provider_source::openai_with_transport(|| {
+        builds.set(builds.get() + 1);
+        Err::<InspectTransport, _>(NoteError::Transport(
+            "cloud HTTP client setup failed".into(),
+        ))
+    });
+    assert_eq!(builds.get(), usize::from(ready));
+    assert_eq!(
+        fallible.err(),
+        Some(if ready {
+            NoteError::Transport("cloud HTTP client setup failed".into())
+        } else {
+            NoteError::NotConfigured
+        })
+    );
     let credential = provider_source::deepgram();
     assert_eq!(credential.is_ok(), ready);
     if !ready {

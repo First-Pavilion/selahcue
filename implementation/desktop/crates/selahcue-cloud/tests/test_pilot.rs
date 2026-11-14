@@ -142,3 +142,53 @@ fn construction_cutoff_refuses_egress_with_an_admitted_provider_positive_control
         assert_eq!(requests.lock().unwrap().len(), expected_requests);
     }
 }
+
+#[test]
+fn pilot_checks_expiry_before_build_and_preserves_transport_admission_errors() {
+    use selahcue_cloud::MockTransport;
+    use selahcue_core::providers::NoteError;
+    use std::cell::Cell;
+
+    let config = PilotConfig::parse(Some(&fixture().to_string()), 1).unwrap();
+    let calls = Cell::new(0);
+    let failed_build = || {
+        calls.set(calls.get() + 1);
+        Err::<MockTransport, _>(NoteError::NotConfigured)
+    };
+    assert_eq!(
+        config
+            .openai_with_transport(failed_build, APPROVED_CUTOFF - 100)
+            .err(),
+        Some(NoteError::NotConfigured)
+    );
+    assert_eq!(calls.get(), 0);
+    assert_eq!(
+        config
+            .openai_with_transport(failed_build, APPROVED_CUTOFF - 101)
+            .err(),
+        Some(NoteError::NotConfigured)
+    );
+    assert_eq!(calls.get(), 1);
+
+    let fault = NoteError::Transport("cloud TLS trust store empty".into());
+    assert_eq!(
+        config
+            .openai_with_transport(
+                || Err::<MockTransport, _>(fault.clone()),
+                APPROVED_CUTOFF - 101,
+            )
+            .err(),
+        Some(fault),
+    );
+    let new = config
+        .openai_with_transport(|| Ok(MockTransport::failing()), APPROVED_CUTOFF - 101)
+        .unwrap();
+    assert_eq!(new.model(), "approved-fixture-model");
+    assert_eq!(
+        config
+            .openai(MockTransport::failing(), APPROVED_CUTOFF - 101)
+            .unwrap()
+            .model(),
+        new.model(),
+    );
+}
