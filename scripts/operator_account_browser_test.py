@@ -9,7 +9,17 @@ from pathlib import Path
 from playwright.sync_api import expect, sync_playwright
 
 
-DIST = Path(__file__).resolve().parents[1] / "implementation/desktop/crates/selahcue-operator/dist"
+OPERATOR = Path(__file__).resolve().parents[1] / "implementation/desktop/crates/selahcue-operator"
+DIST = OPERATOR / "dist"
+MAIN_WINDOW = next(
+    window for window in json.loads((OPERATOR / "tauri.conf.json").read_text())["app"]["windows"]
+    if window["label"] == "main"
+)
+SUPPORTED_VIEWPORTS = (
+    (MAIN_WINDOW["minWidth"], MAIN_WINDOW["minHeight"]),
+    (MAIN_WINDOW["width"], MAIN_WINDOW["height"]),
+)
+LONG_DEVICE_NAME = "W" * 80
 
 STUB = r"""
 (() => {
@@ -126,7 +136,8 @@ def open_account(page, via_providers=True):
     assert order[:4] == ["general", "account", "preservice", "providers"]
 
 
-def boot(browser, dist, initial=None, width=1520, height=1080):
+def boot(browser, dist, viewport, initial=None):
+    width, height = viewport
     page = browser.new_page(viewport={"width": width, "height": height}, reduced_motion="reduce")
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
@@ -141,27 +152,82 @@ def capture(page, directory, name):
         page.screenshot(path=directory / f"{name}.png", animations="disabled")
 
 
+def assert_emergency_hit_targets(page, state):
+    toolbar = page.get_by_role("toolbar", name="Emergency controls", exact=True)
+    targets = []
+    for name in ("Blackout the audience output", "Clear all live layers (double-Escape)"):
+        button = toolbar.get_by_role("button", name=name, exact=True)
+        geometry = button.evaluate("""button => {
+          const { left, right, top, bottom, width, height } = button.getBoundingClientRect();
+          const x = left + width / 2;
+          const y = top + height / 2;
+          return {
+            left, right, top, bottom, x, y,
+            viewportWidth: innerWidth, viewportHeight: innerHeight,
+            onTarget: button.contains(document.elementFromPoint(x, y)),
+            usable: !button.disabled && button.getAttribute("aria-disabled") !== "true",
+          };
+        }""")
+        assert 0 <= geometry["left"] < geometry["right"] <= geometry["viewportWidth"], (state, name, geometry)
+        assert 0 <= geometry["top"] < geometry["bottom"] <= geometry["viewportHeight"], (state, name, geometry)
+        assert geometry["onTarget"] and geometry["usable"], (state, name, geometry)
+        targets.append((geometry["x"], geometry["y"]))
+    return targets
+
+
 def assert_console_emergency(page):
     expect(page.locator("#surface-console")).to_be_visible()
-    page.locator("#blackout").click()
-    page.locator("#clear-all").click()
-    page.get_by_label("Password", exact=True).focus()
+    # Click the checked viewport coordinates so Playwright cannot scroll a
+    # clipped control into view and accidentally turn the failure green.
+    for x, y in assert_emergency_hit_targets(page, "sign-in before emergency clicks"):
+        page.mouse.click(x, y)
+    password = page.get_by_label("Password", exact=True)
+    password.focus()
+    assert_emergency_hit_targets(page, "focused password before emergency shortcuts")
     page.keyboard.press("Control+Shift+B")
     page.keyboard.press("Control+Shift+Period")
     page.wait_for_function("""() =>
         ["blackout", "clear"].every(cmd => accountFixture.calls.filter(call => call.cmd === cmd).length === 2)
     """)
-    assert page.get_by_label("Password", exact=True).evaluate(
+    assert_emergency_hit_targets(page, "after emergency shortcuts")
+    assert password.evaluate(
         """el => !el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }))"""
     )
 
 
-def exercise(browser, dist, screenshots):
-    page, errors = boot(browser, dist)
+def assert_long_device_name(page):
+    name = page.locator("#account-device-name")
+    expect(name).to_have_text(LONG_DEVICE_NAME)
+    expect(page.locator("#account-device-chip")).to_have_text("Activated")
+    geometry = name.evaluate("""name => {
+      const text = document.createRange();
+      text.selectNodeContents(name);
+      const chip = document.getElementById("account-device-chip").getBoundingClientRect();
+      const row = name.closest(".set-row").getBoundingClientRect();
+      return {
+        textRight: Math.max(...Array.from(text.getClientRects(), line => line.right)),
+        chipLeft: chip.left, chipRight: chip.right, rowRight: row.right,
+        viewportWidth: innerWidth, viewportHeight: innerHeight,
+      };
+    }""")
+    assert geometry["textRight"] <= geometry["chipLeft"] < geometry["chipRight"] <= geometry["rowRight"], geometry
+
+
+def exercise(browser, dist, screenshots, viewport):
+    page, errors = boot(browser, dist, viewport)
     expect(page.get_by_role("heading", name="Activate SelahCue")).to_be_visible()
+    assert page.locator(".account-offline-pill img").evaluate("img => img.complete && img.naturalWidth === 7")
+    assert_emergency_hit_targets(page, "startup chooser")
     capture(page, screenshots, "a0-chooser")
-    click(page, "Sign in to your SelahCue account")
+    click(page, "Enter an organisation enrollment key")
+    expect(page.get_by_role("heading", name="Enter your enrollment key")).to_be_focused()
+    assert_emergency_hit_targets(page, "startup enrollment after heading focus")
+    page.get_by_label("Organisation enrollment key").focus()
+    assert_emergency_hit_targets(page, "startup enrollment after key focus")
+    capture(page, screenshots, "a2-startup-enrollment")
+    click(page, "Sign in with your account instead")
     expect(page.get_by_role("heading", name="Sign in to SelahCue")).to_be_focused()
+    assert_emergency_hit_targets(page, "sign-in after heading focus")
     assert page.locator("#account-dismiss").evaluate("""button => {
       const region = document.getElementById("account-first-run").getBoundingClientRect();
       const action = button.getBoundingClientRect();
@@ -170,13 +236,20 @@ def exercise(browser, dist, screenshots):
     capture(page, screenshots, "a1-sign-in")
     fill_sign_in(page)
     assert_console_emergency(page)
+    rules(page, {"error_code": "invalid_credentials"})
+    click(page, "Continue")
+    expect(page.locator("#account-sign-in-error")).to_contain_text("could not be verified")
+    expect(page.locator("#account-password")).to_have_value("")
+    assert_emergency_hit_targets(page, "sign-in after invalid credentials")
+    fill_sign_in(page)
     rules(page, {"hold": True, **ACTIVE})
     page.get_by_label("Password", exact=True).press("Enter")
     expect(page.get_by_role("heading", name="Activating this device…")).to_be_visible()
     expect(page.locator("#account-password")).to_have_value("")
+    assert_emergency_hit_targets(page, "sign-in activation held")
     capture(page, screenshots, "a3-pending")
     page.locator("#account-sign-in").evaluate("form => form.dispatchEvent(new Event('submit', { cancelable: true }))")
-    assert page.evaluate("""() => accountFixture.calls.filter(x => x.cmd === "account_sign_in_and_activate").length""") == 1
+    assert page.evaluate("""() => accountFixture.calls.filter(x => x.cmd === "account_sign_in_and_activate").length""") == 2
     click(page, "Skip — set up later")
     expect(page.locator("#account-card")).to_be_hidden()
     expect(page.locator("#surface-console")).to_be_focused()
@@ -189,13 +262,15 @@ def exercise(browser, dist, screenshots):
     assert not errors, errors
     page.close()
 
-    restarted, errors = boot(browser, dist, {"setup_state": "skipped"})
+    restarted, errors = boot(browser, dist, viewport, {"setup_state": "skipped"})
     restarted.wait_for_function("accountFixture.calls.some(x => x.cmd === 'account_view')")
     expect(restarted.locator("#account-first-run")).to_be_hidden()
     open_account(restarted)
+    assert_emergency_hit_targets(restarted, "Settings Account entry")
     expect(restarted.get_by_role("button", name="Set up this device")).to_be_visible()
     click(restarted, "Set up this device")
     click(restarted, "Enter an organisation enrollment key")
+    assert_emergency_hit_targets(restarted, "Settings enrollment before key focus")
     capture(restarted, screenshots, "a2-enrollment")
     restarted.get_by_label("Organisation enrollment key").fill("fixture-enrollment-key")
     restarted.get_by_label("Device name").fill("Fixture Booth")
@@ -204,6 +279,7 @@ def exercise(browser, dist, screenshots):
     expect(restarted.locator("#account-enrollment-error")).to_contain_text("don’t recognise")
     expect(restarted.get_by_label("Organisation enrollment key")).to_have_value("")
     expect(restarted.get_by_label("Organisation enrollment key")).to_be_focused()
+    assert_emergency_hit_targets(restarted, "Settings enrollment with key error and focus")
     capture(restarted, screenshots, "a4-unknown-key")
 
     for code, heading, screenshot in [
@@ -222,6 +298,8 @@ def exercise(browser, dist, screenshots):
     rules(restarted, {"hold": True, **ACTIVE})
     restarted.get_by_label("Organisation enrollment key").fill("fixture-enrollment-key")
     click(restarted, "Activate this device")
+    expect(restarted.get_by_role("heading", name="Activating this device…")).to_be_visible()
+    assert_emergency_hit_targets(restarted, "Settings enrollment activation held")
     click(restarted, "Back to Account")
     expect(restarted.locator("#account-card")).to_be_hidden()
     restarted.locator("#account-open-providers").click()
@@ -239,6 +317,7 @@ def exercise(browser, dist, screenshots):
     )""")
     assert restarted.locator("#account-active-dot").evaluate("img => img.complete && img.naturalWidth === 9")
     assert restarted.locator("#account-entitlement-dot").evaluate("img => img.complete && img.naturalWidth === 6")
+    assert_emergency_hit_targets(restarted, "Settings activated")
     capture(restarted, screenshots, "a8-a10-activated-status")
     restarted.evaluate("""() => accountFixture.publish({
       setup_state: 'completed', device_state: 'reauthentication_needed', error_code: 'reauthentication_required'
@@ -252,42 +331,42 @@ def exercise(browser, dist, screenshots):
     expect(restarted.locator("#account-device-status")).to_contain_text("storage unavailable")
     expect(restarted.locator("#account-plan-label")).to_be_hidden()
     expect(restarted.locator("#account-manifest-expiry")).to_be_hidden()
+    assert_emergency_hit_targets(restarted, "Settings credential storage unavailable")
     assert not errors, errors
     restarted.close()
 
-    activated_restart, errors = boot(browser, dist, ACTIVE)
+    activated_restart, errors = boot(browser, dist, viewport, {**ACTIVE, "display_name": LONG_DEVICE_NAME})
     activated_restart.wait_for_function("accountFixture.calls.some(x => x.cmd === 'account_view')")
     expect(activated_restart.locator("#account-first-run")).to_be_hidden()
     open_account(activated_restart, via_providers=False)
     expect(activated_restart.locator("#account-device-status")).to_have_text("Device activated")
     expect(activated_restart.locator("#account-plan-label")).to_have_text("Signed fixture plan")
     expect(activated_restart.locator("#account-start-setup")).to_be_hidden()
+    assert_long_device_name(activated_restart)
+    assert_emergency_hit_targets(activated_restart, "Settings restored long-name device")
+    capture(activated_restart, screenshots, "a8-a10-long-device-name")
     assert not errors, errors
     activated_restart.close()
 
-    narrow, errors = boot(browser, dist, width=520, height=760)
-    expect(narrow.get_by_role("heading", name="Activate SelahCue")).to_be_visible()
-    assert narrow.locator(".account-offline-pill img").evaluate("img => img.complete && img.naturalWidth === 7")
-    assert narrow.locator("#account-first-run").evaluate("el => el.scrollWidth <= el.clientWidth")
-    narrow.evaluate("accountFixture.skipFailure = true")
-    click(narrow, "Sign in to your SelahCue account")
-    fill_sign_in(narrow)
-    rules(narrow, {"error_code": "network_unavailable"})
-    click(narrow, "Continue")
-    click(narrow, "Continue offline")
-    expect(narrow.locator("#account-card")).to_be_hidden()
-    expect(narrow.get_by_role("button", name="Retry saving choice")).to_be_visible()
-    narrow.evaluate("accountFixture.skipFailure = false")
-    click(narrow, "Retry saving choice")
-    expect(narrow.locator("#account-setup-status")).to_be_hidden()
-    expect(narrow.locator("#blackout")).to_be_visible()
-    expect(narrow.locator("#clear-all")).to_be_visible()
-    assert narrow.evaluate("""() => ![localStorage, sessionStorage].some(store =>
+    offline, errors = boot(browser, dist, viewport)
+    expect(offline.get_by_role("heading", name="Activate SelahCue")).to_be_visible()
+    offline.evaluate("accountFixture.skipFailure = true")
+    click(offline, "Sign in to your SelahCue account")
+    fill_sign_in(offline)
+    rules(offline, {"error_code": "network_unavailable"})
+    click(offline, "Continue")
+    assert_emergency_hit_targets(offline, "startup network error")
+    click(offline, "Continue offline")
+    expect(offline.locator("#account-card")).to_be_hidden()
+    expect(offline.get_by_role("button", name="Retry saving choice")).to_be_visible()
+    offline.evaluate("accountFixture.skipFailure = false")
+    click(offline, "Retry saving choice")
+    expect(offline.locator("#account-setup-status")).to_be_hidden()
+    assert_emergency_hit_targets(offline, "durable Skip retry complete")
+    assert offline.evaluate("""() => ![localStorage, sessionStorage].some(store =>
       JSON.stringify(store).includes("synthetic-password"))""")
-    open_account(narrow, via_providers=False)
-    expect(narrow.locator("#account-start-setup")).to_be_visible()
-    capture(narrow, screenshots, "account-narrow")
     assert not errors, errors
+    offline.close()
 
 
 def main():
@@ -295,14 +374,17 @@ def main():
     parser.add_argument("--engine", choices=("chromium", "webkit"), default="chromium")
     parser.add_argument("--screenshots", type=Path)
     args = parser.parse_args()
-    if args.screenshots:
-        args.screenshots.mkdir(parents=True, exist_ok=True)
     dist = Path(os.environ.get("SELAHCUE_OPERATOR_DIST", str(DIST))).resolve()
     with sync_playwright() as playwright:
         browser = getattr(playwright, args.engine).launch()
-        exercise(browser, dist, args.screenshots)
+        for width, height in SUPPORTED_VIEWPORTS:
+            size = f"{width}x{height}"
+            screenshots = args.screenshots / size if args.screenshots else None
+            if screenshots:
+                screenshots.mkdir(parents=True, exist_ok=True)
+            exercise(browser, dist, screenshots, (width, height))
+            print(f"Account setup, Settings and emergency hit targets passed in {args.engine} at {size}.", flush=True)
         browser.close()
-    print(f"Account setup, Settings, durable Skip readback and emergency controls passed on {args.engine} fixture.")
 
 
 if __name__ == "__main__":

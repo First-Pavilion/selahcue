@@ -9327,6 +9327,11 @@ main.account-has-notice > #surface-console { overflow: auto; }
   min-width: 0;
 }
 .account-device-info { gap: 12px; }
+.account-device-info > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+#account-device-chip { flex: none; }
 .account-device-icon {
   display: grid;
   place-items: center;
