@@ -57,6 +57,9 @@ export type ApiErrorCode =
   | 'VALIDATION_FAILED'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  /** Native bound-activation codes: browser forms use their existing generic failure state. */
+  | 'ACTIVATION_OPERATION_CONFLICT'
+  | 'ACTIVATION_OPERATION_COMPLETED'
   | 'POLICY_DENIED'
   | 'RATE_LIMITED'
   | 'NOT_IMPLEMENTED'
@@ -98,6 +101,8 @@ const SERVER_ERROR_CODES: ReadonlySet<string> = new Set([
   'VALIDATION_FAILED',
   'NOT_FOUND',
   'CONFLICT',
+  'ACTIVATION_OPERATION_CONFLICT',
+  'ACTIVATION_OPERATION_COMPLETED',
   'POLICY_DENIED',
   'RATE_LIMITED',
   'NOT_IMPLEMENTED',

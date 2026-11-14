@@ -162,3 +162,77 @@ def test_postgres_rechecks_revoked_device_under_target_row_lock(settings):
             device.save(update_fields=["status"])
         assert job.result(timeout=10).status_code == 403
     assert DeviceActivationOperation.objects.count() == DeviceToken.objects.count() == Device.objects.count() == 1
+
+
+def test_fresh_recovery_receipt_survives_concurrent_token_delete(settings, monkeypatch):
+    from threading import Event
+    from time import monotonic, sleep
+    from selahcue_api.apps.devices import bound_activation
+
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (100, 60)
+    _, key = _seed_license_key(tag="fresh-recovery-delete", device_limit=1)
+    initial = activation(body(license_key=key)).json()
+    token_pk = DeviceToken.objects.get().pk
+    locked, release = Event(), Event()
+    original = bound_activation._existing_device_result
+
+    def pause_after_token_lock(*args, **kwargs):
+        result = original(*args, **kwargs)
+        locked.set()
+        assert release.wait(10), "release recovery transaction"
+        return result
+
+    monkeypatch.setattr(bound_activation, "_existing_device_result", pause_after_token_lock)
+
+    def run(call):
+        try:
+            return call()
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        recovering = pool.submit(run, lambda: activation(body(
+            "9" * 32, expected=initial["device"]["device_public_id"], license_key=key,
+        )))
+        assert locked.wait(10)
+        deleting = pool.submit(run, lambda: DeviceToken.objects.filter(pk=token_pk).delete())
+        try:
+            deadline = monotonic() + 8
+            waiting = False
+            while not waiting and monotonic() < deadline:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_stat_clear_snapshot()")
+                    cursor.execute(
+                        """SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                        WHERE datname = current_database() AND wait_event_type = 'Lock'
+                        AND query ILIKE %s)""", [f"DELETE%{DeviceToken._meta.db_table}%"],
+                    )
+                    waiting = cursor.fetchone()[0]
+                if not waiting:
+                    sleep(0.01)
+            assert waiting, "token DELETE reached the held live-token lock"
+        finally:
+            release.set()
+        response = recovering.result(timeout=10)
+        deleting.result(timeout=10)
+    assert response.status_code == 200
+    assert response.json()["activation_token"] is None
+    assert not DeviceToken.objects.exists()
+    receipts = list(DeviceActivationOperation.objects.order_by("pk"))
+    assert len(receipts) == 2
+    assert all(row.result_token_id is None and row.issued_token_pk == token_pk for row in receipts)
+    assert Device.objects.count() == 1
+
+
+def test_receipt_fk_has_database_set_null_and_identity_protection():
+    from django.db.models import DO_NOTHING, PROTECT
+
+    assert DeviceActivationOperation._meta.get_field("result_token").remote_field.on_delete is DO_NOTHING
+    for name in ["device", "license_key", "organization"]:
+        assert DeviceActivationOperation._meta.get_field(name).remote_field.on_delete is PROTECT
+    with connection.cursor() as cursor:
+        cursor.execute("""SELECT c.confdeltype FROM pg_constraint c
+            JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+            WHERE c.conrelid = %s::regclass AND c.contype = 'f' AND a.attname = 'result_token_id'
+        """, [DeviceActivationOperation._meta.db_table])
+        assert cursor.fetchall() == [("n",)]

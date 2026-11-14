@@ -161,7 +161,29 @@ impl<T: HttpTransport, S: SecretStore> Drop for Work<T, S> {
 struct Projection {
     view: AccountView,
     signed: Option<SignedTime>,
-    online_license: Option<LicenseState>,
+    online_license: Option<OnlineLicense>,
+}
+
+#[derive(Clone, Copy)]
+struct OnlineLicense {
+    state: LicenseState,
+    expires: Time,
+    checked: Time,
+}
+
+impl OnlineLicense {
+    fn at(self, now: Time) -> Option<LicenseState> {
+        if now < self.checked {
+            return None;
+        }
+        Some(
+            if self.state == LicenseState::Active && now >= self.expires {
+                LicenseState::RenewalNeeded
+            } else {
+                self.state
+            },
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -185,18 +207,21 @@ impl Projection {
         let entitlement = self.signed.map_or(EntitlementState::Unavailable, |signed| {
             temporal_state(signed.issued, signed.not_before, signed.expiry, now)
         });
-        let license = self.online_license.or_else(|| {
-            let signed = self.signed?;
-            if entitlement == EntitlementState::FutureOrClockSkew {
-                None
-            } else if now >= signed.license_expiry {
-                Some(LicenseState::RenewalNeeded)
-            } else if entitlement == EntitlementState::Current {
-                Some(LicenseState::Active)
-            } else {
-                None
-            }
-        });
+        let license = self
+            .online_license
+            .and_then(|online| online.at(now))
+            .or_else(|| {
+                let signed = self.signed?;
+                if entitlement == EntitlementState::FutureOrClockSkew {
+                    None
+                } else if now >= signed.license_expiry {
+                    Some(LicenseState::RenewalNeeded)
+                } else if entitlement == EntitlementState::Current {
+                    Some(LicenseState::Active)
+                } else {
+                    None
+                }
+            });
         if self.view.entitlement_state != entitlement || self.view.license_state != license {
             self.view.entitlement_state = entitlement;
             self.view.license_state = license;
@@ -217,14 +242,13 @@ pub(super) struct AccountController<T: HttpTransport, S: SecretStore> {
     cleanup_error: Option<Code>,
     device_rejected: bool,
     checked_at: Option<Time>,
-    online_license: Option<LicenseState>,
+    online_license: Option<OnlineLicense>,
     preparation_error: Option<Code>,
 }
 
 struct RetainedActivation {
     answer: Activation,
     operation: PendingActivation,
-    expected_revision: u64,
     received: Instant,
     session: Option<Token>,
 }
@@ -325,22 +349,53 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         if startup {
             self.project(&metadata, presence, cached, result)
         } else {
-            let presence = CredentialPresence::from_check(self.credentials.is_activated());
+            // Cleanup may advance its durable reservation independently. Project
+            // the latest committed local state after all short ownership fences.
+            if let Ok(current) = self.current() {
+                metadata = current;
+            }
+            let presence =
+                CredentialPresence::from_check(self.device_token().map(|token| token.is_some()));
             self.project(&metadata, presence, self.read_cache(&metadata), result)
         }
     }
 
     fn load_metadata(&self) -> Result<(AccountMetadata, CredentialPresence), Code> {
-        let presence = CredentialPresence::from_check(self.credentials.is_activated());
+        let entry = self.credentials.device_token();
+        let presence = CredentialPresence::from_check(entry.as_ref().map(|entry| entry.is_some()));
+        let usable = CredentialPresence::from_check(entry.map(|entry| {
+            entry.is_some_and(|token| !token.is_blank() && !token.has_control_characters())
+        }));
         let metadata = self
             .storage
             .as_ref()
             .ok_or(Code::MetadataUnavailable)?
             .load_or_create(presence)?;
-        Ok((metadata, presence))
+        Ok((metadata, usable))
     }
 
     fn save(&self, metadata: &mut AccountMetadata) -> Result<(), Code> {
+        let _ownership = self.ownership()?;
+        self.save_owned(metadata)
+    }
+
+    fn ownership(&self) -> Result<std::fs::File, Code> {
+        self.storage
+            .as_ref()
+            .ok_or(Code::MetadataUnavailable)?
+            .try_lock_account_session()
+            .map_err(|_| Code::MetadataChanged)
+    }
+
+    fn current(&self) -> Result<AccountMetadata, Code> {
+        self.storage
+            .as_ref()
+            .ok_or(Code::MetadataUnavailable)?
+            .load_or_create(CredentialPresence::Unavailable)
+            .map_err(Into::into)
+    }
+
+    fn save_owned(&self, metadata: &mut AccountMetadata) -> Result<(), Code> {
         *metadata = self
             .storage
             .as_ref()
@@ -363,6 +418,9 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         path: ActivationPath,
         name: &str,
     ) -> Result<PendingActivation, Code> {
+        if metadata.cleanup_reserved {
+            return Err(Code::SessionCleanupUnconfirmed);
+        }
         self.retire_prepared_other_path(metadata, path)?;
         let mut candidate = metadata.clone();
         let pending = candidate
@@ -391,7 +449,21 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     fn mark_dispatched(
         &self,
         metadata: &mut AccountMetadata,
+        session: Option<(&Token, bool)>,
     ) -> Result<(PendingActivation, bool), Code> {
+        let _ownership = self.ownership()?;
+        if self.current()? != *metadata || metadata.cleanup_reserved {
+            return Err(Code::MetadataChanged);
+        }
+        if let Some((session, replace)) = session {
+            if replace {
+                self.credentials
+                    .store_account_session(session)
+                    .map_err(|_| Code::AccountSessionSaveFailed)?;
+            } else if self.account_session()?.as_ref() != Some(session) {
+                return Err(Code::MetadataChanged);
+            }
+        }
         let first_dispatch = metadata
             .pending_activation()
             .is_some_and(|pending| pending.is_prepared());
@@ -399,7 +471,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         candidate.mark_activation_dispatched()?;
         // Fence every sender, even a retry with unchanged payload. A sibling
         // process holding an older snapshot cannot send it after retirement.
-        self.save(&mut candidate)?;
+        self.save_owned(&mut candidate)?;
         *metadata = candidate;
         metadata
             .pending_activation()
@@ -453,20 +525,21 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         let pending = match self.prepare(metadata, ActivationPath::AccountSession, name) {
             Ok(pending) => pending,
             Err(error) => {
-                let _ = self.revoke_and_clear(&session);
+                let _ = self.revoke_unused_session(&session);
                 return Err(error);
             }
         };
-        if self.store_account_session(&session).is_err() {
-            // No activation can leave without saved retry authority. Preserve the
-            // local failure alongside the independent unused-session cleanup result.
-            if pending.is_prepared() {
-                self.preparation_error = self.complete_pending(metadata).err();
+        let dispatch = self.mark_dispatched(metadata, Some((&session, true)));
+        match dispatch {
+            Ok((pending, first)) => self.send_session(metadata, &session, pending, first),
+            Err(error) => {
+                if matches!(error, Code::AccountSessionSaveFailed) && pending.is_prepared() {
+                    self.preparation_error = self.complete_pending(metadata).err();
+                }
+                let _ = self.revoke_and_clear(&session);
+                Err(error)
             }
-            let _ = self.revoke_and_clear(&session);
-            return Err(Code::AccountSessionSaveFailed);
         }
-        self.activate_session(metadata, &session)
     }
 
     fn enroll(
@@ -483,7 +556,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             return self.reconcile_legacy(metadata);
         }
         self.prepare(metadata, ActivationPath::EnrollmentKey, name)?;
-        let (pending, first_dispatch) = self.mark_dispatched(metadata)?;
+        let (pending, first_dispatch) = self.mark_dispatched(metadata, None)?;
         let result = self.client.activate_bound(
             selahcue_licensing::ActivationPath::EnrollmentKey,
             &key,
@@ -500,7 +573,17 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         metadata: &mut AccountMetadata,
         session: &Token,
     ) -> Result<(), Code> {
-        let (pending, first_dispatch) = self.mark_dispatched(metadata)?;
+        let (pending, first_dispatch) = self.mark_dispatched(metadata, Some((session, false)))?;
+        self.send_session(metadata, session, pending, first_dispatch)
+    }
+
+    fn send_session(
+        &mut self,
+        metadata: &mut AccountMetadata,
+        session: &Token,
+        pending: PendingActivation,
+        first_dispatch: bool,
+    ) -> Result<(), Code> {
         let result = self.client.activate_bound(
             selahcue_licensing::ActivationPath::AccountSession,
             session,
@@ -572,7 +655,6 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         self.retained = Some(RetainedActivation {
             answer,
             operation: pending.clone(),
-            expected_revision: metadata.revision(),
             received: Instant::now(),
             session: session.cloned(),
         });
@@ -580,13 +662,17 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     }
 
     fn finish_retained(&mut self, metadata: &mut AccountMetadata) -> Result<(), Code> {
+        let ownership = self.ownership()?;
+        let current = self.current()?;
         let held = self
             .retained
-            .as_mut()
+            .as_ref()
             .ok_or(Code::ActivationCompletionPending)?;
-        if metadata.revision() != held.expected_revision
-            || metadata.pending_activation() != Some(&held.operation)
-            || metadata
+        // Revisions identify local writes, not a different server operation. Only
+        // the identical frozen operation may accept a delayed show-once answer.
+        if current.pending_activation() != Some(&held.operation)
+            || current.cleanup_reserved
+            || current
                 .activated_public_id
                 .as_ref()
                 .is_some_and(|id| id != &held.answer.device_public_id)
@@ -594,69 +680,66 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             self.retained = None;
             return Err(Code::MetadataChanged);
         }
-
-        // Even an already-bound same-ID response must still own the generation
-        // it dispatched from before writing outside the metadata store.
-        let mut registered = metadata.clone();
-        registered.activated_public_id = Some(held.answer.device_public_id.clone());
-        registered.skipped_setup = false;
-        let saved = self
-            .storage
-            .as_ref()
-            .ok_or(Code::MetadataUnavailable)?
-            .save(&registered);
-        let saved = match saved {
-            Ok(saved) => saved,
-            Err(super::state::AccountStorageError::Changed) => {
-                self.retained = None;
-                return Err(Code::MetadataChanged);
-            }
-            Err(error) => return Err(error.into()),
-        };
-        *metadata = saved;
-        held.expected_revision = metadata.revision();
+        *metadata = current;
+        metadata.activated_public_id = Some(held.answer.device_public_id.clone());
+        metadata.skipped_setup = false;
         let session = held.session.clone();
         let public_id = held.answer.device_public_id.clone();
-        let persistence = held.answer.persist(&self.credentials);
-        let replay_status = match persistence {
-            Ok(PersistOutcome::Stored) => None,
-            Ok(PersistOutcome::KeptExisting) => {
-                // A pre-existing token could have been revoked by a remint whose
-                // response was lost. Prove bearer custody for this exact device.
-                let token = self.device_token()?.ok_or(Code::DeviceRecoveryRequired)?;
-                match self.client.refresh_license(&token, &public_id) {
-                    Ok(status) => Some(status),
-                    Err(ActivationFailure::Unauthenticated) => {
-                        self.device_rejected = true;
-                        self.retained = None;
-                        self.complete_pending(metadata)?;
-                        if let Some(session) = &session {
-                            let _ = self.revoke_and_clear(session);
-                        }
-                        return Err(Code::DeviceRecoveryRequired);
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-            }
+        self.save_owned(metadata)?;
+        let persistence = self
+            .retained
+            .as_ref()
+            .expect("held response")
+            .answer
+            .persist(&self.credentials);
+        let replay = match persistence {
+            Ok(PersistOutcome::Stored) => false,
+            Ok(PersistOutcome::KeptExisting) => true,
             Ok(PersistOutcome::MissingLocally) => {
+                // An original token-bearing response may still be in flight in
+                // another process. Keep this nonce replayable until proven custody.
                 self.retained = None;
-                self.complete_pending(metadata)?;
-                if let Some(session) = &session {
-                    let _ = self.revoke_and_clear(session);
-                }
                 return Err(Code::DeviceRecoveryRequired);
             }
             Err(_) => return Err(Code::CredentialSaveFailed),
         };
-        self.complete_pending(metadata)?;
+        if !replay {
+            metadata.clear_pending_activation();
+            self.save_owned(metadata)?;
+        }
+        drop(ownership);
+        let replay_status = if replay {
+            let token = self.device_token()?.ok_or(Code::DeviceRecoveryRequired)?;
+            match self.client.refresh_license(&token, &public_id) {
+                Ok(status) => {
+                    let _ownership = self.ownership()?;
+                    let current = self.current()?;
+                    if current.pending_activation() != metadata.pending_activation()
+                        || current.activated_public_id != metadata.activated_public_id
+                    {
+                        self.retained = None;
+                        return Err(Code::MetadataChanged);
+                    }
+                    *metadata = current;
+                    metadata.clear_pending_activation();
+                    self.save_owned(metadata)?;
+                    Some(status)
+                }
+                Err(ActivationFailure::Unauthenticated) => {
+                    self.device_rejected = true;
+                    self.retained = None;
+                    return Err(Code::DeviceRecoveryRequired);
+                }
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            None
+        };
         self.retained = None;
         self.device_rejected = false;
         self.online_license = None;
         self.checked_at = None;
-
         if let Some(session) = &session {
-            // Cleanup is independent of an already durable device. Its result has
-            // its own field in the view, while refresh continues.
             let _ = self.revoke_and_clear(session);
         }
         if let Some(status) = replay_status {
@@ -730,18 +813,6 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         self.refresh_manifest(metadata, &token, online)
     }
 
-    fn store_account_session(&self, session: &Token) -> Result<(), Code> {
-        let _lock = self
-            .storage
-            .as_ref()
-            .ok_or(Code::AccountSessionSaveFailed)?
-            .try_lock_account_session()
-            .map_err(|_| Code::AccountSessionSaveFailed)?;
-        self.credentials
-            .store_account_session(session)
-            .map_err(|_| Code::AccountSessionSaveFailed)
-    }
-
     fn clear_matching_account_session(&self, session: &Token) -> Result<(), Code> {
         let _lock = self
             .storage
@@ -752,6 +823,11 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         self.credentials
             .clear_account_session_if_matches(session)
             .map_err(|_| Code::SessionCleanupLocalFailure)?;
+        let mut current = self.current()?;
+        if current.cleanup_reserved && self.account_session()?.is_none() {
+            current.cleanup_reserved = false;
+            self.save_owned(&mut current)?;
+        }
         Ok(())
     }
 
@@ -769,30 +845,63 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     }
 
     fn retry_cleanup(&mut self, metadata: &mut AccountMetadata) -> Result<(), Code> {
-        if self.retained.is_some()
-            || metadata
-                .pending_activation()
-                .is_some_and(|pending| !pending.is_prepared())
-        {
+        if self.retained.is_some() {
             return Err(Code::ActivationCompletionPending);
-        }
-        if metadata.pending_activation().is_some() {
-            self.complete_pending(metadata)?;
         }
         if self.cleanup_ack.is_some() {
             return self.clear_acknowledged_cleanup();
         }
-        let Some(session) = self.account_session().inspect_err(|_| {
+        let ownership = self.ownership().map_err(|_| {
             self.cleanup_error = Some(Code::SessionCleanupLocalFailure);
-        })?
-        else {
+            Code::SessionCleanupLocalFailure
+        })?;
+        if self.current()? != *metadata {
+            return Err(Code::MetadataChanged);
+        }
+        if metadata
+            .pending_activation()
+            .is_some_and(|pending| !pending.is_prepared())
+        {
+            return Err(Code::ActivationCompletionPending);
+        }
+        metadata.clear_pending_activation();
+        let session = self.account_session()?;
+        metadata.cleanup_reserved = session.is_some();
+        self.save_owned(metadata)?;
+        drop(ownership);
+        if let Some(session) = session {
+            self.revoke_and_clear(&session)
+        } else {
             self.cleanup_error = None;
-            return Ok(());
-        };
-        self.revoke_and_clear(&session)
+            Ok(())
+        }
+    }
+
+    fn revoke_unused_session(&mut self, session: &Token) -> Result<(), Code> {
+        // A newly returned login session that never reached custody belongs only
+        // to this invocation, so no metadata reservation is needed for its revoke.
+        if self.client.revoke_session(session).is_err() {
+            self.cleanup_error = Some(Code::SessionCleanupUnconfirmed);
+            return Err(Code::SessionCleanupUnconfirmed);
+        }
+        self.cleanup_ack = Some(session.clone());
+        self.clear_acknowledged_cleanup()
     }
 
     fn revoke_and_clear(&mut self, session: &Token) -> Result<(), Code> {
+        // Capture authority before HTTP. Persisting the reservation prevents
+        // cooperating writers from dispatching with this credential after unlock.
+        {
+            let _ownership = self.ownership()?;
+            if self.account_session()?.as_ref() == Some(session) {
+                let mut current = self.current()?;
+                if current.pending_activation().is_some() {
+                    return Err(Code::ActivationCompletionPending);
+                }
+                current.cleanup_reserved = true;
+                self.save_owned(&mut current)?;
+            }
+        }
         if self.client.revoke_session(session).is_err() {
             self.cleanup_error = Some(Code::SessionCleanupUnconfirmed);
             return Err(Code::SessionCleanupUnconfirmed);
@@ -850,15 +959,19 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     ) -> Result<(), Code> {
         self.device_rejected = false;
         self.checked_at = Some((self.clock)());
-        self.online_license = Some(
-            if status.license_valid_now && status.device_status == "ACTIVE" {
+        let expires = OffsetDateTime::parse(&status.license_expires_at, &Rfc3339)
+            .map_err(|_| Code::LicenseInactive)?;
+        self.online_license = Some(OnlineLicense {
+            expires: (expires.unix_timestamp(), expires.nanosecond()),
+            checked: (self.clock)(),
+            state: if status.license_valid_now && status.device_status == "ACTIVE" {
                 LicenseState::Active
             } else if status.license_status == "EXPIRED" {
                 LicenseState::RenewalNeeded
             } else {
                 LicenseState::Inactive
             },
-        );
+        });
         if !status.license_valid_now || status.device_status != "ACTIVE" {
             return Err(Code::LicenseInactive);
         }
@@ -902,7 +1015,8 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             .pending_activation()
             .is_some_and(|pending| !pending.is_prepared());
         let account = self.account_session();
-        view.pending_cleanup = self.cleanup_ack.is_some()
+        view.pending_cleanup = metadata.cleanup_reserved
+            || self.cleanup_ack.is_some()
             || self.cleanup_error.is_some()
             || (!pending && account.as_ref().ok().is_some_and(Option::is_some));
         view.cleanup_error_code = self.cleanup_error;

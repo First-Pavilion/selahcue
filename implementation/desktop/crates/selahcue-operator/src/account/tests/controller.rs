@@ -714,6 +714,41 @@ fn django_g1_real_api() {
                 assert_eq!(parsed["created"], false);
                 assert_eq!(parsed["reminted"], true);
                 assert!(parsed["activation_token"].is_string());
+                let scenario = std::env::var("SELAHCUE_G1_SCENARIO").unwrap_or_default();
+                if scenario.starts_with("race-") {
+                    let request: Value = serde_json::from_str(body).expect("frozen request");
+                    let retry_wire = Wire {
+                        inner: ReqwestTransport::new_for_loopback_tests().expect("retry HTTP"),
+                        custody: self.custody.clone(),
+                        directory: self.directory.clone(),
+                        offline: Arc::new(AtomicBool::new(scenario == "race-loss")),
+                        expected_remint: Arc::new(AtomicBool::new(false)),
+                        lose_initial_reply: Arc::new(AtomicBool::new(false)),
+                    };
+                    let base = std::env::var("SELAHCUE_G1_FIXTURE_URL").expect("base");
+                    let client =
+                        LicensingClient::new_for_loopback_tests(retry_wire, &base).expect("client");
+                    let mut retry = AccountController::new(
+                        Some(self.directory.clone()),
+                        client,
+                        self.custody.clone(),
+                        TrustedKeys::new(),
+                        crate::account::controller::system_time,
+                    );
+                    let result = wire(&retry.execute(Command::Enroll {
+                        key: Token::new(request["license_key"].as_str().expect("enrollment proof")),
+                        display_name: "ignored on retry".into(),
+                    }));
+                    assert_eq!(result["operation_state"], "retry_pending");
+                    assert_eq!(
+                        result["error_code"],
+                        if scenario == "race-loss" {
+                            "network_unavailable"
+                        } else {
+                            "device_recovery_required"
+                        }
+                    );
+                }
             }
             Ok(response)
         }
@@ -977,6 +1012,10 @@ fn django_g1_real_api() {
             .expect("saved replacement")
             .expect("replacement token");
         assert_ne!(original, replacement);
+        assert!(account
+            .client()
+            .refresh_license(&replacement, public_id)
+            .is_ok());
         assert!(custody
             .get(ACCOUNT_SESSION_NAME)
             .expect("cleanup")
@@ -1005,10 +1044,7 @@ fn django_g1_real_api() {
 
 #[test]
 fn session_retry_after_lost_response_checks_retained_bearer_against_device_binding() {
-    for (status, expected) in [
-        (200, "credential_present"),
-        (401, "reauthentication_needed"),
-    ] {
+    for (status, expected) in [(200, "credential_present"), (401, "credential_unconfirmed")] {
         let dir = tempfile::tempdir().expect("fixture directory");
         let custody = Custody::default();
         let mut first = controller(dir.path(), custody.clone());
@@ -1059,10 +1095,21 @@ fn session_retry_after_lost_response_checks_retained_bearer_against_device_bindi
             .expect("device bearer verification");
         assert!(verify.url.ends_with("/v1/license:refresh"));
         assert!(verify.had_bearer);
-        assert!(custody
-            .get(ACCOUNT_SESSION_NAME)
-            .expect("cleanup")
-            .is_none());
+        assert_eq!(
+            custody
+                .get(ACCOUNT_SESSION_NAME)
+                .expect("custody")
+                .is_none(),
+            status == 200
+        );
+        assert_eq!(
+            AccountMetadataStore::new(dir.path().into())
+                .load_or_create(CredentialPresence::Present)
+                .expect("metadata")
+                .pending_activation()
+                .is_some(),
+            status == 401
+        );
     }
 }
 
@@ -1407,6 +1454,8 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
     }
     struct BlockRefresh {
         entered: mpsc::Sender<()>,
+        first: std::sync::atomic::AtomicBool,
+        manifest: String,
         release: Mutex<mpsc::Receiver<()>>,
     }
     impl HttpTransport for BlockRefresh {
@@ -1416,6 +1465,13 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
             _: &str,
             _: Option<&str>,
         ) -> Result<HttpResponse, TransportError> {
+            if !self.first.swap(true, Ordering::SeqCst) {
+                return Ok(HttpResponse {
+                    status: 200,
+                    body: refresh_status(true)
+                        .replace("2027-01-01T00:00:00Z", "2026-11-14T16:00:00.123456789Z"),
+                });
+            }
             self.entered.send(()).expect("refresh reached wire");
             self.release
                 .lock()
@@ -1425,7 +1481,10 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
             Err(TransportError("offline".into()))
         }
         fn get(&self, _: &str, _: Option<&str>) -> Result<HttpResponse, TransportError> {
-            panic!("foreground fixture has no GET");
+            Ok(HttpResponse {
+                status: 200,
+                body: self.manifest.clone(),
+            })
         }
     }
     let dir = tempfile::tempdir().expect("fixture directory");
@@ -1452,6 +1511,8 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
     let (release, wait_release) = mpsc::channel();
     let transport = BlockRefresh {
         entered,
+        first: std::sync::atomic::AtomicBool::new(false),
+        manifest,
         release: Mutex::new(wait_release),
     };
     let client = LicensingClient::new(transport, API_ORIGIN).expect("fixture client");
@@ -1468,6 +1529,11 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
         .unwrap_or_else(|_| panic!("startup slot"))
         .run(Command::Startup);
     assert_eq!(wire(&start)["entitlement_state"], "current");
+    let online = worker
+        .admit()
+        .unwrap_or_else(|_| panic!("online slot"))
+        .run(Command::Refresh { explicit: true });
+    assert_eq!(wire(&online)["license_state"], "active");
     let work = worker.admit().unwrap_or_else(|_| panic!("refresh slot"));
     let busy = worker.view();
     let task = std::thread::spawn(move || work.run(Command::Refresh { explicit: false }));
@@ -1480,6 +1546,8 @@ fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
     release.send(()).expect("release pending refresh");
     let done = task.join().expect("refresh finished");
     assert_eq!(wire(&new_view)["entitlement_state"], "expired");
+    assert_eq!(wire(&new_view)["license_state"], "renewal_needed");
+    assert_eq!(wire(&competing)["license_state"], "renewal_needed");
     assert_eq!(wire(&competing)["entitlement_state"], "expired");
     assert!(new_view.revision > busy.revision);
     assert_eq!(new_view.revision, competing.revision);
@@ -2089,8 +2157,7 @@ fn independent_controllers_fence_fresh_retirement_and_retry_before_http() {
     }
 }
 
-#[test]
-fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_generation() {
+fn same_operation_progress_preserves_original_show_once_response_case(replay: bool) {
     use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -2099,6 +2166,7 @@ fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_
         script: ScriptedTransport,
         custody: Custody,
         advanced: AtomicBool,
+        replay: bool,
     }
     impl HttpTransport for AdvanceOnSecondDispatch {
         fn post_json(
@@ -2110,10 +2178,18 @@ fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_
             if url.ends_with("/v1/activations:bound") && !self.advanced.swap(true, Ordering::SeqCst)
             {
                 let mut competitor = controller(&self.directory, self.custody.clone());
-                competitor
-                    .client()
-                    .transport()
-                    .push_failure("competitor's outcome is ambiguous");
+                if self.replay {
+                    competitor
+                        .client()
+                        .transport()
+                        .push_response(200, activated(None, false))
+                        .push_response(401, r#"{"error":{"code":"UNAUTHENTICATED"}}"#);
+                } else {
+                    competitor
+                        .client()
+                        .transport()
+                        .push_failure("competitor's outcome is ambiguous");
+                }
                 assert_eq!(
                     wire(&competitor.execute(enroll()))["operation_state"],
                     "retry_pending"
@@ -2151,6 +2227,7 @@ fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_
         script: ScriptedTransport::responding(200, activated(Some(SECRET), true)),
         custody: custody.clone(),
         advanced: AtomicBool::new(false),
+        replay,
     };
     let client = LicensingClient::new(transport, API_ORIGIN).expect("origin");
     let mut first = AccountController::new(
@@ -2160,27 +2237,25 @@ fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_
         TrustedKeys::new(),
         || NOW,
     );
-    let stale = wire(&first.execute(enroll()));
-    assert_eq!(stale["error_code"], "metadata_changed");
+    first.execute(enroll());
     assert_eq!(
-        custody.get(DEVICE_TOKEN_NAME).expect("not overwritten"),
-        Some(original.clone())
+        custody.get(DEVICE_TOKEN_NAME).expect("saved response"),
+        Some(Token::new(SECRET))
     );
     assert!(store
         .load_or_create(CredentialPresence::Present)
-        .expect("current metadata")
+        .expect("metadata")
         .pending_activation()
-        .is_some());
-    assert_eq!(
-        wire(&first.execute(Command::RetryActivation))["error_code"],
-        "enrollment_key_required"
-    );
-    assert_eq!(
-        custody
-            .get(DEVICE_TOKEN_NAME)
-            .expect("still not overwritten"),
-        Some(original)
-    );
+        .is_none());
+}
+
+#[test]
+fn same_operation_progress_preserves_original_show_once_response() {
+    same_operation_progress_preserves_original_show_once_response_case(false);
+}
+#[test]
+fn same_operation_no_secret_replay_preserves_delayed_remint_response() {
+    same_operation_progress_preserves_original_show_once_response_case(true);
 }
 
 #[test]
@@ -2322,7 +2397,7 @@ fn fresh_refusal_cannot_remove_another_controllers_retry_session() {
     resume.send(()).expect("resume original cleanup");
     let first_view = wire(&first_attempt.join().expect("first controller"));
     assert_eq!(first_view["error_code"], "permission_denied");
-    assert_eq!(during_cleanup["error_code"], "account_session_save_failed");
+    assert_eq!(during_cleanup["error_code"], "session_cleanup_unconfirmed");
     assert_eq!(
         during_cleanup["cleanup_error_code"],
         "session_cleanup_unconfirmed"
@@ -2365,7 +2440,7 @@ fn fresh_refusal_cannot_remove_another_controllers_retry_session() {
 }
 
 #[test]
-fn acknowledged_remote_cleanup_waits_for_local_lock_without_repeating_revoke() {
+fn cleanup_cannot_select_a_session_while_a_writer_owns_local_authority() {
     let dir = tempfile::tempdir().expect("fixture directory");
     let store = AccountMetadataStore::new(dir.path().into());
     store
@@ -2393,7 +2468,7 @@ fn acknowledged_remote_cleanup_waits_for_local_lock_without_repeating_revoke() {
         "session_cleanup_local_failure"
     );
     assert_eq!(blocked["pending_cleanup"], true);
-    assert_eq!(account.client().transport().request_count(), 1);
+    assert_eq!(account.client().transport().request_count(), 0);
     assert_eq!(
         custody
             .get(ACCOUNT_SESSION_NAME)
@@ -2406,9 +2481,9 @@ fn acknowledged_remote_cleanup_waits_for_local_lock_without_repeating_revoke() {
         .set(ACCOUNT_SESSION_NAME, &replacement)
         .expect("writer saves session B under lock");
     drop(competing_writer);
-    let retried = wire(&account.execute(Command::RetryCleanup));
-    assert!(retried.get("cleanup_error_code").is_none());
-    assert_eq!(account.client().transport().request_count(), 1);
+    let retried = wire(&account.execute(Command::Startup));
+    assert_eq!(retried["pending_cleanup"], true);
+    assert_eq!(account.client().transport().request_count(), 0);
     assert_eq!(
         custody
             .get(ACCOUNT_SESSION_NAME)
@@ -2434,7 +2509,7 @@ fn unsafe_session_lock_path_blocks_local_keyring_mutations_until_restored() {
         .push_response(200, session_json())
         .push_response(200, r#"{"revoked":true}"#);
     let denied = wire(&account.execute(sign_in()));
-    assert_eq!(denied["error_code"], "account_session_save_failed");
+    assert_eq!(denied["error_code"], "metadata_changed");
     assert_eq!(
         denied["cleanup_error_code"],
         "session_cleanup_local_failure"
@@ -2457,4 +2532,354 @@ fn unsafe_session_lock_path_blocks_local_keyring_mutations_until_restored() {
     assert!(after_repair.get("cleanup_error_code").is_none());
     assert_eq!(after_repair["pending_cleanup"], false);
     assert_eq!(account.client().transport().request_count(), 2);
+}
+
+#[test]
+fn existing_blank_or_invalid_device_entry_never_bootstraps_identity() {
+    for raw in ["", "   ", "invalid\ntoken"] {
+        let dir = tempfile::tempdir().expect("directory");
+        let custody = Custody::default();
+        custody
+            .set(DEVICE_TOKEN_NAME, &Token::new(raw))
+            .expect("entry");
+        let mut account = controller(dir.path(), custody);
+        assert_eq!(
+            wire(&account.execute(Command::Startup))["error_code"],
+            "identity_recovery_required"
+        );
+        assert!(!dir.path().join("account-metadata.json").exists());
+    }
+}
+
+#[test]
+fn cleanup_reservation_survives_lost_ack_and_restart_after_local_remove_failure() {
+    use std::sync::atomic::Ordering;
+    for lost_ack in [true, false] {
+        let dir = tempfile::tempdir().expect("directory");
+        let custody = Custody::default();
+        let mut first = controller(dir.path(), custody.clone());
+        first.execute(Command::Startup);
+        custody
+            .set(ACCOUNT_SESSION_NAME, &Token::new(SESSION))
+            .expect("session");
+        custody
+            .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+            .expect("device");
+        if lost_ack {
+            first
+                .client()
+                .transport()
+                .push_failure("server revoked, acknowledgement lost");
+        } else {
+            first
+                .client()
+                .transport()
+                .push_response(200, r#"{"revoked":true}"#);
+            custody.fail_remove.store(true, Ordering::SeqCst);
+        }
+        assert_eq!(
+            wire(&first.execute(Command::RetryCleanup))["pending_cleanup"],
+            true
+        );
+        assert!(
+            AccountMetadataStore::new(dir.path().into())
+                .load_or_create(CredentialPresence::Present)
+                .expect("durable cleanup reservation")
+                .cleanup_reserved
+        );
+        drop(first);
+        custody.fail_remove.store(false, Ordering::SeqCst);
+        let mut restart = controller(dir.path(), custody.clone());
+        restart
+            .client()
+            .transport()
+            .push_response(200, r#"{"revoked":true}"#);
+        assert_eq!(
+            wire(&restart.execute(Command::RetryCleanup))["pending_cleanup"],
+            false
+        );
+        assert!(custody
+            .get(ACCOUNT_SESSION_NAME)
+            .expect("removed")
+            .is_none());
+        assert_eq!(
+            custody.get(DEVICE_TOKEN_NAME).expect("device preserved"),
+            Some(Token::new(SECRET))
+        );
+    }
+}
+
+#[test]
+fn stale_sign_in_cannot_overwrite_the_dispatched_sessions_restart_authority() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    struct LoginRace {
+        directory: std::path::PathBuf,
+        custody: Custody,
+        script: ScriptedTransport,
+    }
+    impl HttpTransport for LoginRace {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/sessions") {
+                let mut dispatcher = controller(&self.directory, self.custody.clone());
+                dispatcher
+                    .client()
+                    .transport()
+                    .push_failure("A committed but reply lost");
+                assert_eq!(
+                    wire(&dispatcher.execute(Command::RetryActivation))["operation_state"],
+                    "retry_pending"
+                );
+            }
+            self.script.post_json(url, body, bearer)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+    let dir = tempfile::tempdir().expect("directory");
+    let custody = Custody::default();
+    let mut seed = controller(dir.path(), custody.clone());
+    seed.client()
+        .transport()
+        .push_response(200, session_json())
+        .push_failure("A sent");
+    seed.execute(sign_in());
+    let script = ScriptedTransport::responding(
+        200,
+        session_json()
+            .replace(SESSION, "different-org-session-B")
+            .replace("org_fixture", "different-org"),
+    );
+    script.push_response(200, r#"{"revoked":true}"#);
+    let mut stale = AccountController::new(
+        Some(dir.path().into()),
+        LicensingClient::new(
+            LoginRace {
+                directory: dir.path().into(),
+                custody: custody.clone(),
+                script,
+            },
+            API_ORIGIN,
+        )
+        .expect("client"),
+        custody.clone(),
+        TrustedKeys::new(),
+        || NOW,
+    );
+    assert_eq!(
+        wire(&stale.execute(sign_in()))["error_code"],
+        "metadata_changed"
+    );
+    assert_eq!(
+        custody.get(ACCOUNT_SESSION_NAME).expect("A preserved"),
+        Some(Token::new(SESSION))
+    );
+    let mut restart = controller(dir.path(), custody.clone());
+    restart
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false))
+        .push_response(200, r#"{"revoked":true}"#)
+        .push_failure("offline refresh");
+    assert_eq!(
+        wire(&restart.execute(Command::RetryActivation))["setup_state"],
+        "completed"
+    );
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("device saved"),
+        Some(Token::new(SECRET))
+    );
+}
+
+#[test]
+fn later_online_renewal_does_not_inherit_old_signed_license_expiry() {
+    let dir = tempfile::tempdir().expect("directory");
+    let custody = Custody::default();
+    let store = AccountMetadataStore::new(dir.path().into());
+    let mut metadata = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    metadata.activated_public_id = Some(DEVICE.into());
+    store.save(&metadata).expect("binding");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+        .expect("token");
+    let (trust, signed) = signed_display(
+        metadata.fingerprint(),
+        "2026-11-14T15:00:00Z",
+        "2026-11-17T16:00:00Z",
+        "2026-11-14T15:30:00Z",
+    );
+    selahcue_licensing::EntitlementCache::new(dir.path())
+        .replace(signed.as_bytes(), &trust, DEVICE, metadata.fingerprint())
+        .expect("cache");
+    let transport = ScriptedTransport::responding(200, refresh_status(true));
+    transport.push_response(200, signed);
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        LicensingClient::new(transport, API_ORIGIN).expect("client"),
+        custody,
+        trust,
+        || NOW,
+    );
+    assert_eq!(
+        wire(&account.execute(Command::Startup))["license_state"],
+        "renewal_needed"
+    );
+    let refreshed = wire(&account.execute(Command::Refresh { explicit: true }));
+    assert_eq!(refreshed["license_state"], "active");
+    assert_eq!(refreshed["entitlement_state"], "current");
+}
+
+#[test]
+fn a_different_operation_still_fences_a_delayed_secret_response() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    struct ReplaceOperation {
+        directory: std::path::PathBuf,
+        script: ScriptedTransport,
+    }
+    impl HttpTransport for ReplaceOperation {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/activations:bound") {
+                let store = AccountMetadataStore::new(self.directory.clone());
+                let mut current = store
+                    .load_or_create(CredentialPresence::Missing)
+                    .expect("current");
+                current.clear_pending_activation();
+                current = store.save(&current).expect("retired operation");
+                current
+                    .begin_activation(
+                        crate::account::state::ActivationPath::EnrollmentKey,
+                        std::env::consts::OS,
+                        env!("CARGO_PKG_VERSION"),
+                        "different operation",
+                    )
+                    .expect("new nonce");
+                store.save(&current).expect("new operation");
+            }
+            self.script.post_json(url, body, bearer)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+    let dir = tempfile::tempdir().expect("directory");
+    let custody = Custody::default();
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        LicensingClient::new(
+            ReplaceOperation {
+                directory: dir.path().into(),
+                script: ScriptedTransport::responding(200, activated(Some(SECRET), false)),
+            },
+            API_ORIGIN,
+        )
+        .expect("client"),
+        custody.clone(),
+        TrustedKeys::new(),
+        || NOW,
+    );
+    assert_eq!(
+        wire(&account.execute(enroll()))["error_code"],
+        "metadata_changed"
+    );
+    assert!(custody
+        .get(DEVICE_TOKEN_NAME)
+        .expect("no stale write")
+        .is_none());
+}
+
+#[test]
+fn cleanup_selection_is_fenced_against_a_new_session_dispatch() {
+    use std::sync::Mutex;
+    struct Interleave {
+        custody: Custody,
+        dispatch: Mutex<Option<std::path::PathBuf>>,
+    }
+    impl SecretStore for Interleave {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            if name == ACCOUNT_SESSION_NAME {
+                if let Some(path) = self.dispatch.lock().expect("gate").take() {
+                    let mut second = controller(&path, self.custody.clone());
+                    second
+                        .client()
+                        .transport()
+                        .push_response(200, session_json().replace(SESSION, "session-B"))
+                        .push_response(200, r#"{"revoked":true}"#);
+                    assert_eq!(
+                        wire(&second.execute(sign_in()))["error_code"],
+                        "metadata_changed"
+                    );
+                    assert!(!second
+                        .client()
+                        .transport()
+                        .recorded()
+                        .iter()
+                        .any(|r| r.url.contains("/v1/activations")));
+                }
+            }
+            self.custody.get(name)
+        }
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            self.custody.set(name, token)
+        }
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            self.custody.remove(name)
+        }
+    }
+    let dir = tempfile::tempdir().expect("directory");
+    AccountMetadataStore::new(dir.path().into())
+        .load_or_create(CredentialPresence::Missing)
+        .expect("metadata");
+    let custody = Custody::default();
+    custody
+        .set(ACCOUNT_SESSION_NAME, &Token::new(SESSION))
+        .expect("A");
+    let client = LicensingClient::new(
+        ScriptedTransport::responding(200, r#"{"revoked":true}"#),
+        API_ORIGIN,
+    )
+    .expect("client");
+    let mut cleanup = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        Interleave {
+            custody: custody.clone(),
+            dispatch: Mutex::new(Some(dir.path().into())),
+        },
+        TrustedKeys::new(),
+        || NOW,
+    );
+    assert_eq!(
+        wire(&cleanup.execute(Command::RetryCleanup))["pending_cleanup"],
+        false
+    );
+    assert!(custody
+        .get(ACCOUNT_SESSION_NAME)
+        .expect("only captured A removed")
+        .is_none());
+    let mut second = controller(dir.path(), custody.clone());
+    second
+        .client()
+        .transport()
+        .push_response(200, session_json().replace(SESSION, "session-B"))
+        .push_failure("B reply lost");
+    assert_eq!(
+        wire(&second.execute(sign_in()))["operation_state"],
+        "retry_pending"
+    );
+    assert_eq!(
+        custody.get(ACCOUNT_SESSION_NAME).expect("B preserved"),
+        Some(Token::new("session-B"))
+    );
 }

@@ -119,6 +119,7 @@ fn metadata_contains_no_credential() {
         "activated_public_id",
         "skipped_setup",
         "pending_activation",
+        "cleanup_reserved",
     ];
     assert_eq!(root.len(), allowed.len());
     assert!(allowed.iter().all(|key| root.contains_key(*key)));

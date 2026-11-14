@@ -61,7 +61,7 @@ def test_revoke_ends_only_presented_session_and_activated_device_keeps_working()
         services.authenticate_session(token)
     services.authenticate_session(other)
     assert post_json(client, ACTIVATE, activation_payload(), **bearer(token)).status_code == 401
-    assert post_json(client, REVOKE, {}, **bearer(token)).status_code == 401
+    assert post_json(client, REVOKE, {}, **bearer(token)).status_code == 200
     refresh = post_json(client, "/v1/license:refresh", {}, **bearer(device_token))
     assert refresh.status_code == 200
     assert refresh.json()["device"]["status"] == "ACTIVE"
@@ -171,7 +171,7 @@ def test_real_socket_cookieless_revoke_refuses_reuse_and_keeps_device(live_serve
     status, activated = call(ACTIVATE, activation_payload(), token)
     assert status == 200
     assert call(REVOKE, {}, token)[0] == 200
-    assert call(REVOKE, {}, token)[0] == 401
+    assert call(REVOKE, {}, token)[0] == 200
     assert call("/v1/license:refresh", {}, activated["activation_token"])[0] == 200
 
 
@@ -191,3 +191,16 @@ def test_default_revoke_budget_and_scope_only_denial_log(settings, caplog):
     # Ending account sessions cannot starve new sign-in or device activation.
     assert session_token(client)
     assert post_json(client, ACTIVATE, activation_payload(), **bearer(token)).status_code == 200
+
+
+def test_terminal_native_cleanup_does_not_relax_authentication_or_browser_logout():
+    token = mint()
+    services.logout_session(token)
+    client = native_client()
+    assert post_json(client, REVOKE, {}, **bearer(token)).status_code == 200
+    with pytest.raises(SafeAPIError):
+        services.authenticate_session(token)
+    with pytest.raises(SafeAPIError):
+        services.logout_session(token)
+    assert post_json(client, REVOKE, {}, **bearer(token + "wrong")).status_code == 401
+    assert AuditEvent.objects.filter(action="customer_user.logged_out").count() == 1
