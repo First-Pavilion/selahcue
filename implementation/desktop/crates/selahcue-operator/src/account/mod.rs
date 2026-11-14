@@ -130,6 +130,7 @@ impl AccountView {
         view.setup_state = match (registered, presence, metadata.skipped_setup) {
             (true, CredentialPresence::Present, _) => SetupState::Completed,
             (_, _, true) => SetupState::Skipped,
+            (_, CredentialPresence::Unavailable, _) => SetupState::Unknown,
             _ => SetupState::Needed,
         };
         view.device_state = match (registered, presence) {

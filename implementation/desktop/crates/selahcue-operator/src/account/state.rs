@@ -281,11 +281,14 @@ impl AccountMetadataStore {
         presence: CredentialPresence,
         fill: impl FnOnce(&mut [u8; 16]) -> bool,
     ) -> Result<AccountMetadata, AccountStorageError> {
-        let may_create = presence == CredentialPresence::Missing;
         let path = self.directory.join(METADATA_FILE);
-        let lock = self.lock(may_create)?;
-        if let Some(metadata) = read_metadata(&path)? {
-            return Ok(metadata);
+        let directory_exists = self.directory_exists()?;
+        if directory_exists {
+            // Publication replaces the entire file. A reader can load the
+            // observed generation without opening or creating a write lock.
+            if let Some(metadata) = read_metadata(&path)? {
+                return Ok(metadata);
+            }
         }
         match presence {
             CredentialPresence::Present => {
@@ -297,9 +300,15 @@ impl AccountMetadataStore {
             CredentialPresence::Missing => {}
         }
 
-        // Creating always holds the same lock as every writer. Re-read above
-        // after acquisition so any other creator's persisted identity wins.
-        let _lock = lock.ok_or(AccountStorageError::Changed)?;
+        if !directory_exists {
+            // Tauri can resolve the app-data location before it exists.
+            fs::create_dir_all(&self.directory)?;
+        }
+        let _lock = self.lock()?;
+        // Another process may have published the identity while we waited.
+        if let Some(metadata) = read_metadata(&path)? {
+            return Ok(metadata);
+        }
         let metadata = AccountMetadata {
             schema_version: SCHEMA_VERSION,
             revision: 0,
@@ -322,7 +331,7 @@ impl AccountMetadataStore {
         &self,
         metadata: &AccountMetadata,
     ) -> Result<AccountMetadata, AccountStorageError> {
-        let _lock = self.lock(false)?.ok_or(AccountStorageError::Changed)?;
+        let _lock = self.lock()?;
         let path = self.directory.join(METADATA_FILE);
         let current = read_metadata(&path)?.ok_or(AccountStorageError::Changed)?;
         if current.revision != metadata.revision
@@ -346,7 +355,7 @@ impl AccountMetadataStore {
         Ok(committed)
     }
 
-    fn lock(&self, create: bool) -> Result<Option<File>, AccountStorageError> {
+    fn directory_exists(&self) -> Result<bool, AccountStorageError> {
         if !self.directory.is_absolute()
             || self
                 .directory
@@ -355,24 +364,24 @@ impl AccountMetadataStore {
         {
             return Err(AccountStorageError::UnsafePath);
         }
-        if create {
-            // On a fresh install Tauri may resolve app data before it exists.
-            fs::create_dir_all(&self.directory)?;
-        }
         match fs::symlink_metadata(&self.directory) {
-            Ok(metadata) if metadata.is_dir() && !is_link_or_device(&metadata) => {}
-            Ok(_) => return Err(AccountStorageError::UnsafePath),
-            Err(error) if !create && error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
+            Ok(metadata) if metadata.is_dir() && !is_link_or_device(&metadata) => Ok(true),
+            Ok(_) => Err(AccountStorageError::UnsafePath),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn lock(&self) -> Result<File, AccountStorageError> {
+        if !self.directory_exists()? {
+            return Err(AccountStorageError::Changed);
         }
 
-        // The lock inode remains in place across atomic metadata replacements.
-        // A reader with no authority to create identity also leaves missing
-        // directories and locks absent. Atomic publication makes its read safe.
-        let file = open_regular(&self.directory.join(LOCK_FILE), create, true)?;
-        if let Some(file) = &file {
-            file.lock()?;
-        }
+        // A fixed inode serializes cooperating writers across replacements.
+        // A writer can restore a missing lock before rereading metadata.
+        let file = open_regular(&self.directory.join(LOCK_FILE), true)?
+            .ok_or(AccountStorageError::Changed)?;
+        file.lock()?;
         Ok(file)
     }
 
@@ -413,7 +422,7 @@ impl AccountMetadataStore {
 }
 
 fn read_metadata(path: &Path) -> Result<Option<AccountMetadata>, AccountStorageError> {
-    let Some(file) = open_regular(path, false, false)? else {
+    let Some(file) = open_regular(path, false)? else {
         return Ok(None);
     };
     let max = MAX_METADATA_BYTES as u64;
@@ -455,12 +464,8 @@ fn is_link_or_device(metadata: &Metadata) -> bool {
     }
 }
 
-fn open_regular(
-    path: &Path,
-    create: bool,
-    lock_file: bool,
-) -> Result<Option<File>, AccountStorageError> {
-    if !observe_regular(path)? && !create {
+fn open_regular(path: &Path, lock_file: bool) -> Result<Option<File>, AccountStorageError> {
+    if !observe_regular(path)? && !lock_file {
         return Ok(None);
     }
 
@@ -473,7 +478,7 @@ fn open_regular(
         } else {
             OFlags::RDONLY
         };
-        if create {
+        if lock_file {
             flags |= OFlags::CREATE;
         }
         match open(path, flags, Mode::RUSR | Mode::WUSR) {
@@ -489,7 +494,7 @@ fn open_regular(
         OpenOptions::new()
             .read(true)
             .write(lock_file)
-            .create(create)
+            .create(lock_file)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
             .open(path)
     };
@@ -497,12 +502,12 @@ fn open_regular(
     let opened = OpenOptions::new()
         .read(true)
         .write(lock_file)
-        .create(create)
+        .create(lock_file)
         .open(path);
 
     let file = match opened {
         Ok(file) => file,
-        Err(error) if !create && error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if !lock_file && error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let attrs = file.metadata()?;

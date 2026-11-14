@@ -417,3 +417,91 @@ fn controller_registration_leaves_metadata_unopened() {
         })
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn readable_metadata_in_read_only_directory_without_lock_loads_for_every_presence() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().expect("test directory");
+    let store = AccountMetadataStore::new(directory.path().to_path_buf());
+    let existing = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    let lock = directory.path().join("account-metadata.lock");
+    fs::remove_file(&lock).expect("remove lock");
+    let original_permissions = directory.path().metadata().expect("metadata").permissions();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o500))
+        .expect("make directory read-only");
+
+    let observed: Vec<_> = [
+        CredentialPresence::Missing,
+        CredentialPresence::Present,
+        CredentialPresence::Unavailable,
+    ]
+    .into_iter()
+    .map(|presence| {
+        store.load_or_create_with_entropy(presence, |_| panic!("existing identity must win"))
+    })
+    .collect();
+    let created_lock = lock.exists();
+
+    fs::set_permissions(directory.path(), original_permissions).expect("restore permissions");
+    assert!(observed
+        .into_iter()
+        .all(|result| result == Ok(existing.clone())));
+    assert!(!created_lock);
+}
+
+#[test]
+fn custody_outage_leaves_existing_setup_unknown_and_preserves_a_skip() {
+    use super::AccountView;
+    use serde_json::json;
+
+    let directory = tempfile::tempdir().expect("test directory");
+    let store = AccountMetadataStore::new(directory.path().to_path_buf());
+    let mut metadata = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    metadata.activated_public_id = Some("dev_81818181818181818181818181818181".into());
+    let mut metadata = store.save(&metadata).expect("record activation");
+    let project = |revision, metadata: &AccountMetadata, presence| {
+        serde_json::to_value(AccountView::local(revision, Some(metadata), presence)).expect("view")
+    };
+
+    let present = project(1, &metadata, CredentialPresence::Present);
+    let outage = project(2, &metadata, CredentialPresence::Unavailable);
+    let missing = project(3, &metadata, CredentialPresence::Missing);
+    assert_eq!(present["setup_state"], json!("completed"));
+    assert_eq!(present["device_state"], json!("credential_present"));
+    assert_eq!(outage["setup_state"], json!("unknown"));
+    assert_eq!(outage["device_state"], json!("custody_unavailable"));
+    assert_eq!(missing["setup_state"], json!("needed"));
+    assert_eq!(missing["device_state"], json!("credential_missing"));
+
+    metadata.skipped_setup = true;
+    let metadata = store.save(&metadata).expect("record skip");
+    let skipped = project(4, &metadata, CredentialPresence::Unavailable);
+    assert_eq!(skipped["setup_state"], json!("skipped"));
+    assert_eq!(skipped["device_state"], json!("custody_unavailable"));
+}
+
+#[test]
+fn save_reestablishes_a_missing_lock_for_a_readable_identity() {
+    let directory = tempfile::tempdir().expect("test directory");
+    let store = AccountMetadataStore::new(directory.path().to_path_buf());
+    store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    let lock = directory.path().join("account-metadata.lock");
+    fs::remove_file(&lock).expect("remove lock");
+
+    let mut metadata = store
+        .load_or_create(CredentialPresence::Present)
+        .expect("load identity");
+    assert!(!lock.exists());
+    metadata.skipped_setup = true;
+    let saved = store.save(&metadata).expect("save existing identity");
+    assert!(lock.is_file());
+    assert_eq!(store.load_or_create(CredentialPresence::Present), Ok(saved));
+}
