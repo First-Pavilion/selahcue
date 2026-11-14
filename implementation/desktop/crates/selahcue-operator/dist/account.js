@@ -59,6 +59,10 @@
     },
   };
 
+  function needsSignIn(view) {
+    return view.device_state === "reauthentication_needed" || view.error_code === "reauthentication_required";
+  }
+
   function createAccount(invoke, update, canShowStartup = () => true) {
     let view = {};
     let source = null;
@@ -130,7 +134,7 @@
       if (nextStage === "signIn" || nextStage === "enroll") path = nextStage;
       if (stage !== nextStage) clearWebFeedback();
       stage = nextStage;
-      formError = null;
+      formError = stage === "signIn" && view.error_code === "reauthentication_required" ? view.error_code : null;
       draw(focus);
     }
 
@@ -159,6 +163,8 @@
       const code = next?.error_code;
       if (next?.setup_state === "completed" && next.device_state === "credential_present") {
         close(true);
+      } else if (code === "reauthentication_required") {
+        choose("signIn");
       } else if (code === "network_unavailable" || code === "service_unavailable") {
         choose("offline");
       } else if (code === "no_active_license") {
@@ -228,6 +234,10 @@
     }
 
     function retry() {
+      if (view.error_code === "reauthentication_required") {
+        choose("signIn");
+        return;
+      }
       // An ambiguous enrollment needs the original key. Only native code owns the
       // bound operation nonce, even when the user supplies the key again.
       if (view.operation_state === "retry_pending" &&
@@ -241,7 +251,7 @@
       start() { return opening || (opening = read()); },
       receive,
       openSettings() {
-        open("settings", true, view.device_state === "reauthentication_needed" ? "signIn" : "chooser");
+        open("settings", true, needsSignIn(view) ? "signIn" : "chooser");
       },
       close,
       choose,
@@ -339,14 +349,15 @@
     $("account-cleanup-row").hidden = !view.pending_cleanup;
     $("account-cleanup").disabled = busy;
     const setup = $("account-start-setup");
-    const reauthenticate = view.device_state === "reauthentication_needed";
+    const reauthenticate = needsSignIn(view);
     setup.hidden = (view.setup_state === "completed" && !reauthenticate) ||
       view.error_code === "device_recovery_required";
     setup.disabled = busy || view.setup_state === "unknown";
     put("account-start-setup", reauthenticate ? "Sign in to continue" : "Set up this device");
     $("account-refresh").disabled = busy || view.device_state !== "credential_present";
     $("account-refresh").hidden = view.device_state !== "credential_present";
-    $("account-recover").hidden = view.operation_state !== "retry_pending" || view.error_code === "enrollment_key_required";
+    $("account-recover").hidden = view.operation_state !== "retry_pending" ||
+      view.error_code === "enrollment_key_required" || view.error_code === "reauthentication_required";
     $("account-recover").disabled = busy;
     $("account-settings-controls").hidden = state.source === "settings";
   }
@@ -360,6 +371,7 @@
     if (locationChanged || stageChanged) {
       password.value = "";
       enrollmentKey.value = "";
+      if (stage === "signIn" && formError === "reauthentication_required") $("account-email").value = "";
     }
     if (locationChanged && source) {
       (source === "startup" ? firstRun : $("account-settings-setup")).append(card);
@@ -377,6 +389,8 @@
     const metadata = deviceDetails(view);
     setError("account-enroll-device", metadata ? "This device: " + metadata : "");
     setError("account-sign-in-error", stage === "signIn" ? errors[formError] || "" : "");
+    const webError = $("account-web-error");
+    const webErrorAppeared = state.webError && webError.hidden;
     $("account-web-help").hidden = state.webError;
     setError("account-web-error", state.webError ? "SelahCue couldn’t open your browser. Try again." : "");
     for (const button of webActions) {
@@ -421,6 +435,17 @@
       if (target === consolePage) target.tabIndex = -1;
       target.focus({ preventScroll: true });
       returnFocus = null;
+    }
+    if (webErrorAppeared && source === "startup" && stage === "signIn") {
+      // Reveal new feedback in the card's own scroll area without shifting focus.
+      const region = webError.closest(".account-view");
+      const bounds = region.getBoundingClientRect();
+      const feedback = webError.getBoundingClientRect();
+      if (feedback.bottom > bounds.bottom) {
+        region.scrollTop += Math.ceil(feedback.bottom - bounds.bottom);
+      } else if (feedback.top < bounds.top) {
+        region.scrollTop += Math.floor(feedback.top - bounds.top);
+      }
     }
     lastStage = stage;
     lastSource = source;

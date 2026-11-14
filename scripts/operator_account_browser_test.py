@@ -329,12 +329,19 @@ def exercise(browser, dist, screenshots, viewport):
     assert restarted.locator("#account-entitlement-dot").evaluate("img => img.complete && img.naturalWidth === 6")
     assert_emergency_hit_targets(restarted, "Settings activated")
     capture(restarted, screenshots, "a8-a10-activated-status")
-    restarted.evaluate("""() => accountFixture.publish({
-      setup_state: 'completed', device_state: 'reauthentication_needed', error_code: 'reauthentication_required'
-    })""")
-    click(restarted, "Sign in to continue")
-    expect(restarted.get_by_role("heading", name="Sign in to SelahCue")).to_be_visible()
-    click(restarted, "Back to Account")
+    for fields in (
+        {"setup_state": "completed", "device_state": "reauthentication_needed"},
+        {"setup_state": "skipped", "device_state": "unregistered", "operation_state": "retry_pending"},
+    ):
+        restarted.evaluate("(fields) => accountFixture.publish(fields)",
+                           {**fields, "error_code": "reauthentication_required"})
+        expect(restarted.locator("#account-recover")).to_be_hidden()
+        click(restarted, "Sign in to continue")
+        expect(restarted.get_by_role("heading", name="Sign in to SelahCue")).to_be_focused()
+        expect(restarted.locator("#account-sign-in-error")).to_have_text(
+            "Sign in again to finish setting up this device."
+        )
+        click(restarted, "Back to Account")
     restarted.evaluate("""() => accountFixture.publish({
       setup_state: 'skipped', device_state: 'custody_unavailable', error_code: 'credential_presence_unavailable'
     })""")
@@ -470,6 +477,92 @@ def exercise_web_links(browser, dist, screenshots, viewport):
     page.close()
 
 
+def exercise_combined_errors(browser, dist, screenshots, viewport, code):
+    page, errors = boot(browser, dist, viewport)
+    click(page, "Sign in to your SelahCue account")
+    fill_sign_in(page)
+    rules(page, {"error_code": code})
+    click(page, "Continue")
+    sign_in_error = page.locator("#account-sign-in-error")
+    expect(sign_in_error).to_be_visible()
+
+    next_control = "Alt+Tab" if sys.platform == "darwin" and browser.browser_type.name == "webkit" else "Tab"
+    page.get_by_role("button", name="Continue", exact=True).focus()
+    for label in ("Create account", "Forgot password?", "Verify email / resend link"):
+        page.keyboard.press(next_control)
+        action = page.get_by_role("button", name=label, exact=True)
+        expect(action).to_be_focused()
+    page.evaluate("accountFixture.holdWebOpen = true")
+    page.keyboard.press("Enter")
+    expect(action).to_have_attribute("aria-disabled", "true")
+    scroll_positions = """() => [document.scrollingElement, document.getElementById("surface-console")]
+      .map(element => [element.scrollLeft, element.scrollTop])"""
+    before = page.evaluate(scroll_positions)
+
+    page.evaluate("accountFixture.finishWebOpen(false)")
+    error = page.locator("#account-web-error")
+    expect(error).to_contain_text("couldn’t open your browser")
+    expect(error, f"{viewport} {code} browser feedback must fit inside the visible card").to_be_in_viewport(
+        ratio=1, timeout=2000
+    )
+    expect(action).to_be_focused()
+    expect(action).to_have_attribute("aria-disabled", "false")
+    expect(action).to_be_in_viewport(ratio=1)
+    assert page.evaluate(scroll_positions) == before
+    assert_emergency_hit_targets(page, f"startup sign-in with {code} and browser launch errors")
+    skip = page.get_by_role("button", name="Skip — set up later", exact=True)
+    assert skip.evaluate("""button => {
+      const { x, y, width, height } = button.getBoundingClientRect();
+      return button.contains(document.elementFromPoint(x + width / 2, y + height / 2));
+    }""")
+    capture(page, screenshots, f"a1-browser-open-failure-{code}")
+
+    page.evaluate("accountFixture.holdWebOpen = false")
+    page.keyboard.press("Enter")
+    expect(error).to_be_hidden()
+    expect(sign_in_error).to_be_visible()
+    expect(action).to_be_focused()
+    assert page.evaluate("""() => accountFixture.calls.filter(x => x.cmd === "account_open_web")""") == [
+        {"cmd": "account_open_web", "args": {"destination": "verification"}},
+        {"cmd": "account_open_web", "args": {"destination": "verification"}},
+    ]
+    click(page, "Skip — set up later")
+    expect(page.locator("#account-card")).to_be_hidden()
+    page.wait_for_function("accountFixture.view.setup_state === 'skipped'")
+    assert not errors, errors
+    page.close()
+
+
+def exercise_reauthentication(browser, dist, viewport):
+    page, errors = boot(browser, dist, viewport)
+    click(page, "Sign in to your SelahCue account")
+    fill_sign_in(page)
+    rules(page, {"operation_state": "retry_pending", "error_code": "network_unavailable"})
+    click(page, "Continue")
+    expect(page.get_by_role("heading", name="Can’t reach SelahCue right now")).to_be_focused()
+
+    rules(page, {"operation_state": "retry_pending", "error_code": "reauthentication_required"})
+    click(page, "Try again")
+    expect(page.get_by_role("heading", name="Sign in to SelahCue")).to_be_focused()
+    expect(page.locator("#account-sign-in-error")).to_have_text("Sign in again to finish setting up this device.")
+    expect(page.get_by_label("Email", exact=True)).to_have_value("")
+    expect(page.get_by_label("Password", exact=True)).to_have_value("")
+    expect(page.get_by_role("button", name="Try again", exact=True)).to_be_hidden()
+    assert_emergency_hit_targets(page, "startup sign-in after requested reauthentication")
+
+    fill_sign_in(page)
+    rules(page, ACTIVE)
+    page.get_by_label("Password", exact=True).press("Enter")
+    expect(page.locator("#account-card")).to_be_hidden()
+    expect(page.get_by_label("Password", exact=True)).to_have_value("")
+    assert page.evaluate("""() => accountFixture.calls.filter(x => x.cmd === "account_retry_activation" ||
+      x.cmd === "account_sign_in_and_activate").map(x => x.cmd)""") == [
+        "account_sign_in_and_activate", "account_retry_activation", "account_sign_in_and_activate"
+    ]
+    assert not errors, errors
+    page.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=("chromium", "webkit"), default="chromium")
@@ -485,6 +578,9 @@ def main():
                 screenshots.mkdir(parents=True, exist_ok=True)
             exercise(browser, dist, screenshots, (width, height))
             exercise_web_links(browser, dist, screenshots, (width, height))
+            for code in ("invalid_credentials", "account_not_active"):
+                exercise_combined_errors(browser, dist, screenshots, (width, height), code)
+            exercise_reauthentication(browser, dist, (width, height))
             print(f"Account setup, browser links, Settings and emergency hit targets passed in {args.engine} at {size}.", flush=True)
         browser.close()
 

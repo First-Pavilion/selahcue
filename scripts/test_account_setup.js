@@ -83,6 +83,89 @@ test("enrollment uses typed errors, and enrollment retry asks for the key again"
   assert.equal(calls.length, 3);
 });
 
+test("ambiguous sign-in with a lost account session asks for fresh credentials", async () => {
+  const calls = [];
+  const ambiguous = snapshot(2, { operation_state: "retry_pending", error_code: "network_unavailable" });
+  const reauth = snapshot(3, { operation_state: "retry_pending", error_code: "reauthentication_required" });
+  const completed = snapshot(4, { setup_state: "completed", device_state: "credential_present" });
+  let state;
+  const account = createAccount(async (command, args) => {
+    calls.push([command, args]);
+    if (command === "account_view") return snapshot(1);
+    if (command === "account_retry_activation") return reauth;
+    assert.equal(command, "account_sign_in_and_activate");
+    return args.password === "fresh-synthetic" ? completed : ambiguous;
+  }, (next) => { state = next; });
+
+  await account.start();
+  account.choose("signIn");
+  await account.submit({ email: "person@example.test", password: "old-synthetic", displayName: "Booth" });
+  assert.equal(state.stage, "offline");
+  await account.retry();
+  assert.equal(state.stage, "signIn");
+  assert.equal(state.formError, "reauthentication_required");
+  assert.equal(state.view, reauth);
+  assert.equal(state.operationPending, false);
+
+  // Even with a native retry record, only an explicit fresh sign-in can proceed.
+  await account.retry();
+  assert.equal(state.stage, "signIn");
+  assert.equal(state.formError, "reauthentication_required");
+  assert.equal(calls.length, 3);
+  await account.submit({ email: " person@example.test ", password: "fresh-synthetic", displayName: "Booth" });
+  assert.equal(state.view, completed);
+  assert.equal(state.source, null);
+  assert.deepEqual(calls.slice(2), [
+    ["account_retry_activation", undefined],
+    ["account_sign_in_and_activate", { email: "person@example.test", password: "fresh-synthetic", displayName: "Booth" }],
+  ]);
+});
+
+test("late reauthentication updates native status without changing the current route or focus", async () => {
+  for (const leave of ["dismiss", "navigate"]) {
+    const held = defer();
+    const draws = [];
+    const account = createAccount(async (command) => {
+      if (command === "account_view") return snapshot(1);
+      if (command === "account_sign_in_and_activate") {
+        return snapshot(2, { operation_state: "retry_pending", error_code: "service_unavailable" });
+      }
+      if (command === "account_skip_setup") {
+        return snapshot(3, { setup_state: "skipped", operation_state: "retry_pending", error_code: "service_unavailable" });
+      }
+      assert.equal(command, "account_retry_activation");
+      return held.promise;
+    }, (state, focus) => { draws.push({ state, focus }); });
+
+    await account.start();
+    account.choose("signIn");
+    await account.submit({ email: "person@example.test", password: "synthetic", displayName: "Booth" });
+    const retrying = account.retry();
+    if (leave === "dismiss") await account.dismiss();
+    else {
+      account.close();
+      account.openSettings();
+    }
+    const current = draws.at(-1).state;
+    draws.length = 0;
+    const reauth = snapshot(4, {
+      setup_state: leave === "dismiss" ? "skipped" : "needed",
+      operation_state: "retry_pending", error_code: "reauthentication_required",
+    });
+    held.resolve(reauth);
+    await retrying;
+    assert.ok(draws.length);
+    for (const { state, focus } of draws) {
+      assert.equal(state.source, current.source);
+      assert.equal(state.stage, current.stage);
+      assert.equal(state.formError, null);
+      assert.equal(focus, false);
+    }
+    assert.equal(draws.at(-1).state.view, reauth);
+    assert.equal(draws.at(-1).state.operationPending, false);
+  }
+});
+
 test("failed durable Skip stays usable and may be retried", async () => {
   let state, fails = true;
   const account = createAccount(async (command) => {
