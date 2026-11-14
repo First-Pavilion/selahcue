@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import sys
 
 
@@ -129,6 +130,9 @@ def verify_options(options: list[str], platform: str) -> None:
             definition = ""
         if CPU_DEFINE.match(definition):
             raise PolicyError("Whisper command has a nonportable compiler option")
+        # The cc crate forwards these case-sensitive MSVC C runtime switches.
+        if platform == "windows" and option in ("-MD", "-MDd", "-MT", "-MTd", "/MD", "/MDd", "/MT", "/MTd"):
+            continue
         if lower.startswith("-m"):
             if platform == "linux" and lower in ("-march=x86-64", "-m64"):
                 if lower.startswith("-march"):
@@ -150,6 +154,64 @@ def file_sha(path: Path) -> str:
         while block := stream.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+def is_x64_object(header: bytes, length: int, platform: str) -> bool:
+    if platform == "linux":
+        if len(header) < 64 or header[:7] != b"\x7fELF\x02\x01\x01":
+            return False
+        kind, machine, version = struct.unpack_from("<HHI", header, 16)
+        sections_at = struct.unpack_from("<Q", header, 40)[0]
+        header_size = struct.unpack_from("<H", header, 52)[0]
+        section_size, sections = struct.unpack_from("<HH", header, 58)
+        return (kind, machine, version, header_size, section_size) == (1, 62, 1, 64, 64) and (
+            64 <= sections_at and sections >= 2 and sections_at + section_size * sections <= length
+        )
+
+    # MSVC emits standard COFF, or bigobj for objects with too many sections.
+    if len(header) >= 56 and header[:4] == b"\0\0\xff\xff":
+        version, machine = struct.unpack_from("<HH", header, 4)
+        bigobj_id = bytes.fromhex("c7a1bad1eebaa94baf20faf66aa4dcb8")
+        sections = struct.unpack_from("<I", header, 44)[0]
+        return version >= 2 and machine == 0x8664 and header[12:28] == bigobj_id and (
+            sections > 0 and 56 + 40 * sections <= length
+        )
+    if len(header) < 20:
+        return False
+    machine, sections = struct.unpack_from("<HH", header)
+    optional_size, characteristics = struct.unpack_from("<HH", header, 16)
+    return machine == 0x8664 and optional_size == 0 and characteristics & 2 == 0 and (
+        sections > 0 and 20 + 40 * sections <= length
+    )
+
+
+def verify_archive(archive: Path, platform: str) -> None:
+    """Check regular GNU ar or MSVC COFF archive framing and x64 object members."""
+    with archive.open("rb") as stream:
+        size = os.fstat(stream.fileno()).st_size
+        if stream.read(8) != b"!<arch>\n":
+            raise PolicyError("Whisper static archive evidence is invalid")
+        objects = 0
+        while stream.tell() < size:
+            member = stream.read(60)
+            length_field = member[48:58].strip()
+            if len(member) != 60 or member[58:60] != b"`\n" or not length_field.isdigit():
+                raise PolicyError("Whisper static archive evidence has a malformed member header")
+            length = int(length_field)
+            end = stream.tell() + length
+            if end + length % 2 > size:
+                raise PolicyError("Whisper static archive evidence has a truncated member")
+            name = member[:16].rstrip()
+            # GNU/COFF linker symbols and long-name tables are metadata, not objects.
+            if name not in (b"/", b"/SYM64/", b"//"):
+                if not name or not is_x64_object(stream.read(min(length, 64)), length, platform):
+                    raise PolicyError("Whisper static archive evidence has a non-x64 object member")
+                objects += 1
+            stream.seek(end)
+            if length % 2 and stream.read(1) != b"\n":
+                raise PolicyError("Whisper static archive evidence has invalid member padding")
+        if not objects:
+            raise PolicyError("Whisper static archive evidence contains no object members")
 
 
 def verify(target: Path, platform: str, *, target_triple: str | None = None) -> dict:
@@ -207,9 +269,7 @@ def verify(target: Path, platform: str, *, target_triple: str | None = None) -> 
         archive = build / ("src" if name == "whisper" else "ggml/src") / filename
         if archive != archive.resolve() or not archive.is_file():
             raise PolicyError("Whisper static archive evidence is missing")
-        with archive.open("rb") as stream:
-            if stream.read(8) != b"!<arch>\n" or archive.stat().st_size <= 8:
-                raise PolicyError("Whisper static archive evidence is invalid")
+        verify_archive(archive, platform)
         hashes[name] = file_sha(archive)
     return {
         "architecture": "x86_64", "compiler": "MSVC" if platform == "windows" else "GCC",
@@ -229,9 +289,16 @@ def main() -> None:
     target = args.target.resolve()
     if args.action == "prepare-windows":
         require_fresh_target(args.target)
+        pinned = {**policy_config("windows"), "CARGO_TARGET_DIR": str(target)}
         filtered = operator_environment(os.environ, "windows", target)
-        print(json.dumps({"remove": sorted(set(os.environ).difference(filtered)),
-                          "set": {**policy_config("windows"), "CARGO_TARGET_DIR": str(target)}}))
+        if os.environ.keys() - filtered.keys():
+            raise PolicyError("Remove inherited compiler or build overrides before packaging")
+        # GitHub applies this to the next step, keeping the canary-checked command literal.
+        with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+            for key, value in pinned.items():
+                if "\r" in value or "\n" in value:
+                    raise PolicyError("Portable target path contains a line break")
+                stream.write(f"{key}={value}\n")
         return
     if args.metadata is None:
         parser.error("verify-windows requires --metadata")

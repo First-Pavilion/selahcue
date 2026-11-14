@@ -6,9 +6,34 @@ import tempfile
 import subprocess
 import sys
 import hashlib
+import os
+import struct
 import unittest
 
 from whisper_cpu_policy import REQUIRED_SOURCES, PolicyError, operator_environment, require_fresh_target, verify
+
+
+def archive_member(name, data):
+    header = f"{name:<16}{0:<12}{0:<6}{0:<6}{644:<8}{len(data):<10}`\n".encode("ascii")
+    return header + data + (b"\n" if len(data) % 2 else b"")
+
+
+def object_archive(platform):
+    if platform == "windows":
+        # COFF x64, one .text section with a single RET instruction.
+        header = struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 0, 0)
+        text = struct.pack("<8sIIIIIIHHI", b".text", 0, 0, 1, 60, 0, 0, 0, 0, 0x60500020)
+        return b"!<arch>\n" + archive_member("/", bytes(4)) + archive_member("fixture.obj/", header + text + b"\xc3")
+
+    # ELF64 x64 relocatable, with a null, .text and section-name string table entry.
+    header = bytearray(64)
+    header[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<HHIQQQIHHHHHH", header, 16, 1, 62, 1, 0, 0, 88, 0, 64, 0, 0, 64, 3, 2)
+    text = struct.pack("<IIQQQQIIQQ", 1, 1, 6, 0, 64, 1, 0, 0, 1, 0)
+    names = struct.pack("<IIQQQQIIQQ", 7, 3, 0, 0, 65, 17, 0, 0, 1, 0)
+    # Place the section table after the string table with 8-byte alignment.
+    content = b"\xc3\0.text\0.shstrtab\0".ljust(24, b"\0")
+    return b"!<arch>\n" + archive_member("fixture.o/", header + content + bytes(64) + text + names)
 
 
 class PolicyTests(unittest.TestCase):
@@ -49,7 +74,7 @@ class PolicyTests(unittest.TestCase):
             archive = f"{name}.lib" if platform == "windows" else f"lib{name}.a"
             folder = self.build / ("src" if name == "whisper" else "ggml/src")
             folder.mkdir(parents=True, exist_ok=True)
-            (folder / archive).write_bytes(b"!<arch>\n" + bytes(64))
+            (folder / archive).write_bytes(object_archive(platform))
 
     def write_commands(self):
         (self.build / "compile_commands.json").write_text(json.dumps(self.commands))
@@ -96,12 +121,51 @@ class PolicyTests(unittest.TestCase):
         self.assertNotIn("Program Files", json.dumps(result))
         baseline = self.commands[-1]["command"]
         for flag in ("/arch:AVX2", "-arch:AVX512", "/favor:ATOM", "/D__BMI2__",
-                     "/D GGML_AVX512_VBMI=1", "@opaque.rsp", "/clang:-mavx2"):
+                     "/D GGML_AVX512_VBMI=1", "@opaque.rsp", "/clang:-mavx2", "-mavx2", "-md"):
             with self.subTest(flag=flag):
                 self.commands[-1]["command"] = f"{baseline} {flag}"
                 self.write_commands()
                 with self.assertRaisesRegex(PolicyError, "compiler option"):
                     verify(self.target, "windows")
+
+    def test_windows_receipt_accepts_hyphenated_msvc_crt_switches(self):
+        self.configure("windows")
+        for row, runtime in zip(self.commands, ("-MD", "-MT", "-MDd", "-MTd", "/MD", "/MT")):
+            row["command"] = row["command"].replace(" /nologo /O2", f" /nologo {runtime} /O2")
+        self.write_commands()
+        self.assertEqual(verify(self.target, "windows")["compile_commands"], 24)
+
+    def test_receipt_rejects_malformed_archive_and_mere_signature(self):
+        self.configure("linux")
+        archive = self.build / "ggml/src/libggml-cpu.a"
+        elf = object_archive("linux")
+        for invalid in (b"!<arch>\nX", b"!<arch>\n" + bytes(64),
+                        b"!<arch>\n" + archive_member("/", bytes(4)), elf[:-1],
+                        object_archive("windows")):
+            with self.subTest(length=len(invalid)):
+                archive.write_bytes(invalid)
+                with self.assertRaisesRegex(PolicyError, "archive evidence"):
+                    verify(self.target, "linux")
+
+    def test_windows_prepare_cli_writes_policy_for_the_standalone_build(self):
+        env_file = self.target.parent / "github-env"
+        helper = Path(__file__).with_name("whisper_cpu_policy.py")
+        command = [sys.executable, str(helper), "prepare-windows", str(self.target)]
+        env = {"PATH": os.environ["PATH"], "GITHUB_ENV": str(env_file), "GGML_NATIVE": "ON"}
+        if os.name == "nt":
+            env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+        self.assertEqual(settings["GGML_NATIVE"], "OFF")
+        self.assertEqual(settings["CMAKE_GENERATOR"], "Ninja")
+        self.assertEqual(Path(settings["CARGO_TARGET_DIR"]), self.target)
+        for name in ("GGML_CPU_ARM_ARCH", "CMAKE_TOOLCHAIN_FILE", "_CL_"):
+            with self.subTest(name=name):
+                env_file.unlink(missing_ok=True)
+                result = subprocess.run(command, env={**env, name: "unexpected"}, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(env_file.exists())
 
     def test_windows_receipt_cli_binds_one_installer_and_blocks_ambiguous_artifacts(self):
         self.configure("windows")

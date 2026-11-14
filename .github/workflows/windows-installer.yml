@@ -202,24 +202,16 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python -B scripts/test_whisper_cpu_policy.py
 
-      - name: Build the installer (--features stt)
-        working-directory: implementation/desktop/crates/selahcue-operator
+      - name: Prepare an empty target and portable Whisper compiler options
+        working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $helper = Join-Path $env:GITHUB_WORKSPACE "scripts/whisper_cpu_policy.py"
-          $target = Join-Path (Get-Location).Path "target"
-          $prepared = python $helper prepare-windows $target
+          python scripts/whisper_cpu_policy.py prepare-windows implementation/desktop/crates/selahcue-operator/target
           if ($LASTEXITCODE -ne 0) { throw "Whisper portable build environment was refused" }
-          $policy = $prepared | ConvertFrom-Json -AsHashtable
-          foreach ($name in $policy.remove) {
-            [Environment]::SetEnvironmentVariable($name, $null, "Process")
-          }
-          foreach ($entry in $policy.set.GetEnumerator()) {
-            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
-          }
-          cargo tauri build --features stt
-          if ($LASTEXITCODE -ne 0) { throw "Portable operator installer build failed" }
+
+      - name: Build the installer (--features stt)
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo tauri build --features stt
 
       - name: Require portable Whisper compiler evidence for the installer
         working-directory: ${{ github.workspace }}
