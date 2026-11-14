@@ -380,3 +380,33 @@ def test_without_a_fallback_plan_first_activation_leaves_no_lifecycle_changes(cl
     assert not AuditEvent.objects.filter(
         action__in=["customer_org.free_activated", "license_key.generated", "device.activated"],
     ).exists()
+
+
+@pytest.mark.parametrize("remaining, accepted", [(timedelta(microseconds=1), True), (timedelta(0), False)])
+def test_refresh_uses_explicit_injected_clock_for_final_liveness(client, monkeypatch, remaining, accepted):
+    from selahcue_api.apps.devices.services import authenticate_device_token
+    from selahcue_api.apps.license_keys.free_lifecycle import renew_free_license_for_device
+    from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    _org, _session, initial, licence = activate_free(client)
+    token = authenticate_device_token(initial["activation_token"])
+    AppLicenseKey.objects.filter(pk=licence.pk).update(
+        starts_at=NOW - timedelta(days=1), expires_at=NOW + remaining,
+    )
+    DeviceToken.objects.filter(pk=token.pk).update(
+        issued_at=NOW - timedelta(days=1), expires_at=NOW + remaining,
+    )
+    # A supplied instant remains authoritative in deterministic service-level tests.
+    monkeypatch.setattr(timezone, "now", lambda: NOW + timedelta(days=1))
+    if accepted:
+        result = renew_free_license_for_device(token, NOW, "injected-final-liveness")
+        assert result.changed
+        assert result.token_expires_at == result.license_expires_at == RENEWED_TO
+    else:
+        before = DeviceToken.objects.values().get()
+        with pytest.raises(SafeAPIError) as error:
+            renew_free_license_for_device(token, NOW, "injected-final-liveness")
+        assert error.value.code == ErrorCode.UNAUTHENTICATED
+        assert DeviceToken.objects.values().get() == before
+        assert not AuditEvent.objects.filter(action="license_key.free_renewed").exists()
