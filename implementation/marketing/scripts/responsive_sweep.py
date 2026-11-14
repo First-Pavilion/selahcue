@@ -479,25 +479,53 @@ SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
   (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
 )"""
 
+# The WebKit wait still uses Playwright's default frame polling and the same predicate.
+# Record the first invocation and the first frame-driven poll. An independent
+# timer probes renderer progress when the first invocation returns false.
+OBSERVED_SETTLE_JS = """() => {
+  const settled = (__SETTLE_PREDICATE__)();
+  try { window.__selahcueObserveSettlePoll?.(settled); } catch (_) {}
+  return settled;
+}""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+
+# Closed labels shared by the observer and the untrusted-console validator.
+ANIMATION_LABELS = {
+    "type": ("Animation", "CSSAnimation", "CSSTransition"),
+    "animationName": ("au-progress-travel", "au-spin", "fade-in", "pulse", "shimmer", "slideUp", "spin"),
+    "transitionProperty": (
+        "-webkit-backdrop-filter", "backdrop-filter", "background-color", "border-color",
+        "box-shadow", "color", "grid-template-rows", "opacity", "transform", "visibility",
+    ),
+    "target": ("navbar-header", "mobile-sheet", "dialog-card", "loading"),
+    "pseudoElement": ("::before", "::after"),
+}
+
 # Diagnostic only: the original settlement predicate above remains the gate. The init
 # script observes the top-level target document and sends snapshots before a timeout;
 # reporting never evaluates a possibly stalled renderer.
 SETTLE_DIAGNOSTIC_JS = r"""(() => {
   if (window !== window.top) return;
   const predicate = (__SETTLE_PREDICATE__);
-  const text = (v) => String(v == null ? '' : v).slice(0, 96);
+  const labels = __ANIMATION_LABELS__;
+  const label = (field, value) => {
+    if (value == null || value === '') return '';
+    return labels[field].includes(value) ? value : 'other';
+  };
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
-  const ids = new WeakMap();
-  let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  const ids = new WeakMap(), targetIds = new WeakMap();
+  let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
+  let raf = null, timer = null, earlyTimer = null, lateTimer = null, stopped = false;
+  let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false;
   const start = performance.now();
   const stop = () => {
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(earlyTimer);
+    clearTimeout(lateTimer);
     if (raf !== null) cancelAnimationFrame(raf);
     raf = null;
   };
   const deadline = setTimeout(stop, 12000);
-  addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
   const sample = () => {
     if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
     sampleCount++;
@@ -505,7 +533,8 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       const animations = document.getAnimations({ subtree: true });
       const snapshot = {
         sample: sampleCount, elapsedMs: number(performance.now() - start),
-        readyState: text(document.readyState), visibilityState: text(document.visibilityState),
+        pollCount, lastPollResult,
+        readyState: document.readyState, visibilityState: document.visibilityState,
         contentPresent: !!document.querySelector('main > :not(.loading)'),
         loadingPresent: !!document.querySelector('.loading'),
         adminShellPresent: !!document.querySelector('.admin-shell'),
@@ -516,6 +545,8 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
         animations: animations.slice(0, 12).map((a) => {
           if (!ids.has(a)) ids.set(a, nextId++);
           const effect = a.effect, target = effect && effect.target;
+          if (target && !targetIds.has(target)) targetIds.set(target, nextTargetId++);
+          const targetLabel = target?.classList && labels.target.find((name) => target.classList.contains(name));
           const timing = effect ? effect.getComputedTiming() : null;
           const computed = {};
           if (timing) for (const key of ['duration', 'delay', 'endDelay', 'iterations', 'iterationStart',
@@ -523,12 +554,13 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
             computed[key] = number(timing[key]);
           }
           return {
-            id: ids.get(a), type: text(a.constructor && a.constructor.name),
-            animationName: text(a.animationName), transitionProperty: text(a.transitionProperty),
-            target: { tag: text(target && target.tagName), id: text(target && target.id),
-                      classes: text(target && target.getAttribute && target.getAttribute('class')),
-                      pseudoElement: text(effect && effect.pseudoElement) },
-            playState: text(a.playState), pending: !!a.pending,
+            id: ids.get(a), type: label('type', a.constructor?.name),
+            animationName: label('animationName', a.animationName),
+            transitionProperty: label('transitionProperty', a.transitionProperty),
+            target: { id: target ? targetIds.get(target) : null,
+                      label: target ? targetLabel || 'other' : '',
+                      pseudoElement: label('pseudoElement', effect?.pseudoElement) },
+            playState: a.playState, pending: !!a.pending,
             currentTime: number(a.currentTime), startTime: number(a.startTime),
             playbackRate: number(a.playbackRate), timelineTime: number(a.timeline && a.timeline.currentTime),
             timing: computed,
@@ -537,12 +569,73 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       };
       console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
     } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
+  };
+  const marker = (event) => {
+    const elapsedMs = performance.now() - start;
+    if (stopped || elapsedMs > 12000) return;
+    try {
+      console.debug('WEBKIT_SETTLE_MARKER ' + JSON.stringify({
+        event, elapsedMs, pollCount, lastPollResult,
+        rafCompleted: frames, rafPending: raf !== null, visibilityState: document.visibilityState,
+      }));
+    } catch (_) {}
+  };
+  addEventListener('pagehide', () => {
+    marker('pageHide');
+    clearTimeout(deadline);
+    stop();
+  }, { once: true });
+  window.__selahcueObserveSettlePoll = (result) => {
+    if (stopped || typeof result !== 'boolean') return;
+    lastPollResult = result;
+    pollCount++;
+    if (pollCount === 1) {
+      marker('firstPoll');
+      if (!result) {
+        earlyTimer = setTimeout(() => marker('earlyTimer'), 100);
+        // One scalar heartbeat independent of the 1s rich snapshot. It never reads layout or animations.
+        lateTimer = setTimeout(() => {
+          if (lastPollResult === false) marker('lateTimer');
+        }, 1250);
+      }
+    } else if (pollCount === 2) {
+      marker('firstFramePoll');
+    }
+  };
+  const tick = () => {
+    if (stopped || sampleCount >= 13) return;
+    if (lastPollResult === false && !reportedPeriodicStart) {
+      reportedPeriodicStart = true;
+      marker('periodicSampleStart');
+    }
+    sample();
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
-    if (sampleCount < 13) timer = setTimeout(sample, 1000);
+    if (sampleCount < 13) timer = setTimeout(tick, 1000);
   };
-  sample();
-})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+  tick();
+})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
+
+
+SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleStart", "lateTimer", "pageHide")
+
+
+def valid_settle_marker(value):
+    if not (
+        type(value) is dict
+        and set(value) == {"event", "elapsedMs", "pollCount", "lastPollResult",
+                           "rafCompleted", "rafPending", "visibilityState"}
+        and value["event"] in SETTLE_MARKERS
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and type(value["pollCount"]) is int and 0 <= value["pollCount"] <= 2**53 - 1
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
+        and (value["pollCount"] > 0 or value["event"] == "pageHide")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
+        and type(value["rafCompleted"]) is int and 0 <= value["rafCompleted"] <= 13
+        and type(value["rafPending"]) is bool
+    ):
+        return False
+    return value["pollCount"] == {"firstPoll": 1, "firstFramePoll": 2}.get(value["event"], value["pollCount"])
 
 
 def valid_settle_sample(value):
@@ -560,13 +653,14 @@ def valid_settle_sample(value):
             or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
         )
 
-    def text(value):
-        return type(value) is str and len(value) <= 96
+    def label(field, value):
+        return value in ("", "other") or value in ANIMATION_LABELS[field]
 
     if type(value) is dict and set(value) == {"observerError"}:
         return value["observerError"] is True
     if not fields(value, (
-        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "sample", "elapsedMs", "pollCount", "lastPollResult",
+        "readyState", "visibilityState", "contentPresent", "loadingPresent",
         "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
         "animationCount", "animationsDropped", "animations",
     )):
@@ -574,6 +668,8 @@ def valid_settle_sample(value):
     if not (
         integer(value["sample"], 1, 13)
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and integer(value["pollCount"])
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
         and value["readyState"] in ("loading", "interactive", "complete")
         and value["visibilityState"] in ("hidden", "visible", "prerender")
         and integer(value["rafCompleted"], 0, 13)
@@ -596,12 +692,15 @@ def valid_settle_sample(value):
             return False
         if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
                 and animation["playState"] in ("idle", "running", "paused", "finished")
-                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(label(key, animation[key]) for key in ("type", "animationName", "transitionProperty"))
                 and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
                 and number(animation["playbackRate"])):
             return False
         target = animation["target"]
-        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+        if not (fields(target, ("id", "label", "pseudoElement"))
+                and (target["id"] is None or integer(target["id"], 1))
+                and label("target", target["label"])
+                and label("pseudoElement", target["pseudoElement"])):
             return False
         timing = animation["timing"]
         # Undefined computed-timing properties are omitted by JSON.stringify; a null
@@ -626,6 +725,7 @@ class SettleDiagnostic:
         self.started = time.monotonic()
         self.closed = False
         self.events: list[dict] = []
+        self.markers: dict[str, dict] = {}
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
@@ -667,21 +767,28 @@ class SettleDiagnostic:
         try:
             if self.closed or time.monotonic() - self.started > 12:
                 return
-            prefix = "WEBKIT_SETTLE_SAMPLE "
-            if message.type == "debug" and message.text.startswith(prefix):
-                # The observer's payload is fixed-schema, but reject oversized/extra records.
-                if len(message.text) > 24576 or len(self.samples) == 13:
+            if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
+                prefix, _, body = message.text.partition(" ")
+                if prefix not in ("WEBKIT_SETTLE_MARKER", "WEBKIT_SETTLE_SAMPLE"):
+                    return
+                is_marker = prefix == "WEBKIT_SETTLE_MARKER"
+                if len(body) > (512 if is_marker else 24576) or (not is_marker and len(self.samples) == 13):
                     self.dropped["samples"] += 1
                     return
                 try:
-                    sample = json.loads(message.text[len(prefix):])
+                    sample = json.loads(body)
                 except ValueError:
                     self.dropped["samples"] += 1
                     return
-                if not valid_settle_sample(sample):
+                if is_marker:
+                    if not valid_settle_marker(sample) or sample["event"] in self.markers:
+                        self.dropped["samples"] += 1
+                        return
+                    self.markers[sample.pop("event")] = sample
+                elif valid_settle_sample(sample):
+                    self.samples.append(sample)
+                else:
                     self.dropped["samples"] += 1
-                    return
-                self.samples.append(sample)
             elif message.type in ("warning", "error"):
                 self.observe("console-" + message.type)  # no arbitrary console text
         except Exception:
@@ -690,7 +797,7 @@ class SettleDiagnostic:
     def stage(self, category):
         try:
             self.current_stage = category
-            if len(self.stages) < 6:
+            if len(self.stages) < 8:
                 self.stages.append({"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)})
         except Exception:
             self.dropped["observerErrors"] += 1
@@ -699,14 +806,15 @@ class SettleDiagnostic:
         payload = {"route": self.path, "viewport": self.viewport,
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
-                   "events": self.events[:], "samples": self.samples[:], "stages": self.stages[:],
+                   "events": self.events[:], **{event: self.markers.get(event) for event in SETTLE_MARKERS},
+                   "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
             encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
             if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
                 return encoded
             payload["truncated"] = True
-            # Preserve the newest animation state and all bounded stage/event observations.
+            # Keep the newest timer state. The separate markers survive trimming.
             if payload["samples"]:
                 payload["samples"].pop(0)
                 payload["dropped"]["samples"] += 1
@@ -721,9 +829,9 @@ class SettleDiagnostic:
 
     def finish(self, page_error_count, failed=False):
         # Successful cells are quiet except the original detail control and the actual
-        # hosted failing list cell. Every failed WebKit cell retains its own evidence.
+        # hosted failing cells. Every failed WebKit cell retains its own evidence.
         if failed or (self.path, self.viewport["width"]) in (
-            ("/admin/customers/cus_001", 320), ("/admin/customers", 768),
+            ("/admin/customers/cus_001", 320), ("/admin/customers", 768), ("/blog", 375),
         ):
             self.emit("assertion-failed" if failed else "settled", page_error_count)
 
@@ -1335,7 +1443,9 @@ def main() -> int:
                         if diagnostic:
                             diagnostic.stage("visible-content-end")
                             diagnostic.stage("settle-start")
-                        page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
+                        page.wait_for_function(
+                            OBSERVED_SETTLE_JS if diagnostic else SETTLE_JS, timeout=10000,
+                        )  # lazy chunk painted, nothing mid-transition
                         if diagnostic:
                             diagnostic.stage("settle-end")
                     except Exception as exc:  # noqa: BLE001
