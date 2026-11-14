@@ -40,6 +40,8 @@ pub(crate) struct AccountView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cleanup_error_code: Option<AccountErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preparation_error_code: Option<AccountErrorCode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error_code: Option<AccountErrorCode>,
     pub(crate) pending_cleanup: bool,
 }
@@ -66,7 +68,7 @@ pub(crate) enum DeviceState {
     ReauthenticationNeeded,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EntitlementState {
     Unavailable,
@@ -75,7 +77,7 @@ pub(crate) enum EntitlementState {
     FutureOrClockSkew,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum LicenseState {
     Active,
@@ -157,6 +159,7 @@ impl AccountView {
             operation_state: OperationState::Idle,
             license_state: None,
             cleanup_error_code: None,
+            preparation_error_code: None,
             manifest_expires_at: None,
             display_name: None,
             platform: None,

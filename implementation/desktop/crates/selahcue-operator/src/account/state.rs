@@ -94,9 +94,33 @@ pub(crate) struct PendingActivation {
     path: ActivationPath,
     idempotency_key: String,
     identity: InstallIdentity,
+    #[serde(default)]
+    phase: DispatchPhase,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DispatchPhase {
+    Prepared,
+    // Snapshots written before dispatch tracking may already have left the device.
+    #[default]
+    PossiblySent,
 }
 
 impl PendingActivation {
+    pub(crate) fn is_prepared(&self) -> bool {
+        self.phase == DispatchPhase::Prepared
+    }
+
+    fn permits_update(&self, candidate: &Self) -> bool {
+        if self == candidate {
+            return true;
+        }
+        let mut dispatched = self.clone();
+        dispatched.phase = DispatchPhase::PossiblySent;
+        self.is_prepared() && dispatched == *candidate
+    }
+
     pub(crate) fn path(&self) -> ActivationPath {
         self.path
     }
@@ -178,6 +202,7 @@ impl AccountMetadata {
                     .map_err(|_| AccountStorageError::InvalidIdentity)?;
             self.pending_activation = Some(PendingActivation {
                 path,
+                phase: DispatchPhase::Prepared,
                 idempotency_key: random_id(|bytes| getrandom::fill(bytes).is_ok())?,
                 identity: InstallIdentity {
                     install_fingerprint: identity.fingerprint,
@@ -193,6 +218,15 @@ impl AccountMetadata {
         self.pending_activation
             .as_ref()
             .ok_or(AccountStorageError::Malformed)
+    }
+
+    pub(crate) fn mark_activation_dispatched(&mut self) -> Result<(), AccountStorageError> {
+        let pending = self
+            .pending_activation
+            .as_mut()
+            .ok_or(AccountStorageError::Changed)?;
+        pending.phase = DispatchPhase::PossiblySent;
+        Ok(())
     }
 
     /// A definitive outcome lets the worker retire the pending request. An
@@ -342,7 +376,7 @@ impl AccountMetadataStore {
         if let (Some(saved), Some(candidate)) =
             (&current.pending_activation, &metadata.pending_activation)
         {
-            if saved != candidate {
+            if !saved.permits_update(candidate) {
                 return Err(AccountStorageError::Changed);
             }
         }

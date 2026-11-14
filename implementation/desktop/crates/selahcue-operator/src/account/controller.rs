@@ -71,35 +71,41 @@ pub(super) enum Command {
 pub(super) struct Worker<T: HttpTransport, S: SecretStore> {
     controller: Mutex<AccountController<T, S>>,
     working: AtomicBool,
-    projection: Mutex<AccountView>,
+    projection: Mutex<Projection>,
+    clock: fn() -> Time,
 }
 
 impl<T: HttpTransport, S: SecretStore> Worker<T, S> {
     pub(super) fn new(controller: AccountController<T, S>) -> Arc<Self> {
+        let clock = controller.clock;
         Arc::new(Self {
             controller: Mutex::new(controller),
             working: AtomicBool::new(false),
-            projection: Mutex::new(AccountView::local(0, None, CredentialPresence::Unavailable)),
+            projection: Mutex::new(Projection::local()),
+            clock,
         })
     }
 
     pub(super) fn view(&self) -> AccountView {
-        self.projection().clone()
+        let mut projection = self.projection();
+        projection.evaluate((self.clock)());
+        projection.view.clone()
     }
 
-    fn projection(&self) -> MutexGuard<'_, AccountView> {
+    fn projection(&self) -> MutexGuard<'_, Projection> {
         self.projection
             .lock()
             .unwrap_or_else(|lock| lock.into_inner())
     }
 
     pub(super) fn admit(self: &Arc<Self>) -> Result<Work<T, S>, Box<AccountView>> {
-        let mut view = self.projection();
+        let mut projection = self.projection();
+        projection.evaluate((self.clock)());
         if self.working.swap(true, Ordering::AcqRel) {
-            return Err(Box::new(view.clone()));
+            return Err(Box::new(projection.view.clone()));
         }
-        view.revision = view.revision.saturating_add(1);
-        view.operation_state = OperationState::Busy;
+        projection.view.revision = projection.view.revision.saturating_add(1);
+        projection.view.operation_state = OperationState::Busy;
         Ok(Work {
             worker: Arc::clone(self),
             finished: false,
@@ -114,34 +120,87 @@ pub(super) struct Work<T: HttpTransport, S: SecretStore> {
 
 impl<T: HttpTransport, S: SecretStore> Work<T, S> {
     pub(super) fn run(mut self, command: Command) -> AccountView {
-        let mut result = match self.worker.controller.lock() {
-            Ok(mut account) => account.execute(command),
+        let result = match self.worker.controller.lock() {
+            Ok(mut account) => account.execute_projection(command),
             Err(_) => {
-                let mut view = self.worker.view();
-                view.error_code = Some(Code::WorkerUnavailable);
-                view.operation_state = OperationState::Idle;
-                view
+                let mut projection = self.worker.projection().clone();
+                projection.view.error_code = Some(Code::WorkerUnavailable);
+                projection.view.operation_state = OperationState::Idle;
+                projection
             }
         };
-        {
-            let mut view = self.worker.projection();
-            result.revision = view.revision.saturating_add(1);
-            *view = result.clone();
+        let view = {
+            let mut projection = self.worker.projection();
+            let mut result = result;
+            result.evaluate((self.worker.clock)());
+            result.view.revision = projection.view.revision.saturating_add(1);
+            let view = result.view.clone();
+            *projection = result;
             self.worker.working.store(false, Ordering::Release);
-        }
+            view
+        };
         self.finished = true;
-        result
+        view
     }
 }
 
 impl<T: HttpTransport, S: SecretStore> Drop for Work<T, S> {
     fn drop(&mut self) {
         if !self.finished {
-            let mut view = self.worker.projection();
+            let mut projection = self.worker.projection();
+            let view = &mut projection.view;
             view.revision = view.revision.saturating_add(1);
             view.operation_state = OperationState::Idle;
             view.error_code = Some(Code::WorkerUnavailable);
             self.worker.working.store(false, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Projection {
+    view: AccountView,
+    signed: Option<SignedTime>,
+    online_license: Option<LicenseState>,
+}
+
+#[derive(Clone, Copy)]
+struct SignedTime {
+    issued: Time,
+    not_before: Time,
+    expiry: Time,
+    license_expiry: Time,
+}
+
+impl Projection {
+    fn local() -> Self {
+        Self {
+            view: AccountView::local(0, None, CredentialPresence::Unavailable),
+            signed: None,
+            online_license: None,
+        }
+    }
+
+    fn evaluate(&mut self, now: Time) {
+        let entitlement = self.signed.map_or(EntitlementState::Unavailable, |signed| {
+            temporal_state(signed.issued, signed.not_before, signed.expiry, now)
+        });
+        let license = self.online_license.or_else(|| {
+            let signed = self.signed?;
+            if entitlement == EntitlementState::FutureOrClockSkew {
+                None
+            } else if now >= signed.license_expiry {
+                Some(LicenseState::RenewalNeeded)
+            } else if entitlement == EntitlementState::Current {
+                Some(LicenseState::Active)
+            } else {
+                None
+            }
+        });
+        if self.view.entitlement_state != entitlement || self.view.license_state != license {
+            self.view.entitlement_state = entitlement;
+            self.view.license_state = license;
+            self.view.revision = self.view.revision.saturating_add(1);
         }
     }
 }
@@ -159,6 +218,7 @@ pub(super) struct AccountController<T: HttpTransport, S: SecretStore> {
     device_rejected: bool,
     checked_at: Option<Time>,
     online_license: Option<LicenseState>,
+    preparation_error: Option<Code>,
 }
 
 struct RetainedActivation {
@@ -189,6 +249,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             device_rejected: false,
             checked_at: None,
             online_license: None,
+            preparation_error: None,
         }
     }
 
@@ -197,7 +258,14 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         &self.client
     }
 
+    #[cfg(test)]
     pub(super) fn execute(&mut self, command: Command) -> AccountView {
+        let mut projection = self.execute_projection(command);
+        projection.evaluate((self.clock)());
+        projection.view
+    }
+
+    fn execute_projection(&mut self, command: Command) -> Projection {
         if self
             .retained
             .as_ref()
@@ -208,14 +276,15 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         let (mut metadata, presence) = match self.load_metadata() {
             Ok(local) => local,
             Err(error) => {
-                let mut view = AccountView::local(0, None, CredentialPresence::Unavailable);
-                view.error_code = Some(error);
-                return view;
+                let mut projection = Projection::local();
+                projection.view.error_code = Some(error);
+                return projection;
             }
         };
         // Verify the on-disk snapshot before attempting to replace it. Project from
         // the disk again after edits, including failed or ambiguous disk writes.
         let cached = self.read_cache(&metadata);
+        self.preparation_error = None;
         let startup = matches!(command, Command::Startup);
         let result = match command {
             Command::Startup => Ok(()),
@@ -293,6 +362,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         path: ActivationPath,
         name: &str,
     ) -> Result<PendingActivation, Code> {
+        self.retire_prepared_other_path(metadata, path)?;
         let mut candidate = metadata.clone();
         let pending = candidate
             .begin_activation(path, std::env::consts::OS, env!("CARGO_PKG_VERSION"), name)?
@@ -302,6 +372,33 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             *metadata = candidate;
         }
         Ok(pending)
+    }
+
+    fn retire_prepared_other_path(
+        &self,
+        metadata: &mut AccountMetadata,
+        path: ActivationPath,
+    ) -> Result<(), Code> {
+        if metadata
+            .pending_activation()
+            .is_some_and(|pending| pending.is_prepared() && pending.path() != path)
+        {
+            self.complete_pending(metadata)?;
+        }
+        Ok(())
+    }
+
+    fn mark_dispatched(&self, metadata: &mut AccountMetadata) -> Result<PendingActivation, Code> {
+        let mut candidate = metadata.clone();
+        candidate.mark_activation_dispatched()?;
+        if candidate != *metadata {
+            self.save(&mut candidate)?;
+            *metadata = candidate;
+        }
+        metadata
+            .pending_activation()
+            .cloned()
+            .ok_or(Code::MetadataChanged)
     }
 
     fn complete_pending(&self, metadata: &mut AccountMetadata) -> Result<(), Code> {
@@ -323,11 +420,15 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             drop(password);
             return self.finish_retained(metadata);
         }
-        if let Some(pending) = metadata.pending_activation() {
-            if pending.path() != ActivationPath::AccountSession {
-                return Err(Code::PendingActivationPath);
-            }
-        } else {
+        if metadata.pending_activation().is_some_and(|pending| {
+            pending.path() != ActivationPath::AccountSession && !pending.is_prepared()
+        }) {
+            return Err(Code::PendingActivationPath);
+        }
+        if metadata
+            .pending_activation()
+            .is_none_or(|pending| pending.path() != ActivationPath::AccountSession)
+        {
             DeviceIdentity::new(
                 metadata.fingerprint(),
                 std::env::consts::OS,
@@ -349,10 +450,13 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         if self.credentials.store_account_session(&session).is_err() {
             // No activation can leave without saved retry authority. Preserve the
             // local failure alongside the independent unused-session cleanup result.
+            if pending.is_prepared() {
+                self.preparation_error = self.complete_pending(metadata).err();
+            }
             let _ = self.revoke_and_clear(&session);
             return Err(Code::AccountSessionSaveFailed);
         }
-        self.activate_session(metadata, &pending, &session)
+        self.activate_session(metadata, &session)
     }
 
     fn enroll(
@@ -365,7 +469,8 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             drop(key);
             return self.finish_retained(metadata);
         }
-        let pending = self.prepare(metadata, ActivationPath::EnrollmentKey, name)?;
+        self.prepare(metadata, ActivationPath::EnrollmentKey, name)?;
+        let pending = self.mark_dispatched(metadata)?;
         let result = self.client.activate_with_enrollment_key(
             &key,
             &pending.device_identity()?,
@@ -378,15 +483,15 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     fn activate_session(
         &mut self,
         metadata: &mut AccountMetadata,
-        pending: &PendingActivation,
         session: &Token,
     ) -> Result<(), Code> {
+        let pending = self.mark_dispatched(metadata)?;
         let result = self.client.begin_session_activation(
             session,
             &pending.device_identity()?,
             &pending.retry_key()?,
         );
-        self.complete_response(metadata, pending, result, Some(session))
+        self.complete_response(metadata, &pending, result, Some(session))
     }
 
     fn complete_response(
@@ -528,9 +633,8 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
                     return Err(Code::ReauthenticationRequired);
                 }
                 let display_name = metadata.display_fields().0.to_owned();
-                let pending =
-                    self.prepare(metadata, ActivationPath::AccountSession, &display_name)?;
-                return self.activate_session(metadata, &pending, &session);
+                self.prepare(metadata, ActivationPath::AccountSession, &display_name)?;
+                return self.activate_session(metadata, &session);
             }
             None => return self.refresh(metadata),
         };
@@ -540,7 +644,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         let session = self
             .account_session()?
             .ok_or(Code::ReauthenticationRequired)?;
-        self.activate_session(metadata, &pending, &session)
+        self.activate_session(metadata, &session)
     }
 
     fn account_session(&self) -> Result<Option<Token>, Code> {
@@ -557,8 +661,15 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     }
 
     fn retry_cleanup(&mut self, metadata: &mut AccountMetadata) -> Result<(), Code> {
-        if self.retained.is_some() || metadata.pending_activation().is_some() {
+        if self.retained.is_some()
+            || metadata
+                .pending_activation()
+                .is_some_and(|pending| !pending.is_prepared())
+        {
             return Err(Code::ActivationCompletionPending);
+        }
+        if metadata.pending_activation().is_some() {
+            self.complete_pending(metadata)?;
         }
         if self.cleanup_ack.is_some() {
             return self.clear_acknowledged_cleanup();
@@ -680,14 +791,17 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         presence: CredentialPresence,
         cache: Result<Option<VerifiedEntitlement>, Code>,
         result: Result<(), Code>,
-    ) -> AccountView {
+    ) -> Projection {
         let mut view = AccountView::local(0, Some(metadata), presence);
-        let pending = metadata.pending_activation().is_some();
+        let pending = metadata
+            .pending_activation()
+            .is_some_and(|pending| !pending.is_prepared());
         let account = self.account_session();
         view.pending_cleanup = self.cleanup_ack.is_some()
             || self.cleanup_error.is_some()
             || (!pending && account.as_ref().ok().is_some_and(Option::is_some));
         view.cleanup_error_code = self.cleanup_error;
+        view.preparation_error_code = self.preparation_error;
         view.error_code = result.err().or_else(|| cache.as_ref().err().copied());
         if view.error_code.is_none() && matches!(presence, CredentialPresence::Unavailable) {
             view.error_code = Some(Code::CredentialPresenceUnavailable);
@@ -712,34 +826,27 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             view.device_state = DeviceState::ReauthenticationNeeded;
         }
         view.last_checked_at = self.checked_at.and_then(rfc3339);
-        view.license_state = self.online_license;
 
-        if let Ok(Some(manifest)) = cache {
-            let now = (self.clock)();
+        let signed = cache.ok().flatten().map(|manifest| {
             let facts = manifest.facts();
-            view.entitlement_state = entitlement_state(&manifest, now);
+            let display = manifest.display();
             view.manifest_expires_at = rfc3339(facts.expires_at());
             view.license_expires_at = rfc3339(facts.license_expires_at());
-            let display = manifest.display();
             view.plan_label = display.plan_display_label.clone();
             view.instances_used = display.instances_used;
             view.instance_limit = display.instances_limit;
-            // An expired manifest alone cannot establish licence expiry. Use the
-            // independent signed licence boundary only for local renewal guidance.
-            if !matches!(view.entitlement_state, EntitlementState::FutureOrClockSkew) {
-                view.license_state = match view.license_state {
-                    Some(LicenseState::Inactive | LicenseState::RenewalNeeded) => {
-                        view.license_state
-                    }
-                    None if now >= facts.license_expires_at() => Some(LicenseState::RenewalNeeded),
-                    None if matches!(view.entitlement_state, EntitlementState::Current) => {
-                        Some(LicenseState::Active)
-                    }
-                    _ => view.license_state,
-                };
+            SignedTime {
+                issued: facts.issued_at(),
+                not_before: manifest.not_before(),
+                expiry: facts.expires_at(),
+                license_expiry: facts.license_expires_at(),
             }
+        });
+        Projection {
+            view,
+            signed,
+            online_license: self.online_license,
         }
-        view
     }
 }
 

@@ -23,6 +23,7 @@ const NOW: Time = (1_794_672_000, 123_456_789);
 struct Custody {
     store: Arc<InMemorySecretStore>,
     fail_write: Arc<std::sync::atomic::AtomicBool>,
+    fail_session_write: Arc<std::sync::atomic::AtomicBool>,
     fail_remove: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -34,6 +35,13 @@ impl SecretStore for Custody {
     fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
         if name == DEVICE_TOKEN_NAME && self.fail_write.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(SecretError("synthetic keyring denial".into()));
+        }
+        if name == ACCOUNT_SESSION_NAME
+            && self
+                .fail_session_write
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(SecretError("synthetic session write denial".into()));
         }
         self.store.set(name, token)
     }
@@ -1098,4 +1106,274 @@ fn failed_public_id_save_retries_from_native_response_without_a_second_activatio
     assert_eq!(requests.len(), 2);
     assert!(requests[0].url.ends_with("/v1/activations"));
     assert!(requests[1].url.ends_with("/v1/license:refresh"));
+}
+
+#[test]
+fn failed_bootstrap_custody_retires_fresh_preparation_but_preserves_sent_retry() {
+    use std::sync::atomic::Ordering;
+    for already_sent in [false, true] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let custody = Custody::default();
+        let mut account = controller(dir.path(), custody.clone());
+        if already_sent {
+            account
+                .client()
+                .transport()
+                .push_response(200, session_json())
+                .push_failure("possibly sent");
+            assert_eq!(
+                wire(&account.execute(sign_in()))["operation_state"],
+                "retry_pending"
+            );
+        }
+        custody.fail_session_write.store(true, Ordering::SeqCst);
+        account
+            .client()
+            .transport()
+            .push_response(
+                200,
+                session_json().replace(SESSION, "different-session-for-retry"),
+            )
+            .push_response(200, r#"{"revoked":true}"#);
+        assert_eq!(
+            wire(&account.execute(sign_in()))["error_code"],
+            "account_session_save_failed"
+        );
+        let saved = AccountMetadataStore::new(dir.path().into())
+            .load_or_create(CredentialPresence::Missing)
+            .expect("persisted preparation");
+        assert_eq!(saved.pending_activation().is_some(), already_sent);
+
+        let mut restarted = controller(dir.path(), custody);
+        restarted
+            .client()
+            .transport()
+            .push_response(200, activated(Some(SECRET), false))
+            .push_failure("offline");
+        let result = wire(&restarted.execute(enroll()));
+        if already_sent {
+            assert_eq!(result["error_code"], "pending_activation_path");
+            assert_eq!(restarted.client().transport().request_count(), 0);
+        } else {
+            assert_eq!(result["setup_state"], "completed");
+        }
+    }
+}
+
+#[test]
+fn restart_can_replace_prepared_path_that_never_dispatched() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let store = AccountMetadataStore::new(dir.path().into());
+    let mut metadata = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    metadata
+        .begin_activation(
+            crate::account::state::ActivationPath::AccountSession,
+            std::env::consts::OS,
+            "1.0",
+            "Booth",
+        )
+        .expect("prepare account path");
+    store.save(&metadata).expect("durable preparation");
+    let mut restarted = controller(dir.path(), Custody::default());
+    restarted
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false))
+        .push_failure("offline");
+    assert_eq!(
+        wire(&restarted.execute(enroll()))["setup_state"],
+        "completed"
+    );
+}
+
+#[test]
+fn legacy_phase_absence_preserves_ambiguous_operation() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let mut account = controller(dir.path(), Custody::default());
+    account
+        .client()
+        .transport()
+        .push_failure("lost enrollment reply");
+    assert_eq!(
+        wire(&account.execute(enroll()))["operation_state"],
+        "retry_pending"
+    );
+    let file = dir.path().join("account-metadata.json");
+    let body = std::fs::read(&file).expect("metadata");
+    let mut json: Value = serde_json::from_slice(&body).expect("metadata JSON");
+    json["pending_activation"]
+        .as_object_mut()
+        .expect("pending")
+        .remove("phase");
+    std::fs::write(
+        file,
+        serde_json::to_vec(&json).expect("serialize legacy shape"),
+    )
+    .expect("legacy fixture");
+    let mut restarted = controller(dir.path(), Custody::default());
+    assert_eq!(
+        wire(&restarted.execute(sign_in()))["error_code"],
+        "pending_activation_path"
+    );
+    assert_eq!(restarted.client().transport().request_count(), 0);
+}
+
+#[test]
+fn cached_projection_expires_at_exact_time_during_blocked_refresh() {
+    use crate::account::controller::Worker;
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    use selahcue_licensing::EntitlementCache;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        mpsc, Mutex,
+    };
+    static NANOSECOND: AtomicU32 = AtomicU32::new(0);
+    fn clock() -> Time {
+        (NOW.0, NANOSECOND.load(Ordering::SeqCst))
+    }
+    struct BlockRefresh {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+    impl HttpTransport for BlockRefresh {
+        fn post_json(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            self.entered.send(()).expect("refresh reached wire");
+            self.release
+                .lock()
+                .expect("hold refresh")
+                .recv_timeout(std::time::Duration::from_secs(8))
+                .expect("unblock refresh");
+            Err(TransportError("offline".into()))
+        }
+        fn get(&self, _: &str, _: Option<&str>) -> Result<HttpResponse, TransportError> {
+            panic!("foreground fixture has no GET");
+        }
+    }
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let store = AccountMetadataStore::new(dir.path().into());
+    let custody = Custody::default();
+    let mut metadata = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    metadata.activated_public_id = Some(DEVICE.into());
+    store.save(&metadata).expect("bind");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+        .expect("durable custody");
+    let (trust, manifest) = signed_display(
+        metadata.fingerprint(),
+        "2026-11-14T15:00:00Z",
+        "2026-11-14T16:00:00.123456789Z",
+        "2026-11-17T16:00:00Z",
+    );
+    EntitlementCache::new(dir.path())
+        .replace(manifest.as_bytes(), &trust, DEVICE, metadata.fingerprint())
+        .expect("verified fixture");
+    let (entered, wait_entered) = mpsc::channel();
+    let (release, wait_release) = mpsc::channel();
+    let transport = BlockRefresh {
+        entered,
+        release: Mutex::new(wait_release),
+    };
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("fixture client");
+    let worker = Worker::new(AccountController::new(
+        Some(dir.path().into()),
+        client,
+        custody,
+        trust,
+        clock,
+    ));
+    NANOSECOND.store(123_456_788, Ordering::SeqCst);
+    let start = worker
+        .admit()
+        .unwrap_or_else(|_| panic!("startup slot"))
+        .run(Command::Startup);
+    assert_eq!(wire(&start)["entitlement_state"], "current");
+    let work = worker.admit().unwrap_or_else(|_| panic!("refresh slot"));
+    let busy = worker.view();
+    let task = std::thread::spawn(move || work.run(Command::Refresh { explicit: false }));
+    wait_entered
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("running refresh");
+    NANOSECOND.store(123_456_789, Ordering::SeqCst);
+    let new_view = worker.view();
+    let competing = worker.admit().err().expect("busy reply");
+    release.send(()).expect("release pending refresh");
+    let done = task.join().expect("refresh finished");
+    assert_eq!(wire(&new_view)["entitlement_state"], "expired");
+    assert_eq!(wire(&competing)["entitlement_state"], "expired");
+    assert!(new_view.revision > busy.revision);
+    assert_eq!(new_view.revision, competing.revision);
+    assert!(done.revision > new_view.revision);
+    assert_eq!(wire(&done)["entitlement_state"], "expired");
+}
+
+#[test]
+fn failed_unsent_retirement_preserves_primary_custody_error_and_can_be_retried() {
+    struct FailRetirement {
+        directory: std::path::PathBuf,
+        store: Custody,
+    }
+    impl SecretStore for FailRetirement {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            self.store.get(name)
+        }
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            if name == ACCOUNT_SESSION_NAME {
+                let lock = self.directory.join("account-metadata.lock");
+                std::fs::remove_file(&lock).expect("closed prep lock");
+                std::fs::create_dir(lock).expect("block completion save");
+                return Err(SecretError("blocked account custody".into()));
+            }
+            self.store.set(name, token)
+        }
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            self.store.remove(name)
+        }
+    }
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let client = LicensingClient::new(ScriptedTransport::new(), API_ORIGIN).expect("static origin");
+    let store = Custody::default();
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        FailRetirement {
+            directory: dir.path().into(),
+            store: store.clone(),
+        },
+        TrustedKeys::new(),
+        || NOW,
+    );
+    account
+        .client()
+        .transport()
+        .push_response(200, session_json())
+        .push_response(200, r#"{"revoked":true}"#);
+    let failed = wire(&account.execute(sign_in()));
+    assert_eq!(failed["error_code"], "account_session_save_failed");
+    assert_eq!(failed["preparation_error_code"], "metadata_unavailable");
+    assert!(account
+        .client()
+        .transport()
+        .recorded()
+        .iter()
+        .all(|r| !r.url.contains("/v1/activations")));
+    std::fs::remove_dir(dir.path().join("account-metadata.lock")).expect("restore lock path");
+    let mut restarted = controller(dir.path(), store);
+    restarted
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false))
+        .push_failure("offline");
+    assert_eq!(
+        wire(&restarted.execute(enroll()))["setup_state"],
+        "completed"
+    );
 }

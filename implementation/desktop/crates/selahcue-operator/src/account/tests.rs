@@ -125,7 +125,8 @@ fn metadata_contains_no_credential() {
     let pending = value["pending_activation"]
         .as_object()
         .expect("pending object");
-    assert_eq!(pending.len(), 3);
+    assert_eq!(pending.len(), 4);
+    assert_eq!(pending["phase"], "prepared");
     assert_eq!(pending["path"], "enrollment_key");
     assert!(pending.contains_key("idempotency_key"));
     let identity = pending["identity"].as_object().expect("identity object");
