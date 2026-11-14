@@ -111,7 +111,7 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertEqual(observed, {'settled': True, 'reads': 1})
             marker = json.loads(diagnostic.render('settled', 0))['firstPoll']
             self.assertIsNotNone(marker)
-            self.assertEqual(set(marker), {'elapsedMs', 'pollCount', 'lastPollResult', 'rafCompleted', 'rafPending'})
+            self.assertEqual(set(marker), {'elapsedMs', 'pollCount', 'lastPollResult', 'rafCompleted', 'rafPending', 'visibilityState'})
             self.assertTrue(marker['lastPollResult'])
             payload = json.loads(diagnostic.render('settled', 0))
             self.assertIsNone(payload['firstFramePoll'])
@@ -133,6 +133,55 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertIsNone(payload['firstFramePoll'])
             self.assertEqual(payload['earlyTimer']['pollCount'], 1)
             self.assertFalse(payload['earlyTimer']['lastPollResult'])
+
+    def test_pagehide_reports_why_observation_stopped_before_first_poll(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/pagehide-control', 375)
+            page.goto('data:text/html,<main><h1>Pagehide control</h1></main>')
+            page.evaluate("dispatchEvent(new Event('pagehide'))")
+            payload = json.loads(diagnostic.render('infra', 0))
+            hidden = payload.get('pageHide')
+            self.assertIsNotNone(hidden, 'no record of observation stopping on pagehide')
+            self.assertEqual(hidden['pollCount'], 0)
+            self.assertIsNone(hidden['lastPollResult'])
+            self.assertTrue(page.evaluate(sweep.OBSERVED_SETTLE_JS))
+            self.assertNotIn('firstPoll', diagnostic.markers)
+
+    def test_separate_timer_reports_when_periodic_animation_snapshot_errors(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/snapshot-error-control', 375)
+            snapshot_events = []
+            page.on('console', lambda message: snapshot_events.append(message.text))
+            page.goto('data:text/html,<main><h1>Snapshot error control</h1></main>')
+            with page.expect_console_message(
+                predicate=lambda message: message.text == 'WEBKIT_SETTLE_SAMPLE {"observerError":true}',
+                timeout=3000,
+            ):
+                page.evaluate("document.querySelector('h1').animate([{opacity:1},{opacity:0}], {duration:30000})")
+                self.assertFalse(page.evaluate(sweep.OBSERVED_SETTLE_JS))
+                # Model a diagnostic animation read failing independently of the gate.
+                page.evaluate("() => { document.getAnimations = () => { throw new Error('private-snapshot-error'); }; }")
+            payload = json.loads(diagnostic.render('infra', 0))
+            start = payload.get('periodicSampleStart')
+            self.assertIsNotNone(start, 'no marker reached the harness before the animation snapshot')
+            self.assertEqual(payload['samples'][-1], {'observerError': True})
+            start_index = next(index for index, event in enumerate(snapshot_events)
+                               if event.startswith('WEBKIT_SETTLE_MARKER {"event":"periodicSampleStart",'))
+            self.assertLess(start_index, snapshot_events.index('WEBKIT_SETTLE_SAMPLE {"observerError":true}'))
+            if 'lateTimer' not in diagnostic.markers:
+                page.wait_for_event(
+                    'console', predicate=lambda message: message.text.startswith('WEBKIT_SETTLE_MARKER ')
+                    and '"event":"lateTimer"' in message.text,
+                    timeout=3000,
+                )
+            encoded = diagnostic.render('infra', 0)
+            late = json.loads(encoded)['lateTimer']
+            self.assertGreaterEqual(late['elapsedMs'], start['elapsedMs'])
+            self.assertEqual(late['pollCount'], 1)
+            self.assertFalse(late['lastPollResult'])
+            self.assertNotIn('private-snapshot-error', encoded)
 
     def test_animation_observer_hides_unrecognized_labels_and_rejects_spoofed_labels(self):
         with self.browser.new_context() as context:

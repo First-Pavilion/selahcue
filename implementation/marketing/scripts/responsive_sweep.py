@@ -514,18 +514,18 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
   const ids = new WeakMap(), targetIds = new WeakMap();
   let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
-  let raf = null, timer = null, earlyTimer = null, stopped = false;
-  let pollCount = 0, lastPollResult = null;
+  let raf = null, timer = null, earlyTimer = null, lateTimer = null, stopped = false;
+  let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false;
   const start = performance.now();
   const stop = () => {
     stopped = true;
     clearTimeout(timer);
     clearTimeout(earlyTimer);
+    clearTimeout(lateTimer);
     if (raf !== null) cancelAnimationFrame(raf);
     raf = null;
   };
   const deadline = setTimeout(stop, 12000);
-  addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
   const sample = () => {
     if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
     sampleCount++;
@@ -573,24 +573,41 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   const marker = (event) => {
     const elapsedMs = performance.now() - start;
     if (stopped || elapsedMs > 12000) return;
-    console.debug('WEBKIT_SETTLE_MARKER ' + JSON.stringify({
-      event, elapsedMs, pollCount, lastPollResult,
-      rafCompleted: frames, rafPending: raf !== null,
-    }));
+    try {
+      console.debug('WEBKIT_SETTLE_MARKER ' + JSON.stringify({
+        event, elapsedMs, pollCount, lastPollResult,
+        rafCompleted: frames, rafPending: raf !== null, visibilityState: document.visibilityState,
+      }));
+    } catch (_) {}
   };
+  addEventListener('pagehide', () => {
+    marker('pageHide');
+    clearTimeout(deadline);
+    stop();
+  }, { once: true });
   window.__selahcueObserveSettlePoll = (result) => {
     if (stopped || typeof result !== 'boolean') return;
     lastPollResult = result;
     pollCount++;
     if (pollCount === 1) {
       marker('firstPoll');
-      if (!result) earlyTimer = setTimeout(() => marker('earlyTimer'), 100);
+      if (!result) {
+        earlyTimer = setTimeout(() => marker('earlyTimer'), 100);
+        // One scalar heartbeat independent of the 1s rich snapshot. It never reads layout or animations.
+        lateTimer = setTimeout(() => {
+          if (lastPollResult === false) marker('lateTimer');
+        }, 1250);
+      }
     } else if (pollCount === 2) {
       marker('firstFramePoll');
     }
   };
   const tick = () => {
     if (stopped || sampleCount >= 13) return;
+    if (lastPollResult === false && !reportedPeriodicStart) {
+      reportedPeriodicStart = true;
+      marker('periodicSampleStart');
+    }
     sample();
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
@@ -600,17 +617,20 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
 })();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
 
 
-SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer")
+SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleStart", "lateTimer", "pageHide")
 
 
 def valid_settle_marker(value):
     if not (
         type(value) is dict
-        and set(value) == {"event", "elapsedMs", "pollCount", "lastPollResult", "rafCompleted", "rafPending"}
+        and set(value) == {"event", "elapsedMs", "pollCount", "lastPollResult",
+                           "rafCompleted", "rafPending", "visibilityState"}
         and value["event"] in SETTLE_MARKERS
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
-        and type(value["pollCount"]) is int and 1 <= value["pollCount"] <= 2**53 - 1
-        and type(value["lastPollResult"]) is bool
+        and type(value["pollCount"]) is int and 0 <= value["pollCount"] <= 2**53 - 1
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
+        and (value["pollCount"] > 0 or value["event"] == "pageHide")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
         and type(value["rafCompleted"]) is int and 0 <= value["rafCompleted"] <= 13
         and type(value["rafPending"]) is bool
     ):
