@@ -124,6 +124,9 @@ pub(crate) enum AccountErrorCode {
     ActivationCompletionPending,
     DeviceBindingMismatch,
     WorkerUnavailable,
+    BoundActivationUnsupported,
+    ActivationOperationCompleted,
+    LegacyActivationOutcomeUnknown,
 }
 
 impl From<AccountStorageError> for AccountErrorCode {

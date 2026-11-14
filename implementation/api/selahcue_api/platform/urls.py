@@ -4,6 +4,9 @@ from selahcue_api.platform import views
 
 
 urlpatterns = [
+    path("activations:bound", views.activate_device_bound, name="activation-bound"),
+    path("activations:bound-with-session", views.activate_device_bound_with_session,
+         name="activation-bound-with-session"),
     path("activations", views.activate_device, name="activation"),
     # Native-client account sign-in (86ak5t1gw, ADR-0029). The browser equivalents live on
     # `/graphql/account`, which stays CSRF-enforced.

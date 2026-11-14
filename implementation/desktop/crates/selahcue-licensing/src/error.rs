@@ -59,6 +59,15 @@ use crate::contract::ErrorCode;
 /// Every variant is non-fatal to presentation — see [`Self::permits_presentation`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationFailure {
+    /// The dedicated versioned native activation contract is unavailable.
+    BoundActivationUnsupported,
+    /// Request differs from the recorded operation or the authorized binding.
+    ActivationOperationConflict,
+    /// The original operation completed but its exact credential is unavailable.
+    ActivationOperationCompleted {
+        /// Present only after the dedicated route's proof passed nonce, platform and ID checks.
+        device_public_id: Option<String>,
+    },
     /// The platform could not be reached at all: DNS, TLS, connection, timeout. Frame A7.
     ///
     /// **Retryable and silent.** FR-523 and NFR-504 require this to produce no
@@ -203,6 +212,14 @@ impl ActivationFailure {
             ErrorCode::ValidationFailed => ActivationFailure::ValidationFailed,
             ErrorCode::RateLimited => ActivationFailure::RateLimited,
             ErrorCode::Internal => ActivationFailure::Server(500),
+            ErrorCode::ActivationOperationConflict => {
+                ActivationFailure::ActivationOperationConflict
+            }
+            ErrorCode::ActivationOperationCompleted => {
+                ActivationFailure::ActivationOperationCompleted {
+                    device_public_id: None,
+                }
+            }
             other => ActivationFailure::Coded(other),
         }
     }
@@ -216,6 +233,9 @@ impl ActivationFailure {
     /// running app (CON-P3, NG-5).
     pub fn permits_presentation(&self) -> bool {
         match self {
+            ActivationFailure::BoundActivationUnsupported
+            | ActivationFailure::ActivationOperationConflict
+            | ActivationFailure::ActivationOperationCompleted { .. } => true,
             ActivationFailure::Unreachable(_) => true,
             ActivationFailure::NoActiveLicense => true,
             ActivationFailure::UnknownKey => true,
@@ -257,6 +277,15 @@ impl ActivationFailure {
 impl core::fmt::Display for ActivationFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            ActivationFailure::BoundActivationUnsupported => {
+                f.write_str("the server does not support bound native activation")
+            }
+            ActivationFailure::ActivationOperationConflict => {
+                f.write_str("the request did not match the saved activation or device")
+            }
+            ActivationFailure::ActivationOperationCompleted { .. } => {
+                f.write_str("the activation completed and its original credential is unavailable")
+            }
             ActivationFailure::Unreachable(why) => {
                 write!(f, "the SelahCue platform could not be reached: {why}")
             }

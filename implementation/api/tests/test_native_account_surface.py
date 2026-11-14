@@ -62,6 +62,8 @@ EMAIL = "pastor@grace.example"
 # an exempt route must not be able to authenticate from, or set, an ambient browser credential.
 EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/activations",
+    "v1/activations:bound",
+    "v1/activations:bound-with-session",
     "v1/sessions",
     "v1/sessions:revoke",
     "v1/activations:with-session",

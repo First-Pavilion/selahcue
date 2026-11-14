@@ -124,6 +124,8 @@ def test_route_contracts_keep_admin_account_and_desktop_surfaces_separate():
     desktop_paths = [contract.path for contract in desktop_command_contracts()]
     assert desktop_paths == [
         "v1/activations",
+        "v1/activations:bound",
+        "v1/activations:bound-with-session",
         # The native sign-in pair (86ak5t1gw): the desktop reaches account sign-in here, not on
         # `/graphql/account`, which stays CSRF-enforced for browsers.
         "v1/sessions",

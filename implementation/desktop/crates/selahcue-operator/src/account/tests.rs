@@ -125,7 +125,13 @@ fn metadata_contains_no_credential() {
     let pending = value["pending_activation"]
         .as_object()
         .expect("pending object");
-    assert_eq!(pending.len(), 4);
+    assert_eq!(pending.len(), 7);
+    assert_eq!(pending["mode"], "recover");
+    assert_eq!(pending["protocol"], "bound_v1");
+    assert_eq!(
+        pending["expected_device_public_id"],
+        "dev_81818181818181818181818181818181"
+    );
     assert_eq!(pending["phase"], "prepared");
     assert_eq!(pending["path"], "enrollment_key");
     assert!(pending.contains_key("idempotency_key"));

@@ -2708,3 +2708,66 @@ fn deferred_session_activation_does_not_attempt_cleanup() {
     assert!(answer.session_cleanup.is_none());
     assert_eq!(client.transport().request_count(), 1);
 }
+
+#[test]
+fn bound_activation_requires_versioned_response_and_never_uses_legacy_urls() {
+    use selahcue_licensing::ScriptedTransport;
+    let key = IdempotencyKey::new("0123456789abcdef0123456789abcdef").expect("fixture nonce");
+    let identity =
+        DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("fixture identity");
+    let credential = Token::new("fixture-authority");
+    for (status, body, error) in [
+        (
+            404,
+            "<html>old response</html>",
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+        (
+            405,
+            r#"{"operation_version":1,"error":{"code":"NOT_FOUND","message":"fixture"}}"#,
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+        (
+            404,
+            r#"{"operation_version":1,"error":{"code":"NOT_FOUND","message":"fixture"}}"#,
+            ActivationFailure::UnknownKey,
+        ),
+        (
+            409,
+            r#"{"operation_version":1,"error":{"code":"ACTIVATION_OPERATION_COMPLETED","message":"fixture"}}"#,
+            ActivationFailure::ActivationOperationCompleted {
+                device_public_id: None,
+            },
+        ),
+        (
+            200,
+            r#"{"created":true,"reminted":false,"activation_token":"legacy","device":{"device_public_id":"dev_0123456789abcdef0123456789abcdef","status":"ACTIVE","platform":"macos"},"token":{},"license":{"status":"ACTIVATED","expires_at":"2027-01-01T00:00:00Z"}}"#,
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+    ] {
+        let client = LicensingClient::new(
+            ScriptedTransport::responding(status, body),
+            "https://api.fixture.test",
+        )
+        .expect("fixture origin");
+        assert_eq!(
+            client
+                .activate_bound(
+                    ActivationPath::EnrollmentKey,
+                    &credential,
+                    &identity,
+                    &key,
+                    None
+                )
+                .expect_err("unsupported or refusal"),
+            error
+        );
+        let requests = client.transport().recorded();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].url,
+            "https://api.fixture.test/v1/activations:bound"
+        );
+        assert!(!requests[0].had_bearer);
+    }
+}

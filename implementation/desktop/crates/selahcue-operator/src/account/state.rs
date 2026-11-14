@@ -96,6 +96,12 @@ pub(crate) struct PendingActivation {
     identity: InstallIdentity,
     #[serde(default)]
     phase: DispatchPhase,
+    #[serde(default)]
+    protocol: ActivationProtocol,
+    #[serde(default)]
+    mode: Option<ActivationMode>,
+    #[serde(default)]
+    expected_device_public_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,13 +113,41 @@ enum DispatchPhase {
     PossiblySent,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ActivationProtocol {
+    #[default]
+    LegacyV1,
+    BoundV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ActivationMode {
+    Initial,
+    Recover,
+}
+
 impl PendingActivation {
+    pub(crate) fn is_legacy(&self) -> bool {
+        self.protocol == ActivationProtocol::LegacyV1
+    }
+
+    pub(crate) fn expected_device_public_id(&self) -> Option<&str> {
+        self.expected_device_public_id.as_deref()
+    }
+
     pub(crate) fn is_prepared(&self) -> bool {
         self.phase == DispatchPhase::Prepared
     }
 
     fn permits_update(&self, candidate: &Self) -> bool {
-        if self == candidate {
+        if self == candidate
+            || (self.is_prepared()
+                && self.is_legacy()
+                && candidate.is_prepared()
+                && !candidate.is_legacy())
+        {
             return true;
         }
         let mut dispatched = self.clone();
@@ -192,6 +226,15 @@ impl AccountMetadata {
         version: &str,
         display_name: &str,
     ) -> Result<&PendingActivation, AccountStorageError> {
+        if self
+            .pending_activation
+            .as_ref()
+            .is_some_and(|pending| pending.is_prepared() && pending.is_legacy())
+        {
+            // Saved atomically through the metadata CAS below. A missing legacy
+            // dispatch phase defaults to PossiblySent and never reaches this.
+            self.pending_activation = None;
+        }
         if let Some(pending) = &self.pending_activation {
             if pending.path != path {
                 return Err(AccountStorageError::PendingActivationPath);
@@ -203,6 +246,13 @@ impl AccountMetadata {
             self.pending_activation = Some(PendingActivation {
                 path,
                 phase: DispatchPhase::Prepared,
+                protocol: ActivationProtocol::BoundV1,
+                mode: Some(if self.activated_public_id.is_some() {
+                    ActivationMode::Recover
+                } else {
+                    ActivationMode::Initial
+                }),
+                expected_device_public_id: self.activated_public_id.clone(),
                 idempotency_key: random_id(|bytes| getrandom::fill(bytes).is_ok())?,
                 identity: InstallIdentity {
                     install_fingerprint: identity.fingerprint,
@@ -262,8 +312,33 @@ impl AccountMetadata {
         }
         if let Some(pending) = &self.pending_activation {
             let identity = pending.device_identity()?;
-            if identity.fingerprint != self.install_fingerprint
+            let valid_mode = matches!(
+                (
+                    pending.protocol,
+                    pending.mode,
+                    &pending.expected_device_public_id
+                ),
+                (ActivationProtocol::LegacyV1, None, None)
+                    | (
+                        ActivationProtocol::BoundV1,
+                        Some(ActivationMode::Initial),
+                        None
+                    )
+                    | (
+                        ActivationProtocol::BoundV1,
+                        Some(ActivationMode::Recover),
+                        Some(_)
+                    )
+            );
+            if !valid_mode
+                || identity.fingerprint != self.install_fingerprint
                 || !is_random_id(&pending.idempotency_key)
+                || pending
+                    .expected_device_public_id
+                    .as_ref()
+                    .is_some_and(|expected| {
+                        pending.is_legacy() || Some(expected) != self.activated_public_id.as_ref()
+                    })
             {
                 return Err(AccountStorageError::Malformed);
             }

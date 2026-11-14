@@ -38,10 +38,11 @@
 //! which permits presentation.
 
 use crate::contract::{
-    ActivationRequest, ActivationResponse, ApiErrorEnvelope, EntitlementEnvelope, ErrorCode,
-    LicenseDto, SessionActivationRequest, SessionRequest, SessionResponse, SessionRevokeResponse,
-    TokenMetaDto, ACTIVATIONS_PATH, ACTIVATIONS_WITH_SESSION_PATH, ENTITLEMENT_MANIFEST_PATH,
-    SESSIONS_PATH, SESSION_REVOKE_PATH,
+    ActivationRequest, ActivationResponse, ApiErrorEnvelope, BoundActivationError,
+    BoundActivationRequest, BoundActivationResponse, BoundOperationState, EntitlementEnvelope,
+    ErrorCode, LicenseDto, SessionActivationRequest, SessionRequest, SessionResponse,
+    SessionRevokeResponse, TokenMetaDto, ACTIVATIONS_PATH, ACTIVATIONS_WITH_SESSION_PATH,
+    ENTITLEMENT_MANIFEST_PATH, SESSIONS_PATH, SESSION_REVOKE_PATH,
 };
 use crate::custody::DeviceCredentials;
 use crate::device::{DeviceIdentity, IdempotencyKey};
@@ -477,6 +478,111 @@ impl<T: HttpTransport> LicensingClient<T> {
         })?;
 
         Self::activation(ActivationPath::EnrollmentKey, parsed)
+    }
+
+    /// Send the frozen native operation using its dedicated path. These paths
+    /// intentionally never fall back to the legacy allocating endpoints.
+    pub fn activate_bound(
+        &self,
+        path: ActivationPath,
+        credential: &Token,
+        identity: &DeviceIdentity,
+        idempotency_key: &IdempotencyKey,
+        expected_device_public_id: Option<&str>,
+    ) -> Result<Activation, ActivationFailure> {
+        let (route, bearer, key) = match path {
+            ActivationPath::EnrollmentKey => {
+                ("/v1/activations:bound", None, Some(credential.expose()))
+            }
+            ActivationPath::AccountSession => {
+                if Self::unusable_bearer(credential) {
+                    return Err(ActivationFailure::Unauthenticated);
+                }
+                ("/v1/activations:bound-with-session", Some(credential), None)
+            }
+        };
+        let request = BoundActivationRequest {
+            operation_version: 1,
+            mode: if expected_device_public_id.is_some() {
+                "recover"
+            } else {
+                "initial"
+            },
+            idempotency_key: idempotency_key.as_str(),
+            expected_device_public_id,
+            device_fingerprint: &identity.fingerprint,
+            platform: &identity.platform,
+            app_version: &identity.app_version,
+            display_name: &identity.display_name,
+            license_key: key,
+        };
+        let body = Self::encode(&request)?;
+        let response = self.post(route, &body, bearer)?;
+        let status = response.status;
+        if status == 405 {
+            return Err(ActivationFailure::BoundActivationUnsupported);
+        }
+        if !(200..300).contains(&status) {
+            if status == 429 || status >= 500 {
+                return Err(Self::status_failure(status, &|code| {
+                    ActivationFailure::from_code(code, path)
+                }));
+            }
+            let parsed: BoundActivationError = (response.body.len() <= MAX_RESPONSE_BODY_BYTES)
+                .then(|| serde_json::from_str(&response.body).ok())
+                .flatten()
+                .filter(|envelope: &BoundActivationError| envelope.operation_version == 1)
+                .ok_or(ActivationFailure::BoundActivationUnsupported)?;
+            let code = ErrorCode::parse(&parsed.error.code);
+            if matches!(code, ErrorCode::Unknown(_)) {
+                return Err(ActivationFailure::BoundActivationUnsupported);
+            }
+            if code == ErrorCode::ActivationOperationCompleted {
+                if let Some(proof) = parsed.completed_activation {
+                    if status != 409
+                        || proof.idempotency_key != request.idempotency_key
+                        || proof.platform != identity.platform
+                        || !Self::valid_bound_device_id(&proof.device_public_id)
+                        || expected_device_public_id.is_some_and(|id| id != proof.device_public_id)
+                    {
+                        return Err(ActivationFailure::ActivationOperationConflict);
+                    }
+                    return Err(ActivationFailure::ActivationOperationCompleted {
+                        device_public_id: Some(proof.device_public_id),
+                    });
+                }
+            }
+            return Err(ActivationFailure::from_code(code, path));
+        }
+        let parsed: BoundActivationResponse =
+            Self::decode(response, |code| ActivationFailure::from_code(code, path))
+                .map_err(|_| ActivationFailure::BoundActivationUnsupported)?;
+        if parsed.operation_version != 1 {
+            return Err(ActivationFailure::BoundActivationUnsupported);
+        }
+        if parsed.idempotency_key != request.idempotency_key
+            || !Self::valid_bound_device_id(&parsed.activation.device.device_public_id)
+            || parsed.activation.device.status != "ACTIVE"
+            || (parsed.operation_state == BoundOperationState::Replay
+                && (parsed.activation.activation_token.is_some()
+                    || parsed.activation.created
+                    || parsed.activation.reminted))
+            || parsed.activation.device.platform != identity.platform
+            || expected_device_public_id
+                .is_some_and(|id| parsed.activation.device.device_public_id != id)
+        {
+            return Err(ActivationFailure::ActivationOperationConflict);
+        }
+        Self::activation(path, parsed.activation)
+    }
+
+    fn valid_bound_device_id(value: &str) -> bool {
+        value.strip_prefix("dev_").is_some_and(|id| {
+            id.len() == 32
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
     }
 
     /// Fetch an unverified manifest envelope for later verification against trusted keys

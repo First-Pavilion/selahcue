@@ -23,6 +23,8 @@ _STATUS_BY_CODE = {
     ErrorCode.VALIDATION_FAILED: 400,
     ErrorCode.NOT_FOUND: 404,
     ErrorCode.CONFLICT: 409,
+    ErrorCode.ACTIVATION_OPERATION_CONFLICT: 409,
+    ErrorCode.ACTIVATION_OPERATION_COMPLETED: 409,
     ErrorCode.POLICY_DENIED: 403,
     ErrorCode.RATE_LIMITED: 429,
     ErrorCode.NOT_IMPLEMENTED: 501,
@@ -35,7 +37,9 @@ _STATUS_BY_CODE = {
 }
 
 
-def command_error_response(*, code: ErrorCode, surface: str, operation: str) -> JsonResponse:
+def command_error_response(
+    *, code: ErrorCode, surface: str, operation: str, operation_version: int | None = None,
+) -> JsonResponse:
     """A safe, coded JSON error for a /v1 command, in the same shape as the not-implemented
     stub. Error payloads never carry secrets, so the redaction assertion is run over them."""
     payload = {
@@ -43,5 +47,7 @@ def command_error_response(*, code: ErrorCode, surface: str, operation: str) -> 
         "surface": surface,
         "operation": operation,
     }
+    if operation_version is not None:
+        payload["operation_version"] = operation_version
     assert_no_restricted_payload_fields(payload)
     return JsonResponse(payload, status=_STATUS_BY_CODE.get(code, 400))

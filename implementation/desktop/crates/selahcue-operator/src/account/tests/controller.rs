@@ -1,7 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use selahcue_licensing::{
-    InMemorySecretStore, LicensingClient, ScriptedTransport, SecretError, SecretStore, Token,
+    InMemorySecretStore, LicensingClient, RecordedRequest, SecretError, SecretStore, Token,
     TrustedKeys, ACCOUNT_SESSION_NAME, DEVICE_TOKEN_NAME,
 };
 use serde_json::{json, Value};
@@ -56,6 +56,79 @@ impl SecretStore for Custody {
     }
 }
 
+// Script the real response shape while echoing the generated, on-disk operation
+// nonce. Individual protocol failure tests can inject an explicit bad echo.
+struct ScriptedTransport(selahcue_licensing::ScriptedTransport);
+impl ScriptedTransport {
+    fn new() -> Self {
+        Self(selahcue_licensing::ScriptedTransport::new())
+    }
+    fn responding(status: u16, body: impl Into<String>) -> Self {
+        Self(selahcue_licensing::ScriptedTransport::responding(
+            status, body,
+        ))
+    }
+    fn push_response(&self, status: u16, body: impl Into<String>) -> &Self {
+        self.0.push_response(status, body);
+        self
+    }
+    fn push_failure(&self, reason: impl Into<String>) -> &Self {
+        self.0.push_failure(reason);
+        self
+    }
+    fn request_count(&self) -> usize {
+        self.0.request_count()
+    }
+    fn request(&self, index: usize) -> Option<RecordedRequest> {
+        self.0.request(index)
+    }
+    fn recorded(&self) -> Vec<RecordedRequest> {
+        self.0.recorded()
+    }
+}
+impl selahcue_licensing::HttpTransport for ScriptedTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        let mut response = self.0.post_json(url, body, bearer)?;
+        if url.contains("/v1/activations:bound") {
+            if let Ok(mut payload) = serde_json::from_str::<Value>(&response.body) {
+                if payload["fixture_echo"] == true {
+                    let request: Value = serde_json::from_str(body).expect("native request");
+                    payload
+                        .as_object_mut()
+                        .expect("response")
+                        .remove("fixture_echo");
+                    payload["operation_version"] = json!(1);
+                    payload["idempotency_key"] = request["idempotency_key"].clone();
+                    payload["operation_state"] = json!(if payload["activation_token"].is_null() {
+                        "replay"
+                    } else {
+                        "completed"
+                    });
+                    response.body = payload.to_string();
+                } else if payload["completed_activation"]["idempotency_key"] == "fixture_nonce" {
+                    let request: Value = serde_json::from_str(body).expect("native request");
+                    payload["completed_activation"]["idempotency_key"] =
+                        request["idempotency_key"].clone();
+                    response.body = payload.to_string();
+                }
+            }
+        }
+        Ok(response)
+    }
+    fn get(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        self.0.get(url, bearer)
+    }
+}
+
 fn controller(directory: &Path, custody: Custody) -> AccountController<ScriptedTransport, Custody> {
     let client = LicensingClient::new(ScriptedTransport::new(), API_ORIGIN).expect("static origin");
     AccountController::new(
@@ -94,6 +167,7 @@ fn session_json() -> String {
 
 fn activated(token: Option<&str>, reminted: bool) -> String {
     json!({
+        "fixture_echo": true,
         "created": token.is_some() && !reminted,
         "reminted": reminted,
         "activation_token": token,
@@ -166,7 +240,7 @@ fn session_activation_saves_before_cleanup_and_survives_network_loss() {
     let requests = account.client().transport().recorded();
     for (request, path) in requests.iter().zip([
         "/v1/sessions",
-        "/v1/activations:with-session",
+        "/v1/activations:bound-with-session",
         "/v1/sessions:revoke",
         "/v1/license:refresh",
     ]) {
@@ -591,6 +665,7 @@ fn django_g1_real_api() {
         directory: std::path::PathBuf,
         offline: Arc<AtomicBool>,
         expected_remint: Arc<AtomicBool>,
+        lose_initial_reply: Arc<AtomicBool>,
     }
 
     impl HttpTransport for Wire {
@@ -604,11 +679,18 @@ fn django_g1_real_api() {
                 return Err(TransportError("synthetic network unavailable".into()));
             }
             if url.ends_with("/v1/sessions:revoke") {
-                assert!(self
+                let device_present = self
                     .custody
                     .get(DEVICE_TOKEN_NAME)
                     .expect("fixture custody")
-                    .is_some());
+                    .is_some();
+                assert!(
+                    device_present
+                        || matches!(
+                            std::env::var("SELAHCUE_G1_SCENARIO").as_deref(),
+                            Ok("initial-restart" | "lost-initial")
+                        )
+                );
                 let metadata = AccountMetadataStore::new(self.directory.clone())
                     .load_or_create(CredentialPresence::Present)
                     .expect("persisted device binding before revoke");
@@ -616,7 +698,14 @@ fn django_g1_real_api() {
                 assert!(metadata.pending_activation().is_none());
             }
             let response = self.inner.post_json(url, body, bearer)?;
-            if (url.ends_with("/v1/activations") || url.ends_with("/v1/activations:with-session"))
+            if url.ends_with("/v1/activations:bound-with-session")
+                && self.lose_initial_reply.swap(false, Ordering::SeqCst)
+            {
+                assert_eq!(response.status, 200);
+                return Err(TransportError("synthetic lost activation answer".into()));
+            }
+            if (url.ends_with("/v1/activations:bound")
+                || url.ends_with("/v1/activations:bound-with-session"))
                 && response.status == 200
                 && self.expected_remint.swap(false, Ordering::SeqCst)
             {
@@ -654,6 +743,7 @@ fn django_g1_real_api() {
     let custody = Custody::default();
     let offline = Arc::new(AtomicBool::new(false));
     let expected_remint = Arc::new(AtomicBool::new(false));
+    let lose_initial_reply = Arc::new(AtomicBool::new(false));
     let synthetic_seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let public_key = ed25519_dalek::SigningKey::from_bytes(&synthetic_seed)
         .verifying_key()
@@ -667,6 +757,7 @@ fn django_g1_real_api() {
             directory: dir.path().into(),
             offline: offline.clone(),
             expected_remint: expected_remint.clone(),
+            lose_initial_reply: lose_initial_reply.clone(),
         };
         let api = LicensingClient::new_for_loopback_tests(transport, &base).expect("loopback only");
         AccountController::new(
@@ -685,7 +776,7 @@ fn django_g1_real_api() {
         .expect("local synthetic fixtures");
     let init: Value = serde_json::from_str(&init).expect("fixture inputs");
     let auth = || match scenario.as_str() {
-        "cascade" => Command::SignIn {
+        "cascade" | "initial-restart" | "lost-initial" => Command::SignIn {
             email: init["email"].as_str().expect("fixture email").into(),
             password: Token::new(init["password"].as_str().expect("fixture password")),
             display_name: "G1 live booth".into(),
@@ -700,6 +791,74 @@ fn django_g1_real_api() {
         },
     };
     let mut account = make_controller();
+    if scenario == "initial-restart" {
+        custody.fail_write.store(true, Ordering::SeqCst);
+        let first = wire(&account.execute(auth()));
+        assert_eq!(first["device_state"], "credential_not_saved");
+        let storage = AccountMetadataStore::new(dir.path().into());
+        let saved = storage
+            .load_or_create(CredentialPresence::Missing)
+            .expect("saved binding");
+        assert!(saved.activated_public_id.is_some());
+        assert!(saved
+            .pending_activation()
+            .expect("frozen initial")
+            .expected_device_public_id()
+            .is_none());
+        checkpoint(&mut input, "initial unsaved");
+        drop(account);
+        custody.fail_write.store(false, Ordering::SeqCst);
+        let mut restarted = make_controller();
+        let replay = wire(&restarted.execute(Command::RetryActivation));
+        assert_eq!(replay["error_code"], "device_recovery_required");
+        assert!(custody
+            .get(DEVICE_TOKEN_NAME)
+            .expect("device custody")
+            .is_none());
+        let bound = storage
+            .load_or_create(CredentialPresence::Missing)
+            .expect("unchanged binding");
+        assert_eq!(bound.activated_public_id, saved.activated_public_id);
+        assert_eq!(bound.fingerprint(), saved.fingerprint());
+        println!("G1 initial replay");
+        return;
+    }
+    if scenario == "lost-initial" {
+        // Simulate losing the complete response after Django commits the initial
+        // transaction. The controller must obtain identity via the receipt alone.
+        lose_initial_reply.store(true, Ordering::SeqCst);
+        let first = wire(&account.execute(auth()));
+        assert_eq!(first["error_code"], "network_unavailable");
+        let storage = AccountMetadataStore::new(dir.path().into());
+        let saved = storage
+            .load_or_create(CredentialPresence::Missing)
+            .expect("ambiguous operation");
+        assert!(saved.activated_public_id.is_none());
+        assert!(saved.pending_activation().is_some());
+        checkpoint(&mut input, "initial response lost");
+        let mut restarted = make_controller();
+        let learned = wire(&restarted.execute(Command::RetryActivation));
+        assert_eq!(learned["error_code"], "activation_operation_completed");
+        assert_eq!(learned["device_state"], "reauthentication_needed");
+        assert!(custody
+            .get(DEVICE_TOKEN_NAME)
+            .expect("credential custody")
+            .is_none());
+        let bound = storage
+            .load_or_create(CredentialPresence::Missing)
+            .expect("learned identity");
+        assert!(bound.activated_public_id.is_some() && bound.pending_activation().is_none());
+        assert_eq!(bound.fingerprint(), saved.fingerprint());
+        checkpoint(&mut input, "completed receipt learned");
+        let recovered = wire(&restarted.execute(auth()));
+        assert_eq!(recovered["entitlement_state"], "current");
+        let final_binding = storage
+            .load_or_create(CredentialPresence::Present)
+            .expect("preserved identity");
+        assert_eq!(final_binding.activated_public_id, bound.activated_public_id);
+        println!("G1 lost-initial recovered");
+        return;
+    }
     let activate = wire(&account.execute(auth()));
     assert_eq!(activate["setup_state"], "completed");
     assert_eq!(activate["entitlement_state"], "current");
@@ -1063,7 +1222,8 @@ fn failed_public_id_save_retries_from_native_response_without_a_second_activatio
             body: &str,
             bearer: Option<&str>,
         ) -> Result<HttpResponse, TransportError> {
-            if url.ends_with("/v1/activations") && !self.drained.swap(true, Ordering::SeqCst) {
+            if url.ends_with("/v1/activations:bound") && !self.drained.swap(true, Ordering::SeqCst)
+            {
                 let lock = self.directory.join("account-metadata.lock");
                 std::fs::remove_file(&lock).expect("release test writer lock");
                 std::fs::create_dir(lock).expect("block later metadata save");
@@ -1104,7 +1264,7 @@ fn failed_public_id_save_retries_from_native_response_without_a_second_activatio
     assert_eq!(recovered["setup_state"], "completed");
     let requests = account.client().transport().requests.recorded();
     assert_eq!(requests.len(), 2);
-    assert!(requests[0].url.ends_with("/v1/activations"));
+    assert!(requests[0].url.ends_with("/v1/activations:bound"));
     assert!(requests[1].url.ends_with("/v1/license:refresh"));
 }
 
@@ -1207,6 +1367,18 @@ fn legacy_phase_absence_preserves_ambiguous_operation() {
         .as_object_mut()
         .expect("pending")
         .remove("phase");
+    json["pending_activation"]
+        .as_object_mut()
+        .expect("pending")
+        .remove("protocol");
+    json["pending_activation"]
+        .as_object_mut()
+        .expect("pending")
+        .remove("expected_device_public_id");
+    json["pending_activation"]
+        .as_object_mut()
+        .expect("pending")
+        .remove("mode");
     std::fs::write(
         file,
         serde_json::to_vec(&json).expect("serialize legacy shape"),
@@ -1215,7 +1387,7 @@ fn legacy_phase_absence_preserves_ambiguous_operation() {
     let mut restarted = controller(dir.path(), Custody::default());
     assert_eq!(
         wire(&restarted.execute(sign_in()))["error_code"],
-        "pending_activation_path"
+        "legacy_activation_outcome_unknown"
     );
     assert_eq!(restarted.client().transport().request_count(), 0);
 }
@@ -1364,7 +1536,7 @@ fn failed_unsent_retirement_preserves_primary_custody_error_and_can_be_retried()
         .transport()
         .recorded()
         .iter()
-        .all(|r| !r.url.contains("/v1/activations")));
+        .all(|r| !r.url.contains("/v1/activations:bound")));
     std::fs::remove_dir(dir.path().join("account-metadata.lock")).expect("restore lock path");
     let mut restarted = controller(dir.path(), store);
     restarted
@@ -1376,4 +1548,214 @@ fn failed_unsent_retirement_preserves_primary_custody_error_and_can_be_retried()
         wire(&restarted.execute(enroll()))["setup_state"],
         "completed"
     );
+}
+
+#[test]
+fn dedicated_bound_path_refuses_old_server_without_fallback() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account = controller(dir.path(), custody.clone());
+    account
+        .client()
+        .transport()
+        .push_response(404, "<html>old server</html>");
+    let reply = wire(&account.execute(enroll()));
+    assert_eq!(reply["error_code"], "bound_activation_unsupported");
+    assert_eq!(reply["operation_state"], "retry_pending");
+    let requests = account.client().transport().recorded();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.ends_with("/v1/activations:bound"));
+    assert!(custody
+        .get(DEVICE_TOKEN_NAME)
+        .expect("local custody")
+        .is_none());
+}
+
+#[test]
+fn restart_replays_initial_expectation_after_public_id_survives_failed_custody() {
+    use std::sync::atomic::Ordering;
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    custody.fail_write.store(true, Ordering::SeqCst);
+    let mut account = controller(dir.path(), custody.clone());
+    account
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false));
+    assert_eq!(
+        wire(&account.execute(enroll()))["device_state"],
+        "credential_not_saved"
+    );
+    let sent = account
+        .client()
+        .transport()
+        .request(0)
+        .expect("initial request");
+    let metadata = AccountMetadataStore::new(dir.path().into())
+        .load_or_create(CredentialPresence::Missing)
+        .expect("on-disk receipt");
+    assert_eq!(metadata.activated_public_id.as_deref(), Some(DEVICE));
+    assert_eq!(
+        metadata
+            .pending_activation()
+            .expect("frozen operation")
+            .expected_device_public_id(),
+        None
+    );
+    let mut restarted = controller(dir.path(), custody);
+    restarted
+        .client()
+        .transport()
+        .push_response(200, activated(None, false));
+    assert_eq!(
+        wire(&restarted.execute(enroll()))["error_code"],
+        "device_recovery_required"
+    );
+    let retried = restarted
+        .client()
+        .transport()
+        .request(0)
+        .expect("replay request");
+    assert!(sent == retried);
+    let request: Value = serde_json::from_str(&sent.body).expect("initial wire");
+    assert_eq!(request["mode"], "initial");
+    assert!(request["expected_device_public_id"].is_null());
+}
+
+#[test]
+fn unusable_completed_initial_receipt_cannot_reserve_a_second_slot() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let mut account = controller(dir.path(), Custody::default());
+    account.client().transport()
+        .push_failure("initial outcome lost")
+        .push_response(409, r#"{"operation_version":1,"error":{"code":"ACTIVATION_OPERATION_COMPLETED","message":"fixture"}}"#)
+        .push_response(404, r#"{"operation_version":1,"error":{"code":"NOT_FOUND","message":"fixture"}}"#);
+    account.execute(enroll());
+    assert_eq!(
+        wire(&account.execute(enroll()))["error_code"],
+        "activation_operation_completed"
+    );
+    assert_eq!(
+        wire(&account.execute(enroll()))["error_code"],
+        "unknown_key"
+    );
+    let requests = account.client().transport().recorded();
+    assert!(requests[0] == requests[1] && requests[1] == requests[2]);
+    assert_eq!(
+        wire(&account.execute(sign_in()))["error_code"],
+        "pending_activation_path"
+    );
+}
+
+fn completed_proof(device: &str, platform: &str) -> String {
+    json!({
+        "operation_version": 1,
+        "error": {"code": "ACTIVATION_OPERATION_COMPLETED", "message": "fixture"},
+        "completed_activation": {
+            "idempotency_key": "fixture_nonce",
+            "device_public_id": device,
+            "platform": platform,
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn completed_proof_with_wrong_device_or_platform_preserves_pending_operation() {
+    let forged = "dev_ffeeddccbbaa99887766554433221100";
+    for (id, platform) in [(forged, std::env::consts::OS), (DEVICE, "wrong-platform")] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let store = AccountMetadataStore::new(dir.path().into());
+        let mut local = store
+            .load_or_create(CredentialPresence::Missing)
+            .expect("identity");
+        local.activated_public_id = Some(DEVICE.into());
+        store.save(&local).expect("bound ID");
+        let custody = Custody::default();
+        let mut account = controller(dir.path(), custody.clone());
+        account
+            .client()
+            .transport()
+            .push_response(409, completed_proof(id, platform));
+        let view = wire(&account.execute(enroll()));
+        assert_eq!(view["error_code"], "device_binding_mismatch");
+        let saved = store
+            .load_or_create(CredentialPresence::Missing)
+            .expect("original metadata");
+        assert_eq!(saved.activated_public_id.as_deref(), Some(DEVICE));
+        assert!(saved.pending_activation().is_some());
+        assert!(custody
+            .get(DEVICE_TOKEN_NAME)
+            .expect("no overwrite")
+            .is_none());
+    }
+}
+
+#[test]
+fn failed_completed_proof_cas_can_retry_the_same_pending_request() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FaultOnce {
+        directory: std::path::PathBuf,
+        script: ScriptedTransport,
+        block: AtomicBool,
+    }
+    impl HttpTransport for FaultOnce {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            let response = self.script.post_json(url, body, bearer)?;
+            if self.block.swap(false, Ordering::SeqCst) {
+                let lock = self.directory.join("account-metadata.lock");
+                std::fs::remove_file(&lock).expect("closed metadata lock");
+                std::fs::create_dir(lock).expect("simulate metadata CAS failure");
+            }
+            Ok(response)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let script = ScriptedTransport::responding(409, completed_proof(DEVICE, std::env::consts::OS));
+    script.push_response(409, completed_proof(DEVICE, std::env::consts::OS));
+    let transport = FaultOnce {
+        directory: dir.path().into(),
+        script,
+        block: AtomicBool::new(true),
+    };
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("fixture origin");
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        Custody::default(),
+        TrustedKeys::new(),
+        || NOW,
+    );
+    assert_eq!(
+        wire(&account.execute(enroll()))["error_code"],
+        "metadata_unavailable"
+    );
+    let store = AccountMetadataStore::new(dir.path().into());
+    let initial = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("read frozen receipt");
+    assert!(initial.activated_public_id.is_none());
+    assert!(initial.pending_activation().is_some());
+    std::fs::remove_dir(dir.path().join("account-metadata.lock")).expect("restore writer");
+    let learned = wire(&account.execute(enroll()));
+    assert_eq!(learned["error_code"], "activation_operation_completed");
+    assert_eq!(learned["device_state"], "reauthentication_needed");
+    let final_binding = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("bound identity");
+    assert_eq!(final_binding.activated_public_id.as_deref(), Some(DEVICE));
+    assert!(final_binding.pending_activation().is_none());
+    let sent = account.client().transport().script.recorded();
+    assert!(sent[0] == sent[1]);
 }

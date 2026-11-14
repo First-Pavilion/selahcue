@@ -379,10 +379,9 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         metadata: &mut AccountMetadata,
         path: ActivationPath,
     ) -> Result<(), Code> {
-        if metadata
-            .pending_activation()
-            .is_some_and(|pending| pending.is_prepared() && pending.path() != path)
-        {
+        if metadata.pending_activation().is_some_and(|pending| {
+            pending.is_prepared() && pending.path() != path && !pending.is_legacy()
+        }) {
             self.complete_pending(metadata)?;
         }
         Ok(())
@@ -419,6 +418,9 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         if self.retained.is_some() {
             drop(password);
             return self.finish_retained(metadata);
+        }
+        if Self::legacy_ambiguous(metadata) {
+            return self.reconcile_legacy(metadata);
         }
         if metadata.pending_activation().is_some_and(|pending| {
             pending.path() != ActivationPath::AccountSession && !pending.is_prepared()
@@ -469,12 +471,17 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             drop(key);
             return self.finish_retained(metadata);
         }
+        if Self::legacy_ambiguous(metadata) {
+            return self.reconcile_legacy(metadata);
+        }
         self.prepare(metadata, ActivationPath::EnrollmentKey, name)?;
         let pending = self.mark_dispatched(metadata)?;
-        let result = self.client.activate_with_enrollment_key(
+        let result = self.client.activate_bound(
+            selahcue_licensing::ActivationPath::EnrollmentKey,
             &key,
             &pending.device_identity()?,
             &pending.retry_key()?,
+            pending.expected_device_public_id(),
         );
         drop(key);
         self.complete_response(metadata, &pending, result, None)
@@ -486,10 +493,12 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         session: &Token,
     ) -> Result<(), Code> {
         let pending = self.mark_dispatched(metadata)?;
-        let result = self.client.begin_session_activation(
+        let result = self.client.activate_bound(
+            selahcue_licensing::ActivationPath::AccountSession,
             session,
             &pending.device_identity()?,
             &pending.retry_key()?,
+            pending.expected_device_public_id(),
         );
         self.complete_response(metadata, &pending, result, Some(session))
     }
@@ -503,26 +512,34 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     ) -> Result<(), Code> {
         let answer = match response {
             Ok(answer) => answer,
-            Err(error) => {
-                // A definite policy or input refusal did not consume the operation.
-                // A missing response or a malformed success leaves the outcome unknown.
-                if matches!(
-                    error,
-                    ActivationFailure::NoActiveLicense
-                        | ActivationFailure::UnknownKey
-                        | ActivationFailure::PolicyDenied
-                        | ActivationFailure::PermissionDenied
-                        | ActivationFailure::ValidationFailed
-                ) {
-                    self.complete_pending(metadata)?;
-                    if pending.path() == ActivationPath::AccountSession {
-                        if let Some(session) = session {
-                            let _ = self.revoke_and_clear(session);
-                        }
-                    }
+            Err(ActivationFailure::ActivationOperationCompleted { device_public_id }) => {
+                let Some(id) = device_public_id else {
+                    // A response without a validated receipt cannot retire the
+                    // pending operation or let another initial request allocate.
+                    return Err(Code::ActivationOperationCompleted);
+                };
+                if metadata
+                    .activated_public_id
+                    .as_ref()
+                    .is_some_and(|known| known != &id)
+                {
+                    return Err(Code::DeviceBindingMismatch);
                 }
-                return Err(error.into());
+                let mut completed = metadata.clone();
+                completed.activated_public_id = Some(id);
+                completed.skipped_setup = false;
+                completed.clear_pending_activation();
+                self.save(&mut completed)?;
+                *metadata = completed;
+                if let Some(session) = session {
+                    let _ = self.revoke_and_clear(session);
+                }
+                self.device_rejected = true;
+                return Err(Code::ActivationOperationCompleted);
             }
+            // A refusal on a later attempt does not establish that the first
+            // request had no effect. A new initial nonce could allocate a seat.
+            Err(error) => return Err(error.into()),
         };
         if metadata
             .activated_public_id
@@ -621,6 +638,9 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         if self.retained.is_some() {
             return self.finish_retained(metadata);
         }
+        if Self::legacy_ambiguous(metadata) {
+            return self.reconcile_legacy(metadata);
+        }
         let pending = match metadata.pending_activation().cloned() {
             Some(pending) => pending,
             None if self.device_rejected => {
@@ -644,7 +664,34 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         let session = self
             .account_session()?
             .ok_or(Code::ReauthenticationRequired)?;
+        if pending.is_legacy() {
+            let name = metadata.display_fields().0.to_owned();
+            self.prepare(metadata, ActivationPath::AccountSession, &name)?;
+        }
         self.activate_session(metadata, &session)
+    }
+
+    fn legacy_ambiguous(metadata: &AccountMetadata) -> bool {
+        metadata
+            .pending_activation()
+            .is_some_and(|pending| pending.is_legacy() && !pending.is_prepared())
+    }
+
+    fn reconcile_legacy(&mut self, metadata: &mut AccountMetadata) -> Result<(), Code> {
+        let id = metadata
+            .activated_public_id
+            .as_deref()
+            .ok_or(Code::LegacyActivationOutcomeUnknown)?;
+        let token = self
+            .device_token()?
+            .ok_or(Code::LegacyActivationOutcomeUnknown)?;
+        let online = self
+            .client
+            .refresh_license(&token, id)
+            .map_err(|_| Code::LegacyActivationOutcomeUnknown)?;
+        self.complete_pending(metadata)?;
+        let _ = self.retry_cleanup(metadata);
+        self.refresh_manifest(metadata, &token, online)
     }
 
     fn account_session(&self) -> Result<Option<Token>, Code> {
@@ -881,6 +928,11 @@ fn entitlement_state(manifest: &VerifiedEntitlement, now: Time) -> EntitlementSt
 impl From<ActivationFailure> for Code {
     fn from(error: ActivationFailure) -> Self {
         match error {
+            ActivationFailure::BoundActivationUnsupported => Self::BoundActivationUnsupported,
+            ActivationFailure::ActivationOperationConflict => Self::DeviceBindingMismatch,
+            ActivationFailure::ActivationOperationCompleted { .. } => {
+                Self::ActivationOperationCompleted
+            }
             ActivationFailure::InvalidCredentials => Self::InvalidCredentials,
             ActivationFailure::AccountNotActive => Self::AccountNotActive,
             ActivationFailure::NoActiveLicense => Self::NoActiveLicense,
