@@ -181,9 +181,11 @@ pub(crate) fn verify_with_envelope(
         return Err(WrongDevice);
     }
 
-    if payload.plan_display_label.as_ref().is_some_and(|label| {
-        label.chars().count() > MAX_PLAN_DISPLAY_CHARS || label.chars().any(char::is_control)
-    }) {
+    if payload
+        .plan_display_label
+        .as_ref()
+        .is_some_and(|label| label.chars().count() > MAX_PLAN_DISPLAY_CHARS)
+    {
         return Err(MalformedPayload);
     }
 
@@ -206,7 +208,11 @@ pub(crate) fn verify_with_envelope(
         facts,
         grants: payload.grants,
         display: EntitlementDisplay {
-            plan_display_label: payload.plan_display_label,
+            // The issuer permits controls such as embedded tabs in plan names. Keep
+            // the verified entitlement while suppressing unsafe display text.
+            plan_display_label: payload
+                .plan_display_label
+                .filter(|label| !label.chars().any(char::is_control)),
             instances_used: payload.instances_used,
             instances_limit: payload.instances_limit,
         },

@@ -34,16 +34,17 @@ const SWEPT_RENDERINGS: usize = 10;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
-/// Each one hands out a raw credential. All three are "attach this to an outbound request",
+/// Each one hands out a raw credential. All four are "attach this to an outbound request",
 /// and none may be a formatter:
 ///
 /// - `client.rs` — the password into the sign-in request body
 /// - `client.rs` — the enrollment key into the activation request body
 /// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
+/// - `client.rs` — the device token into the Authorization header for manifest GET
+///   and status POST via their shared device bearer helper.
 ///
 /// Pinned so adding one is a decision made here, in the open.
-// The fourth use supplies the shared device bearer for manifest GET and status POST.
 const SANCTIONED_EXPOSE_SITES: usize = 4;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.

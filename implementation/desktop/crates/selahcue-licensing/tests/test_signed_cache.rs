@@ -516,7 +516,6 @@ fn rejects_signed_display_fields_with_wrong_types_or_out_of_bounds_values() {
     for (field, value) in [
         ("plan_display_label", json!({})),
         ("plan_display_label", json!("é".repeat(129))),
-        ("plan_display_label", json!("label\u{0000}")),
         ("instances_used", json!("1")),
         ("instances_used", json!(-1)),
         ("instances_limit", json!(4_294_967_296u64)),
@@ -531,4 +530,64 @@ fn rejects_signed_display_fields_with_wrong_types_or_out_of_bounds_values() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn a_control_bearing_label_does_not_prevent_cache_replacement_or_reopen() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    let dir = tempdir().unwrap();
+    let cache = EntitlementCache::new(dir.path());
+    let mut payload = facts(FIRST_ISSUANCE);
+    payload["plan_display_label"] = json!("Pilot");
+    let original = wire(&sign(&key, &key_id, &payload));
+    cache
+        .replace(&original, &keys, DEVICE, FINGERPRINT)
+        .unwrap();
+
+    payload["plan_display_label"] = json!("Pilot\tPlan");
+    payload["not_before"] = json!("2026-11-15T16:00:00.123455+00:00");
+    payload["issued_at"] = json!("2026-11-15T16:00:00.123456+00:00");
+    payload["expires_at"] = json!("2027-11-01T00:00:00.987654+00:00");
+    payload["license_expires_at"] = json!("2027-11-01T00:00:00.987655+00:00");
+    payload["instances_used"] = json!(1);
+    payload["instances_limit"] = json!(3);
+    let incoming = wire(&sign(&key, &key_id, &payload));
+    assert_eq!(
+        cache
+            .replace(&incoming, &keys, DEVICE, FINGERPRINT)
+            .unwrap(),
+        CacheDecision::Replace
+    );
+
+    let reopened = EntitlementCache::new(dir.path());
+    let verified = reopened.load(&keys, DEVICE, FINGERPRINT).unwrap().unwrap();
+    assert_eq!(fs::read(reopened.path()).unwrap(), incoming);
+    assert_eq!(verified.display().plan_display_label, None);
+    assert_eq!(verified.display().instances_used, Some(1));
+    assert_eq!(verified.display().instances_limit, Some(3));
+    assert_eq!(verified.device_public_id(), DEVICE);
+    assert_eq!(verified.device_fingerprint(), FINGERPRINT);
+    assert_eq!(
+        verified.grants().allowance("transcription"),
+        Allowance::Flag(true)
+    );
+    assert_eq!(verified.not_before(), (1_794_758_400, 123_455_000));
+    assert_eq!(verified.facts().issued_at(), (1_794_758_400, 123_456_000));
+    assert_eq!(verified.facts().expires_at(), (1_825_027_200, 987_654_000));
+    assert_eq!(
+        verified.facts().license_expires_at(),
+        (1_825_027_200, 987_655_000)
+    );
+}
+
+#[test]
+fn a_signed_label_with_nul_is_omitted_from_display() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    let mut payload = facts(FIRST_ISSUANCE);
+    payload["plan_display_label"] = json!("label\u{0000}");
+    let body = wire(&sign(&key, &key_id, &payload));
+    let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(verified.display().plan_display_label, None);
 }
