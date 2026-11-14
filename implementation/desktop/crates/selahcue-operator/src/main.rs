@@ -27,8 +27,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
-// The native Account worker will consume the persistence and view interfaces.
-#[allow(dead_code)]
+#[cfg(feature = "native-account")]
 mod account;
 
 /// Bring-up of the bundled native output window that sits beside the operator in a packaged
@@ -12280,7 +12279,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            app.manage(account::AccountState::new(app.path().app_data_dir().ok()));
+            #[cfg(feature = "native-account")]
+            account::commands::initialize(app.handle(), app.path().app_data_dir().ok());
             // Packaged install: bring up the bundled output window (a sibling binary) BEFORE we
             // build the backend, so `build_backend()` finds its fresh loopback endpoint and
             // connects instead of falling back to the demo. In a dev run the sibling is absent,
@@ -12367,7 +12367,29 @@ fn main() {
             });
             Ok(())
         })
+        .on_window_event(|window, event| {
+            #[cfg(feature = "native-account")]
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Focused(true)) {
+                account::commands::foreground(window.app_handle());
+            }
+            #[cfg(not(feature = "native-account"))]
+            let _ = (window, event);
+        })
         .invoke_handler(tauri::generate_handler![
+            #[cfg(feature = "native-account")]
+            account::commands::account_view,
+            #[cfg(feature = "native-account")]
+            account::commands::account_skip_setup,
+            #[cfg(feature = "native-account")]
+            account::commands::account_sign_in_and_activate,
+            #[cfg(feature = "native-account")]
+            account::commands::account_activate_with_enrollment,
+            #[cfg(feature = "native-account")]
+            account::commands::account_retry_activation,
+            #[cfg(feature = "native-account")]
+            account::commands::account_refresh,
+            #[cfg(feature = "native-account")]
+            account::commands::account_retry_session_cleanup,
             pilot_access_status,
             export_sermon_notes_pdf,
             remote_snapshot,

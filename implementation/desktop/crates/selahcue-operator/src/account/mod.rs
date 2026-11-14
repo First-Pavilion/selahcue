@@ -1,11 +1,12 @@
 //! Isolated state for native Account Setup.
 pub(crate) mod state;
 
-use std::{path::PathBuf, sync::Mutex};
+pub(crate) mod commands;
+pub(crate) mod controller;
 
 use serde::Serialize;
 
-use state::{AccountMetadata, AccountMetadataStore, AccountStorageError, CredentialPresence};
+use state::{AccountMetadata, AccountStorageError, CredentialPresence};
 
 /// The only account state sent to the WebView. Fields that need verified
 /// entitlement or runtime evidence are absent until the worker observes it.
@@ -15,6 +16,8 @@ pub(crate) struct AccountView {
     pub(crate) setup_state: SetupState,
     pub(crate) device_state: DeviceState,
     pub(crate) entitlement_state: EntitlementState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) license_state: Option<LicenseState>,
     pub(crate) operation_state: OperationState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) display_name: Option<String>,
@@ -32,6 +35,10 @@ pub(crate) struct AccountView {
     pub(crate) license_expires_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) last_checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) manifest_expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cleanup_error_code: Option<AccountErrorCode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error_code: Option<AccountErrorCode>,
     pub(crate) pending_cleanup: bool,
@@ -54,12 +61,26 @@ pub(crate) enum DeviceState {
     CredentialMissing,
     CredentialPresent,
     CustodyUnavailable,
+    CredentialNotSaved,
+    CredentialUnconfirmed,
+    ReauthenticationNeeded,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EntitlementState {
     Unavailable,
+    Current,
+    Expired,
+    FutureOrClockSkew,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LicenseState {
+    Active,
+    RenewalNeeded,
+    Inactive,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -67,6 +88,7 @@ pub(crate) enum EntitlementState {
 pub(crate) enum OperationState {
     Idle,
     RetryPending,
+    Busy,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -78,6 +100,28 @@ pub(crate) enum AccountErrorCode {
     MetadataChanged,
     InvalidIdentity,
     PendingActivationPath,
+    InvalidCredentials,
+    AccountNotActive,
+    NoActiveLicense,
+    UnknownKey,
+    PolicyDenied,
+    PermissionDenied,
+    InvalidInput,
+    RateLimited,
+    NetworkUnavailable,
+    ServiceUnavailable,
+    ReauthenticationRequired,
+    EnrollmentKeyRequired,
+    DeviceRecoveryRequired,
+    CredentialSaveFailed,
+    AccountSessionSaveFailed,
+    ManifestUnavailable,
+    LicenseInactive,
+    SessionCleanupUnconfirmed,
+    SessionCleanupLocalFailure,
+    ActivationCompletionPending,
+    DeviceBindingMismatch,
+    WorkerUnavailable,
 }
 
 impl From<AccountStorageError> for AccountErrorCode {
@@ -111,6 +155,9 @@ impl AccountView {
             device_state: DeviceState::Unknown,
             entitlement_state: EntitlementState::Unavailable,
             operation_state: OperationState::Idle,
+            license_state: None,
+            cleanup_error_code: None,
+            manifest_expires_at: None,
             display_name: None,
             platform: None,
             app_version: None,
@@ -156,22 +203,6 @@ fn nonempty(value: &str) -> Option<String> {
         None
     } else {
         Some(value.to_owned())
-    }
-}
-
-/// Tauri state independent of the live presentation state. Construction
-/// stores the configured location and an empty projection without I/O.
-pub(crate) struct AccountState {
-    pub(crate) metadata_store: Option<AccountMetadataStore>,
-    pub(crate) view: Mutex<AccountView>,
-}
-
-impl AccountState {
-    pub(crate) fn new(directory: Option<PathBuf>) -> Self {
-        Self {
-            metadata_store: directory.map(AccountMetadataStore::new),
-            view: Mutex::new(AccountView::local(0, None, CredentialPresence::Unavailable)),
-        }
     }
 }
 

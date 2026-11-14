@@ -352,12 +352,17 @@ impl<T: HttpTransport> LicensingClient<T> {
         identity: &DeviceIdentity,
         idempotency_key: &IdempotencyKey,
     ) -> Result<Activation, ActivationFailure> {
-        let mut activation = self.request_session_activation(session, identity, idempotency_key)?;
+        let mut activation = self.begin_session_activation(session, identity, idempotency_key)?;
         self.cleanup_session(session, &mut activation);
         Ok(activation)
     }
 
-    fn request_session_activation(
+    /// Request a validated activation and leave session cleanup to the caller.
+    ///
+    /// An operator with durable install metadata should save the public device ID,
+    /// persist the show-once token, and then revoke the session. Use the same frozen
+    /// request and authorization on an ambiguous failure.
+    pub fn begin_session_activation(
         &self,
         session: &Token,
         identity: &DeviceIdentity,
@@ -425,7 +430,7 @@ impl<T: HttpTransport> LicensingClient<T> {
         idempotency_key: &IdempotencyKey,
         credentials: &DeviceCredentials<S>,
     ) -> Result<PersistedActivation, ActivationFailure> {
-        let mut activation = self.request_session_activation(session, identity, idempotency_key)?;
+        let mut activation = self.begin_session_activation(session, identity, idempotency_key)?;
         // Preserve the show-once device token before waiting on a second remote operation.
         let device_persistence = activation.persist(credentials);
         self.cleanup_session(session, &mut activation);

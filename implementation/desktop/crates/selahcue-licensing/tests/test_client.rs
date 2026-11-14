@@ -2674,3 +2674,37 @@ fn device_token_is_persisted_before_the_wrapper_waits_for_remote_cleanup() {
     assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
     assert_eq!(result.account_session_cleared, Ok(true));
 }
+
+#[test]
+fn deferred_session_activation_does_not_attempt_cleanup() {
+    use selahcue_licensing::ScriptedTransport;
+    let transport = ScriptedTransport::responding(
+        200,
+        serde_json::json!({
+            "created": true,
+            "reminted": false,
+            "activation_token": "synthetic-deferred-device-token",
+            "device": {
+                "device_public_id": "dev_0123456789abcdef0123456789abcdef",
+                "status": "ACTIVE",
+                "platform": "macos"
+            },
+            "token": {},
+            "license": {
+                "status": "ACTIVATED",
+                "expires_at": "2027-01-01T00:00:00+00:00"
+            }
+        })
+        .to_string(),
+    );
+    let client =
+        LicensingClient::new(transport, "https://api.fixture.test").expect("static origin");
+    let id = DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("device identity");
+    let key = IdempotencyKey::new("deferred-0001").expect("operation key");
+    let answer = client
+        .begin_session_activation(&Token::new("test-session"), &id, &key)
+        .expect("response");
+    assert!(answer.token.is_some());
+    assert!(answer.session_cleanup.is_none());
+    assert_eq!(client.transport().request_count(), 1);
+}

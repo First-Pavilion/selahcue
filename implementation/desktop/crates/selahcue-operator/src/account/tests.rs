@@ -391,33 +391,6 @@ fn local_view_reports_only_observed_account_state() {
     );
 }
 
-#[test]
-fn controller_registration_leaves_metadata_unopened() {
-    let directory = tempfile::tempdir().expect("test directory");
-    let app = tauri::test::mock_app();
-    use tauri::Manager;
-    app.manage(super::AccountState::new(Some(
-        directory.path().to_path_buf(),
-    )));
-    let managed = app.state::<super::AccountState>();
-    assert!(managed.metadata_store.is_some());
-    assert_eq!(
-        fs::read_dir(directory.path()).expect("directory").count(),
-        0
-    );
-    assert_eq!(
-        serde_json::to_value(&*managed.view.lock().expect("cached view")).expect("view"),
-        serde_json::json!({
-            "revision": 0,
-            "setup_state": "unknown",
-            "device_state": "unknown",
-            "entitlement_state": "unavailable",
-            "operation_state": "idle",
-            "pending_cleanup": false
-        })
-    );
-}
-
 #[cfg(unix)]
 #[test]
 fn readable_metadata_in_read_only_directory_without_lock_loads_for_every_presence() {
@@ -554,3 +527,5 @@ fn multiply_linked_metadata_and_writer_lock_are_unsafe() {
         .expect("create second lock link");
     assert_eq!(store.save(&original), Err(AccountStorageError::UnsafePath));
 }
+
+mod controller;
