@@ -28,6 +28,5 @@ implementation/build/
 __pycache__/
 *.py[cod]
 scph-worktrees/
-# Production deploy secrets and backups (implementation/deploy/README.md). Only the .example is tracked.
+# A filled-in production env for local rehearsal (implementation/deploy/README.md). Only the .example is tracked.
 implementation/deploy/production.env
-implementation/deploy/backups/

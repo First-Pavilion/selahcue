@@ -1,53 +1,73 @@
-# Production stack for SelahCue: Platform API (Gunicorn), Celery worker and beat, website (nginx),
-# PostgreSQL 16, Redis 7 and a Caddy TLS edge. The development stack is docker-compose.yml; it
-# shares nothing with this file except the two Dockerfiles.
+# Production stack for SelahCue, deployed by Coolify's "Docker Compose" build pack:
+# Platform API (Gunicorn), Celery worker and beat, a one-off migration, the website (nginx),
+# PostgreSQL 16 and Redis 7. The development stack is docker-compose.yml; the two files share
+# only the Dockerfiles.
 #
-# Run every command from implementation/, always with the env file (it feeds both ${...}
-# interpolation below and the containers):
+# Coolify setup (deploy/README.md has the full runbook):
+#   Build pack: Docker Compose. Base directory: /implementation.
+#   Docker Compose location: /docker-compose.prod.yml.
+#   Environment variables: paste deploy/production.env.example and fill in every value.
+#   Domains: leave EVERY service's domain field empty. The Traefik labels below do the routing,
+#   and a domain set in the UI would add a second, unguarded router in front of the same service.
 #
-#   cp deploy/production.env.example deploy/production.env     # then fill in every value
-#   deploy/deploy.sh                                           # build, back up, migrate, start, check
-#
-# Or by hand:
-#
-#   docker compose -f docker-compose.prod.yml --env-file deploy/production.env build
-#   docker compose -f docker-compose.prod.yml --env-file deploy/production.env up -d
-#
-# The runbook is deploy/README.md; the variable reference is ../deployments.md section 1 and
-# ../DEPLOYMENT.md "Runtime environment".
-#
-# Topology. Only Caddy publishes ports. Every request reaches Django through exactly ONE proxy
-# (Caddy), on both domains: the website domain's /graphql/* goes straight from Caddy to `api`,
-# not through the website's nginx. That is what makes SELAHCUE_TRUSTED_PROXY_COUNT=1 correct
-# for browser AND native traffic at once (see deploy/Caddyfile). The `backend` network is
-# internal (no route out of the host); only Caddy (ACME, clients) and the worker (SMTP) also
-# join `egress`.
-
-name: selahcue
+# Routing (Traefik, Coolify's proxy). Every request reaches Django through exactly ONE proxy hop,
+# on both domains: the website domain's /graphql/* goes straight from Traefik to `api`, not
+# through the website's nginx. That is what makes SELAHCUE_TRUSTED_PROXY_COUNT=1 correct for
+# browser AND native traffic at once. The routers also:
+#   - strip the inbound X-SelahCue-* identity headers (docs/ops/DEPLOYMENT.md section 6b);
+#   - send /graphql/admin to a path Django does not route (404): production staff auth does not
+#     exist yet;
+#   - redirect HTTP to HTTPS.
+# Traefik replaces a client's X-Forwarded-For/-Proto unless the entrypoint trusts that client
+# (forwardedHeaders.trustedIPs). If production Coolify sits behind Cloudflare or a load balancer,
+# re-derive SELAHCUE_TRUSTED_PROXY_COUNT and SELAHCUE_TRUST_FORWARDED_PROTO first
+# (docs/ops/DEPLOYMENT.md sections 6b and 6c).
 
 x-api-image: &api-image
   image: ${API_IMAGE:-selahcue-api}:${RELEASE_TAG:-latest}
   build:
     context: ./api
 
-# Values the stack itself owns. `environment` overrides env_file, so an operator cannot point
-# these at the wrong place by accident, and the Redis password is written once (REDIS_PASSWORD).
+# Every variable the API-image processes read. Coolify lists each ${VAR} in its Environment
+# Variables page; `:?` marks the required ones (an empty value stops the deploy). Defaults after
+# `:-` are the production choice for this stack. Reference: ../deployments.md section 1.
 x-api-env: &api-env
+  ENVIRONMENT: ${ENVIRONMENT:-prod}
+  DEBUG: "0"
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+  DJANGO_ALLOWED_HOSTS: ${API_DOMAIN:?set API_DOMAIN} ${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
+  FRONTEND_BASE_URL: https://${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
+  # Used by the api healthcheck only (an allowed Host header).
+  API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+  # The single Traefik hop; see the header comment before changing either.
+  SELAHCUE_TRUSTED_PROXY_COUNT: "1"
+  SELAHCUE_TRUST_FORWARDED_PROTO: "1"
+  # HSTS ramp-up (DEPLOYMENT.md section 6c): start short, raise once HTTPS is verified everywhere.
+  SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-300}
+  SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-0}
+  SECURE_HSTS_PRELOAD: ${SECURE_HSTS_PRELOAD:-0}
+  SELAHCUE_ENTITLEMENT_SIGNING_KEY: ${SELAHCUE_ENTITLEMENT_SIGNING_KEY:?set SELAHCUE_ENTITLEMENT_SIGNING_KEY}
   SQL_ENGINE: django.db.backends.postgresql
   SQL_HOST: db
   SQL_PORT: "5432"
+  SQL_DATABASE: ${SQL_DATABASE:-selahcue}
+  SQL_USER: ${SQL_USER:-selahcue}
+  SQL_PASSWORD: ${SQL_PASSWORD:?set SQL_PASSWORD}
   CACHE_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/1
   CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/2
   CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/2
-  # The single Caddy hop. Do not change without changing the Caddyfile routes.
-  SELAHCUE_TRUSTED_PROXY_COUNT: "1"
+  MAIL_HOST: ${MAIL_HOST:?set MAIL_HOST}
+  MAIL_PORT: ${MAIL_PORT:-587}
+  MAIL_USERNAME: ${MAIL_USERNAME:-}
+  MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+  DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:?set DEFAULT_FROM_EMAIL}
+  DEFAULT_EMAIL: ${DEFAULT_EMAIL:-info@firstpavitech.com}
+  SELAHCUE_PILOT_REGISTRATION_ENABLED: "0"
+  SELAHCUE_PILOT_GRANT_ENABLED: "0"
 
 # Shared by every process that runs the API image: web, worker, beat, migrate.
 x-api-common: &api-common
   <<: *api-image
-  env_file:
-    - path: ./deploy/production.env
-      required: true
   environment: *api-env
   # Least privilege: an unprivileged uid, a read-only root filesystem, writable /tmp only
   # (gunicorn heartbeat files, celery beat schedule and pidfile).
@@ -66,12 +86,11 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${SQL_DATABASE:?set SQL_DATABASE}
-      POSTGRES_USER: ${SQL_USER:?set SQL_USER}
+      POSTGRES_DB: ${SQL_DATABASE:-selahcue}
+      POSTGRES_USER: ${SQL_USER:-selahcue}
       POSTGRES_PASSWORD: ${SQL_PASSWORD:?set SQL_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
-    networks: [backend]
+      - selahcue-pgdata:/var/lib/postgresql/data
     shm_size: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
@@ -83,14 +102,12 @@ services:
 
   redis:
     image: redis:7-alpine
-    # AOF on: queued mail jobs survive a restart. The password is passed on the command line
-    # inside the container only; no port is published and `backend` is internal.
+    # AOF on: queued mail jobs survive a restart. No port is published.
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
     environment:
       REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
     volumes:
-      - redisdata:/data
-    networks: [backend]
+      - selahcue-redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -99,9 +116,10 @@ services:
     restart: unless-stopped
     logging: *logging
 
-  # One-off: applies migrations, then exits. web/worker/beat wait for it to succeed.
-  # For a release that drops a column, stop the app processes FIRST (deploy/deploy.sh does);
-  # see ../docs/ops/DEPLOYMENT.md section 6d.
+  # One-off: applies migrations, then exits 0. web/worker/beat wait for it to succeed, so every
+  # Coolify deploy migrates before the new release starts. Coolify shows it as exited; that is
+  # expected. For a release that DROPS A COLUMN, stop the resource in Coolify before deploying
+  # (docs/ops/DEPLOYMENT.md section 6d).
   migrate:
     <<: *api-common
     command: ["python", "manage.py", "migrate", "--noinput"]
@@ -109,7 +127,6 @@ services:
       <<: *api-env
       PGOPTIONS: "-c lock_timeout=5000"
     restart: "no"
-    networks: [backend]
     depends_on:
       db: { condition: service_healthy }
 
@@ -117,9 +134,6 @@ services:
     <<: *api-common
     # Default image command: gunicorn --config gunicorn.conf.py selahcue_api.wsgi:application
     expose: ["8000"]
-    networks:
-      backend:
-        aliases: [api]
     depends_on:
       migrate: { condition: service_completed_successfully }
       db: { condition: service_healthy }
@@ -127,19 +141,54 @@ services:
     # gunicorn.conf.py's graceful_timeout is 30 s; give it room before SIGKILL.
     stop_grace_period: 40s
     healthcheck:
-      # The documented liveness route, with an allowed Host (Django 400s any other). Python, not
-      # curl: the runtime needs no extra packages for its own healthcheck.
+      # The documented liveness route, with an allowed Host (Django 400s any other).
       test: ["CMD", "python", "-c", "import os, urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/graphql/csrf', headers={'Host': os.environ['API_DOMAIN']}), timeout=4)"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.selahcue-api.loadbalancer.server.port=8000
+      # Shared middlewares (defined once, here).
+      - traefik.http.middlewares.selahcue-strip-identity.headers.customrequestheaders.X-SelahCue-Actor-Id=
+      - traefik.http.middlewares.selahcue-strip-identity.headers.customrequestheaders.X-SelahCue-Actor-Kind=
+      - traefik.http.middlewares.selahcue-strip-identity.headers.customrequestheaders.X-SelahCue-Org-Id=
+      - traefik.http.middlewares.selahcue-strip-identity.headers.customrequestheaders.X-SelahCue-Staff-Permissions=
+      - traefik.http.middlewares.selahcue-to-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.selahcue-to-https.redirectscheme.permanent=true
+      - traefik.http.middlewares.selahcue-block-staff.replacepath.path=/__staff_graph_disabled__
+      # API domain: everything to Django.
+      - traefik.http.routers.selahcue-api.rule=Host(`${API_DOMAIN:?set API_DOMAIN}`)
+      - traefik.http.routers.selahcue-api.entrypoints=https
+      - traefik.http.routers.selahcue-api.tls=true
+      - traefik.http.routers.selahcue-api.tls.certresolver=letsencrypt
+      - traefik.http.routers.selahcue-api.middlewares=selahcue-strip-identity
+      - traefik.http.routers.selahcue-api.service=selahcue-api
+      # Website domain: /graphql/* to Django directly (same origin, one hop).
+      - traefik.http.routers.selahcue-web-graphql.rule=Host(`${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}`) && PathPrefix(`/graphql/`)
+      - traefik.http.routers.selahcue-web-graphql.entrypoints=https
+      - traefik.http.routers.selahcue-web-graphql.tls=true
+      - traefik.http.routers.selahcue-web-graphql.tls.certresolver=letsencrypt
+      - traefik.http.routers.selahcue-web-graphql.middlewares=selahcue-strip-identity
+      - traefik.http.routers.selahcue-web-graphql.service=selahcue-api
+      # Staff graph on either domain: rewritten to an unrouted path, so Django answers 404.
+      - traefik.http.routers.selahcue-staff.rule=(Host(`${API_DOMAIN:?set API_DOMAIN}`) || Host(`${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}`)) && PathPrefix(`/graphql/admin`)
+      - traefik.http.routers.selahcue-staff.priority=1000
+      - traefik.http.routers.selahcue-staff.entrypoints=https
+      - traefik.http.routers.selahcue-staff.tls=true
+      - traefik.http.routers.selahcue-staff.tls.certresolver=letsencrypt
+      - traefik.http.routers.selahcue-staff.middlewares=selahcue-block-staff
+      - traefik.http.routers.selahcue-staff.service=selahcue-api
+      # Plain HTTP on either domain: redirect.
+      - traefik.http.routers.selahcue-http.rule=Host(`${API_DOMAIN:?set API_DOMAIN}`) || Host(`${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}`)
+      - traefik.http.routers.selahcue-http.entrypoints=http
+      - traefik.http.routers.selahcue-http.middlewares=selahcue-to-https
+      - traefik.http.routers.selahcue-http.service=selahcue-api
 
   worker:
     <<: *api-common
     command: ["celery", "-A", "selahcue_api", "worker", "--loglevel=info", "--concurrency=2"]
-    # egress: the only process that talks to the SMTP server.
-    networks: [backend, egress]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -155,7 +204,6 @@ services:
     <<: *api-common
     # Exactly one beat instance, ever: two would double-schedule the maintenance tasks.
     command: ["celery", "-A", "selahcue_api", "beat", "--loglevel=info", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
-    networks: [backend]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
@@ -166,7 +214,6 @@ services:
       context: ..
       dockerfile: implementation/marketing/Dockerfile
     expose: ["80"]
-    networks: [backend]
     cap_drop: [ALL]
     cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
@@ -177,37 +224,16 @@ services:
       retries: 3
     restart: unless-stopped
     logging: *logging
-
-  # TLS edge. Skip this service (and route with your own proxy) on Coolify or behind another
-  # load balancer: see deploy/README.md "Behind Coolify or another proxy".
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
-      WEBSITE_DOMAIN: ${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    networks: [backend, egress]
-    depends_on:
-      api: { condition: service_healthy }
-      website: { condition: service_healthy }
-    restart: unless-stopped
-    logging: *logging
-
-networks:
-  backend:
-    internal: true
-  egress: {}
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.selahcue-website.loadbalancer.server.port=80
+      - traefik.http.routers.selahcue-website.rule=Host(`${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}`)
+      - traefik.http.routers.selahcue-website.entrypoints=https
+      - traefik.http.routers.selahcue-website.tls=true
+      - traefik.http.routers.selahcue-website.tls.certresolver=letsencrypt
+      - traefik.http.routers.selahcue-website.middlewares=selahcue-strip-identity
+      - traefik.http.routers.selahcue-website.service=selahcue-website
 
 volumes:
-  pgdata:
-  redisdata:
-  caddy_data:
-  caddy_config:
+  selahcue-pgdata:
+  selahcue-redisdata:
