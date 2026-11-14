@@ -536,4 +536,57 @@ fn multiply_linked_metadata_and_writer_lock_are_unsafe() {
     assert_eq!(store.save(&original), Err(AccountStorageError::UnsafePath));
 }
 
+#[test]
+fn web_destinations_launch_only_fixed_website_urls() {
+    use super::links::AccountWebDestination;
+    let routes = [
+        ("signup", "https://selahcueapp.com/signup"),
+        ("forgot_password", "https://selahcueapp.com/forgot-password"),
+        ("verification", "https://selahcueapp.com/verify"),
+        ("account", "https://selahcueapp.com/account"),
+    ];
+    for (wire_value, expected_url) in routes {
+        let destination: AccountWebDestination =
+            serde_json::from_value(serde_json::json!(wire_value)).expect("allowed destination");
+        let mut launched = Vec::new();
+        destination
+            .open_with(|url| {
+                launched.push(url);
+                Ok::<_, ()>(())
+            })
+            .expect("launcher accepted the fixed URL");
+        assert_eq!(launched, [expected_url]);
+        assert!(!launched[0].contains(['?', '#', '@']));
+    }
+}
+
+#[test]
+fn web_destinations_reject_unknown_or_caller_supplied_urls() {
+    use super::links::AccountWebDestination;
+    use serde_json::json;
+    for payload in [
+        json!("reset"),
+        json!("Signup"),
+        json!("https://selahcueapp.com/signup"),
+        json!("signup?email=account@example.test"),
+        json!({ "url": "https://example.test" }),
+        json!({ "signup": { "email": "account@example.test" } }),
+        json!(null),
+    ] {
+        assert!(serde_json::from_value::<AccountWebDestination>(payload).is_err());
+    }
+}
+
+#[test]
+fn web_launcher_failure_returns_a_safe_account_ui_error() {
+    use super::links::AccountWebDestination;
+    let error = AccountWebDestination::Verification
+        .open_with(|_| Err("synthetic native error detail"))
+        .expect_err("launch failure");
+    assert_eq!(
+        serde_json::to_value(error).expect("serializable account UI error"),
+        serde_json::json!("browser_open_failed"),
+    );
+}
+
 mod controller;

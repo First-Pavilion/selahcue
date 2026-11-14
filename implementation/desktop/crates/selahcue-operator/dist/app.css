@@ -9240,6 +9240,16 @@ main.account-has-notice > #surface-console { overflow: auto; }
   color: var(--sc-text-secondary);
 }
 .account-back { justify-self: start; }
+.account-web-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.account-web-actions button[aria-disabled="true"] {
+  opacity: .6;
+  cursor: default;
+}
 .account-view button:disabled,
 .account-settings button:disabled,
 .account-card-actions button:disabled {

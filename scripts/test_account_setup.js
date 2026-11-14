@@ -99,3 +99,79 @@ test("failed durable Skip stays usable and may be retried", async () => {
   assert.equal(state.skipError, false);
   assert.equal(state.view.setup_state, "skipped");
 });
+
+test("browser entry points leave activation to a separate native sign-in", async () => {
+  for (const destination of ["signup", "forgot_password", "verification"]) {
+    const calls = [];
+    let state;
+    const account = createAccount(async (command, args) => {
+      calls.push([command, args]);
+      if (command === "account_view") return snapshot(1);
+      if (command === "account_open_web") return;
+      assert.equal(command, "account_sign_in_and_activate");
+      return snapshot(2, { error_code: "invalid_credentials" });
+    }, (next) => { state = next; });
+
+    await account.start();
+    account.choose("signIn");
+    const before = state.view;
+    await account.openWeb(destination);
+    assert.equal(state.stage, "signIn");
+    assert.equal(state.view, before);
+    assert.equal(state.operationPending, false);
+    assert.deepEqual(calls, [["account_view", undefined], ["account_open_web", { destination }]]);
+    await account.submit({ email: " account@example.test ", password: "synthetic", displayName: "Booth" });
+    assert.deepEqual(calls[2], ["account_sign_in_and_activate", {
+      email: "account@example.test", password: "synthetic", displayName: "Booth",
+    }]);
+  }
+});
+
+test("browser launch errors can be retried independently of the sign-in form", async () => {
+  let state;
+  const held = defer();
+  const destinations = [];
+  const account = createAccount(async (command, args) => {
+    if (command === "account_view") return snapshot(1);
+    assert.equal(command, "account_open_web");
+    destinations.push(args.destination);
+    if (destinations.length === 1) return held.promise;
+  }, (next) => { state = next; });
+
+  await account.start();
+  account.choose("signIn");
+  const opening = account.openWeb("signup");
+  assert.equal(state.webPending, true);
+  assert.equal(state.operationPending, false);
+  await account.openWeb("verification");
+  assert.deepEqual(destinations, ["signup"]);
+  held.reject("browser_open_failed");
+  await opening;
+  assert.equal(state.webPending, false);
+  assert.equal(state.webError, true);
+  assert.equal(state.formError, null);
+  await account.openWeb("signup");
+  assert.equal(state.webError, false);
+  assert.deepEqual(destinations, ["signup", "signup"]);
+});
+
+test("a late browser launch error is discarded when returning to sign-in", async () => {
+  let state;
+  const held = defer();
+  const account = createAccount(async (command) => {
+    if (command === "account_view") return snapshot(1);
+    assert.equal(command, "account_open_web");
+    return held.promise;
+  }, (next) => { state = next; });
+
+  await account.start();
+  account.choose("signIn");
+  const opening = account.openWeb("forgot_password");
+  account.choose("chooser");
+  account.choose("signIn");
+  held.reject("browser_open_failed");
+  await opening;
+  assert.equal(state.stage, "signIn");
+  assert.equal(state.webPending, false);
+  assert.equal(state.webError, false);
+});

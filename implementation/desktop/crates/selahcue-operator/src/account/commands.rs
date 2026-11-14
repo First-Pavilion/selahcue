@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use super::{
     controller::{system_time, AccountController, Command, Worker, API_ORIGIN},
+    links::{AccountUiError, AccountWebDestination},
     state::CredentialPresence,
     AccountErrorCode, AccountView, DeviceState,
 };
@@ -106,6 +107,17 @@ async fn submit(state: &ManagedAccount, command: Command) -> AccountView {
         Ok(view) => view,
         Err(_) => state.view(),
     }
+}
+
+#[tauri::command]
+pub(crate) async fn account_open_web(
+    destination: AccountWebDestination,
+) -> Result<(), AccountUiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        destination.open_with(|url| tauri_plugin_opener::open_url(url, None::<&str>))
+    })
+    .await
+    .map_err(|_| AccountUiError::BrowserOpenFailed)?
 }
 
 #[tauri::command]

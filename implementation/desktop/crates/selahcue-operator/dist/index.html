@@ -285,7 +285,13 @@
             <p id="account-sign-in-error" class="account-form-error" role="status" aria-live="polite" hidden></p>
             <button type="submit" class="account-action-primary">Continue</button>
           </form>
-          <p id="account-password-help" class="account-hint">For password help, visit the SelahCue website or contact your administrator.</p>
+          <div class="account-web-actions">
+            <button type="button" class="account-text-button" data-account-web="signup" aria-disabled="false">Create account</button>
+            <button type="button" class="account-text-button" data-account-web="forgot_password" aria-disabled="false">Forgot password?</button>
+            <button type="button" class="account-text-button" data-account-web="verification" aria-disabled="false">Verify email / resend link</button>
+          </div>
+          <p id="account-password-help" class="account-hint">Finish in your browser, then return here to sign in.</p>
+          <p id="account-web-error" class="account-form-error" role="status" aria-live="polite" hidden></p>
           <button type="button" class="account-text-button" data-account-go="enroll">Use an enrollment key instead</button>
           <div class="pp-banner account-banner-info" role="note">
             <span class="account-info-icon" aria-hidden="true">◆</span>

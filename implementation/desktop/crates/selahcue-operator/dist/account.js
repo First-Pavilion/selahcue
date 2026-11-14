@@ -69,12 +69,20 @@
     let localError = false;
     let skipPending = false;
     let operationPending = false;
+    let webRequest = null;
+    let webError = false;
     let firstRunEligible = true;
     let opening = null;
     let generation = 0;
 
     function draw(focus = false) {
-      update({ view, source, stage, path, formError, skipError, skipPending, operationPending, localError }, focus);
+      update({ view, source, stage, path, formError, skipError, skipPending, operationPending, localError,
+        webPending: webRequest !== null, webError }, focus);
+    }
+
+    function clearWebFeedback() {
+      webError = false;
+      if (webRequest) webRequest.reportError = false;
     }
 
     function receive(next) {
@@ -104,6 +112,7 @@
       if (source === nextSource) return;
       generation += 1;
       source = nextSource;
+      clearWebFeedback();
       choose(firstStage, focus);
     }
 
@@ -113,11 +122,13 @@
       generation += 1;
       source = null;
       formError = null;
+      clearWebFeedback();
       draw(focus);
     }
 
     function choose(nextStage, focus = true) {
       if (nextStage === "signIn" || nextStage === "enroll") path = nextStage;
+      if (stage !== nextStage) clearWebFeedback();
       stage = nextStage;
       formError = null;
       draw(focus);
@@ -187,6 +198,22 @@
       }
     }
 
+    async function openWeb(destination) {
+      if (!source || stage !== "signIn" || webRequest) return;
+      const request = { reportError: true };
+      webRequest = request;
+      webError = false;
+      draw();
+      try {
+        await invoke("account_open_web", { destination });
+      } catch (_) {
+        webError = request.reportError;
+      } finally {
+        webRequest = null;
+        draw();
+      }
+    }
+
     function submit(fields) {
       if (stage === "signIn") {
         return operation("account_sign_in_and_activate", {
@@ -219,6 +246,7 @@
       close,
       choose,
       dismiss,
+      openWeb,
       submit,
       retry,
       read,
@@ -241,6 +269,7 @@
   const setupStatus = $("account-setup-status");
   const forms = [$("account-sign-in"), $("account-enroll")];
   const password = $("account-password");
+  const webActions = card.querySelectorAll("[data-account-web]");
   const enrollmentKey = $("account-enrollment-key");
   let lastSource = null;
   let lastStage = null;
@@ -348,6 +377,10 @@
     const metadata = deviceDetails(view);
     setError("account-enroll-device", metadata ? "This device: " + metadata : "");
     setError("account-sign-in-error", stage === "signIn" ? errors[formError] || "" : "");
+    setError("account-web-error", state.webError ? "SelahCue couldn’t open your browser. Try again." : "");
+    for (const button of webActions) {
+      button.setAttribute("aria-disabled", String(state.webPending));
+    }
     setError("account-enrollment-error", stage === "enroll" ? errors[formError] || "" : "");
     forms[1].querySelector('button[type="submit"]').textContent = formError === "unknown_key" ?
       "Try again" : "Activate this device";
@@ -403,6 +436,13 @@
     const button = event.target.closest("button[data-account-go]");
     if (button) account.choose(button.dataset.accountGo);
   });
+  for (const button of webActions) {
+    button.addEventListener("click", () => {
+      if (button.getAttribute("aria-disabled") === "true") return;
+      password.value = "";
+      account.openWeb(button.dataset.accountWeb);
+    });
+  }
   forms[0].addEventListener("submit", (event) => {
     event.preventDefault();
     const entered = password.value;

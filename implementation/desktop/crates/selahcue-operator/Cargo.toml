@@ -31,7 +31,7 @@ default = ["read-encrypted-transcripts", "native-account"]
 # credential store and fixed HTTPS API, with no cloud-provider or developer keys.
 # LAUNCH_REACHABILITY: REQUIRED
 # RELEASE: SAFE
-native-account = ["dep:selahcue-licensing", "dep:time", "selahcue-cloud/http", "selahcue-cloud/keyring"]
+native-account = ["dep:selahcue-licensing", "dep:time", "dep:tauri-plugin-opener", "selahcue-cloud/http", "selahcue-cloud/keyring"]
 # Read-only access, via the SAME OS-keychain/Argon2id key `selahcue-desktop` acquires, to the
 # at-rest-encrypted store selahcue-desktop now writes by default (86akgrz3b; FR-154). This shell
 # never creates, writes, or migrates that store (`open_transcript_db_at` in main.rs) — it only
@@ -163,6 +163,8 @@ tauri = { version = "2", features = [] }
 # Tauri v2 dialog plugin (permissive-licensed, same org as tauri). Used ONLY host-side
 # via a `pick_image` command; the chosen path becomes an Element::Image source.
 tauri-plugin-dialog = "2"
+# Only the native fixed-destination account command can call this opener.
+tauri-plugin-opener = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"

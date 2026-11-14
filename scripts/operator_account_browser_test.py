@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
@@ -34,6 +35,8 @@ STUB = r"""
     calls: [],
     resolve: null,
     skipFailure: false,
+    finishWebOpen: null,
+    holdWebOpen: false,
     publish(fields) {
       this.view = { ...base, revision: this.view.revision + 1, ...fields };
       for (const listener of listeners) listener({ payload: this.view });
@@ -59,6 +62,13 @@ STUB = r"""
       async invoke(cmd, args) {
         fixture.calls.push({ cmd, args });
         if (cmd === "account_view") return fixture.view;
+        if (cmd === "account_open_web") {
+          if (fixture.holdWebOpen) {
+            const succeeds = await new Promise((resolve) => { fixture.finishWebOpen = resolve; });
+            if (!succeeds) throw "browser_open_failed";
+          }
+          return;
+        }
         if (cmd === "account_skip_setup") {
           if (fixture.skipFailure) throw "metadata_unavailable";
           fixture.view = { ...fixture.view, setup_state: "skipped", revision: fixture.view.revision + 1 };
@@ -369,6 +379,97 @@ def exercise(browser, dist, screenshots, viewport):
     offline.close()
 
 
+def exercise_web_links(browser, dist, screenshots, viewport):
+    page, errors = boot(browser, dist, viewport)
+    original_url = page.url
+    sign_in = page.get_by_role("heading", name="Sign in to SelahCue", exact=True)
+    click(page, "Sign in to your SelahCue account")
+    expect(sign_in).to_be_focused()
+    fill_sign_in(page)
+
+    actions = [
+        ("Create account", "signup"),
+        ("Forgot password?", "forgot_password"),
+        ("Verify email / resend link", "verification"),
+    ]
+    previous = page.get_by_role("button", name="Continue", exact=True)
+    # macOS WebKit uses Option-Tab to traverse every focusable control.
+    next_control = "Alt+Tab" if sys.platform == "darwin" and browser.browser_type.name == "webkit" else "Tab"
+    for label, _ in actions:
+        action = page.get_by_role("button", name=label, exact=True)
+        previous.press(next_control)
+        expect(action).to_be_focused()
+        assert action.evaluate("""button => {
+          const r = button.getBoundingClientRect();
+          return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth &&
+            button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+        }"""), (viewport, label)
+        previous = action
+    capture(page, screenshots, "a1-browser-entry-points")
+
+    signup = page.get_by_role("button", name=actions[0][0], exact=True)
+    page.evaluate("accountFixture.holdWebOpen = true")
+    signup.press("Enter")
+    expect(signup).to_be_focused()
+    expect(signup).to_have_attribute("aria-disabled", "true")
+    expect(page.get_by_label("Password", exact=True)).to_have_value("")
+    assert_emergency_hit_targets(page, "startup sign-in while browser dispatch is held")
+    signup.press("Enter")
+    assert page.evaluate("""() => accountFixture.calls.filter(
+      x => x.cmd === "account_open_web"
+    ).length""") == 1
+    page.evaluate("accountFixture.finishWebOpen(false)")
+    error = page.locator("#account-web-error")
+    expect(error).to_be_visible()
+    expect(page.locator("#account-sign-in-error")).to_be_hidden()
+    expect(signup).to_have_attribute("aria-disabled", "false")
+    expect(signup).to_be_focused()
+    capture(page, screenshots, "a1-browser-open-failure")
+
+    page.evaluate("accountFixture.holdWebOpen = false")
+    for label, _ in actions:
+        click(page, label)
+        expect(page.get_by_role("button", name=label, exact=True)).to_have_attribute("aria-disabled", "false")
+        expect(sign_in).to_be_visible()
+        expect(error).to_be_hidden()
+    assert page.url == original_url and len(page.context.pages) == 1
+    assert page.evaluate("""() => accountFixture.calls.filter(
+      x => x.cmd.startsWith("account_") && x.cmd !== "account_view"
+    )""") == [{"cmd": "account_open_web", "args": {"destination": dest}}
+               for dest in ["signup", *(item[1] for item in actions)]]
+    fill_sign_in(page)
+    rules(page, {"error_code": "account_not_active"})
+    click(page, "Continue")
+    expect(page.locator("#account-sign-in-error")).to_be_visible()
+    expect(page.get_by_role("button", name=actions[2][0], exact=True)).to_be_visible()
+    assert page.evaluate("""() => accountFixture.calls.filter(
+      x => x.cmd === "account_sign_in_and_activate"
+    ).length""") == 1
+
+    click(page, "Skip — set up later")
+    page.wait_for_function("accountFixture.view.setup_state === 'skipped'")
+    open_account(page, via_providers=False)
+    click(page, "Set up this device")
+    click(page, "Sign in to your SelahCue account")
+    page.evaluate("accountFixture.holdWebOpen = true")
+    click(page, "Forgot password?")
+    expect(page.get_by_role("button", name="Continue", exact=True)).to_be_enabled()
+    assert_emergency_hit_targets(page, "Settings sign-in while browser dispatch is held")
+    page.locator('.set-nav[data-setpage="providers"]').click()
+    expect(page.locator("#account-card")).to_be_hidden()
+    click(page, "Account and device activation")
+    click(page, "Set up this device")
+    click(page, "Sign in to your SelahCue account")
+    page.evaluate("accountFixture.finishWebOpen(false)")
+    expect(page.get_by_role("button", name="Forgot password?", exact=True)).to_have_attribute("aria-disabled", "false")
+    expect(error).to_be_hidden()
+    expect(sign_in).to_be_focused()
+    assert_emergency_hit_targets(page, "Settings sign-in after late browser dispatch failure")
+    assert page.url == original_url
+    assert not errors, errors
+    page.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=("chromium", "webkit"), default="chromium")
@@ -383,7 +484,8 @@ def main():
             if screenshots:
                 screenshots.mkdir(parents=True, exist_ok=True)
             exercise(browser, dist, screenshots, (width, height))
-            print(f"Account setup, Settings and emergency hit targets passed in {args.engine} at {size}.", flush=True)
+            exercise_web_links(browser, dist, screenshots, (width, height))
+            print(f"Account setup, browser links, Settings and emergency hit targets passed in {args.engine} at {size}.", flush=True)
         browser.close()
 
 
