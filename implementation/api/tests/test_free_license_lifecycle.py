@@ -130,22 +130,41 @@ def test_expired_token_requires_admin_same_fingerprint_recovery(client, monkeypa
     assert licence.status == LicenseKeyStatus.ACTIVATED
 
 
-def test_same_license_renewal_preserves_public_device_id(client, monkeypatch):
+@pytest.mark.parametrize("competing_window", [False, True])
+def test_completed_live_replay_leaves_managed_licence_and_receipt_unchanged(
+    client, monkeypatch, competing_window,
+):
     monkeypatch.setattr(timezone, "now", lambda: NOW)
     _org, session, initial, licence = activate_free(client)
-    token = DeviceToken.objects.get()
-    expiry = NOW + timedelta(days=5)
-    AppLicenseKey.objects.filter(pk=licence.pk).update(expires_at=expiry, status=LicenseKeyStatus.EXPIRING)
-    DeviceToken.objects.filter(pk=token.pk).update(expires_at=expiry)
+    expires_at = NOW + timedelta(days=30)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(
+        expires_at=expires_at, status=LicenseKeyStatus.EXPIRING,
+    )
+    DeviceToken.objects.update(expires_at=expires_at)
+    if competing_window:
+        competitor, _ = another_license(licence, "future-replay")
+        AppLicenseKey.objects.filter(pk=competitor.pk).update(
+            starts_at=expires_at, expires_at=expires_at + timedelta(days=45),
+        )
+
+    receipt_before = DeviceActivationOperation.objects.values().get()
+    token_before = DeviceToken.objects.values().get()
+    audit_count = AuditEvent.objects.filter(action="license_key.free_renewed").count()
+
     replay = post(client, SESSION, body(), session)
+
     assert replay.status_code == 200, replay.json()
+    assert replay.json()["operation_state"] == "replay"
     assert replay.json()["device"]["device_public_id"] == initial["device"]["device_public_id"]
     assert replay.json()["activation_token"] is None
-    assert DeviceActivationOperation.objects.get().result_token_id == token.pk
-    assert DeviceToken.objects.count() == 1
+    assert DeviceActivationOperation.objects.values().get() == receipt_before
+    assert receipt_before["result_token_id"] == token_before["id"]
+    assert DeviceToken.objects.values().get() == token_before
+    assert Device.objects.count() == 1
     licence.refresh_from_db()
-    assert licence.expires_at == RENEWED_TO
-    assert licence.status == LicenseKeyStatus.ACTIVATED
+    assert licence.expires_at == expires_at
+    assert licence.status == LicenseKeyStatus.EXPIRING
+    assert AuditEvent.objects.filter(action="license_key.free_renewed").count() == audit_count
 
 
 def test_different_license_activation_is_not_same_device_recovery(client, monkeypatch):
@@ -248,7 +267,11 @@ def test_presented_token_can_catch_up_after_admin_renewal(client, monkeypatch):
     expiry = NOW + timedelta(days=5)
     AppLicenseKey.objects.filter(pk=licence.pk).update(expires_at=expiry)
     DeviceToken.objects.update(expires_at=expiry)
-    assert post(client, SESSION, body(), session).status_code == 200
+    target = initial["device"]["device_public_id"]
+    recovery = post(client, SESSION, body("2" * 32, expected=target), session)
+    assert recovery.status_code == 200, recovery.json()
+    assert recovery.json()["device"]["device_public_id"] == target
+    assert recovery.json()["activation_token"] is None
     assert DeviceToken.objects.get().expires_at == expiry
 
     response = post(client, REFRESH, {}, initial["activation_token"])

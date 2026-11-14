@@ -22,6 +22,8 @@ from selahcue_api.apps.devices.services import (
 )
 from selahcue_api.apps.license_keys.free_lifecycle import (
     FreeRenewalDenied,
+    _authorize_managed_activation,
+    _locked_marker,
     ensure_free_license_under_org_lock,
     renew_free_license_for_activation,
 )
@@ -187,9 +189,8 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
                     require_commercial_service(license_key)
             raise CompletedActivationReceipt(receipt, device)
         if actor is not None:
-            renew_free_license_for_activation(
-                customer, license_key, actor, timezone.now(), data.idempotency_key,
-            )
+            if _locked_marker(customer, license_key) is not None:
+                _authorize_managed_activation(customer, actor)
             require_commercial_service(license_key)
         activation = ActivateDeviceResult(device, token, license_key, None, False)
         return BoundActivationResult(activation, data.idempotency_key, "replay")
