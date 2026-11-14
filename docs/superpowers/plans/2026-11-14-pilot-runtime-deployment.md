@@ -16,7 +16,7 @@
 
 - Owner deploys manually; no deployment or provider administration is authorized by this slice.
 - Public API https://api.selahcueapp.com; intended website https://selahcueapp.com.
-- Two sync workers,30-second worker/graceful shutdown timeouts, no preload and no request access logs.
+- Two sync workers,30-second worker/graceful shutdown timeouts, no preload, no control socket and no request access logs.
 - Pin Gunicorn27.0.1 with a package-specific age exception only; preserve unrelated lock versions and the14-day default.
 - Gunicorn does not infer secure requests from untrusted forwarded headers; existing Django trusted-proxy settings remain authoritative.
 - No reusable provider, admin, signing private key or account secret is baked into source/images/packages.
@@ -26,7 +26,8 @@
 - Normal startup serves the existing CSRF liveness route and graceful SIGTERM exits without orphan workers.
 - A missing required production setting fails startup rather than serving with development defaults.
 - Spoofed forwarded-proto headers are ignored when Django trust is disabled, while the explicitly trusted path works.
-- A sensitive query/body sentinel is not emitted by server access logging.
+- Gunicorn preserves an existing disposable control socket through startup and shutdown.
+- The invalid JSON request returns HTTP 400 without logging its synthetic query or body values.
 - Development Compose retains its explicit runserver override and the image contains the declared locked server.
 
 ---

@@ -7,6 +7,9 @@ timeout = 30
 graceful_timeout = 30
 preload_app = False
 
+# Coolify controls the master process through container signals.
+control_socket_disable = True
+
 # Requests may carry account tokens. Keep request access logging off.
 accesslog = None
 errorlog = "-"

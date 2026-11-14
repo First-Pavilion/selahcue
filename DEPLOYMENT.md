@@ -84,7 +84,7 @@ Compile those 32 public bytes into the desktop release's trusted key set. The ke
    docker build -f implementation/marketing/Dockerfile .
    ```
 
-   The API image starts `gunicorn --config gunicorn.conf.py selahcue_api.wsgi:application` on `0.0.0.0:8000`. Its baseline is two synchronous workers with 30-second worker and graceful shutdown timeouts, no preloading and no request access log. Error logs go to stderr. Keep Gunicorn’s forwarded-header trust disabled and use Django’s explicit setting at the verified proxy boundary. Give Coolify at least 30 seconds to stop the container so Gunicorn can finish its graceful shutdown. Size any Coolify worker override from staging measurements.
+   The API image starts `gunicorn --config gunicorn.conf.py selahcue_api.wsgi:application` on `0.0.0.0:8000`. Its baseline is two synchronous workers with 30-second worker and graceful shutdown timeouts and no preloading. Gunicorn disables the local control socket and request access logs. Error logs go to stderr and can include request paths and query strings on exceptions. Restrict log access and redact sensitive fields before exporting those logs. Keep Gunicorn’s forwarded-header trust disabled and use Django’s explicit setting at the verified proxy boundary. Give Coolify at least 30 seconds to stop the container so Gunicorn can finish its graceful shutdown. Size any Coolify worker override from staging measurements.
 
    The checked-in `implementation/docker-compose.yml` is a development stack with an explicit Django `runserver` command, source mounts, host port mappings, example passwords and MailHog.
 
