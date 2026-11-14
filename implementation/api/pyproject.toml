@@ -63,6 +63,7 @@ dependencies = [
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
   "celery[redis]==5.6.3",
+  "gunicorn==27.0.1",
 ]
 
 [project.optional-dependencies]
@@ -96,3 +97,8 @@ build = ["setuptools==84.2.1"]
 # Deliberate local/CI/Docker bootstrap remains exactly 0.13.4; see .uv-version/README.
 required-version = ">=0.13.4,<0.14"
 exclude-newer = "14 days"
+
+[tool.uv.exclude-newer-package]
+# Admit the 27.0.1 framing and shutdown fixes without lowering the global 14-day gate.
+# Both artifacts for this exact pin were uploaded on 2026-11-12 at 22:41 UTC.
+gunicorn = "2026-11-12T22:42:00Z"
