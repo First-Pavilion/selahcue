@@ -2247,3 +2247,214 @@ fn failed_fresh_refusal_retirement_keeps_metadata_and_session_for_existing_retry
         restarted.client().transport().request(0)
     );
 }
+
+#[test]
+fn fresh_refusal_cannot_remove_another_controllers_retry_session() {
+    use std::{
+        sync::{mpsc, Mutex},
+        time::Duration,
+    };
+
+    struct PausedRemoval {
+        inner: Custody,
+        pause: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+
+    impl SecretStore for PausedRemoval {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            self.inner.get(name)
+        }
+
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            self.inner.set(name, token)
+        }
+
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            if name == ACCOUNT_SESSION_NAME {
+                if let Some((entered, release)) = self.pause.lock().expect("gate").take() {
+                    entered
+                        .send(())
+                        .expect("cleanup has compared the exact original session");
+                    release
+                        .recv_timeout(Duration::from_secs(8))
+                        .expect("continue cleanup");
+                }
+            }
+            self.inner.remove(name)
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let script = ScriptedTransport::responding(200, session_json());
+    script
+        .push_response(
+            403,
+            bound_refusal("activation_bound_with_session", "PERMISSION_DENIED"),
+        )
+        .push_response(200, r#"{"revoked":true}"#);
+    let client = LicensingClient::new(script, API_ORIGIN).expect("origin");
+    let (entered, pause) = mpsc::channel();
+    let (resume, release) = mpsc::channel();
+    let mut first = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        PausedRemoval {
+            inner: custody.clone(),
+            pause: Mutex::new(Some((entered, release))),
+        },
+        TrustedKeys::new(),
+        || NOW,
+    );
+    let first_attempt = std::thread::spawn(move || first.execute(sign_in()));
+    pause
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first cleanup paused after matching A");
+
+    let mut second = controller(dir.path(), custody.clone());
+    let second_session = "synthetic-retry-session-B";
+    second
+        .client()
+        .transport()
+        .push_response(200, session_json().replace(SESSION, second_session))
+        .push_failure("replacement activation or cleanup reply lost");
+    let during_cleanup = wire(&second.execute(sign_in()));
+    resume.send(()).expect("resume original cleanup");
+    let first_view = wire(&first_attempt.join().expect("first controller"));
+    assert_eq!(first_view["error_code"], "permission_denied");
+    assert_eq!(during_cleanup["error_code"], "account_session_save_failed");
+    assert_eq!(
+        during_cleanup["cleanup_error_code"],
+        "session_cleanup_unconfirmed"
+    );
+    assert!(second
+        .client()
+        .transport()
+        .request(1)
+        .expect("revoke only")
+        .url
+        .ends_with("/v1/sessions:revoke"));
+
+    // The OS lock was released at completion. A subsequent authorized sign-in
+    // can save B and dispatch. Losing its activation response keeps B retryable.
+    second
+        .client()
+        .transport()
+        .push_response(200, session_json().replace(SESSION, second_session))
+        .push_failure("replacement activation reply lost");
+    let after_cleanup = wire(&second.execute(sign_in()));
+    assert_eq!(after_cleanup["operation_state"], "retry_pending");
+    assert_eq!(
+        custody
+            .get(ACCOUNT_SESSION_NAME)
+            .expect("B remains in custody"),
+        Some(Token::new(second_session))
+    );
+
+    let mut restarted = controller(dir.path(), custody);
+    restarted
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false))
+        .push_response(200, r#"{"revoked":true}"#)
+        .push_failure("offline");
+    assert_eq!(
+        wire(&restarted.execute(Command::RetryActivation))["setup_state"],
+        "completed"
+    );
+}
+
+#[test]
+fn acknowledged_remote_cleanup_waits_for_local_lock_without_repeating_revoke() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let store = AccountMetadataStore::new(dir.path().into());
+    store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    let custody = Custody::default();
+    custody
+        .set(ACCOUNT_SESSION_NAME, &Token::new(SESSION))
+        .expect("session A");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+        .expect("device credential");
+    let mut account = controller(dir.path(), custody.clone());
+    account
+        .client()
+        .transport()
+        .push_response(200, r#"{"revoked":true}"#);
+
+    let competing_writer = store
+        .try_lock_account_session()
+        .expect("writer owns custody lock");
+    let blocked = wire(&account.execute(Command::RetryCleanup));
+    assert_eq!(
+        blocked["cleanup_error_code"],
+        "session_cleanup_local_failure"
+    );
+    assert_eq!(blocked["pending_cleanup"], true);
+    assert_eq!(account.client().transport().request_count(), 1);
+    assert_eq!(
+        custody
+            .get(ACCOUNT_SESSION_NAME)
+            .expect("unchanged credential"),
+        Some(Token::new(SESSION))
+    );
+
+    let replacement = Token::new("synthetic-replacement-while-cleanup-is-blocked");
+    custody
+        .set(ACCOUNT_SESSION_NAME, &replacement)
+        .expect("writer saves session B under lock");
+    drop(competing_writer);
+    let retried = wire(&account.execute(Command::RetryCleanup));
+    assert!(retried.get("cleanup_error_code").is_none());
+    assert_eq!(account.client().transport().request_count(), 1);
+    assert_eq!(
+        custody
+            .get(ACCOUNT_SESSION_NAME)
+            .expect("replacement preserved"),
+        Some(replacement)
+    );
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("device preserved"),
+        Some(Token::new(SECRET))
+    );
+}
+
+#[test]
+fn unsafe_session_lock_path_blocks_local_keyring_mutations_until_restored() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account = controller(dir.path(), custody.clone());
+    let obstruction = dir.path().join("account-session-custody.lock");
+    std::fs::create_dir(&obstruction).expect("unsafe lock path");
+    account
+        .client()
+        .transport()
+        .push_response(200, session_json())
+        .push_response(200, r#"{"revoked":true}"#);
+    let denied = wire(&account.execute(sign_in()));
+    assert_eq!(denied["error_code"], "account_session_save_failed");
+    assert_eq!(
+        denied["cleanup_error_code"],
+        "session_cleanup_local_failure"
+    );
+    assert!(custody
+        .get(ACCOUNT_SESSION_NAME)
+        .expect("no stored session")
+        .is_none());
+    assert_eq!(account.client().transport().request_count(), 2);
+    assert!(account
+        .client()
+        .transport()
+        .request(1)
+        .expect("revoke unused A")
+        .url
+        .ends_with("/v1/sessions:revoke"));
+
+    std::fs::remove_dir(obstruction).expect("restore lock path");
+    let after_repair = wire(&account.execute(Command::RetryCleanup));
+    assert!(after_repair.get("cleanup_error_code").is_none());
+    assert_eq!(after_repair["pending_cleanup"], false);
+    assert_eq!(account.client().transport().request_count(), 2);
+}

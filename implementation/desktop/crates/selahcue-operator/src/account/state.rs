@@ -12,6 +12,7 @@ use selahcue_licensing::{DeviceIdentity, IdempotencyKey};
 const SCHEMA_VERSION: u32 = 1;
 const METADATA_FILE: &str = "account-metadata.json";
 const LOCK_FILE: &str = "account-metadata.lock";
+const SESSION_LOCK_FILE: &str = "account-session-custody.lock";
 const STAGING_FILE: &str = "account-metadata.stage";
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 
@@ -483,6 +484,20 @@ impl AccountMetadataStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Serialize only the local account-session write or compare/remove. The
+    /// same stable file coordinates independent operators sharing this app data.
+    /// The OS releases the lock when the handle closes, including process exit.
+    pub(crate) fn try_lock_account_session(&self) -> Result<File, AccountStorageError> {
+        if !self.directory_exists()? {
+            return Err(AccountStorageError::Changed);
+        }
+        let file = open_regular(&self.directory.join(SESSION_LOCK_FILE), true)?
+            .ok_or(AccountStorageError::Changed)?;
+        validate_open_regular(&file, true)?;
+        file.try_lock().map_err(io::Error::from)?;
+        Ok(file)
     }
 
     fn lock(&self) -> Result<File, AccountStorageError> {

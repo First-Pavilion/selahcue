@@ -457,7 +457,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
                 return Err(error);
             }
         };
-        if self.credentials.store_account_session(&session).is_err() {
+        if self.store_account_session(&session).is_err() {
             // No activation can leave without saved retry authority. Preserve the
             // local failure alongside the independent unused-session cleanup result.
             if pending.is_prepared() {
@@ -730,6 +730,31 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         self.refresh_manifest(metadata, &token, online)
     }
 
+    fn store_account_session(&self, session: &Token) -> Result<(), Code> {
+        let _lock = self
+            .storage
+            .as_ref()
+            .ok_or(Code::AccountSessionSaveFailed)?
+            .try_lock_account_session()
+            .map_err(|_| Code::AccountSessionSaveFailed)?;
+        self.credentials
+            .store_account_session(session)
+            .map_err(|_| Code::AccountSessionSaveFailed)
+    }
+
+    fn clear_matching_account_session(&self, session: &Token) -> Result<(), Code> {
+        let _lock = self
+            .storage
+            .as_ref()
+            .ok_or(Code::SessionCleanupLocalFailure)?
+            .try_lock_account_session()
+            .map_err(|_| Code::SessionCleanupLocalFailure)?;
+        self.credentials
+            .clear_account_session_if_matches(session)
+            .map_err(|_| Code::SessionCleanupLocalFailure)?;
+        Ok(())
+    }
+
     fn account_session(&self) -> Result<Option<Token>, Code> {
         self.credentials
             .account_session()
@@ -778,11 +803,8 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
 
     fn clear_acknowledged_cleanup(&mut self) -> Result<(), Code> {
         if let Some(acknowledged) = self.cleanup_ack.as_ref() {
-            match self
-                .credentials
-                .clear_account_session_if_matches(acknowledged)
-            {
-                Ok(_) => {
+            match self.clear_matching_account_session(acknowledged) {
+                Ok(()) => {
                     self.cleanup_ack = None;
                     self.cleanup_error = None;
                 }
