@@ -115,6 +115,54 @@ class MacOSPackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(build.PackagingError, "x86_64 target"):
             build.check_whisper_flags(self.target_dir)
 
+    def test_interrupted_copy_cleans_temporary_file_and_allows_retry(self):
+        source = self.scratch / "source.dmg"
+        source.write_bytes(b"complete disk image")
+        destination = self.scratch / "candidate.dmg"
+
+        def interrupted_copy(_source, temporary):
+            Path(temporary).write_bytes(b"partial")
+            self.assertFalse(destination.exists())
+            raise KeyboardInterrupt
+
+        with patch("build_macos_installer.shutil.copy2", side_effect=interrupted_copy):
+            with self.assertRaises(KeyboardInterrupt):
+                build.publish_dmg(source, destination)
+        self.assertEqual(list(self.scratch.iterdir()), [source])
+
+        build.publish_dmg(source, destination)
+        self.assertEqual(destination.read_bytes(), source.read_bytes())
+        self.assertEqual(set(self.scratch.iterdir()), {source, destination})
+
+    def test_corrupted_copy_does_not_publish_even_with_matching_size(self):
+        source = self.scratch / "source.dmg"
+        source.write_bytes(b"correct")
+        destination = self.scratch / "candidate.dmg"
+
+        def corrupt_copy(_source, temporary):
+            Path(temporary).write_bytes(b"corrupt")
+
+        with patch("build_macos_installer.shutil.copy2", side_effect=corrupt_copy):
+            with self.assertRaisesRegex(build.PackagingError, "does not match"):
+                build.publish_dmg(source, destination)
+        self.assertEqual(list(self.scratch.iterdir()), [source])
+
+    def test_competing_publish_preserves_winner_and_cleans_temporary_file(self):
+        source = self.scratch / "source.dmg"
+        source.write_bytes(b"our disk image")
+        destination = self.scratch / "candidate.dmg"
+        copy = shutil.copy2
+
+        def competing_copy(actual_source, temporary):
+            copy(actual_source, temporary)
+            destination.write_bytes(b"other disk image")
+
+        with patch("build_macos_installer.shutil.copy2", side_effect=competing_copy):
+            with self.assertRaisesRegex(build.PackagingError, "already exists"):
+                build.publish_dmg(source, destination)
+        self.assertEqual(destination.read_bytes(), b"other disk image")
+        self.assertEqual(set(self.scratch.iterdir()), {source, destination})
+
     def test_old_dmg_cannot_be_mistaken_for_the_current_build(self):
         package = self.scratch / "old.dmg"
         package.write_bytes(b"old package")

@@ -72,3 +72,9 @@ The scanner self-test passed 47 cases. Each DMG and its three uncompressed binar
 The original DMG is 72,791,134 bytes. The portable DMG is 72,791,095 bytes. Local artifacts, build stdout/stderr, exact compiler flags, source diffs and mounted-payload receipts are under `/private/tmp/selahcue-public-release-20261114/macos-baseline/` and `/private/tmp/selahcue-public-release-20261114/macos-portable/`.
 
 Physical Intel and early Apple Silicon first transcription, microphone permission behavior, external display and NDI receiver acceptance, Gatekeeper behavior for a downloaded image and the final cloud-feature profile remain unverified here.
+
+## Disk image publication
+
+A follow-up changes only the wrapper’s final copy. It copies the completed image to a private temporary sibling, compares the bytes, then publishes it with an atomic same-filesystem link that refuses an existing candidate. The temporary name is removed on success and handled failures, including an interrupted copy. The wrapper preserves the build and its receipts under `scratch`. Start a new build in a fresh output directory to keep those receipts.
+
+Ten focused wrapper tests passed, including interrupted copy and retry, same-size corruption, and a competing publisher. The revised publication step also copied the actual Tauri image into a fresh directory. The copy passed `hdiutil verify` and matched the original portable DMG byte for byte and by SHA-256. The native build was not rerun for this copy-only change.

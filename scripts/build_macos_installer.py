@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import json
+import os
 from pathlib import Path
 import platform
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ARCHITECTURES = {"aarch64-apple-darwin": "arm64", "x86_64-apple-darwin": "x86_64"}
 PORTABLE_WHISPER = dict.fromkeys(
@@ -103,6 +106,21 @@ def require_new_file(path: Path) -> None:
         raise PackagingError(f"Output already exists at {path}")
 
 
+def publish_dmg(package: Path, candidate: Path) -> None:
+    require_new_file(candidate)
+    with tempfile.NamedTemporaryFile(dir=candidate.parent, prefix=f".{candidate.name}.", suffix=".partial") as temporary:
+        copied = Path(temporary.name)
+        shutil.copy2(package, copied)
+        if not filecmp.cmp(package, copied, shallow=False):
+            raise PackagingError("Copied DMG does not match the completed Tauri image")
+        # A same-directory hard link exposes the complete file atomically and
+        # fails if another invocation published to the same name first.
+        try:
+            os.link(copied, candidate)
+        except FileExistsError as exc:
+            raise PackagingError(f"Output already exists at {candidate}") from exc
+
+
 def run(command: list[str], directory: Path, env: dict[str, str], receipt: Path) -> Path:
     stdout = receipt.with_suffix(".stdout")
     stderr = receipt.with_suffix(".stderr")
@@ -165,7 +183,7 @@ def build_installer(root: Path, output: Path, cli: Path) -> Path:
     package = target_dir / "universal-apple-darwin/release/bundle/dmg" / DMG_NAME
     if not package.is_file() or package.stat().st_size == 0:
         raise PackagingError("Tauri did not produce the expected DMG")
-    shutil.copy2(package, candidate)
+    publish_dmg(package, candidate)
     return candidate
 
 
