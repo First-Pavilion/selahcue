@@ -18,8 +18,12 @@ from selahcue_api.apps.devices.services import (
     _assert_device_activatable,
     _existing_device_result,
     _resolve_license_key,
-    _resolve_org_active_license_key,
     require_commercial_service,
+)
+from selahcue_api.apps.license_keys.free_lifecycle import (
+    FreeRenewalDenied,
+    ensure_free_license_under_org_lock,
+    renew_free_license_for_activation,
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey
 from selahcue_api.apps.license_keys.services import lock_customer_for_key_changes
@@ -103,13 +107,17 @@ def _complete(data, org_id, auth_path, *, enrollment=None, actor=None):
         sort_keys=True, separators=(",", ":"), ensure_ascii=True,
     ).encode("ascii")).hexdigest()
     try:
-        return _transaction(data, org_id, auth_path, digest, enrollment=enrollment, actor=actor)
-    except IntegrityError:
-        # Different organizations take different row locks. If they race on a global
-        # nonce, the failed insert rolls back every mutation from the losing transaction.
-        if not DeviceActivationOperation.objects.filter(operation_key=data.idempotency_key).exists():
-            raise
-        return _transaction(data, org_id, auth_path, digest, enrollment=enrollment, actor=actor)
+        try:
+            return _transaction(data, org_id, auth_path, digest, enrollment=enrollment, actor=actor)
+        except IntegrityError:
+            # Different organizations take different row locks. If they race on a global
+            # nonce, the failed insert rolls back every mutation from the losing transaction.
+            if not DeviceActivationOperation.objects.filter(operation_key=data.idempotency_key).exists():
+                raise
+            return _transaction(data, org_id, auth_path, digest, enrollment=enrollment, actor=actor)
+    except FreeRenewalDenied as error:
+        error.audit()
+        raise
 
 
 def _verify_receipt(receipt, org_id, auth_path, digest, enrollment):
@@ -126,7 +134,8 @@ def _verify_receipt(receipt, org_id, auth_path, digest, enrollment):
 def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
     # Serializes simultaneous operations in the same org before resolving the
     # currently preferred licence. Different orgs arbitrate through the unique nonce.
-    lock_customer_for_key_changes(org_id)
+    customer = lock_customer_for_key_changes(org_id)
+    now = timezone.now()
     receipt = DeviceActivationOperation.objects.filter(operation_key=data.idempotency_key).first()
     if receipt is not None:
         _verify_receipt(receipt, org_id, auth_path, digest, enrollment)
@@ -140,7 +149,9 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
         if license_id is None:
             raise _conflict()
     else:
-        license_id = _resolve_org_active_license_key(org_id).pk
+        license_id = ensure_free_license_under_org_lock(
+            customer, actor, now, data.idempotency_key, defer_renewal=True,
+        ).pk
 
     license_key = (
         AppLicenseKey.objects.select_for_update().filter(pk=license_id, customer_id=org_id).first()
@@ -153,7 +164,8 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
     ):
         # Preserve the current authenticated proof after acquiring the licence row.
         raise SafeAPIError(ErrorCode.NOT_FOUND)
-    require_commercial_service(license_key)
+    if enrollment is not None:
+        require_commercial_service(license_key)
 
     devices = Device.objects.select_for_update().filter(license_key=license_key, customer_id=org_id)
     if receipt is not None:
@@ -166,13 +178,31 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
             pk=receipt.result_token_id, device=device, status=DeviceTokenStatus.ACTIVE,
         ).first()
         if token is None or token.expires_at <= timezone.now():
+            if actor is not None:
+                may_recover = renew_free_license_for_activation(
+                    customer, license_key, actor, timezone.now(), data.idempotency_key,
+                    completed_without_token=True,
+                )
+                if not may_recover:
+                    require_commercial_service(license_key)
             raise CompletedActivationReceipt(receipt, device)
+        if actor is not None:
+            renew_free_license_for_activation(
+                customer, license_key, actor, timezone.now(), data.idempotency_key,
+            )
+            require_commercial_service(license_key)
         activation = ActivateDeviceResult(device, token, license_key, None, False)
         return BoundActivationResult(activation, data.idempotency_key, "replay")
 
     if data.expected_device_public_id is not None:
         device = devices.filter(device_public_id=data.expected_device_public_id).first()
         _verify_device(data, device)
+        _assert_device_activatable(device)
+        if actor is not None:
+            renew_free_license_for_activation(
+                customer, license_key, actor, timezone.now(), data.idempotency_key,
+            )
+            require_commercial_service(license_key)
         activation = _existing_device_result(
             device, license_key, idempotency_key=data.idempotency_key,
             audit_actor=actor, source_surface="desktop_v1", lock_result_token=True,
@@ -187,6 +217,12 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
             existing = devices.filter(device_fingerprint=data.device_fingerprint).first()
             if existing is not None:
                 _verify_device(data, existing)
+        if existing is not None:
+            _assert_device_activatable(existing)
+        if actor is not None:
+            renew_free_license_for_activation(
+                customer, license_key, actor, timezone.now(), data.idempotency_key,
+            )
         activation = _activate_device_for_key(
             license_key, idempotency_key=data.idempotency_key,
             device_fingerprint=data.device_fingerprint, platform=data.platform,

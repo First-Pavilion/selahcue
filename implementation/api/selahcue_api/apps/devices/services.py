@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
+from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
@@ -20,6 +21,16 @@ from selahcue_api.apps.devices.models import (
     DeviceTokenStatus,
 )
 from selahcue_api.apps.accounts.models import CustomerRole
+from selahcue_api.apps.license_keys.free_lifecycle import (
+    FreeRenewalDenied,
+    ensure_free_license_under_org_lock,
+    renew_free_license_for_device,
+)
+from selahcue_api.apps.license_keys.selection import (
+    ACTIVATABLE_KEY_STATUSES,
+    find_eligible_org_license,
+)
+from selahcue_api.apps.license_keys.services import lock_customer_for_key_changes
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
 from selahcue_api.graphql.context import (
@@ -40,11 +51,6 @@ TOKEN_GROUP_SIZE = 4
 # Native activation is the desktop licensing surface. These match DeviceIdentity's
 # documented OS identifiers; mobile controllers authenticate to the paired LAN host.
 ACTIVATION_PLATFORMS = frozenset({"macos", "windows", "linux"})
-
-# License-key statuses under which a device may (re-)activate. Terminal/blocked states deny.
-ACTIVATABLE_KEY_STATUSES = frozenset(
-    {LicenseKeyStatus.ISSUED, LicenseKeyStatus.ACTIVATED, LicenseKeyStatus.EXPIRING}
-)
 
 # The mandatory `reason` (>= 8 characters) the licence audit row carries for the automated
 # ISSUED -> ACTIVATED move; there is no operator to supply one. Worded to be true on both
@@ -625,18 +631,7 @@ def _resolve_org_active_license_key(org_id: str) -> AppLicenseKey:
     """Resolve the org's currently-activatable license key (DEC-005 account path). NOT_FOUND if the
     org has no active key — no oracle on which orgs/keys exist. Picks the furthest-out expiry when
     several are active (best entitlement window)."""
-    now = timezone.now()
-    key = (
-        AppLicenseKey.objects.select_related("customer")
-        .filter(
-            customer_id=org_id,
-            status__in=ACTIVATABLE_KEY_STATUSES,
-            starts_at__lte=now,
-            expires_at__gt=now,
-        )
-        .order_by("-expires_at")
-        .first()
-    )
+    key = find_eligible_org_license(org_id, timezone.now())
     if key is None:
         raise SafeAPIError(ErrorCode.NOT_FOUND)
     return key
@@ -657,18 +652,26 @@ def activate_device_with_session(
     checked = require_customer_role(actor, CustomerRole.ADMIN)
     idempotency_key, fingerprint, platform, app_version, display_name = _activation_metadata(data)
 
-    license_key = _resolve_org_active_license_key(checked.org_id)
-    return _activate_device_for_key(
-        license_key,
-        idempotency_key=idempotency_key,
-        device_fingerprint=fingerprint,
-        platform=platform,
-        app_version=app_version,
-        display_name=display_name,
-        activated_by_actor_id=checked.actor_id,
-        audit_actor=checked,
-        source_surface=source_surface,
-    )
+    try:
+        with transaction.atomic():
+            customer = lock_customer_for_key_changes(checked.org_id)
+            license_key = ensure_free_license_under_org_lock(
+                customer, checked, timezone.now(), idempotency_key,
+            )
+            return _activate_device_for_key(
+                license_key,
+                idempotency_key=idempotency_key,
+                device_fingerprint=fingerprint,
+                platform=platform,
+                app_version=app_version,
+                display_name=display_name,
+                activated_by_actor_id=checked.actor_id,
+                audit_actor=checked,
+                source_surface=source_surface,
+            )
+    except FreeRenewalDenied as error:
+        error.audit()
+        raise
 
 
 def authenticate_device_token(presented_token: str) -> DeviceToken:
@@ -705,10 +708,11 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
 
 def refresh_license(presented_token: str) -> LicenseRefreshResult:
     """Return the current license/entitlement status for an authenticated device token, so the
-    desktop can refresh its cached offline entitlement (DEC-004). Pure read — no mutation. The
-    *license* status is reported truthfully (incl. expired/revoked) so the client can act; only an
-    invalid *token* denies (via `authenticate_device_token`)."""
+    desktop can refresh its cached offline entitlement (DEC-004). An eligible managed Free
+    licence and the presented live token can be extended. Blocked licences still report
+    their current status through the existing refresh contract."""
     token = authenticate_device_token(presented_token)
+    renewal = renew_free_license_for_device(token, None, uuid4().hex)
     device = token.device
     license_key = device.license_key
 
@@ -722,11 +726,11 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
         device_status=device.status,
         license_status=license_key.status,
         license_starts_at=license_key.starts_at.isoformat(),
-        license_expires_at=license_key.expires_at.isoformat(),
+        license_expires_at=renewal.license_expires_at.isoformat(),
         license_valid_now=valid_now,
         instances_used=instances_used,
         instances_limit=license_key.device_limit,
-        token_expires_at=token.expires_at.isoformat(),
+        token_expires_at=renewal.token_expires_at.isoformat(),
         feature_scope=license_key.feature_scope,
         territory=license_key.territory,
     )

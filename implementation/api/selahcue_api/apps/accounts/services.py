@@ -739,6 +739,25 @@ def _customer_actor(user: CustomerUser) -> ActorContext:
     )
 
 
+def require_verified_activation_admin(actor: ActorContext, customer: CustomerOrg) -> None:
+    """Recheck the persisted authority for a managed Free lifecycle change."""
+    if (
+        actor.org_id != str(customer.pk)
+        or not actor.actor_id.isascii()
+        or not actor.actor_id.isdecimal()
+        or len(actor.actor_id) > 19
+        or not CustomerUser.objects.select_for_update().filter(
+            pk=int(actor.actor_id), customer=customer, role=CustomerRole.ADMIN,
+            status=CustomerUserStatus.ACTIVE, email_verified_at__isnull=False,
+        ).exists()
+    ):
+        raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+
+
+def is_self_service_org(customer: CustomerOrg) -> bool:
+    return customer.created_by_actor_id.startswith(f"{SELF_SIGNUP_ACTOR}:")
+
+
 # --- result dataclasses ----------------------------------------------------
 @dataclass(frozen=True)
 class RegisterCustomerUserData:

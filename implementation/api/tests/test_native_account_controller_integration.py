@@ -19,12 +19,13 @@ from django.utils import timezone
 
 from test_bound_activation import another_license
 from test_device_token_remint import TEST_SEED_B64, _expire_tokens, _renew, _seed_license_key
+from test_free_license_lifecycle import self_service_org
 from test_native_account_surface import seed_user
 from selahcue_api.apps.accounts.models import CustomerSession
 from selahcue_api.apps.audit.models import AuditEvent
-from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
+from selahcue_api.apps.devices.models import Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
-from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 
 OPERATOR_TEST = "account::tests::controller::django_g1_real_api"
 RUST_BIN = os.environ.get("SELAHCUE_G1_OPERATOR_TEST_BIN")
@@ -32,21 +33,30 @@ RUST_BIN = os.environ.get("SELAHCUE_G1_OPERATOR_TEST_BIN")
 
 @pytest.mark.skipif(not RUST_BIN, reason="requires staged Rust operator integration test binary")
 @pytest.mark.django_db(transaction=True)
-@pytest.mark.parametrize("scenario", ["expired", "cascade", "missing", "missing-local", "live", "initial-restart", "lost-initial"])
+@pytest.mark.parametrize("scenario", [
+    "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
+    "lost-initial", "managed-free-lost-initial",
+])
 def test_native_account_controller_against_local_platform_api(scenario, settings, live_server):
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
     cache.clear()
     now = timezone.now().replace(microsecond=0)
-    key, enrollment_key = _seed_license_key(tag=scenario, device_limit=1, starts_at=now - timedelta(days=40))
-    assert key.device_limit == 1
+    starts_with_free = scenario == "managed-free-lost-initial"
+    if starts_with_free:
+        customer = self_service_org()
+        enrollment_key = None
+    else:
+        key, enrollment_key = _seed_license_key(tag=scenario, device_limit=1, starts_at=now - timedelta(days=40))
+        assert key.device_limit == 1
+        customer = key.customer
     email = f"admin-{scenario}@fixture.test"
     password = "Synthetic-loopback-fixture-only-548!"
-    if scenario in {"cascade", "initial-restart", "lost-initial"}:
-        seed_user(key.customer, email=email, password=password)
+    if starts_with_free or scenario in {"cascade", "initial-restart", "lost-initial"}:
+        seed_user(customer, email=email, password=password)
 
     env = os.environ.copy()
     env["SELAHCUE_G1_FIXTURE_URL"] = live_server.url
-    env["SELAHCUE_G1_SCENARIO"] = scenario
+    env["SELAHCUE_G1_SCENARIO"] = "lost-initial" if starts_with_free else scenario
     env["NO_PROXY"] = "127.0.0.1,localhost"
     with subprocess.Popen(
         [str(Path(RUST_BIN).resolve(strict=True)), OPERATOR_TEST, "--exact", "--ignored", "--nocapture"],
@@ -79,8 +89,6 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
             child.stdin.write(json.dumps({"email": email, "password": password, "enrollment_key": enrollment_key}) + "\n")
             child.stdin.flush()
             if scenario == "initial-restart":
-                from selahcue_api.apps.devices.models import DeviceActivationOperation
-
                 receive("initial unsaved")
                 original = Device.objects.get(license_key=key)
                 receipt = DeviceActivationOperation.objects.get()
@@ -94,23 +102,43 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
                 assert DeviceActivationOperation.objects.count() == 1
                 assert not CustomerSession.objects.filter(revoked_at__isnull=True).exists()
                 return
-            if scenario == "lost-initial":
-                from selahcue_api.apps.devices.models import DeviceActivationOperation
-
+            if starts_with_free or scenario == "lost-initial":
                 receive("initial response lost")
                 receipt = DeviceActivationOperation.objects.get()
                 origin = receipt.device
                 receipt.result_token.delete()
-                competitor, _ = another_license(key, "native-lost-competitor")
+                competitor = None
+                if starts_with_free:
+                    key = receipt.license_key
+                    assert FreeLicenseLifecycle.objects.get(customer=customer).license_key_id == key.pk
+                    assert key.expires_at - key.starts_at == timedelta(days=365)
+                    expired = now - timedelta(days=1)
+                    AppLicenseKey.objects.filter(pk=key.pk).update(
+                        starts_at=expired - timedelta(days=365), expires_at=expired,
+                        status=LicenseKeyStatus.EXPIRED,
+                    )
+                else:
+                    competitor, _ = another_license(key, "native-lost-competitor")
                 advance()
                 receive("completed receipt learned")
+                if starts_with_free:
+                    key.refresh_from_db()
+                    assert key.expires_at == expired
+                    assert not AuditEvent.objects.filter(action="license_key.free_renewed").exists()
                 assert not DeviceToken.objects.exists()
                 assert not AuditEvent.objects.filter(action="device_token.reminted").exists()
                 assert DeviceActivationOperation.objects.count() == 1
                 advance()
                 receive("lost-initial recovered")
                 assert child.wait(timeout=30) == 0
-                assert not Device.objects.filter(license_key=competitor).exists()
+                if competitor is not None:
+                    assert not Device.objects.filter(license_key=competitor).exists()
+                if starts_with_free:
+                    key.refresh_from_db()
+                    assert key.status == LicenseKeyStatus.ACTIVATED
+                    assert key.expires_at > now + timedelta(days=364)
+                    assert AuditEvent.objects.filter(action="license_key.free_renewed").count() == 1
+                    assert DeviceActivationOperation.objects.filter(license_key=key, device=origin).count() == 2
                 assert DeviceToken.objects.filter(device=origin).count() == Device.objects.count() == 1
                 old = DeviceActivationOperation.objects.get(pk=receipt.pk)
                 assert old.result_token_id is None and old.issued_token_pk == receipt.issued_token_pk

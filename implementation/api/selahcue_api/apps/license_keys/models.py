@@ -88,3 +88,16 @@ class AppLicenseKey(models.Model):
 
     def __str__(self) -> str:
         return self.masked_key
+
+
+class FreeLicenseLifecycle(models.Model):
+    customer = models.OneToOneField(
+        "selahcue_accounts.CustomerOrg",
+        on_delete=models.PROTECT,
+        related_name="free_license_lifecycle",
+    )
+    license_key = models.OneToOneField(
+        AppLicenseKey, on_delete=models.PROTECT, related_name="free_lifecycle"
+    )
+    policy_version = models.PositiveSmallIntegerField()
+    renewal_enabled = models.BooleanField(default=True)
