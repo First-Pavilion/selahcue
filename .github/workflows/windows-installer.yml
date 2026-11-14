@@ -90,7 +90,6 @@ jobs:
         with:
           workspaces: |
             implementation/desktop
-            implementation/desktop/crates/selahcue-operator
       # MSVC dev shell so dumpbin + lib (used to generate the NDI import library) are on PATH.
       - uses: ilammy/msvc-dev-cmd@v1
       # Interpreter for the shipped-artefact secret scan at the bottom of this job. Pinned, and
@@ -103,10 +102,13 @@ jobs:
       # whisper-rs (STT) compiles whisper.cpp: needs cmake + libclang (bindgen). windows-latest
       # ships both; assert them and export LIBCLANG_PATH so a future image change fails fast here
       # rather than deep inside the build.
-      - name: Verify STT build deps (cmake + libclang)
+      - name: Verify STT build deps (CMake, Ninja and libclang)
         shell: pwsh
         run: |
           cmake --version
+          if ($LASTEXITCODE -ne 0) { throw "CMake is required for the Whisper build" }
+          ninja --version
+          if ($LASTEXITCODE -ne 0) { throw "Ninja is required to emit the Whisper compile database" }
           $llvm = Join-Path $env:ProgramFiles "LLVM\bin"
           if (-not (Test-Path $llvm)) { throw "LLVM/libclang not found at $llvm" }
           "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
@@ -196,9 +198,35 @@ jobs:
       - name: Install Tauri CLI v2
         run: cargo install tauri-cli --version "^2.0" --locked
 
+      - name: Self-test the Whisper CPU policy
+        working-directory: ${{ github.workspace }}
+        run: python -B scripts/test_whisper_cpu_policy.py
+
       - name: Build the installer (--features stt)
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo tauri build --features stt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $helper = Join-Path $env:GITHUB_WORKSPACE "scripts/whisper_cpu_policy.py"
+          $target = Join-Path (Get-Location).Path "target"
+          $prepared = python $helper prepare-windows $target
+          if ($LASTEXITCODE -ne 0) { throw "Whisper portable build environment was refused" }
+          $policy = $prepared | ConvertFrom-Json -AsHashtable
+          foreach ($name in $policy.remove) {
+            [Environment]::SetEnvironmentVariable($name, $null, "Process")
+          }
+          foreach ($entry in $policy.set.GetEnumerator()) {
+            [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "Process")
+          }
+          cargo tauri build --features stt
+          if ($LASTEXITCODE -ne 0) { throw "Portable operator installer build failed" }
+
+      - name: Require portable Whisper compiler evidence for the installer
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          python scripts/whisper_cpu_policy.py verify-windows implementation/desktop/crates/selahcue-operator/target --metadata release-metadata.json
+          if ($LASTEXITCODE -ne 0) { throw "Installer lacks verified portable Whisper compiler evidence" }
 
       # ---------------------------------------------------------------------------------
       # EFFECT-LEVEL GATE: developer AI-provider keys must not be in what we ship.
