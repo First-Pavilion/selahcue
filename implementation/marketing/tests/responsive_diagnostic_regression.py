@@ -113,6 +113,26 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertIsNotNone(marker)
             self.assertEqual(set(marker), {'elapsedMs', 'pollCount', 'lastPollResult', 'rafCompleted', 'rafPending'})
             self.assertTrue(marker['lastPollResult'])
+            payload = json.loads(diagnostic.render('settled', 0))
+            self.assertIsNone(payload['firstFramePoll'])
+            self.assertIsNone(payload['earlyTimer'])
+
+    def test_early_timer_reports_without_a_second_poll(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/early-timer-control', 375)
+            page.goto('data:text/html,<main><h1>Timer control</h1></main>')
+            with page.expect_console_message(
+                predicate=lambda message: message.text.startswith('WEBKIT_SETTLE_MARKER ')
+                and '"event":"earlyTimer"' in message.text,
+            ):
+                page.evaluate("document.querySelector('h1').animate([{opacity:1},{opacity:0}], {duration:30000})")
+                # Invoke one real predicate without scheduling a follow-up Playwright poll.
+                self.assertFalse(page.evaluate(sweep.OBSERVED_SETTLE_JS))
+            payload = json.loads(diagnostic.render('infra', 0))
+            self.assertIsNone(payload['firstFramePoll'])
+            self.assertEqual(payload['earlyTimer']['pollCount'], 1)
+            self.assertFalse(payload['earlyTimer']['lastPollResult'])
 
     def test_animation_observer_hides_unrecognized_labels_and_rejects_spoofed_labels(self):
         with self.browser.new_context() as context:
@@ -217,7 +237,16 @@ class DiagnosticRegression(unittest.TestCase):
             with self.assertRaises(PlaywrightTimeoutError):
                 page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
             payload = json.loads(diagnostic.render('infra', 0))
-            self.assertFalse(payload['firstPoll']['lastPollResult'])
+            first = payload['firstPoll']
+            frame = payload['firstFramePoll']
+            timer = payload['earlyTimer']
+            self.assertFalse(first['lastPollResult'])
+            self.assertEqual(frame['pollCount'], 2)
+            self.assertFalse(frame['lastPollResult'])
+            self.assertGreaterEqual(frame['elapsedMs'], first['elapsedMs'])
+            self.assertGreaterEqual(timer['elapsedMs'] - first['elapsedMs'], 90)
+            self.assertGreaterEqual(timer['pollCount'], 1)
+            self.assertFalse(timer['lastPollResult'])
             self.assertTrue(any(
                 not sample['predicate'] and sample['rafCompleted'] > 0
                 and sample['pollCount'] > 1 and sample['lastPollResult'] is False

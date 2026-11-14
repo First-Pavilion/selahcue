@@ -359,6 +359,42 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
     page.set_viewport_size(size)
 
 
+def check_contact_focus_fallback(page, c: Checks, base: str) -> None:
+    """Exercise the production focus handler independently of native scrolling."""
+    open_page(page, base, "/contact", ".contact-form-card")
+    for top, move_focus, label in (
+        (40, False, "covered link"),
+        (120, False, "already visible link"),
+        (40, True, "focus moves away before paint"),
+    ):
+        got = page.evaluate(
+            """async ([top, moveFocus]) => {
+              const link = document.querySelector('.method-link');
+              const field = document.querySelector('.contact-form textarea');
+              const nav = document.querySelector('.navbar-header');
+              field.focus({ preventScroll: true });
+              window.scrollTo({ top: scrollY + link.getBoundingClientRect().top - top, behavior: 'instant' });
+              const before = scrollY;
+              link.focus({ preventScroll: true });
+              const keyboardFocus = link.matches(':focus-visible');
+              if (moveFocus) field.focus({ preventScroll: true });
+              await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              return {
+                before, after: scrollY, top: link.getBoundingClientRect().top,
+                nav: nav.getBoundingClientRect().bottom, keyboardFocus,
+                expectedFocus: document.activeElement === (moveFocus ? field : link),
+              };
+            }""", [top, move_focus],
+        )
+        c.ok(got["keyboardFocus"] and got["expectedFocus"], f"contact fallback: {label} uses keyboard focus")
+        if top == 40 and not move_focus:
+            c.ok(got["top"] >= got["nav"] and got["after"] < got["before"],
+                 f"contact fallback: covered link clears the navbar with native scrolling suppressed "
+                 f"(link top {got['top']:.0f}, navbar ends {got['nav']:.0f})")
+        else:
+            c.eq(got["after"], got["before"], f"contact fallback: {label} leaves scroll unchanged")
+
+
 def check_support(page, c: Checks, base: str) -> None:
     open_page(page, base, "/support", ".search-input")
     s = box(page, ".search-input")
@@ -584,6 +620,7 @@ def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
 GROUPS = {
     "contact": check_contact,
     "contact-behaviour": check_contact_behaviour,
+    "contact-focus-fallback": check_contact_focus_fallback,
     "support": check_support,
     "docs": check_docs,
     "changelog": check_changelog,

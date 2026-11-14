@@ -480,8 +480,8 @@ SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
 )"""
 
 # The WebKit wait still uses Playwright's default frame polling and the same predicate.
-# Record the first actual invocation synchronously: the init observer's timer may never
-# fire again in the failed cell, leaving no evidence from the settlement phase.
+# Record the first invocation and the first frame-driven poll. An independent
+# timer probes renderer progress when the first invocation returns false.
 OBSERVED_SETTLE_JS = """() => {
   const settled = (__SETTLE_PREDICATE__)();
   try { window.__selahcueObserveSettlePoll?.(settled); } catch (_) {}
@@ -514,12 +514,13 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
   const ids = new WeakMap(), targetIds = new WeakMap();
   let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
-  let raf = null, timer = null, stopped = false;
+  let raf = null, timer = null, earlyTimer = null, stopped = false;
   let pollCount = 0, lastPollResult = null;
   const start = performance.now();
   const stop = () => {
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(earlyTimer);
     if (raf !== null) cancelAnimationFrame(raf);
     raf = null;
   };
@@ -569,15 +570,23 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
     } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
   };
+  const marker = (event) => {
+    const elapsedMs = performance.now() - start;
+    if (stopped || elapsedMs > 12000) return;
+    console.debug('WEBKIT_SETTLE_MARKER ' + JSON.stringify({
+      event, elapsedMs, pollCount, lastPollResult,
+      rafCompleted: frames, rafPending: raf !== null,
+    }));
+  };
   window.__selahcueObserveSettlePoll = (result) => {
-    if (stopped) return;
-    if (typeof result !== 'boolean') return;
+    if (stopped || typeof result !== 'boolean') return;
     lastPollResult = result;
-    if (++pollCount === 1) {
-      console.debug('WEBKIT_SETTLE_POLL ' + JSON.stringify({
-        elapsedMs: performance.now() - start, pollCount, lastPollResult,
-        rafCompleted: frames, rafPending: raf !== null,
-      }));
+    pollCount++;
+    if (pollCount === 1) {
+      marker('firstPoll');
+      if (!result) earlyTimer = setTimeout(() => marker('earlyTimer'), 100);
+    } else if (pollCount === 2) {
+      marker('firstFramePoll');
     }
   };
   const tick = () => {
@@ -591,16 +600,22 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
 })();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
 
 
-def valid_first_poll(value):
-    return (
+SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer")
+
+
+def valid_settle_marker(value):
+    if not (
         type(value) is dict
-        and set(value) == {"elapsedMs", "pollCount", "lastPollResult", "rafCompleted", "rafPending"}
+        and set(value) == {"event", "elapsedMs", "pollCount", "lastPollResult", "rafCompleted", "rafPending"}
+        and value["event"] in SETTLE_MARKERS
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
-        and type(value["pollCount"]) is int and value["pollCount"] == 1
+        and type(value["pollCount"]) is int and 1 <= value["pollCount"] <= 2**53 - 1
         and type(value["lastPollResult"]) is bool
         and type(value["rafCompleted"]) is int and 0 <= value["rafCompleted"] <= 13
         and type(value["rafPending"]) is bool
-    )
+    ):
+        return False
+    return value["pollCount"] == {"firstPoll": 1, "firstFramePoll": 2}.get(value["event"], value["pollCount"])
 
 
 def valid_settle_sample(value):
@@ -690,7 +705,7 @@ class SettleDiagnostic:
         self.started = time.monotonic()
         self.closed = False
         self.events: list[dict] = []
-        self.first_poll: dict | None = None
+        self.markers: dict[str, dict] = {}
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
@@ -734,12 +749,10 @@ class SettleDiagnostic:
                 return
             if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
                 prefix, _, body = message.text.partition(" ")
-                if prefix not in ("WEBKIT_SETTLE_POLL", "WEBKIT_SETTLE_SAMPLE"):
+                if prefix not in ("WEBKIT_SETTLE_MARKER", "WEBKIT_SETTLE_SAMPLE"):
                     return
-                is_poll = prefix == "WEBKIT_SETTLE_POLL"
-                # The first-poll marker has its own slot so timer samples cannot crowd it out.
-                if (len(body) > (512 if is_poll else 24576)
-                        or (self.first_poll is not None if is_poll else len(self.samples) == 13)):
+                is_marker = prefix == "WEBKIT_SETTLE_MARKER"
+                if len(body) > (512 if is_marker else 24576) or (not is_marker and len(self.samples) == 13):
                     self.dropped["samples"] += 1
                     return
                 try:
@@ -747,14 +760,15 @@ class SettleDiagnostic:
                 except ValueError:
                     self.dropped["samples"] += 1
                     return
-                valid = valid_first_poll if is_poll else valid_settle_sample
-                if not valid(sample):
-                    self.dropped["samples"] += 1
-                    return
-                if is_poll:
-                    self.first_poll = sample
-                else:
+                if is_marker:
+                    if not valid_settle_marker(sample) or sample["event"] in self.markers:
+                        self.dropped["samples"] += 1
+                        return
+                    self.markers[sample.pop("event")] = sample
+                elif valid_settle_sample(sample):
                     self.samples.append(sample)
+                else:
+                    self.dropped["samples"] += 1
             elif message.type in ("warning", "error"):
                 self.observe("console-" + message.type)  # no arbitrary console text
         except Exception:
@@ -772,7 +786,7 @@ class SettleDiagnostic:
         payload = {"route": self.path, "viewport": self.viewport,
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
-                   "events": self.events[:], "firstPoll": self.first_poll,
+                   "events": self.events[:], **{event: self.markers.get(event) for event in SETTLE_MARKERS},
                    "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
@@ -780,7 +794,7 @@ class SettleDiagnostic:
             if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
                 return encoded
             payload["truncated"] = True
-            # Keep the newest timer state. The separate first marker always survives.
+            # Keep the newest timer state. The separate markers survive trimming.
             if payload["samples"]:
                 payload["samples"].pop(0)
                 payload["dropped"]["samples"] += 1

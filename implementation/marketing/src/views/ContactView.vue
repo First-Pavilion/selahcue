@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import UiBadge from '@/components/UiBadge.vue'
@@ -80,6 +80,38 @@ const handleSubmit = () => {
     if (problem) errors.value[field] = problem
   }
 }
+
+let focusFrame: number | undefined
+
+const cancelFocusReveal = () => {
+  if (focusFrame === undefined) return
+  window.cancelAnimationFrame(focusFrame)
+  focusFrame = undefined
+}
+
+const revealEmailLink = (event: FocusEvent) => {
+  const link = event.currentTarget
+  if (!(link instanceof HTMLAnchorElement) || !link.matches(':focus-visible')) return
+
+  // Linux WebKit can focus a link already inside the viewport without scrolling
+  // it past the sticky header. Give native focus scrolling a chance first.
+  cancelFocusReveal()
+  focusFrame = window.requestAnimationFrame(() => {
+    focusFrame = undefined
+    if (document.activeElement !== link) return
+    const navbar = document.querySelector('.navbar-header')
+    if (!navbar) return
+    const navbarBottom = navbar.getBoundingClientRect().bottom
+    const { top, bottom } = link.getBoundingClientRect()
+    if (navbarBottom <= 0 || bottom <= 0 || top >= navbarBottom) return
+
+    const margin = Number.parseFloat(getComputedStyle(link).scrollMarginTop)
+    const clearance = Math.max(navbarBottom, Number.isFinite(margin) ? margin : 0)
+    window.scrollBy({ top: top - clearance, behavior: 'instant' })
+  })
+}
+
+onBeforeUnmount(cancelFocusReveal)
 </script>
 
 <template>
@@ -166,7 +198,12 @@ const handleSubmit = () => {
             <div class="method-body">
               <h2>Email us</h2>
               <p>Write to us at this address.</p>
-              <a href="mailto:support@selahcueapp.com" class="method-link">support@selahcueapp.com</a>
+              <a
+                href="mailto:support@selahcueapp.com"
+                class="method-link"
+                @focus="revealEmailLink"
+                @blur="cancelFocusReveal"
+              >support@selahcueapp.com</a>
             </div>
           </div>
         </div>
