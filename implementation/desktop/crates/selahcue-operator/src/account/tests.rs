@@ -505,3 +505,52 @@ fn save_reestablishes_a_missing_lock_for_a_readable_identity() {
     assert!(lock.is_file());
     assert_eq!(store.load_or_create(CredentialPresence::Present), Ok(saved));
 }
+
+#[cfg(unix)]
+#[test]
+fn opened_metadata_remains_valid_after_atomic_replacement() {
+    use std::os::unix::fs::MetadataExt;
+
+    let directory = tempfile::tempdir().expect("test directory");
+    let store = AccountMetadataStore::new(directory.path().to_path_buf());
+    let original = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("initial generation");
+    let old_handle = fs::File::open(directory.path().join("account-metadata.json"))
+        .expect("open published generation");
+    assert_eq!(old_handle.metadata().expect("file metadata").nlink(), 1);
+
+    let mut candidate = original.clone();
+    candidate.skipped_setup = true;
+    let committed = store.save(&candidate).expect("replace metadata generation");
+    assert_eq!(old_handle.metadata().expect("file metadata").nlink(), 0);
+
+    assert_eq!(read_metadata_file(old_handle), Ok(original));
+    assert_eq!(
+        store.load_or_create(CredentialPresence::Missing),
+        Ok(committed)
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn multiply_linked_metadata_and_writer_lock_are_unsafe() {
+    let directory = tempfile::tempdir().expect("test directory");
+    let store = AccountMetadataStore::new(directory.path().to_path_buf());
+    let original = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("initial generation");
+    let alias = directory.path().join("alias");
+
+    fs::hard_link(directory.path().join("account-metadata.json"), &alias)
+        .expect("create second metadata link");
+    assert_eq!(
+        store.load_or_create(CredentialPresence::Missing),
+        Err(AccountStorageError::UnsafePath)
+    );
+    fs::remove_file(&alias).expect("remove second metadata link");
+
+    fs::hard_link(directory.path().join("account-metadata.lock"), &alias)
+        .expect("create second lock link");
+    assert_eq!(store.save(&original), Err(AccountStorageError::UnsafePath));
+}

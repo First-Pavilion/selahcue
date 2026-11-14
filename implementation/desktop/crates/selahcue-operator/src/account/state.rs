@@ -381,6 +381,7 @@ impl AccountMetadataStore {
         // A writer can restore a missing lock before rereading metadata.
         let file = open_regular(&self.directory.join(LOCK_FILE), true)?
             .ok_or(AccountStorageError::Changed)?;
+        validate_open_regular(&file, true)?;
         file.lock()?;
         Ok(file)
     }
@@ -425,8 +426,13 @@ fn read_metadata(path: &Path) -> Result<Option<AccountMetadata>, AccountStorageE
     let Some(file) = open_regular(path, false)? else {
         return Ok(None);
     };
+    read_metadata_file(file).map(Some)
+}
+
+pub(super) fn read_metadata_file(file: File) -> Result<AccountMetadata, AccountStorageError> {
+    let attrs = validate_open_regular(&file, false)?;
     let max = MAX_METADATA_BYTES as u64;
-    if file.metadata()?.len() > max {
+    if attrs.len() > max {
         return Err(AccountStorageError::Oversize);
     }
     let mut bytes = Vec::new();
@@ -437,7 +443,7 @@ fn read_metadata(path: &Path) -> Result<Option<AccountMetadata>, AccountStorageE
     let metadata: AccountMetadata =
         serde_json::from_slice(&bytes).map_err(|_| AccountStorageError::Malformed)?;
     metadata.validate()?;
-    Ok(Some(metadata))
+    Ok(metadata)
 }
 
 fn observe_regular(path: &Path) -> Result<bool, AccountStorageError> {
@@ -510,20 +516,27 @@ fn open_regular(path: &Path, lock_file: bool) -> Result<Option<File>, AccountSto
         Err(error) if !lock_file && error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    Ok(Some(file))
+}
+
+fn validate_open_regular(file: &File, lock_file: bool) -> Result<Metadata, AccountStorageError> {
     let attrs = file.metadata()?;
     if !attrs.is_file() || is_link_or_device(&attrs) {
         return Err(AccountStorageError::UnsafePath);
     }
     #[cfg(unix)]
-    {
+    let link_count = {
         use std::os::unix::fs::MetadataExt;
-        if attrs.nlink() != 1 {
-            return Err(AccountStorageError::UnsafePath);
-        }
-    }
+        attrs.nlink()
+    };
     #[cfg(windows)]
-    if winapi_util::file::information(&file)?.number_of_links() != 1 {
+    let link_count = winapi_util::file::information(file)?.number_of_links();
+
+    // A concurrent replacement can unlink an already-open metadata
+    // generation. The lock must still name one inode for all writers.
+    #[cfg(any(unix, windows))]
+    if link_count > 1 || (lock_file && link_count == 0) {
         return Err(AccountStorageError::UnsafePath);
     }
-    Ok(Some(file))
+    Ok(attrs)
 }
