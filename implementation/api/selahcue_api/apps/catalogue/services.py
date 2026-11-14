@@ -24,6 +24,7 @@ from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
+from selahcue_api.apps.catalogue.base_plan import _base_plan_for_license
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
 from selahcue_api.apps.catalogue.models import (
     UNLIMITED,
@@ -35,10 +36,10 @@ from selahcue_api.apps.catalogue.models import (
     MAX_GRANT_DIMENSIONS,
     Plan,
     PlanGrant,
-    PlanScopeAlias,
     is_reserved_grant_key,
     validate_grant_key,
 )
+from selahcue_api.apps.catalogue.org_plans import _select_org_plan
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
@@ -236,20 +237,7 @@ def _plan_grant_map(plan: Plan, revision: int) -> CachedGrants:
 
 
 def resolve_plan_for_license(license_key) -> Plan | None:
-    """Assignment → legacy scope alias → designated fallback. None when none exist."""
-    assignment = (
-        LicensePlanAssignment.objects.select_related("plan").filter(license_key=license_key).first()
-    )
-    if assignment is not None:
-        return assignment.plan
-
-    scope = (getattr(license_key, "feature_scope", "") or "").strip().upper()
-    if scope:
-        alias = PlanScopeAlias.objects.select_related("plan").filter(feature_scope=scope).first()
-        if alias is not None:
-            return alias.plan
-
-    return Plan.objects.filter(is_fallback=True).first()
+    return _base_plan_for_license(license_key)
 
 
 # The dimension a plan's seat count lives in. A dimension KEY is a wire contract and a stable
@@ -292,7 +280,7 @@ def plan_device_instances_for_issuance(plan: Plan) -> int | None:
     return value
 
 
-def resolve_entitlement(license_key) -> ResolvedEntitlement:
+def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedEntitlement:
     """The typed grants a licence carries right now.
 
     Degrades rather than raises: an empty catalogue yields an empty `values` map and the
@@ -325,7 +313,7 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
     unconfigured = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
     failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
     try:
-        plan = resolve_plan_for_license(license_key)
+        plan, _ = _select_org_plan(license_key.customer_id, at if at is not None else timezone.now())
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
         logger.exception("catalogue plan resolution failed; issuing a degraded entitlement")
         return failed

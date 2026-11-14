@@ -156,6 +156,7 @@ INSTALLED_APPS = [
     "selahcue_api.apps.billing.apps.SelahCueBillingConfig",
     "selahcue_api.apps.license_keys.apps.SelahCueLicenseKeysConfig",
     "selahcue_api.apps.catalogue.apps.SelahCueCatalogueConfig",
+    "selahcue_api.apps.usage.apps.SelahCueUsageConfig",
     "selahcue_api.apps.entitlements.apps.SelahCueEntitlementsConfig",
     "selahcue_api.apps.downloads.apps.SelahCueDownloadsConfig",
     "selahcue_api.apps.pilot_downloads.apps.SelahCuePilotDownloadsConfig",
