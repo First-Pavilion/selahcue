@@ -3,7 +3,7 @@
 //! Before this crate the desktop consumed none of the platform: no activation, no
 //! entitlement, no licence code in any workspace crate. This is the seam that makes the
 //! desktop a client of the Platform API at all — and it is deliberately a *narrow* one.
-//! It does exactly three things:
+//! It provides four licensing functions:
 //!
 //! 1. **Activates a device**, over both server-side paths — account sign-in (primary) and
 //!    enrollment key (delegation). See [`client`].
@@ -19,6 +19,8 @@
 //!    never in the app database, and keeps it there across sign-out. See [`custody`].
 //! 3. **Holds the trusted entitlement-signing keys as a rotation-ready set** selected by
 //!    `key_id`. See [`trust`].
+//! 4. **Verifies and caches signed entitlements** for the activated device. See
+//!    [`verify_entitlement`] and [`EntitlementCache`].
 //!
 //! It does **not** gate, block, enforce or degrade anything. There is no `is_allowed` and
 //! no `enforce` in this crate, and that absence is the design.
@@ -61,15 +63,12 @@
 //!
 //! # Deliberately not here
 //!
-//! Manifest fetching, Ed25519 signature verification and entitlement caching are
-//! **86ak5mn1d**. This crate pins the envelope shape (with its `key_id`) and holds the key
-//! *set*, so that ticket implements `verify()` against an already rotation-ready contract
-//! — DEC-011 pt 2 requires the set from the first build that verifies an entitlement, and
-//! retrofitting one later is the failure mode it exists to prevent. Enforcement is
-//! **86ak5mn1t**; opportunistic refresh is **86ak5mn1h**.
+//! Manifest fetching and opportunistic refresh are tracked in **86ak5mn1h**.
+//! Enforcement is tracked in **86ak5mn1t**.
 
 #![forbid(unsafe_code)]
 
+mod cache;
 pub mod client;
 pub mod contract;
 pub mod custody;
@@ -78,6 +77,9 @@ pub mod entitlement;
 pub mod error;
 pub mod script;
 pub mod trust;
+mod verified;
+
+pub use cache::{EntitlementCache, EntitlementCacheError};
 
 pub use client::{
     AccountSession, Activation, ActivationPath, LicensingClient, PersistOutcome,
@@ -93,6 +95,10 @@ pub use entitlement::{
 pub use error::ActivationFailure;
 pub use script::{RecordedRequest, ScriptedTransport};
 pub use trust::{TrustedKey, TrustedKeys, MAX_TRUSTED_KEYS};
+pub use verified::{
+    verify_entitlement, EntitlementVerificationError, VerifiedEntitlement,
+    MAX_ENTITLEMENT_ENVELOPE_BYTES,
+};
 
 // Re-exported so a consumer needs one dependency, not two, and so the seams the shell
 // must inject are discoverable from here.

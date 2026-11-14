@@ -1265,7 +1265,7 @@ fn every_request_is_a_v1_post_and_only_account_operations_carry_a_bearer() {
 }
 
 /// Number of `.rs` modules in `src/`; the other test files pin the same number.
-const EXPECTED_SRC_MODULES: usize = 9;
+const EXPECTED_SRC_MODULES: usize = 11;
 
 /// The first forbidden name on a line of CODE, if any.
 ///
