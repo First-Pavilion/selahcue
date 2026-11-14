@@ -1,6 +1,6 @@
 # Managed Free licence lifecycle — source checkpoint
 
-Task1 is implemented and independently reviewed through d59d1c4db92429600a3f15eade0b30df77b975f4. The initial304 focused PG tests preceded the live-replay correction; the correction has58 focused PG/wire passes. Independent review identified the live-replay mutation; scoped re-review at d59d1c4d confirmed it addressed, with spec and quality PASS and no fix regression. The original 12-file review found no other actionable issue. Exact implementation commands and their revision limits follow below. Full hosted CI, integration with the final native foundation, deployment and public cloud enablement remain separate. This is not a final release or provider-qualification claim.
+Task1 is implemented and independently reviewed through d59d1c4db92429600a3f15eade0b30df77b975f4. The initial304 focused PG tests preceded the live-replay correction; the correction has58 focused PG/wire passes. Independent review identified the live-replay mutation; scoped re-review at d59d1c4d confirmed it addressed, with spec and quality PASS and no fix regression. The original 12-file review found no other actionable issue. Exact implementation commands and their revision limits follow below. Integration with the final reviewed native foundation is now locally verified at e06939da; all87 PostgreSQL cases passed, including10 actual Rust/Django scenarios, plus5 historical SQLite tests. The narrowly scoped historical-fixture correction passed independent spec/quality re-review. Full hosted CI, deployment and public cloud enablement remain separate. This is not a final release or provider-qualification claim.
 
 # Task 1 implementation evidence
 
@@ -88,3 +88,39 @@ PYTHON -m pytest tests/test_free_license_lifecycle.py \
 ```
 
 The focused repeat used `SQL_ENGINE=django.db.backends.postgresql`, `SQL_DATABASE=free_replay_test`, `SQL_USER=free_replay_test`, `SQL_PASSWORD=free_replay_fixture`, `SQL_HOST=127.0.0.1`, and `SQL_PORT=54898` against a fresh disposable PG17 container. It reused the exact native test binary above because the fix changes only the Django application and tests. Output was `58 passed in 41.39s`, zero skips, including all eight live Rust/Django fixtures. Working and staged diff whitespace checks passed. The broader 304-test run remains prior-head evidence.
+
+
+## Integration correction 2
+
+Baseline `f5ef72ec9565533d2661b843f5237f2ca9162423` integrates the independently reviewed native foundation. The exact integration RED at `/private/tmp/selahcue-free-foundation-integration-20261114/pytest.log` reported `2 failed, 85 passed in 52.26s`. The failures were confined to the historical accounts 0003 snapshot, where current refresh tried to query the later Free marker table that had correctly been rolled back. The existing RED log was used without repeating it.
+
+Commit `e06939dafb32c3b6b43cb1fff6d53d1b9cad9b90` changes only `implementation/api/tests/test_migration_remove_org_device_limit.py`. The old-schema snapshots isolate the optional Free renewal hook with the no-renewal result for unmanaged keys and their actual authenticated licence/token dates. The post-migration snapshot uses the real hook. Both snapshots still use real refresh, signed manifest verification, admin projection, and rolled-back enrollment to compare existing licence rows, grants, and seat behavior. The migration graph, real historical DB state, production code, and all original assertions are unchanged.
+
+From `implementation/api`, using the same `PYTHON` and cleared `PATH`, `HOME`, `ENVIRONMENT=dev` environment:
+
+```sh
+PYTHON -m pytest tests/test_migration_remove_org_device_limit.py \
+  -k 'test_every_key_grants_exactly_what_it_did_before or test_the_scenarios_really_differ_so_equality_is_not_vacuous' \
+  -q --tb=short
+```
+
+The focused PostgreSQL 17 result was `2 passed, 3 deselected in 2.68s`. The PostgreSQL invocations used `SQL_ENGINE=django.db.backends.postgresql`, `SQL_DATABASE=free_history_test`, `SQL_USER=free_history_test`, `SQL_PASSWORD=free_history_fixture`, `SQL_HOST=127.0.0.1`, and `SQL_PORT=50941` for the per-task loopback container.
+
+```sh
+PYTHON -m pytest \
+  tests/test_free_license_lifecycle.py tests/test_free_license_concurrency_postgres.py \
+  tests/test_bound_activation.py tests/test_bound_activation_postgres.py \
+  tests/test_migration_receipt_token_delete.py tests/test_migration_remove_org_device_limit.py \
+  tests/test_native_session_revoke.py tests/test_native_account_controller_integration.py \
+  -q --tb=short
+```
+
+The integrated PostgreSQL result was `87 passed in 48.88s`, zero skips, including all ten actual Rust/Django loopback scenarios. The existing integrated executable `/private/tmp/selahcue-free-foundation-integration-20261114/operator-test-bin` supplied `SELAHCUE_G1_OPERATOR_TEST_BIN`. Its SHA-256 was verified as `3c7ee7c8adef7e70b8d94f6ffd9433e5ecb0c1333cabe91dcae9e5c1dba3d985`.
+
+```sh
+PYTHON -m pytest tests/test_migration_remove_org_device_limit.py -q --tb=short
+```
+
+Using a separate SQLite `SQL_DATABASE=/private/tmp/selahcue-free-historical-fixture-20261114-61073.sqlite`, the full historical file reported `5 passed in 1.42s`. Working and staged whitespace checks passed. The fixture/schema mismatch is resolved in these checks. Full CI and deployment acceptance remain separate.
+
+Independent scoped re-review at e06939da: ADDRESSED, specification PASS, quality PASS, no new fix regression. See the source checkpoint's review evidence; no broader old-suite result is relabeled as current-head evidence.
