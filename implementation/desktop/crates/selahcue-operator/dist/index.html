@@ -247,6 +247,126 @@
     </div>
   </div>
   <main>
+    <div id="account-setup-status" class="account-setup-status" hidden>
+      <span id="account-setup-status-message" role="status" aria-live="polite"></span>
+      <button type="button" id="account-skip-retry" class="account-text-button" hidden>Retry saving choice</button>
+    </div>
+    <section id="account-first-run" aria-label="SelahCue setup" hidden>
+      <div id="account-card" class="account-card" hidden>
+        <div class="account-offline-pill"><img src="account-assets/offline-dot.svg" alt=""> Works offline</div>
+        <div class="account-view" data-account-view="chooser">
+          <span class="account-mark" aria-hidden="true"></span>
+          <h2 tabindex="-1">Activate SelahCue</h2>
+          <p>Connect this computer to your organisation’s SelahCue account and register it on your plan.</p>
+          <button type="button" class="account-action-primary" data-account-go="signIn">Sign in to your SelahCue account</button>
+          <p class="account-hint">Recommended for managing your SelahCue plan.</p>
+          <div class="account-action-row">
+            <button type="button" class="account-action-secondary" data-account-go="enroll">Enter an organisation enrollment key</button>
+            <span class="pp-badge pp-badge-neutral">Optional</span>
+          </div>
+          <div class="pp-banner account-banner-info" role="note">
+            <span class="account-info-icon" aria-hidden="true">◆</span>
+            <div class="pp-banner-body">
+              <p class="pp-banner-title">SelahCue works offline</p>
+              <p class="pp-banner-text">Set up later from Settings › Account. Live presentation works without activation.</p>
+            </div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="signIn" hidden>
+          <button type="button" class="account-text-button account-back" data-account-go="chooser">‹ Back</button>
+          <h2 tabindex="-1">Sign in to SelahCue</h2>
+          <p>Use your organisation’s SelahCue account to register this computer on your plan.</p>
+          <form id="account-sign-in" class="account-form" autocomplete="off">
+            <label for="account-email">Email</label>
+            <input type="email" id="account-email" placeholder="name@yourchurch.org" required
+              aria-describedby="account-sign-in-error" spellcheck="false" autocapitalize="none">
+            <label for="account-password">Password</label>
+            <input type="password" id="account-password" required aria-describedby="account-sign-in-error account-password-help">
+            <p id="account-sign-in-error" class="account-form-error" role="status" aria-live="polite" hidden></p>
+            <button type="submit" class="account-action-primary">Continue</button>
+          </form>
+          <p id="account-password-help" class="account-hint">For password help, visit the SelahCue website or contact your administrator.</p>
+          <button type="button" class="account-text-button" data-account-go="enroll">Use an enrollment key instead</button>
+          <div class="pp-banner account-banner-info" role="note">
+            <span class="account-info-icon" aria-hidden="true">◆</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">You can activate later</p>
+              <p class="pp-banner-text">SelahCue works offline. Signing in is optional for live presentation.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="enroll" hidden>
+          <button type="button" class="account-text-button account-back" data-account-go="chooser">‹ Back</button>
+          <h2 tabindex="-1">Enter your enrollment key</h2>
+          <p>Your administrator or reseller provides this key. It registers this computer on your plan.</p>
+          <form id="account-enroll" class="account-form" autocomplete="off">
+            <label for="account-enrollment-key">Organisation enrollment key</label>
+            <input type="text" id="account-enrollment-key" placeholder="SC-XXXX-XXXX-XXXX-XXXX" required
+              aria-describedby="account-enrollment-error" spellcheck="false" autocapitalize="none">
+            <p id="account-enrollment-error" class="account-form-error" role="status" aria-live="polite" hidden></p>
+            <label for="account-device-display-name">Device name</label>
+            <input type="text" id="account-device-display-name" placeholder="This device" maxlength="80" aria-describedby="account-enroll-device">
+            <p id="account-enroll-device" class="account-hint" hidden></p>
+            <button type="submit" class="account-action-primary">Activate this device</button>
+          </form>
+          <button type="button" class="account-text-button" data-account-go="signIn">Sign in with your account instead</button>
+          <div class="pp-banner account-banner-info" role="note">
+            <span class="account-info-icon" aria-hidden="true">◆</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">A connection is needed to activate</p>
+              <p class="pp-banner-text">SelahCue can cache the verified entitlement after activation. Live presentation stays available offline.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="pending" hidden>
+          <img src="account-assets/spinner.svg" class="account-spinner" alt="">
+          <h2 tabindex="-1">Activating this device…</h2>
+          <p>Contacting SelahCue and registering this install on your plan.</p>
+          <progress class="account-progress" aria-label="Device activation in progress"></progress>
+          <div class="pp-banner pp-banner-ok" role="note">
+            <span aria-hidden="true">✓</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">You can keep working</p>
+              <p class="pp-banner-text">You can continue to present while activation runs.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="policy" hidden>
+          <span class="account-state-mark account-state-warning" aria-hidden="true">◆</span>
+          <h2 tabindex="-1">This device couldn’t be activated</h2>
+          <p id="account-policy-message"></p>
+          <div class="pp-banner account-banner-info" role="note">
+            <span class="account-info-icon" aria-hidden="true">◆</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">Your presentation is unaffected</p>
+              <p class="pp-banner-text">SelahCue can keep presenting offline.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="license" hidden>
+          <span class="account-state-mark account-state-warning" aria-hidden="true">◆</span>
+          <h2 tabindex="-1">No active SelahCue plan</h2>
+          <p>This account has no active SelahCue plan. Ask your administrator to check the plan.</p>
+          <div class="pp-banner account-banner-info" role="note">
+            <span class="account-info-icon" aria-hidden="true">◆</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">Live presentation keeps working</p>
+              <p class="pp-banner-text">SelahCue can keep presenting offline.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="offline" hidden>
+          <span class="account-state-mark" aria-hidden="true">◇</span>
+          <h2 tabindex="-1">Can’t reach SelahCue right now</h2>
+          <p id="account-offline-message"></p>
+          <div class="pp-banner pp-banner-ok" role="note">
+            <span aria-hidden="true">✓</span>
+            <div class="pp-banner-body"><p class="pp-banner-title">You’re ready to present</p>
+              <p class="pp-banner-text">Slides, local scripture, media, blackout, clear and timers still work.</p></div>
+          </div>
+        </div>
+        <div class="account-view" data-account-view="attention" hidden>
+          <span class="account-state-mark account-state-warning" aria-hidden="true">◆</span>
+          <h2 tabindex="-1">Device setup needs attention</h2>
+          <p id="account-attention-message"></p>
+        </div>
+        <p id="account-activation-status" class="sr-only" role="status" aria-live="polite"></p>
+        <div class="account-card-actions">
+          <button type="button" id="account-card-retry" class="account-action-primary" hidden>Try again</button>
+          <button type="button" id="account-dismiss" class="account-text-button">Skip — set up later</button>
+        </div>
+      </div>
+    </section>
     <div id="surface-console" class="surface-page active">
       <!-- LEFT zone: the service plan (top) + the live transcript (bottom).
            Figma 165:124 layout; every element id is preserved from the prior
@@ -1204,6 +1324,7 @@
         <nav class="set-side" aria-label="Settings sections">
           <div class="set-side-h">SETTINGS</div>
           <button class="set-nav" data-setpage="general" type="button"><span class="set-ico" aria-hidden="true">⚙</span> General</button>
+          <button class="set-nav" data-setpage="account" type="button"><span class="set-ico" aria-hidden="true">◆</span> Account</button>
           <button class="set-nav" data-setpage="preservice" type="button"><span class="set-ico" aria-hidden="true">✓</span> Pre-service Check</button>
           <button class="set-nav active" data-setpage="providers" type="button" aria-current="page"><span class="set-ico" aria-hidden="true">🛡</span> Providers &amp; Privacy</button>
           <button class="set-nav" data-setpage="scripture" type="button"><span class="set-ico" aria-hidden="true">✦</span> Scripture &amp; Translations</button>
@@ -1215,6 +1336,85 @@
           <button class="set-nav" data-setpage="about" type="button"><span class="set-ico" aria-hidden="true">ⓘ</span> About &amp; Licensing</button>
         </nav>
         <div class="set-body">
+          <div id="set-page-account" class="set-page" data-setpage="account" hidden>
+            <div class="pp-wrap account-settings">
+              <header class="pp-head">
+                <h1 id="account-settings-title" class="pp-title" tabindex="-1">Account</h1>
+                <p class="pp-sub">This device’s SelahCue account, plan and licensing. Live presentation works offline.</p>
+              </header>
+              <div id="account-status-banner" class="pp-banner account-banner-info" aria-live="polite" aria-atomic="true">
+                <img id="account-active-dot" src="account-assets/device-dot.svg" alt="" hidden>
+                <div class="pp-banner-body">
+                  <p id="account-device-status" class="pp-banner-title">Checking device status…</p>
+                  <p class="pp-banner-text" id="account-entitlement-status">Checking signed entitlement…</p>
+                </div>
+              </div>
+              <div id="account-settings-setup"></div>
+              <div id="account-settings-controls" class="account-settings-controls">
+                <button type="button" class="account-action-primary" id="account-start-setup">Set up this device</button>
+                <button type="button" class="account-action-secondary" id="account-recover" hidden>Continue pending activation</button>
+                <button type="button" class="account-action-secondary" id="account-refresh" hidden>Check licence status</button>
+              </div>
+              <p id="account-status-error" class="account-status-issue" role="status" hidden></p>
+              <p id="account-preparation-error" class="account-status-issue" role="status" hidden></p>
+              <div id="account-cleanup-row" class="set-row" hidden>
+                <div><p class="set-row-t">Session cleanup</p><p class="set-row-d" id="account-cleanup-status"></p></div>
+                <button type="button" id="account-cleanup" class="account-action-secondary">Retry session cleanup</button>
+              </div>
+              <section class="pp-section" aria-labelledby="account-device-heading">
+                <h2 id="account-device-heading" class="pp-seclabel">This device</h2>
+                <div class="set-row">
+                  <div class="account-device-info">
+                    <span class="account-device-icon" aria-hidden="true">▣</span>
+                    <div><p class="set-row-t" id="account-device-name">This device</p>
+                      <p class="set-row-d" id="account-device-details" hidden></p></div>
+                  </div>
+                  <span id="account-device-chip" class="pp-badge pp-badge-ok account-chip" hidden>
+                    <img src="account-assets/entitlement-dot.svg" alt=""> Activated
+                  </span>
+                </div>
+              </section>
+              <section class="pp-section" aria-labelledby="account-plan-heading">
+                <h2 id="account-plan-heading" class="pp-seclabel">Plan &amp; licence</h2>
+                <div class="pp-card account-plan">
+                  <div>
+                    <dl class="account-facts">
+                      <div hidden><dt>Plan</dt><dd id="account-plan-label"></dd></div>
+                      <div hidden><dt>Device instances</dt><dd id="account-instance-count"></dd></div>
+                      <div hidden><dt>Licence status</dt><dd id="account-license-status"></dd></div>
+                    </dl>
+                    <meter id="account-instance-meter" min="0" value="0" aria-label="Device instances in use" hidden></meter>
+                    <p id="account-plan-empty" class="set-row-d">Plan details appear when a verified entitlement is available.</p>
+                  </div>
+                  <dl class="account-facts">
+                    <div hidden><dt>Licence valid through</dt><dd><time id="account-license-expiry"></time></dd></div>
+                    <div hidden><dt>Signed entitlement valid through</dt><dd><time id="account-manifest-expiry"></time></dd></div>
+                    <div id="account-entitlement-chip" hidden>
+                      <dt class="sr-only">Entitlement status</dt>
+                      <dd><span class="pp-badge pp-badge-ok account-chip"><img id="account-entitlement-dot"
+                        src="account-assets/entitlement-dot.svg" alt=""> Verified</span></dd>
+                    </div>
+                    <div hidden><dt>Last checked</dt><dd><time id="account-last-checked"></time></dd></div>
+                  </dl>
+                </div>
+              </section>
+              <section class="pp-section" aria-labelledby="account-cloud-heading">
+                <h2 id="account-cloud-heading" class="pp-seclabel">Cloud &amp; connected features</h2>
+                <div class="pp-card account-cloud">
+                  <p class="set-row-t">SelahCue cloud providers unavailable</p>
+                  <button type="button" class="set-linkrow" id="account-open-providers">Providers &amp; Privacy <span aria-hidden="true">→</span></button>
+                </div>
+              </section>
+              <div class="pp-banner account-banner-info" role="note">
+                <span class="account-info-icon" aria-hidden="true">◆</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">SelahCue works offline</p>
+                  <p class="pp-banner-text">Account status never interrupts live output. Ask your administrator for help managing the devices on your plan.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- Providers & Privacy (built + wired by settings.js — ids preserved) -->
           <div id="set-page-providers" class="set-page" data-setpage="providers">
             <div class="pp-wrap">
@@ -1231,6 +1431,10 @@
                   <p class="pp-banner-text">Cloud features are opt-in and clearly flagged. Audio and transcripts never leave this device unless you switch a cloud provider on.</p>
                 </div>
               </div>
+
+              <button type="button" class="set-linkrow" id="pp-open-account">Account and device activation
+                <span aria-hidden="true">→</span>
+              </button>
 
               <!-- 2 · Live transcription (radio cards rendered by settings.js) -->
               <section class="pp-section" aria-labelledby="pp-trans-h">
@@ -2629,6 +2833,7 @@
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>
   <script src="settings.js" defer></script>
+  <script src="account.js" defer></script>
   <script src="settings-about.js" defer></script>
   <script src="settings-appearance.js" defer></script>
   <script src="settings-general.js" defer></script>

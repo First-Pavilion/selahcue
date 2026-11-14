@@ -1602,6 +1602,7 @@
         // from the shared store each visit, never a stale in-memory cache from a prior visit.
         if (name === "transcripts" && typeof trActivate === "function") trActivate();
         if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
+        window.scAccount?.visibilityChanged();
       }
       // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
       // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
@@ -1628,6 +1629,7 @@
           about: "set-page-about",
           appearance: "set-page-appearance",
           general: "set-page-general",
+          account: "set-page-account",
           scripture: "set-page-scripture",
           outputs: "set-page-outputs",
           security: "set-page-security",
@@ -1639,6 +1641,7 @@
         if (built[page]) {
           document.getElementById(built[page]).hidden = false;
           if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
+          if (page === "account") window.scAccount?.activateSettings();
           if (page === "about" && typeof settingsAboutActivate === "function") settingsAboutActivate();
           if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
           if (page === "general" && typeof settingsGeneralActivate === "function") settingsGeneralActivate();
@@ -1652,6 +1655,7 @@
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";
         }
+        window.scAccount?.visibilityChanged();
       }
       (function initSettingsSidebar() {
         const side = document.querySelector("#surface-settings .set-side");

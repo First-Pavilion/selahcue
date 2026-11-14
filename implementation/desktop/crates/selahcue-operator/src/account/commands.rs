@@ -116,8 +116,14 @@ pub(crate) async fn account_view(state: State<'_, ManagedAccount>) -> Result<Acc
 #[tauri::command]
 pub(crate) async fn account_skip_setup(
     state: State<'_, ManagedAccount>,
-) -> Result<AccountView, ()> {
-    Ok(submit(&state, Command::Skip).await)
+) -> Result<AccountView, AccountErrorCode> {
+    let worker = state
+        .worker()
+        .cloned()
+        .ok_or(AccountErrorCode::WorkerUnavailable)?;
+    tauri::async_runtime::spawn_blocking(move || worker.skip_setup())
+        .await
+        .map_err(|_| AccountErrorCode::WorkerUnavailable)?
 }
 
 #[tauri::command]

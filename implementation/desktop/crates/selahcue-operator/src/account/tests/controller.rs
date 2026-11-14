@@ -197,7 +197,9 @@ fn untouched_install_is_local_even_on_foreground_and_skip() {
         wire(&account.execute(Command::Refresh { explicit: false }))["setup_state"],
         "needed"
     );
-    let skipped = wire(&account.execute(Command::Skip));
+    let worker =
+        crate::account::controller::Worker::new(controller(dir.path(), Custody::default()));
+    let skipped = wire(&worker.skip_setup().expect("durable Skip"));
     assert_eq!(skipped["setup_state"], "skipped");
     assert_eq!(account.client().transport().request_count(), 0);
     assert_eq!(
@@ -615,9 +617,9 @@ fn in_flight_account_work_admits_no_second_mutation_and_publishes_newer_view() {
     let second = worker.admit().err().expect("duplicate rejected");
     assert_eq!(wire(&second)["operation_state"], "busy");
     assert_eq!(worker.view().revision, second.revision);
-    let finished = first.run(Command::Skip);
+    let finished = first.run(Command::Startup);
     assert!(finished.revision > second.revision);
-    assert_eq!(wire(&worker.view())["setup_state"], "skipped");
+    assert_eq!(wire(&worker.view())["setup_state"], "needed");
     let next = worker
         .admit()
         .unwrap_or_else(|_| panic!("admit next request"));
@@ -2881,5 +2883,151 @@ fn cleanup_selection_is_fenced_against_a_new_session_dispatch() {
     assert_eq!(
         custody.get(ACCOUNT_SESSION_NAME).expect("B preserved"),
         Some(Token::new("session-B"))
+    );
+}
+
+#[test]
+fn skip_is_durable_while_bound_activation_http_is_held() {
+    use crate::account::controller::Worker;
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    use std::sync::{mpsc, Mutex};
+    use std::time::Duration;
+
+    struct HeldActivation {
+        transport: ScriptedTransport,
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl HttpTransport for HeldActivation {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/activations:bound-with-session") {
+                self.entered.send(()).expect("activation reached HTTP");
+                self.release
+                    .lock()
+                    .expect("receiver")
+                    .recv_timeout(Duration::from_secs(8))
+                    .expect("test releases HTTP");
+            }
+            self.transport.post_json(url, body, bearer)
+        }
+
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.transport.get(url, bearer)
+        }
+    }
+
+    for activation_succeeds in [false, true] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let path = dir.path().to_path_buf();
+        let store = AccountMetadataStore::new(path.clone());
+        let custody = Custody::default();
+        let transport = ScriptedTransport::new();
+        transport.push_response(200, session_json());
+        if activation_succeeds {
+            transport
+                .push_response(200, activated(Some(SECRET), false))
+                .push_response(200, r#"{"revoked":true}"#)
+                .push_failure("synthetic refresh failure");
+        } else {
+            transport.push_failure("synthetic activation failure");
+        }
+        let (entered, wait) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        let worker = Worker::new(AccountController::new(
+            Some(path),
+            LicensingClient::new(
+                HeldActivation {
+                    transport,
+                    entered,
+                    release: Mutex::new(held),
+                },
+                API_ORIGIN,
+            )
+            .expect("licensing client"),
+            custody.clone(),
+            TrustedKeys::new(),
+            || NOW,
+        ));
+        worker
+            .admit()
+            .unwrap_or_else(|_| panic!("startup slot"))
+            .run(Command::Startup);
+        let work = worker.admit().unwrap_or_else(|_| panic!("activation slot"));
+        let activation = std::thread::spawn(move || work.run(sign_in()));
+        wait.recv_timeout(Duration::from_secs(4))
+            .expect("held HTTP");
+        let before = store
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("frozen operation before Skip");
+        assert!(before.pending_activation().is_some());
+        let skip = worker.skip_setup();
+        let after = store
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("frozen operation after Skip");
+        let restarted = controller(dir.path(), custody.clone()).execute(Command::Startup);
+        let session = custody.get(ACCOUNT_SESSION_NAME).expect("account custody");
+        let device = custody.get(DEVICE_TOKEN_NAME).expect("device custody");
+        release.send(()).expect("release HTTP");
+        let late = activation.join().expect("activation worker");
+
+        let skip = skip.expect("Skip acknowledged before HTTP release");
+        assert_eq!(wire(&skip)["setup_state"], "skipped");
+        assert_eq!(wire(&skip)["operation_state"], "busy");
+        assert_eq!(wire(&restarted)["setup_state"], "skipped");
+        assert_eq!(wire(&late)["error_code"], "network_unavailable");
+        assert!(late.revision > skip.revision);
+        assert_eq!(after, before);
+        assert_eq!(session, Some(Token::new(SESSION)));
+        assert_eq!(device, None);
+        if activation_succeeds {
+            assert_eq!(wire(&late)["setup_state"], "completed");
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("saved device"),
+                Some(Token::new(SECRET))
+            );
+            assert_eq!(
+                custody.get(ACCOUNT_SESSION_NAME).expect("cleaned session"),
+                None
+            );
+            // Completion must not erase the independent Skip preference even
+            // when a future restart finds that system custody is missing.
+            custody
+                .remove(DEVICE_TOKEN_NAME)
+                .expect("simulate later OS-store loss");
+            let restarted = controller(dir.path(), custody).execute(Command::Startup);
+            assert_eq!(wire(&restarted)["device_state"], "credential_missing");
+            assert_eq!(wire(&restarted)["setup_state"], "skipped");
+        } else {
+            assert_eq!(wire(&late)["setup_state"], "skipped");
+        }
+    }
+}
+
+#[test]
+fn unsafe_dismissal_path_leaves_setup_pending_and_can_be_retried() {
+    use crate::account::controller::Worker;
+
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let worker = Worker::new(controller(dir.path(), Custody::default()));
+    worker
+        .admit()
+        .unwrap_or_else(|_| panic!("startup slot"))
+        .run(Command::Startup);
+
+    let marker = dir.path().join("account-setup-dismissed");
+    std::fs::create_dir(&marker).expect("block dismissal write");
+    assert!(worker.skip_setup().is_err());
+    assert_eq!(wire(&worker.view())["setup_state"], "needed");
+
+    std::fs::remove_dir(marker).expect("allow dismissal write");
+    assert_eq!(
+        wire(&worker.skip_setup().expect("dismissal retried"))["setup_state"],
+        "skipped"
     );
 }
