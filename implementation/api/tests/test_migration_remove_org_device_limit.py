@@ -12,10 +12,11 @@ HOW IT WORKS (the first `MigrationExecutor` test in this repo, so the method is 
     seeded through the HISTORICAL models of that state, because the current `CustomerOrg` model
     has no `device_limit` and could not insert into a table that still has the NOT NULL column.
 2.  Take a snapshot of every key THROUGH THE REAL SERVICES — the refresh response, the signed
-    manifest's `instances_*`, the admin console's reading, and an activation PROBE. The services
-    read only the licence-key table, which this migration does not touch, so they run unchanged
-    on the old schema. The probe attempts a new activation inside a transaction that is rolled
-    back, so "does this key admit one more device?" is observed without changing the data.
+    manifest's `instances_*`, the admin console's reading, and an activation PROBE. On the old
+    schema, only the later Free renewal hook is substituted because its marker table does not
+    exist yet. The seeded keys are all unmanaged, so the hook leaves their dates unchanged.
+    The after snapshot runs the real hook. The probe rolls back its activation so observing
+    whether the key admits another device leaves the data unchanged.
 3.  Migrate FORWARD to the new migration and take the same snapshot.
 4.  Assert the snapshots are identical, and that the key table is byte-for-byte unchanged.
 
@@ -42,6 +43,7 @@ from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg
+from selahcue_api.apps.devices import services as device_services
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
     activate_device,
@@ -50,6 +52,7 @@ from selahcue_api.apps.devices.services import (
 from selahcue_api.apps.entitlements.services import build_entitlement_manifest
 from selahcue_api.apps.entitlements.signing import load_signing_key, verify_envelope
 from selahcue_api.apps.license_keys import services as license_services
+from selahcue_api.apps.license_keys.free_lifecycle import RenewalResult
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.admin_schema import customer_to_type, license_key_to_type
 from selahcue_api.graphql.errors import SafeAPIError
@@ -340,6 +343,16 @@ def _snapshot(seeded):
     return snapshot
 
 
+def _snapshot_before_free_lifecycle(seeded, monkeypatch):
+    # accounts 0003 predates the marker table, so every historical key is unmanaged.
+    def no_managed_renewal(token, now, request_id):
+        return RenewalResult(False, token.device.license_key.expires_at, token.expires_at)
+
+    with monkeypatch.context() as historical:
+        historical.setattr(device_services, "renew_free_license_for_device", no_managed_renewal)
+        return _snapshot(seeded)
+
+
 def _key_table():
     return list(AppLicenseKey.objects.order_by("pk").values())
 
@@ -371,7 +384,7 @@ def test_the_migration_is_a_single_forward_remove_field():
     )
 
 
-def test_every_key_grants_exactly_what_it_did_before(restore_schema):
+def test_every_key_grants_exactly_what_it_did_before(restore_schema, monkeypatch):
     old = _migrate(_targets_with(BEFORE))
     old_apps = old.loader.project_state(_targets_with(BEFORE)).apps
     # POSITIVE CONTROL: the "before" state really is the old schema, with the column present.
@@ -380,7 +393,7 @@ def test_every_key_grants_exactly_what_it_did_before(restore_schema):
     )
 
     seeded = _seed(old_apps)
-    before_snapshot = _snapshot(seeded)
+    before_snapshot = _snapshot_before_free_lifecycle(seeded, monkeypatch)
     before_keys = _key_table()
     assert len(before_keys) == len(SCENARIOS) + 2, "premise: every seeded key is in the table"
     # NON-VACUITY, spelled out for the pair that was once vacuous: the grandfathered org's two
@@ -404,14 +417,14 @@ def test_every_key_grants_exactly_what_it_did_before(restore_schema):
         )
 
 
-def test_the_scenarios_really_differ_so_equality_is_not_vacuous():
+def test_the_scenarios_really_differ_so_equality_is_not_vacuous(monkeypatch):
     """The comparison above would pass for a snapshot function that returns the same thing for
     every key. This shows the scenarios produce distinct observations — at least one key that
     admits another device, one that does not, and one that errors — on the old schema."""
     old = _migrate(_targets_with(BEFORE))
     try:
         seeded = _seed(old.loader.project_state(_targets_with(BEFORE)).apps)
-        snapshot = _snapshot(seeded)
+        snapshot = _snapshot_before_free_lifecycle(seeded, monkeypatch)
     finally:
         _migrate(_latest())
 
