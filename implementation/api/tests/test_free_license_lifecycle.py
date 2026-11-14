@@ -10,7 +10,7 @@ from test_bound_activation import KEY, SESSION, admin_session, another_license, 
 from test_native_account_surface import seed_license, seed_org
 from selahcue_api.apps.accounts.models import CustomerStatus
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
-from selahcue_api.apps.catalogue.models import LicensePlanAssignment
+from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.devices.models import Device, DeviceActivationOperation, DeviceToken
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 
@@ -47,7 +47,7 @@ def test_first_verified_admin_activation_issues_one_free_license(client, monkeyp
     assert licence.starts_at == NOW
     assert licence.expires_at == RENEWED_TO
     assignment = LicensePlanAssignment.objects.get(license_key=licence)
-    assert assignment.plan.code == "FREE"
+    assert assignment.plan.is_fallback
     marker = FreeLicenseLifecycle.objects.get(customer=org)
     assert marker.license_key_id == licence.pk and marker.renewal_enabled
     assert AuditEvent.objects.filter(action="customer_org.free_activated").count() == 1
@@ -314,8 +314,6 @@ def test_stale_admin_session_does_not_issue_free_without_verification(client):
 
 
 def test_reassigned_licence_keeps_current_plan_and_does_not_renew_as_free(client, monkeypatch):
-    from selahcue_api.apps.catalogue.models import Plan
-
     monkeypatch.setattr(timezone, "now", lambda: NOW)
     _org, session, initial, licence = activate_free(client)
     expiry = NOW + timedelta(days=5)
@@ -330,3 +328,55 @@ def test_reassigned_licence_keeps_current_plan_and_does_not_renew_as_free(client
     licence.refresh_from_db()
     assert licence.expires_at == expiry
     assert not AuditEvent.objects.filter(action="license_key.free_renewed").exists()
+
+
+def test_first_activation_assigns_the_renamed_fallback_plan(client, monkeypatch):
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    fallback = Plan.objects.get(is_fallback=True)
+    Plan.objects.filter(pk=fallback.pk).update(code="ENTRY", display_name="Entry")
+
+    org, _session, _initial, licence = activate_free(client)
+
+    assert LicensePlanAssignment.objects.get(license_key=licence).plan_id == fallback.pk
+    assert FreeLicenseLifecycle.objects.get(customer=org).license_key_id == licence.pk
+    assert licence.expires_at == RENEWED_TO
+
+
+def test_renaming_assigned_fallback_keeps_managed_licence_renewable(client, monkeypatch):
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    org, _session, initial, licence = activate_free(client)
+    fallback = Plan.objects.get(is_fallback=True)
+    Plan.objects.filter(pk=fallback.pk).update(code="ENTRY", display_name="Entry")
+    expiry = NOW + timedelta(days=5)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(expires_at=expiry)
+    DeviceToken.objects.update(expires_at=expiry)
+
+    response = post(client, REFRESH, {}, initial["activation_token"])
+
+    assert response.status_code == 200, response.json()
+    assert response.json()["license"]["expires_at"] == RENEWED_TO.isoformat()
+    assert DeviceToken.objects.get().expires_at == RENEWED_TO
+    assert LicensePlanAssignment.objects.get(license_key=licence).plan_id == fallback.pk
+    assert FreeLicenseLifecycle.objects.get(customer=org).license_key_id == licence.pk
+    assert AuditEvent.objects.filter(action="license_key.free_renewed").count() == 1
+
+
+def test_without_a_fallback_plan_first_activation_leaves_no_lifecycle_changes(client):
+    org = self_service_org()
+    session = admin_session(client, org)
+    Plan.objects.filter(is_fallback=True).update(is_fallback=False)
+
+    reply = post(client, SESSION, body(), session)
+
+    assert reply.status_code == 403
+    assert reply.json()["error"]["code"] == "POLICY_DENIED"
+    org.refresh_from_db()
+    assert org.status == CustomerStatus.TRIAL
+    assert not AppLicenseKey.objects.filter(customer=org).exists()
+    assert not FreeLicenseLifecycle.objects.filter(customer=org).exists()
+    assert not Device.objects.filter(customer=org).exists()
+    assert not DeviceToken.objects.exists()
+    assert not DeviceActivationOperation.objects.exists()
+    assert not AuditEvent.objects.filter(
+        action__in=["customer_org.free_activated", "license_key.generated", "device.activated"],
+    ).exists()
