@@ -534,12 +534,10 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   timeout times the commands a route spends (up to 9, rarely a few more, on a three-budget route;
   12 on a fresh connection) below any request timeout your host or proxy enforces. Size threads or
   workers for arrival rate times the added latency.
-- **No server timeout is configured here.** This repository ships only Django's development server
-  (`manage.py runserver`, in the `Dockerfile` and the compose file), which has no request timeout
-  and starts a thread per connection with no cap. No production application server (gunicorn,
-  uvicorn and the like) is configured in this repo, so there is no "worker timeout" to stay under
-  until one is chosen; until then a stall shows up as extra in-flight requests (arrival rate times
-  the added latency), not as refused ones.
+- **API worker limits.** The API image starts two synchronous Gunicorn workers with 30-second
+  worker and graceful shutdown timeouts. Each worker serves one request at a time. Keep downstream
+  timeouts within the web and ingress budgets and size workers against measured latency and
+  concurrency. Development Compose uses Django's `manage.py runserver`.
 - **Alert on it.** Failing open is now quiet inside the app: the only in-app signal is one WARNING
   per worker per minute (`rate-limit store unavailable (TimeoutError)`, plus `limiter unavailable`
   when a mail send is skipped). This repo configures no `LOGGING` and has no Sentry integration
@@ -778,11 +776,9 @@ The native `/v1` routes (`POST /v1/sessions`, `POST /v1/activations:with-session
 
 ## 6d. Database migrations — deploy order (Platform API)
 
-**Nothing in this repository runs `migrate` for you.** The API image ends in `manage.py
-runserver`, the compose file does the same, and no workflow, Makefile target or script applies
-migrations to a deployed database. **How your deploys sequence `migrate` is not known to the
-engineering team; confirm it before the first release that contains a column drop.** (Owner
-question, ClickUp 86ak5mn0m.)
+The Gunicorn API image and development Compose both require a separate migration step.
+Run the one-off migration from the release image using the order in the
+[Coolify runbook](../../DEPLOYMENT.md#deploy-and-verify-the-platform).
 
 Most migrations only add things and can run beside the running release. A **column drop cannot**.
 The first one is `selahcue_accounts` 0004, which removes `CustomerOrg.device_limit`
