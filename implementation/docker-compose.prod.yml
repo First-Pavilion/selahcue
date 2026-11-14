@@ -1,0 +1,213 @@
+# Production stack for SelahCue: Platform API (Gunicorn), Celery worker and beat, website (nginx),
+# PostgreSQL 16, Redis 7 and a Caddy TLS edge. The development stack is docker-compose.yml; it
+# shares nothing with this file except the two Dockerfiles.
+#
+# Run every command from implementation/, always with the env file (it feeds both ${...}
+# interpolation below and the containers):
+#
+#   cp deploy/production.env.example deploy/production.env     # then fill in every value
+#   deploy/deploy.sh                                           # build, back up, migrate, start, check
+#
+# Or by hand:
+#
+#   docker compose -f docker-compose.prod.yml --env-file deploy/production.env build
+#   docker compose -f docker-compose.prod.yml --env-file deploy/production.env up -d
+#
+# The runbook is deploy/README.md; the variable reference is ../deployments.md section 1 and
+# ../DEPLOYMENT.md "Runtime environment".
+#
+# Topology. Only Caddy publishes ports. Every request reaches Django through exactly ONE proxy
+# (Caddy), on both domains: the website domain's /graphql/* goes straight from Caddy to `api`,
+# not through the website's nginx. That is what makes SELAHCUE_TRUSTED_PROXY_COUNT=1 correct
+# for browser AND native traffic at once (see deploy/Caddyfile). The `backend` network is
+# internal (no route out of the host); only Caddy (ACME, clients) and the worker (SMTP) also
+# join `egress`.
+
+name: selahcue
+
+x-api-image: &api-image
+  image: ${API_IMAGE:-selahcue-api}:${RELEASE_TAG:-latest}
+  build:
+    context: ./api
+
+# Values the stack itself owns. `environment` overrides env_file, so an operator cannot point
+# these at the wrong place by accident, and the Redis password is written once (REDIS_PASSWORD).
+x-api-env: &api-env
+  SQL_ENGINE: django.db.backends.postgresql
+  SQL_HOST: db
+  SQL_PORT: "5432"
+  CACHE_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/1
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/2
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/2
+  # The single Caddy hop. Do not change without changing the Caddyfile routes.
+  SELAHCUE_TRUSTED_PROXY_COUNT: "1"
+
+# Shared by every process that runs the API image: web, worker, beat, migrate.
+x-api-common: &api-common
+  <<: *api-image
+  env_file:
+    - path: ./deploy/production.env
+      required: true
+  environment: *api-env
+  # Least privilege: an unprivileged uid, a read-only root filesystem, writable /tmp only
+  # (gunicorn heartbeat files, celery beat schedule and pidfile).
+  user: "65534:65534"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  logging: &logging
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${SQL_DATABASE:?set SQL_DATABASE}
+      POSTGRES_USER: ${SQL_USER:?set SQL_USER}
+      POSTGRES_PASSWORD: ${SQL_PASSWORD:?set SQL_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    # AOF on: queued mail jobs survive a restart. The password is passed on the command line
+    # inside the container only; no port is published and `backend` is internal.
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+
+  # One-off: applies migrations, then exits. web/worker/beat wait for it to succeed.
+  # For a release that drops a column, stop the app processes FIRST (deploy/deploy.sh does);
+  # see ../docs/ops/DEPLOYMENT.md section 6d.
+  migrate:
+    <<: *api-common
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    environment:
+      <<: *api-env
+      PGOPTIONS: "-c lock_timeout=5000"
+    restart: "no"
+    networks: [backend]
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    <<: *api-common
+    # Default image command: gunicorn --config gunicorn.conf.py selahcue_api.wsgi:application
+    expose: ["8000"]
+    networks:
+      backend:
+        aliases: [api]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # gunicorn.conf.py's graceful_timeout is 30 s; give it room before SIGKILL.
+    stop_grace_period: 40s
+    healthcheck:
+      # The documented liveness route, with an allowed Host (Django 400s any other). Python, not
+      # curl: the runtime needs no extra packages for its own healthcheck.
+      test: ["CMD", "python", "-c", "import os, urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/graphql/csrf', headers={'Host': os.environ['API_DOMAIN']}), timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *api-common
+    command: ["celery", "-A", "selahcue_api", "worker", "--loglevel=info", "--concurrency=2"]
+    # egress: the only process that talks to the SMTP server.
+    networks: [backend, egress]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    stop_grace_period: 40s
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A selahcue_api inspect ping -d celery@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  beat:
+    <<: *api-common
+    # Exactly one beat instance, ever: two would double-schedule the maintenance tasks.
+    command: ["celery", "-A", "selahcue_api", "beat", "--loglevel=info", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
+    networks: [backend]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+
+  website:
+    image: ${WEBSITE_IMAGE:-selahcue-website}:${RELEASE_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: implementation/marketing/Dockerfile
+    expose: ["80"]
+    networks: [backend]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    logging: *logging
+
+  # TLS edge. Skip this service (and route with your own proxy) on Coolify or behind another
+  # load balancer: see deploy/README.md "Behind Coolify or another proxy".
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+      WEBSITE_DOMAIN: ${WEBSITE_DOMAIN:?set WEBSITE_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [backend, egress]
+    depends_on:
+      api: { condition: service_healthy }
+      website: { condition: service_healthy }
+    restart: unless-stopped
+    logging: *logging
+
+networks:
+  backend:
+    internal: true
+  egress: {}
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
