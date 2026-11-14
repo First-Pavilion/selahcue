@@ -15,12 +15,7 @@
 //! The cost is the one DEC-011 names — "an array instead of a constant, plus one field" —
 //! and it is what makes deferring KMS custody a safe deferral rather than a trap.
 //!
-//! # What this module does and does not do
-//!
-//! It holds keys and selects one by `key_id`. It does **not** verify signatures: that,
-//! with manifest caching, is 86ak5mn1d. Keeping the trust store here means that ticket
-//! implements `verify()` against a store that is already a set, so single-key thinking
-//! never gets a chance to be baked in.
+//! [`crate::verify_entitlement`] uses this store to select the exact signing key.
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -83,7 +78,7 @@ impl TrustedKey {
         &self.key_id
     }
 
-    /// The raw 32-byte public key, for the verifier in 86ak5mn1d.
+    /// The raw 32-byte public key, for the entitlement verifier.
     pub fn public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
         &self.public_key
     }
@@ -157,14 +152,8 @@ impl TrustedKeys {
 
     /// The keys compiled into this build.
     ///
-    /// **Currently empty, and honestly so.** The production entitlement signing key is an
-    /// env-var seed on the server (`SELAHCUE_ENTITLEMENT_SIGNING_KEY`, DEC-011 pt 1) and
-    /// no public key has been issued for bundling yet. Populating this — and the
-    /// fail-closed rule that an envelope naming an unknown `key_id` is refused while the
-    /// previous valid cache is kept (FR-518) — belongs to 86ak5mn1d, which is where the
-    /// verifier lands. Refusal keeps the prior cache and never degrades the running app;
-    /// an empty store therefore fails closed on *verification* without ever failing
-    /// closed on *presentation*.
+    /// Release builds have no bundled keys until the production public key is provisioned.
+    /// Debug builds include the deliberately public development key below.
     pub fn bundled() -> Self {
         let store = Self::new();
 

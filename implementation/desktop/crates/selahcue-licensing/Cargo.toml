@@ -26,11 +26,21 @@ serde_json = "1"
 # mirroring the server's `derive_key_id` so a key and its id cannot drift apart.
 # Already in the workspace lock (selahcue-lan cert pinning), so this adds no new tree.
 sha2 = "0.11"
+base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "3.0.0", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 # Drive the actual licensing activation/cleanup method over the shipped HTTP transport
 # against a local socket; no live API/provider or OS keychain is needed.
 selahcue-cloud = { path = "../selahcue-cloud", features = ["http"] }
