@@ -70,9 +70,22 @@ def _migrate(targets):
 
 
 def _targets_with(accounts_node):
-    """Every app at its latest migration, except `selahcue_accounts` pinned to `accounts_node`."""
+    """Latest compatible graph frontier, excluding descendants of later accounts state.
+
+    A latest leaf in another app may depend on the field removal. Including it
+    silently reapplies the removal in project_state even after the DB rollback.
+    """
     graph = MigrationExecutor(connection).loader.graph
-    return [node for node in graph.leaf_nodes() if node[0] != ACCOUNTS] + [accounts_node]
+    ancestors = set(graph.forwards_plan(accounts_node))
+    later_accounts = {node for node in graph.nodes if node[0] == ACCOUNTS and node not in ancestors}
+    allowed = {node for node in graph.nodes
+               if not later_accounts.intersection(graph.forwards_plan(node))}
+    frontier = [node for node in allowed
+                if node != accounts_node
+                and not any(child.key in allowed for child in graph.node_map[node].children)]
+    # Explicitly pin this app even when another compatible app depends on BEFORE;
+    # otherwise migrate() has no target directing it to undo accounts AFTER.
+    return [accounts_node, *frontier]
 
 
 def _latest():

@@ -69,6 +69,10 @@ def graphql_endpoint_contracts(*, debug: bool) -> tuple[GraphQLEndpointContract,
 def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
     return (
         CommandEndpointContract("desktop", "v1/activations", "POST", "app_key_then_device_token"),
+        CommandEndpointContract("desktop", "v1/activations:bound", "POST", "app_key_then_device_token"),
+        CommandEndpointContract(
+            "desktop", "v1/activations:bound-with-session", "POST", "account_session_bearer_no_cookie"
+        ),
         # Native account sign-in/cleanup (86ak5t1gw,17tnw2b1wf2). These are CSRF-exempt, which is sound only because
         # neither reads or sets a cookie: the session travels in `Authorization: Bearer` alone.
         CommandEndpointContract("desktop", "v1/sessions", "POST", "account_credentials_no_cookie"),

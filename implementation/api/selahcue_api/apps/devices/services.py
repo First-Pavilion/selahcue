@@ -261,15 +261,16 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
     return token, full_token
 
 
-def _live_token(device: Device) -> DeviceToken | None:
+def _live_token(device: Device, *, lock: bool = False) -> DeviceToken | None:
     """The device's currently USABLE token, or None.
 
     "Usable" is the same predicate `authenticate_device_token` enforces — ACTIVE and not
     past `expires_at` — so this can never disagree with what the device would actually be
     able to authenticate with.
     """
+    tokens = device.tokens.select_for_update() if lock else device.tokens
     return (
-        device.tokens.filter(
+        tokens.filter(
             status=DeviceTokenStatus.ACTIVE, expires_at__gt=timezone.now()
         )
         .order_by("-issued_at", "-id")
@@ -394,6 +395,7 @@ def _existing_device_result(
     idempotency_key: str,
     audit_actor: ActorContext | None,
     source_surface: str,
+    lock_result_token: bool = False,
 ) -> ActivateDeviceResult:
     """Shared outcome for a device that ALREADY exists — an idempotent retry (same
     idempotency key) or a known install re-enrolling (same fingerprint).
@@ -408,7 +410,7 @@ def _existing_device_result(
     — reviving a device is where a downgraded licence would otherwise leak extra seats.
     """
     _assert_device_activatable(device)
-    live = _live_token(device)
+    live = _live_token(device, lock=lock_result_token)
     if live is not None:
         # Untouched by the allowance check on purpose: this device is already running, so
         # refusing its replay would revoke nothing and would break retry-idempotency for a
@@ -454,6 +456,7 @@ def _activate_device_for_key(
     activated_by_actor_id: str | None = None,
     audit_actor: ActorContext | None = None,
     source_surface: str = "desktop_v1",
+    lock_result_token: bool = False,
 ) -> ActivateDeviceResult:
     """Core activation for an ALREADY-RESOLVED license key. Shared by the enrollment-key path
     (activate_device) and the account-session path (activate_device_with_session) so both converge
@@ -466,7 +469,7 @@ def _activate_device_for_key(
         # replay instead of an IntegrityError/500. Re-read + re-check status under the lock, since it
         # could have changed between resolve and lock.
         license_key = (
-            AppLicenseKey.objects.select_for_update()
+            AppLicenseKey.objects.select_for_update(of=("self",))
             .select_related("customer")
             .get(pk=license_key.pk)
         )
@@ -484,6 +487,7 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                lock_result_token=lock_result_token,
             )
 
         # Natural identity: a known install (same fingerprint) re-enrolling with a different
@@ -504,6 +508,7 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                lock_result_token=lock_result_token,
             )
 
         # Instance limit (DEC-004): active devices under this key may not exceed the plan limit.

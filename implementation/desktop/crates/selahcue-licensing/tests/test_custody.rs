@@ -34,16 +34,18 @@ const SWEPT_RENDERINGS: usize = 10;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
-/// Each one hands out a raw credential. All three are "attach this to an outbound request",
+/// Each one hands out a raw credential. All five are "attach this to an outbound request",
 /// and none may be a formatter:
 ///
 /// - `client.rs` — the password into the sign-in request body
-/// - `client.rs` — the enrollment key into the activation request body
+/// - `client.rs` — the enrollment key into the legacy and bound activation bodies
 /// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
+/// - `client.rs` — the device token into the Authorization header for manifest GET
+///   and status POST via their shared device bearer helper.
 ///
 /// Pinned so adding one is a decision made here, in the open.
-const SANCTIONED_EXPOSE_SITES: usize = 3;
+const SANCTIONED_EXPOSE_SITES: usize = 5;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
@@ -437,8 +439,20 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "must be String to serialize; hand-redacted Debug on ActivationRequest",
         ),
         (
+            "license_key: Option<&'a str>",
+            "borrowed only for bound wire serialization on a non-Debug request",
+        ),
+        (
+            "idempotency_key: &'a str",
+            "a non-secret frozen operation nonce",
+        ),
+        (
             "idempotency_key: String",
             "a client-chosen correlation id, deliberately visible in logs",
+        ),
+        (
+            "token_expires_at: String",
+            "validated RFC3339 expiry metadata for an online status response",
         ),
         ("key_id: String", "names a PUBLIC key; not secret"),
         (

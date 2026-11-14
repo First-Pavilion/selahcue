@@ -187,7 +187,7 @@ endif
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 COMMA := ,
-OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts $(STT_FEATURES) $(AI_FEATURES)))
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts native-account $(STT_FEATURES) $(AI_FEATURES)))
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
 # OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard

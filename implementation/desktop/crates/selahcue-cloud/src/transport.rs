@@ -92,7 +92,7 @@ pub trait HttpTransport {
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError>;
 }
 
-/// The most response body the production transport will read off the socket.
+/// The default and maximum allowed response body size for the production transport.
 ///
 /// **This is the bound that actually holds.** A cap applied after the body is in hand
 /// bounds *parsing*, not memory: by then an unbounded read has already allocated
@@ -196,6 +196,7 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
     loopback_http_for_tests: bool,
+    max_response_bytes: usize,
 }
 
 /// Ceiling on the TCP/TLS connect phase alone.
@@ -315,7 +316,19 @@ impl ReqwestTransport {
     /// stalling peer always fails rather than hanging the caller. Trusts the operating
     /// system's certificate store and nothing else (see the type documentation).
     pub fn new() -> Result<Self, TransportError> {
-        Self::build(&[])
+        Self::new_with_response_limit(MAX_TRANSPORT_RESPONSE_BYTES)
+    }
+
+    /// Apply a tighter byte limit to this client's response reads for both GET and POST.
+    pub fn new_with_response_limit(max_bytes: usize) -> Result<Self, TransportError> {
+        if !(1..=MAX_TRANSPORT_RESPONSE_BYTES).contains(&max_bytes) {
+            return Err(TransportError(format!(
+                "response limit must be between 1 and {MAX_TRANSPORT_RESPONSE_BYTES} bytes"
+            )));
+        }
+        let mut transport = Self::build(&[])?;
+        transport.max_response_bytes = max_bytes;
+        Ok(transport)
     }
 
     /// Explicit test transport for local HTTP fixture servers. Every request still validates
@@ -386,6 +399,7 @@ impl ReqwestTransport {
         Ok(ReqwestTransport {
             client,
             loopback_http_for_tests: false,
+            max_response_bytes: MAX_TRANSPORT_RESPONSE_BYTES,
         })
     }
 }
@@ -484,14 +498,17 @@ pub fn read_capped(
 
 /// Read a response body with a hard ceiling, instead of `text()`'s read-to-end.
 #[cfg(feature = "http")]
-fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
+fn read_bounded(
+    resp: reqwest::blocking::Response,
+    max_bytes: usize,
+) -> Result<HttpResponse, TransportError> {
     let status = resp.status().as_u16();
     // The body read gets its own deadline because the client timeout does not bound it (PERF-2).
     // Worst case is therefore the head phase plus this budget rather than a single
     // REQUEST_TIMEOUT_SECS — stated plainly rather than hidden, since the alternative is a bound
     // that only holds for peers that stay silent.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
-    let buf = read_capped(resp, MAX_TRANSPORT_RESPONSE_BYTES, Some(deadline))?;
+    let buf = read_capped(resp, max_bytes, Some(deadline))?;
     // Bodies are untrusted bytes; decode lossily rather than failing on bad UTF-8, so a
     // mangled response becomes a parse error the caller can map, not a transport error
     // that would trigger the degraded-fallback path for the wrong reason.
@@ -521,7 +538,7 @@ impl HttpTransport for ReqwestTransport {
         let resp = req
             .send()
             .map_err(|e| TransportError(describe_send_error(&e)))?;
-        read_bounded(resp)
+        read_bounded(resp, self.max_response_bytes)
     }
 
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
@@ -533,6 +550,6 @@ impl HttpTransport for ReqwestTransport {
         let resp = req
             .send()
             .map_err(|e| TransportError(describe_send_error(&e)))?;
-        read_bounded(resp)
+        read_bounded(resp, self.max_response_bytes)
     }
 }

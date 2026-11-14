@@ -9,6 +9,8 @@ class ErrorCode(str, Enum):
     VALIDATION_FAILED = "VALIDATION_FAILED"
     NOT_FOUND = "NOT_FOUND"
     CONFLICT = "CONFLICT"
+    ACTIVATION_OPERATION_CONFLICT = "ACTIVATION_OPERATION_CONFLICT"
+    ACTIVATION_OPERATION_COMPLETED = "ACTIVATION_OPERATION_COMPLETED"
     POLICY_DENIED = "POLICY_DENIED"
     RATE_LIMITED = "RATE_LIMITED"
     NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
@@ -34,6 +36,8 @@ class ErrorCode(str, Enum):
 
 
 SAFE_MESSAGES = {
+    ErrorCode.ACTIVATION_OPERATION_CONFLICT: "This activation does not match the saved operation or device.",
+    ErrorCode.ACTIVATION_OPERATION_COMPLETED: "The activation completed and its original credential is unavailable.",
     ErrorCode.UNAUTHENTICATED: "Authentication is required.",
     ErrorCode.PERMISSION_DENIED: "You do not have permission to perform this action.",
     ErrorCode.VALIDATION_FAILED: "The request is invalid.",

@@ -26,7 +26,12 @@ tauri-build = { version = "2", features = [] }
 # same SQLCipher-encrypted store `selahcue-desktop` now writes by default, or its already-shipped
 # Transcripts viewer (86akcffvt) silently and permanently regresses to "unavailable" for every
 # fresh install with a working OS keychain.
-default = ["read-encrypted-transcripts"]
+default = ["read-encrypted-transcripts", "native-account"]
+# Native Platform API activation and entitlement status. Uses only the system
+# credential store and fixed HTTPS API, with no cloud-provider or developer keys.
+# LAUNCH_REACHABILITY: REQUIRED
+# RELEASE: SAFE
+native-account = ["dep:selahcue-licensing", "dep:time", "selahcue-cloud/http", "selahcue-cloud/keyring"]
 # Read-only access, via the SAME OS-keychain/Argon2id key `selahcue-desktop` acquires, to the
 # at-rest-encrypted store selahcue-desktop now writes by default (86akgrz3b; FR-154). This shell
 # never creates, writes, or migrates that store (`open_transcript_db_at` in main.rs) — it only
@@ -190,6 +195,9 @@ zeroize = { version = "1", optional = true }
 # build compiles the offline half only (in-memory secret store, no HTTP); the `cloud-live`
 # feature adds the real transport + OS keychain token.
 selahcue-cloud = { path = "../selahcue-cloud" }
+# Reuse the native activation contract types and normalization.
+selahcue-licensing = { path = "../selahcue-licensing", optional = true }
+time = { version = "0.3", features = ["formatting"], optional = true }
 # Cloud (Deepgram) transcription readiness + the `TranscriptProvider` seam (86akby4yz).
 # NOT optional: with the `deepgram` feature off (the default) this crate pulls in only
 # `selahcue-core` + `serde_json` — no async runtime, no WebSocket stack — so keeping it
@@ -244,6 +252,7 @@ futures-util = { version = "0.3", default-features = false, features = [
 # directory they own and can inspect afterward — the same crate + convention `selahcue-data`'s
 # own tests already use for this.
 tempfile = "3"
+ed25519-dalek = { version = "3.0.0", default-features = false }
 
 [lints.clippy]
 unwrap_used = "warn"

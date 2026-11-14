@@ -2674,3 +2674,213 @@ fn device_token_is_persisted_before_the_wrapper_waits_for_remote_cleanup() {
     assert_eq!(result.device_persistence, Ok(PersistOutcome::Stored));
     assert_eq!(result.account_session_cleared, Ok(true));
 }
+
+#[test]
+fn deferred_session_activation_does_not_attempt_cleanup() {
+    use selahcue_licensing::ScriptedTransport;
+    let transport = ScriptedTransport::responding(
+        200,
+        serde_json::json!({
+            "created": true,
+            "reminted": false,
+            "activation_token": "synthetic-deferred-device-token",
+            "device": {
+                "device_public_id": "dev_0123456789abcdef0123456789abcdef",
+                "status": "ACTIVE",
+                "platform": "macos"
+            },
+            "token": {},
+            "license": {
+                "status": "ACTIVATED",
+                "expires_at": "2027-01-01T00:00:00+00:00"
+            }
+        })
+        .to_string(),
+    );
+    let client =
+        LicensingClient::new(transport, "https://api.fixture.test").expect("static origin");
+    let id = DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("device identity");
+    let key = IdempotencyKey::new("deferred-0001").expect("operation key");
+    let answer = client
+        .begin_session_activation(&Token::new("test-session"), &id, &key)
+        .expect("response");
+    assert!(answer.token.is_some());
+    assert!(answer.session_cleanup.is_none());
+    assert_eq!(client.transport().request_count(), 1);
+}
+
+#[test]
+fn bound_activation_requires_versioned_response_and_never_uses_legacy_urls() {
+    use selahcue_licensing::ScriptedTransport;
+    let key = IdempotencyKey::new("0123456789abcdef0123456789abcdef").expect("fixture nonce");
+    let identity =
+        DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("fixture identity");
+    let credential = Token::new("fixture-authority");
+    for (status, body, error) in [
+        (
+            404,
+            "<html>old response</html>",
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+        (
+            405,
+            r#"{"operation_version":1,"error":{"code":"NOT_FOUND","message":"fixture"}}"#,
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+        (
+            404,
+            r#"{"operation_version":1,"error":{"code":"NOT_FOUND","message":"fixture"}}"#,
+            ActivationFailure::UnknownKey,
+        ),
+        (
+            409,
+            r#"{"operation_version":1,"error":{"code":"ACTIVATION_OPERATION_COMPLETED","message":"fixture"}}"#,
+            ActivationFailure::ActivationOperationCompleted {
+                device_public_id: None,
+            },
+        ),
+        (
+            200,
+            r#"{"created":true,"reminted":false,"activation_token":"legacy","device":{"device_public_id":"dev_0123456789abcdef0123456789abcdef","status":"ACTIVE","platform":"macos"},"token":{},"license":{"status":"ACTIVATED","expires_at":"2027-01-01T00:00:00Z"}}"#,
+            ActivationFailure::BoundActivationUnsupported,
+        ),
+    ] {
+        let client = LicensingClient::new(
+            ScriptedTransport::responding(status, body),
+            "https://api.fixture.test",
+        )
+        .expect("fixture origin");
+        assert_eq!(
+            client
+                .activate_bound(
+                    ActivationPath::EnrollmentKey,
+                    &credential,
+                    &identity,
+                    &key,
+                    None
+                )
+                .expect_err("unsupported or refusal"),
+            error
+        );
+        let requests = client.transport().recorded();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].url,
+            "https://api.fixture.test/v1/activations:bound"
+        );
+        assert!(!requests[0].had_bearer);
+    }
+}
+
+#[test]
+fn bound_definitive_refusal_requires_exact_version_operation_surface_and_status_code() {
+    use serde_json::json;
+    let nonce = IdempotencyKey::new("0123456789abcdef0123456789abcdef").expect("fixture nonce");
+    let identity =
+        DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("fixture identity");
+    for (status, code, surface, operation, version, proven) in [
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            403,
+            "POLICY_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            400,
+            "VALIDATION_FAILED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            404,
+            "NOT_FOUND",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound",
+            1,
+            false,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "account",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            2,
+            false,
+        ),
+        (
+            401,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            409,
+            "ACTIVATION_OPERATION_CONFLICT",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            503,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+    ] {
+        let response = json!({
+            "operation_version": version,
+            "surface": surface,
+            "operation": operation,
+            "error": {"code": code, "message": "fixture"}
+        });
+        let transport = ScriptedTransport::responding(status, response.to_string());
+        let client = LicensingClient::new(transport, BASE).expect("fixture API");
+        let error = client
+            .activate_bound(
+                ActivationPath::AccountSession,
+                &Token::new(SESSION),
+                &identity,
+                &nonce,
+                None,
+            )
+            .expect_err("fixture refusal");
+        assert_eq!(
+            matches!(error, ActivationFailure::BoundActivationRefused { .. }),
+            proven,
+            "{status} {code} {surface} {operation} v{version}"
+        );
+    }
+}

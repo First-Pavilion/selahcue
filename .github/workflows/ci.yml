@@ -1543,6 +1543,11 @@ jobs:
       - name: Clippy (stt -- the shipped configuration, no cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo clippy --features stt --all-targets -- -D warnings
+      - name: Dev entitlement key absent from the linked release operator
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/dev_key_not_in_release.sh --operator
 
   flutter:
     name: flutter controller

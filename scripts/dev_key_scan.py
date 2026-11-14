@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan the rlibs cargo just emitted for the development entitlement key.
+"""Scan current Cargo artifacts for the development entitlement key.
 
 Invoked by scripts/dev_key_not_in_release.sh. See that script for why this is the gate and
 the source-text guards are not.
@@ -10,8 +10,8 @@ import re
 import sys
 
 
-def artifacts(json_path: str) -> list[pathlib.Path]:
-    """Exactly the rlibs THIS build emitted for selahcue-licensing.
+def artifacts(json_path: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
+    """The licensing rlibs and operator executable from this invocation.
 
     Read from cargo's `--message-format=json` rather than globbed out of `target/`. The first
     cut of this scan globbed `target/release/deps/libselahcue_licensing*.rlib` and reported a
@@ -20,7 +20,8 @@ def artifacts(json_path: str) -> list[pathlib.Path]:
     poisoned artefact is a false red, and a stale clean one standing in for a build that never
     ran is a false green.
     """
-    out: list[pathlib.Path] = []
+    libraries: list[pathlib.Path] = []
+    executables: list[pathlib.Path] = []
     for line in pathlib.Path(json_path).read_text().splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -36,13 +37,17 @@ def artifacts(json_path: str) -> list[pathlib.Path]:
         # reported "no rlib to scan" -- which failed closed, correctly, but only because that
         # case was made an error rather than a pass.
         name = ((msg.get("target") or {}).get("name") or "").replace("-", "_")
+        if name == "selahcue_operator" and "bin" in msg["target"]["kind"]:
+            executable = msg.get("executable")
+            if executable and pathlib.Path(executable).is_file():
+                executables.append(pathlib.Path(executable))
         if name != "selahcue_licensing":
             continue
         for f in msg.get("filenames") or []:
             p = pathlib.Path(f)
             if p.suffix == ".rlib" and p.is_file():
-                out.append(p)
-    return out
+                libraries.append(p)
+    return libraries, executables
 
 
 def main() -> None:
@@ -61,7 +66,13 @@ def main() -> None:
     if len(key) != 32:
         sys.exit(f"DEV KEY SCAN FAILED: parsed {len(key)} key bytes, expected 32")
 
-    release_libs, debug_libs = artifacts(release_json), artifacts(debug_json)
+    release_libs, release_bins = artifacts(release_json)
+    debug_libs, debug_bins = artifacts(debug_json)
+    mode = sys.argv[4] if len(sys.argv) > 4 else "desktop"
+    if mode not in {"desktop", "operator"}:
+        sys.exit(f"DEV KEY SCAN FAILED: unknown mode {mode!r}")
+    if mode == "operator" and (not release_bins or not debug_bins):
+        sys.exit("DEV KEY SCAN FAILED: expected a linked operator executable in both profiles")
     if not release_libs or not debug_libs:
         sys.exit(
             f"DEV KEY SCAN FAILED: cargo emitted no rlib to scan (release={len(release_libs)}, "
@@ -81,7 +92,11 @@ def main() -> None:
             "parse and the artefact paths before trusting this gate again."
         )
 
-    release_hits = carries(release_libs)
+    if mode == "operator" and not carries(debug_bins):
+        sys.exit("DEV KEY SCAN FAILED: the linked debug operator does not contain the development key")
+
+    release_artifacts = release_libs + release_bins if mode == "operator" else release_libs
+    release_hits = carries(release_artifacts)
     if release_hits:
         for p in release_hits:
             print(f"  dev key present in {p}", file=sys.stderr)
@@ -94,7 +109,7 @@ def main() -> None:
 
     print(
         f"== dev key scan: OK == (present in {len(debug_hits)}/{len(debug_libs)} debug "
-        f"rlib(s), absent from {len(release_libs)} release rlib(s))"
+        f"rlib(s), absent from {len(release_artifacts)} {mode} release artifact(s))"
     )
 
 
