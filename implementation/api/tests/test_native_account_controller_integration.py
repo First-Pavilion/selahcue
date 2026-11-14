@@ -35,7 +35,7 @@ RUST_BIN = os.environ.get("SELAHCUE_G1_OPERATOR_TEST_BIN")
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("scenario", [
     "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
-    "lost-initial", "managed-free-lost-initial",
+    "lost-initial", "managed-free-lost-initial", "race-loss", "race-replay",
 ])
 def test_native_account_controller_against_local_platform_api(scenario, settings, live_server):
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
@@ -100,7 +100,9 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
                 assert not Device.objects.filter(license_key=competitor).exists()
                 assert DeviceToken.objects.filter(device=original).count() == 1
                 assert DeviceActivationOperation.objects.count() == 1
-                assert not CustomerSession.objects.filter(revoked_at__isnull=True).exists()
+                # A replay with no secret cannot retire a possibly in-flight
+                # original response; restart retains the identical retry authority.
+                assert CustomerSession.objects.filter(revoked_at__isnull=True).count() == 1
                 return
             if starts_with_free or scenario == "lost-initial":
                 receive("initial response lost")
@@ -159,7 +161,7 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
 
             expired = now - timedelta(days=1)
             AppLicenseKey.objects.filter(pk=key.pk).update(expires_at=expired, status=LicenseKeyStatus.EXPIRED)
-            if scenario == "expired":
+            if scenario in {"expired", "race-loss", "race-replay"}:
                 _expire_tokens(key, at=expired)
             elif scenario == "cascade":
                 assert cascade_license_revocations() == 1

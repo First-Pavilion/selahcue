@@ -114,7 +114,9 @@ class DeviceActivationOperation(models.Model):
     organization = models.ForeignKey("selahcue_accounts.CustomerOrg", on_delete=models.PROTECT)
     license_key = models.ForeignKey("selahcue_license_keys.AppLicenseKey", on_delete=models.PROTECT)
     device = models.ForeignKey(Device, on_delete=models.PROTECT)
-    result_token = models.ForeignKey(DeviceToken, null=True, on_delete=models.SET_NULL)
+    # Migration 0004 installs ON DELETE SET NULL in the database. DO_NOTHING
+    # keeps Django's collector out of this relation; identity FKs retain PROTECT.
+    result_token = models.ForeignKey(DeviceToken, null=True, on_delete=models.DO_NOTHING)
     issued_token_pk = models.PositiveBigIntegerField()
     auth_path = models.CharField(max_length=16)
     mode = models.CharField(max_length=7)

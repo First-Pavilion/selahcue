@@ -87,6 +87,8 @@ pub(crate) struct AccountMetadata {
     pub(crate) activated_public_id: Option<String>,
     pub(crate) skipped_setup: bool,
     pending_activation: Option<PendingActivation>,
+    #[serde(default)]
+    pub(crate) cleanup_reserved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,10 +208,6 @@ impl InstallIdentity {
 }
 
 impl AccountMetadata {
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub(crate) fn fingerprint(&self) -> &str {
         &self.install_fingerprint
     }
@@ -433,6 +431,7 @@ impl AccountMetadataStore {
             activated_public_id: None,
             skipped_setup: false,
             pending_activation: None,
+            cleanup_reserved: false,
         };
         self.publish(&path, &metadata)?;
         Ok(metadata)
@@ -486,8 +485,9 @@ impl AccountMetadataStore {
         }
     }
 
-    /// Serialize only the local account-session write or compare/remove. The
+    /// Serialize short local metadata/session/custody ownership decisions. The
     /// same stable file coordinates independent operators sharing this app data.
+    /// Callers release this fence before any network request or view lock.
     /// The OS releases the lock when the handle closes, including process exit.
     pub(crate) fn try_lock_account_session(&self) -> Result<File, AccountStorageError> {
         if !self.directory_exists()? {

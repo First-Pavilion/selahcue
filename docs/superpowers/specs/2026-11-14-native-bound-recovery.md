@@ -128,3 +128,48 @@ The coordinator approved this during Task 3 fix round 1, before implementation. 
 The native client requires the expected status/version/nonce/platform and a canonical ID matching any known or frozen expected binding. It must atomically CAS-save the learned public ID and retire the completed pending request. A failed CAS preserves the identical pending request for the identical no-secret proof on retry. Display reauthentication/recovery required. Only a separate explicit authorized action can create a fresh recover nonce; never implicitly remint or allocate another initial device. Tests must cover the entire first response lost followed by token expiry/deletion, wrong-proof rejection and CAS-failure preservation.
 
 Rationale: a lost first response could otherwise leave a safely recorded server operation unresolved forever despite a durable known target. Cost if wrong: an additive authenticated error DTO; no new token disclosure, seat allocation or weakened binding.
+
+
+## Foundation review amendment — local operation and cleanup ownership
+
+The consolidated foundation correction supersedes the Task 3 exact-send-generation
+response-custody rule. A revision change for the identical frozen bound operation is
+progress, not authority to discard its delayed show-once response. Before custody,
+reload and compare the complete immutable pending request and known device binding
+under the shared local ownership fence. A different nonce, protocol, mode, path,
+identity or binding still refuses custody. Save public identity before OS custody;
+retire pending only after the token is stored, or an existing bearer is verified
+against that exact device. A no-secret replay with missing or rejected local custody
+retains the pending operation and retry authority because the original response may
+still arrive. This does not re-show lost secrets or mint another live credential.
+
+The stable account-session-custody lock now coordinates short metadata/session/device
+custody decisions. Dispatch validates the loaded metadata before session replacement
+and advances its durable send generation within the same fence. Cleanup validates
+its metadata and captures the exact session under that fence, then saves a non-secret
+`cleanup_reserved` boolean before HTTP. All cooperating activation writers refuse
+that reservation. Confirmation removes only the matching session and clears the
+reservation; a restart with no local session can clear a leftover reservation.
+Every HTTP call and view projection remains outside this fence and the metadata
+writer lock. OS custody failures remain explicit; no cross-system transaction or
+protection from arbitrary external keyring writers is claimed.
+
+`POST /v1/sessions:revoke` may confirm an exact recorded already-revoked bearer with
+its usual `revoked:true` result. This is terminal cleanup only: it grants no login,
+activation, refresh, browser logout or other account authority, does not touch other
+sessions, and repeats no logout audit. Unknown/deleted or other inactive tokens
+retain the existing refusal. This closes acknowledgement loss and restart after a
+local-remove failure without treating a generic401 as successful cleanup.
+
+The receipt-token relationship uses an explicit database `ON DELETE SET NULL` via
+an additive migration. Django E323/E050 prohibit mixing `DB_SET_NULL` with the
+existing Python `PROTECT` graph; ORM state therefore uses `DO_NOTHING` and the
+migration installs the database action through schema-editor `alter_field` with
+`DB_SET_NULL`. Existing identity protection remains unchanged. PostgreSQL owns the referential action so a fresh recovery receipt committed while
+DELETE waits on the live token is also nulled. Both receipts and their immutable
+issued-token PK snapshots survive. Earlier ORM-only SET_NULL wording is superseded.
+
+Online display retains the observed licence expiry and check instant, evaluates
+exact expiry on every view/busy read, and ignores online facts after a backwards
+clock jump before the observation. A later genuine renewal can supersede an older
+signed licence expiry for online display; offline authority remains signed-only.

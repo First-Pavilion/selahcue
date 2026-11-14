@@ -12,7 +12,7 @@ from selahcue_api.apps.accounts.services import (
     LoginData,
     actor_from_session_token,
     login as _login_service,
-    logout_session as _logout_session_service,
+    revoke_native_session as _logout_session_service,
 )
 from selahcue_api.apps.devices.bound_activation import (
     BoundActivationData, BoundEnrollmentData, CompletedActivationReceipt,

@@ -1314,6 +1314,25 @@ def refresh_session(presented_token: str) -> RefreshResult:
     return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
 
 
+def revoke_native_session(presented_token: str, *, source_surface: str) -> LogoutResult:
+    """Confirm terminal revocation only for this exact possession proof.
+
+    This cleanup endpoint alone accepts a recorded revoked session. It grants no
+    authentication authority, reveals no account data, and never revokes siblings.
+    Unknown/deleted and other inactive tokens retain 401.
+    """
+    fingerprint = _fingerprint((presented_token or "").strip())
+    with transaction.atomic():
+        session = CustomerSession.objects.select_for_update().filter(
+            token_fingerprint=fingerprint,
+        ).first()
+        if (session is not None
+                and hmac.compare_digest(session.token_fingerprint, fingerprint)
+                and session.status == CustomerSessionStatus.REVOKED):
+            return LogoutResult(revoked=True)
+        return logout_session(presented_token, source_surface=source_surface)
+
+
 def logout_session(
     presented_token: str, *, all_sessions: bool = False, source_surface: str = ACCOUNT_AUDIT_SURFACE
 ) -> LogoutResult:
