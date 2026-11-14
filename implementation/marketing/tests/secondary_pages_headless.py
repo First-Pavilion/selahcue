@@ -334,14 +334,27 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
         page.locator(".contact-form textarea").focus()
         c.eq(page.evaluate(FOCUS_JS), "How can we help?", f"contact: at {height} high the last field holds focus")
         settle_scroll(page)
+        before = page.evaluate("""() => ({
+          linkTop: document.querySelector('.method-link').getBoundingClientRect().top,
+          y: scrollY,
+        })""")
         press_tab(page, c)
         settle_scroll(page)
         got = page.evaluate(
             """() => { const a = document.activeElement, r = a.getBoundingClientRect();
-              return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom, vh: innerHeight }; }"""
+              return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom,
+                vh: innerHeight, width: document.documentElement.clientWidth, y: scrollY,
+                margin: getComputedStyle(a).scrollMarginTop, focusVisible: a.matches(':focus-visible') }; }"""
         )
         c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
-        c.ok(got["top"] >= got["nav"] - 1, f"contact: at {height} high the focused link is not under the sticky navbar (top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11)")
+        c.ok(
+            got["top"] >= got["nav"] - 1,
+            f"contact: at {height} high the focused link is not under the sticky navbar "
+            f"(top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11; "
+            f"before Tab: link top {before['linkTop']:.0f}, scrollY {before['y']:.0f}; "
+            f"after Tab: scrollY {got['y']:.0f}, margin {got['margin']}, "
+            f"focus-visible {got['focusVisible']}, layout width {got['width']})",
+        )
         c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
     page.set_viewport_size(size)
 

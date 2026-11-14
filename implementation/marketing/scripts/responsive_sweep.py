@@ -479,6 +479,15 @@ SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
   (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
 )"""
 
+# The WebKit wait still uses Playwright's default frame polling and the same predicate.
+# Record the first actual invocation synchronously: the init observer's timer may never
+# fire again in the failed cell, leaving no evidence from the settlement phase.
+OBSERVED_SETTLE_JS = """() => {
+  const settled = (__SETTLE_PREDICATE__)();
+  try { window.__selahcueObserveSettlePoll?.(settled); } catch (_) {}
+  return settled;
+}""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+
 # Diagnostic only: the original settlement predicate above remains the gate. The init
 # script observes the top-level target document and sends snapshots before a timeout;
 # reporting never evaluates a possibly stalled renderer.
@@ -489,6 +498,7 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
   const ids = new WeakMap();
   let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  let pollCount = 0, lastPollResult = null;
   const start = performance.now();
   const stop = () => {
     stopped = true;
@@ -498,13 +508,14 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   };
   const deadline = setTimeout(stop, 12000);
   addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
-  const sample = () => {
+  const sample = (source) => {
     if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
     sampleCount++;
     try {
       const animations = document.getAnimations({ subtree: true });
       const snapshot = {
         sample: sampleCount, elapsedMs: number(performance.now() - start),
+        source, pollCount, lastPollResult,
         readyState: text(document.readyState), visibilityState: text(document.visibilityState),
         contentPresent: !!document.querySelector('main > :not(.loading)'),
         loadingPresent: !!document.querySelector('.loading'),
@@ -537,11 +548,21 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       };
       console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
     } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
+  };
+  window.__selahcueObserveSettlePoll = (result) => {
+    if (stopped) return;
+    if (typeof result !== 'boolean') return;
+    lastPollResult = result;
+    if (++pollCount === 1) sample('settle-poll');
+  };
+  const tick = () => {
+    if (stopped || sampleCount >= 13) return;
+    sample('timer');
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
-    if (sampleCount < 13) timer = setTimeout(sample, 1000);
+    if (sampleCount < 13) timer = setTimeout(tick, 1000);
   };
-  sample();
+  tick();
 })();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
 
 
@@ -566,7 +587,8 @@ def valid_settle_sample(value):
     if type(value) is dict and set(value) == {"observerError"}:
         return value["observerError"] is True
     if not fields(value, (
-        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "sample", "elapsedMs", "source", "pollCount", "lastPollResult",
+        "readyState", "visibilityState", "contentPresent", "loadingPresent",
         "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
         "animationCount", "animationsDropped", "animations",
     )):
@@ -574,6 +596,10 @@ def valid_settle_sample(value):
     if not (
         integer(value["sample"], 1, 13)
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and value["source"] in ("timer", "settle-poll")
+        and integer(value["pollCount"])
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
+        and (value["source"] != "settle-poll" or value["pollCount"] == 1)
         and value["readyState"] in ("loading", "interactive", "complete")
         and value["visibilityState"] in ("hidden", "visible", "prerender")
         and integer(value["rafCompleted"], 0, 13)
@@ -690,7 +716,7 @@ class SettleDiagnostic:
     def stage(self, category):
         try:
             self.current_stage = category
-            if len(self.stages) < 6:
+            if len(self.stages) < 8:
                 self.stages.append({"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)})
         except Exception:
             self.dropped["observerErrors"] += 1
@@ -706,9 +732,13 @@ class SettleDiagnostic:
             if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
                 return encoded
             payload["truncated"] = True
-            # Preserve the newest animation state and all bounded stage/event observations.
-            if payload["samples"]:
-                payload["samples"].pop(0)
+            # Keep the first actual poll and newest state when discarding older timer samples.
+            timer_index = next(
+                (i for i, sample in enumerate(payload["samples"]) if sample.get("source") != "settle-poll"),
+                None,
+            )
+            if timer_index is not None:
+                payload["samples"].pop(timer_index)
                 payload["dropped"]["samples"] += 1
             else:
                 return '{"truncated":true,"observerError":true}'
@@ -721,9 +751,9 @@ class SettleDiagnostic:
 
     def finish(self, page_error_count, failed=False):
         # Successful cells are quiet except the original detail control and the actual
-        # hosted failing list cell. Every failed WebKit cell retains its own evidence.
+        # hosted failing cells. Every failed WebKit cell retains its own evidence.
         if failed or (self.path, self.viewport["width"]) in (
-            ("/admin/customers/cus_001", 320), ("/admin/customers", 768),
+            ("/admin/customers/cus_001", 320), ("/admin/customers", 768), ("/blog", 375),
         ):
             self.emit("assertion-failed" if failed else "settled", page_error_count)
 
@@ -1335,7 +1365,9 @@ def main() -> int:
                         if diagnostic:
                             diagnostic.stage("visible-content-end")
                             diagnostic.stage("settle-start")
-                        page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
+                        page.wait_for_function(
+                            OBSERVED_SETTLE_JS if diagnostic else SETTLE_JS, timeout=10000,
+                        )  # lazy chunk painted, nothing mid-transition
                         if diagnostic:
                             diagnostic.stage("settle-end")
                     except Exception as exc:  # noqa: BLE001

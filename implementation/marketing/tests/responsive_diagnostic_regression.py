@@ -42,7 +42,7 @@ class DiagnosticRegression(unittest.TestCase):
 
     def test_observer_records_actual_list_and_blog_cells(self):
         # A pathname whitelist dropping either actual failed cell must fail this test.
-        for route, width in [('/admin/customers', 768), ('/blog/no-such-post', 375),
+        for route, width in [('/admin/customers', 768), ('/blog', 375), ('/blog/no-such-post', 375),
                              ('/admin/customers/cus_001', 320)]:
             with self.subTest(route=route), self.browser.new_context(
                 viewport={'width': width, 'height': 800}) as context:
@@ -58,6 +58,7 @@ class DiagnosticRegression(unittest.TestCase):
             for path, width, failed, expected in [
                 ('/blog/no-such-post', 375, False, False),
                 ('/blog/no-such-post', 375, True, True),
+                ('/blog', 375, False, True),
                 ('/admin/customers', 768, False, True),
                 ('/admin/customers/cus_001', 320, False, True),
             ]:
@@ -86,7 +87,7 @@ class DiagnosticRegression(unittest.TestCase):
             page.evaluate("console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify({secret:'do not retain'}))")
             payload = json.loads(diagnostic.render('infra', 40))
             self.assertEqual(len(payload['events']), 24)
-            self.assertEqual(len(payload['stages']), 6)
+            self.assertEqual(len(payload['stages']), 8)
             self.assertEqual(payload['dropped']['events'], 16)
             self.assertEqual(payload['dropped']['samples'], 1)
             self.assertNotIn('secret', diagnostic.render('infra', 40))
@@ -102,7 +103,7 @@ class DiagnosticRegression(unittest.TestCase):
             page.evaluate("window.finite = document.querySelector('button').animate([{transform:'scale(.5)'},{transform:'scale(.8)'}], {duration:1400})")
             self.assertFalse(page.evaluate(sweep.SETTLE_JS))
             self.assertLess(page.locator('button').bounding_box()['height'], 44)
-            page.wait_for_function(sweep.SETTLE_JS, timeout=10000)
+            page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
             self.assertEqual(page.locator('button').bounding_box()['height'], 44)
             page.evaluate("window.decoration = document.body.animate([{opacity:1},{opacity:.9}], {duration:500,iterations:Infinity})")
             self.assertTrue(page.evaluate(sweep.SETTLE_JS))
@@ -110,13 +111,13 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertEqual(state['state'], 'running')
             self.assertTrue(state['pending'])
             self.assertFalse(page.evaluate(sweep.SETTLE_JS))
-            page.wait_for_function(sweep.SETTLE_JS, timeout=10000)
+            page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
             page.evaluate("window.long = document.querySelector('button').animate([{opacity:1},{opacity:.9}], {duration:30000})")
             self.assertFalse(page.evaluate(sweep.SETTLE_JS))
             self.assertEqual(page.evaluate('long.effect.getComputedTiming().iterations'), 1)
             with self.assertRaises(PlaywrightTimeoutError):
-                page.wait_for_function(sweep.SETTLE_JS, timeout=10000)
-            self.assertTrue(any(not sample.get('predicate', True) and sample.get('rafCompleted', 0) > 0 and any(animation['timing'].get('iterations') == 1 for animation in sample['animations']) for sample in diagnostic.samples))
+                page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
+            self.assertTrue(any(not sample.get('predicate', True) and sample.get('rafCompleted', 0) > 0 and sample.get('pollCount', 0) > 1 and sample.get('lastPollResult') is False and any(animation['timing'].get('iterations') == 1 for animation in sample['animations']) for sample in diagnostic.samples))
             self.assertLessEqual(len(diagnostic.samples), 13)
 
     def test_missing_route_content_is_refused_at_existing_deadline(self):
@@ -153,7 +154,14 @@ raise SystemExit(sweep.main())
             self.assertIn('rendered (almost) nothing', result.stdout)
             self.assertIn('uncaught page error: diagnostic-control-error', result.stdout)
             trace = next(line for line in result.stdout.splitlines() if line.startswith('WEBKIT_SETTLE_TRACE '))
-            self.assertEqual(json.loads(trace.split(' ', 1)[1])['outcome'], 'assertion-failed')
+            payload = json.loads(trace.split(' ', 1)[1])
+            self.assertEqual(payload['outcome'], 'assertion-failed')
+            # This sample must come from the sweep's actual wait, after route content rendered.
+            poll = next((sample for sample in payload['samples'] if sample.get('source') == 'settle-poll'), None)
+            self.assertIsNotNone(poll, 'trace has no sample taken during the actual settlement wait')
+            self.assertTrue(poll['contentPresent'])
+            self.assertTrue(poll['predicate'])
+            self.assertEqual(poll['pollCount'], 1)
 
     def test_existing_geometry_guards_detect_bad_controls(self):
         with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:
