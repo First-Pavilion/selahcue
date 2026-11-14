@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +15,7 @@ import tempfile
 
 from installer_secret_scan import MIN_ARTEFACT_BYTES, SIGNATURES, ScanError, run_scan
 from ubuntu_packaging_preflight import OPERATOR, TARGET, elf_problem
+from whisper_cpu_policy import PolicyError, file_sha, operator_environment, require_fresh_target, verify
 
 
 class PackagingError(RuntimeError):
@@ -109,14 +109,6 @@ def check_elf_closure(path: Path, root: Path, env: dict) -> dict:
     return {"binary": path.name, "readelf_dynamic": dynamic, "ldd": linked}
 
 
-def file_sha(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while block := stream.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def scan_package(unpacked: Path, package: Path, main_name: str) -> None:
     copied = unpacked / "candidate.deb"
     shutil.copyfile(package, copied)
@@ -166,10 +158,13 @@ def main() -> int:
             raise PackagingError("Output artifact was emitted outside this checkout's target directory")
         staged = op / f"binaries/selahcue-output-{TARGET}"
         stage_sidecar(source, staged, debug_assertions=emitted[0].get("profile", {}).get("debug_assertions"))
-    bundle_dir = op / "target" / TARGET / "release/bundle/deb"
-    # Refuse old .deb files rather than publishing one after a failed/no-op build.
+    operator_target = root / ".target" / "portable-linux"
+    require_fresh_target(operator_target)
+    operator_env = operator_environment(env, "linux", operator_target)
+    bundle_dir = operator_target / TARGET / "release/bundle/deb"
     require_fresh_bundle_directory(bundle_dir)
-    run(operator_cmd, op, env)
+    run(operator_cmd, op, operator_env)
+    whisper_receipt = verify(operator_target, "linux", target_triple=TARGET)
     package = select_deb(bundle_dir)
     main_name = cfg.get("mainBinaryName", "selahcue-operator")
     if not isinstance(main_name, str) or Path(main_name).name != main_name:
@@ -206,6 +201,8 @@ def main() -> int:
                     "profile": "ordinary-release-no-ndi-with-local-stt", "main_binary": main_name, "signed": False,
                     "public_download_ready": False, "pilot_credentials_embedded": False,
                     "runtime_validation": "not-run-by-build", "control": control, "elf": closure}
+        whisper_receipt["installer_sha256"] = metadata["sha256"]
+        metadata["whisper_cpu_policy"] = whisper_receipt
         for key in ("GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
             if key in env:
                 metadata[key.lower()] = env[key]
@@ -219,7 +216,7 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (PackagingError, ScanError, OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (PackagingError, PolicyError, ScanError, OSError, ValueError, TypeError, KeyError, subprocess.CalledProcessError) as error:
         # No environment values or scanned binary context in diagnostics.
         print(f"Linux packaging failed: {error}", file=sys.stderr)
         sys.exit(1)
