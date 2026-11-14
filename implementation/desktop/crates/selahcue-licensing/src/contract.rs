@@ -404,6 +404,8 @@ pub(crate) enum BoundOperationState {
 #[derive(Deserialize)]
 pub(crate) struct BoundActivationError {
     pub operation_version: u8,
+    pub surface: Option<String>,
+    pub operation: Option<String>,
     pub error: ApiErrorBody,
     pub completed_activation: Option<CompletedActivationReceipt>,
 }

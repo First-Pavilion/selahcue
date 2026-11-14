@@ -224,6 +224,7 @@ pub(super) struct AccountController<T: HttpTransport, S: SecretStore> {
 struct RetainedActivation {
     answer: Activation,
     operation: PendingActivation,
+    expected_revision: u64,
     received: Instant,
     session: Option<Token>,
 }
@@ -387,16 +388,23 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         Ok(())
     }
 
-    fn mark_dispatched(&self, metadata: &mut AccountMetadata) -> Result<PendingActivation, Code> {
+    fn mark_dispatched(
+        &self,
+        metadata: &mut AccountMetadata,
+    ) -> Result<(PendingActivation, bool), Code> {
+        let first_dispatch = metadata
+            .pending_activation()
+            .is_some_and(|pending| pending.is_prepared());
         let mut candidate = metadata.clone();
         candidate.mark_activation_dispatched()?;
-        if candidate != *metadata {
-            self.save(&mut candidate)?;
-            *metadata = candidate;
-        }
+        // Fence every sender, even a retry with unchanged payload. A sibling
+        // process holding an older snapshot cannot send it after retirement.
+        self.save(&mut candidate)?;
+        *metadata = candidate;
         metadata
             .pending_activation()
             .cloned()
+            .map(|pending| (pending, first_dispatch))
             .ok_or(Code::MetadataChanged)
     }
 
@@ -475,7 +483,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             return self.reconcile_legacy(metadata);
         }
         self.prepare(metadata, ActivationPath::EnrollmentKey, name)?;
-        let pending = self.mark_dispatched(metadata)?;
+        let (pending, first_dispatch) = self.mark_dispatched(metadata)?;
         let result = self.client.activate_bound(
             selahcue_licensing::ActivationPath::EnrollmentKey,
             &key,
@@ -484,7 +492,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             pending.expected_device_public_id(),
         );
         drop(key);
-        self.complete_response(metadata, &pending, result, None)
+        self.complete_response(metadata, &pending, first_dispatch, result, None)
     }
 
     fn activate_session(
@@ -492,7 +500,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         metadata: &mut AccountMetadata,
         session: &Token,
     ) -> Result<(), Code> {
-        let pending = self.mark_dispatched(metadata)?;
+        let (pending, first_dispatch) = self.mark_dispatched(metadata)?;
         let result = self.client.activate_bound(
             selahcue_licensing::ActivationPath::AccountSession,
             session,
@@ -500,13 +508,14 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             &pending.retry_key()?,
             pending.expected_device_public_id(),
         );
-        self.complete_response(metadata, &pending, result, Some(session))
+        self.complete_response(metadata, &pending, first_dispatch, result, Some(session))
     }
 
     fn complete_response(
         &mut self,
         metadata: &mut AccountMetadata,
         pending: &PendingActivation,
+        first_dispatch: bool,
         response: Result<Activation, ActivationFailure>,
         session: Option<&Token>,
     ) -> Result<(), Code> {
@@ -537,6 +546,17 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
                 self.device_rejected = true;
                 return Err(Code::ActivationOperationCompleted);
             }
+            Err(error @ ActivationFailure::BoundActivationRefused { .. }) if first_dispatch => {
+                match self.complete_pending(metadata) {
+                    Ok(()) => {
+                        if let Some(session) = session {
+                            let _ = self.revoke_and_clear(session);
+                        }
+                    }
+                    Err(retirement_error) => self.preparation_error = Some(retirement_error),
+                }
+                return Err(error.into());
+            }
             // A refusal on a later attempt does not establish that the first
             // request had no effect. A new initial nonce could allocate a seat.
             Err(error) => return Err(error.into()),
@@ -552,6 +572,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         self.retained = Some(RetainedActivation {
             answer,
             operation: pending.clone(),
+            expected_revision: metadata.revision(),
             received: Instant::now(),
             session: session.cloned(),
         });
@@ -561,34 +582,49 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     fn finish_retained(&mut self, metadata: &mut AccountMetadata) -> Result<(), Code> {
         let held = self
             .retained
-            .as_ref()
+            .as_mut()
             .ok_or(Code::ActivationCompletionPending)?;
-        if metadata.pending_activation() != Some(&held.operation)
+        if metadata.revision() != held.expected_revision
+            || metadata.pending_activation() != Some(&held.operation)
             || metadata
                 .activated_public_id
                 .as_ref()
                 .is_some_and(|id| id != &held.answer.device_public_id)
         {
+            self.retained = None;
             return Err(Code::MetadataChanged);
         }
-        if metadata.activated_public_id.is_none() || metadata.skipped_setup {
-            let mut registered = metadata.clone();
-            registered.activated_public_id = Some(held.answer.device_public_id.clone());
-            registered.skipped_setup = false;
-            self.save(&mut registered)?;
-            *metadata = registered;
-        }
 
+        // Even an already-bound same-ID response must still own the generation
+        // it dispatched from before writing outside the metadata store.
+        let mut registered = metadata.clone();
+        registered.activated_public_id = Some(held.answer.device_public_id.clone());
+        registered.skipped_setup = false;
+        let saved = self
+            .storage
+            .as_ref()
+            .ok_or(Code::MetadataUnavailable)?
+            .save(&registered);
+        let saved = match saved {
+            Ok(saved) => saved,
+            Err(super::state::AccountStorageError::Changed) => {
+                self.retained = None;
+                return Err(Code::MetadataChanged);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        *metadata = saved;
+        held.expected_revision = metadata.revision();
         let session = held.session.clone();
+        let public_id = held.answer.device_public_id.clone();
         let persistence = held.answer.persist(&self.credentials);
         let replay_status = match persistence {
             Ok(PersistOutcome::Stored) => None,
             Ok(PersistOutcome::KeptExisting) => {
                 // A pre-existing token could have been revoked by a remint whose
                 // response was lost. Prove bearer custody for this exact device.
-                let id = &held.answer.device_public_id;
                 let token = self.device_token()?.ok_or(Code::DeviceRecoveryRequired)?;
-                match self.client.refresh_license(&token, id) {
+                match self.client.refresh_license(&token, &public_id) {
                     Ok(status) => Some(status),
                     Err(ActivationFailure::Unauthenticated) => {
                         self.device_rejected = true;
@@ -928,6 +964,9 @@ fn entitlement_state(manifest: &VerifiedEntitlement, now: Time) -> EntitlementSt
 impl From<ActivationFailure> for Code {
     fn from(error: ActivationFailure) -> Self {
         match error {
+            ActivationFailure::BoundActivationRefused { path, code } => {
+                Self::from(ActivationFailure::from_code(code, path))
+            }
             ActivationFailure::BoundActivationUnsupported => Self::BoundActivationUnsupported,
             ActivationFailure::ActivationOperationConflict => Self::DeviceBindingMismatch,
             ActivationFailure::ActivationOperationCompleted { .. } => {

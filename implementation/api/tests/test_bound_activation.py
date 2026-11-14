@@ -264,3 +264,29 @@ def test_unusable_initial_receipt_returns_recorded_identity_without_a_token(clie
     assert reminted.status_code == 200 and reminted.json()["reminted"]
     assert not Device.objects.filter(license_key=later).exists()
     assert Device.objects.count() == DeviceToken.objects.count() == 1
+
+
+def test_member_and_no_active_license_refusals_are_versioned_and_leave_no_activation(client):
+    from selahcue_api.apps.accounts.models import CustomerRole
+    from selahcue_api.apps.devices.models import DeviceActivationOperation
+    from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+
+    key, _ = _seed_license_key(tag="first-refusal")
+    email = "member-for-native-first-refusal@fixture.test"
+    password = "Synthetic-member-fixture-248!"
+    seed_user(key.customer, email=email, password=password, role=CustomerRole.MEMBER)
+    member = post(client, "/v1/sessions", {"email": email, "password": password}).json()["session_token"]
+    admin = admin_session(client, key.customer)
+    AppLicenseKey.objects.filter(pk=key.pk).update(status=LicenseKeyStatus.REVOKED)
+    for credential, status, code in [(member, 403, "PERMISSION_DENIED"), (admin, 404, "NOT_FOUND")]:
+        refusal = post(client, SESSION, body(), credential)
+        assert refusal.status_code == status
+        data = refusal.json()
+        assert data["operation"] == "activation_bound_with_session"
+        assert data["surface"] == "desktop"
+        assert data["operation_version"] == 1
+        assert data["error"]["code"] == code
+        assert "completed_activation" not in data
+    assert not DeviceActivationOperation.objects.exists()
+    assert not Device.objects.exists()
+    assert not DeviceToken.objects.exists()

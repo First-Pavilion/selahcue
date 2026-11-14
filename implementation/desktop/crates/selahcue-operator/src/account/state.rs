@@ -205,6 +205,10 @@ impl InstallIdentity {
 }
 
 impl AccountMetadata {
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub(crate) fn fingerprint(&self) -> &str {
         &self.install_fingerprint
     }

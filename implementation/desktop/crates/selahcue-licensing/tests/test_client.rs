@@ -2771,3 +2771,116 @@ fn bound_activation_requires_versioned_response_and_never_uses_legacy_urls() {
         assert!(!requests[0].had_bearer);
     }
 }
+
+#[test]
+fn bound_definitive_refusal_requires_exact_version_operation_surface_and_status_code() {
+    use serde_json::json;
+    let nonce = IdempotencyKey::new("0123456789abcdef0123456789abcdef").expect("fixture nonce");
+    let identity =
+        DeviceIdentity::new("fixture", "macos", "1.0", "Booth").expect("fixture identity");
+    for (status, code, surface, operation, version, proven) in [
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            403,
+            "POLICY_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            400,
+            "VALIDATION_FAILED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            404,
+            "NOT_FOUND",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            true,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound",
+            1,
+            false,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "account",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            403,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            2,
+            false,
+        ),
+        (
+            401,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            409,
+            "ACTIVATION_OPERATION_CONFLICT",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+        (
+            503,
+            "PERMISSION_DENIED",
+            "desktop",
+            "activation_bound_with_session",
+            1,
+            false,
+        ),
+    ] {
+        let response = json!({
+            "operation_version": version,
+            "surface": surface,
+            "operation": operation,
+            "error": {"code": code, "message": "fixture"}
+        });
+        let transport = ScriptedTransport::responding(status, response.to_string());
+        let client = LicensingClient::new(transport, BASE).expect("fixture API");
+        let error = client
+            .activate_bound(
+                ActivationPath::AccountSession,
+                &Token::new(SESSION),
+                &identity,
+                &nonce,
+                None,
+            )
+            .expect_err("fixture refusal");
+        assert_eq!(
+            matches!(error, ActivationFailure::BoundActivationRefused { .. }),
+            proven,
+            "{status} {code} {surface} {operation} v{version}"
+        );
+    }
+}

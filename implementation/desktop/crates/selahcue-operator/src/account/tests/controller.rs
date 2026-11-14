@@ -1759,3 +1759,491 @@ fn failed_completed_proof_cas_can_retry_the_same_pending_request() {
     let sent = account.client().transport().script.recorded();
     assert!(sent[0] == sent[1]);
 }
+
+fn bound_refusal(operation: &str, code: &str) -> String {
+    json!({
+        "operation_version": 1,
+        "surface": "desktop",
+        "operation": operation,
+        "error": {"code": code, "message": "fixture refusal"}
+    })
+    .to_string()
+}
+
+#[test]
+fn definitive_first_account_refusal_enables_enrollment_after_restart() {
+    for (status, code, expected) in [
+        (403, "PERMISSION_DENIED", "permission_denied"),
+        (404, "NOT_FOUND", "no_active_license"),
+        (400, "VALIDATION_FAILED", "invalid_input"),
+        (403, "POLICY_DENIED", "policy_denied"),
+    ] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let custody = Custody::default();
+        let mut account = controller(dir.path(), custody.clone());
+        account
+            .client()
+            .transport()
+            .push_response(200, session_json())
+            .push_response(status, bound_refusal("activation_bound_with_session", code))
+            .push_response(200, r#"{"revoked":true}"#);
+        let result = wire(&account.execute(sign_in()));
+        assert_eq!(result["error_code"], expected);
+        assert_eq!(result["operation_state"], "idle");
+        assert!(custody
+            .get(ACCOUNT_SESSION_NAME)
+            .expect("session custody")
+            .is_none());
+        assert!(account
+            .client()
+            .transport()
+            .request(2)
+            .expect("revoke")
+            .url
+            .ends_with("/v1/sessions:revoke"));
+
+        let mut restarted = controller(dir.path(), custody);
+        restarted
+            .client()
+            .transport()
+            .push_response(200, activated(Some(SECRET), false))
+            .push_failure("offline");
+        assert_eq!(
+            wire(&restarted.execute(enroll()))["setup_state"],
+            "completed"
+        );
+    }
+}
+
+#[test]
+fn first_wrong_enrollment_key_does_not_block_authorized_bound_account_recovery() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let store = AccountMetadataStore::new(dir.path().into());
+    let mut bound = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    bound.activated_public_id = Some(DEVICE.into());
+    store.save(&bound).expect("bound device");
+    let mut account = controller(dir.path(), custody.clone());
+    account
+        .client()
+        .transport()
+        .push_response(404, bound_refusal("activation_bound", "NOT_FOUND"))
+        .push_response(200, session_json())
+        .push_response(200, activated(Some(SECRET), true))
+        .push_response(200, r#"{"revoked":true}"#)
+        .push_failure("offline");
+    let refused = wire(&account.execute(enroll()));
+    assert_eq!(refused["error_code"], "unknown_key");
+    assert_eq!(refused["operation_state"], "idle");
+    assert_eq!(
+        wire(&account.execute(sign_in()))["setup_state"],
+        "completed"
+    );
+    let requests = account.client().transport().recorded();
+    let old: Value = serde_json::from_str(&requests[0].body).expect("enrollment");
+    let next: Value = serde_json::from_str(&requests[2].body).expect("account activation");
+    assert_eq!(next["expected_device_public_id"], DEVICE);
+    assert_eq!(next["mode"], "recover");
+    assert_ne!(old["idempotency_key"], next["idempotency_key"]);
+}
+
+#[test]
+fn definitive_refusal_after_an_ambiguous_account_attempt_cannot_retire_it() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account = controller(dir.path(), custody.clone());
+    account
+        .client()
+        .transport()
+        .push_response(200, session_json())
+        .push_failure("first result lost");
+    assert_eq!(
+        wire(&account.execute(sign_in()))["operation_state"],
+        "retry_pending"
+    );
+
+    let mut restarted = controller(dir.path(), custody.clone());
+    restarted.client().transport().push_response(
+        403,
+        bound_refusal("activation_bound_with_session", "PERMISSION_DENIED"),
+    );
+    let retry = wire(&restarted.execute(Command::RetryActivation));
+    assert_eq!(retry["error_code"], "permission_denied");
+    assert_eq!(retry["operation_state"], "retry_pending");
+    assert_eq!(
+        wire(&restarted.execute(enroll()))["error_code"],
+        "pending_activation_path"
+    );
+    assert_eq!(restarted.client().transport().request_count(), 1);
+    assert!(custody
+        .get(ACCOUNT_SESSION_NAME)
+        .expect("session still in custody")
+        .is_some());
+    assert_eq!(
+        account.client().transport().request(1),
+        restarted.client().transport().request(0)
+    );
+}
+
+#[test]
+fn first_dispatch_keeps_pending_when_reply_lacks_definitive_refusal_provenance() {
+    for (status, body) in [
+        (404, "<html>old server</html>".into()),
+        (
+            404,
+            r#"{"operation_version":1,"error":{"code":"NOT_FOUND"}}"#.into(),
+        ),
+        (
+            404,
+            bound_refusal("activation_bound_with_session", "NOT_FOUND"),
+        ),
+        (404, bound_refusal("activation_bound", "POLICY_DENIED")),
+        (
+            409,
+            bound_refusal("activation_bound", "ACTIVATION_OPERATION_CONFLICT"),
+        ),
+        (
+            403,
+            bound_refusal("activation_bound", "POLICY_DENIED")
+                .replace(r#""operation_version":1"#, r#""operation_version":2"#),
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let mut account = controller(dir.path(), Custody::default());
+        account.client().transport().push_response(status, body);
+        assert_eq!(
+            wire(&account.execute(enroll()))["operation_state"],
+            "retry_pending"
+        );
+        assert_eq!(
+            wire(&account.execute(sign_in()))["error_code"],
+            "pending_activation_path"
+        );
+        assert_eq!(account.client().transport().request_count(), 1);
+    }
+}
+
+// Runs two independently constructed controllers against the same disk/custody.
+// Blocking only the test edges gives both send-generation interleavings without sleeps.
+#[test]
+fn independent_controllers_fence_fresh_retirement_and_retry_before_http() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    use std::{
+        sync::{mpsc, Mutex},
+        time::Duration,
+    };
+
+    const DEADLINE: Duration = Duration::from_secs(8);
+    type Gate = (mpsc::Sender<()>, Mutex<mpsc::Receiver<()>>);
+    fn wait(gate: &Gate) {
+        gate.0.send(()).expect("entered fixture gate");
+        gate.1
+            .lock()
+            .expect("gate lock")
+            .recv_timeout(DEADLINE)
+            .expect("release gate");
+    }
+
+    struct GatedWire {
+        script: Arc<ScriptedTransport>,
+        gate: Option<Gate>,
+    }
+    impl HttpTransport for GatedWire {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/activations:bound-with-session") {
+                if let Some(gate) = &self.gate {
+                    wait(gate);
+                }
+            }
+            self.script.post_json(url, body, bearer)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+    struct GatedCustody {
+        store: Custody,
+        gate: Mutex<Option<Gate>>,
+    }
+    impl SecretStore for GatedCustody {
+        fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+            let observed = self.store.get(name);
+            if name == ACCOUNT_SESSION_NAME {
+                if let Some(gate) = self.gate.lock().expect("custody gate").take() {
+                    wait(&gate);
+                }
+            }
+            observed
+        }
+        fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+            self.store.set(name, token)
+        }
+        fn remove(&self, name: &str) -> Result<(), SecretError> {
+            self.store.remove(name)
+        }
+    }
+    for competing_fence_first in [false, true] {
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let path = dir.path().to_path_buf();
+        let custody = Custody::default();
+
+        let (first_enter, wait_first) = mpsc::channel();
+        let (release_first, first_release) = mpsc::channel();
+        let first_script = Arc::new(ScriptedTransport::new());
+        first_script
+            .push_response(200, session_json())
+            .push_response(
+                403,
+                bound_refusal("activation_bound_with_session", "PERMISSION_DENIED"),
+            )
+            .push_response(200, r#"{"revoked":true}"#);
+        let first_client = LicensingClient::new(
+            GatedWire {
+                script: first_script.clone(),
+                gate: Some((first_enter, Mutex::new(first_release))),
+            },
+            API_ORIGIN,
+        )
+        .expect("fixture client");
+        let mut first = AccountController::new(
+            Some(path.clone()),
+            first_client,
+            custody.clone(),
+            TrustedKeys::new(),
+            || NOW,
+        );
+        let a = std::thread::spawn(move || first.execute(sign_in()));
+        wait_first.recv_timeout(DEADLINE).expect("first dispatch");
+
+        let (second_enter, wait_second) = mpsc::channel();
+        let (release_second, second_release) = mpsc::channel();
+        let second_gate = (second_enter, Mutex::new(second_release));
+        let (request_gate, custody_gate) = if competing_fence_first {
+            (Some(second_gate), None)
+        } else {
+            (None, Some(second_gate))
+        };
+        let second_script = Arc::new(ScriptedTransport::new());
+        second_script
+            .push_response(200, activated(Some(SECRET), false))
+            .push_response(200, r#"{"revoked":true}"#)
+            .push_failure("offline");
+        let second_client = LicensingClient::new(
+            GatedWire {
+                script: second_script.clone(),
+                gate: request_gate,
+            },
+            API_ORIGIN,
+        )
+        .expect("fixture client");
+        let second_store = GatedCustody {
+            store: custody.clone(),
+            gate: Mutex::new(custody_gate),
+        };
+        let mut second = AccountController::new(
+            Some(path.clone()),
+            second_client,
+            second_store,
+            TrustedKeys::new(),
+            || NOW,
+        );
+        let b = std::thread::spawn(move || second.execute(Command::RetryActivation));
+        wait_second
+            .recv_timeout(DEADLINE)
+            .expect("competing retry paused");
+
+        release_first
+            .send(())
+            .expect("first refusal reaches controller");
+        let refused = wire(&a.join().expect("first worker"));
+        assert_eq!(refused["error_code"], "permission_denied");
+        if competing_fence_first {
+            assert_eq!(refused["preparation_error_code"], "metadata_changed");
+            assert_eq!(first_script.request_count(), 2);
+            assert_eq!(
+                custody.get(ACCOUNT_SESSION_NAME).expect("custody"),
+                Some(Token::new(SESSION))
+            );
+        } else {
+            assert_eq!(refused["operation_state"], "idle");
+            assert_eq!(first_script.request_count(), 3);
+        }
+        release_second.send(()).expect("competing retry resumes");
+        let retried = wire(&b.join().expect("second worker"));
+        if competing_fence_first {
+            assert_eq!(retried["setup_state"], "completed");
+            assert_eq!(first_script.request(1), second_script.request(0));
+        } else {
+            // The pending generation was retired before this process could
+            // advance it. This process must dispatch no activation.
+            assert_eq!(retried["error_code"], "metadata_changed");
+            assert_eq!(second_script.request_count(), 0);
+        }
+    }
+}
+
+#[test]
+fn accepted_same_device_answer_loses_custody_write_if_another_dispatch_advances_generation() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct AdvanceOnSecondDispatch {
+        directory: std::path::PathBuf,
+        script: ScriptedTransport,
+        custody: Custody,
+        advanced: AtomicBool,
+    }
+    impl HttpTransport for AdvanceOnSecondDispatch {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/activations:bound") && !self.advanced.swap(true, Ordering::SeqCst)
+            {
+                let mut competitor = controller(&self.directory, self.custody.clone());
+                competitor
+                    .client()
+                    .transport()
+                    .push_failure("competitor's outcome is ambiguous");
+                assert_eq!(
+                    wire(&competitor.execute(enroll()))["operation_state"],
+                    "retry_pending"
+                );
+                assert_eq!(
+                    competitor
+                        .client()
+                        .transport()
+                        .request(0)
+                        .expect("competing send")
+                        .body,
+                    body
+                );
+            }
+            self.script.post_json(url, body, bearer)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let store = AccountMetadataStore::new(dir.path().into());
+    let mut binding = store
+        .load_or_create(CredentialPresence::Missing)
+        .expect("identity");
+    binding.activated_public_id = Some(DEVICE.into());
+    store.save(&binding).expect("existing binding");
+    let custody = Custody::default();
+    let original = Token::new("previous-device-credential");
+    custody
+        .set(DEVICE_TOKEN_NAME, &original)
+        .expect("existing custody");
+    let transport = AdvanceOnSecondDispatch {
+        directory: dir.path().into(),
+        script: ScriptedTransport::responding(200, activated(Some(SECRET), true)),
+        custody: custody.clone(),
+        advanced: AtomicBool::new(false),
+    };
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("origin");
+    let mut first = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        custody.clone(),
+        TrustedKeys::new(),
+        || NOW,
+    );
+    let stale = wire(&first.execute(enroll()));
+    assert_eq!(stale["error_code"], "metadata_changed");
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("not overwritten"),
+        Some(original.clone())
+    );
+    assert!(store
+        .load_or_create(CredentialPresence::Present)
+        .expect("current metadata")
+        .pending_activation()
+        .is_some());
+    assert_eq!(
+        wire(&first.execute(Command::RetryActivation))["error_code"],
+        "enrollment_key_required"
+    );
+    assert_eq!(
+        custody
+            .get(DEVICE_TOKEN_NAME)
+            .expect("still not overwritten"),
+        Some(original)
+    );
+}
+
+#[test]
+fn failed_fresh_refusal_retirement_keeps_metadata_and_session_for_existing_retry() {
+    use selahcue_cloud::{transport::HttpResponse, HttpTransport, TransportError};
+
+    struct BlockRetirement {
+        directory: std::path::PathBuf,
+        script: ScriptedTransport,
+    }
+    impl HttpTransport for BlockRetirement {
+        fn post_json(
+            &self,
+            url: &str,
+            body: &str,
+            bearer: Option<&str>,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.ends_with("/v1/activations:bound-with-session") {
+                let lock = self.directory.join("account-metadata.lock");
+                std::fs::remove_file(&lock).expect("closed lock");
+                std::fs::create_dir(lock).expect("block refusal retirement");
+            }
+            self.script.post_json(url, body, bearer)
+        }
+        fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+            self.script.get(url, bearer)
+        }
+    }
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let transport = BlockRetirement {
+        directory: dir.path().into(),
+        script: ScriptedTransport::responding(200, session_json()),
+    };
+    transport.script.push_response(
+        403,
+        bound_refusal("activation_bound_with_session", "PERMISSION_DENIED"),
+    );
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("origin");
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        custody.clone(),
+        TrustedKeys::new(),
+        || NOW,
+    );
+    let refused = wire(&account.execute(sign_in()));
+    assert_eq!(refused["error_code"], "permission_denied");
+    assert_eq!(refused["preparation_error_code"], "metadata_unavailable");
+    assert_eq!(refused["operation_state"], "retry_pending");
+    assert_eq!(account.client().transport().script.request_count(), 2);
+    std::fs::remove_dir(dir.path().join("account-metadata.lock")).expect("restore writer");
+    let mut restarted = controller(dir.path(), custody);
+    restarted.client().transport().push_response(
+        403,
+        bound_refusal("activation_bound_with_session", "PERMISSION_DENIED"),
+    );
+    assert_eq!(
+        wire(&restarted.execute(Command::RetryActivation))["operation_state"],
+        "retry_pending"
+    );
+    assert_eq!(
+        account.client().transport().script.request(1),
+        restarted.client().transport().request(0)
+    );
+}

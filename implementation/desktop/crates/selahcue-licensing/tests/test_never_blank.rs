@@ -122,7 +122,8 @@ fn this_crate_exposes_no_enforcement_entry_point() {
 fn every_failure_variant() -> Vec<ActivationFailure> {
     let sample = ActivationFailure::UnknownKey;
     match sample {
-        ActivationFailure::BoundActivationUnsupported
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
         | ActivationFailure::ActivationOperationConflict
         | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}
@@ -244,7 +245,8 @@ fn an_unreachable_platform_is_a_silent_retryable_unknown() {
         .unwrap_err();
 
     match &failure {
-        ActivationFailure::BoundActivationUnsupported
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
         | ActivationFailure::ActivationOperationConflict
         | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}

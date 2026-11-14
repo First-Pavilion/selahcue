@@ -61,6 +61,12 @@ use crate::contract::ErrorCode;
 pub enum ActivationFailure {
     /// The dedicated versioned native activation contract is unavailable.
     BoundActivationUnsupported,
+    /// The dedicated endpoint returned a matching version, route and status/code
+    /// pair for an authoritative refusal. A prior dispatch may still be ambiguous.
+    BoundActivationRefused {
+        path: ActivationPath,
+        code: ErrorCode,
+    },
     /// Request differs from the recorded operation or the authorized binding.
     ActivationOperationConflict,
     /// The original operation completed but its exact credential is unavailable.
@@ -233,7 +239,8 @@ impl ActivationFailure {
     /// running app (CON-P3, NG-5).
     pub fn permits_presentation(&self) -> bool {
         match self {
-            ActivationFailure::BoundActivationUnsupported
+            ActivationFailure::BoundActivationRefused { .. }
+            | ActivationFailure::BoundActivationUnsupported
             | ActivationFailure::ActivationOperationConflict
             | ActivationFailure::ActivationOperationCompleted { .. } => true,
             ActivationFailure::Unreachable(_) => true,
@@ -277,6 +284,9 @@ impl ActivationFailure {
 impl core::fmt::Display for ActivationFailure {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            ActivationFailure::BoundActivationRefused { path, code } => {
+                Self::from_code(code.clone(), *path).fmt(f)
+            }
             ActivationFailure::BoundActivationUnsupported => {
                 f.write_str("the server does not support bound native activation")
             }

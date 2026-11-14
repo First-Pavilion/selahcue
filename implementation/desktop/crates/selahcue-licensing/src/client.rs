@@ -490,15 +490,23 @@ impl<T: HttpTransport> LicensingClient<T> {
         idempotency_key: &IdempotencyKey,
         expected_device_public_id: Option<&str>,
     ) -> Result<Activation, ActivationFailure> {
-        let (route, bearer, key) = match path {
-            ActivationPath::EnrollmentKey => {
-                ("/v1/activations:bound", None, Some(credential.expose()))
-            }
+        let (route, operation, bearer, key) = match path {
+            ActivationPath::EnrollmentKey => (
+                "/v1/activations:bound",
+                "activation_bound",
+                None,
+                Some(credential.expose()),
+            ),
             ActivationPath::AccountSession => {
                 if Self::unusable_bearer(credential) {
                     return Err(ActivationFailure::Unauthenticated);
                 }
-                ("/v1/activations:bound-with-session", Some(credential), None)
+                (
+                    "/v1/activations:bound-with-session",
+                    "activation_bound_with_session",
+                    Some(credential),
+                    None,
+                )
             }
         };
         let request = BoundActivationRequest {
@@ -551,6 +559,18 @@ impl<T: HttpTransport> LicensingClient<T> {
                         device_public_id: Some(proof.device_public_id),
                     });
                 }
+            }
+            if parsed.completed_activation.is_none()
+                && parsed.surface.as_deref() == Some("desktop")
+                && parsed.operation.as_deref() == Some(operation)
+                && matches!(
+                    (status, &code),
+                    (400, ErrorCode::ValidationFailed)
+                        | (403, ErrorCode::PermissionDenied | ErrorCode::PolicyDenied)
+                        | (404, ErrorCode::NotFound)
+                )
+            {
+                return Err(ActivationFailure::BoundActivationRefused { path, code });
             }
             return Err(ActivationFailure::from_code(code, path));
         }
