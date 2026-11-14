@@ -38,9 +38,10 @@
 //! which permits presentation.
 
 use crate::contract::{
-    ActivationRequest, ActivationResponse, ApiErrorEnvelope, ErrorCode, LicenseDto,
-    SessionActivationRequest, SessionRequest, SessionResponse, SessionRevokeResponse, TokenMetaDto,
-    ACTIVATIONS_PATH, ACTIVATIONS_WITH_SESSION_PATH, SESSIONS_PATH, SESSION_REVOKE_PATH,
+    ActivationRequest, ActivationResponse, ApiErrorEnvelope, EntitlementEnvelope, ErrorCode,
+    LicenseDto, SessionActivationRequest, SessionRequest, SessionResponse, SessionRevokeResponse,
+    TokenMetaDto, ACTIVATIONS_PATH, ACTIVATIONS_WITH_SESSION_PATH, ENTITLEMENT_MANIFEST_PATH,
+    SESSIONS_PATH, SESSION_REVOKE_PATH,
 };
 use crate::custody::DeviceCredentials;
 use crate::device::{DeviceIdentity, IdempotencyKey};
@@ -49,15 +50,15 @@ use selahcue_cloud::transport::{require_https_base_url, require_loopback_test_ur
 use selahcue_cloud::{
     HttpResponse, HttpTransport, SecretError, SecretStore, Token, TransportError,
 };
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize};
 
 /// The most response body this client will parse.
 ///
 /// Every success body here is a few hundred bytes and every coded error is under 200, so
 /// 64 KiB is two orders of magnitude of headroom. The transport already refuses to *read*
-/// more than `MAX_TRANSPORT_RESPONSE_BYTES` (4 MiB) off the socket; this is the second,
-/// tighter bound for what is handed to a parser, and it holds for any transport, including
-/// a test double. A body over it is refused unparsed and is never quoted.
+/// more than its configured limit off the socket. Configure the native account transport
+/// with this cap. The parsing bound here also applies to any injected transport. A body
+/// over it is refused unparsed and is never quoted.
 pub const MAX_RESPONSE_BODY_BYTES: usize = 64 * 1024;
 
 /// Which path produced an activation.
@@ -197,6 +198,60 @@ impl Activation {
             }
         }
     }
+}
+
+/// Online status for the bound device as last reported by the Platform API.
+/// Offline state and feature grants come from a verified signed entitlement.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LicenseRefresh {
+    pub device_public_id: String,
+    pub device_status: String,
+    pub license_status: String,
+    pub license_starts_at: String,
+    pub license_expires_at: String,
+    pub license_valid_now: bool,
+    pub instances_used: u32,
+    pub instances_limit: u32,
+    pub token_expires_at: String,
+}
+
+impl core::fmt::Debug for LicenseRefresh {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LicenseRefresh").finish_non_exhaustive()
+    }
+}
+
+#[derive(Deserialize)]
+struct LicenseRefreshResponse {
+    device: RefreshDevice,
+    license: RefreshLicense,
+    instances: RefreshInstances,
+    token: RefreshToken,
+}
+
+#[derive(Deserialize)]
+struct RefreshDevice {
+    device_public_id: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct RefreshLicense {
+    status: String,
+    starts_at: String,
+    expires_at: String,
+    valid_now: bool,
+}
+
+#[derive(Deserialize)]
+struct RefreshInstances {
+    used: u32,
+    limit: u32,
+}
+
+#[derive(Deserialize)]
+struct RefreshToken {
+    expires_at: String,
 }
 
 /// A client for the Platform API's licensing surfaces.
@@ -419,12 +474,108 @@ impl<T: HttpTransport> LicensingClient<T> {
         Self::activation(ActivationPath::EnrollmentKey, parsed)
     }
 
+    /// Fetch an unverified manifest envelope for later verification against trusted keys
+    /// and this install's identity. Keeps the response bytes for the verifier and cache.
+    pub fn fetch_entitlement(&self, device_token: &Token) -> Result<Vec<u8>, ActivationFailure> {
+        let bearer = Self::device_bearer(device_token)?;
+        let response = self
+            .transport
+            .get(&self.url(ENTITLEMENT_MANIFEST_PATH), Some(bearer))
+            .map_err(|_| Self::device_transport_failure())?;
+        Self::check_device_response(&response)?;
+        // Check the outer wire shape. Payload decoding and signature verification belong
+        // to verify_entitlement, which receives the unmodified envelope.
+        serde_json::from_str::<EntitlementEnvelope>(&response.body)
+            .map_err(|e| Self::malformed(&e))?;
+        Ok(response.body.into_bytes())
+    }
+
+    /// Read current online licence status. A live device token can report an expired
+    /// licence. The caller supplies the public ID saved at activation.
+    pub fn refresh_license(
+        &self,
+        device_token: &Token,
+        expected_device_public_id: &str,
+    ) -> Result<LicenseRefresh, ActivationFailure> {
+        let bearer = Self::device_bearer(device_token)?;
+        let response = self
+            .transport
+            .post_json(&self.url("/v1/license:refresh"), "{}", Some(bearer))
+            .map_err(|_| Self::device_transport_failure())?;
+        Self::check_device_response(&response)?;
+        let parsed: LicenseRefreshResponse =
+            serde_json::from_str(&response.body).map_err(|e| Self::malformed(&e))?;
+        if expected_device_public_id.is_empty()
+            || parsed.device.device_public_id != expected_device_public_id
+        {
+            return Err(ActivationFailure::Malformed(
+                "the refresh response was for a different device".into(),
+            ));
+        }
+        let status_is_bounded = |status: &str, max_len| {
+            !status.is_empty()
+                && status.len() <= max_len
+                && status.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+        };
+        if parsed.device.device_public_id.len() > 64
+            || !status_is_bounded(&parsed.device.status, 16)
+            || !status_is_bounded(&parsed.license.status, 32)
+            || [
+                &parsed.license.starts_at,
+                &parsed.license.expires_at,
+                &parsed.token.expires_at,
+            ]
+            .iter()
+            .any(|date| date.len() > 64 || chrono::DateTime::parse_from_rfc3339(date).is_err())
+        {
+            return Err(ActivationFailure::Malformed(
+                "the refresh response carried invalid status details".into(),
+            ));
+        }
+        Ok(LicenseRefresh {
+            device_public_id: parsed.device.device_public_id,
+            device_status: parsed.device.status,
+            license_status: parsed.license.status,
+            license_starts_at: parsed.license.starts_at,
+            license_expires_at: parsed.license.expires_at,
+            license_valid_now: parsed.license.valid_now,
+            instances_used: parsed.instances.used,
+            instances_limit: parsed.instances.limit,
+            token_expires_at: parsed.token.expires_at,
+        })
+    }
+
+    fn device_bearer(token: &Token) -> Result<&str, ActivationFailure> {
+        if Self::unusable_bearer(token) {
+            return Err(ActivationFailure::Unauthenticated);
+        }
+        Ok(token.expose())
+    }
+
+    fn device_transport_failure() -> ActivationFailure {
+        ActivationFailure::Unreachable("the device request did not complete".into())
+    }
+
+    fn check_device_response(response: &HttpResponse) -> Result<(), ActivationFailure> {
+        // A device credential rejection remains distinguishable if a proxy stripped the
+        // application error envelope. A redirect never becomes a successful device read.
+        match response.status {
+            401 => return Err(ActivationFailure::Unauthenticated),
+            300..=399 => return Err(ActivationFailure::UnexpectedStatus(response.status)),
+            _ => {}
+        }
+        Self::check_response(response, |code| match code {
+            ErrorCode::NotFound => ActivationFailure::Coded(ErrorCode::NotFound),
+            ErrorCode::Unknown(_) => ActivationFailure::UnexpectedStatus(response.status),
+            known => ActivationFailure::from_code(known, ActivationPath::AccountSession),
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Transport plumbing
     // -----------------------------------------------------------------------
 
-    /// The one place a request leaves this crate: a JSON `POST`, with the session token as
-    /// the only credential header there can be. This crate sets no cookie, CSRF, `Origin` or
+    /// Send an activation or account-session JSON `POST`. This crate sets no cookie, CSRF, `Origin` or
     /// `Referer` header, and the transport seam (`post_json(url, body, bearer)`) gives it no way
     /// to; that is the property the native routes' CSRF exemption rests on.
     ///
@@ -495,6 +646,14 @@ impl<T: HttpTransport> LicensingClient<T> {
         response: HttpResponse,
         classify: impl Fn(ErrorCode) -> ActivationFailure,
     ) -> Result<D, ActivationFailure> {
+        Self::check_response(&response, classify)?;
+        serde_json::from_str(&response.body).map_err(|e| Self::malformed(&e))
+    }
+
+    fn check_response(
+        response: &HttpResponse,
+        classify: impl Fn(ErrorCode) -> ActivationFailure,
+    ) -> Result<(), ActivationFailure> {
         let ok = (200..300).contains(&response.status);
         if response.body.len() > MAX_RESPONSE_BODY_BYTES {
             // Refused unparsed: no allocation proportional to the body, and no echo of it.
@@ -507,9 +666,9 @@ impl<T: HttpTransport> LicensingClient<T> {
             });
         }
         if !ok {
-            return Err(Self::error(&response, classify));
+            return Err(Self::error(response, classify));
         }
-        serde_json::from_str(&response.body).map_err(|e| Self::malformed(&e))
+        Ok(())
     }
 
     /// Classify a non-2xx response.

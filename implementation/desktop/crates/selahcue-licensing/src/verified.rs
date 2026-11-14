@@ -12,8 +12,18 @@ use std::fmt;
 pub const MAX_ENTITLEMENT_ENVELOPE_BYTES: usize = crate::client::MAX_RESPONSE_BODY_BYTES;
 
 const ENTITLEMENT_VERSION: u32 = 1;
+// Plan.display_name in the signing API is capped at 128 Unicode characters.
+const MAX_PLAN_DISPLAY_CHARS: usize = 128;
 const SIGNATURE_BYTES: usize = 64;
 const SIGNATURE_ENCODED_BYTES: usize = (SIGNATURE_BYTES * 4).div_ceil(3);
+
+/// Display metadata carried inside a verified payload. Feature decisions use grants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntitlementDisplay {
+    pub plan_display_label: Option<String>,
+    pub instances_used: Option<u32>,
+    pub instances_limit: Option<u32>,
+}
 
 /// A signature-verified version 1 manifest bound to the expected device and fingerprint.
 /// Verification establishes provenance and shape. Consumers evaluate signed times separately.
@@ -24,6 +34,7 @@ pub struct VerifiedEntitlement {
     not_before: (i64, u32),
     facts: SignedFacts,
     grants: Grants,
+    display: EntitlementDisplay,
 }
 
 impl fmt::Debug for VerifiedEntitlement {
@@ -58,6 +69,10 @@ impl VerifiedEntitlement {
 
     pub fn grants(&self) -> &Grants {
         &self.grants
+    }
+
+    pub fn display(&self) -> &EntitlementDisplay {
+        &self.display
     }
 }
 
@@ -104,6 +119,9 @@ struct Payload {
     // Added compatibly to v1. Old v1 issuers sent no grants.
     #[serde(default)]
     grants: Grants,
+    plan_display_label: Option<String>,
+    instances_used: Option<u32>,
+    instances_limit: Option<u32>,
 }
 
 /// Verify the API's transmitted base64url string before decoding the signed payload.
@@ -163,6 +181,12 @@ pub(crate) fn verify_with_envelope(
         return Err(WrongDevice);
     }
 
+    if payload.plan_display_label.as_ref().is_some_and(|label| {
+        label.chars().count() > MAX_PLAN_DISPLAY_CHARS || label.chars().any(char::is_control)
+    }) {
+        return Err(MalformedPayload);
+    }
+
     let timestamp = |date: &str| {
         DateTime::parse_from_rfc3339(date)
             .map(|value| (value.timestamp(), value.timestamp_subsec_nanos()))
@@ -181,6 +205,11 @@ pub(crate) fn verify_with_envelope(
         not_before: timestamp(&payload.not_before)?,
         facts,
         grants: payload.grants,
+        display: EntitlementDisplay {
+            plan_display_label: payload.plan_display_label,
+            instances_used: payload.instances_used,
+            instances_limit: payload.instances_limit,
+        },
     };
     Ok((envelope, verified))
 }

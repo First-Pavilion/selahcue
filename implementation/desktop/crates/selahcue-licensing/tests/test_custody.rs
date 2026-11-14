@@ -43,7 +43,8 @@ const SWEPT_RENDERINGS: usize = 10;
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
 ///
 /// Pinned so adding one is a decision made here, in the open.
-const SANCTIONED_EXPOSE_SITES: usize = 3;
+// The fourth use supplies the shared device bearer for manifest GET and status POST.
+const SANCTIONED_EXPOSE_SITES: usize = 4;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
@@ -439,6 +440,10 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
         (
             "idempotency_key: String",
             "a client-chosen correlation id, deliberately visible in logs",
+        ),
+        (
+            "token_expires_at: String",
+            "validated RFC3339 expiry metadata for an online status response",
         ),
         ("key_id: String", "names a PUBLIC key; not secret"),
         (

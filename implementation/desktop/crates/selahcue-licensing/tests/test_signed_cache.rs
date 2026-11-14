@@ -475,3 +475,60 @@ fn exposes_exact_signed_validity_boundaries_after_reopen() {
     );
     assert!(verified.facts().is_degraded());
 }
+
+#[test]
+fn reads_only_signed_display_metadata_and_leaves_legacy_fields_optional() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    let mut payload = facts(FIRST_ISSUANCE);
+    payload["grants"] = json!({});
+    payload["feature_scope"] = json!("Paid and unlimited");
+    let mut outer = serde_json::to_value(sign(&key, &key_id, &payload)).unwrap();
+    outer["plan_display_label"] = json!("Unsigned");
+    outer["instances_used"] = json!(99);
+    outer["instances_limit"] = json!(99);
+    let body = serde_json::to_vec(&outer).unwrap();
+    let legacy = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(legacy.display().plan_display_label, None);
+    assert_eq!(legacy.display().instances_used, None);
+    assert_eq!(legacy.display().instances_limit, None);
+    assert!(legacy.grants().is_empty());
+
+    let label = "é".repeat(128);
+    payload["plan_display_label"] = json!(label);
+    payload["instances_used"] = json!(1);
+    payload["instances_limit"] = json!(3);
+    let next = wire(&sign(&key, &key_id, &payload));
+    let verified = verify_entitlement(&next, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(
+        verified.display().plan_display_label.as_deref(),
+        Some(label.as_str())
+    );
+    assert_eq!(verified.display().instances_used, Some(1));
+    assert_eq!(verified.display().instances_limit, Some(3));
+    assert!(verified.grants().is_empty());
+}
+
+#[test]
+fn rejects_signed_display_fields_with_wrong_types_or_out_of_bounds_values() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    for (field, value) in [
+        ("plan_display_label", json!({})),
+        ("plan_display_label", json!("é".repeat(129))),
+        ("plan_display_label", json!("label\u{0000}")),
+        ("instances_used", json!("1")),
+        ("instances_used", json!(-1)),
+        ("instances_limit", json!(4_294_967_296u64)),
+        ("instances_limit", json!(1.5)),
+    ] {
+        let mut payload = facts(FIRST_ISSUANCE);
+        payload[field] = value;
+        let body = wire(&sign(&key, &key_id, &payload));
+        assert_eq!(
+            verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap_err(),
+            VerifyError::MalformedPayload,
+            "{field}"
+        );
+    }
+}

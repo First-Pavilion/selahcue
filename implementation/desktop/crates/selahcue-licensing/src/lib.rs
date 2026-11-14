@@ -63,7 +63,7 @@
 //!
 //! # Deliberately not here
 //!
-//! Manifest fetching and opportunistic refresh are tracked in **86ak5mn1h**.
+//! Opportunistic refresh is tracked in **86ak5mn1h**.
 //! Enforcement is tracked in **86ak5mn1t**.
 
 #![forbid(unsafe_code)]
@@ -82,7 +82,7 @@ mod verified;
 pub use cache::{EntitlementCache, EntitlementCacheError};
 
 pub use client::{
-    AccountSession, Activation, ActivationPath, LicensingClient, PersistOutcome,
+    AccountSession, Activation, ActivationPath, LicenseRefresh, LicensingClient, PersistOutcome,
     PersistedActivation, SessionCleanup, TokenDisposition,
 };
 pub use contract::{EntitlementEnvelope, ErrorCode};
@@ -96,7 +96,7 @@ pub use error::ActivationFailure;
 pub use script::{RecordedRequest, ScriptedTransport};
 pub use trust::{TrustedKey, TrustedKeys, MAX_TRUSTED_KEYS};
 pub use verified::{
-    verify_entitlement, EntitlementVerificationError, VerifiedEntitlement,
+    verify_entitlement, EntitlementDisplay, EntitlementVerificationError, VerifiedEntitlement,
     MAX_ENTITLEMENT_ENVELOPE_BYTES,
 };
 
