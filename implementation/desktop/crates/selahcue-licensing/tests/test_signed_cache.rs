@@ -445,3 +445,33 @@ fn interrupted_staging_keeps_old_cache_and_reuses_the_single_staging_name() {
     assert_eq!(fs::read(cache.path()).unwrap(), next);
     assert!(!staging.exists());
 }
+
+#[test]
+fn exposes_exact_signed_validity_boundaries_after_reopen() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    let mut payload = facts("2026-11-14T16:00:00.123456+00:00");
+    payload["not_before"] = json!("2026-11-14T16:00:00.123455+00:00");
+    payload["expires_at"] = json!("2026-11-14T16:00:00.987654+00:00");
+    payload["license_expires_at"] = json!("2026-11-14T16:00:00.987655+00:00");
+    let body = wire(&sign(&key, &key_id, &payload));
+
+    let dir = tempdir().unwrap();
+    EntitlementCache::new(dir.path())
+        .replace(&body, &keys, DEVICE, FINGERPRINT)
+        .unwrap();
+    let verified = EntitlementCache::new(dir.path())
+        .load(&keys, DEVICE, FINGERPRINT)
+        .unwrap()
+        .unwrap();
+
+    let seconds = 1_794_672_000;
+    assert_eq!(verified.not_before(), (seconds, 123_455_000));
+    assert_eq!(verified.facts().issued_at(), (seconds, 123_456_000));
+    assert_eq!(verified.facts().expires_at(), (seconds, 987_654_000));
+    assert_eq!(
+        verified.facts().license_expires_at(),
+        (seconds, 987_655_000)
+    );
+    assert!(verified.facts().is_degraded());
+}

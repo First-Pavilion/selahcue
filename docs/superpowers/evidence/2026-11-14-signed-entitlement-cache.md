@@ -29,3 +29,13 @@ Commands used from the desktop workspace with Rust 1.98.0, `CARGO_BUILD_JOBS=1` 
 Cargo resolved the primary `ed25519-dalek` 3.0.0 from crates.io (BSD-3-Clause, Rust 1.85 minimum) with default features disabled. No new license exceptions were required. [Published crate metadata](https://docs.rs/crate/ed25519-dalek/3.0.0)
 
 Scope is the licensing workspace crate. Linux and Windows cache runtime, native UI, deployed issuance, production public-key provisioning, manifest fetching and entitlement enforcement were outside this local evidence.
+
+## Final review follow-up
+
+`VerifiedEntitlement::not_before` and `SignedFacts::{issued_at, expires_at, license_expires_at}` return exact signed instants as Unix seconds and nanoseconds within the second. The whole-second accessors and the existing whole-second policy constructor remain available. The upper validity bound comes from the signed `expires_at` field. The live v1 producer has no `refresh_after` field. The verification layer exposes these instants for a future policy consumer and applies no clock-based policy.
+
+The new signed integration regression reopens a real cache and distinguishes lower bound, issue time, artifact expiry and licence expiry within the same second. Before the fix, the public-API test could not compile on the missing accessors. Afterward, 175 licensing tests passed on macOS arm64, including 16 cache/verification tests. From the repository root, with `CARGO_BUILD_JOBS=1` and the same task-specific temporary target directory:
+
+- `cargo test --offline --locked --manifest-path implementation/desktop/Cargo.toml -p selahcue-licensing --no-fail-fast` passed.
+- `cargo clippy --offline --locked --manifest-path implementation/desktop/Cargo.toml -p selahcue-licensing --all-targets -- -D warnings` passed.
+- `cargo fmt --manifest-path implementation/desktop/Cargo.toml -p selahcue-licensing -- --check` and `git diff --check` passed.

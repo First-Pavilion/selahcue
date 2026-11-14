@@ -282,8 +282,6 @@ impl Grants {
 /// attaches a forged "not degraded" marker outside the signature would otherwise collapse a
 /// customer's offline window on demand.
 ///
-/// The fields are private and there is one constructor, named for the contract, so every
-/// construction site reads `from_verified_payload` and a reviewer can grep for all of them.
 /// The entitlement verifier constructs these facts after checking the signature and binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignedFacts {
@@ -295,7 +293,7 @@ pub struct SignedFacts {
 }
 
 impl SignedFacts {
-    /// Build from values read out of a payload whose signature has been verified.
+    /// Build from whole Unix seconds read out of a payload whose signature has been verified.
     ///
     /// `degraded` is `None` when the payload does not carry the field — which is every
     /// payload today, since the server publishes it only to the audit record.
@@ -345,9 +343,14 @@ impl SignedFacts {
         self.grant_count > 0
     }
 
-    /// The **licence** expiry — never clamped, whatever happened server-side.
+    /// Signed licence expiry as (Unix seconds, nanoseconds within the second).
+    pub fn license_expires_at(&self) -> (i64, u32) {
+        self.license_expires_at
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::license_expires_at`] for time comparisons.
     pub fn license_expires_at_unix(&self) -> i64 {
-        self.license_expires_at.0
+        self.license_expires_at().0
     }
 
     /// Whether this issuance was degraded.
@@ -361,18 +364,25 @@ impl SignedFacts {
             .unwrap_or(self.expires_at < self.license_expires_at)
     }
 
-    /// The **artefact** expiry — the clamped `expires_at`, not `license_expires_at`.
-    ///
-    /// The payload carries both and only this one reflects the degraded clamp. Feeding the
-    /// licence expiry here would defeat the whole rule: a degraded manifest would look
-    /// multi-year and replace a good cache.
-    pub fn expires_at_unix(&self) -> i64 {
-        self.expires_at.0
+    /// Signed upper validity bound (`expires_at`), as (Unix seconds, nanoseconds within the second).
+    /// The issuer may clamp this below the licence expiry for a degraded issuance.
+    pub fn expires_at(&self) -> (i64, u32) {
+        self.expires_at
     }
 
-    /// When the server issued this artefact.
+    /// Whole Unix seconds for display. Use [`Self::expires_at`] for time comparisons.
+    pub fn expires_at_unix(&self) -> i64 {
+        self.expires_at().0
+    }
+
+    /// Signed issuance time as (Unix seconds, nanoseconds within the second).
+    pub fn issued_at(&self) -> (i64, u32) {
+        self.issued_at
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::issued_at`] for time comparisons.
     pub fn issued_at_unix(&self) -> i64 {
-        self.issued_at.0
+        self.issued_at().0
     }
 
     /// The server's own word on whether this issuance was degraded, when it says.

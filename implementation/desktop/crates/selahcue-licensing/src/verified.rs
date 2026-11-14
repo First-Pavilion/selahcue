@@ -21,7 +21,7 @@ const SIGNATURE_ENCODED_BYTES: usize = (SIGNATURE_BYTES * 4).div_ceil(3);
 pub struct VerifiedEntitlement {
     device_public_id: String,
     device_fingerprint: String,
-    not_before_unix: i64,
+    not_before: (i64, u32),
     facts: SignedFacts,
     grants: Grants,
 }
@@ -42,8 +42,14 @@ impl VerifiedEntitlement {
         &self.device_fingerprint
     }
 
+    /// Signed lower validity bound as (Unix seconds, nanoseconds within the second).
+    pub fn not_before(&self) -> (i64, u32) {
+        self.not_before
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::not_before`] for time comparisons.
     pub fn not_before_unix(&self) -> i64 {
-        self.not_before_unix
+        self.not_before().0
     }
 
     pub fn facts(&self) -> SignedFacts {
@@ -172,7 +178,7 @@ pub(crate) fn verify_with_envelope(
     let verified = VerifiedEntitlement {
         device_public_id: payload.device_public_id,
         device_fingerprint: payload.device_fingerprint,
-        not_before_unix: timestamp(&payload.not_before)?.0,
+        not_before: timestamp(&payload.not_before)?,
         facts,
         grants: payload.grants,
     };
