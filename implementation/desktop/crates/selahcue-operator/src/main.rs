@@ -27,6 +27,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 
+// The native Account worker will consume the persistence and view interfaces.
+#[allow(dead_code)]
+mod account;
+
 /// Bring-up of the bundled native output window that sits beside the operator in a packaged
 /// install (ADR-0002/0003: the audience compositor is a separate process, never the WebView).
 mod autolaunch;
@@ -12276,6 +12280,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            app.manage(account::AccountState::new(app.path().app_data_dir().ok()));
             // Packaged install: bring up the bundled output window (a sibling binary) BEFORE we
             // build the backend, so `build_backend()` finds its fresh loopback endpoint and
             // connects instead of falling back to the demo. In a dev run the sibling is absent,

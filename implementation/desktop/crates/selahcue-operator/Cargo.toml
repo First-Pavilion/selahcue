@@ -190,6 +190,8 @@ zeroize = { version = "1", optional = true }
 # build compiles the offline half only (in-memory secret store, no HTTP); the `cloud-live`
 # feature adds the real transport + OS keychain token.
 selahcue-cloud = { path = "../selahcue-cloud" }
+# Reuse the native activation contract types and normalization.
+selahcue-licensing = { path = "../selahcue-licensing" }
 # Cloud (Deepgram) transcription readiness + the `TranscriptProvider` seam (86akby4yz).
 # NOT optional: with the `deepgram` feature off (the default) this crate pulls in only
 # `selahcue-core` + `serde_json` — no async runtime, no WebSocket stack — so keeping it
