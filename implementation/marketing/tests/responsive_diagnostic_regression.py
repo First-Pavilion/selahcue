@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real-WebKit observation checks; synthetic controls are not app reproduction."""
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -93,11 +94,103 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertNotIn('secret', diagnostic.render('infra', 40))
             self.assertLessEqual(len(diagnostic.render('infra', 40).encode()), 32768)
 
+    def test_first_poll_only_reads_animations_for_the_gate(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/poll-control', 375)
+            page.goto('data:text/html,<main><h1>Poll control</h1></main>')
+            observed = page.evaluate(
+                """(source) => {
+                  const getAnimations = document.getAnimations.bind(document);
+                  let reads = 0;
+                  document.getAnimations = (...args) => { reads++; return getAnimations(...args); };
+                  const settled = eval(source)();
+                  return { settled, reads };
+                }""", sweep.OBSERVED_SETTLE_JS,
+            )
+            self.assertEqual(observed, {'settled': True, 'reads': 1})
+            marker = json.loads(diagnostic.render('settled', 0))['firstPoll']
+            self.assertIsNotNone(marker)
+            self.assertEqual(set(marker), {'elapsedMs', 'pollCount', 'lastPollResult', 'rafCompleted', 'rafPending'})
+            self.assertTrue(marker['lastPollResult'])
+
+    def test_animation_observer_hides_unrecognized_labels_and_rejects_spoofed_labels(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/animation-labels', 375)
+            page.goto('data:text/html,<main><button>Private control</button></main>')
+            page.evaluate(
+                """() => {
+                  const target = document.querySelector('button');
+                  target.id = 'private-id';
+                  target.className = 'private-class';
+                  const style = document.createElement('style');
+                  style.textContent = '@keyframes private-animation { to { opacity: .5 } }'
+                    + '#private-id { animation: private-animation 30s; }';
+                  document.head.append(style);
+                }"""
+            )
+            page.wait_for_event('console', predicate=lambda m: m.text.startswith('WEBKIT_SETTLE_SAMPLE '))
+            encoded = diagnostic.render('infra', 0)
+            self.assertNotIn('private-', encoded)
+            sample = json.loads(encoded)['samples'][-1]
+            animation = sample['animations'][0]
+            self.assertEqual(animation['type'], 'CSSAnimation')
+            self.assertEqual(animation['animationName'], 'other')
+            self.assertIs(type(animation['target']['id']), int)
+            for field in ('type', 'animationName', 'transitionProperty', 'target'):
+                spoofed = copy.deepcopy(sample)
+                spoofed['animations'][0][field] = (
+                    {**animation['target'], 'label': 'private-forged-target'}
+                    if field == 'target' else 'private-forged-' + field
+                )
+                page.evaluate("(sample) => console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(sample))", spoofed)
+            payload = json.loads(diagnostic.render('infra', 0))
+            self.assertEqual(payload['dropped']['samples'], 4)
+            self.assertNotIn('private-forged', json.dumps(payload))
+
+    def test_first_poll_survives_output_byte_trimming(self):
+        with self.browser.new_context() as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/trim-control', 375)
+            page.goto('data:text/html,<main><h1>Trim control</h1></main>')
+            page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
+            page.evaluate(
+                """() => {
+                  for (let i = 0; i < 12; i++) {
+                    const button = document.createElement('button');
+                    document.querySelector('main').append(button);
+                    button.animate([{opacity:1},{opacity:0}], {duration:31415.926535897932});
+                  }
+                }"""
+            )
+            page.wait_for_event('console', predicate=lambda m: m.text.startswith('WEBKIT_SETTLE_SAMPLE '))
+            sample = diagnostic.samples[-1]
+            self.assertEqual(len(sample['animations']), 12)
+            first_poll = json.loads(diagnostic.render('infra', 0))['firstPoll']
+            self.assertIsNotNone(first_poll)
+            # Fill the actual console ledger with browser-derived, valid timer records.
+            page.evaluate(
+                """sample => {
+                  for (let i = 3; i <= 13; i++) {
+                    console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify({...sample, sample: i}));
+                  }
+                }""", sample,
+            )
+            self.assertEqual(len(diagnostic.samples), 13)
+            self.assertGreater(len(json.dumps(diagnostic.samples)), 32768)
+            encoded = diagnostic.render('infra', 0)
+            payload = json.loads(encoded)
+            self.assertLessEqual(len(encoded.encode('ascii')), 32768)
+            self.assertTrue(payload['truncated'])
+            self.assertGreater(payload['dropped']['samples'], 0)
+            self.assertEqual(payload['firstPoll'], first_poll)
+            self.assertEqual(payload['samples'][-1]['sample'], 13)
+
     def test_real_finite_infinite_delayed_and_pending_animation_controls(self):
         with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:
             page = context.new_page()
             context.route('**/*', lambda route: route.fulfill(content_type='text/html', body='<main><button style="width:44px;height:44px">Control</button></main>'))
-            diagnostic = sweep.SettleDiagnostic(page, '/animation-control', 375)
             page.goto('http://diagnostic.invalid/animation-control', wait_until='load')
             # A moving finite control blocks the original gate, then returns to its geometry.
             page.evaluate("window.finite = document.querySelector('button').animate([{transform:'scale(.5)'},{transform:'scale(.8)'}], {duration:1400})")
@@ -112,12 +205,26 @@ class DiagnosticRegression(unittest.TestCase):
             self.assertTrue(state['pending'])
             self.assertFalse(page.evaluate(sweep.SETTLE_JS))
             page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
+
+    def test_long_animation_timeout_records_its_own_poll_and_frames(self):
+        with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:
+            page = context.new_page()
+            diagnostic = sweep.SettleDiagnostic(page, '/timeout-control', 375)
+            page.goto('data:text/html,<main><button>Timeout control</button></main>')
             page.evaluate("window.long = document.querySelector('button').animate([{opacity:1},{opacity:.9}], {duration:30000})")
             self.assertFalse(page.evaluate(sweep.SETTLE_JS))
             self.assertEqual(page.evaluate('long.effect.getComputedTiming().iterations'), 1)
             with self.assertRaises(PlaywrightTimeoutError):
                 page.wait_for_function(sweep.OBSERVED_SETTLE_JS, timeout=10000)
-            self.assertTrue(any(not sample.get('predicate', True) and sample.get('rafCompleted', 0) > 0 and sample.get('pollCount', 0) > 1 and sample.get('lastPollResult') is False and any(animation['timing'].get('iterations') == 1 for animation in sample['animations']) for sample in diagnostic.samples))
+            payload = json.loads(diagnostic.render('infra', 0))
+            self.assertFalse(payload['firstPoll']['lastPollResult'])
+            self.assertTrue(any(
+                not sample['predicate'] and sample['rafCompleted'] > 0
+                and sample['pollCount'] > 1 and sample['lastPollResult'] is False
+                and any(animation['timing'].get('duration') == 30000 and animation['playState'] == 'running'
+                        for animation in sample['animations'])
+                for sample in payload['samples']
+            ))
             self.assertLessEqual(len(diagnostic.samples), 13)
 
     def test_missing_route_content_is_refused_at_existing_deadline(self):
@@ -157,11 +264,11 @@ raise SystemExit(sweep.main())
             payload = json.loads(trace.split(' ', 1)[1])
             self.assertEqual(payload['outcome'], 'assertion-failed')
             # This sample must come from the sweep's actual wait, after route content rendered.
-            poll = next((sample for sample in payload['samples'] if sample.get('source') == 'settle-poll'), None)
-            self.assertIsNotNone(poll, 'trace has no sample taken during the actual settlement wait')
-            self.assertTrue(poll['contentPresent'])
-            self.assertTrue(poll['predicate'])
+            poll = payload['firstPoll']
+            self.assertIsNotNone(poll, 'trace has no marker from the actual settlement wait')
+            self.assertTrue(poll['lastPollResult'])
             self.assertEqual(poll['pollCount'], 1)
+            self.assertEqual(payload['stages'][-3]['category'], 'settle-end')
 
     def test_existing_geometry_guards_detect_bad_controls(self):
         with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:

@@ -488,16 +488,33 @@ OBSERVED_SETTLE_JS = """() => {
   return settled;
 }""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
 
+# Closed labels shared by the observer and the untrusted-console validator.
+ANIMATION_LABELS = {
+    "type": ("Animation", "CSSAnimation", "CSSTransition"),
+    "animationName": ("au-progress-travel", "au-spin", "fade-in", "pulse", "shimmer", "slideUp", "spin"),
+    "transitionProperty": (
+        "-webkit-backdrop-filter", "backdrop-filter", "background-color", "border-color",
+        "box-shadow", "color", "grid-template-rows", "opacity", "transform", "visibility",
+    ),
+    "target": ("navbar-header", "mobile-sheet", "dialog-card", "loading"),
+    "pseudoElement": ("::before", "::after"),
+}
+
 # Diagnostic only: the original settlement predicate above remains the gate. The init
 # script observes the top-level target document and sends snapshots before a timeout;
 # reporting never evaluates a possibly stalled renderer.
 SETTLE_DIAGNOSTIC_JS = r"""(() => {
   if (window !== window.top) return;
   const predicate = (__SETTLE_PREDICATE__);
-  const text = (v) => String(v == null ? '' : v).slice(0, 96);
+  const labels = __ANIMATION_LABELS__;
+  const label = (field, value) => {
+    if (value == null || value === '') return '';
+    return labels[field].includes(value) ? value : 'other';
+  };
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
-  const ids = new WeakMap();
-  let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  const ids = new WeakMap(), targetIds = new WeakMap();
+  let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
+  let raf = null, timer = null, stopped = false;
   let pollCount = 0, lastPollResult = null;
   const start = performance.now();
   const stop = () => {
@@ -508,15 +525,15 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   };
   const deadline = setTimeout(stop, 12000);
   addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
-  const sample = (source) => {
+  const sample = () => {
     if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
     sampleCount++;
     try {
       const animations = document.getAnimations({ subtree: true });
       const snapshot = {
         sample: sampleCount, elapsedMs: number(performance.now() - start),
-        source, pollCount, lastPollResult,
-        readyState: text(document.readyState), visibilityState: text(document.visibilityState),
+        pollCount, lastPollResult,
+        readyState: document.readyState, visibilityState: document.visibilityState,
         contentPresent: !!document.querySelector('main > :not(.loading)'),
         loadingPresent: !!document.querySelector('.loading'),
         adminShellPresent: !!document.querySelector('.admin-shell'),
@@ -527,6 +544,8 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
         animations: animations.slice(0, 12).map((a) => {
           if (!ids.has(a)) ids.set(a, nextId++);
           const effect = a.effect, target = effect && effect.target;
+          if (target && !targetIds.has(target)) targetIds.set(target, nextTargetId++);
+          const targetLabel = target?.classList && labels.target.find((name) => target.classList.contains(name));
           const timing = effect ? effect.getComputedTiming() : null;
           const computed = {};
           if (timing) for (const key of ['duration', 'delay', 'endDelay', 'iterations', 'iterationStart',
@@ -534,12 +553,13 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
             computed[key] = number(timing[key]);
           }
           return {
-            id: ids.get(a), type: text(a.constructor && a.constructor.name),
-            animationName: text(a.animationName), transitionProperty: text(a.transitionProperty),
-            target: { tag: text(target && target.tagName), id: text(target && target.id),
-                      classes: text(target && target.getAttribute && target.getAttribute('class')),
-                      pseudoElement: text(effect && effect.pseudoElement) },
-            playState: text(a.playState), pending: !!a.pending,
+            id: ids.get(a), type: label('type', a.constructor?.name),
+            animationName: label('animationName', a.animationName),
+            transitionProperty: label('transitionProperty', a.transitionProperty),
+            target: { id: target ? targetIds.get(target) : null,
+                      label: target ? targetLabel || 'other' : '',
+                      pseudoElement: label('pseudoElement', effect?.pseudoElement) },
+            playState: a.playState, pending: !!a.pending,
             currentTime: number(a.currentTime), startTime: number(a.startTime),
             playbackRate: number(a.playbackRate), timelineTime: number(a.timeline && a.timeline.currentTime),
             timing: computed,
@@ -553,17 +573,34 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
     if (stopped) return;
     if (typeof result !== 'boolean') return;
     lastPollResult = result;
-    if (++pollCount === 1) sample('settle-poll');
+    if (++pollCount === 1) {
+      console.debug('WEBKIT_SETTLE_POLL ' + JSON.stringify({
+        elapsedMs: performance.now() - start, pollCount, lastPollResult,
+        rafCompleted: frames, rafPending: raf !== null,
+      }));
+    }
   };
   const tick = () => {
     if (stopped || sampleCount >= 13) return;
-    sample('timer');
+    sample();
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
     if (sampleCount < 13) timer = setTimeout(tick, 1000);
   };
   tick();
-})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
+
+
+def valid_first_poll(value):
+    return (
+        type(value) is dict
+        and set(value) == {"elapsedMs", "pollCount", "lastPollResult", "rafCompleted", "rafPending"}
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and type(value["pollCount"]) is int and value["pollCount"] == 1
+        and type(value["lastPollResult"]) is bool
+        and type(value["rafCompleted"]) is int and 0 <= value["rafCompleted"] <= 13
+        and type(value["rafPending"]) is bool
+    )
 
 
 def valid_settle_sample(value):
@@ -581,13 +618,13 @@ def valid_settle_sample(value):
             or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
         )
 
-    def text(value):
-        return type(value) is str and len(value) <= 96
+    def label(field, value):
+        return value in ("", "other") or value in ANIMATION_LABELS[field]
 
     if type(value) is dict and set(value) == {"observerError"}:
         return value["observerError"] is True
     if not fields(value, (
-        "sample", "elapsedMs", "source", "pollCount", "lastPollResult",
+        "sample", "elapsedMs", "pollCount", "lastPollResult",
         "readyState", "visibilityState", "contentPresent", "loadingPresent",
         "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
         "animationCount", "animationsDropped", "animations",
@@ -596,10 +633,8 @@ def valid_settle_sample(value):
     if not (
         integer(value["sample"], 1, 13)
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
-        and value["source"] in ("timer", "settle-poll")
         and integer(value["pollCount"])
         and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
-        and (value["source"] != "settle-poll" or value["pollCount"] == 1)
         and value["readyState"] in ("loading", "interactive", "complete")
         and value["visibilityState"] in ("hidden", "visible", "prerender")
         and integer(value["rafCompleted"], 0, 13)
@@ -622,12 +657,15 @@ def valid_settle_sample(value):
             return False
         if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
                 and animation["playState"] in ("idle", "running", "paused", "finished")
-                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(label(key, animation[key]) for key in ("type", "animationName", "transitionProperty"))
                 and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
                 and number(animation["playbackRate"])):
             return False
         target = animation["target"]
-        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+        if not (fields(target, ("id", "label", "pseudoElement"))
+                and (target["id"] is None or integer(target["id"], 1))
+                and label("target", target["label"])
+                and label("pseudoElement", target["pseudoElement"])):
             return False
         timing = animation["timing"]
         # Undefined computed-timing properties are omitted by JSON.stringify; a null
@@ -652,6 +690,7 @@ class SettleDiagnostic:
         self.started = time.monotonic()
         self.closed = False
         self.events: list[dict] = []
+        self.first_poll: dict | None = None
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
@@ -693,21 +732,29 @@ class SettleDiagnostic:
         try:
             if self.closed or time.monotonic() - self.started > 12:
                 return
-            prefix = "WEBKIT_SETTLE_SAMPLE "
-            if message.type == "debug" and message.text.startswith(prefix):
-                # The observer's payload is fixed-schema, but reject oversized/extra records.
-                if len(message.text) > 24576 or len(self.samples) == 13:
+            if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
+                prefix, _, body = message.text.partition(" ")
+                if prefix not in ("WEBKIT_SETTLE_POLL", "WEBKIT_SETTLE_SAMPLE"):
+                    return
+                is_poll = prefix == "WEBKIT_SETTLE_POLL"
+                # The first-poll marker has its own slot so timer samples cannot crowd it out.
+                if (len(body) > (512 if is_poll else 24576)
+                        or (self.first_poll is not None if is_poll else len(self.samples) == 13)):
                     self.dropped["samples"] += 1
                     return
                 try:
-                    sample = json.loads(message.text[len(prefix):])
+                    sample = json.loads(body)
                 except ValueError:
                     self.dropped["samples"] += 1
                     return
-                if not valid_settle_sample(sample):
+                valid = valid_first_poll if is_poll else valid_settle_sample
+                if not valid(sample):
                     self.dropped["samples"] += 1
                     return
-                self.samples.append(sample)
+                if is_poll:
+                    self.first_poll = sample
+                else:
+                    self.samples.append(sample)
             elif message.type in ("warning", "error"):
                 self.observe("console-" + message.type)  # no arbitrary console text
         except Exception:
@@ -725,20 +772,17 @@ class SettleDiagnostic:
         payload = {"route": self.path, "viewport": self.viewport,
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
-                   "events": self.events[:], "samples": self.samples[:], "stages": self.stages[:],
+                   "events": self.events[:], "firstPoll": self.first_poll,
+                   "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
             encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
             if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
                 return encoded
             payload["truncated"] = True
-            # Keep the first actual poll and newest state when discarding older timer samples.
-            timer_index = next(
-                (i for i, sample in enumerate(payload["samples"]) if sample.get("source") != "settle-poll"),
-                None,
-            )
-            if timer_index is not None:
-                payload["samples"].pop(timer_index)
+            # Keep the newest timer state. The separate first marker always survives.
+            if payload["samples"]:
+                payload["samples"].pop(0)
                 payload["dropped"]["samples"] += 1
             else:
                 return '{"truncated":true,"observerError":true}'
