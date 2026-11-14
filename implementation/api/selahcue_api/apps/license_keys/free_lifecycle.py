@@ -7,10 +7,14 @@ from django.db import transaction
 from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerRole, CustomerStatus
-from selahcue_api.apps.accounts.services import is_self_service_org, require_verified_activation_admin
+from selahcue_api.apps.accounts.services import (
+    is_self_service_org,
+    promote_trial_for_self_service_activation,
+    require_verified_activation_admin,
+)
 from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
-from selahcue_api.apps.catalogue.models import LicensePlanAssignment
+from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.devices.models import Device, DeviceStatus, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.license_keys.models import (
     AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus, LicenseKeyType,
@@ -29,7 +33,6 @@ from selahcue_api.apps.license_keys.state_machine import apply_license_status_tr
 from selahcue_api.graphql.context import ActorContext, ActorKind, require_customer_role
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
-PLAN_CODE = "FREE"
 POLICY_VERSION = 1
 VALIDITY = timedelta(days=365)
 RENEWAL_WINDOW = timedelta(days=30)
@@ -68,7 +71,18 @@ def _locked_marker(customer: CustomerOrg, license_key: AppLicenseKey) -> FreeLic
     ).first()
 
 
-def _may_renew(marker: FreeLicenseLifecycle, license_key: AppLicenseKey, now: datetime) -> bool:
+def _lock_fallback_assignment(license_key: AppLicenseKey) -> bool:
+    # Keep an assignment column selected: exists() discards model columns and
+    # PostgreSQL then loses OF self, also locking the shared joined Plan row.
+    return LicensePlanAssignment.objects.select_for_update(of=("self",)).filter(
+        license_key=license_key, plan__is_fallback=True,
+    ).values_list("pk", flat=True).first() is not None
+
+
+def _may_renew(
+    marker: FreeLicenseLifecycle, license_key: AppLicenseKey, now: datetime,
+    *, fallback_assigned: bool,
+) -> bool:
     return (
         marker.renewal_enabled
         and marker.policy_version == POLICY_VERSION
@@ -77,11 +91,7 @@ def _may_renew(marker: FreeLicenseLifecycle, license_key: AppLicenseKey, now: da
             license_key.status in ACTIVATABLE_KEY_STATUSES
             or (license_key.status == LicenseKeyStatus.EXPIRED and license_key.expires_at <= now)
         )
-        # Lock the existing assignment so a concurrent staff plan change and a
-        # Free extension have a defined order.
-        and LicensePlanAssignment.objects.select_for_update(of=("self",)).filter(
-            license_key=license_key, plan__code=PLAN_CODE,
-        ).exists()
+        and fallback_assigned
     )
 
 
@@ -91,11 +101,13 @@ def _renew_locked(
     marker: FreeLicenseLifecycle,
     now: datetime,
     request_id: str,
+    *,
+    fallback_assigned: bool,
 ) -> bool:
     if (
         customer.status != CustomerStatus.ACTIVE
         or license_key.expires_at - now > RENEWAL_WINDOW
-        or not _may_renew(marker, license_key, now)
+        or not _may_renew(marker, license_key, now, fallback_assigned=fallback_assigned)
     ):
         return False
 
@@ -150,27 +162,28 @@ def renew_free_license_for_activation(
     if marker is None:
         return False
     _authorize_managed_activation(customer, actor)
+    fallback_assigned = _lock_fallback_assignment(license_key)
     if completed_without_token:
-        return _may_renew(marker, license_key, now)
-    return _renew_locked(customer, license_key, marker, now, request_id)
+        return _may_renew(marker, license_key, now, fallback_assigned=fallback_assigned)
+    return _renew_locked(
+        customer, license_key, marker, now, request_id, fallback_assigned=fallback_assigned,
+    )
 
 
 def _issue_initial_free(customer: CustomerOrg, now: datetime, request_id: str) -> AppLicenseKey:
+    plan = Plan.objects.filter(is_fallback=True).first()
+    if plan is None:
+        raise SafeAPIError(ErrorCode.POLICY_DENIED)
+
     reason = "First verified administrator activation for self-service Free."
-    if customer.status == CustomerStatus.TRIAL:
-        customer.status = CustomerStatus.ACTIVE
-        customer.save(update_fields=["status", "updated_at"])
-        record_audit_event(
-            FREE_SERVICE, action="customer_org.free_activated", target_type="customer_org",
-            target_id=str(customer.pk), request_id=request_id, reason=reason,
-            source_surface="free_lifecycle", before={"status": CustomerStatus.TRIAL},
-            after={"status": CustomerStatus.ACTIVE},
-        )
+    promote_trial_for_self_service_activation(
+        customer, actor=FREE_SERVICE, request_id=request_id, reason=reason,
+    )
 
     key_type = LicenseKeyType.CUSTOM
     data = GenerateLicenseKeyData(
         idempotency_key=request_id, customer_id=str(customer.pk), key_type=key_type,
-        feature_scope=PLAN_CODE, plan_code=PLAN_CODE, starts_at=now, expires_at=now + VALIDITY,
+        feature_scope=plan.code, plan_code=plan.code, starts_at=now, expires_at=now + VALIDITY,
         timezone=customer.timezone, seat_limit=customer.seat_limit, territory=customer.country,
         reason=reason,
     )
@@ -222,7 +235,10 @@ def ensure_free_license_under_org_lock(
         _authorize_managed_activation(customer, actor)
         if defer_renewal:
             return license_key
-        _renew_locked(customer, license_key, marker, now, request_id)
+        _renew_locked(
+            customer, license_key, marker, now, request_id,
+            fallback_assigned=_lock_fallback_assignment(license_key),
+        )
     if (
         license_key.status not in ACTIVATABLE_KEY_STATUSES
         or not license_key.starts_at <= now < license_key.expires_at
@@ -271,18 +287,26 @@ def renew_free_license_for_device(
                 pk=token.pk, device=device, status=DeviceTokenStatus.ACTIVE,
                 token_fingerprint=token.token_fingerprint,
             ).first()
-            now = now or timezone.now()
-            if locked_token is None or locked_token.expires_at <= now:
+            if locked_token is None:
+                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+            marker = _locked_marker(customer, license_key)
+            fallback_assigned = marker is not None and _lock_fallback_assignment(license_key)
+            # Marker/assignment reads can wait behind staff writes. Sample the
+            # production clock only after every eligibility lock, then use that
+            # instant for both licence renewal and presented-token catch-up.
+            now = now if now is not None else timezone.now()
+            if locked_token.expires_at <= now:
                 raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
 
-            marker = _locked_marker(customer, license_key)
-            renewed = marker is not None and _renew_locked(customer, license_key, marker, now, request_id)
+            renewed = marker is not None and _renew_locked(
+                customer, license_key, marker, now, request_id, fallback_assigned=fallback_assigned,
+            )
             extend_token = renewed or (
                 marker is not None
                 and customer.status == CustomerStatus.ACTIVE
                 and locked_token.expires_at - now <= RENEWAL_WINDOW
                 and locked_token.expires_at < license_key.expires_at
-                and _may_renew(marker, license_key, now)
+                and _may_renew(marker, license_key, now, fallback_assigned=fallback_assigned)
             )
             if extend_token:
                 old_expiry = locked_token.expires_at

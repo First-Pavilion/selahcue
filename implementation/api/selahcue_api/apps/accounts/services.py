@@ -758,6 +758,22 @@ def is_self_service_org(customer: CustomerOrg) -> bool:
     return customer.created_by_actor_id.startswith(f"{SELF_SIGNUP_ACTOR}:")
 
 
+def promote_trial_for_self_service_activation(
+    customer: CustomerOrg, *, actor: ActorContext, request_id: str, reason: str,
+) -> None:
+    """Promote an eligible org while its verified activation holds the org lock."""
+    if customer.status != CustomerStatus.TRIAL:
+        return
+    customer.status = CustomerStatus.ACTIVE
+    customer.save(update_fields=["status", "updated_at"])
+    record_audit_event(
+        actor, action="customer_org.free_activated", target_type="customer_org",
+        target_id=str(customer.pk), request_id=request_id, reason=reason,
+        source_surface="free_lifecycle", before={"status": CustomerStatus.TRIAL},
+        after={"status": CustomerStatus.ACTIVE},
+    )
+
+
 # --- result dataclasses ----------------------------------------------------
 @dataclass(frozen=True)
 class RegisterCustomerUserData:
