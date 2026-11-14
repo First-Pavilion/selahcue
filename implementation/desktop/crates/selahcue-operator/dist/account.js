@@ -377,6 +377,7 @@
     const metadata = deviceDetails(view);
     setError("account-enroll-device", metadata ? "This device: " + metadata : "");
     setError("account-sign-in-error", stage === "signIn" ? errors[formError] || "" : "");
+    $("account-web-help").hidden = state.webError;
     setError("account-web-error", state.webError ? "SelahCue couldn’t open your browser. Try again." : "");
     for (const button of webActions) {
       button.setAttribute("aria-disabled", String(state.webPending));

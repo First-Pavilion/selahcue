@@ -420,7 +420,7 @@ def exercise_web_links(browser, dist, screenshots, viewport):
     ).length""") == 1
     page.evaluate("accountFixture.finishWebOpen(false)")
     error = page.locator("#account-web-error")
-    expect(error).to_be_visible()
+    expect(error).to_be_in_viewport(ratio=1)
     expect(page.locator("#account-sign-in-error")).to_be_hidden()
     expect(signup).to_have_attribute("aria-disabled", "false")
     expect(signup).to_be_focused()
