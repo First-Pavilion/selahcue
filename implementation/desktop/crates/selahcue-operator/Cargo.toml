@@ -151,7 +151,7 @@ pilot-credentials = ["stt", "selahcue-cloud/openai", "selahcue-cloud/http", "sel
 # Offline PDF serialization and OpenType shaping; no HTML/browser renderer.
 printpdf = { version = "=0.12.8", default-features = false }
 harfrust = "=0.5.2"
-unicode-normalization = "=0.1.25"
+unicode-normalization = "=0.1.26"
 unicode-segmentation = "=1.13.3"
 tauri = { version = "2", features = [] }
 # Native OS file picker for the Add-Image flow (86ajq6j4p/86ajq6j49) — the official
@@ -210,7 +210,7 @@ selahcue-stt = { path = "../selahcue-stt", features = ["whisper", "capture", "do
 selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "=1.1.4", features = ["fs"] }
+rustix = { version = "=1.1.6", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
 # Safe, exact-source-reviewed handle observations and Kernel32 volume/move APIs.
