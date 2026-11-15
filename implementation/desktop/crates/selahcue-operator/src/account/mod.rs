@@ -3,6 +3,7 @@ pub(crate) mod state;
 
 pub(crate) mod commands;
 pub(crate) mod controller;
+mod links;
 
 use serde::Serialize;
 

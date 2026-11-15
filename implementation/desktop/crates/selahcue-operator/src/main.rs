@@ -12379,6 +12379,8 @@ fn main() {
             #[cfg(feature = "native-account")]
             account::commands::account_view,
             #[cfg(feature = "native-account")]
+            account::commands::account_open_web,
+            #[cfg(feature = "native-account")]
             account::commands::account_skip_setup,
             #[cfg(feature = "native-account")]
             account::commands::account_sign_in_and_activate,

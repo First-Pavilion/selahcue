@@ -14,6 +14,9 @@ const METADATA_FILE: &str = "account-metadata.json";
 const LOCK_FILE: &str = "account-metadata.lock";
 const SESSION_LOCK_FILE: &str = "account-session-custody.lock";
 const STAGING_FILE: &str = "account-metadata.stage";
+const SETUP_DISMISSAL_FILE: &str = "account-setup-dismissed";
+const SETUP_DISMISSAL_STAGE: &str = "account-setup-dismissed.stage";
+const SETUP_DISMISSED: &[u8] = b"1\n";
 const MAX_METADATA_BYTES: usize = 16 * 1024;
 
 /// One fresh observation from native device custody. Only a successful
@@ -372,6 +375,7 @@ fn random_id(fill: impl FnOnce(&mut [u8; 16]) -> bool) -> Result<String, Account
 }
 
 /// Fixed files inside the operator's OS-resolved app-data directory.
+#[derive(Clone)]
 pub(crate) struct AccountMetadataStore {
     directory: PathBuf,
 }
@@ -468,6 +472,35 @@ impl AccountMetadataStore {
         Ok(committed)
     }
 
+    /// Setup dismissal is independent of the install identity and credential
+    /// transaction. Neither an in-flight activation nor its later save owns it.
+    pub(super) fn dismiss_setup(&self) -> Result<(), AccountStorageError> {
+        let _lock = self.lock()?;
+        let destination = self.directory.join(SETUP_DISMISSAL_FILE);
+        observe_regular(&destination)?;
+        self.publish_bytes(&destination, SETUP_DISMISSAL_STAGE, SETUP_DISMISSED)
+    }
+
+    pub(super) fn setup_dismissed(&self) -> Result<bool, AccountStorageError> {
+        if !self.directory_exists()? {
+            return Ok(false);
+        }
+        let Some(mut file) = open_regular(&self.directory.join(SETUP_DISMISSAL_FILE), false)?
+        else {
+            return Ok(false);
+        };
+        let attributes = validate_open_regular(&file, false)?;
+        let mut marker = [0; SETUP_DISMISSED.len()];
+        if attributes.len() != marker.len() as u64 {
+            return Err(AccountStorageError::Malformed);
+        }
+        file.read_exact(&mut marker)?;
+        if marker != SETUP_DISMISSED {
+            return Err(AccountStorageError::Malformed);
+        }
+        Ok(true)
+    }
+
     fn directory_exists(&self) -> Result<bool, AccountStorageError> {
         if !self.directory.is_absolute()
             || self
@@ -525,7 +558,16 @@ impl AccountMetadataStore {
             return Err(AccountStorageError::Oversize);
         }
 
-        let staging = self.directory.join(STAGING_FILE);
+        self.publish_bytes(destination, STAGING_FILE, &body)
+    }
+
+    fn publish_bytes(
+        &self,
+        destination: &Path,
+        stage_name: &str,
+        body: &[u8],
+    ) -> Result<(), AccountStorageError> {
+        let staging = self.directory.join(stage_name);
         if observe_regular(&staging)? {
             fs::remove_file(&staging)?;
         }
@@ -537,7 +579,7 @@ impl AccountMetadataStore {
             options.mode(0o600);
         }
         let mut file = options.open(&staging)?;
-        let written = file.write_all(&body).and_then(|()| file.sync_all());
+        let written = file.write_all(body).and_then(|()| file.sync_all());
         drop(file);
         let published = written.and_then(|()| fs::rename(&staging, destination));
         if published.is_err() {

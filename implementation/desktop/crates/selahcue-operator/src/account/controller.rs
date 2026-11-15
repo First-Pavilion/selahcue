@@ -49,7 +49,6 @@ fn rfc3339(at: Time) -> Option<String> {
 
 pub(super) enum Command {
     Startup,
-    Skip,
     SignIn {
         email: String,
         password: Token,
@@ -69,6 +68,7 @@ pub(super) enum Command {
 /// One admit slot and one immutable projection. Holding a secret-store prompt
 /// open or waiting on a remote deadline never blocks reads or queues mutations.
 pub(super) struct Worker<T: HttpTransport, S: SecretStore> {
+    storage: Option<AccountMetadataStore>,
     controller: Mutex<AccountController<T, S>>,
     working: AtomicBool,
     projection: Mutex<Projection>,
@@ -79,6 +79,7 @@ impl<T: HttpTransport, S: SecretStore> Worker<T, S> {
     pub(super) fn new(controller: AccountController<T, S>) -> Arc<Self> {
         let clock = controller.clock;
         Arc::new(Self {
+            storage: controller.storage.clone(),
             controller: Mutex::new(controller),
             working: AtomicBool::new(false),
             projection: Mutex::new(Projection::local()),
@@ -90,6 +91,20 @@ impl<T: HttpTransport, S: SecretStore> Worker<T, S> {
         let mut projection = self.projection();
         projection.evaluate((self.clock)());
         projection.view.clone()
+    }
+
+    pub(super) fn skip_setup(&self) -> Result<AccountView, Code> {
+        self.storage
+            .as_ref()
+            .ok_or(Code::MetadataUnavailable)?
+            .dismiss_setup()?;
+        let mut projection = self.projection();
+        if !projection.setup_dismissed {
+            projection.dismiss_setup();
+            projection.view.revision = projection.view.revision.saturating_add(1);
+        }
+        projection.evaluate((self.clock)());
+        Ok(projection.view.clone())
     }
 
     fn projection(&self) -> MutexGuard<'_, Projection> {
@@ -132,6 +147,10 @@ impl<T: HttpTransport, S: SecretStore> Work<T, S> {
         let view = {
             let mut projection = self.worker.projection();
             let mut result = result;
+            // A local Skip may have committed after the operation last read disk.
+            if projection.setup_dismissed {
+                result.dismiss_setup();
+            }
             result.evaluate((self.worker.clock)());
             result.view.revision = projection.view.revision.saturating_add(1);
             let view = result.view.clone();
@@ -160,6 +179,7 @@ impl<T: HttpTransport, S: SecretStore> Drop for Work<T, S> {
 #[derive(Clone)]
 struct Projection {
     view: AccountView,
+    setup_dismissed: bool,
     signed: Option<SignedTime>,
     online_license: Option<OnlineLicense>,
 }
@@ -198,8 +218,16 @@ impl Projection {
     fn local() -> Self {
         Self {
             view: AccountView::local(0, None, CredentialPresence::Unavailable),
+            setup_dismissed: false,
             signed: None,
             online_license: None,
+        }
+    }
+
+    fn dismiss_setup(&mut self) {
+        self.setup_dismissed = true;
+        if !matches!(self.view.setup_state, SetupState::Completed) {
+            self.view.setup_state = SetupState::Skipped;
         }
     }
 
@@ -291,6 +319,18 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
     }
 
     fn execute_projection(&mut self, command: Command) -> Projection {
+        let mut result = self.execute_account_operation(command);
+        if self
+            .storage
+            .as_ref()
+            .is_some_and(|store| store.setup_dismissed() == Ok(true))
+        {
+            result.dismiss_setup();
+        }
+        result
+    }
+
+    fn execute_account_operation(&mut self, command: Command) -> Projection {
         if self
             .retained
             .as_ref()
@@ -313,7 +353,6 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         let startup = matches!(command, Command::Startup);
         let result = match command {
             Command::Startup => Ok(()),
-            Command::Skip => self.skip(&mut metadata),
             Command::SignIn {
                 email,
                 password,
@@ -401,14 +440,6 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             .as_ref()
             .ok_or(Code::MetadataUnavailable)?
             .save(metadata)?;
-        Ok(())
-    }
-
-    fn skip(&self, metadata: &mut AccountMetadata) -> Result<(), Code> {
-        let mut candidate = metadata.clone();
-        candidate.skipped_setup = true;
-        self.save(&mut candidate)?;
-        *metadata = candidate;
         Ok(())
     }
 
@@ -1063,6 +1094,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
         });
         Projection {
             view,
+            setup_dismissed: false,
             signed,
             online_license: self.online_license,
         }

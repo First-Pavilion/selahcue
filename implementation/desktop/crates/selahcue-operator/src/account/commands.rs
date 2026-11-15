@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
 use super::{
     controller::{system_time, AccountController, Command, Worker, API_ORIGIN},
+    links::{AccountUiError, AccountWebDestination},
     state::CredentialPresence,
     AccountErrorCode, AccountView, DeviceState,
 };
@@ -109,6 +110,17 @@ async fn submit(state: &ManagedAccount, command: Command) -> AccountView {
 }
 
 #[tauri::command]
+pub(crate) async fn account_open_web(
+    destination: AccountWebDestination,
+) -> Result<(), AccountUiError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        destination.open_with(|url| tauri_plugin_opener::open_url(url, None::<&str>))
+    })
+    .await
+    .map_err(|_| AccountUiError::BrowserOpenFailed)?
+}
+
+#[tauri::command]
 pub(crate) async fn account_view(state: State<'_, ManagedAccount>) -> Result<AccountView, ()> {
     Ok(state.view())
 }
@@ -116,8 +128,14 @@ pub(crate) async fn account_view(state: State<'_, ManagedAccount>) -> Result<Acc
 #[tauri::command]
 pub(crate) async fn account_skip_setup(
     state: State<'_, ManagedAccount>,
-) -> Result<AccountView, ()> {
-    Ok(submit(&state, Command::Skip).await)
+) -> Result<AccountView, AccountErrorCode> {
+    let worker = state
+        .worker()
+        .cloned()
+        .ok_or(AccountErrorCode::WorkerUnavailable)?;
+    tauri::async_runtime::spawn_blocking(move || worker.skip_setup())
+        .await
+        .map_err(|_| AccountErrorCode::WorkerUnavailable)?
 }
 
 #[tauri::command]
