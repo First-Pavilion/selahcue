@@ -62,9 +62,28 @@ Defined in `src/router/index.ts`; every page except the home page is lazy-loaded
 Only the auth and session code calls the API (sign-up, sign-in, forgot-password, verify, reset, sign-out and the `/account` session check). It does so through one
 place, `src/lib/api/graphql.ts`, with typed wrappers in `src/lib/api/account.ts`.
 
-- Requests go to a relative `/graphql/account` (and `/graphql/csrf` to seed the CSRF cookie), so the site is same-origin with the API. `vite.config.ts` proxies `/graphql` to `SELAHCUE_API_ORIGIN` (default `http://localhost:8008`) in development, and `nginx.conf` proxies it to the `api` service in production.
+- Requests go to a relative `/graphql/account` (and `/graphql/csrf` to seed the CSRF cookie), so the site is same-origin with the API. `vite.config.ts` proxies `/graphql` to `SELAHCUE_API_ORIGIN` (default `http://localhost:8008`) in development. In the current production Compose topology, Traefik routes the browser domain's `/graphql/*` directly to the API. The `nginx.conf` proxy remains a standalone fallback; routing production browser requests through it requires revisiting the trusted proxy hop count.
 - Same-origin is deliberate: the API sends no CORS headers, its session cookie is `SameSite=Strict`, and Django checks the request origin. Leave `VITE_API_BASE_URL` unset unless all three are solved first. See `.env.example`.
 - The API returns errors with HTTP 200, so the seam reads the response body, not the status.
+
+### Marketing ingress privacy
+
+nginx access records contain only method, normalized path (`$uri`), status, response bytes
+and request time. They omit query strings, raw request lines, Referer, cookies, authorization
+and bodies. `/verify` and `/reset` landing paths also serve the SPA without an internal
+redirect and disable access logging, including case and trailing slash variants. Marketing request error logging goes to `/dev/null`
+because nginx errors can embed the original token-bearing URL; startup and configuration
+failures remain visible at the parent nginx level. This is a deliberate loss of per-request
+nginx error detail. Health/status counts and the content-free access records remain useful
+for diagnosis.
+
+The release manifest at `/releases/current.json` is served as JSON with cache
+revalidation and the full security-header policy. `/admin`, `/admin/*` and
+`/affiliates/*` return HTTP 404 at ingress; `/affiliates` remains the closed
+public landing page. Token URLs still pass through the outer edge before nginx, and
+production GraphQL requests go directly from that edge to the API. Verify the edge,
+API and email logging policies with synthetic tokens during release qualification;
+marketing nginx configuration alone cannot establish their behavior.
 
 ## Legal pages (`/privacy`, `/terms`)
 
