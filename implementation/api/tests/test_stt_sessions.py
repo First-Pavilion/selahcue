@@ -36,3 +36,26 @@ def test_session_route_accepts_only_header_authentication(client):
     )
     assert reply.status_code == 401
     assert resolve("/v1/stt/session").url_name == "stt-session"
+
+
+def test_csrf_exempt_cloud_routes_ignore_ambient_account_cookie():
+    from django.test import Client
+
+    from selahcue_api.graphql.context import ACCOUNT_SESSION_COOKIE
+
+    browser = Client(enforce_csrf_checks=True)
+    browser.cookies[ACCOUNT_SESSION_COOKIE] = "synthetic-account-cookie"
+    session = browser.post(
+        "/v1/stt/session",
+        {
+            "idempotency_key": str(UUID(int=1)), "action": "start", "socket": "new",
+            "consent_version": "stt-direct-audio-v1", "policy_version": "stt-direct-v1",
+        },
+        content_type="application/json",
+    )
+    quota = browser.get("/v1/quota")
+    assert session.status_code == quota.status_code == 401
+    assert not session.cookies and not quota.cookies
+    method_refusal = browser.post("/v1/quota", {})
+    assert method_refusal.status_code == 405
+    assert method_refusal["Allow"] == "GET"
