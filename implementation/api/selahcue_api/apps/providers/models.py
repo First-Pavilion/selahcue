@@ -11,6 +11,7 @@ from .contracts import (
     AdminOperation, AllowanceState, AttemptState, ChainState, ClaimState, CLEANUP_OPS,
     OutboxKind, OutboxState, ProvisioningErrorCode, ProviderMappingState as State, RecoveryCollection,
     RecoveryEvidenceKind, ResourceCountState, ScanState, StageState,
+    LOCAL_MINT_FAILURES, UNCERTAIN_MINT_FAILURES, MintFailureCode, SttMintState,
 )
 
 EXTERNAL_FIELDS = ("external_project_id", "external_service_account_id", "external_api_key_id")
@@ -620,3 +621,63 @@ class ProviderProvisioningOutbox(_Mutable):
                 & (Q(state=OutboxState.ACKED, acked_at__isnull=False) | ~Q(state=OutboxState.ACKED))),
         ]
         indexes = [models.Index(fields=("state", "available_at"), name="prov_outbox_due_idx")]
+
+
+class SttMintAttempt(models.Model):
+    """Durable dispatch and accounting facts for one initial STT reservation."""
+
+    id = models.UUIDField(primary_key=True, default=uuid4, editable=False)
+    reservation = models.OneToOneField(
+        "selahcue_usage.UsageReservation", on_delete=models.PROTECT, related_name="stt_mint_attempt",
+    )
+    request_receipt_id = models.UUIDField(unique=True, editable=False)
+    owner_nonce = models.UUIDField(editable=False)
+    trigger_token_pk = models.PositiveBigIntegerField(editable=False)
+    mapping_revision = models.PositiveBigIntegerField(editable=False)
+    state = models.CharField(max_length=16, choices=[(item.value, item.value) for item in SttMintState])
+    prepared_at = models.DateTimeField()
+    dispatch_not_after = models.DateTimeField()
+    dispatched_at = models.DateTimeField(null=True)
+    finished_at = models.DateTimeField(null=True)
+    credential_expires_at = models.DateTimeField(null=True)
+    known_mint_received_at = models.DateTimeField(null=True)
+    failure_code = models.CharField(
+        max_length=32, null=True, choices=[(item.value, item.value) for item in MintFailureCode],
+    )
+    audit_event = models.OneToOneField("selahcue_audit.AuditEvent", on_delete=models.SET_NULL, null=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(trigger_token_pk__gt=0, mapping_revision__gt=0, dispatch_not_after__gt=F("prepared_at"))
+                    & (Q(dispatched_at__isnull=True) | Q(dispatched_at__gte=F("prepared_at")))
+                    & (Q(finished_at__isnull=True) | Q(finished_at__gte=F("prepared_at")))
+                    & (
+                        Q(credential_expires_at__isnull=True, known_mint_received_at__isnull=True)
+                        | Q(credential_expires_at__gt=F("known_mint_received_at"),
+                            known_mint_received_at__isnull=False, credential_expires_at__isnull=False)
+                    )
+                ), name="stt_mint_attempt_time_shape",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(state=SttMintState.PREPARED, dispatched_at__isnull=True, finished_at__isnull=True,
+                      credential_expires_at__isnull=True, failure_code__isnull=True)
+                    | Q(state=SttMintState.DISPATCHED, dispatched_at__isnull=False, finished_at__isnull=True,
+                        credential_expires_at__isnull=True, failure_code__isnull=True)
+                    | Q(state=SttMintState.UNKNOWN, dispatched_at__isnull=False, finished_at__isnull=False,
+                        failure_code__isnull=False, failure_code__in=UNCERTAIN_MINT_FAILURES)
+                    | Q(state=SttMintState.GRANTED, dispatched_at__isnull=False, finished_at__isnull=False,
+                        credential_expires_at__isnull=False, failure_code__isnull=True)
+                    | (
+                        Q(state=SttMintState.DISCARDED, dispatched_at__isnull=False, finished_at__isnull=False,
+                          credential_expires_at__isnull=False)
+                        & (Q(failure_code__isnull=True) | Q(failure_code__in=UNCERTAIN_MINT_FAILURES))
+                    )
+                    | Q(state=SttMintState.DEFINITE_FAILURE, finished_at__isnull=False,
+                        credential_expires_at__isnull=True, failure_code__isnull=False,
+                        failure_code__in=LOCAL_MINT_FAILURES)
+                ), name="stt_mint_attempt_state_shape",
+            ),
+        ]

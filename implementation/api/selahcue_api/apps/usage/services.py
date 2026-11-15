@@ -59,7 +59,11 @@ def _open_week(org: CustomerOrg, plan: EffectivePlan, at: datetime) -> UsageWeek
     week = _current_week(org, at, lock=True)
     if week is not None:
         return week
-    bounds, prior = _next_week_bounds(org, at)
+    return _create_week(org, plan, _next_week_bounds(org, at))
+
+
+def _create_week(org, plan, geometry):
+    bounds, prior = geometry
     stt_debt, notes_debt = _carried_debt(prior, plan.stt_seconds_limit, plan.notes_limit)
     # All ledger mutations take the org lock first. Only that holder can create a week.
     return UsageWeek.objects.create(
@@ -92,6 +96,10 @@ def _open_rows(week: UsageWeek):
     return UsageReservation.objects.filter(week=week, state__in=OPEN_STATES)
 
 
+def _remaining_units(limit, settled, held, debt):
+    return max(0, limit - settled - held - debt)
+
+
 def remaining(org: CustomerOrg, at: datetime) -> tuple[QuotaSnapshot, ...]:
     now = utc_instant(at)
     plan = effective_plan(org, now)
@@ -120,7 +128,7 @@ def remaining(org: CustomerOrg, at: datetime) -> tuple[QuotaSnapshot, ...]:
     return tuple(
         QuotaSnapshot(
             meter, limit, settled, held, debt,
-            0 if unavailable else max(0, limit - settled - held - debt),
+            0 if unavailable else _remaining_units(limit, settled, held, debt),
             now, resets_at, status,
         )
         for meter, limit, settled, held, debt in (
@@ -145,14 +153,18 @@ def reserve(context: CloudContext, request: SessionRequest, now: datetime) -> Re
     )
     if not (starts_new or renews):
         raise ReservationRejected("INVALID_REQUEST")
+    return _reserve(
+        context, request.idempotency_key, stt_request_digest(request),
+        utc_instant(now), request.previous_reservation_id,
+    )
+
+
+def stt_request_digest(request: SessionRequest) -> str:
     payload = json.dumps([
         request.action, str(request.previous_reservation_id), request.socket_mode,
         request.consent_version, request.policy_version,
     ], separators=(",", ":"))
-    return _reserve(
-        context, request.idempotency_key, hashlib.sha256(payload.encode()).hexdigest(),
-        utc_instant(now), request.previous_reservation_id,
-    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def reserve_notes_job(
@@ -221,10 +233,7 @@ def _reserve_locked(
         return ReservationRejected("ALREADY_ISSUED")
 
     is_stt = context.meter == "stt"
-    units = STT_SLICE_SECONDS if is_stt else 1
-    ttl = STT_RESERVED_TTL_SECONDS if is_stt else NOTES_RESERVED_TTL_SECONDS
-    authorized_from = now
-    state = ReservationState.RESERVED
+    previous = None
     if previous_id is not None:
         previous = UsageReservation.objects.select_for_update().filter(
             pk=previous_id, org=org, meter="stt", device_id=context.device_id, license=license_key,
@@ -235,8 +244,6 @@ def _reserve_locked(
             or UsageReservation.objects.filter(renews_id=previous_id).exists()
         ):
             return ReservationRejected("INVALID_RENEWAL")
-        authorized_from = previous.authorized_until
-        state = ReservationState.ISSUED
 
     if context.provider_mapping_id is not None:
         mapping = ProviderCredential.objects.select_for_update().filter(
@@ -248,14 +255,32 @@ def _reserve_locked(
         if mapping is None:
             raise ReservationRejected("INVALID_CONTEXT")
 
-    held = _open_rows(week).filter(meter=context.meter).aggregate(total=Sum("units", default=0))["total"]
-    if is_stt:
-        used = week.stt_seconds_settled + week.stt_seconds_carried_debt
+    return _reserve_from_snapshot(context, key, request_hash, now, org, license_key, week, plan, previous)
+
+
+def _balance(week, plan, meter, *, excluding=None, virtual_upgrade=False):
+    rows = _open_rows(week).filter(meter=meter)
+    if excluding is not None:
+        rows = rows.exclude(pk=excluding)
+    held = rows.aggregate(total=Sum("units", default=0))["total"]
+    if meter == "stt":
+        settled = week.stt_seconds_settled
+        debt = week.stt_seconds_carried_debt
         limit = plan.stt_seconds_limit
     else:
-        used = week.notes_settled + week.notes_carried_debt
+        settled = week.notes_settled
+        debt = week.notes_carried_debt
         limit = plan.notes_limit
-    if used + held + units > limit:
+    return _remaining_units(limit, 0 if virtual_upgrade else settled, held, debt)
+
+
+def _reserve_from_snapshot(context, key, request_hash, now, org, license_key, week, plan, previous):
+    is_stt = context.meter == "stt"
+    units = STT_SLICE_SECONDS if is_stt else 1
+    ttl = STT_RESERVED_TTL_SECONDS if is_stt else NOTES_RESERVED_TTL_SECONDS
+    authorized_from = previous.authorized_until if previous is not None else now
+    state = ReservationState.ISSUED if previous is not None else ReservationState.RESERVED
+    if _balance(week, plan, context.meter) < units:
         return ReservationRejected("QUOTA_EXHAUSTED")
 
     authorized_until = authorized_from + timedelta(seconds=STT_SLICE_SECONDS if is_stt else ttl)
@@ -266,7 +291,7 @@ def _reserve_locked(
         policy_version=context.policy_version, admitted_at=now,
         authorized_from=authorized_from, authorized_until=authorized_until,
         issued_at=now if state == ReservationState.ISSUED else None,
-        renews_id=previous_id, expires_at=now + timedelta(seconds=ttl),
+        renews=previous, expires_at=now + timedelta(seconds=ttl),
     )
     return ReservationDecision(row.pk, state, units, authorized_from, authorized_until, row.retry_count)
 

@@ -6,6 +6,8 @@ from enum import StrEnum
 from typing import Callable, Literal
 from uuid import UUID
 
+from selahcue_api.apps.usage.contracts import ReservationDecision
+
 ProviderProcessRole = Literal["web", "usage", "provisioner", "notes", "maintenance"]
 ProviderKind = Literal["deepgram", "openai"]
 
@@ -472,3 +474,116 @@ class CleanupAuthorization:
 class PolicyPublicationResult:
     global_epochs: tuple[UUID, ...]
     scope_epochs: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MintPolicy:
+    provider: ProviderKind
+    credential_ttl_seconds: int
+    connect_timeout_seconds: int
+    read_timeout_seconds: int
+    absolute_deadline_seconds: int
+    endpoint: str
+
+
+@dataclass(frozen=True, slots=True)
+class EphemeralGrant:
+    secret: SecretBytes = field(repr=False)
+    endpoint: str
+    expires_at: datetime
+    provider_kind: ProviderKind
+
+
+class MintFailureCode(StrEnum):
+    CONFIGURATION_UNAVAILABLE = "configuration_unavailable"
+    REQUEST_REJECTED_LOCALLY = "request_rejected_locally"
+    PROVIDER_REFUSED = "provider_refused"
+    TRANSPORT_TIMEOUT = "transport_timeout"
+    TRANSPORT_ERROR = "transport_error"
+    INVALID_PROVIDER_RESPONSE = "invalid_provider_response"
+    PROVIDER_OUTCOME_UNPROVEN = "provider_outcome_unproven"
+
+
+@dataclass(frozen=True, slots=True)
+class Granted:
+    grant: EphemeralGrant = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class DefiniteFailure:
+    code: MintFailureCode
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeUnknown:
+    code: MintFailureCode
+
+
+MintOutcome = Granted | DefiniteFailure | OutcomeUnknown
+
+
+@dataclass(frozen=True, slots=True)
+class SessionResult:
+    decision: ReservationDecision
+    grant: EphemeralGrant | None = field(repr=False)
+    server_time: datetime
+    issued_at: datetime
+    policy_version: str
+
+
+class SessionFailureCode(StrEnum):
+    RATE_LIMITED = "RATE_LIMITED"
+    UNAUTHENTICATED = "UNAUTHENTICATED"
+    POLICY_DENIED = "POLICY_DENIED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    NOT_FOUND = "NOT_FOUND"
+    INTERNAL = "INTERNAL"
+    PROVIDER_PROVISIONING = "PROVIDER_PROVISIONING"
+    PROVISIONING_CAPACITY_EXHAUSTED = "PROVISIONING_CAPACITY_EXHAUSTED"
+    CLOUD_NOT_ENABLED = "CLOUD_NOT_ENABLED"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
+    POLICY_CHANGED = "POLICY_CHANGED"
+    QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+    SESSION_PENDING = "SESSION_PENDING"
+    ALREADY_ISSUED = "ALREADY_ISSUED"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    REQUEST_MISMATCH = "REQUEST_MISMATCH"
+
+
+class SessionRejected(Exception):
+    def __init__(self, code: SessionFailureCode, retry_after_seconds: int | None = None):
+        if type(code) is not SessionFailureCode:
+            raise ValueError("Invalid session refusal")
+        if code is SessionFailureCode.RATE_LIMITED:
+            valid = type(retry_after_seconds) is int and 1 <= retry_after_seconds <= 3600
+        elif code is SessionFailureCode.PROVIDER_PROVISIONING:
+            valid = type(retry_after_seconds) is int and retry_after_seconds == 5
+        else:
+            valid = retry_after_seconds is None
+        if not valid:
+            raise ValueError("Invalid retry interval")
+        self.code = code
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(code.value)
+
+
+class SttMintState(StrEnum):
+    PREPARED = "PREPARED"
+    DISPATCHED = "DISPATCHED"
+    UNKNOWN = "UNKNOWN"
+    GRANTED = "GRANTED"
+    DISCARDED = "DISCARDED"
+    DEFINITE_FAILURE = "DEFINITE_FAILURE"
+
+
+LOCAL_MINT_FAILURES = (
+    MintFailureCode.CONFIGURATION_UNAVAILABLE,
+    MintFailureCode.REQUEST_REJECTED_LOCALLY,
+)
+UNCERTAIN_MINT_FAILURES = (
+    MintFailureCode.TRANSPORT_TIMEOUT,
+    MintFailureCode.TRANSPORT_ERROR,
+    MintFailureCode.INVALID_PROVIDER_RESPONSE,
+    MintFailureCode.PROVIDER_OUTCOME_UNPROVEN,
+)
