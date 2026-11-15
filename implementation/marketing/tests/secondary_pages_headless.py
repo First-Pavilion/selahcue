@@ -283,11 +283,13 @@ CONTACT_TAB_TRACE_JS = r"""
   let journalOverflow = false;
   window.__selahcueContactJournal = () => ({ events: journal.slice(), overflow: journalOverflow });
   function keep(kind, id, ...details) {
-    if (journal.length === limit) {
-      journalOverflow = true;
-      return;
-    }
-    journal.push([kind, id, Math.round(performance.now() - start), ...details]);
+    try {
+      if (journal.length === limit) {
+        journalOverflow = true;
+        return;
+      }
+      journal.push([kind, id, Math.round(performance.now() - start), ...details]);
+    } catch (_) {} // Dropped diagnostics must not interrupt native forwarding or frame cleanup.
   }
   function record(event) {
     if (count > limit) return;
