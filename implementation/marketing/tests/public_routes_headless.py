@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Verify public acquisition against the built SPA with loopback-only account fixtures."""
 import argparse
+import json
 import re
 import threading
+from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
 
 from playwright.sync_api import expect, sync_playwright
@@ -10,6 +12,15 @@ from playwright.sync_api import expect, sync_playwright
 from core_pages_headless import DIST, Server, SpaHandler
 
 DOWNLOAD = '/download#public-downloads'
+CSRF_PATH = '/graphql/csrf'
+ACCOUNT_PATH = '/graphql/account'
+SYNTHETIC_CSRF = 'synthetic'
+VERIFY_QUERY = 'mutation VerifyEmail($token: String!) { verifyEmail(token: $token) { verified } }'
+VERIFY_CASES = (
+    ('verify-success', 'synthetic-success', {'data': {'verifyEmail': {'verified': True}}}),
+    ('verify-invalid', 'synthetic-invalid', {'errors': [{'extensions': {'code': 'VALIDATION_FAILED'}}]}),
+)
+EXPECTED_RECEIPTS = [('bootstrap', 200), *((label, 200, True, True) for label, _, _ in VERIFY_CASES)]
 EXCLUDED = (
     '/admin', '/admin/', '/admin/customers', '/admin/customers/example/',
     '/admin/users', '/admin/subscriptions', '/admin/licenses', '/admin/affiliates',
@@ -28,38 +39,116 @@ class LocalSpaHandler(SpaHandler):
         )
         super().end_headers()
 
+    def send_fixture_json(self, status, value, set_cookie=False):
+        body = json.dumps(value, separators=(',', ':')).encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        if set_cookie:
+            # HTTP loopback only. Production uses Secure outside debug.
+            self.send_header('Set-Cookie', f'csrftoken={SYNTHETIC_CSRF}; Path=/; SameSite=Strict')
+        self.end_headers()
+        self.wfile.write(body)
 
-def run(engine, base):
+    def do_GET(self):
+        if self.path != CSRF_PATH:
+            if urlsplit(self.path).path.startswith('/graphql/'):
+                self.send_error(404)
+                return
+            return super().do_GET()
+        with self.server.receipt_lock:
+            status = 409 if self.server.receipts else 200
+            self.send_fixture_json(status, {'ready': status == 200}, set_cookie=status == 200)
+            self.server.receipts.append(('bootstrap', status))
+
+    def read_verification(self, token):
+        lengths = self.headers.get_all('Content-Length', [])
+        if (len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,4}', lengths[0])
+                or not 0 < int(lengths[0]) <= 1024
+                or self.headers.get('Transfer-Encoding') is not None
+                or self.headers.get_content_type() != 'application/json'):
+            return False
+        length = int(lengths[0])
+        body = self.rfile.read(length)
+        if len(body) != length:
+            return False
+        try:
+            data = json.loads(body)
+        except (ValueError, RecursionError):
+            return False
+        return (isinstance(data, dict) and set(data) == {'query', 'variables'}
+                and isinstance(data['query'], str) and ' '.join(data['query'].split()) == VERIFY_QUERY
+                and data['variables'] == {'token': token})
+
+    def has_csrf_cookie(self):
+        values = self.headers.get_all('Cookie', [])
+        if len(values) != 1:
+            return False
+        # Require an unambiguous token if a request supplies multiple cookies.
+        names = [part.partition('=')[0].strip() for part in values[0].split(';')]
+        if names.count('csrftoken') != 1:
+            return False
+        try:
+            cookie = SimpleCookie(values[0]).get('csrftoken')
+        except CookieError:
+            return False
+        return cookie is not None and cookie.value == SYNTHETIC_CSRF
+
+    def do_POST(self):
+        if self.path != ACCOUNT_PATH:
+            self.send_error(404)
+            return
+        with self.server.receipt_lock:
+            receipts = self.server.receipts
+            index = len(receipts) - 1
+            if not 0 <= index < len(VERIFY_CASES) or receipts != EXPECTED_RECEIPTS[:len(receipts)]:
+                receipts.append(('unexpected-account-post', 400))
+                self.send_error(400)
+                return
+            label, token, response = VERIFY_CASES[index]
+            has_cookie = self.has_csrf_cookie()
+            has_header = self.headers.get_all('X-CSRFToken', []) == [SYNTHETIC_CSRF]
+            if not self.read_verification(token):
+                status = 400
+            elif not (has_cookie and has_header):
+                status = 403
+            else:
+                status = 200
+            receipts.append((label, status, has_cookie, has_header))
+            if status != 200:
+                self.send_error(status)
+                return
+            self.send_fixture_json(status, response)
+
+
+class AcquisitionServer(Server):
+    def __init__(self):
+        super().__init__(('127.0.0.1', 0), LocalSpaHandler)
+        self.receipts = []
+        self.receipt_lock = threading.Lock()
+
+
+def run(engine, server):
+    base = f'http://127.0.0.1:{server.server_address[1]}'
     browser = engine.launch()
+    browser_version = browser.version
     context = browser.new_context(viewport={'width': 1440, 'height': 900},
                                   service_workers='block', reduced_motion='reduce')
-    verification, unexpected, errors = [], [], []
+    unexpected, errors = [], []
     manifest_requests = []
     tab_key = 'Alt+Tab' if engine.name == 'webkit' else 'Tab'
 
     def fixture(route):
         request = route.request
         url = urlsplit(request.url)
-        if request.url == base + '/graphql/csrf' and request.method == 'GET':
-            route.fulfill(status=204, headers={'Set-Cookie': 'csrftoken=synthetic; Path=/; SameSite=Lax'})
-        elif request.url == base + '/graphql/account' and request.method == 'POST':
-            data = request.post_data_json
-            operation = re.match(r'\s*mutation\s+(\w+)\(', data.get('query', ''))
-            name = operation.group(1) if operation else None
-            variables = data.get('variables', {})
-            verification.append((name, variables, request.header_value('x-csrftoken')))
-            token = variables.get('token')
-            if name != 'VerifyEmail' or token not in ('synthetic-success', 'synthetic-invalid'):
-                unexpected.append((request.method, request.url, name))
-                route.abort()
-            elif token == 'synthetic-success':
-                route.fulfill(json={'data': {'verifyEmail': {'verified': True}}})
-            else:
-                route.fulfill(json={'errors': [{'extensions': {'code': 'VALIDATION_FAILED'}}]})
+        if (request.method, request.url) in (('GET', base + CSRF_PATH), ('POST', base + ACCOUNT_PATH)):
+            route.continue_()
         elif request.url == base + '/releases/current.json' and request.method == 'GET':
             manifest_requests.append(request.url)
             route.continue_()
         elif (request.url.startswith(base + '/') and request.method == 'GET' and
+              not url.path.startswith('/graphql/') and
               (request.is_navigation_request() or url.path in ('/favicon.ico', '/selahcue-logo.png')
                or url.path.startswith(('/assets/', '/fonts/', '/icons/')))):
             route.continue_()
@@ -160,16 +249,15 @@ def run(engine, base):
         expect(page.get_by_role('heading', name='This page needs a verification link')).to_be_visible()
         expect(page.get_by_role('button', name='Send a verification link')).to_be_visible()
 
-        assert verification == [
-            ('VerifyEmail', {'token': 'synthetic-success'}, 'synthetic'),
-            ('VerifyEmail', {'token': 'synthetic-invalid'}, 'synthetic'),
-        ], verification
+        assert server.receipts == EXPECTED_RECEIPTS, server.receipts
         assert len(manifest_requests) == 4, manifest_requests
         assert not unexpected, unexpected
         assert not errors, errors
         print('  Signup reached. Invalid/expired and missing verification preserve recovery. Only the synthetic account fixture and the public manifest received API requests.')
     finally:
         browser.close()
+        # Only response status and expected cookie/header matches, never raw request values.
+        print(f'  {engine.name} {browser_version} loopback receipts: {server.receipts}', flush=True)
 
 
 def main():
@@ -182,16 +270,15 @@ def main():
     mock_chunks = [asset.name for asset in assets if re.match(r'Admin|Affiliate(?!sView-)|PilotDownloads', asset.name)]
     assert not mock_chunks, f'Public build contains mock portal chunks: {mock_chunks}'
 
-    with Server(('127.0.0.1', 0), LocalSpaHandler) as server:
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        base = f'http://127.0.0.1:{server.server_address[1]}'
-        try:
-            with sync_playwright() as playwright:
-                for name in ('chromium', 'webkit') if args.engine == 'both' else (args.engine,):
-                    print(f'[{name}] public acquisition and direct routes')
-                    run(getattr(playwright, name), base)
-        finally:
-            server.shutdown()
+    with sync_playwright() as playwright:
+        for name in ('chromium', 'webkit') if args.engine == 'both' else (args.engine,):
+            with AcquisitionServer() as server:
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                try:
+                    print(f'[{name}] public acquisition and direct routes', flush=True)
+                    run(getattr(playwright, name), server)
+                finally:
+                    server.shutdown()
     print('PASS: public acquisition, archived download URL, verification and route exclusions')
 
 

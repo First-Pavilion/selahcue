@@ -1805,6 +1805,13 @@ jobs:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine webkit
 
+      - name: Responsive touch-target and geometry controls (WebKit)
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 tests/responsive_diagnostic_regression.py
+          DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
+          DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
+
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.
       - name: Shared components (Chromium + WebKit)
