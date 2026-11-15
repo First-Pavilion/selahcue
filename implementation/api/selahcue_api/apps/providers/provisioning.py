@@ -695,10 +695,7 @@ def _finalize_mutation(config, request, lease_id, receipt, clock):
                 return _result(chain)
             mutate(stage, at, state=StageState.DONE, ownership_evidence_id=evidence.pk)
             if stage.operation == Op.OA_CREATE_PROJECT:
-                account = next(row for row in chain.stages if row.operation == Op.OA_CREATE_SERVICE_ACCOUNT_KEY)
-                if account.state == StageState.BLOCKED and chain.claim.cleanup_started_at is None:
-                    mutate(account, at, state=StageState.READY, target_project_id=receipt.identity.project_id)
-                    _prepare(chain.mapping, chain.pool, account, at)
+                if _prepare_project_dependency(chain, receipt.identity.project_id, at):
                     _next_provision(chain, at)
             else:
                 activate = fresh and receipt.secret is not None and receipt.expires_at is None
@@ -1221,7 +1218,7 @@ def _apply_operator_evidence(chain, attempt, identity, kind, evidence, at):
         and chain.demand.state == ChainState.FAILED and chain.demand.last_error_code in (
             Error.RETRY_EXHAUSTED, Error.OPERATOR_REQUIRED,
         )):
-        _authorize_failed_cleanup(chain, stage, attempt, identity, evidence, at)
+        _apply_failed_ownership(chain, stage, attempt, identity, evidence, at)
         return
     if attempt.state not in UNKNOWN_STATES:
         _refuse(Error.INVALID_CONTEXT)
@@ -1259,14 +1256,24 @@ def _apply_operator_evidence(chain, attempt, identity, kind, evidence, at):
         mutate(stage, at, state=StageState.WORKING)
     mutate(stage, at, state=StageState.DONE, ownership_evidence_id=evidence.pk)
     if stage.operation == Op.OA_CREATE_PROJECT:
-        account_stage = next(row for row in chain.stages if row.operation == Op.OA_CREATE_SERVICE_ACCOUNT_KEY)
-        mutate(account_stage, at, state=StageState.READY, target_project_id=project)
-        _prepare(chain.mapping, chain.pool, account_stage, at)
+        _prepare_project_dependency(chain, project, at)
     _next_provision(chain, at)
 
 
-def _authorize_failed_cleanup(chain, stage, attempt, identity, evidence, at):
-    """Apply fresh ownership evidence to a failed but positively known allocation."""
+def _prepare_project_dependency(chain, project_id, at):
+    account = next(row for row in chain.stages if row.operation == Op.OA_CREATE_SERVICE_ACCOUNT_KEY)
+    if (
+        account.state != StageState.BLOCKED or account.current_attempt_id is not None
+        or account.attempt_count != 0 or chain.claim.cleanup_started_at is not None
+    ):
+        return False
+    mutate(account, at, state=StageState.READY, target_project_id=project_id)
+    _prepare(chain.mapping, chain.pool, account, at)
+    return True
+
+
+def _apply_failed_ownership(chain, stage, attempt, identity, evidence, at):
+    """Resume recovery or an unsent dependency after fresh ownership evidence."""
     observed = (attempt.observed_project_id, attempt.observed_service_account_id, attempt.observed_api_key_id)
     if (
         _identity_tuple(identity) != observed or not any(observed)
@@ -1284,4 +1291,8 @@ def _authorize_failed_cleanup(chain, stage, attempt, identity, evidence, at):
         mutate(stage, at, state=StageState.READY)
         mutate(stage, at, state=StageState.WORKING)
         mutate(stage, at, state=StageState.DONE)
+    if stage.operation == Op.OA_CREATE_PROJECT:
+        # Reuse the existing hold. Only the regular worker may dispatch after
+        # rechecking the original demand and current capacity.
+        _prepare_project_dependency(chain, identity.project_id, at)
     _next_provision(chain, at)
