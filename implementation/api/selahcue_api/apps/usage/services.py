@@ -15,6 +15,7 @@ from selahcue_api.apps.catalogue.org_plans import effective_plan
 from selahcue_api.apps.devices.models import Device, DeviceStatus
 from selahcue_api.apps.license_keys.models import AppLicenseKey
 from selahcue_api.apps.license_keys.selection import ACTIVATABLE_KEY_STATUSES
+from selahcue_api.apps.providers.models import ProviderCredential
 from selahcue_api.apps.usage.contracts import (
     CloudContext, DeliveryCreditResult, QuotaSnapshot, ReservationDecision,
     ReservationRejected, ReservationState, SessionRequest,
@@ -169,7 +170,7 @@ def _reserve(
     if not isinstance(key, UUID):
         raise ReservationRejected("INVALID_REQUEST")
     if (
-        context.provider_mapping_id is not None
+        (context.provider_mapping_id is not None and not isinstance(context.provider_mapping_id, UUID))
         or not 0 < len(context.policy_version) <= 64
     ):
         raise ReservationRejected("INVALID_CONTEXT")
@@ -211,6 +212,7 @@ def _reserve_locked(
     if replay is not None:
         if (
             replay.device_id != context.device_id or replay.license_id != context.license_id
+            or replay.provider_mapping_id != context.provider_mapping_id
             or replay.request_hash != request_hash or replay.policy_version != context.policy_version
         ):
             return ReservationRejected("IDEMPOTENCY_CONFLICT")
@@ -228,10 +230,23 @@ def _reserve_locked(
             pk=previous_id, org=org, meter="stt", device_id=context.device_id, license=license_key,
             state=ReservationState.ISSUED, authorized_from__lte=now, authorized_until__gt=now,
         ).first()
-        if previous is None or UsageReservation.objects.filter(renews_id=previous_id).exists():
+        if (
+            previous is None or previous.provider_mapping_id != context.provider_mapping_id
+            or UsageReservation.objects.filter(renews_id=previous_id).exists()
+        ):
             return ReservationRejected("INVALID_RENEWAL")
         authorized_from = previous.authorized_until
         state = ReservationState.ISSUED
+
+    if context.provider_mapping_id is not None:
+        mapping = ProviderCredential.objects.select_for_update().filter(
+            pk=context.provider_mapping_id, org_id=org.pk,
+            provider="deepgram" if is_stt else "openai", state="ACTIVE",
+            secret_version=1, wrapping_key_id__isnull=False,
+            secret_nonce__isnull=False, secret_ciphertext__isnull=False,
+        ).only("id").first()
+        if mapping is None:
+            raise ReservationRejected("INVALID_CONTEXT")
 
     held = _open_rows(week).filter(meter=context.meter).aggregate(total=Sum("units", default=0))["total"]
     if is_stt:
@@ -246,6 +261,7 @@ def _reserve_locked(
     authorized_until = authorized_from + timedelta(seconds=STT_SLICE_SECONDS if is_stt else ttl)
     row = UsageReservation.objects.create(
         org=org, week=week, license=license_key, device_id=context.device_id, meter=context.meter,
+        provider_mapping_id=context.provider_mapping_id,
         units=units, state=state, idempotency_key=key, request_hash=request_hash,
         policy_version=context.policy_version, admitted_at=now,
         authorized_from=authorized_from, authorized_until=authorized_until,

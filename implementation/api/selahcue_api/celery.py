@@ -9,8 +9,11 @@ import os
 
 from celery import Celery
 
+from selahcue_api.apps.providers.bootstrap import register_celery_provider_hooks
+
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "selahcue_api.settings")
 
 app = Celery("selahcue_api")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
+register_celery_provider_hooks()

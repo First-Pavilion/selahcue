@@ -49,6 +49,9 @@ class UsageReservation(models.Model):
     license = models.ForeignKey("selahcue_license_keys.AppLicenseKey", on_delete=models.PROTECT)
     device = models.ForeignKey("selahcue_devices.Device", on_delete=models.PROTECT)
     week = models.ForeignKey(UsageWeek, on_delete=models.PROTECT, related_name="reservations")
+    provider_mapping = models.ForeignKey(
+        "selahcue_providers.ProviderCredential", on_delete=models.PROTECT, null=True,
+    )
     meter = models.CharField(max_length=5, choices=[("stt", "Transcription"), ("notes", "Notes")])
     units = models.PositiveIntegerField()
     state = models.CharField(max_length=8, choices=[(state.value, state.value) for state in ReservationState])
