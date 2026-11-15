@@ -1,12 +1,20 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from django.core.exceptions import ValidationError
 
 from selahcue_api.apps.accounts.models import CustomerOrg
+from selahcue_api.apps.catalogue import services as catalogue_services
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
-from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan, OrgPlanGrant
+from selahcue_api.apps.catalogue.models import (
+    GrantDimension,
+    LicenseGrantOverride,
+    LicensePlanAssignment,
+    OrgPlanGrant,
+    Plan,
+)
 from selahcue_api.apps.catalogue.org_plans import effective_plan
 from selahcue_api.apps.catalogue.services import resolve_entitlement
 from selahcue_api.apps.devices.models import Device
@@ -105,6 +113,54 @@ def test_grant_selection_never_enters_shared_catalogue_cache():
     cached = GRANT_CACHE.get(plan.plan_id, plan.catalogue_revision)
     assert cached.values[NOTES_KEY] == 10
     assert not ({"org", "org_id", "settled", "remaining", "carried_debt"} & cached.values.keys())
+
+
+@pytest.fixture
+def licence_with_expiring_grants():
+    org = church()
+    key = licence(org)
+    staff_grant(org, "PRO", NOW - timedelta(hours=1), NOW)
+    LicenseGrantOverride.objects.create(
+        license_key=key,
+        dimension=GrantDimension.objects.get(key=NOTES_KEY),
+        raw_value="12",
+        granted_by_actor_id="fixture-staff",
+        reason="Temporary weekly notes allowance",
+        expires_at=NOW,
+    )
+    return key
+
+
+@pytest.mark.parametrize(
+    ("seconds_from_expiry", "wall_seconds_from_expiry", "expected_plan", "expected_notes"),
+    [
+        pytest.param(-1, 1, "PRO", 12, id="before"),
+        pytest.param(0, -1, "FREE", 1, id="at"),
+        pytest.param(1, -1, "FREE", 1, id="after"),
+    ],
+)
+def test_entitlement_evaluates_plan_and_override_at_explicit_instant(
+    licence_with_expiring_grants, monkeypatch,
+    seconds_from_expiry, wall_seconds_from_expiry, expected_plan, expected_notes,
+):
+    at = NOW + timedelta(seconds=seconds_from_expiry)
+    wall_time = NOW + timedelta(seconds=wall_seconds_from_expiry)
+    monkeypatch.setattr(catalogue_services, "timezone", SimpleNamespace(now=lambda: wall_time))
+
+    result = resolve_entitlement(licence_with_expiring_grants, at=at)
+
+    assert (result.plan.code, result.values[NOTES_KEY]) == (expected_plan, expected_notes)
+
+
+def test_entitlement_uses_the_same_wall_clock_instant_across_expiry(
+    licence_with_expiring_grants, monkeypatch,
+):
+    instants = iter((NOW - timedelta(seconds=1), NOW))
+    monkeypatch.setattr(catalogue_services, "timezone", SimpleNamespace(now=lambda: next(instants)))
+
+    result = resolve_entitlement(licence_with_expiring_grants)
+
+    assert (result.plan.code, result.values[NOTES_KEY]) == ("PRO", 12)
 
 
 def test_invalid_timezone_is_rejected_on_org_validation():

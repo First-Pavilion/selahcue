@@ -281,7 +281,7 @@ def plan_device_instances_for_issuance(plan: Plan) -> int | None:
 
 
 def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedEntitlement:
-    """The typed grants a licence carries right now.
+    """The typed grants a licence carries at the supplied instant or the current time.
 
     Degrades rather than raises: an empty catalogue yields an empty `values` map and the
     caller keeps whatever it already had (which is how "no loss of current entitlement"
@@ -313,7 +313,8 @@ def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedE
     unconfigured = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
     failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
     try:
-        plan, _ = _select_org_plan(license_key.customer_id, at if at is not None else timezone.now())
+        evaluated_at = at if at is not None else timezone.now()
+        plan, _ = _select_org_plan(license_key.customer_id, evaluated_at)
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
         logger.exception("catalogue plan resolution failed; issuing a degraded entitlement")
         return failed
@@ -364,9 +365,7 @@ def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedE
                 dimension__is_active=True,
                 dimension__key__in=grants.known,
             )
-            .filter(
-                models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
-            )
+            .filter(models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=evaluated_at))
             .select_related("dimension")
         )
         # No `order_by` and no slice: `known` holds at most `MAX_GRANT_DIMENSIONS` keys and
