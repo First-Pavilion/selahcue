@@ -266,7 +266,9 @@ def check_contact(page, c: Checks, base: str) -> None:
 CONTACT_TAB_TRACE_PREFIX = "CONTACT_700_TAB "
 CONTACT_TAB_TRACE_LIMIT = 32
 CONTACT_TAB_TRACE_JS = r"""
-({ prefix, limit }) => {
+(settings) => {
+  'use strict';
+  const { prefix, limit } = settings;
   const link = document.querySelector('.method-link');
   let count = 0;
   let focused = false;
