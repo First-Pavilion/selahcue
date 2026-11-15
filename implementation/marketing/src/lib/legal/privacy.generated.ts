@@ -236,7 +236,7 @@ export const privacyPolicy: LegalDocument = {
               "inline": [
                 { "kind": "text", "text": "We decide why and how the personal data described in section " },
                 { "kind": "ref", "anchor": "s-3", "text": "3" },
-                { "kind": "text", "text": " is used. The exception is audio and transcript text you send to SelahCue for a sermon-note draft. We process it to provide the requested feature to your church. Cloud transcription audio goes from your device directly to Deepgram (see section " },
+                { "kind": "text", "text": " is used. The exception is the selected transcript text you send to SelahCue when you request a sermon-note draft. We process that text to provide the requested feature to your church. Cloud transcription audio goes from your device directly to Deepgram (see section " },
                 { "kind": "ref", "anchor": "s-3-8", "text": "3.8" },
                 { "kind": "text", "text": ")." }
               ],

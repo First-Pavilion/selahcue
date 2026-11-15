@@ -50,10 +50,10 @@ This summary is part of the policy. The full sections below give the detail.
 - install and use the SelahCue desktop app; or
 - contact us for help.
 
-1.2 We decide why and how the personal data described in section 3 is used. The exception is audio and
-transcript text you send to SelahCue for a sermon-note draft. We process it to provide the requested
-feature to your church. Cloud transcription audio goes from your device directly to Deepgram (see
-section 3.8).
+1.2 We decide why and how the personal data described in section 3 is used. The exception is the
+selected transcript text you send to SelahCue when you request a sermon-note draft. We process that
+text to provide the requested feature to your church. Cloud transcription audio goes from your
+device directly to Deepgram (see section 3.8).
 
 1.3 This policy does **not** cover:
 
