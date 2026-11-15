@@ -31,6 +31,181 @@ EXCLUDED = (
 )
 
 
+CSRF_TRACE_PREFIX = 'PUBLIC_ACQUISITION_CSRF '
+CSRF_TRACE_LIMIT = 32
+HEADER_STATES = ('absent', 'mismatch', 'duplicate', 'match')
+COOKIE_PHASES = ('before-bootstrap', 'bootstrap-pending', 'bootstrap-resolved', 'bootstrap-rejected', 'after-post')
+
+CSRF_TRACE_JS = r"""
+({ origin, csrfPath, accountPath, token, prefix, limit }) => {
+  if (location.origin !== origin || location.pathname !== '/verify') return;
+  let count = 0;
+  let phase = 'before-bootstrap';
+  function emit(event) {
+    if (count > limit) return;
+    try {
+      console.debug(prefix + JSON.stringify(count === limit ? ['overflow'] : event));
+    } catch {
+      // A diagnostic failure must never affect the request or cookie getter.
+    }
+    count++;
+  }
+
+  function propertyOwner(object, name) {
+    for (let owner = object; owner; owner = Object.getPrototypeOf(owner)) {
+      if (Object.hasOwn(owner, name)) return owner;
+    }
+    return null;
+  }
+
+  let cookieHook = false;
+  try {
+    const owner = propertyOwner(document, 'cookie');
+    const descriptor = owner && Object.getOwnPropertyDescriptor(owner, 'cookie');
+    if (descriptor?.configurable && typeof descriptor.get === 'function') {
+      const originalGet = descriptor.get;
+      Object.defineProperty(owner, 'cookie', {
+        ...descriptor,
+        get() {
+          const value = Reflect.apply(originalGet, this, []);
+          if (this === document && typeof value === 'string') {
+            const match = value.split(';').some(part => part.trim() === 'csrftoken=' + token);
+            emit(['cookie-read', phase, match]);
+          }
+          return value;
+        },
+      });
+      cookieHook = true;
+    }
+  } catch {
+    // Report unavailable rather than replace the original read path.
+  }
+  emit(['hook', 'cookie', cookieHook]);
+
+  function headerState(headers) {
+    if (headers === undefined) return 'absent';
+    // graphqlRequest supplies a plain header record. Do not create or modify a Request.
+    if (!headers || Object.getPrototypeOf(headers) !== Object.prototype) return 'unavailable';
+    const matches = Object.entries(headers).filter(([name]) => name.toLowerCase() === 'x-csrftoken');
+    if (matches.length === 0) return 'absent';
+    if (matches.length > 1) return 'duplicate';
+    return matches[0][1] === token ? 'match' : 'mismatch';
+  }
+
+  let fetchHook = false;
+  try {
+    const owner = propertyOwner(window, 'fetch');
+    const descriptor = owner && Object.getOwnPropertyDescriptor(owner, 'fetch');
+    if (typeof descriptor?.value === 'function') {
+      const originalFetch = descriptor.value;
+      Object.defineProperty(owner, 'fetch', {
+        ...descriptor,
+        value: function (...args) {
+          const [input, init] = args;
+          const bootstrap = init?.method === 'GET' && (input === csrfPath || input === origin + csrfPath);
+          if (bootstrap) {
+            phase = 'bootstrap-pending';
+            emit(['bootstrap-start']);
+          } else if (init?.method === 'POST' && (input === accountPath || input === origin + accountPath)) {
+            try {
+              emit(['post-header', headerState(init.headers)]);
+            } catch {
+              emit(['post-header', 'unavailable']);
+            }
+            phase = 'after-post';
+          }
+
+          let result;
+          try {
+            result = Reflect.apply(originalFetch, this, args);
+          } catch (error) {
+            if (bootstrap) {
+              phase = 'bootstrap-rejected';
+              emit(['bootstrap-threw']);
+            }
+            throw error;
+          }
+          if (bootstrap) {
+            // Attach an observation only. The app receives the exact original Promise.
+            try {
+              result.then(
+                response => {
+                  phase = 'bootstrap-resolved';
+                  emit(['bootstrap-resolved', response.status]);
+                },
+                () => {
+                  phase = 'bootstrap-rejected';
+                  emit(['bootstrap-rejected']);
+                },
+              );
+            } catch {
+              emit(['bootstrap-observer-unavailable']);
+            }
+          }
+          return result;
+        },
+      });
+      fetchHook = true;
+    }
+  } catch {
+    // An unavailable hook is a diagnostic limitation, not a test result.
+  }
+  emit(['hook', 'fetch', fetchHook]);
+}
+"""
+
+
+class CsrfTrace:
+    def __init__(self):
+        self.events = []
+        self.overflow = False
+        self.lock = threading.Lock()
+
+    def add(self, event):
+        with self.lock:
+            if event == ['overflow'] or len(self.events) == CSRF_TRACE_LIMIT:
+                self.overflow = True
+            else:
+                self.events.append(event)
+
+    def on_console(self, message):
+        if not message.text.startswith(CSRF_TRACE_PREFIX):
+            return
+        payload = message.text[len(CSRF_TRACE_PREFIX):]
+        if len(payload) > 128:
+            return
+        try:
+            event = json.loads(payload)
+        except (ValueError, RecursionError):
+            return
+        if not isinstance(event, list):
+            return
+        match event:
+            case ['hook', 'cookie' | 'fetch', flag] if type(flag) is bool:
+                self.add(event)
+            case ['cookie-read', phase, flag] if phase in COOKIE_PHASES and type(flag) is bool:
+                self.add(event)
+            case ['bootstrap-start' | 'bootstrap-rejected' | 'bootstrap-threw'
+                  | 'bootstrap-observer-unavailable' | 'overflow']:
+                self.add(event)
+            case ['bootstrap-resolved', status] if type(status) is int and (status == 0 or 100 <= status <= 599):
+                self.add(event)
+            case ['post-header', state] if state in (*HEADER_STATES, 'unavailable'):
+                self.add(event)
+
+    def render(self):
+        with self.lock:
+            return json.dumps({'events': self.events, 'overflow': self.overflow}, separators=(',', ':'))
+
+
+def csrf_header_state(values):
+    if not values:
+        return 'absent'
+    if len(values) > 1:
+        return 'duplicate'
+    return 'match' if values[0] == SYNTHETIC_CSRF else 'mismatch'
+
+
 class LocalSpaHandler(SpaHandler):
     def end_headers(self):
         self.send_header(
@@ -61,6 +236,8 @@ class LocalSpaHandler(SpaHandler):
             status = 409 if self.server.receipts else 200
             self.send_fixture_json(status, {'ready': status == 200}, set_cookie=status == 200)
             self.server.receipts.append(('bootstrap', status))
+            if self.server.csrf_trace is not None:
+                self.server.csrf_trace.add(['server-bootstrap', status])
 
     def read_verification(self, token):
         lengths = self.headers.get_all('Content-Length', [])
@@ -108,7 +285,8 @@ class LocalSpaHandler(SpaHandler):
                 return
             label, token, response = VERIFY_CASES[index]
             has_cookie = self.has_csrf_cookie()
-            has_header = self.headers.get_all('X-CSRFToken', []) == [SYNTHETIC_CSRF]
+            header = csrf_header_state(self.headers.get_all('X-CSRFToken', []))
+            has_header = header == 'match'
             if not self.read_verification(token):
                 status = 400
             elif not (has_cookie and has_header):
@@ -116,6 +294,8 @@ class LocalSpaHandler(SpaHandler):
             else:
                 status = 200
             receipts.append((label, status, has_cookie, has_header))
+            if self.server.csrf_trace is not None:
+                self.server.csrf_trace.add(['server-post', status, has_cookie, header])
             if status != 200:
                 self.send_error(status)
                 return
@@ -127,6 +307,7 @@ class AcquisitionServer(Server):
         super().__init__(('127.0.0.1', 0), LocalSpaHandler)
         self.receipts = []
         self.receipt_lock = threading.Lock()
+        self.csrf_trace = None
 
 
 def run(engine, server):
@@ -138,6 +319,9 @@ def run(engine, server):
     unexpected, errors = [], []
     manifest_requests = []
     tab_key = 'Alt+Tab' if engine.name == 'webkit' else 'Tab'
+    if engine.name == 'webkit':
+        server.csrf_trace = CsrfTrace()
+    trace = server.csrf_trace
 
     def fixture(route):
         request = route.request
@@ -228,6 +412,13 @@ def run(engine, server):
         expect(page).to_have_url(base + '/signup')
         expect(page.locator('form input[type=email]')).to_be_visible()
 
+        if trace is not None:
+            page.on('console', trace.on_console)
+            settings = json.dumps({
+                'origin': base, 'csrfPath': CSRF_PATH, 'accountPath': ACCOUNT_PATH,
+                'token': SYNTHETIC_CSRF, 'prefix': CSRF_TRACE_PREFIX, 'limit': CSRF_TRACE_LIMIT,
+            })
+            page.add_init_script(f'({CSRF_TRACE_JS})({settings})')
         page.goto(base + '/verify?token=synthetic-success')
         verified = page.get_by_role('heading', name='Email address verified')
         expect(verified).to_be_focused()
@@ -255,9 +446,13 @@ def run(engine, server):
         assert not errors, errors
         print('  Signup reached. Invalid/expired and missing verification preserve recovery. Only the synthetic account fixture and the public manifest received API requests.')
     finally:
-        browser.close()
-        # Only response status and expected cookie/header matches, never raw request values.
-        print(f'  {engine.name} {browser_version} loopback receipts: {server.receipts}', flush=True)
+        try:
+            # Emit before closing so a browser assertion or close failure cannot hide the trace.
+            print(f'  {engine.name} {browser_version} loopback receipts: {server.receipts}', flush=True)
+            if trace is not None:
+                print(CSRF_TRACE_PREFIX + trace.render(), flush=True)
+        finally:
+            browser.close()
 
 
 def main():
