@@ -1,0 +1,705 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "unauthenticated",
+      "valid": true,
+      "expected": "UNAUTHENTICATED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "UNAUTHENTICATED",
+            "message": "Authentication is required."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "policy_denied",
+      "valid": true,
+      "expected": "POLICY_DENIED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "POLICY_DENIED",
+            "message": "The current policy does not allow this action."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "validation_failed",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "not_found",
+      "valid": true,
+      "expected": "NOT_FOUND",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "NOT_FOUND",
+            "message": "The requested resource was not found."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "internal",
+      "valid": true,
+      "expected": "INTERNAL",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 500,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "INTERNAL",
+            "message": "The request could not be completed."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "provider_provisioning",
+      "valid": true,
+      "expected": "PROVIDER_PROVISIONING",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Retry-After": "5"
+        },
+        "body": {
+          "error": {
+            "code": "PROVIDER_PROVISIONING",
+            "message": "Cloud transcription is being prepared."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "provisioning_capacity_exhausted",
+      "valid": true,
+      "expected": "PROVISIONING_CAPACITY_EXHAUSTED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "PROVISIONING_CAPACITY_EXHAUSTED",
+            "message": "Cloud provisioning capacity is unavailable."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "cloud_not_enabled",
+      "valid": true,
+      "expected": "CLOUD_NOT_ENABLED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "CLOUD_NOT_ENABLED",
+            "message": "Cloud transcription is unavailable."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "provider_unavailable",
+      "valid": true,
+      "expected": "PROVIDER_UNAVAILABLE",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "PROVIDER_UNAVAILABLE",
+            "message": "The cloud provider is unavailable."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "reconciliation_pending",
+      "valid": true,
+      "expected": "RECONCILIATION_PENDING",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 503,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "RECONCILIATION_PENDING",
+            "message": "Cloud usage reconciliation is pending."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "policy_changed",
+      "valid": true,
+      "expected": "POLICY_CHANGED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "POLICY_CHANGED",
+            "message": "The cloud transcription policy has changed."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "quota_exhausted",
+      "valid": true,
+      "expected": "QUOTA_EXHAUSTED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "QUOTA_EXHAUSTED",
+            "message": "The cloud allowance is exhausted."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "session_pending",
+      "valid": true,
+      "expected": "SESSION_PENDING",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "SESSION_PENDING",
+            "message": "The session request is pending."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "already_issued",
+      "valid": true,
+      "expected": "ALREADY_ISSUED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "ALREADY_ISSUED",
+            "message": "Authorization has already been issued for this request."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "reservation_released",
+      "valid": true,
+      "expected": "RESERVATION_RELEASED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "RESERVATION_RELEASED",
+            "message": "This reservation has been released."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "request_mismatch",
+      "valid": true,
+      "expected": "REQUEST_MISMATCH",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "REQUEST_MISMATCH",
+            "message": "The request does not match the saved session."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "rate_limited",
+      "valid": true,
+      "expected": "RATE_LIMITED",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Retry-After": "3600"
+        },
+        "body": {
+          "error": {
+            "code": "RATE_LIMITED",
+            "message": "Too many requests."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "stt_session_get_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "GET",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "POST"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "stt_session_head_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "HEAD",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "POST"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "stt_session_options_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "OPTIONS",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "POST"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "quota_post_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "POST",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "GET"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "quota"
+        }
+      }
+    },
+    {
+      "name": "quota_head_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "HEAD",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "GET"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "quota"
+        }
+      }
+    },
+    {
+      "name": "quota_options_method_refusal",
+      "valid": true,
+      "expected": "VALIDATION_FAILED",
+      "request": null,
+      "request_method": "OPTIONS",
+      "response": {
+        "status": 405,
+        "headers": {
+          "Cache-Control": "no-store",
+          "Allow": "GET"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "Request method not supported."
+          },
+          "surface": "desktop",
+          "operation": "quota"
+        }
+      }
+    },
+    {
+      "name": "duplicate_action",
+      "valid": false,
+      "expected": "rejected_request",
+      "raw_request_utf8": "{\"idempotency_key\": \"12345678-1234-1234-1234-000000000001\", \"action\": \"start\", \"socket\": \"new\", \"policy_version\": \"stt-direct-v1\", \"consent_version\": \"stt-direct-audio-v1\", \"action\":\"start\"}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "unicode_lone_surrogate",
+      "valid": false,
+      "expected": "rejected_request",
+      "raw_request_utf8": "{\"idempotency_key\": \"12345678-1234-1234-1234-000000000001\", \"action\": \"start\", \"socket\": \"new\", \"policy_version\": \"\\ud800\", \"consent_version\": \"stt-direct-audio-v1\"}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "boolean_uuid_never_coerced",
+      "valid": false,
+      "expected": "rejected_request",
+      "raw_request_utf8": "{\"idempotency_key\": true, \"action\": \"start\", \"socket\": \"new\", \"policy_version\": \"stt-direct-v1\", \"consent_version\": \"stt-direct-audio-v1\"}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "reconnect_rejected",
+      "valid": false,
+      "expected": "rejected_request",
+      "raw_request_utf8": "{\"idempotency_key\": \"12345678-1234-1234-1234-000000000001\", \"action\": \"reconnect\", \"socket\": \"new\", \"policy_version\": \"stt-direct-v1\", \"consent_version\": \"stt-direct-audio-v1\"}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "renew_with_new_socket_rejected",
+      "valid": false,
+      "expected": "rejected_request",
+      "raw_request_utf8": "{\"idempotency_key\": \"12345678-1234-1234-1234-000000000002\", \"action\": \"renew\", \"socket\": \"new\", \"previous_reservation_id\": \"12345678-1234-1234-1234-000000000003\", \"policy_version\": \"stt-direct-v1\", \"consent_version\": \"stt-direct-audio-v1\"}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    },
+    {
+      "name": "declared_8193_body_rejected",
+      "valid": false,
+      "expected": "rejected_request",
+      "request_headers": {
+        "Content-Type": "application/json",
+        "Content-Length": "8193"
+      },
+      "raw_request_utf8": "{}",
+      "response": {
+        "status": 400,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "error": {
+            "code": "VALIDATION_FAILED",
+            "message": "The request is invalid."
+          },
+          "surface": "desktop",
+          "operation": "stt_session"
+        }
+      }
+    }
+  ]
+}

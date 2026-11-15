@@ -88,3 +88,47 @@ class DeliveryCreditResult:
     created: bool
     credited_units: int
     week_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class SttReadiness:
+    org_id: int
+    mapping_id: UUID
+    status: Literal["current_observed", "stale", "not_initialized"]
+    checked_at: datetime
+    observed_through: datetime | None
+    valid_until: datetime | None
+    publication_revision: int | None
+    blocked_reason: Literal[
+        "reader_missing", "coverage_missing", "coverage_stale", "reconciliation_pending",
+        "placement_gap", "unattributed_limit",
+    ] | None
+
+    def __post_init__(self):
+        from selahcue_api.apps.usage.weeks import utc_instant
+
+        if not isinstance(self.checked_at, datetime):
+            raise ValueError("Invalid STT readiness check time")
+        for field in ("checked_at", "observed_through", "valid_until"):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, utc_instant(value))
+        if type(self.org_id) is not int or self.org_id <= 0 or type(self.mapping_id) is not UUID:
+            raise ValueError("Invalid STT readiness identity")
+        if self.publication_revision is not None and (
+            type(self.publication_revision) is not int or self.publication_revision <= 0
+        ):
+            raise ValueError("Invalid STT readiness revision")
+        if self.status == "current_observed":
+            valid = (
+                self.blocked_reason is None and self.publication_revision is not None
+                and self.observed_through is not None and self.valid_until is not None
+                and self.checked_at < self.valid_until
+            )
+        else:
+            valid = self.status in ("stale", "not_initialized") and self.blocked_reason in (
+                "reader_missing", "coverage_missing", "coverage_stale",
+                "reconciliation_pending", "placement_gap", "unattributed_limit",
+            )
+        if not valid:
+            raise ValueError("Invalid STT readiness evidence")

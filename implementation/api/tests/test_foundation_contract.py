@@ -136,6 +136,8 @@ def test_route_contracts_keep_admin_account_and_desktop_surfaces_separate():
         "v1/downloads:prepare",
         "v1/downloads/<lease_id>:complete",
         "v1/usage-events:batch",
+        "v1/stt/session",
+        "v1/quota",
     ]
     assert billing_webhook_contract().path == "webhooks/billing/<provider>"
 

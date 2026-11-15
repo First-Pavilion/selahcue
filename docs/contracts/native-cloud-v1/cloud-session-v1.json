@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "start_with_anchored_300_second_window",
+      "valid": true,
+      "expected": "success_start",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "reservation_id": "12345678-1234-1234-1234-000000000003",
+          "meter": "stt",
+          "issued_at": "2026-11-15T12:00:00.000000Z",
+          "server_time": "2026-11-15T12:00:00.000000Z",
+          "authorized_from": "2026-11-15T12:00:00.000000Z",
+          "authorized_until": "2026-11-15T12:05:00.000000Z",
+          "policy_version": "stt-direct-v1",
+          "provider": {
+            "kind": "deepgram",
+            "endpoint": "wss://api.deepgram.com/v1/listen",
+            "credential": "synthetic-not-a-provider-credential",
+            "credential_expires_at": "2026-11-15T12:00:30.000000Z"
+          }
+        }
+      },
+      "timing": {
+        "t0_ns": 100000000000,
+        "t1_ns": 102000000000,
+        "expected_deadline_ns": 400000000000
+      }
+    },
+    {
+      "name": "renewal_omits_provider_and_starts_at_previous_end",
+      "valid": true,
+      "expected": "success_renewal",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000002",
+        "action": "renew",
+        "socket": "existing",
+        "previous_reservation_id": "12345678-1234-1234-1234-000000000003",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "reservation_id": "12345678-1234-1234-1234-000000000004",
+          "meter": "stt",
+          "issued_at": "2026-11-15T12:04:20.000000Z",
+          "server_time": "2026-11-15T12:04:20.000000Z",
+          "authorized_from": "2026-11-15T12:05:00.000000Z",
+          "authorized_until": "2026-11-15T12:10:00.000000Z",
+          "policy_version": "stt-direct-v1"
+        }
+      }
+    },
+    {
+      "name": "round_trip_at_least_remaining_window",
+      "valid": false,
+      "expected": "rejected_response",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "reservation_id": "12345678-1234-1234-1234-000000000003",
+          "meter": "stt",
+          "issued_at": "2026-11-15T12:00:00.000000Z",
+          "server_time": "2026-11-15T12:00:00.000000Z",
+          "authorized_from": "2026-11-15T12:00:00.000000Z",
+          "authorized_until": "2026-11-15T12:05:00.000000Z",
+          "policy_version": "stt-direct-v1",
+          "provider": {
+            "kind": "deepgram",
+            "endpoint": "wss://api.deepgram.com/v1/listen",
+            "credential": "synthetic-not-a-provider-credential",
+            "credential_expires_at": "2026-11-15T12:00:30.000000Z"
+          }
+        }
+      },
+      "timing": {
+        "t0_ns": 100000000000,
+        "t1_ns": 400000000000,
+        "expected_deadline_ns": null
+      }
+    },
+    {
+      "name": "monotonic_deadline_overflow",
+      "valid": false,
+      "expected": "rejected_response",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "reservation_id": "12345678-1234-1234-1234-000000000003",
+          "meter": "stt",
+          "issued_at": "2026-11-15T12:00:00.000000Z",
+          "server_time": "2026-11-15T12:00:00.000000Z",
+          "authorized_from": "2026-11-15T12:00:00.000000Z",
+          "authorized_until": "2026-11-15T12:05:00.000000Z",
+          "policy_version": "stt-direct-v1",
+          "provider": {
+            "kind": "deepgram",
+            "endpoint": "wss://api.deepgram.com/v1/listen",
+            "credential": "synthetic-not-a-provider-credential",
+            "credential_expires_at": "2026-11-15T12:00:30.000000Z"
+          }
+        }
+      },
+      "timing": {
+        "t0_ns": 18446744073709550616,
+        "t1_ns": 18446744073709550716,
+        "expected_deadline_ns": null
+      }
+    },
+    {
+      "name": "timestamp_with_unpaired_surrogate",
+      "valid": false,
+      "expected": "rejected_response",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000001",
+        "action": "start",
+        "socket": "new",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "raw_response_utf8": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body_utf8": "{\"reservation_id\":\"12345678-1234-1234-1234-000000000003\",\"meter\":\"stt\",\"issued_at\":\"2026-11-15T12:00:00.000000Z\",\"server_time\":\"2026-11-15T12:00:00.000000Z\",\"authorized_from\":\"2026-11-15T12:00:00.000000Z\",\"authorized_until\":\"\\ud800\",\"policy_version\":\"stt-direct-v1\",\"provider\":{\"kind\":\"deepgram\",\"endpoint\":\"wss://api.deepgram.com/v1/listen\",\"credential\":\"synthetic-not-a-provider-credential\",\"credential_expires_at\":\"2026-11-15T12:00:30.000000Z\"}}"
+      }
+    },
+    {
+      "name": "renewal_provider_cannot_be_null",
+      "valid": false,
+      "expected": "rejected_response",
+      "request": {
+        "idempotency_key": "12345678-1234-1234-1234-000000000002",
+        "action": "renew",
+        "socket": "existing",
+        "previous_reservation_id": "12345678-1234-1234-1234-000000000003",
+        "policy_version": "stt-direct-v1",
+        "consent_version": "stt-direct-audio-v1"
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "reservation_id": "12345678-1234-1234-1234-000000000004",
+          "meter": "stt",
+          "issued_at": "2026-11-15T12:04:20.000000Z",
+          "server_time": "2026-11-15T12:04:20.000000Z",
+          "authorized_from": "2026-11-15T12:05:00.000000Z",
+          "authorized_until": "2026-11-15T12:10:00.000000Z",
+          "policy_version": "stt-direct-v1",
+          "provider": null
+        }
+      }
+    }
+  ]
+}

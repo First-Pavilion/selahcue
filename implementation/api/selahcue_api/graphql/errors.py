@@ -33,9 +33,31 @@ class ErrorCode(str, Enum):
     # Server-side misconfiguration or failure. Distinct from NOT_IMPLEMENTED, which
     # says "by design"; INTERNAL says "this should work and does not".
     INTERNAL = "INTERNAL"
+    PROVIDER_PROVISIONING = "PROVIDER_PROVISIONING"
+    PROVISIONING_CAPACITY_EXHAUSTED = "PROVISIONING_CAPACITY_EXHAUSTED"
+    CLOUD_NOT_ENABLED = "CLOUD_NOT_ENABLED"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    RECONCILIATION_PENDING = "RECONCILIATION_PENDING"
+    POLICY_CHANGED = "POLICY_CHANGED"
+    QUOTA_EXHAUSTED = "QUOTA_EXHAUSTED"
+    SESSION_PENDING = "SESSION_PENDING"
+    ALREADY_ISSUED = "ALREADY_ISSUED"
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"
+    REQUEST_MISMATCH = "REQUEST_MISMATCH"
 
 
 SAFE_MESSAGES = {
+    ErrorCode.PROVIDER_PROVISIONING: "Cloud transcription is being prepared.",
+    ErrorCode.PROVISIONING_CAPACITY_EXHAUSTED: "Cloud provisioning capacity is unavailable.",
+    ErrorCode.CLOUD_NOT_ENABLED: "Cloud transcription is unavailable.",
+    ErrorCode.PROVIDER_UNAVAILABLE: "The cloud provider is unavailable.",
+    ErrorCode.RECONCILIATION_PENDING: "Cloud usage reconciliation is pending.",
+    ErrorCode.POLICY_CHANGED: "The cloud transcription policy has changed.",
+    ErrorCode.QUOTA_EXHAUSTED: "The cloud allowance is exhausted.",
+    ErrorCode.SESSION_PENDING: "The session request is pending.",
+    ErrorCode.ALREADY_ISSUED: "Authorization has already been issued for this request.",
+    ErrorCode.RESERVATION_RELEASED: "This reservation has been released.",
+    ErrorCode.REQUEST_MISMATCH: "The request does not match the saved session.",
     ErrorCode.ACTIVATION_OPERATION_CONFLICT: "This activation does not match the saved operation or device.",
     ErrorCode.ACTIVATION_OPERATION_COMPLETED: "The activation completed and its original credential is unavailable.",
     ErrorCode.UNAUTHENTICATED: "Authentication is required.",

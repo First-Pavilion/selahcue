@@ -125,14 +125,14 @@ def test_waiting_free_renewal_rechecks_committed_suspension(client, path):
 
 def test_migration_preserves_existing_licence_without_managing_it():
     old_leaf = ("selahcue_license_keys", "0002_applicensekey_prior_status")
-    new_leaf = ("selahcue_license_keys", "0003_free_license_lifecycle")
     executor = MigrationExecutor(connection)
-    executor.migrate([old_leaf])
+    latest = executor.loader.graph.leaf_nodes()
     try:
+        executor.migrate([old_leaf])
         original = seed_license(seed_org(tag="pre-managed"))
         before = AppLicenseKey.objects.values().get(pk=original.pk)
     finally:
-        MigrationExecutor(connection).migrate([new_leaf])
+        MigrationExecutor(connection).migrate(latest)
     assert AppLicenseKey.objects.values().get(pk=original.pk) == before
     assert not FreeLicenseLifecycle.objects.filter(license_key_id=original.pk).exists()
 

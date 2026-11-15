@@ -21,8 +21,8 @@ class GraphQLEndpointContract:
 # surfaces or deliberately not. Nothing else enforces this, because `authenticate_device_token`
 # checks the token and never the licence.
 #
-# COMMERCIAL — refused with POLICY_DENIED while the licence is not activatable, by calling
-#   `devices.services.require_commercial_service` (the one named enforcement point).
+# COMMERCIAL — refused with POLICY_DENIED while the licence is not activatable.
+#   STT checks the same licence window alongside its locked original device and token.
 # ALLOWED_WHILE_SUSPENDED — reachable on purpose; the reason is on the route below.
 LICENSE_GATE_COMMERCIAL = "commercial"
 LICENSE_GATE_ALLOWED_WHILE_SUSPENDED = "allowed_while_suspended"
@@ -113,6 +113,16 @@ def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
         CommandEndpointContract(
             "desktop", "v1/usage-events:batch", "POST", "device_token",
             license_gate=LICENSE_GATE_COMMERCIAL,
+        ),
+        # The two cloud routes authenticate only the Bearer header. A valid
+        # device can read its balances while suspended, but cannot start cloud work.
+        CommandEndpointContract(
+            "desktop", "v1/stt/session", "POST", "device_token",
+            license_gate=LICENSE_GATE_COMMERCIAL,
+        ),
+        CommandEndpointContract(
+            "desktop", "v1/quota", "GET", "device_token",
+            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
         ),
     )
 
