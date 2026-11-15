@@ -1,3 +1,6 @@
+from zoneinfo import available_timezones
+
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -40,6 +43,11 @@ class CustomerOrg(models.Model):
             models.Index(fields=["slug"]),
             models.Index(fields=["primary_contact_email"]),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.timezone != "UTC" and self.timezone not in available_timezones():
+            raise ValidationError({"timezone": "Select a valid IANA time zone."})
 
     def __str__(self) -> str:
         return self.name

@@ -515,3 +515,25 @@ class CatalogueRevision(models.Model):
 
     def __str__(self) -> str:
         return f"catalogue revision {self.revision}"
+
+
+class OrgPlanGrant(models.Model):
+    """An effective-dated staff grant. Resolution does not mutate grant history."""
+
+    org = models.ForeignKey("selahcue_accounts.CustomerOrg", on_delete=models.PROTECT)
+    plan = models.ForeignKey(Plan, on_delete=models.PROTECT)
+    starts_at = models.DateTimeField()
+    ends_at = models.DateTimeField()
+    ended_at = models.DateTimeField(null=True, blank=True)
+    granted_by_actor_id = models.CharField(max_length=128)
+    reason = models.TextField()
+
+    class Meta:
+        constraints = [
+            *accountability_constraints("org_plan_grant", actor_field="granted_by_actor_id"),
+            models.CheckConstraint(
+                condition=models.Q(starts_at__lt=models.F("ends_at")),
+                name="org_plan_grant_valid_interval",
+            ),
+        ]
+        indexes = [models.Index(fields=["org", "ends_at"], name="org_plan_grant_ends_idx")]
