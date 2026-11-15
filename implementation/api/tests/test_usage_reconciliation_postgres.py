@@ -256,23 +256,370 @@ def _publish_with_delivery_receipt(work, broker_app, *, clock=None):
     return state
 
 
+class _UsageDeliveryDiagnostic:
+    """Finite fixture-only receipts; configuration alone is never a channel receipt.
+
+    Copied into the spawned worker with inspect.getsource, so this class imports
+    only its own dependencies and never imports the Django test module there.
+    """
+
+    marker = "TASK7_USAGE_DELIVERY "
+    namespace_fields = {"app", "transport", "host", "port", "db", "broker_match",
+                        "prefix_sha256", "prefix_match", "queue", "exchange", "routing_key"}
+    identity_fields = {"task_name_match", "task_id_match", "work_id_match"}
+
+    def __init__(self, broker, prefix, task_id, work_id, *, stream=None):
+        import time
+        from urllib.parse import urlsplit
+
+        self.started = time.monotonic()
+        self.events, self.stream = [], stream
+        self.prefix, self.task_id, self.work_id = prefix, task_id, work_id
+        self.broker = urlsplit(broker)
+        self.publish_channel = self.publish_client = None
+
+    @classmethod
+    def valid(cls, row):
+        import re
+
+        if type(row) is not dict:
+            return False
+        stage = row.get("stage")
+        if type(stage) is not str:
+            return False
+        fields = {"stage", "elapsed_ms", "overflow"}
+        if stage == "publish_channel":
+            fields |= cls.namespace_fields | cls.identity_fields
+        elif stage == "consumer_channel":
+            fields |= cls.namespace_fields
+        elif stage == "received":
+            fields |= cls.identity_fields | {"routing_key"}
+        elif stage == "queue_counts":
+            fields |= {"counts"}
+        elif stage not in {"publish_unknown", "consumer_unknown", "received_unknown", "counts_unknown", "overflow"}:
+            return False
+        if set(row) != fields or type(row["elapsed_ms"]) is not int or not 0 <= row["elapsed_ms"] <= 3_600_000:
+            return False
+        for key in fields & {"overflow", "broker_match", "prefix_match", *cls.identity_fields}:
+            if type(row[key]) is not bool:
+                return False
+        if row["overflow"] != (stage == "overflow"):
+            return False
+        enums = {"app": {"task6-test", "selahcue_api", "other"}, "transport": {"redis", "other"},
+                 "host": {"expected-loopback", "other"},
+                 "queue": {"expected", "other", "absent"}, "exchange": {"expected", "other", "absent"},
+                 "routing_key": {"expected", "other", "absent"}}
+        for key, allowed in enums.items():
+            if key in fields and (type(row[key]) is not str or row[key] not in allowed):
+                return False
+        if "port" in fields:
+            if type(row["port"]) is not int or not 1 <= row["port"] <= 65535:
+                return False
+            if type(row["db"]) is not int or not 0 <= row["db"] <= 15:
+                return False
+            if type(row["prefix_sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", row["prefix_sha256"]):
+                return False
+        if "counts" in fields:
+            counts = row["counts"]
+            if type(counts) is not list or len(counts) != 4 or any(type(n) is not int or not 0 <= n <= 2**31 - 1 for n in counts):
+                return False
+        return True
+
+    def emit(self, stage, **fields):
+        import json
+        import time
+
+        if len(self.events) >= 8:
+            return
+        if len(self.events) == 7:
+            stage, fields = "overflow", {}
+        row = {"stage": stage, "elapsed_ms": min(3_600_000, max(0, int((time.monotonic() - self.started) * 1000))),
+               "overflow": stage == "overflow", **fields}
+        if not self.valid(row):
+            return
+        line = self.marker + json.dumps(row, separators=(",", ":"))
+        if len(line.encode("utf-8")) > 2048:
+            return
+        self.events.append(row)
+        if self.stream is not None:
+            print(line, file=self.stream, flush=True)
+
+    def unknown(self, stage):
+        try:
+            self.emit(stage)
+        except Exception:
+            pass  # Broken diagnostic output cannot replace a native error.
+
+    def observe(self, stage, reader):
+        # No error text, task repr, arbitrary headers or configuration enters a marker.
+        try:
+            self.emit(stage, **reader())
+        except Exception:
+            self.unknown({"publish_channel": "publish_unknown", "consumer_channel": "consumer_unknown",
+                          "received": "received_unknown", "queue_counts": "counts_unknown"}[stage])
+
+    @staticmethod
+    def selected(value):
+        return "expected" if value == "provider_usage" else "absent" if value in (None, "") else "other"
+
+    def namespace(self, channel, app, queue, exchange, routing_key, *, client=None):
+        import hashlib
+        from kombu.transport.redis import Channel
+
+        # Channel.__init__ has already pinged this cached client. Do not resolve
+        # the lazy property here or create/acquire any connection for observation.
+        if not isinstance(channel, Channel):
+            raise ValueError
+        if client is None:
+            client = channel.__dict__["client"]
+        params = client.connection_pool.connection_kwargs
+        prefix = getattr(client, "global_keyprefix", "")
+        if type(prefix) is not str or len(prefix) > 128 or not prefix.isascii():
+            raise ValueError
+        host, port, db = params.get("host"), params.get("port"), params.get("db")
+        loopback = host in ("localhost", "127.0.0.1", "::1")
+        match = (loopback and host == self.broker.hostname and port == (self.broker.port or 6379)
+                 and db == int(self.broker.path.strip("/") or "0"))
+        return {"app": app if app in ("task6-test", "selahcue_api") else "other", "transport": "redis",
+                "host": "expected-loopback" if loopback else "other", "port": port, "db": db,
+                "broker_match": match, "prefix_sha256": hashlib.sha256(prefix.encode("ascii")).hexdigest(),
+                "prefix_match": prefix == self.prefix, "queue": self.selected(queue),
+                "exchange": self.selected(exchange), "routing_key": self.selected(routing_key)}
+
+    def identity(self, name, task_id, kwargs):
+        return {"task_name_match": name == "usage.recover_mint", "task_id_match": task_id == self.task_id,
+                "work_id_match": type(kwargs) is dict and kwargs.get("work_id") == self.work_id}
+
+    def publish(self, channel, message, exchange, routing_key, app, *, client=None):
+        import json
+
+        def read():
+            body = message["body"]
+            if (message.get("content-type") != "application/json" or message.get("content-encoding") != "utf-8"
+                    or type(body) not in (str, bytes) or len(body) > 8192):
+                raise ValueError
+            decoded = json.loads(body)
+            if type(decoded) is not list or len(decoded) != 3 or type(decoded[1]) is not dict:
+                raise ValueError
+            row = self.namespace(channel, app, routing_key, exchange, routing_key, client=client)
+            row.update(self.identity(message["headers"].get("task"), message["headers"].get("id"), decoded[1]))
+            if not self.valid({"stage": "publish_channel", "elapsed_ms": 0, "overflow": False, **row}):
+                raise ValueError
+            self.publish_channel = channel
+            self.publish_client = client if client is not None else channel.__dict__["client"]
+            return row
+        self.observe("publish_channel", read)
+
+    def publisher_hook(self, app):
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        from kombu.transport.redis import Channel
+
+        native_publish, native_acquire = Channel.basic_publish, Channel.conn_or_acquire
+        pending = [None]  # Only the currently executing native publication.
+
+        @contextmanager
+        def acquire(channel, *args, **kwargs):
+            # _put acquires this synchronous client immediately before LPUSH.
+            # The channel's cached client is asynchronous and is not that client.
+            with native_acquire(channel, *args, **kwargs) as client:
+                observation = pending[0]
+                if observation is not None and observation[0] is channel:
+                    _, message, exchange, routing_key = observation
+                    try:
+                        self.publish(channel, message, exchange, routing_key, app.main, client=client)
+                    except Exception:
+                        self.unknown("publish_unknown")
+                yield client
+
+        def forwarding(channel, *args, **kwargs):
+            previous, before = pending[0], len(self.events)
+            try:
+                try:
+                    message = args[0] if args else kwargs["message"]
+                    # Preserve pre-base64 serialized identity without mutating the
+                    # native message that basic_publish augments in place.
+                    envelope = {key: message[key] for key in ("body", "headers", "content-type", "content-encoding")}
+                    pending[0] = (channel, envelope, args[1] if len(args) > 1 else kwargs.get("exchange"),
+                                  args[2] if len(args) > 2 else kwargs.get("routing_key"))
+                except Exception:
+                    pending[0] = None
+                return native_publish(channel, *args, **kwargs)
+            finally:
+                pending[0] = previous
+                if len(self.events) == before:
+                    self.unknown("publish_unknown")
+
+        @contextmanager
+        def installed():
+            with patch.object(Channel, "basic_publish", forwarding), patch.object(Channel, "conn_or_acquire", acquire):
+                yield
+        return installed()
+
+    def ready(self, sender=None, **kwargs):
+        def read():
+            consumer = sender.task_consumer
+            if len(consumer.queues) != 1:
+                raise ValueError
+            queue = consumer.queues[0]
+            row = self.namespace(consumer.channel, sender.app.main, queue.name, queue.exchange.name, queue.routing_key)
+            if not self.valid({"stage": "consumer_channel", "elapsed_ms": 0, "overflow": False, **row}):
+                raise ValueError
+            return row
+        self.observe("consumer_channel", read)
+
+    def received(self, request=None, **kwargs):
+        self.observe("received", lambda: {**self.identity(request.name, request.id, request.kwargs),
+                                          "routing_key": self.selected(request.delivery_info.get("routing_key"))})
+
+    def worker_hooks(self):
+        from contextlib import ExitStack
+        from celery import signals
+
+        stack = ExitStack()
+        try:
+            for signal, receiver in ((signals.worker_ready, self.ready), (signals.task_received, self.received)):
+                signal.connect(receiver, weak=False)
+                stack.callback(signal.disconnect, receiver=receiver)
+        except Exception:
+            stack.close()
+            self.unknown("consumer_unknown")
+        return stack
+
+    @classmethod
+    def collect(cls, log):
+        import io
+        import json
+
+        rows = []
+        # Bounded line reads also reject a huge non-marker or malformed JSON line.
+        stream = io.StringIO(log)
+        while len(rows) < 8:
+            line = stream.readline(2049)
+            if not line:
+                break
+            if not line.endswith("\n") and len(line) == 2049:
+                while line and not line.endswith("\n"):
+                    line = stream.readline(2049)
+                continue
+            if not line.startswith(cls.marker) or len(line.encode("utf-8", errors="replace")) > 2048:
+                continue
+            try:
+                row = json.loads(line[len(cls.marker):])
+                if cls.valid(row):
+                    rows.append(row)
+            except (ValueError, TypeError, RecursionError):
+                pass
+        return rows
+
+    @classmethod
+    def branch(cls, parent, worker):
+        parent = [row for row in parent if cls.valid(row)]
+        worker = [row for row in worker if cls.valid(row)]
+        rows = [*parent, *worker]
+        received = [row for row in worker if row["stage"] == "received"]
+        if received:
+            return "received" if all(all(row[k] for k in cls.identity_fields) and row["routing_key"] == "expected" for row in received) else "mismatch"
+        channels = [row for row in rows if row["stage"] in ("publish_channel", "consumer_channel")]
+        if any(not row["broker_match"] or not row["prefix_match"] or row["queue"] != "expected"
+               or row["routing_key"] != "expected" or row["exchange"] == "other"
+               or any(not row[k] for k in cls.identity_fields if k in row) for row in channels):
+            return "mismatch"
+        if (any(row["stage"] == "publish_channel" for row in parent)
+                and any(row["stage"] == "consumer_channel" for row in worker)
+                and not any(row["stage"].endswith("unknown") or row["overflow"] for row in rows)):
+            return "matched_no_receive"
+        return "unknown"
+
+    def queue_counts(self, worker, *, failed_after_deadline):
+        # Optional post-failure observation only. Never run on missing/mismatched
+        # namespace/identity or reception; never change the original work verdict.
+        import time
+
+        deadline = time.monotonic() + 2
+        if not failed_after_deadline or self.branch(self.events, worker) != "matched_no_receive":
+            return
+
+        def read():
+            import json
+            import os
+            import re
+            import subprocess
+            import sys
+            import redis
+
+            channel = self.publish_channel
+            client = self.publish_client
+            params = client.connection_pool.connection_kwargs
+            if (not re.fullmatch(r"task6-[0-9a-f]{32}:", self.prefix)
+                    or channel.priority_steps != [0, 3, 6, 9]
+                    or client.connection_pool.connection_class is not redis.Connection
+                    or params.get("credential_provider") is not None):
+                raise ValueError
+            keys = [client.global_keyprefix + channel._q_for_pri("provider_usage", priority)
+                    for priority in channel.priority_steps]
+            expected = [self.prefix + "provider_usage" + suffix for suffix in ("", "\x06\x163", "\x06\x166", "\x06\x169")]
+            if keys != expected:
+                raise ValueError
+            # No inherited environment/config or key material in argv/output.
+            config = {key: params[key] for key in ("host", "port", "db", "username", "password") if key in params}
+            payload = json.dumps([config, keys])
+            if len(payload.encode("utf-8")) > 2048:
+                raise ValueError
+            source = """
+import json, sys, redis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
+config, keys = json.load(sys.stdin)
+client = redis.Redis(**config, socket_connect_timeout=0.15, socket_timeout=0.15,
+                     retry=Retry(NoBackoff(), 0), retry_on_timeout=False)
+try:
+    with client.pipeline(transaction=False) as pipe:
+        for key in keys:
+            pipe.llen(key)
+        print(json.dumps(pipe.execute()))
+finally:
+    client.close()
+"""
+            # Reserve cleanup/parse time from the single total two-second budget.
+            timeout = min(1.5, deadline - time.monotonic() - 0.2)
+            if timeout <= 0:
+                raise ValueError
+            result = subprocess.run([sys.executable, "-B", "-c", source], input=payload,
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout,
+                                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"})
+            if time.monotonic() >= deadline or result.returncode != 0 or len(result.stdout) > 128:
+                raise ValueError
+            counts = json.loads(result.stdout)
+            if not self.valid({"stage": "queue_counts", "elapsed_ms": 0, "overflow": False, "counts": counts}):
+                raise ValueError
+            return {"counts": counts}
+        self.observe("queue_counts", read)
+
+
 def test_real_redis_publish_and_worker_ack_preserve_terminal_usage_work(usage_runtime, tmp_path):
+    import inspect
     from celery import Celery
 
     broker = os.getenv("CELERY_BROKER_URL")
     if not broker or not broker.startswith(("redis://", "rediss://")):
         pytest.skip("Requires the configured disposable Redis broker")
     usage_runtime()
-    code = """
-import os, django
+    code = inspect.getsource(_UsageDeliveryDiagnostic) + """
+import os, sys, django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'selahcue_api.settings')
 django.setup()
 from selahcue_api.celery import app
 app.conf.broker_transport_options = {
     **app.conf.broker_transport_options, 'global_keyprefix': os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
 }
-app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_usage', '--without-gossip',
-                 '--without-mingle', '--without-heartbeat', '--loglevel=INFO'])
+diagnostic = _UsageDeliveryDiagnostic(
+    os.environ['CELERY_BROKER_URL'], os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
+    os.environ['SELAHCUE_TEST_USAGE_TASK_ID'], os.environ['SELAHCUE_TEST_USAGE_WORK_ID'], stream=sys.__stdout__,
+)
+with diagnostic.worker_hooks():
+    app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_usage', '--without-gossip',
+                     '--without-mingle', '--without-heartbeat', '--loglevel=INFO'])
 """
     prefix = f"task6-{uuid4().hex}:"
     broker_app = Celery("task6-test", broker=broker)
@@ -283,12 +630,16 @@ app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_u
         attempt = uuid4()
         work = ensure_work("MINT_RECOVERY", str(attempt), NOW, attempt_id=attempt)
     env = _worker_environment(prefix)
+    delivery = UsageOutbox.objects.get(work=work)
+    env.update({"SELAHCUE_TEST_USAGE_TASK_ID": str(delivery.pk), "SELAHCUE_TEST_USAGE_WORK_ID": str(work.pk)})
+    diagnostic = _UsageDeliveryDiagnostic(broker, prefix, str(delivery.pk), str(work.pk))
     with (tmp_path / "worker.log").open("w+") as output:
         process = subprocess.Popen(
             [sys.executable, "-c", code], stdout=output, stderr=subprocess.STDOUT, env=env,
         )
         try:
-            publication = _publish_with_delivery_receipt(work, broker_app)
+            with diagnostic.publisher_hook(broker_app):
+                publication = _publish_with_delivery_receipt(work, broker_app)
             expires = time.monotonic() + 15
             while time.monotonic() < expires and process.poll() is None:
                 if UsageWork.objects.filter(pk=work.pk, state="COMPLETE").exists():
@@ -298,8 +649,14 @@ app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_u
             log = output.read()
             assert "usage.recover_mint" in log
             final = UsageOutbox.objects.get(work=work)
-            assert UsageWork.objects.get(pk=work.pk).state == "COMPLETE", {
+            worker_events = diagnostic.collect(log)
+            work_state = UsageWork.objects.get(pk=work.pk).state
+            diagnostic.queue_counts(worker_events, failed_after_deadline=(work_state != "COMPLETE" and time.monotonic() >= expires))
+            # Freeze the original verdict before the optional diagnostic allowance.
+            assert work_state == "COMPLETE", {
                 "publication": publication, "final_delivery_state": final.state, "worker": log[-2500:],
+                "delivery_boundary": diagnostic.branch(diagnostic.events, worker_events),
+                "producer_events": diagnostic.events, "worker_events": worker_events,
             }
             assert UsageOutbox.objects.get(work=work).state == "ACKED"
         finally:
