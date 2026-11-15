@@ -381,15 +381,24 @@ describe('HomeIcon draws every name it accepts, as a decorative stroke icon', ()
     }
   })
 
+  async function renderInvalidName(name: string): Promise<string> {
+    const warnings: string[] = []
+    const html = await server.render('components/home/HomeIcon.vue', { name }, (message) => {
+      warnings.push(message)
+    })
+    assert.deepEqual(warnings, ['Invalid prop: custom validator check failed for prop "name".'], name)
+    return html
+  }
+
   test('an unknown name draws nothing instead of a blank box (and the validator names the set)', async () => {
-    const html = await server.render('components/home/HomeIcon.vue', { name: 'sparkle' })
+    const html = await renderInvalidName('sparkle')
     assert.equal(findAll(parseHtml(html), (e) => e.tag === 'svg' && findAll(e, (c) => c.tag === 'path').length > 0).length, 0)
     assert.match(read('components/home/HomeIcon.vue'), /validator/)
   })
 
   test('a name that is a property of every object (__proto__, constructor, toString, hasOwnProperty, valueOf) draws nothing: the lookup is by own property', async () => {
     for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
-      const html = await server.render('components/home/HomeIcon.vue', { name })
+      const html = await renderInvalidName(name)
       assert.deepEqual(findAll(parseHtml(html), (e) => e.tag === 'svg').map((e) => e.attrs['viewBox']), [], `${name} drew an svg`)
     }
   })

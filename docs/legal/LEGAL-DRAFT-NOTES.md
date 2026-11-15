@@ -156,7 +156,7 @@ Desktop, backend and website integration evidence must match the actual packages
 | L-51 | Gate | Terms 5.6, 13.1 | Open-source licence notices and the NDI attribution are published | Not built | Engineering (`{{THIRD_PARTY_NOTICES_LOCATION}}`; the NDI attribution wording is filled in Terms 13.1, §5) |
 | L-52 | Gate | Terms 10.1 | Scripture detection requires operator approval by default; AI notes show the AI-generated label and fabrication warning | Partly built (label and warning in `selahcue-core`/`selahcue-cloud`; the detection default is specified in PRD FR-115 but not verified in code) | Engineering to confirm |
 | L-53 | Gate | Terms 14.2, Privacy 3.6 and 11 | Verify the support mailbox is staffed for the intended service and rights requests. | Address is owner-supplied. The prior fixed response targets lack evidence and were removed. | Operations confirms mailbox handling and rights timing. |
-| L-54 | Gate | Terms 22 | Governing law and forum are chosen | Undecided | Owner + counsel |
+| L-54 | Gate | Terms 22 | Confirm the governing law and forum before publication | Nigerian law and the courts of Abeokuta, Ogun State, Nigeria are drafted. Owner and counsel review is pending. | Owner + counsel |
 | L-55 | Out of scope | Privacy 1.3 and 3.11, Terms 1.2 | Controller app release and store policy operation. | Separate Controller documents remain in source. These drafts make no Controller distribution claim. | Reconcile with the separate mobile release. |
 | L-56 | Gate | Website pages | Confirm home, pricing/FAQ copy, download, contact, signup and linked legal routes match the Free public release. | Website source exposes separate signup-linked /privacy and /terms. Public manifest remains unpublished. | Verify actual accepted build and manual deployment, including no paid or unverified shipping claims. |
 | L-57 | Out of scope | Prior Terms 8.3 and 8.9 | Paid service invoices and tax collection and remittance. | Historical paid-service readiness gate. No payments are collected in this release. | Owner and accountant verify requirements before paid service. |
@@ -195,7 +195,7 @@ decided. Each needs owner and counsel acceptance (checklist row L-50) before pub
 
 | Clause | What it does | Why it is a proposal |
 |---|---|---|
-| Terms 17.3 | Caps SelahCue's liability at the greater of 12 months' fees and `{{MINIMUM_LIABILITY_AMOUNT}}` | A risk allocation; the floor protects free users' claims from being capped at zero |
+| Terms 17.3 | Caps SelahCue's liability at the greater of 12 months' fees and US$25,000 | A risk allocation; the floor protects free users' claims from being capped at zero |
 | Terms 19 | Customer indemnity for infringing content and unlawful recording | A risk allocation; may be resisted by churches; can be deleted |
 | Terms 6.5 | A licence or Plan change never interrupts a running Session | Decided product rule (CON-P1, FR-549); publishing it makes it a contractual promise |
 | Terms 14.3 | Ability to change, add or remove features | Review alongside the Free service description and consumer-rights savings. Earlier paid refund language is deferred. |
@@ -478,9 +478,10 @@ generic posture leaves out. The v0.3 policies no longer map clause by clause to 
 
 ### 10.5 Governing law and forum
 
-Options for `{{GOVERNING_LAW}}` / `{{DISPUTE_FORUM}}`: Nigerian law with the courts of Lagos State;
-Nigerian law with arbitration seated in Lagos under the AMA 2023; or either with consumers keeping
-home-country rights (already in Terms 22.3).
+The October draft considered Nigerian law with the courts of Lagos State or arbitration seated in
+Lagos under the AMA 2023. Terms 22.1–22.2 now draft Nigerian law and the courts of Abeokuta, Ogun
+State, Nigeria. Terms 22.3 preserves applicable consumer rights to bring a claim where the consumer
+lives. Owner and counsel review of the drafted law and forum remains pending under L-54.
 
 ## 11. Source ledger
 

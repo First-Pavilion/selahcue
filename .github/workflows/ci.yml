@@ -1828,6 +1828,21 @@ jobs:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:secondary
 
+      - name: Legal source and generated pages agree
+        if: ${{ !cancelled() }}
+        run: npm run check:legal
+      - name: Legal pages (full Chromium suite)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/legal_pages_headless.py --only all
+      - name: Public acquisition and route exclusions (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: python3 tests/public_routes_headless.py --engine both
+      - name: Public downloads (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: python3 tests/public_downloads_headless.py --engine both
+
       # Build the shipping nginx configuration, then exercise real response headers in
       # both installed browsers. A preview server cannot verify nginx CSP inheritance.
       - name: Build and verify production security headers

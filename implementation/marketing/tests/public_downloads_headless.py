@@ -39,7 +39,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             threading.Event().wait(8)
             self.close_connection = True
             return
-        if self.path == '/download':
+        if self.path in ('/download', '/pilot-privacy'):
             self.path = '/index.html'
         return super().do_GET()
 
@@ -94,7 +94,7 @@ def run(engine, base):
             navigations.append((url, request.all_headers()))
             route.fulfill(content_type='text/html', body='<h1>Synthetic installer navigation</h1>')
         elif (url.startswith(base + '/') and request.method == 'GET' and
-              (urlsplit(url).path in ('/download', '/favicon.ico', '/selahcue-logo.png') or
+              (urlsplit(url).path in ('/download', '/pilot-privacy', '/favicon.ico', '/selahcue-logo.png') or
                urlsplit(url).path.startswith(('/assets/', '/fonts/', '/icons/')))):
             route.continue_()
         else:
@@ -109,6 +109,11 @@ def run(engine, base):
     """)
     page = context.new_page()
     page.on('pageerror', lambda error: errors.append(str(error)))
+    page.goto(base + '/pilot-privacy')
+    expect(page.get_by_role('heading', name='Pilot registration data notice')).to_be_visible()
+    expect(page.locator('main')).to_contain_text('ARCHIVED PILOT NOTICE')
+    expect(page.locator('main')).to_contain_text('Pilot registration is closed.')
+
     panel = page.locator('#public-downloads')
     retry = panel.get_by_role('button', name='Retry availability check')
     links = panel.get_by_role('link')
@@ -134,10 +139,21 @@ def run(engine, base):
     expect(links).to_have_count(0)
     expect(retry).to_be_visible(timeout=7500)
 
-    state['mode'] = 'published'
     retry.focus()
     expect(retry).to_be_focused()
     assert retry.evaluate("el => el.matches(':focus-visible')"), 'Retry lacks keyboard focus'
+    for mode in ['partial', 'error']:
+        state['mode'] = mode
+        previous_requests = len(requests)
+        page.keyboard.press('Enter')
+        expect(panel.get_by_role('status')).to_contain_text('couldn’t check installer availability')
+        expect(links).to_have_count(0)
+        expect(retry).to_be_enabled()
+        expect(retry).to_be_focused()
+        assert retry.evaluate("el => el.matches(':focus-visible')"), f'Retry lost keyboard focus after {mode}'
+        assert len(requests) == previous_requests + 1, requests
+
+    state['mode'] = 'published'
     page.keyboard.press('Enter')
     expect(links).to_have_count(4)
     expect(panel.get_by_role('heading', name='Desktop installers')).to_be_focused()
@@ -169,13 +185,15 @@ def run(engine, base):
     expect(page.get_by_role('heading', name='Synthetic installer navigation')).to_be_visible()
     assert len(navigations) == 1 and navigations[0][0] == selected, navigations
     assert {'referer', 'cookie', 'authorization'}.isdisjoint(navigations[0][1])
-    assert len(requests) == 6, requests
+    assert len(requests) == 8, requests
     assert all('cookie' not in headers for headers in requests), requests
     assert not unexpected, unexpected
     assert not errors, errors
+    version = browser.version
     context.close()
     browser.close()
-    print(f'{engine.name}: PASS unpublished/missing/partial/HTTP-error/timeout, keyboard retry and navigation, '
+    print(f'{engine.name} {version}: PASS archived notice; unpublished/missing/partial/HTTP-error/timeout; '
+          'two failed keyboard retries, then successful retry and navigation; '
           '4 targets and disclosures, 320/375/768/1440px and request/cookie checks')
 
 

@@ -3,8 +3,8 @@
 
 `tests/secondaryPages.test.ts` reads the source and server-renders the views. This drives the BUILT
 site (`dist/`) in a real browser, because what it cannot see is what the Figma audit found wrong:
-computed size and colour, where a box lands, the order Tab visits things in, whether a focus ring is
-drawn, whether the whole featured card is one link, whether the page scrolls sideways. Every number
+computed size and colour, where a box lands, Tab order, focus and :focus-visible matching, link
+activation, whether the whole featured card is one link, whether the page scrolls sideways. Every number
 quoted next to a check is a Figma value from `docs/design/visual-parity/marketing/figma-style/*.json`
 or an accessibility floor (WCAG AA 4.5:1 for normal text).
 
@@ -14,8 +14,7 @@ Usage (from implementation/marketing, after `npm run build`):
 Needs Playwright and an engine, and the network for Inter. If either is missing this exits 0 with a
 LOUD skip unless SELAHCUE_HEADLESS_REQUIRE=1, which makes a missing engine a hard failure.
 
-This file is not wired into `npm test` (that globs `tests/*.test.ts`) or CI: that needs a `package.json`
-script and a workflow line, which are outside this ticket's footprint (reported to the coordinator).
+CI runs this check through `npm run test:secondary`. The `npm test` glob covers Node tests only.
 
 Exit codes: 0 pass (or loud skip), 1 a check failed, 2 infrastructure problem, 3 a required engine is unavailable.
 """
@@ -631,14 +630,14 @@ def check_cloud_help(page, c: Checks, base: str) -> None:
                 if help_link.evaluate("(el) => el === document.activeElement"):
                     break
             c.ok(help_link.evaluate("(el) => el === document.activeElement && el.matches(':focus-visible')"),
-                 f"blog: transcription help link has visible keyboard focus at {width}px")
+                 f"blog: Tab reaches the transcription help link and it matches :focus-visible at {width}px")
             page.keyboard.press("Enter")
             page.wait_for_url(base + support)
             page.get_by_role("heading", name="Transcription will not start", exact=True).wait_for()
             text = " ".join(page.locator("main article").inner_text().split())
             for pattern, label in (
                 (r"local mode.*Start listening.*internet", "local model setup"),
-                (r"microphone access.*stop and start listening", "local microphone troubleshooting"),
+                (r"on macOS, grant microphone access in System Settings.*stop and start listening", "macOS microphone troubleshooting"),
                 (r"audio directly to Deepgram.*sends the transcript text to SelahCue.*separate consent", "the two processing paths"),
                 (r"activated.*weekly allowance.*temporarily unavailable.*switch to local mode", "cloud access checks and local fallback"),
                 (r"keep the source transcript and any prior draft.*Retry when", "recovery guidance for a failed note"),

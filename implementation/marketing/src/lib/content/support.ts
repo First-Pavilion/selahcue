@@ -382,7 +382,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
       { type: 'h2', text: 'No audio reaching the microphone' },
       {
         type: 'p',
-        text: 'If the console says **No audio is reaching the microphone**, grant microphone access in System Settings under Privacy & Security, Microphone, then stop and start listening again.',
+        text: 'If the console says **No audio is reaching the microphone**, on macOS, grant microphone access in System Settings under Privacy & Security, Microphone, then stop and start listening again.',
       },
       {
         type: 'callout',

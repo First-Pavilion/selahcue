@@ -153,7 +153,12 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # 2765 -> 2817 in bounded initial verify-resend readiness: the complete local
 # 78-scenario run measured this count with zero behavioral failures; the added
 # delayed case shares the original 52 checks. Keep the exact equality guard.
-EXPECTED_MIN_CHECKS = 2817
+# 2817 -> 2816 in the public website integration: 78 scenarios are unchanged.
+# The V2 never-blank account banner check was removed with that copy. The body
+# and installer CTA were replaced one-for-one and the offline banner, success
+# glyph, alignment and heading focus checks remain. Task 5 measured 2816 (exit 4
+# at the old guard); verify the reconciled count in the required hosted run.
+EXPECTED_MIN_CHECKS = 2816
 
 
 def find_chrome() -> str | None:

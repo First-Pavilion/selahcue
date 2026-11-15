@@ -87,9 +87,12 @@ describe('legal-drift workflow', { skip: !PRESENT && 'repository workflows are n
     assert.match(scripts['test:legal-pages'] ?? '', /^npm run build && python3 scripts\/legal_pages_headless\.py$/)
   })
 
-  test('does not live in ci.yml: the marketing job there is edited by other PRs', () => {
-    const ci = readFileSync(`${REPO}.github/workflows/ci.yml`, 'utf8')
-    assert.ok(!ci.includes('check:legal'), 'keep the drift guard in its own workflow')
+  test('the marketing job also checks legal drift and runs the full legal browser suite', () => {
+    const ci = readFileSync(WORKFLOW.replace('legal-drift.yml', 'ci.yml'), 'utf8')
+    const marketing = /^ {2}marketing:\n([\s\S]*?)(?=^ {2}\w+:)/m.exec(ci)?.[1]
+    assert.ok(marketing, 'could not find the marketing job')
+    assert.match(marketing, /run: npm run check:legal/)
+    assert.match(marketing, /SELAHCUE_HEADLESS_REQUIRE: "1"\n\s+run: python3 scripts\/legal_pages_headless\.py --only all/)
   })
 })
 
