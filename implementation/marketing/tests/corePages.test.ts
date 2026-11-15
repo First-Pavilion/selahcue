@@ -66,13 +66,6 @@ type Page = keyof typeof VIEWS
 
 const pages = {} as Record<Page, HtmlNode>
 
-/** P14 adds a separately configured pilot unit; legacy release copy bans still apply
- * to the standard Download content. Pilot behavior/copy is covered by pilot runtime tests,
- * including absence of direct artifact URLs, cloud consent copy and approved policy gating. */
-function standardContent(root: HtmlNode): HtmlNode {
-  return { ...root, children: root.children.filter(child => child.attrs.id !== 'pilot-downloads').map(standardContent) }
-}
-
 let server: ViteDevServer
 const loaded = new Map<string, Component>()
 
@@ -87,11 +80,7 @@ before(async () => {
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
   })
-  for (const page of Object.keys(VIEWS) as Page[]) {
-    const rendered = await render(VIEWS[page])
-    if (page === 'download') assert.equal(all(rendered, node => node.attrs.id === 'pilot-downloads').length, 1, 'pilot component missing; see dedicated runtime tests')
-    pages[page] = page === 'download' ? standardContent(rendered) : rendered
-  }
+  for (const page of Object.keys(VIEWS) as Page[]) pages[page] = await render(VIEWS[page])
 })
 
 after(async () => {
@@ -202,7 +191,7 @@ const BANNED: readonly Banned[] = [
   { id: 'nothing leaves the machine', pattern: /nothing leaves|never leaves|entirely on the machine|zero cloud|stays on your (machine|computer|device)/, because: 'features-11: stated as absolute, and not backed' },
   { id: 'an installer version, format or size', pattern: /\bv\d+\.\d|\.msi\b|\.dmg\b|\bnsis\b|~\s?\d+\s?mb|universal/, pages: ['download'], because: 'download-04: no release exists' },
   { id: 'an OS floor', pattern: /windows 1[01]|macos\s+1\d|monterey|or later/, pages: ['download'], because: 'download-04: no documented minimum' },
-  { id: 'a hardware requirement', pattern: /\d+\s?(gb|mb|ghz)\b|dual-core|quad-core|intel|apple silicon|directx|integrated gpu|discrete gpu|\bssd\b/, pages: ['download'], because: 'download-05: no single backed figure' },
+  { id: 'a hardware requirement', pattern: /\d+\s?(gb|mb|ghz)\b|dual-core|quad-core|directx|integrated gpu|discrete gpu|\bssd\b/, pages: ['download'], because: 'download-05: no single backed figure' },
   { id: 'no account required', pattern: /no account|no internet or account|without an account/, pages: ['download', 'about'], because: 'download-01, about-08: not evidenced' },
   { id: 'store availability', pattern: /available for ios|download on\b|app store badge/, pages: ['download'], because: 'download-09: the apps are not in the stores' },
   { id: 'a placeholder phone', pattern: /mobile app mockup/, pages: ['download'], because: 'download-07: a visible placeholder' },
@@ -437,41 +426,17 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   download: [
     "DOWNLOAD",
     "Get SelahCue for your platform",
-    "See pilot registration availability below. Standard desktop installers are not available to download yet. Core live controls work with no network.",
+    "Choose the desktop installer for your platform when downloads are available.",
     "Free plan · Core live controls work offline",
+    "Desktop installers",
+    "Checking installer availability…",
     "Windows",
-    "Windows desktop app · 64-bit",
-    "Download for Windows",
-    "Not available to download yet",
+    "Windows x64",
     "macOS",
-    "macOS desktop app",
-    "Download for macOS",
-    "Not available to download yet",
-    "System requirements",
-    "MINIMUM",
-    "requirements",
-    "Processor",
-    "To be confirmed",
-    "Memory",
-    "To be confirmed",
-    "Graphics",
-    "To be confirmed",
-    "Storage",
-    "To be confirmed",
-    "Display",
-    "To be confirmed",
-    "RECOMMENDED",
-    "requirements",
-    "Processor",
-    "To be confirmed",
-    "Memory",
-    "To be confirmed",
-    "Graphics",
-    "To be confirmed",
-    "Storage",
-    "To be confirmed",
-    "Display",
-    "To be confirmed",
+    "macOS Apple silicon (arm64)",
+    "macOS Intel (x64)",
+    "Ubuntu",
+    "Ubuntu 24.04 x64",
     "MOBILE CONTROL",
     "Control from your phone",
     "The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
@@ -493,13 +458,13 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Up and running in three steps",
     "01",
     "Download & install",
-    "Run the installer for your platform once it is available.",
+    "Choose the installer for your computer and open it after it downloads.",
     "02",
-    "Build your first plan",
-    "Add scripture and presentations to a service plan and pick your outputs.",
+    "Set up your account",
+    "Create an account and verify your email, then open SelahCue and sign in.",
     "03",
-    "Go live & pair your phone",
-    "Go live, and pair your phone from Network & Mobile in Settings.",
+    "Build a service plan & go live",
+    "Add scripture and presentations, choose your outputs, and go live.",
   ],
   about: [
     "ABOUT",
@@ -789,32 +754,15 @@ describe('Download', () => {
     assert.ok(byClass(pages.download, 'trust-line').length === 1)
   })
 
-  test('download-02: two platform cards, Windows and macOS, no Linux card is added', () => {
+  test('desktop cards name the supported targets while availability is being checked', () => {
     const cards = byClass(pages.download, 'platform-card')
-    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h2')[0] as HtmlNode)), ['Windows', 'macOS'])
-    assert.ok(!/linux/i.test(textOf(pages.download)), 'Linux is not drawn in Figma and no page may claim a Linux installer')
-  })
-
-  test('PR 134 stays: both download buttons are disabled, say so, and name the status that explains them', () => {
-    for (const c of byClass(pages.download, 'platform-card')) {
-      const btn = byClass(c, 'ui-button')[0] as HtmlNode
-      assert.equal(btn.tag, 'button')
-      assert.ok('disabled' in btn.attrs)
-      assert.equal(btn.attrs['aria-disabled'], 'true')
-      const status = all(c, (n) => n.attrs['id'] === btn.attrs['aria-describedby'])[0] as HtmlNode
-      assert.equal(textOf(status), 'Not available to download yet')
-    }
-  })
-
-  test('download-06: two requirement cards, MINIMUM and RECOMMENDED, with five rows each and no invented figure', () => {
-    const cards = byClass(pages.download, 'req-card')
-    // The chip is the visible label; the heading reads "MINIMUM requirements" (review round 1, Cody N15).
-    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['MINIMUM requirements', 'RECOMMENDED requirements'])
-    for (const c of cards) {
-      const rows = byTag(c, 'dt').map((t) => textOf(t))
-      assert.deepEqual(rows, ['Processor', 'Memory', 'Graphics', 'Storage', 'Display'])
-      assert.deepEqual(byTag(c, 'dd').map((d) => textOf(d)), Array(5).fill('To be confirmed'))
-    }
+    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['Windows', 'macOS', 'Ubuntu'])
+    assert.deepEqual(cards.flatMap((c) => byClass(c, 'platform-sub').map(textOf)), [
+      'Windows x64', 'macOS Apple silicon (arm64)', 'macOS Intel (x64)', 'Ubuntu 24.04 x64',
+    ])
+    const panel = all(pages.download, (node) => node.attrs.id === 'public-downloads')[0] as HtmlNode
+    assert.deepEqual(byTag(panel, 'button', 'a'), [])
+    assert.equal(all(pages.download, (node) => node.attrs.id === 'pilot-downloads').length, 0)
   })
 
   test('download-07: the mobile section has the pill, the heading, three bullets and the controller mock, and no placeholder phone', () => {
@@ -838,7 +786,7 @@ describe('Download', () => {
 
   test('download-10: three steps, with Figma titles, numbered 01 to 03', () => {
     const steps = byClass(pages.download, 'step-card')
-    assert.deepEqual(steps.map((s) => textOf(byTag(s, 'h3')[0] as HtmlNode)), ['Download & install', 'Build your first plan', 'Go live & pair your phone'])
+    assert.deepEqual(steps.map((s) => textOf(byTag(s, 'h3')[0] as HtmlNode)), ['Download & install', 'Set up your account', 'Build a service plan & go live'])
     assert.deepEqual(steps.map((s) => textOf(byClass(s, 'step-num')[0] as HtmlNode)), ['01', '02', '03'])
   })
 })

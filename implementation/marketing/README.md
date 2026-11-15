@@ -94,17 +94,55 @@ templates only (no `v-html`).
 
 ## Known gaps
 
-- **Standard downloads do not exist yet.** `/download` shows the Windows and macOS buttons and the App Store and Google Play badges as disabled, because no installer is served and the downloads backend is not built (ClickUp `86ak10afm`; both endpoints return 501). Store publishing is separate open work (`86ajxz3nj`). Wire these up when those land.
 - **Mock data.** `/account` (past the session guard), the affiliate portal and the admin console render hard-coded sample data. The affiliate portal and admin console have no route guard at all, so treat them as unfinished, not as secured.
 - **`tests/` and `scripts/email_mirror_probe.ts` are linted but not type-checked.** `tsconfig.node.json` lists only `vite.config.ts` and the two legal scripts, `scripts/legal_markdown.ts` and `scripts/sync_legal.ts`, so `npm run type-check` covers those and nothing else under `scripts/`. Checking `tests/` by hand with `tsc --strict` shows type errors in `tests/authCopy.test.ts` that no gate reports today.
 - **Lint covers error prevention only.** It uses the `essential` tier of `eslint-plugin-vue` and has no formatter. The style tiers flagged about 1,300 existing sites and were left out on purpose.
 - **Node versions differ.** The `Dockerfile` builds on `node:20-alpine`, while CI and the tests use Node 22.
 
-## Pilot registration journey (P14, 17tnw2bbhxu)
+## Public desktop download configuration
 
-Shared Home/nav/footer download links reach `/download#pilot-downloads`. The pilot panel is separate
-from the existing disabled standard/licensed download buttons (`86ak11rt1`). It does not call the licensed
-account API, accept a receipt in the URL, store personal/church details, or expose an installer URL.
+The public download section at `/download#public-downloads` revalidates the same-origin
+`/releases/current.json` manifest. It omits credentials, rejects redirects, and uses a
+five-second timeout and 64 KiB limit. The source file `public/releases/current.json`
+ships with this inventory:
+
+```json
+{"schema_version":1,"status":"unpublished","artifacts":[]}
+```
+
+For publication, the release operator sets `status` to `published`, supplies the
+`release_id`, `version` and 40-digit lowercase hex `source_commit`, and supplies exactly
+one artifact each for `windows-x64`, `macos-arm64`, `macos-x64` and `ubuntu-24.04-x64`.
+Each artifact requires `target`, verified `architectures`, `url`, `filename`, positive
+integer `size_bytes`, lowercase 64-digit `sha256`, `app_signature`, `package_signature`,
+`notarization` and `publisher`. See `src/lib/releases/downloads.ts` for allowed states.
+The selected macOS package has an ad hoc app signature, an unsigned DMG and no
+notarization. A shared macOS object must contain both verified architecture slices
+and carry matching metadata on its two records.
+
+Copy the HTTPS object URLs and safe basenames from the release receipts. The host
+is `selahcue-installers.sfo3.digitaloceanspaces.com` and the immutable object keys
+contain the recorded version and SHA-256 as complete path segments. Keep the
+manifest unpublished until the operator verifies receipt provenance and independently
+checks the uploaded bytes, checksum, signing state, and attachment disposition and
+filename on the actual objects. Serve `/releases/current.json` with cache revalidation
+separately from the immutable hashed SPA assets.
+
+Verification from this folder:
+
+```sh
+node --test tests/publicDownloads.test.ts tests/downloadView.test.ts tests/corePages.test.ts
+npm run build
+python3 tests/public_downloads_headless.py --engine both
+```
+
+The browser check uses the built site, installed Playwright Chromium and WebKit, and
+synthetic fixtures for publication and installer navigation.
+
+## Historical pilot registration configuration (P14, 17tnw2bbhxu)
+
+The pilot panel is retained in source for historical reference. The public
+download view mounts the public installer cards.
 
 `public/pilot-downloads.json` is nonsecret, same-origin deployment configuration, fetched without cookies
 or caching, with a 10-second timeout and 32-KiB body limit. The committed deployment is deliberately:
