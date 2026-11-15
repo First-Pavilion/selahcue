@@ -241,3 +241,24 @@ The desktop is a **PUBLIC OIDC client** → Authorization Code + **PKCE**, **no 
 - **Prod must-set:** `ENVIRONMENT` (`staging` or `prod`; **genuinely unset with an empty key and any non-local allowed host refuses settings import**; local-only defaults and explicit `dev` remain available, while a configured raw key is outside this narrow guard), `SECRET_KEY` (a fresh random value: when `ENVIRONMENT` is not `dev` the API refuses to start if it is empty, the dev key or the old `.env.sample` placeholder), `DEBUG` unset or `0`, `DJANGO_ALLOWED_HOSTS`, `SQL_ENGINE=django.db.backends.postgresql` with `SQL_DATABASE`, `SQL_USER`, `SQL_PASSWORD` and `SQL_HOST`, `CACHE_URL` (without it the rate-limit counters live in each web worker's own memory and reset on every restart, so the per-IP and per-address limits barely limit anything), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `MAIL_HOST`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `DEFAULT_FROM_EMAIL`, `FRONTEND_BASE_URL`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, and `SELAHCUE_TRUST_ACTOR_HEADERS` unset/false. Behind a TLS-terminating proxy also `SELAHCUE_TRUST_FORWARDED_PROTO` and `SELAHCUE_TRUSTED_PROXY_COUNT`, set exactly as their rows describe (the proxy must overwrite `X-Forwarded-Proto` and be the only route to Django; the count must be exact, because a count that is too high lets a client bypass the rate limiter). Every row above marked `prod: yes` belongs on this list; a test fails if one is missing.
 - **Desktop is a public OIDC client** — it holds no client secret; PKCE + redirect validation carry the security (see the ADR-0022 security review, task 86ajy7aqw).
 - Add new keys here in the same turn you add the `os.getenv`/`env::var` read, so this stays the single source of truth. For the API this is checked: `implementation/api/tests/test_deployment_env_docs.py` fails when a documented name is not read, when the API reads a name with no row here, and when a name in §1a–1e or `docs/ops/DEPLOYMENT.md` §6 is stale. Run it with `make api-check`; CI runs it on the weekly schedule and on commits that also change a file CI does not ignore, but a docs-only commit does not start CI.
+
+### Provisioning policy publication
+
+The provider deployment policy accepts an optional `creation_budgets` array. Each entry has
+`provider` (`deepgram` or `openai`), `create_per_hour` and `create_per_day`. Use whole nonnegative
+integers and at most one entry per provider. New creation requires positive global and parent
+hourly and daily limits. Absent or zero global limits prevent new allocations. When provisioning
+is disabled, eligible existing mappings can still be reused and the provisioner can perform
+metadata recovery and previously authorized cleanup.
+
+Install and migrate the API, then restart each role with its mounted policy files. An explicitly
+initialized operator provisioner publishes the configured policy through `publish_provider_policy`.
+Pass an empty cleanup authorization tuple unless the deployment has separately approved lifecycle
+evidence for each authorized parent. Omitted global or parent policies preserve previously
+published rows. Publish explicit zero budgets or remove the scope's create capability to revoke
+create authority. Publishing changed parent policy starts a new inventory scan.
+
+Allow the `provider_provisioning` worker to complete inventory before checking matching policy
+digests, capacity and operator authority. Set production budgets only after provider lifecycle
+and capacity qualification, and enable provisioning separately. No provider administration call
+runs during application startup or policy publication.

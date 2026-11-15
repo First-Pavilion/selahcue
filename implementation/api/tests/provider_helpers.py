@@ -32,7 +32,7 @@ def keyring(active="old", *, old=True, new=False):
     return {"schema_version": 1, "active_key_id": active, "keys": keys}
 
 
-def policy_rows(*, capable=False):
+def policy_rows(*, capable=False, budgets=True):
     deepgram = {"project_id": DEEPGRAM.parent_scope_id, "unattributed_usage_threshold": "0"}
     openai = {"organization_id": OPENAI.parent_scope_id, "unattributed_usage_threshold": "0.00001"}
     if capable:
@@ -44,11 +44,17 @@ def policy_rows(*, capable=False):
         }
         deepgram.update(common, stream_concurrency_capacity=100)
         openai.update(common, notes_policy_id="synthetic-policy")
-    return {
+    policy = {
         "schema_version": 1, "accounting_mode": "observed_records_with_late_corrections",
         "accepted_by": "synthetic-operator", "accepted_at": "2026-11-14T00:00:00Z",
         "deepgram": [deepgram], "openai": [openai],
     }
+    if capable and budgets:
+        policy["creation_budgets"] = [
+            {"provider": provider, "create_per_hour": 2, "create_per_day": 5}
+            for provider in ("deepgram", "openai")
+        ]
+    return policy
 
 
 def identity(scope=DEEPGRAM, *, key=None):
@@ -77,13 +83,13 @@ def cold_provider_cache():
 
 @pytest.fixture
 def provider_mounts(settings, tmp_path):
-    def prepare(role, *, stt=False, notes=False, provisioning=False, capable=False, ring=None):
+    def prepare(role, *, stt=False, notes=False, provisioning=False, capable=False, ring=None, budgets=True):
         _reset_provider_configuration_for_tests()
         settings.SELAHCUE_PROVIDER_PROCESS_ROLE = role
         settings.SELAHCUE_CLOUD_STT_ENABLED = stt
         settings.SELAHCUE_CLOUD_NOTES_ENABLED = notes
         settings.SELAHCUE_PROVIDER_PROVISIONING_ENABLED = provisioning
-        settings.SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE = write_mount(tmp_path, "policy", policy_rows(capable=capable))
+        settings.SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE = write_mount(tmp_path, "policy", policy_rows(capable=capable, budgets=budgets))
         settings.SELAHCUE_PROVIDER_KEYRING_FILE = write_mount(tmp_path, "keys", keyring() if ring is None else ring)
         settings.SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE = write_mount(tmp_path, "usage", {
             "schema_version": 1,
