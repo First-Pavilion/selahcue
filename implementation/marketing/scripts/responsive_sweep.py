@@ -276,6 +276,7 @@ PAGE_JS = r"""
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
   out.title = (document.querySelector('h1') || {}).innerText || '';
+  try { out.settleState = window.__selahcueSettleState?.() ?? null; } catch (_) {}
   return out;
 }
 """
@@ -525,7 +526,7 @@ ANIMATION_LABELS = {
 
 # Diagnostic only: the original settlement predicate above remains the gate. The init
 # script observes the top-level target document and sends snapshots before a timeout;
-# reporting never evaluates a possibly stalled renderer.
+# the timeout path can ask for scalar state only through one separately capped probe.
 SETTLE_DIAGNOSTIC_JS = r"""(() => {
   if (window !== window.top) return;
   const predicate = (__SETTLE_PREDICATE__);
@@ -540,6 +541,12 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   let raf = null, timer = null, earlyTimer = null, lateTimer = null, stopped = false;
   let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false, blockerReported = false;
   const start = performance.now();
+  let earlyTimerEntries = 0, periodicTimerEntries = 0, lateTimerEntries = 0;
+  window.__selahcueSettleState = () => ({
+    elapsedMs: Math.round(performance.now() - start),
+    totalPolls: Math.min(pollCount, 65535), lastResult: lastPollResult, stopped,
+    earlyTimerEntries, periodicTimerEntries, lateTimerEntries,
+  });
   const stop = () => {
     stopped = true;
     clearTimeout(timer);
@@ -609,15 +616,20 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
     stop();
   }, { once: true });
   window.__selahcueObserveSettlePoll = (result, blocker) => {
-    if (stopped || typeof result !== 'boolean') return;
+    if (typeof result !== 'boolean') return;
     lastPollResult = result;
     pollCount++;
+    if (stopped) return;
     if (pollCount === 1) {
       marker('firstPoll');
       if (!result) {
-        earlyTimer = setTimeout(() => marker('earlyTimer'), 100);
+        earlyTimer = setTimeout(() => {
+          earlyTimerEntries++;
+          marker('earlyTimer');
+        }, 100);
         // One scalar heartbeat independent of the 1s rich snapshot. It never reads layout or animations.
         lateTimer = setTimeout(() => {
+          lateTimerEntries++;
           if (lastPollResult === false) marker('lateTimer');
         }, 1250);
       }
@@ -644,13 +656,50 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
     sample();
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
-    if (sampleCount < 13) timer = setTimeout(tick, 1000);
+    if (sampleCount < 13) timer = setTimeout(() => {
+      periodicTimerEntries++;
+      tick();
+    }, 1000);
   };
   tick();
 })();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
 
 
 SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleStart", "lateTimer", "pageHide")
+
+
+SETTLE_STATE_PREFIX = "WEBKIT_SETTLE_STATE "
+SETTLE_STATE_PROBE_JS = """prefix => {
+  throw new Error(prefix + JSON.stringify(window.__selahcueSettleState?.() ?? null));
+}"""
+SETTLE_STATE_LIMITS = {"elapsedMs": 120000, "totalPolls": 65535,
+                       "earlyTimerEntries": 1, "periodicTimerEntries": 12, "lateTimerEntries": 1}
+
+
+def valid_settle_state(value):
+    if (type(value) is not dict or set(value) != {*SETTLE_STATE_LIMITS, "lastResult", "stopped"}
+            or type(value["stopped"]) is not bool
+            or (value["lastResult"] is not None and type(value["lastResult"]) is not bool)):
+        return None
+    if any(type(value[key]) is not int or not 0 <= value[key] <= limit for key, limit in SETTLE_STATE_LIMITS.items()):
+        return None
+    return value
+
+
+def probe_settle_state(page):
+    """Use Playwright's bounded error channel without retrying the original predicate."""
+    try:
+        page.wait_for_function(SETTLE_STATE_PROBE_JS, arg=SETTLE_STATE_PREFIX, timeout=1000, polling=100)
+    except Exception as exc:
+        first = str(exc)[:384].split("\n", 1)[0].removeprefix("Page.wait_for_function: ").removeprefix("Error: ")
+        if first.startswith(SETTLE_STATE_PREFIX):
+            payload = first[len(SETTLE_STATE_PREFIX):]
+            if len(payload) <= 256:
+                try:
+                    return valid_settle_state(json.loads(payload))
+                except (ValueError, RecursionError):
+                    pass
+    return None
 
 
 def valid_settle_blocker(value):
@@ -766,6 +815,7 @@ class SettleDiagnostic:
         self.events: list[dict] = []
         self.markers: dict[str, dict] = {}
         self.first_blocker: dict | None = None
+        self.settle_state: dict | None = None
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
@@ -852,7 +902,7 @@ class SettleDiagnostic:
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
                    "events": self.events[:], **{event: self.markers.get(event) for event in SETTLE_MARKERS},
-                   "firstBlocker": self.first_blocker,
+                   "firstBlocker": self.first_blocker, "settleState": self.settle_state,
                    "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
@@ -1410,7 +1460,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
     except ImportError:
         return skip_or_fail("Playwright not installed (pip install playwright && playwright install chromium webkit)")
 
@@ -1497,7 +1547,11 @@ def main() -> int:
                     except Exception as exc:  # noqa: BLE001
                         if diagnostic:
                             diagnostic.emit("infra", len(errors))
-                        print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")
+                        print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}", flush=True)
+                        if diagnostic and diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
+                            print(SETTLE_STATE_PREFIX + json.dumps(
+                                {"capture": "after-timeout", "state": probe_settle_state(page)}, separators=(",", ":")),
+                                flush=True)
                         return 2
 
                     if diagnostic:
@@ -1505,6 +1559,8 @@ def main() -> int:
                     try:
                         failures_before = len(failures)
                         info = page.evaluate(PAGE_JS)
+                        if diagnostic:
+                            diagnostic.settle_state = valid_settle_state(info.get("settleState"))
                         tag = f"{args.engine} {width:>4}px {path}"
 
                         checks += 1
