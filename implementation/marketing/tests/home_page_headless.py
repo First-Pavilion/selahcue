@@ -331,7 +331,7 @@ def run_engine(p, engine_name: str) -> Run:
         r.near(m["eyebrow"]["w"], 272, 3, "hero eyebrow pill is 272px wide (469:125)")
         # 469:131 is 49 tall (solid), 469:133 is 47 (quiet); the row is centred so neither is stretched.
         hb = {b["label"]: b for b in m["heroButtons"]}
-        r.eq(hb.get("View pilot downloads", {}).get("h"), 49, "hero View pilot downloads is 49px (469:131)")
+        r.eq(hb.get("View downloads", {}).get("h"), 49, "hero View downloads is 49px (469:131)")
         r.eq(hb.get("Watch 2-min demo", {}).get("h"), 47, "hero Watch 2-min demo is 47px, not stretched to 49 (469:133; PR 172 review)")
         r.eq(hb.get("Watch 2-min demo", {}).get("tag"), "BUTTON", "the demo control is a button")
         r.eq(hb.get("Watch 2-min demo", {}).get("disabled"), True, "the demo button is disabled (nothing to play yet)")
@@ -357,11 +357,8 @@ def run_engine(p, engine_name: str) -> Run:
 
         # 472:129: grid 1248 wide, cards 402 x 218, 20 apart, padding 88.
         f = m["features"]
-        # Approved claims corrections a526a5ec and pilot copy 6f6a50bc lengthened the
-        # second-row descriptions. The existing content-sized grid stretches that row
-        # to 240px (one extra 22px line), while the first row stays at Figma's 218px.
-        # Keep an exact six-card geometry oracle, not an unbounded minimum/tolerance.
-        heights = [218, 218, 218, 240, 240, 240]
+        # Removing the pilot description restores both rows to Figma's 218px.
+        heights = [218] * 6
         r.check(len(f["cards"]) == len(heights) and all(abs(c["h"] - h) <= 0.5 for c, h in zip(f["cards"], heights)), f"feature cards match approved content geometry {heights}: {[c['h'] for c in f['cards']]}")
         r.check(all(f["contentVisible"]), f"all feature titles/descriptions remain visible inside non-overflowing cards: {f['contentVisible']}")
         r.near(f["cards"][1]["x"] - (f["cards"][0]["x"] + f["cards"][0]["w"]), 20, 0.5, "feature cards are 20 apart (472:129)")
@@ -405,7 +402,7 @@ def run_engine(p, engine_name: str) -> Run:
         pr = m["pricing"]
         r.eq(pr["pad"], {"top": 90, "bottom": 90}, "Pricing padding 90 (477:124)")
         r.eq(pr["cards"], 0, "the pricing section draws no plan card")
-        r.eq(pr["sub"], "Plans and prices have not been published yet.", "the pricing section says plans and prices are not published yet")
+        r.eq(pr["sub"], "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.", "the pricing section describes ongoing Free and deferred paid subscriptions")
 
         # 478:153: padding 90; title 38; the list 780 wide.
         q = m["faq"]
@@ -426,8 +423,8 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq((c["h2"]["size"], c["h2"]["lh"], c["h2"]["weight"]), ("44px", "50px", "700"), "final CTA title 44/50 Bold (479:127)")
         r.eq(c["sub"]["size"], "19px", "final CTA sub 19px (479:130)")
         bl = {b["label"]: b for b in c["buttons"]}
-        r.eq(bl.get("View pilot downloads", {}).get("h"), 49, "CTA View pilot downloads is 49px (479:129)")
-        r.eq(bl.get("See pricing", {}).get("h"), 47, "CTA See pricing is 47px (479:131)")
+        r.eq(bl.get("View downloads", {}).get("h"), 49, "CTA View downloads is 49px (479:129)")
+        r.eq(bl.get("Create an account", {}).get("h"), 47, "CTA Create an account is 47px (479:131)")
 
         # Semantics: one h1, no skipped level, the mocks are named images with no heading or tab stop inside.
         lv = [h["level"] for h in m["headings"]]
@@ -457,14 +454,14 @@ def run_engine(p, engine_name: str) -> Run:
         in_main = [s for s in seen if s["inMain"]]
         labels = [s["label"] for s in in_main]
         want = [
-            "View pilot downloads",  # hero (the disabled demo button is skipped)
+            "View downloads",  # hero (the disabled demo button is skipped)
             "Do I need an internet connection?",
             "Which platforms are supported?",
             "Can I use my own slides and designs?",
             "What is NDI, and do I need it?",
-            "How does billing work?",
-            "View pilot downloads",  # the final band
-            "See pricing",
+            "What does Free include?",
+            "View downloads",  # the final band
+            "Create an account",
         ]
         r.eq(labels, [w[:40] for w in want], "Tab order through the page body")
         r.check(all(s["outlineStyle"] != "none" and s["outlineWidth"] >= 2 for s in in_main), f"every Tab stop in the page body shows a focus ring: {[(s['label'], s['outlineStyle'], s['outlineWidth']) for s in in_main if s['outlineStyle'] == 'none' or s['outlineWidth'] < 2]}")
@@ -507,14 +504,14 @@ def run_engine(p, engine_name: str) -> Run:
             check_no_horizontal_scroll(r, page, w)
             r.eq(mm["consoleRole"], "img", f"the console mock is still one image at {w}")
             hbm = {b["label"]: b for b in mm["heroButtons"]}
-            r.check(hbm.get("View pilot downloads", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
+            r.check(hbm.get("View downloads", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
             dnm = mm["demoNote"]
             r.check(dnm is not None and dnm["y"] >= dnm["btn"]["y"] + dnm["btn"]["h"] and dnm["x"] >= 0 and dnm["x"] + dnm["w"] <= mm["vw"] and dnm["y"] + dnm["h"] <= dnm["trust"]["y"], f"the demo note is on screen and clear of the trust line at {w}: {dnm}")
             lv = [h["level"] for h in mm["headings"]]
             r.check(all(b <= a + 1 for a, b in zip(lv, lv[1:])), f"no heading level is skipped at {w}")
-            # Approved pilot copy (6f6a50bc): the trust line still breaks BETWEEN its three exact items, never inside one.
+            # At narrow widths, the trust line still breaks BETWEEN its three exact items, never inside one.
             trust = page.evaluate(LINES_JS, ".hero-trust")
-            items = ["Pilot registration", "Core live controls work offline", "Windows, Ubuntu & macOS"]
+            items = ["Free to start", "Core live controls work offline", "Windows, Ubuntu & macOS"]
             r.check(trust is not None and all(any(item in line for line in trust) for item in items), f"no item of the hero trust line is split across lines at {w}: {trust}")
             r.check(page.evaluate("[...document.querySelectorAll('.outputs-title br, .hero-title br, .section-title br')].every((b) => getComputedStyle(b).display === 'none') || innerWidth >= 768"), f"the designed title breaks are off on a phone ({w})")
         r.eq(page_errors, [], "no page error in the whole run")

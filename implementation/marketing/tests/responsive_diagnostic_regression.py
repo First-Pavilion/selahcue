@@ -348,6 +348,29 @@ raise SystemExit(sweep.main())
             self.assertEqual(poll['pollCount'], 1)
             self.assertEqual(payload['stages'][-3]['category'], 'settle-end')
 
+    def test_legal_table_prose_reference_keeps_standalone_touch_controls_checked(self):
+        ref = '<a class="li-link" href="#s-3-8">3.8</a>'
+        non_inline = ref.replace('<a ', '<a style="display:inline-block" ')
+        with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:
+            page = context.new_page()
+            for label, content, offenders in (
+                ('adjacent prose', f'See the limits in section <!--v--> {ref}', []),
+                ('standalone reference', ref, ['a.li-link "3.8"']),
+                ('punctuation', f'({ref}).', ['a.li-link "3.8"']),
+                ('separate control', f'See <button>Go</button> {ref}', ['button "Go"', 'a.li-link "3.8"']),
+                ('non-inline reference', f'See {non_inline}', ['a.li-link "3.8"']),
+                ('inline action', f'See {ref.replace("li-link", "li-link btn")}', ['a.li-link.btn "3.8"']),
+            ):
+                with self.subTest(label=label):
+                    page.set_content(
+                        '<style>button{width:25px;height:25px}</style><main>'
+                        f'<table class="lt-table"><tbody><tr><td>{content}</td></tr></tbody></table></main>'
+                    )
+                    bounds = page.locator('a.li-link').bounding_box()
+                    self.assertLess(min(bounds['width'], bounds['height']), 43.5, 'control must be undersized')
+                    bad = page.evaluate(sweep.TOUCH_JS, sweep.TOUCH_SCOPES)
+                    self.assertEqual([line.rsplit(' ', 1)[0] for line in bad], offenders)
+
     def test_existing_geometry_guards_detect_bad_controls(self):
         with self.browser.new_context(viewport={'width': 375, 'height': 800}) as context:
             page = context.new_page()

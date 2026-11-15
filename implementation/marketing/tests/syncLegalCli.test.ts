@@ -44,8 +44,9 @@ function mutatedDrafts(): string {
   }
   const privacy = join(dir, TARGETS[0]?.source.split('/').pop() ?? '')
   const text = readFileSync(privacy, 'utf8')
-  assert.ok(text.includes("stays on your church's computers"))
-  writeFileSync(privacy, text.replace("stays on your church's computers", "stays on your church's machines"))
+  const changed = text.replace(/^(# .+)$/m, '$1 Test')
+  assert.notEqual(changed, text, 'the copied draft must have a title to mutate')
+  writeFileSync(privacy, changed)
   return dir
 }
 

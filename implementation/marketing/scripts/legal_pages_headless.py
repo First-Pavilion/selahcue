@@ -88,7 +88,7 @@ DRAFT_NOTICE = "Draft, pending legal review. This page is not our final policy."
 EXPECTATIONS_JS = r"""
 import { privacyPolicy } from './src/lib/legal/privacy.generated.ts'
 import { termsOfService } from './src/lib/legal/terms.generated.ts'
-import { legalPageState, tableOfContents, legalTitle, allAnchorIds } from './src/lib/legal/document.ts'
+import { legalPageState, tableOfContents, legalTitle, allAnchorIds, inlineToText } from './src/lib/legal/document.ts'
 const headingsOf = (doc) => {
   const out = [doc.title]
   if (doc.summary) out.push(doc.summary.title)
@@ -110,6 +110,7 @@ for (const [key, doc] of [['privacy', privacyPolicy], ['terms', termsOfService]]
     draft: s.draft,
     noindex: s.noindex,
     placeholderCount: s.placeholderCount,
+    bannerNotes: doc.banner?.notes.filter((note) => note.kind === 'paragraph').map((note) => inlineToText(note.inline)) ?? [],
     tocIds: tableOfContents(doc).flatMap((g) => g.entries.map((e) => e.id)),
     anchorIds: allAnchorIds(doc),
     hasTables: key === 'privacy',
@@ -488,8 +489,13 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
             check(f"{tag}: Part headings keep the dash", any(h.lower().startswith("part a — ") for h in headings), str(headings[:3]))
         clause = page.evaluate("(() => { const p = document.querySelector('.lb-clause'); return p ? p.innerText : '' })()")
         check(f"{tag}: a clause number is followed by a real space in the text", bool(__import__('re').match(r"^\d+\.\d+ \S", clause)), repr(clause[:30]))
-        banner_text = page.locator("[data-draft-banner]").inner_text()
-        check(f"{tag}: the document's own banner notes are on the page", "Status: Draft" in banner_text and "operates at launch" in banner_text, banner_text[:80])
+        banner_notes = page.locator("[data-draft-banner] .draft-note").all_inner_texts()
+        check(
+            f"{tag}: the document's own banner notes are on the page",
+            bool(banner_notes) and [" ".join(note.split()) for note in banner_notes]
+            == [" ".join(note.split()) for note in exp["bannerNotes"]],
+            f"{len(banner_notes)} rendered, {len(exp['bannerNotes'])} expected",
+        )
         check(f"{tag}: no aside, one Contents nav, few named regions", page.locator("aside").count() == 0 and page.locator("nav[aria-label=Contents]").count() == 1 and page.locator("[aria-labelledby]").count() <= 3,
               f"aside={page.locator('aside').count()} labelled={page.locator('[aria-labelledby]').count()}")
 

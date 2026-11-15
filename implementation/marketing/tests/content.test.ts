@@ -474,7 +474,59 @@ describe('claims that review found wrong or unverifiable do not come back', () =
     assert.match(JSON.stringify(stage.body), /WRAP UP · 2 MIN LEFT/)
     const assign = docsArticles.find((a) => a.slug === 'assign-displays-to-outputs')!
     assert.match(JSON.stringify(assign.body), /separate window and stays open/)
-    const tx = supportArticles.find((a) => a.slug === 'transcription-will-not-start')!
-    assert.match(JSON.stringify(tx.body), /consent has not been granted/)
+  })
+})
+
+describe('public cloud and offline help', () => {
+  const readableBody = ({ body }: KnowledgeArticle | BlogPost) => body.map((block) => {
+    if ('items' in block) return block.items.map(inlineToText).join('\n')
+    if ('text' in block) return inlineToText(block.text)
+    return ''
+  }).join('\n')
+  const troubleshooting = () => readableBody(findSupportArticle('troubleshooting', 'transcription-will-not-start')!)
+  const offline = () => readableBody(findDocsArticle('getting-started', 'offline-and-autosave')!)
+
+  test('troubleshooting keeps the first model download and microphone instructions local', () => {
+    const text = troubleshooting()
+    assert.match(text, /local mode.*model/i)
+    assert.match(text, /Start listening.*internet/i)
+    assert.match(text, /microphone access.*stop and start listening/i)
+    assert.match(text, /couldn’t be verified|expected checksum/i)
+    assert.doesNotMatch(text, /SelahCue works fully offline|developer option|not part of release builds/i)
+  })
+
+  test('troubleshooting distinguishes cloud access, direct audio and requested notes', () => {
+    const text = troubleshooting()
+    assert.match(text, /cloud transcription.*(available|availability)/i)
+    assert.match(text, /activat/i)
+    assert.match(text, /consent for that feature is current/i)
+    assert.match(text, /audio.*directly to Deepgram/i)
+    assert.match(text, /request.*sermon note.*transcript.*SelahCue/i)
+    assert.match(text, /separate consent/i)
+    assert.match(text, /weekly allowance/i)
+    assert.match(text, /still being set up|temporarily unavailable/i)
+  })
+
+  test('help preserves source and prior draft when a requested note fails', () => {
+    const text = troubleshooting()
+    assert.match(text, /keep.*source transcript.*prior draft/i)
+    assert.match(text, /retry.*when/i)
+    assert.match(text, /switch to.*local mode.*model/i)
+    assert.doesNotMatch(text, /refund|automatically switches|10\s*[–-]\s*20 seconds/i)
+  })
+
+  test('the offline guide scopes the model to local mode and distinguishes online operations', () => {
+    const text = offline()
+    assert.match(text, /On-device speech-to-text, after its model has been downloaded once/i)
+    assert.match(text, /local mode.*Start listening/i)
+    assert.match(text, /sign-in.*activation.*(?:online|internet)/i)
+    assert.match(text, /cloud transcription.*sermon note.*internet/i)
+    assert.doesNotMatch(text, /transcription works fully offline/i)
+  })
+
+  test('the offline blog explains what cloud paths need today', () => {
+    const text = readableBody(findBlogPost('why-offline-first-matters-for-sunday-morning')!)
+    assert.match(text, /cloud transcription.*sermon note.*internet/i)
+    assert.doesNotMatch(text, /cloud transcription option is not in release builds/i)
   })
 })

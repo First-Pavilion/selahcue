@@ -114,7 +114,11 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       },
       {
         type: 'p',
-        text: 'The speech model is downloaded the first time you press **Start listening**, and that needs an internet connection once. After the download finishes, transcription works fully offline.',
+        text: 'In local mode, connect to the internet the first time you press **Start listening** so the app can download the speech model. After that, local transcription can work offline.',
+      },
+      {
+        type: 'p',
+        text: 'Sign-in and device activation also need internet access. When available, cloud transcription and requested sermon notes need internet access and separate consent. See [Transcription will not start](/support/troubleshooting/transcription-will-not-start) for help with either mode.',
       },
       { type: 'h2', text: 'How autosave works' },
       {
