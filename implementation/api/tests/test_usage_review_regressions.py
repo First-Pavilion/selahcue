@@ -245,10 +245,10 @@ def test_recent_plan_stages_all_members_before_work_and_preserves_intent_after_r
     assert _schedule_periodic(scope, "RECENT_SCOPE", clock, limit=2) == 2
     assert UsageRecentPlan.objects.get(scope=scope).usagerecentmember_set.count() == 2
     assert not UsageScan.objects.filter(scope=scope, purpose="RECENT").exists()
-    assert _schedule_periodic(UsageScope.objects.get(pk=scope.pk), "RECENT_SCOPE", clock, limit=2) == 1
+    assert _schedule_periodic(UsageScope.objects.get(pk=scope.pk), "RECENT_SCOPE", clock, limit=2) == 2
     staged = UsageScan.objects.get(scope=scope, purpose="RECENT")
     assert staged.planning
-    assert staged.usagescanrequirement_set.count() == 2
+    assert staged.usagescanrequirement_set.count() == 1
     assert not staged.usagepageclaim_set.exists() and not staged.usagework_set.exists()
     clock.value += timedelta(seconds=301)
     _schedule_periodic(UsageScope.objects.get(pk=scope.pk), "RECENT_SCOPE", clock, limit=2)

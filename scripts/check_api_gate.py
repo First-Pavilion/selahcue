@@ -57,11 +57,6 @@ MARKER_SUFFIX = ".marker"  # the marker is a file NEXT TO the venv directory
 # Variables that must never reach the test commands, whatever the caller exported.
 LEAKY = ["SQL_ENGINE", "SQL_HOST", "CACHE_URL", "CELERY_BROKER_URL", "SECRET_KEY", "PYTHONPATH"]
 
-# Differences between the Makefile's commands and the CI job's that are known and intended:
-# `-rfEs` makes pytest print skip reasons and failures by name. (The psycopg install and the Postgres
-# environment variables are other `run:`/`env:` content of the CI job, which this comparison ignores.)
-ALLOWED_MAKEFILE_EXTRA = ["-rfEs"]
-
 BACKEND = textwrap.dedent(
     '''\
     """In-tree PEP 660 backend: an editable install with no network and no setuptools."""
@@ -1063,10 +1058,7 @@ def api_commands_from_makefile(text):
     for l in text.splitlines():
         m = re.match(r'^\tcd \$\(API\) && \$\(API_ENV\) "\$\(API_VPY\)" (manage\.py .+|-m pytest .+)$', l)
         if m:
-            c = m.group(1)
-            for extra in ALLOWED_MAKEFILE_EXTRA:
-                c = c.replace(" " + extra, "")
-            cmds.append(c.strip())
+            cmds.append(m.group(1).strip())
     return cmds
 
 

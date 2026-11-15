@@ -78,12 +78,12 @@ def _stage(plan, found, now):
 def _transfer(plan, scope, epoch, now, limit):
     if plan.lowest_start is None:
         plan.delete()
-        return
+        return 0
     scan = plan.scan
     if scan is None:
         scan = schedule_scan(scope, ScanPurpose.RECENT, plan.lowest_start, plan.cutoff, now, epoch, plan=plan)
         if scan is None:
-            return
+            return 0
         plan.scan = scan
         plan.save(update_fields=("scan",))
     members = list(plan.usagerecentmember_set.order_by("pk")[:limit])
@@ -97,12 +97,12 @@ def _transfer(plan, scope, epoch, now, limit):
     if members:
         plan.usagerecentmember_set.filter(pk__in=[row.pk for row in members]).delete()
     if plan.usagerecentmember_set.exists():
-        return
+        return len(members)
     if UsageScan.objects.filter(
         scope=scope, profile=scan.profile, requested_start=scan.requested_start, requested_end=plan.cutoff,
         state="PARTIAL", planning=False,
     ).exists():
-        return
+        return len(members)
     health_start = plan.cutoff - health.HEALTH_WINDOW
     if scan.requested_start <= health_start:
         UsageScanRequirement.objects.get_or_create(
@@ -112,13 +112,14 @@ def _transfer(plan, scope, epoch, now, limit):
     if not ProviderCapacityPool.objects.filter(pk=scope.pool_id, current_epoch=epoch).exists():
         plan.phase = "DISCARD"
         plan.save(update_fields=("phase",))
-        return
+        return len(members)
     scan.planning = False
     scan.updated_at = now
     scan.save(update_fields=("planning", "updated_at"))
     UsagePageClaim.objects.create(scan=scan, ordinal=0, created_at=now, updated_at=now)
     ensure_work("SCAN", str(scan.pk), now, scope=scope, scan=scan)
     plan.delete()
+    return len(members)
 
 
 def _discard(plan, limit):
@@ -126,15 +127,16 @@ def _discard(plan, limit):
         keys = list(plan.scan.usagescanrequirement_set.order_by("pk").values_list("pk", flat=True)[:limit])
         if keys:
             plan.scan.usagescanrequirement_set.filter(pk__in=keys).delete()
-            return
+            return len(keys)
     keys = list(plan.usagerecentmember_set.order_by("pk").values_list("pk", flat=True)[:limit])
     if keys:
         plan.usagerecentmember_set.filter(pk__in=keys).delete()
-        return
+        return len(keys)
     scan = plan.scan
     plan.delete()
     if scan is not None:
         scan.delete()
+    return 0
 
 
 def advance_recent(scope, epoch, now, cutoff, *, limit):
@@ -151,8 +153,7 @@ def advance_recent(scope, epoch, now, cutoff, *, limit):
         plan.phase = "DISCARD"
         plan.save(update_fields=("phase",))
     if plan.phase == "DISCARD":
-        _discard(plan, limit)
-        return 1
+        return max(1, _discard(plan, limit))
     scanned = 0
     if plan.phase == "MAPPINGS":
         found, scanned = _mapping_batch(plan, limit)
@@ -163,6 +164,6 @@ def advance_recent(scope, epoch, now, cutoff, *, limit):
         scanned += consumed
     plan.updated_at = now
     plan.save(update_fields=("phase", "mapping_after", "open_after", "lowest_start", "updated_at"))
-    if plan.phase == "TRANSFER":
-        _transfer(plan, scope, epoch, now, limit)
+    if plan.phase == "TRANSFER" and scanned < limit:
+        scanned += _transfer(plan, scope, epoch, now, limit - scanned)
     return max(1, scanned)

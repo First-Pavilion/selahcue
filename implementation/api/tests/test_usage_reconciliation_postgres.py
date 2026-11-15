@@ -224,6 +224,38 @@ def _worker_environment(prefix):
     return environ
 
 
+def _publish_with_delivery_receipt(work, broker_app, *, clock=None):
+    from unittest.mock import patch
+
+    real_send = broker_app.send_task
+    invocations, errors = [], []
+
+    def send(name, **kwargs):
+        invocations.append((name, kwargs.get("task_id"), kwargs.get("queue")))
+        try:
+            return real_send(name, **kwargs)
+        except Exception as error:
+            errors.append((type(error).__name__, type(error.__cause__).__name__))
+            raise
+
+    with patch.object(broker_app, "send_task", side_effect=send):
+        if clock is None:
+            publish_work(work.pk, app=broker_app)
+        else:
+            publish_work(work.pk, app=broker_app, clock=clock)
+    delivery = UsageOutbox.objects.get(work=work, generation=work.execution_generation)
+    state = {
+        "delivery": str(delivery.pk), "generation": delivery.generation, "state": delivery.state,
+        "publish_attempts": delivery.publish_attempts, "last_error": delivery.last_error,
+        "available_at": delivery.available_at.isoformat(), "first_failure_at": delivery.first_failure_at,
+        "invocations": invocations, "error_classes": errors,
+    }
+    assert len(invocations) == 1 and invocations[0][1:] == (str(delivery.pk), "provider_usage"), state
+    assert delivery.publish_attempts == 1 and delivery.state in ("SENT", "ACKED"), state
+    assert not errors, state
+    return state
+
+
 def test_real_redis_publish_and_worker_ack_preserve_terminal_usage_work(usage_runtime, tmp_path):
     from celery import Celery
 
@@ -256,7 +288,7 @@ app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_u
             [sys.executable, "-c", code], stdout=output, stderr=subprocess.STDOUT, env=env,
         )
         try:
-            publish_work(work.pk, app=broker_app)
+            publication = _publish_with_delivery_receipt(work, broker_app)
             expires = time.monotonic() + 15
             while time.monotonic() < expires and process.poll() is None:
                 if UsageWork.objects.filter(pk=work.pk, state="COMPLETE").exists():
@@ -265,7 +297,10 @@ app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_u
             output.seek(0)
             log = output.read()
             assert "usage.recover_mint" in log
-            assert UsageWork.objects.get(pk=work.pk).state == "COMPLETE", log[-2500:]
+            final = UsageOutbox.objects.get(work=work)
+            assert UsageWork.objects.get(pk=work.pk).state == "COMPLETE", {
+                "publication": publication, "final_delivery_state": final.state, "worker": log[-2500:],
+            }
             assert UsageOutbox.objects.get(work=work).state == "ACKED"
         finally:
             process.terminate()
@@ -515,7 +550,7 @@ app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_u
             pytest.fail("Expected prefork checkpoint was not observed. " + output.read()[-2500:])
 
         try:
-            publish_work(work.pk, app=app, clock=lambda: original_at)
+            _publish_with_delivery_receipt(work, app, clock=lambda: original_at)
             if failure == "checkpoint":
                 wait_for(lambda: UsageWork.objects.filter(pk=work.pk, state="PENDING", execution_generation=2).exists())
                 assert UsagePageClaim.objects.get(scan=scan).attempts == 1
@@ -556,3 +591,458 @@ def test_migration_installs_oa_page_json_guard_with_safe_shape_refusal(usage_run
         )
     assert getattr(caught.value.__cause__, "sqlstate", None) == "23514"
     assert UsagePageClaim.objects.filter(scan=scan, ordinal=0).exists()
+
+
+def test_postgres_scope_id_guard_accepts_full_256_byte_printable_contract():
+    from django.db import DataError
+    from selahcue_api.apps.usage.models import UsageScope
+
+    for value in ("!", "x" * 255, "x" * 255 + "~"):
+        scope = UsageScope.objects.create(provider="deepgram", parent_scope_id=value, created_at=NOW, updated_at=NOW)
+        assert UsageScope.objects.get(pk=scope.pk).parent_scope_id == value
+    with pytest.raises(DataError) as too_long, transaction.atomic():
+        UsageScope.objects.create(provider="deepgram", parent_scope_id="x" * 257, created_at=NOW, updated_at=NOW)
+    assert getattr(too_long.value.__cause__, "sqlstate", None) == "22001"
+    for value in ("", "trailing ", "xπ", "tab\t"):
+        with pytest.raises(IntegrityError) as caught, transaction.atomic():
+            UsageScope.objects.create(provider="deepgram", parent_scope_id=value, created_at=NOW, updated_at=NOW)
+        assert getattr(caught.value.__cause__, "sqlstate", None) == "23514"
+
+
+def test_postgres_nested_savepoint_cleanup_preserves_original_error_and_works_after_deadline():
+    from django.db import DataError
+    from selahcue_api.apps.usage.observation_contracts import UsageRejected
+
+    with bounded_transaction():
+        with pytest.raises(DataError) as caught, transaction.atomic(), connection.cursor() as cursor:
+            cursor.execute("SELECT %s::integer", ["not-an-integer"])
+        assert getattr(caught.value.__cause__, "sqlstate", None) == "22P02"
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetchone() == (1,)
+
+    ns = [0]
+    with pytest.raises(UsageRejected, match="TASK_BUDGET"):
+        with bounded_transaction(deadline_ns=100_000_000, monotonic_ns=lambda: ns[0]):
+            with transaction.atomic(), connection.cursor() as cursor:
+                cursor.execute("SELECT 2")
+                assert cursor.fetchone() == (2,)
+                ns[0] = 100_000_000
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 3")
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 4")
+        assert cursor.fetchone() == (4,)
+
+
+def test_concurrent_reconciles_publish_once_after_single_current_snapshot(usage_runtime, clock):
+    from selahcue_api.apps.usage.models import SttOrgReadiness, SttOrgCoverage
+
+    org = church()
+    active_mapping(org, identity(key="simultaneous"))
+    usage_runtime()
+    scan = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(scan, [request(key="simultaneous", duration=3)], NOW)
+    barrier = Barrier(3, timeout=5)
+
+    def write():
+        close_old_connections()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                pid = cursor.fetchone()[0]
+            barrier.wait()
+            return pid, reconcile_org(org.pk, NOW, clock=clock)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(write) for _ in range(2)]
+        barrier.wait()
+        rows = [future.result(timeout=10) for future in futures]
+    assert rows[0][0] != rows[1][0]
+    assert all(result.blocked_reason is None for _, result in rows)
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 3
+    assert SttOrgReadiness.objects.get(org=org).publication_revision == 1
+    assert SttOrgCoverage.objects.filter(publication_id=org.pk).count() == 1
+
+
+def test_reader_sees_stale_old_vector_until_atomic_reconciliation_commits(usage_runtime, clock):
+    from threading import Event
+    from django.test.utils import CaptureQueriesContext
+
+    org = church()
+    mapping = active_mapping(org)
+    usage_runtime()
+    initial = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(initial, [], NOW)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    clock.value += timedelta(seconds=1)
+    next_scan = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, clock()), start=clock())
+    observed(next_scan, [], clock())
+    updated, release = Event(), Event()
+
+    def write():
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                assert reconcile_org(org.pk, clock(), clock=clock).blocked_reason is None
+                updated.set()
+                assert release.wait(5)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(write)
+        assert updated.wait(5)
+        try:
+            with CaptureQueriesContext(connection) as statements:
+                old = read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=clock())
+            assert old.status == "stale" and len(statements) == 1
+        finally:
+            release.set()
+        future.result(timeout=10)
+    full = read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=clock())
+    assert full.status == "current_observed" and full.publication_revision == old.publication_revision + 1
+
+
+def test_concurrent_late_attribution_binds_once_at_scope_authority(usage_runtime, clock, provider_mounts):
+    from selahcue_api.apps.usage.observations import attribute_scope_batch
+
+    usage_runtime()
+    from_provider = begin_scan(DEEPGRAM)
+    observed(from_provider, [request("concurrent-binding", key="not-yet-known", duration=3)], NOW)
+    assert ProviderUsageRecord.objects.get().mapping_id is None
+    provider_mounts("provisioner", capable=True)
+    initialize_provider_runtime(entrypoint="operator")
+    org = church()
+    mapping = active_mapping(org, identity(key="not-yet-known"))
+    usage_runtime()
+    barrier = Barrier(3, timeout=5)
+
+    def bind():
+        close_old_connections()
+        try:
+            barrier.wait()
+            return attribute_scope_batch(from_provider.scope_id, after=None, clock=clock)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(bind) for _ in range(2)]
+        barrier.wait()
+        results = [future.result(timeout=10) for future in futures]
+    assert sum(item.changed for item in results) == 1
+    assert ProviderUsageRecord.objects.get().mapping_id == mapping.mapping_id
+    assert UsageWork.objects.filter(kind="RECONCILE", org=org, state__in=("PENDING", "RUNNING")).count() == 1
+
+
+def test_original_discarded_mint_receipt_is_followed_by_late_exact_accounting(provider_mounts, usage_runtime, clock):
+    from test_cloud_grant_postgres import granted, submit
+
+    org = church()
+    install = device(licence(org))
+    mapping = active_mapping(org, identity(key="discarded-key"))
+    token, _ = token_for(install)
+    provider_mounts("web", stt=True, capable=True)
+    initialize_provider_runtime(entrypoint="wsgi")
+
+    def release_in_transit(*args, dispatch, **kwargs):
+        receipt = granted(*args, dispatch=dispatch, **kwargs)
+        UsageReservation.objects.filter(pk=dispatch.authorization.reservation_id).update(state="RELEASED")
+        return receipt
+
+    assert submit(token, command(), deps(release_in_transit, clock=clock)) == "RESERVATION_RELEASED"
+    attempt = SttMintAttempt.objects.get(reservation__org=org)
+    assert attempt.state == "DISCARDED" and attempt.audit_event_id
+    issued = attempt.reservation
+    usage_runtime()
+    scan = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(scan, [request("known-discarded-actual", key="discarded-key", duration=4)], NOW)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 4
+    issued.refresh_from_db()
+    attempt.refresh_from_db()
+    assert issued.state == "RELEASED" and attempt.state == "DISCARDED"
+
+
+def test_actual_mint_recovery_precedes_original_owner_receipt_without_second_outcome(
+    provider_mounts, usage_runtime, clock,
+):
+    from test_cloud_grant_postgres import granted, submit
+    from selahcue_api.apps.audit.models import AuditEvent
+    from selahcue_api.apps.providers.stt_recovery import recover_abandoned_stt_mint
+
+    org = church()
+    install = device(licence(org))
+    active_mapping(org)
+    token, _ = token_for(install)
+    provider_mounts("web", stt=True, capable=True)
+    initialize_provider_runtime(entrypoint="wsgi")
+    attempts = []
+
+    def recover_then_return(*args, dispatch, **kwargs):
+        receipt = granted(*args, dispatch=dispatch, **kwargs)
+        identifier = dispatch.authorization.attempt_id
+        attempts.append(identifier)
+        usage_runtime()
+        attempt = SttMintAttempt.objects.get(pk=identifier)
+        at = attempt.dispatch_not_after + timedelta(seconds=4)
+        assert recover_abandoned_stt_mint(identifier, clock=lambda: at).state == "recovered_unknown"
+        assert not recover_abandoned_stt_mint(identifier, clock=lambda: at).changed
+        provider_mounts("web", stt=True, capable=True)
+        initialize_provider_runtime(entrypoint="wsgi")
+        return receipt
+
+    first = command()
+    dependencies = deps(recover_then_return, clock=clock)
+    assert submit(token, first, dependencies) == "PROVIDER_UNAVAILABLE"
+    attempt = SttMintAttempt.objects.get(reservation__org=org)
+    assert attempt.state == "UNKNOWN" and attempt.audit_event_id is None
+    assert attempt.known_mint_received_at == attempt.reservation.last_minted_at
+    assert attempt.known_mint_received_at is not None
+    assert submit(token, first, dependencies) == "SESSION_PENDING" and len(attempts) == 1
+    assert AuditEvent.objects.filter(action="cloud.stt.mint_recovery", request_id=str(attempt.pk)).count() == 1
+
+
+def _wait_for_pg_blocking(pid, seconds=1.5):
+    timeout = time.monotonic()+seconds
+    while time.monotonic() < timeout:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT cardinality(pg_blocking_pids(%s))", [pid])
+            if cursor.fetchone()[0]:
+                return
+        time.sleep(0.01)
+    pytest.fail("Expected PostgreSQL lock wait did not occur before its deadline")
+
+
+def test_upgrade_guarded_by_org_lock_cannot_fall_back_to_an_older_counted_from(usage_runtime, clock):
+    from queue import Queue
+    from test_effective_org_plan import staff_grant
+
+    org = church()
+    install = device(licence(org))
+    mapping = active_mapping(org, identity(key="upgrade-race"))
+    since = NOW - timedelta(hours=1)
+    reserve_stt(install, mapping.mapping_id, since-timedelta(minutes=1))
+    staff_grant(org, "CORE", since, NOW+timedelta(hours=1))
+    usage_runtime()
+    scan = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(scan, [
+        request("pre-race-upgrade", key="upgrade-race", duration=80, created=since-timedelta(seconds=1)),
+        request("post-race-upgrade", key="upgrade-race", duration=7, created=since),
+    ], NOW)
+    pid = Queue(maxsize=1)
+
+    def run():
+        close_old_connections()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                pid.put(cursor.fetchone()[0])
+            return reconcile_org(org.pk, NOW, clock=clock)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with transaction.atomic():
+            reserve_stt(install, mapping.mapping_id, since)
+            future = pool.submit(run)
+            _wait_for_pg_blocking(pid.get(timeout=4))
+        assert future.result(timeout=8).blocked_reason is None
+    week = UsageWeek.objects.get(org=org)
+    assert (week.counted_from, week.stt_seconds_settled) == (since, 7)
+
+
+def test_reconciliation_reads_fact_committed_while_waiting_for_final_provider_authority(usage_runtime, clock):
+    from queue import Queue
+    from selahcue_api.apps.usage import health
+
+    org = church()
+    mapping = active_mapping(org, identity(key="capture-race"))
+    usage_runtime()
+    initial = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(initial, [], NOW)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    clock.value += timedelta(seconds=1)
+    interval = UTCInterval(MONDAY, clock())
+    arriving = begin_scan(DEEPGRAM, interval=interval, start=clock())
+    work = task_for(arriving, clock())
+    claim = page_claim(work, clock())
+    page = parse_dg(dg_data([request("authority-arrival", duration=5, key="capture-race")]), interval=interval)
+    pid = Queue(maxsize=1)
+
+    def run():
+        close_old_connections()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                pid.put(cursor.fetchone()[0])
+            return reconcile_org(org.pk, clock(), clock=clock)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with transaction.atomic():
+            health.lock_provider("deepgram", clock())
+            future = pool.submit(run)
+            _wait_for_pg_blocking(pid.get(timeout=4))
+            ingest_observations(page, arriving.pk, claim=claim)
+        assert future.result(timeout=8).blocked_reason is None
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 5
+
+
+def test_usage_transport_closes_open_auxiliary_alias_before_child(usage_runtime, monkeypatch):
+    from selahcue_api.apps.providers.adapters import deepgram_usage, usage_transport
+    from selahcue_api.apps.usage.observation_contracts import UsageProfile
+
+    usage_runtime()
+    alias = "task6_auxiliary"
+    connections.databases[alias] = dict(connection.settings_dict)
+    try:
+        extra = connections[alias]
+        extra.connect()
+        with extra.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetchone() == (1,)
+        assert extra.connection is not None
+
+        def checked(_payload, **_kwargs):
+            assert all(connections[name].connection is None for name in connections)
+            return b'{"page":0,"limit":100,"requests":[]}'
+
+        monkeypatch.setattr(usage_transport, "_run", checked)
+        result = deepgram_usage.read_usage_page(DEEPGRAM, COVERAGE, None)
+        assert result.receipt.profile == UsageProfile.DG_LISTEN_V1
+        assert result.receipt.terminal_page_seen
+    finally:
+        connections[alias].close()
+        del connections[alias]
+        del connections.databases[alias]
+
+
+def test_actual_publisher_socket_timeout_records_failure_without_extra_attempts(usage_runtime, tmp_path):
+    import socket
+    from threading import Event, Thread
+
+    if not os.getenv("CELERY_BROKER_URL"):
+        pytest.skip("Requires the hosted publisher runner")
+    usage_runtime()
+    with bounded_transaction():
+        attempt = uuid4()
+        job = ensure_work("MINT_RECOVERY", str(attempt), NOW, attempt_id=attempt)
+    done = Event()
+    seen = Event()
+    source = """
+import django, os
+from uuid import UUID
+django.setup()
+from selahcue_api.celery import app
+from selahcue_api.apps.providers.bootstrap import initialize_provider_runtime
+from selahcue_api.apps.usage.usage_tasks import publish_work
+initialize_provider_runtime(entrypoint='celery_worker')
+publish_work(UUID(os.environ['TASK6_PUBLISH_ID']), app=app)
+"""
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(4)
+        server.settimeout(3)
+
+        def sink():
+            accepted, _ = server.accept()
+            with accepted:
+                seen.set()
+                done.wait(10)
+
+        thread = Thread(target=sink, daemon=True)
+        thread.start()
+        port = server.getsockname()[1]
+        env = _worker_environment(f"task6-publisher-{uuid4().hex}:")
+        env.update({"CELERY_BROKER_URL": f"redis://127.0.0.1:{port}/2", "TASK6_PUBLISH_ID": str(job.pk)})
+        start = time.monotonic()
+        try:
+            result = subprocess.run([sys.executable, "-c", source], env=env, capture_output=True, timeout=10)
+        finally:
+            done.set()
+            thread.join(timeout=3)
+        assert result.returncode == 0 and seen.is_set(), result.stderr[-1500:]
+        assert time.monotonic()-start < 10
+    delivery = UsageOutbox.objects.get(work=job)
+    assert (delivery.state, delivery.publish_attempts, delivery.last_error) == ("PENDING", 1, "PUBLICATION_FAILED")
+    assert delivery.first_failure_at is not None and delivery.available_at > delivery.first_failure_at
+
+
+def test_other_parent_health_transaction_denies_org_only_after_it_commits(provider_mounts, settings, tmp_path, clock):
+    from threading import Event
+    from selahcue_api.apps.providers.adapters import deepgram_usage
+    from selahcue_api.apps.providers.contracts import ProviderScope, ProvisioningAuditContext
+    from selahcue_api.apps.providers.policy_publication import publish_provider_policy
+    from selahcue_api.apps.usage.observation_contracts import ObservedCoverage
+    from selahcue_api.apps.usage.scans import finish_scan
+    from test_usage_retained_history_load import _complete_scope, _runtime
+
+    other = ProviderScope("deepgram", "other-parent-race")
+    scopes = (DEEPGRAM, other)
+    _runtime("provisioner", provider_mounts, settings, tmp_path, scopes)
+    publish_provider_policy(
+        cleanup_authorizations=(), audit=ProvisioningAuditContext("custody-fixture", uuid4(), "other-parent"),
+        clock=lambda: NOW-timedelta(hours=1),
+    )
+    org = church()
+    mapping = active_mapping(org)
+    _runtime("usage", provider_mounts, settings, tmp_path, scopes)
+    for scope in scopes:
+        _complete_scope(scope, MONDAY, NOW, NOW, health_input=True)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    clock.value += timedelta(seconds=1)
+    at = clock()
+    interval = UTCInterval(MONDAY, at)
+    scan = begin_scan(other, interval=interval, start=at)
+    work = task_for(scan, at)
+    claim = page_claim(work, at)
+    raw = request("other-parent-new-breach", duration=60)
+    raw["project_uuid"] = other.parent_scope_id
+    page = deepgram_usage._parse_page(dg_data([raw]), other, interval, None)
+    committed, release = Event(), Event()
+
+    def write():
+        close_old_connections()
+        try:
+            with transaction.atomic():
+                ingest_observations(page, scan.pk, claim=claim)
+                finish_scan(scan.pk, ObservedCoverage(scan.pk, other, interval, at, at, True))
+                committed.set()
+                assert release.wait(5)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(write)
+        assert committed.wait(5)
+        try:
+            assert read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=at).status == "current_observed"
+        finally:
+            release.set()
+        future.result(timeout=10)
+    assert read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=at).blocked_reason == "unattributed_limit"
+
+
+def test_actual_early_future_renewal_has_no_mint_and_uses_authorized_until_floor(usage_runtime, provider_mounts, clock):
+    from selahcue_api.apps.usage.reconciliation import settlement_floor
+
+    org = church()
+    install = device(licence(org))
+    active_mapping(org)
+    token, _ = token_for(install)
+    provider_mounts("web", stt=True, capable=True)
+    initialize_provider_runtime(entrypoint="wsgi")
+    first, _ = sessions._issue_stt_session(token, command(), deps(clock=clock))
+    clock.value += timedelta(seconds=250)
+    renewal, _ = sessions._issue_stt_session(
+        token, command(first.decision.reservation_id), deps(clock=clock),
+    )
+    row = UsageReservation.objects.get(pk=renewal.decision.reservation_id)
+    assert row.last_minted_at is None
+    assert row.issued_at == clock() < row.authorized_from == first.decision.authorized_until
+    assert settlement_floor(row) == row.authorized_until + timedelta(seconds=900)
+    assert SttMintAttempt.objects.filter(reservation__org=org).count() == 1

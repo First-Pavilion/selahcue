@@ -201,16 +201,18 @@ def test_retention_strict_horizon_respects_terminal_reservation_and_chain(usage_
     org = church()
     install = device(licence(org))
     mapping = active_mapping(org)
-    rows = [reserve_stt(install, mapping.mapping_id, NOW - timedelta(minutes=10)) for _ in range(3)]
+    rows = [reserve_stt(install, mapping.mapping_id, NOW - timedelta(minutes=10)) for _ in range(4)]
     cutoff = NOW - timedelta(weeks=104)
-    for item, created in zip(rows, (cutoff - timedelta(microseconds=1), cutoff, cutoff - timedelta(days=1)), strict=True):
+    for item, created in zip(rows, (
+        cutoff - timedelta(microseconds=1), cutoff, cutoff - timedelta(days=1), cutoff + timedelta(microseconds=1),
+    ), strict=True):
         UsageReservation.objects.filter(pk=item.pk).update(state="RELEASED", created_at=created)
     UsageReservation.objects.filter(pk=rows[1].pk).update(renews=rows[2])
     provider_mounts("maintenance", capable=True)
     initialize_provider_runtime(entrypoint="celery_worker")
     removed = prune_usage_batch(RetentionKind.TERMINAL_RESERVATION, clock=clock)
     assert (removed.scanned, removed.deleted, removed.deferred) == (2, 1, 1)
-    assert set(UsageReservation.objects.values_list("pk", flat=True)) == {rows[1].pk, rows[2].pk}
+    assert set(UsageReservation.objects.values_list("pk", flat=True)) == {rows[1].pk, rows[2].pk, rows[3].pk}
 
 
 @pytest.mark.django_db

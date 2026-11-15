@@ -88,6 +88,17 @@ _SCAN_WINDOW_CHECK = """
         OR NEW.requested_end - NEW.requested_start <> INTERVAL '24 hours'
     )
 """
+
+
+def _invalid_external_id(column):
+    # PostgreSQL's ARE repetition bounds stop at 255. Validate the
+    # configured 256-byte ASCII contract without a counted regex.
+    return (
+        f'NEW.{column} IS NOT NULL AND (octet_length(NEW.{column}) NOT BETWEEN 1 AND 256 '
+        f"""OR NEW.{column} COLLATE "C" !~ '^[!-~]+$')"""
+    )
+
+
 _SHAPES = {
     "scopeusagehealth": (_SCOPE_HEALTH_CHECK,),
     "usagescan": (
@@ -103,7 +114,7 @@ _SHAPES = {
             SELECT 1 FROM selahcue_providers_providercapacitypool p WHERE p.id = NEW.pool_id
               AND p.provider = NEW.provider AND p.parent_scope_id = NEW.parent_scope_id
         )""",
-        "NEW.parent_scope_id !~ '^[!-~]{1,256}$'",
+        _invalid_external_id("parent_scope_id"),
     ),
     "usagepageclaim": (
         "jsonb_typeof(NEW.oa_bucket_starts) IS DISTINCT FROM 'array'",
@@ -123,7 +134,7 @@ _SHAPES = {
     ),
     _RECORD: (
         "NEW.identity_key !~ '^[0-9a-f]{64}$'",
-        "NEW.request_id !~ '^[!-~]{1,256}$' OR NEW.returned_project_id !~ '^[!-~]{1,256}$' OR NEW.returned_api_key_id !~ '^[!-~]{1,256}$'",
+        *(_invalid_external_id(column) for column in ("request_id", "returned_project_id", "returned_api_key_id")),
         "NOT EXISTS (SELECT 1 FROM selahcue_usage_usagescope s WHERE s.id = NEW.scope_id AND s.provider = NEW.provider)",
         """NEW.current_version_id IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM selahcue_usage_providerusageversion v

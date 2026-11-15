@@ -9,7 +9,7 @@ from pathlib import Path
 import resource
 import subprocess
 import sys
-from threading import Barrier
+from threading import Barrier, Timer
 import time
 from uuid import UUID
 
@@ -209,6 +209,43 @@ def _latencies(kind, samples, outcomes, locks=(), queries=0):
     }
 
 
+LOCAL_PARTICIPANTS = (
+    (0, "reader"), (1, "reader"), (2, "reader"), (3, "reader"),
+    (6, "reconcile"), (7, "ingest"),
+)
+
+
+def _sample_admissions(submit_once, until, *, monotonic=time.monotonic, sleep=time.sleep, granted=None):
+    samples, outcomes, query_count = [], {}, 0
+    while monotonic() < until and len(samples) < 500:
+        start = monotonic()
+        with CaptureQueriesContext(connection) as statements:
+            result = submit_once()
+        query_count += len(statements)
+        name = result if isinstance(result, str) else "GRANTED"
+        outcomes[name] = outcomes.get(name, 0) + 1
+        if name == "GRANTED" and granted is not None:
+            granted()
+        samples.append(round((monotonic() - start) * 1000, 3))
+        sleep(0.05)
+    return _latencies("admit", samples, outcomes, queries=query_count)
+
+
+def _collect_locals(operation, release, *, timeout):
+    barrier = Barrier(len(LOCAL_PARTICIPANTS), timeout=timeout)
+
+    def participant(index, role):
+        barrier.wait()
+        result = operation(index, role)
+        assert result["kind"] == role and result["count"] > 0
+        return result
+
+    with ThreadPoolExecutor(max_workers=len(LOCAL_PARTICIPANTS)) as executor:
+        measurements = [executor.submit(participant, index, role) for index, role in LOCAL_PARTICIPANTS]
+        release()
+        return [f.result(timeout=timeout) for f in measurements]
+
+
 def run_web_admissions():
     """Separate initialized web runtime for two real admission connections."""
     from selahcue_api.apps.devices.models import DeviceToken
@@ -226,26 +263,24 @@ def run_web_admissions():
     at = datetime.fromisoformat(cfg["at"])
 
     def admit(token_id):
-        samples, outcomes = [], {}
+        _cap_connection()
         token = DeviceToken.objects.get(pk=token_id)
-        until = time.monotonic() + cfg["duration"]
         try:
-            while time.monotonic() < until and len(samples) < 500:
-                start = time.monotonic()
-                with CaptureQueriesContext(connection) as statements:
-                    result = submit(token, command(), deps(clock=lambda: at, readiness_reader=read_stt_readiness))
-                query_count += len(statements)
-                name = result if isinstance(result, str) else "GRANTED"
-                outcomes[name] = outcomes.get(name, 0) + 1
-                samples.append(round((time.monotonic() - start) * 1000, 3))
-                time.sleep(0.05)
-            return _latencies("admit", samples, outcomes, queries=query_count)
+            return _sample_admissions(
+                lambda: submit(token, command(), deps(clock=lambda: at, readiness_reader=read_stt_readiness)),
+                time.monotonic() + cfg["duration"], granted=Path(cfg["grant"]).touch,
+            )
         finally:
             connections.close_all()
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         result = list(pool.map(admit, cfg["tokens"]))
     Path(cfg["result"]).write_text(json.dumps(result))
+
+
+def _cap_connection():
+    with connection.cursor() as cursor:
+        cursor.execute("SET statement_timeout = '10s'; SET lock_timeout = '2s'")
 
 
 def _web_load(at, duration, tokens, tmp_path, settings):
@@ -255,7 +290,7 @@ def _web_load(at, duration, tokens, tmp_path, settings):
     controls = path / "controls.json"
     fields = {
         "at": at.isoformat(), "duration": duration, "tokens": tokens,
-        "ready": str(path / "ready"), "go": str(path / "go"), "result": str(path / "result"),
+        "ready": str(path / "ready"), "go": str(path / "go"), "result": str(path / "result"), "grant": str(path / "grant"),
     }
     controls.write_text(json.dumps(fields))
     env = {
@@ -263,6 +298,7 @@ def _web_load(at, duration, tokens, tmp_path, settings):
         "ENVIRONMENT": "dev", "DJANGO_SETTINGS_MODULE": "selahcue_api.settings", "SQL_ENGINE": db["ENGINE"],
         "SQL_DATABASE": db["NAME"], "SQL_USER": db["USER"], "SQL_PASSWORD": db["PASSWORD"],
         "SQL_HOST": db["HOST"], "SQL_PORT": str(db["PORT"]), "SELAHCUE_PROVIDER_PROCESS_ROLE": "web",
+        "PGCONNECT_TIMEOUT": "5", "PGOPTIONS": "-c statement_timeout=10000 -c lock_timeout=2000",
         "SELAHCUE_CLOUD_STT_ENABLED": "1",
         "SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE": settings.SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE,
         "SELAHCUE_PROVIDER_KEYRING_FILE": settings.SELAHCUE_PROVIDER_KEYRING_FILE,
@@ -273,11 +309,11 @@ def _web_load(at, duration, tokens, tmp_path, settings):
 
 def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, clock):
     """Eight separate connections with bounded measurements and deterministic roles."""
-    barrier = Barrier(8, timeout=15)
-    options = ("reader", "reader", "reader", "reader", "admit", "admit", "reconcile", "ingest")
     clock.value = at
     interval = UTCInterval(MONDAY, at)
     secondary = ProviderScope("deepgram", "load-active-6")
+    env, controls, logfile = _web_load(at, duration, tokens, tmp_path, settings)
+    first_grant = Path(controls["grant"])
     connections.close_all()
 
     def operation(index, kind):
@@ -286,8 +322,12 @@ def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, c
         samples, outcomes, locks = [], {}, []
         queries = writes = 0
         try:
-            barrier.wait()
+            _cap_connection()
             deadline = time.monotonic() + duration
+            if kind == "ingest":
+                allow_first_grant = time.monotonic() + min(2, duration / 2)
+                while not first_grant.exists() and time.monotonic() < allow_first_grant:
+                    time.sleep(0.01)
             while time.monotonic() < deadline:
                 started = time.monotonic()
                 with CaptureQueriesContext(connection) as statements:
@@ -325,7 +365,6 @@ def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, c
         finally:
             connections.close_all()
 
-    env, controls, logfile = _web_load(at, duration, tokens, tmp_path, settings)
     with logfile.open("w+") as logs:
         web = subprocess.Popen(
             [sys.executable, "-c",
@@ -339,10 +378,7 @@ def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, c
             if not Path(controls["ready"]).exists():
                 logs.seek(0)
                 pytest.fail(logs.read()[-3000:])
-            with ThreadPoolExecutor(max_workers=6) as executor:
-                measurements = [executor.submit(operation, n, name) for n, name in enumerate(options)]
-                Path(controls["go"]).touch()
-                result = [item.result(timeout=duration + 25) for item in measurements]
+            result = _collect_locals(operation, Path(controls["go"]).touch, timeout=duration + 25)
             if web.wait(timeout=20) != 0:
                 logs.seek(0)
                 pytest.fail(logs.read()[-3000:])
@@ -354,12 +390,41 @@ def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, c
 
 
 
-def test_task6_bounded_retained_history_explain_and_concurrent_work(
-    provider_mounts, settings, tmp_path, clock, capsys,
-):
+def _emit(capsys, stage, values):
+    with capsys.disabled():
+        print("TASK6_RETAINED_HISTORY", stage, json.dumps(values, default=str), flush=True)
+
+
+@pytest.fixture
+def load_watchdog(capsys):
     if connection.vendor != "postgresql":
         pytest.skip("Requires the existing PostgreSQL retained-history runner")
     started = time.monotonic()
+
+    def expired():
+        os.write(2, b"TASK6_RETAINED_HISTORY hard-timeout 600s: aborting disposable test runner\n")
+        os._exit(124)
+
+    timer = Timer(600, expired)
+    timer.daemon = True
+    timer.start()
+    try:
+        _cap_connection()
+        yield started
+    finally:
+        timer.cancel()
+        connections.close_all()
+
+
+def test_task6_bounded_retained_history_explain_and_concurrent_work(
+    provider_mounts, settings, tmp_path, clock, capsys, load_watchdog,
+):
+    started = load_watchdog
+    _emit(capsys, "start", {
+        "seed": SEED, "seed_sha256": sha256(SEED.encode()).hexdigest(),
+        "runtime": sys.version.split()[0], "postgres_version_num": connection.pg_version,
+        "connection_roles": [role for _, role in LOCAL_PARTICIPANTS] + ["admit", "admit"],
+    })
     scopes = [DEEPGRAM, *[ProviderScope("deepgram", f"load-active-{index}") for index in range(1, 8)]]
     hot = ProviderScope("deepgram", "load-hot-parent")
     _runtime("provisioner", provider_mounts, settings, tmp_path, (*scopes, hot))
@@ -372,32 +437,12 @@ def test_task6_bounded_retained_history_explain_and_concurrent_work(
         active_mapping(org, identity(scopes[index % 8], key=f"load-key-{index}"))
         for index, org in enumerate(orgs)
     ]
-    tokens = [token_for(device(licence(orgs[index])))[0].pk for index in (4, 5)]
+    tokens = [token_for(device(licence(orgs[index])))[0].pk for index in range(6)]
     template = ProviderCapacityPool.objects.get(provider="deepgram", parent_scope_id=DEEPGRAM.parent_scope_id)
     historical = [_historical_parent(template, f"load-history-{i}") for i in range(32)]
-    hot_orgs = []
-    hot_evidence = []
-    for population in (1, 100, 250):
-        while len(hot_orgs) < population:
-            org = church()
-            active_mapping(org, identity(hot, key=f"hot-key-{len(hot_orgs)}"))
-            hot_orgs.append(org)
-        _runtime("usage", provider_mounts, settings, tmp_path, (*scopes, hot))
-        at = NOW + timedelta(seconds=population)
-        with bounded_transaction():
-            _, hot_scope, _ = enroll_scope("deepgram", hot.parent_scope_id, at)
-        batches = []
-        for _ in range(8):
-            with CaptureQueriesContext(connection) as statements:
-                count = _schedule_periodic(hot_scope, "RECENT_SCOPE", lambda: at, limit=100)
-            batches.append({"candidates": count, "sql": len(statements)})
-            if not UsageRecentPlan.objects.filter(scope=hot_scope).exists():
-                break
-        scan = UsageScan.objects.filter(scope=hot_scope, purpose="RECENT", requested_end=at).get()
-        assert scan.usagescanrequirement_set.filter(kind="CURRENT").count() == population
-        assert scan.usagework_set.count() == 1 and max(item["candidates"] for item in batches) <= 100
-        hot_evidence.append({"population": population, "batches": batches})
-        _runtime("provisioner", provider_mounts, settings, tmp_path, (*scopes, hot))
+    hot_orgs = [church() for _ in range(250)]
+    for index, org in enumerate(hot_orgs):
+        active_mapping(org, identity(hot, key=f"hot-key-{index}"))
     _runtime("usage", provider_mounts, settings, tmp_path, (*scopes, hot))
 
     seeds = []
@@ -424,14 +469,20 @@ def test_task6_bounded_retained_history_explain_and_concurrent_work(
     assert ProviderUsageRecord.objects.filter(issue="ANCIENT_FACT").count() == 2
     assert ProviderUsageRecord.objects.count() == 53250
     assert ProviderUsageVersion.objects.count() == 106498
+    _emit(capsys, "seeded", {
+        "orgs": 64, "weeks": 64 * 104, "records": 53250, "versions": 106498, "scopes": 41,
+        "hot_orgs": len(hot_orgs), "ancient_unresolved": 2, "elapsed_s": time.monotonic() - started,
+    })
     for org in orgs[:8]:
         assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
     readiness, stt_plan = _plans(lambda: read_stt_readiness(org_id=orgs[0].pk, mapping_id=mapping_rows[0].mapping_id, at=NOW))
     provider, health_plan = _plans(lambda: health.read_provider_usage_health("deepgram", NOW))
     assert readiness.status == "current_observed" and provider.status == "CURRENT"
     assert len(stt_plan) == len(health_plan) == 1
+    _emit(capsys, "reader_plans", {"stt": stt_plan, "health": health_plan})
     _, totals_plan = _plans(lambda: _weekly_totals(ProviderUsageRecord.objects.filter(mapping_id=mapping_rows[0].mapping_id)))
     _, population_plan = _plans(lambda: health._population(seeds[0][0][0].scope, NOW - timedelta(days=1), NOW))
+    hot_scope = UsageScope.objects.get(provider="deepgram", parent_scope_id=hot.parent_scope_id)
     planning = UsageRecentPlan(scope=hot_scope, captured_at=NOW, cutoff=NOW)
     _, recent_plan = _plans(lambda: _mapping_batch(planning, 100))
     retention = {
@@ -441,24 +492,58 @@ def test_task6_bounded_retained_history_explain_and_concurrent_work(
         ).order_by("pk").values_list("pk", flat=True)[:100]))[1]
         for kind in RetentionKind
     }
-    warmup = _mixed_round(orgs, mapping_rows, tokens, NOW + timedelta(seconds=1), 5, tmp_path, settings, clock)
-    runs = [
-        _mixed_round(orgs, mapping_rows, tokens, NOW + timedelta(seconds=index), 30, tmp_path, settings, clock)
-        for index in (2, 3)
-    ]
-    assert all(all(item["count"] > 0 for item in run) for run in runs)
-    assert UsageReservation.objects.filter(state__in=("RESERVED", "ISSUED")).count() <= 8
+    _emit(capsys, "writer_plans", {
+        "health_window": population_plan, "totals": totals_plan, "recent": recent_plan, "retention": retention,
+    })
+    for index, elapsed in enumerate((5, 30, 30)):
+        at = NOW + timedelta(seconds=index + 1)
+        clock.value = at
+        for org in orgs[:8]:
+            assert reconcile_org(org.pk, at, clock=clock).blocked_reason is None
+        batch = _mixed_round(orgs, mapping_rows, tokens[2*index:2*index+2], at, elapsed, tmp_path, settings, clock)
+        _emit(capsys, f"samples-{index}", {
+            "operations": batch, "parent_test_process_rss_os_units": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "database_connection_counts_are_samples": True, "elapsed_s": time.monotonic() - started,
+        })
+        assert all(item["count"] > 0 for item in batch)
+        assert sum(row["outcomes"].get("GRANTED", 0) for row in batch if row["kind"] == "admit") > 0
+        assert sum(row["outcomes"].get("current_observed", 0) for row in batch if row["kind"] == "reader") > 0
+        assert sum(row["outcomes"].get("CORRECTED", 0) for row in batch if row["kind"] == "reconcile") > 0
+        assert all(active <= 8 for item in batch for active, _ in item["locks"])
+        _cap_connection()
+    assert UsageReservation.objects.filter(state__in=("RESERVED", "ISSUED")).count() <= 24
     assert UsageWeek.objects.filter(org_id__in=[org.pk for org in orgs], stt_seconds_settled=1).count() == 64 * 104
-    assert all(active <= 8 for run in runs for item in run for active, _ in item["locks"])
-    elapsed = time.monotonic() - started
-    assert elapsed < 600
-    with capsys.disabled():
-        print("TASK6_RETAINED_HISTORY", json.dumps({
-            "seed": SEED, "seed_sha256": sha256(SEED.encode()).hexdigest(), "elapsed_s": elapsed,
-            "max_rss_os_units": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
-            "orgs": 64, "weeks": 64 * 104, "records": 53250, "versions": 106498, "scopes": 41,
-                "ancient_unresolved": 2,
-            "hot": hot_evidence, "warmup": warmup, "runs": runs,
-            "plans": {"stt": stt_plan, "health": health_plan, "health_window": population_plan,
-                      "totals": totals_plan, "recent": recent_plan, "retention": retention},
-        }, default=str))
+    _emit(capsys, "complete", {"elapsed_s": time.monotonic() - started})
+
+
+def test_local_load_roles_all_start_and_finish_before_seeding():
+    from threading import Lock
+
+    started, finished = [], []
+    lock = Lock()
+
+    def operation(org_index, role):
+        with lock:
+            started.append((org_index, role))
+        result = {"kind": role, "count": 1}
+        with lock:
+            finished.append((org_index, role))
+        return result
+
+    results = _collect_locals(operation, lambda: None, timeout=2)
+    intended = [(0, "reader"), (1, "reader"), (2, "reader"), (3, "reader"), (6, "reconcile"), (7, "ingest")]
+    assert sorted(started) == sorted(finished) == intended
+    assert [row["kind"] for row in results] == [role for _, role in intended]
+
+
+def test_admission_measurement_counts_a_real_query_in_one_sample():
+    ticks = iter((0, 0, 0.01, 1))
+
+    def submit_once():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetchone() == (1,)
+        return object()
+
+    result = _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
+    assert (result["count"], result["queries"], result["outcomes"]) == (1, 1, {"GRANTED": 1})

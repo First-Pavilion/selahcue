@@ -43,6 +43,11 @@ def bounded_transaction(*, deadline=None, deadline_ns=None, monotonic_ns=time.mo
             return
 
         def guard(execute, sql, params, many, context):
+            # An inner atomic block may need to recover a failed transaction
+            # or close its savepoint after the work deadline. The PostgreSQL
+            # connection cannot accept SET LOCAL while awaiting that rollback.
+            if sql.lstrip().upper().startswith(("ROLLBACK TO SAVEPOINT ", "RELEASE SAVEPOINT ")):
+                return execute(sql, params, many, context)
             remaining_ms = (deadline_ns - monotonic_ns()) // 1_000_000
             if remaining_ms <= 0:
                 raise UsageRejected(Code.TASK_BUDGET)
