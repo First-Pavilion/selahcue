@@ -4,7 +4,7 @@ import time
 from uuid import uuid4
 
 from django.db import connection
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q
 from django.utils import timezone
 
 from selahcue_api.apps.providers.adapters import deepgram_usage, openai_usage
@@ -14,13 +14,13 @@ from selahcue_api.apps.providers.models import ProviderCapacityPool, ProviderCre
 from . import health
 from .contracts import UTCInterval
 from .models import (
-    UsageCoverageGap, UsageObservedInterval, UsagePageClaim, UsageScan, UsageScanRequirement,
+    ProviderUsageRecord, UsageCoverageGap, UsageObservedInterval, UsagePageClaim, UsageScan, UsageScanRequirement,
     UsageScope, UsageWork,
 )
 from .observation_contracts import (
-    ObservedCoverage, ScanPurpose, ScanState, UsageClaim, UsageFailureCode as Code, UsageProfile, UsageRejected,
+    Attribution, DGCompletion, ObservedCoverage, ScanPurpose, ScanState, UsageClaim, UsageFailureCode as Code, UsageProfile, UsageRejected,
 )
-from .observations import bump_scope, dirty_orgs, ingest_observations, set_gap
+from .observations import RETENTION_AGE, bump_scope, dirty_orgs, ingest_observations, set_gap
 from .usage_tasks import _PAGE_OR_PUBLISH_DELAYS, bounded_transaction, ensure_work, require_usage_role
 
 _COOLDOWN = timedelta(seconds=120)
@@ -69,9 +69,8 @@ def schedule_scan(scope, purpose, start, end, now, epoch, *, requirements=()):
     if scan is not None and scan.policy_epoch_id != epoch.pk:
         return None  # The old claim must fail under its own policy provenance.
     if scan is None:
-        if UsageScan.objects.filter(
-            scope=scope, purpose=purpose, state=ScanState.FAILED, replacement_not_before__gt=now,
-        ).exists():
+        prior = probe if purpose == ScanPurpose.HISTORY else UsageScan.objects.filter(scope=scope, purpose=purpose)
+        if prior.filter(state=ScanState.FAILED, replacement_not_before__gt=now).exists():
             return None
         scan = UsageScan.objects.create(
             scope=scope, purpose=purpose, profile=profile_for(scope.provider),
@@ -90,6 +89,75 @@ def schedule_scan(scope, purpose, start, end, now, epoch, *, requirements=()):
             )
     ensure_work("SCAN", str(scan.pk), now, scope=scope, scan=scan)
     return scan
+
+
+def _unresolved_history_day(scope, retained_start):
+    open_gap = UsageCoverageGap.objects.filter(record_id=OuterRef("pk"), state="OPEN")
+    candidates = ProviderUsageRecord.objects.filter(scope=scope, event_at__lt=retained_start).filter(
+        Q(issue__isnull=False)
+        | Q(attribution__in=(Attribution.UNATTRIBUTED, Attribution.DISCREPANCY))
+        | Q(current_version__completion=DGCompletion.COMPLETION_UNKNOWN)
+        | Exists(open_gap)
+    ).order_by("event_at", "pk")
+    timestamps = candidates.values_list("event_at", flat=True)
+    after = scope.history_recovery_after
+    selected = timestamps.filter(event_at__gte=after).first() if after is not None else None
+    if selected is None:
+        selected = timestamps.first()
+    return None if selected is None else selected.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _advance_history(scope, start, end):
+    fields = []
+    if scope.history_next_start == start:
+        scope.history_next_start = end
+        fields.append("history_next_start")
+    if scope.history_recovery_pending == start:
+        scope.history_recovery_after = end
+        scope.history_recovery_pending = None
+        fields.extend(("history_recovery_after", "history_recovery_pending"))
+    if fields:
+        scope.save(update_fields=fields)
+
+
+def _history_opportunity(scope, epoch, retained_start, aligned_end, now, *, recovery):
+    day = timedelta(days=1)
+    if recovery:
+        lower = scope.history_recovery_pending
+        if lower is None:
+            lower = _unresolved_history_day(scope, retained_start)
+            if lower is None:
+                return False
+            scope.history_recovery_pending = lower
+            scope.save(update_fields=("history_recovery_pending",))
+    else:
+        lower = scope.history_next_start
+        if lower is None or lower + day > aligned_end:
+            lower = retained_start
+            scope.history_next_start = lower
+            scope.save(update_fields=("history_next_start",))
+    upper = lower + day
+    if UsageCoverageGap.objects.filter(
+        scope=scope, start=lower, end=upper, reason=Code.HISTORY_UNAVAILABLE, state="OPEN",
+    ).exists():
+        _advance_history(scope, lower, upper)
+        return True
+    return schedule_scan(
+        scope, ScanPurpose.HISTORY, lower, upper, now, epoch,
+        requirements=(("HISTORY", None, None, lower, upper),),
+    ) is not None
+
+
+def schedule_history(scope, epoch, aligned_end, now):
+    # Both windows use the existing HISTORY lane/class. Reuse pending work,
+    # and alternate opportunities even when the older day remains unresolved.
+    retained_start = (now - RETENTION_AGE).replace(hour=0, minute=0, second=0, microsecond=0)
+    for recovery in (scope.history_recovery_turn, not scope.history_recovery_turn):
+        if _history_opportunity(scope, epoch, retained_start, aligned_end, now, recovery=recovery):
+            if scope.history_recovery_turn == recovery:
+                scope.history_recovery_turn = not recovery
+                scope.save(update_fields=("history_recovery_turn",))
+            return
 
 
 def _matching_policy(scope, scan):
@@ -324,9 +392,8 @@ def finish_scan(scan_id, coverage: ObservedCoverage) -> None:
             scope=scope, record=None, state="OPEN", start__gte=scan.requested_start, end__lte=scan.requested_end,
             last_scan__generation__lt=scan.generation,
         ).update(state="RESOLVED", resolved_at=now, updated_at=now)
-        if scan.purpose == ScanPurpose.HISTORY and scope.history_next_start == scan.requested_start:
-            scope.history_next_start = scan.requested_end
-            scope.save(update_fields=("history_next_start",))
+        if scan.usagescanrequirement_set.filter(kind="HISTORY").exists():
+            _advance_history(scope, scan.requested_start, scan.requested_end)
         dirty_orgs(_scope_orgs(scope, scan), now)
 
 

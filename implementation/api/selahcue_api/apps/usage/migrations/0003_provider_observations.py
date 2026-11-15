@@ -574,6 +574,9 @@ class Migration(migrations.Migration):
                 ('scheduling_turn', models.PositiveSmallIntegerField(default=0)),
                 ('last_served_at', models.DateTimeField(null=True)),
                 ('history_next_start', models.DateTimeField(null=True)),
+                ('history_recovery_after', models.DateTimeField(null=True)),
+                ('history_recovery_pending', models.DateTimeField(null=True)),
+                ('history_recovery_turn', models.BooleanField(default=False)),
                 ('attribution_after_record_id', models.PositiveBigIntegerField(null=True)),
                 ('lane_scan', models.ForeignKey(null=True, on_delete=django.db.models.deletion.PROTECT, related_name='+', to='selahcue_usage.usagescan')),
                 ('pool', models.OneToOneField(null=True, on_delete=django.db.models.deletion.PROTECT, to='selahcue_providers.providercapacitypool')),
@@ -841,6 +844,10 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name='providerusagerecord',
             index=models.Index(fields=['scope', 'attribution', 'id'], name='usage_record_scope_attr'),
+        ),
+        migrations.AddIndex(
+            model_name='providerusagerecord',
+            index=models.Index(fields=['scope', 'event_at', 'id'], name='usage_record_scope_event'),
         ),
         migrations.AddIndex(
             model_name='providerusagerecord',

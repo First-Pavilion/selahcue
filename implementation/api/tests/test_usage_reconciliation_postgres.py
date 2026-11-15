@@ -304,3 +304,35 @@ def test_dispatched_mint_recovery_preserves_original_metadata_and_audits_once(us
     assert attempt.failure_code == "provider_outcome_unproven"
     assert (reservation.state, reservation.last_minted_at) == ("RESERVED", None)
     assert AuditEvent.objects.filter(action="cloud.stt.mint_recovery", actor_kind="service").count() == 1
+
+
+def test_concurrent_history_sweeps_share_older_and_retained_windows(usage_runtime, clock):
+    from selahcue_api.apps.usage.models import UsageScan
+    from selahcue_api.apps.usage.usage_tasks import _schedule_periodic
+    from test_usage_reconciliation import seed_old_unresolved_days
+
+    usage_runtime()
+    scope, (first_day, _) = seed_old_unresolved_days(clock)
+    barrier = Barrier(3, timeout=5)
+
+    def schedule():
+        close_old_connections()
+        try:
+            barrier.wait()
+            _schedule_periodic(scope, "HISTORY_SCOPE", clock)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        contenders = [pool.submit(schedule) for _ in range(2)]
+        barrier.wait()
+        for contender in contenders:
+            contender.result(timeout=10)
+
+    pending = UsageScan.objects.filter(scope=scope, purpose="HISTORY", state="PARTIAL")
+    retained_day = (NOW - timedelta(weeks=104)).replace(hour=0)
+    assert sorted(pending.values_list("requested_start", flat=True)) == [first_day, retained_day]
+    assert UsageWork.objects.filter(kind="SCAN", scan__in=pending, state="PENDING").count() == 2
+    scope.refresh_from_db()
+    assert scope.history_recovery_pending == first_day
+    assert scope.history_recovery_after is None

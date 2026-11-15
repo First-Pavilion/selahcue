@@ -232,3 +232,173 @@ def test_late_retired_key_facts_correct_the_original_church_without_a_replacemen
     assert ProviderUsageRecord.objects.get().mapping_id == mapping.mapping_id
     row.refresh_from_db()
     assert row.state == "RELEASED"
+
+
+def seed_old_unresolved_days(clock):
+    """Ingest two old provider days through the normal immutable-fact writer."""
+    from selahcue_api.apps.usage.models import UsageScope
+    from selahcue_api.apps.usage.observation_contracts import ScanPurpose
+
+    day = (NOW - timedelta(weeks=105)).replace(hour=0)
+    days = (day, day + timedelta(days=2))
+    for ordinal, start_at in enumerate(days):
+        clock.value = NOW - timedelta(seconds=10 - ordinal)
+        scan = begin_scan(
+            DEEPGRAM, interval=UTCInterval(start_at, start_at + timedelta(days=1)),
+            start=clock(), purpose=ScanPurpose.HISTORY,
+        )
+        observed(scan, [
+            request(f"old-unresolved-{ordinal}", completed=False, duration=None, created=start_at + timedelta(hours=1)),
+        ], clock())
+    clock.value = NOW
+    return UsageScope.objects.get(pk=scan.scope_id), days
+
+
+def scheduled_history(scope, clock, *, purpose="HISTORY_SCOPE"):
+    """Exercise the scope sweep path and return only newly persisted scans."""
+    from selahcue_api.apps.usage.models import UsageScan
+    from selahcue_api.apps.usage.usage_tasks import _schedule_periodic
+
+    generation = scope.usagescan_set.order_by("-generation").values_list("generation", flat=True).first()
+    _schedule_periodic(scope, purpose, clock)
+    return list(UsageScan.objects.filter(scope=scope, generation__gt=generation or 0).order_by("generation"))
+
+
+@pytest.mark.django_db
+def test_history_sweep_discovers_old_unresolved_days_alongside_retained_history(usage_runtime, clock):
+    usage_runtime()
+    scope, (first_old, _) = seed_old_unresolved_days(clock)
+    retained = (NOW - timedelta(weeks=104)).replace(hour=0)
+    scheduled = scheduled_history(scope, clock) + scheduled_history(scope, clock)
+    assert {(row.requested_start, row.requested_end) for row in scheduled} == {
+        (retained, retained + timedelta(days=1)),
+        (first_old, first_old + timedelta(days=1)),
+    }
+    assert all(row.purpose == "HISTORY" for row in scheduled)
+    assert all(row.usagework_set.filter(kind="SCAN", state="PENDING").exists() for row in scheduled)
+    current = scheduled_history(scope, clock, purpose="RECENT_SCOPE")
+    assert [(row.purpose, row.requested_end) for row in current] == [("HEALTH", NOW)]
+    assert scope.usagescan_set.filter(purpose="HISTORY", state="PARTIAL").count() == 2
+
+
+@pytest.mark.django_db
+def test_older_history_advances_only_on_completion_and_wraps_over_unchanged_records(usage_runtime, clock):
+    from selahcue_api.apps.usage.models import ProviderUsageRecord
+
+    usage_runtime()
+    scope, (first_day, second_day) = seed_old_unresolved_days(clock)
+    retained = scheduled_history(scope, clock)
+    observed(retained[0], [], clock())
+    first, = scheduled_history(scope, clock)
+    assert first.requested_start == first_day
+
+    work = task_for(first, clock())
+    interval = UTCInterval(first.requested_start, first.requested_end)
+    row = request("old-unresolved-0", completed=False, duration=None, created=first_day + timedelta(hours=1))
+    ingest_observations(parse_dg(dg_data([row] * 100), interval=interval), first.pk, claim=page_claim(work, clock()))
+    scope.refresh_from_db()
+    assert scope.history_recovery_pending == first_day
+    assert scope.history_recovery_after is None
+
+    last_page = parse_dg(dg_data(page=1), interval=interval, cursor="1")
+    ingest_observations(last_page, first.pk, claim=page_claim(work, clock()))
+    complete(first, DEEPGRAM, clock())
+    scope.refresh_from_db()
+    assert scope.history_recovery_pending is None
+    assert scope.history_recovery_after == first.requested_end
+    assert ProviderUsageRecord.objects.filter(issue="ANCIENT_FACT").count() == 2
+
+    retained, = scheduled_history(scope, clock)
+    observed(retained, [], clock())
+    second, = scheduled_history(scope, clock)
+    assert second.requested_start == second_day
+    observed(second, [], clock())
+    retained, = scheduled_history(scope, clock)
+    observed(retained, [], clock())
+    wrapped, = scheduled_history(scope, clock)
+    assert wrapped.requested_start == first_day
+    assert wrapped.generation > second.generation
+    scope.refresh_from_db()
+    assert scope.history_recovery_after == second.requested_end
+    assert scope.history_recovery_pending == first_day
+
+
+@pytest.mark.django_db
+def test_older_history_advances_over_verified_unavailable_day_without_a_read(usage_runtime, clock):
+    from selahcue_api.apps.usage.observation_contracts import UsageFailureCode
+    from selahcue_api.apps.usage.observations import set_gap
+
+    usage_runtime()
+    scope, (first_day, second_day) = seed_old_unresolved_days(clock)
+    gap = set_gap(
+        scope, UsageFailureCode.HISTORY_UNAVAILABLE, clock(),
+        start=first_day, end=first_day + timedelta(days=1),
+    )
+    retained, = scheduled_history(scope, clock)
+    observed(retained, [], clock())
+    assert scheduled_history(scope, clock) == []
+    scope.refresh_from_db()
+    assert scope.history_recovery_pending is None
+    assert scope.history_recovery_after == gap.end
+    gap.refresh_from_db()
+    assert gap.state == "OPEN"
+    assert scope.usagescan_set.filter(requested_start=first_day).count() == 1  # Seed only.
+
+    retained, = scheduled_history(scope, clock)
+    observed(retained, [], clock())
+    following, = scheduled_history(scope, clock)
+    assert following.requested_start == second_day
+
+
+@pytest.mark.django_db
+def test_older_history_failure_preserves_its_cursor_and_does_not_stall_retained_days(usage_runtime, clock):
+    from selahcue_api.apps.usage.observation_contracts import UsageFailureCode
+    from selahcue_api.apps.usage.scans import _apply_failure
+
+    usage_runtime()
+    scope, (first_day, _) = seed_old_unresolved_days(clock)
+    retained, = scheduled_history(scope, clock)
+    observed(retained, [], clock())
+    failed, = scheduled_history(scope, clock)
+    work = task_for(failed, clock())
+    for offset in (0, 5, 30):
+        clock.value = NOW + timedelta(seconds=offset)
+        claim = page_claim(work, clock())
+        _apply_failure(work, claim, UsageFailureCode.TRANSPORT_ERROR, clock)
+    failed.refresh_from_db()
+    assert failed.state == "FAILED"
+    assert failed.replacement_not_before == clock() + timedelta(seconds=120)
+    scope.refresh_from_db()
+    assert scope.history_recovery_after is None
+    assert scope.history_recovery_pending == first_day
+
+    retained, = scheduled_history(scope, clock)
+    assert retained.requested_start != first_day
+    clock.value = failed.replacement_not_before - timedelta(microseconds=1)
+    assert not any(row.requested_start == first_day for row in scheduled_history(scope, clock))
+    assert scope.usagescan_set.filter(requested_start=first_day, state="PARTIAL").count() == 0
+
+    clock.value = failed.replacement_not_before
+    retried, = scheduled_history(scope, clock)
+    assert retried.requested_start == first_day
+    assert retried.generation > failed.generation
+    scope.refresh_from_db()
+    assert scope.history_recovery_after is None
+
+
+@pytest.mark.django_db
+def test_older_history_does_not_start_after_the_shared_sweep_deadline(usage_runtime, clock):
+    import time
+
+    from selahcue_api.apps.usage.observation_contracts import UsageRejected
+    from selahcue_api.apps.usage.usage_tasks import _schedule_periodic
+
+    usage_runtime()
+    scope, _ = seed_old_unresolved_days(clock)
+    scheduled_history(scope, clock)
+    before = scope.usagescan_set.count()
+    with pytest.raises(UsageRejected, match="TASK_BUDGET"):
+        _schedule_periodic(scope, "HISTORY_SCOPE", clock, deadline=time.monotonic() - 1)
+    assert scope.usagescan_set.count() == before
+    scope.refresh_from_db()
+    assert scope.history_recovery_pending is None

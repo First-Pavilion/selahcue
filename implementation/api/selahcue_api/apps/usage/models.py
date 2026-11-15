@@ -248,6 +248,9 @@ class UsageScope(_MutableObservation):
     scheduling_turn = models.PositiveSmallIntegerField(default=0)
     last_served_at = _date()
     history_next_start = _date()
+    history_recovery_after = _date()
+    history_recovery_pending = _date()
+    history_recovery_turn = models.BooleanField(default=False)
     attribution_after_record_id = models.PositiveBigIntegerField(null=True)
 
     class Meta:
@@ -488,6 +491,7 @@ class ProviderUsageRecord(_MutableObservation):
         indexes = [
             _index("record_mapping_event", "mapping", "event_at"),
             _index("record_scope_attr", "scope", "attribution", "id"),
+            _index("record_scope_event", "scope", "event_at", "id"),
             _index("record_retention", "retention_at", "id"),
         ]
 

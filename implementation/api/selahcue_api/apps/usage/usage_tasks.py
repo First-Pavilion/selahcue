@@ -30,15 +30,19 @@ def require_usage_role(*, maintenance=False):
 
 
 @contextmanager
-def bounded_transaction():
-    deadline = time.monotonic_ns() + 10_000_000_000
+def bounded_transaction(*, deadline=None):
+    deadline_ns = time.monotonic_ns() + 10_000_000_000
+    if deadline is not None:
+        deadline_ns = min(deadline_ns, int(deadline * 1_000_000_000))
+        if deadline_ns <= time.monotonic_ns():
+            raise UsageRejected(Code.TASK_BUDGET)
     with transaction.atomic():
         if connection.vendor != "postgresql":
             yield
             return
 
         def guard(execute, sql, params, many, context):
-            remaining_ms = (deadline - time.monotonic_ns()) // 1_000_000
+            remaining_ms = (deadline_ns - time.monotonic_ns()) // 1_000_000
             if remaining_ms <= 0:
                 raise UsageRejected(Code.TASK_BUDGET)
             # Use the same atomic driver cursor without recursing through this
@@ -465,14 +469,13 @@ def _recent_requirements(scope, now, end):
     return requirements
 
 
-def _schedule_periodic(hint, purpose, clock):
+def _schedule_periodic(hint, purpose, clock, *, deadline=None):
     from . import health
-    from .models import UsageCoverageGap, UsageScope
+    from .models import UsageScope
     from .observation_contracts import ScanPurpose
-    from .observations import RETENTION_AGE
-    from .scans import floor_hour, floor_second, schedule_scan
+    from .scans import floor_hour, floor_second, schedule_history, schedule_scan
 
-    with bounded_transaction():
+    with bounded_transaction(deadline=deadline):
         now = clock()
         provider = health.lock_provider(hint.provider, now)
         scope = UsageScope.objects.select_for_update().get(pk=hint.pk)
@@ -499,22 +502,7 @@ def _schedule_periodic(hint, purpose, clock):
                 )
             ensure_work("ATTRIBUTE", str(scope.pk), now, scope=scope)
             return
-        lower = scope.history_next_start
-        if lower is None or lower + timedelta(days=1) > aligned_end:
-            lower = (now - RETENTION_AGE).replace(hour=0, minute=0, second=0, microsecond=0)
-        upper = lower + timedelta(days=1)
-        if UsageCoverageGap.objects.filter(
-            scope=scope, start=lower, end=upper, reason=Code.HISTORY_UNAVAILABLE, state="OPEN",
-        ).exists():
-            scope.history_next_start = upper
-            scope.save(update_fields=("history_next_start",))
-            return
-        if scope.history_next_start != lower:
-            scope.history_next_start = lower
-            scope.save(update_fields=("history_next_start",))
-        schedule_scan(
-            scope, ScanPurpose.HISTORY, lower, upper, now, epoch, requirements=(("HISTORY", None, None, lower, upper),),
-        )
+        schedule_history(scope, epoch, aligned_end, now)
 
 
 def _recover_candidate(clock):
@@ -571,7 +559,7 @@ def sweep_usage(*, limit: int = 100, clock=timezone.now) -> int:
             scope = _scope_candidate(purpose, clock)
             if scope is None:
                 break
-            _schedule_periodic(scope, purpose, clock)
+            _schedule_periodic(scope, purpose, clock, deadline=deadline)
             consumed += 1
     for _ in range(min(limit - consumed, max(1, limit // 8))):
         if time.monotonic() >= deadline or not _recover_candidate(clock):
