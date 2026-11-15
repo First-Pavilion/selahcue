@@ -648,3 +648,193 @@ def test_unresolved_old_facts_are_not_removed_during_normalized_retention(
     assert prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock).deleted == 0
     assert set(ProviderUsageRecord.objects.values_list("pk", flat=True)) == preexisting
     assert UsageCoverageGap.objects.filter(state="OPEN", reason="PLACEMENT_GAP").count() == 2
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(("disruption", "reason"), [
+    ("digest_mismatch", "POLICY_MISMATCH"),
+    ("missing_provider_health", "COVERAGE_MISSING"),
+])
+def test_provider_health_refuses_each_missing_or_mismatched_input_independently(
+    usage_runtime, provider_mounts, clock, disruption, reason,
+):
+    from django.db import IntegrityError, connection, transaction
+    from django.test.utils import CaptureQueriesContext
+
+    from selahcue_api.apps.usage.models import ProviderUsageHealthState
+
+    usage_runtime()
+    scan = begin_scan(DEEPGRAM)
+    observed(scan, [], NOW)
+    provider_mounts("web", stt=True, capable=True)
+    config = initialize_provider_runtime(entrypoint="wsgi")
+    assert not config.usage_credentials
+
+    with CaptureQueriesContext(connection) as statements:
+        result = read_provider_usage_health("deepgram", NOW)
+    assert len(statements) == 1 and result.status == "CURRENT"
+    evaluation = ScopeUsageHealth.objects.get(scope_id=scan.scope_id)
+    assert evaluation.complete_scan_id == scan.pk
+    assert evaluation.policy_epoch_id == scan.policy_epoch_id == scan.scope.pool.current_epoch_id
+    assert evaluation.policy_digest == scan.policy_digest == scan.policy_epoch.digest
+
+    if disruption == "digest_mismatch":
+        model = ScopeUsageHealth
+        bad_digest = "0" * 64
+        assert evaluation.policy_digest != bad_digest
+
+        def disrupt():
+            model.objects.filter(pk=evaluation.pk).update(policy_digest=bad_digest)
+
+        columns = [
+            f"'{bad_digest}' AS policy_digest" if field.column == "policy_digest"
+            else connection.ops.quote_name(field.column)
+            for field in model._meta.local_concrete_fields
+        ]
+        projection = "SELECT " + ", ".join(columns) + f" FROM {model._meta.db_table}"
+    else:
+        model = ProviderUsageHealthState
+
+        def disrupt():
+            model.objects.filter(provider="deepgram").delete()
+
+        projection = f"SELECT * FROM {model._meta.db_table} WHERE 1=0"
+
+    def draw_from_fixture(execute, sql, params, many, context):
+        table = f"LEFT JOIN {model._meta.db_table}"
+        assert sql.count(table) == 1
+        return execute(sql.replace(table, f"LEFT JOIN ({projection})"), params, many, context)
+
+    # Project only the forbidden input into the SELECT. The same query
+    # predicates run in SQLite and PostgreSQL with all guards enabled.
+    with connection.execute_wrapper(draw_from_fixture), CaptureQueriesContext(connection) as statements:
+        result = read_provider_usage_health("deepgram", NOW)
+    assert len(statements) == 1
+    assert result.status == "UNRESOLVED" and result.reason == reason
+    assert result.valid_until == evaluation.valid_until
+    if disruption == "missing_provider_health":
+        assert result.revision is None
+
+    if connection.vendor == "postgresql":
+        with pytest.raises(IntegrityError) as blocked, transaction.atomic():
+            disrupt()
+        assert getattr(blocked.value.__cause__, "sqlstate", None) == "23514"
+    else:
+        disrupt()
+        with CaptureQueriesContext(connection) as statements:
+            assert read_provider_usage_health("deepgram", NOW) == result
+        assert len(statements) == 1
+    assert ScopeUsageHealth.objects.get(pk=evaluation.pk).policy_epoch_id == evaluation.policy_epoch_id
+
+
+@pytest.mark.django_db
+def test_resolved_normalization_ages_across_retention_without_losing_live_provenance(
+    usage_runtime, clock, provider_mounts,
+):
+    from selahcue_api.apps.usage.models import ProviderUsageRecord, ProviderUsageVersion
+    from test_usage_section12_accounting import frozen_week
+
+    org = church()
+    prior = frozen_week(org, "UTC", MONDAY - timedelta(weeks=1))
+    active_mapping(org, identity(key="normalized-retention"))
+    usage_runtime()
+    edge = timedelta(microseconds=1)
+    events = {
+        "expired-resolved": MONDAY - edge,
+        "at-cutoff": MONDAY,
+        "past-cutoff": MONDAY + edge,
+        "unrelated-live": NOW - timedelta(minutes=2),
+    }
+    scan = begin_scan(DEEPGRAM, interval=UTCInterval(prior.starts_at, NOW))
+    observed(scan, [
+        request(name, key="normalized-retention", duration=1, created=event)
+        for name, event in events.items()
+    ], NOW)
+    clock.value += timedelta(seconds=1)
+    revision = begin_scan(DEEPGRAM, interval=UTCInterval(prior.starts_at, clock()), start=clock())
+    observed(revision, [
+        request("expired-resolved", key="normalized-retention", duration=2, created=events["expired-resolved"]),
+    ], clock())
+    assert reconcile_org(org.pk, clock(), clock=clock).blocked_reason is None
+    rows = {row.request_id: row for row in ProviderUsageRecord.objects.select_related("current_version")}
+    assert set(rows) == set(events)
+    assert all(row.issue is None and row.placed_week_id and row.attribution == "EXACT_KEY" for row in rows.values())
+    expired = rows["expired-resolved"]
+    assert expired.placed_week_id == prior.pk
+    assert ProviderUsageVersion.objects.filter(record=expired).count() == 2
+    live = rows["unrelated-live"].current_version
+    provenance = (live.source_scan_id, live.source_page_id, live.source_generation, live.first_receipt_at)
+    assert provenance[0] == scan.pk and provenance[1] is not None
+
+    provider_mounts("maintenance", capable=True)
+    initialize_provider_runtime(entrypoint="celery_worker")
+    horizon = timedelta(weeks=104)
+    clock.value = events["expired-resolved"] + horizon - edge
+    before = prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)
+    assert (before.scanned, before.deleted, before.deferred) == (0, 0, 0)
+    clock.value += edge
+    equal = prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)
+    assert (equal.scanned, equal.deleted, equal.deferred) == (0, 0, 0)
+
+    clock.value = MONDAY + horizon
+    retained_week = prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)
+    assert (retained_week.scanned, retained_week.deleted, retained_week.deferred) == (0, 0, 0)
+    retained_week = prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)
+    assert (retained_week.scanned, retained_week.deleted, retained_week.deferred) == (1, 0, 1)
+    assert ProviderUsageRecord.objects.count() == 4
+
+    clock.value += edge
+    prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)  # Finish the previous cutoff pass.
+    expired_week = prune_usage_batch(RetentionKind.NORMALIZED_RECORD, clock=clock)
+    assert (expired_week.scanned, expired_week.deleted, expired_week.deferred) == (2, 3, 1)
+    assert set(ProviderUsageRecord.objects.values_list("request_id", flat=True)) == events.keys() - {"expired-resolved"}
+    assert not ProviderUsageVersion.objects.filter(record_id=expired.pk).exists()
+    live.refresh_from_db()
+    assert ProviderUsageRecord.objects.get(request_id="unrelated-live").current_version_id == live.pk
+    assert (live.source_scan_id, live.source_page_id, live.source_generation, live.first_receipt_at) == provenance
+
+
+@pytest.mark.django_db
+def test_expired_week_cutoff_and_durable_cursor_resume_after_dependency_cleanup(
+    usage_runtime, clock, provider_mounts,
+):
+    from selahcue_api.apps.usage.models import UsageRetentionCursor, UsageWeek
+
+    org = church()
+    mapping = active_mapping(org)
+    held = reserve_stt(device(licence(org)), mapping.mapping_id, NOW)
+    UsageReservation.objects.filter(pk=held.pk).update(state="RELEASED", created_at=NOW)
+    dependent = held.week
+    edge = timedelta(microseconds=1)
+    # Clone valid week geometry into distinct organizations to avoid overlap.
+    positions = [dependent.ends_at] * 100 + [dependent.ends_at + edge, dependent.ends_at + 2 * edge]
+    orgs = [church() for _ in positions]
+    field_values = {
+        field.attname: getattr(dependent, field.attname)
+        for field in UsageWeek._meta.local_concrete_fields if not field.primary_key and field.name != "org"
+    }
+    weeks = UsageWeek.objects.bulk_create([
+        UsageWeek(org=target, **{**field_values, "ends_at": end})
+        for target, end in zip(orgs, positions, strict=True)
+    ])
+    after_budget, equal, younger = weeks[-3:]
+
+    provider_mounts("maintenance", capable=True)
+    initialize_provider_runtime(entrypoint="celery_worker")
+    clock.value = dependent.ends_at + edge + timedelta(weeks=104)
+    first = prune_usage_batch(RetentionKind.EXPIRED_WEEK, clock=clock)
+    assert (first.scanned, first.deleted, first.deferred, first.has_more) == (100, 99, 1, True)
+    cursor = UsageRetentionCursor.objects.get(kind=RetentionKind.EXPIRED_WEEK)
+    assert cursor.after_id == weeks[-4].pk and cursor.cutoff_at == clock() - timedelta(weeks=104)
+    assert set(UsageWeek.objects.values_list("pk", flat=True)) == {dependent.pk, after_budget.pk, equal.pk, younger.pk}
+
+    second = prune_usage_batch(RetentionKind.EXPIRED_WEEK, clock=clock)
+    assert (second.scanned, second.deleted, second.deferred, second.has_more) == (1, 1, 0, False)
+    assert UsageRetentionCursor.objects.get(pk=cursor.pk).after_id is None
+    assert set(UsageWeek.objects.values_list("pk", flat=True)) == {dependent.pk, equal.pk, younger.pk}
+
+    terminal = prune_usage_batch(RetentionKind.TERMINAL_RESERVATION, clock=clock)
+    assert (terminal.scanned, terminal.deleted, terminal.deferred) == (1, 1, 0)
+    resumed = prune_usage_batch(RetentionKind.EXPIRED_WEEK, clock=clock)
+    assert (resumed.scanned, resumed.deleted, resumed.deferred) == (1, 1, 0)
+    assert set(UsageWeek.objects.values_list("pk", flat=True)) == {equal.pk, younger.pk}
