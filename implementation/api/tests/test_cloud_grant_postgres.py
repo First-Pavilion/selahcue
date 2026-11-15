@@ -853,3 +853,65 @@ def test_reserved_note_crosses_expiry_during_real_reservation_lock_wait(live_org
             at = expiry
         assert future.result(timeout=5) == expiry
     assert UsageReservation.objects.get(pk=note.reservation_id).state == "RELEASED"
+
+
+@pytest.mark.parametrize("entry", ["http", "direct"])
+@pytest.mark.parametrize("failure", ["naive", "exception"])
+def test_provisioning_clock_failure_records_one_denial(
+    client, admitted_pool, real_budget, monkeypatch, entry, failure,
+):
+    from django.utils import timezone
+
+    from selahcue_api.apps.providers.models import ProviderProvisioningOutbox, ProvisioningDemand
+    from selahcue_api.platform import cloud_views
+
+    store, prefix = real_budget
+    org = church()
+    token, raw = token_for(device(licence(org)))
+    first = command()
+    at = timezone.now()
+    samples = []
+    outbox_count = ProviderProvisioningOutbox.objects.filter(pool=admitted_pool).count()
+
+    def clock():
+        assert connection.in_atomic_block
+        samples.append(at)
+        if len(samples) <= 2:
+            return at
+        assert len(samples) == 3, "Provisioning must not retry the authority clock"
+        if failure == "naive":
+            return at.replace(tzinfo=None)
+        raise RuntimeError("synthetic clock detail")
+
+    def unexpected_mint(*args, **kwargs):
+        pytest.fail("A failing provisioning clock must not start a mint")
+
+    monkeypatch.setattr(sessions, "mint", unexpected_mint)
+    if entry == "http":
+        monkeypatch.setattr(cloud_views, "_defaults", lambda _: sessions._defaults(clock))
+        response = client.post("/v1/stt/session", wire(first), content_type="application/json",
+                               headers={"Authorization": f"Bearer {raw}"})
+        assert response.status_code == 503
+        assert response.json() == {
+            "error": {"code": "PROVIDER_UNAVAILABLE", "message": "The cloud provider is unavailable."},
+            "surface": "desktop", "operation": "stt_session",
+        }
+        assert response["Cache-Control"] == "no-store" and "Retry-After" not in response
+    else:
+        with pytest.raises(SessionRejected, match="^PROVIDER_UNAVAILABLE$") as denied:
+            sessions.issue_stt_session(devices.authenticate_device_token(raw), first, clock=clock)
+        assert denied.value.retry_after_seconds is None
+
+    assert len(samples) == 3
+    base = f"{prefix}:1:cloud:v1:{{org:{org.pk}}}:admission:"
+    assert store.mget(base + "org", base + f"device:{token.device_id}") == [b"1", b"1"]
+    assert not UsageReservation.objects.filter(org=org).exists()
+    assert not SttMintAttempt.objects.filter(reservation__org=org).exists()
+    assert not ProviderCredential.objects.filter(org=org).exists()
+    assert not ProvisioningDemand.objects.filter(org=org).exists()
+    assert ProviderProvisioningOutbox.objects.filter(pool=admitted_pool).count() == outbox_count
+    event = audits(first).get()
+    assert (event.actor_kind, event.actor_id) == ("device", token.device.device_public_id)
+    assert (event.result, event.reason) == ("DENIED", "PROVIDER_UNAVAILABLE")
+    assert event.after["delivery"] == "unconfirmed"
+    assert event.after["reservation_id"] is None and event.after["replay"] is False

@@ -10,6 +10,7 @@ from django.db import DatabaseError, connections, transaction
 from django.utils import timezone
 
 from selahcue_api.apps.devices.models import DeviceToken
+from selahcue_api.apps.license_keys.selection import aware_utc
 from selahcue_api.apps.throttling.cloud import CloudBudgetDecision, evaluate_cloud_budget
 from selahcue_api.apps.throttling.services import BudgetOutcome
 from selahcue_api.apps.usage.contracts import (
@@ -270,8 +271,17 @@ def _admission(identity, request, deps, recorder, *, mapping_id=None):
 
 
 def _provision(context, token, clock):
+    def provisioning_clock():
+        try:
+            return aware_utc(clock())
+        except DatabaseError:
+            raise
+        except Exception:
+            # This aborts Task 4's transaction before the outer denial writer.
+            raise ReservationRejected("CLOCK_UNAVAILABLE") from None
+
     try:
-        ready = ensure_provider_ready(context, authenticated_token_id=token.pk, clock=clock)
+        ready = ensure_provider_ready(context, authenticated_token_id=token.pk, clock=provisioning_clock)
     except ProvisioningRejected as error:
         raise SessionRejected({
             ProvisioningErrorCode.INVALID_CONTEXT: Code.VALIDATION_FAILED,
@@ -501,8 +511,8 @@ def _issue_stt_session(token: DeviceToken, request: SessionRequest,
         return _complete_mint(identity, candidate, deps, recorder, receipt)
     except ReservationRejected as error:
         denial = _ledger_refusal(error)
-        # The boundary retry rolled both transactions back before entering their
-        # bodies. Record its completed refusal without creating a new week.
+        # The failed authority transaction has unwound. Record the completed
+        # refusal without creating a new week.
         if error.code in ("PROVIDER_UNAVAILABLE", "CLOCK_UNAVAILABLE") and not recorder._used:
             denial_deps = replace(deps, utc_clock=timezone.now) if error.code == "CLOCK_UNAVAILABLE" else deps
             denial = _record_provisioning_denial(identity, denial_deps, recorder, denial)
