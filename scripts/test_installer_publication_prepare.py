@@ -175,6 +175,36 @@ class PrepareTests(unittest.TestCase):
         with patch.object(prepare_module, "_stream_hash", side_effect=mutate_after_copy):
             self.reject(fixture)
 
+    def assert_retained_copy_corruption_refused(self, fixture, original_path, collection):
+        original = fixture.original / original_path
+        unchanged = original.read_bytes()
+        real_copy = prepare_module._copy_file
+        corrupted_paths = []
+
+        def corrupt_retained_copy(source, size, sha256, destination_fd, filename):
+            real_copy(source, size, sha256, destination_fd, filename)
+            if os.path.samestat(os.fstat(source.fileno()), original.stat()):
+                copied = fixture.output / collection / filename
+                corrupted = bytes([unchanged[0] ^ 1]) + unchanged[1:]
+                copied.chmod(0o600)
+                copied.write_bytes(corrupted)
+                copied.chmod(0o400)
+                corrupted_paths.append(copied)
+
+        with patch.object(prepare_module, "_copy_file", side_effect=corrupt_retained_copy):
+            self.reject(fixture)
+        self.assertEqual(len(corrupted_paths), 1)
+        self.assertNotEqual(corrupted_paths[0].read_bytes(), unchanged)
+        self.assertEqual(original.read_bytes(), unchanged)
+
+    def test_corrupted_retained_package_refuses_prepare(self):
+        fixture = self.fixture()
+        self.assert_retained_copy_corruption_refused(fixture, fixture.data["artifacts"][0]["path"], "packages")
+
+    def test_corrupted_retained_opaque_evidence_refuses_prepare(self):
+        fixture = self.fixture()
+        self.assert_retained_copy_corruption_refused(fixture, fixture.builds["windows"]["build_log"]["path"], "evidence")
+
     def test_public_plan_derived_fields_and_closed_remote_receipts(self):
         fixture = self.fixture()
         self.prepare(fixture)

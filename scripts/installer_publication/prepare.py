@@ -496,6 +496,16 @@ def _snapshot_packages(original: int, package_dir: int, release: ReleaseInput) -
     return tuple(result)
 
 
+def _verify_packages(directory: int, release: ReleaseInput, packages: tuple[PackageMapping, ...]) -> None:
+    artifacts = {row.id: row for row in release.artifacts}
+    for row in packages:
+        original = artifacts[row.id]
+        require((row.original_path, row.size_bytes, row.sha256) == (original.path, original.size_bytes, original.sha256),
+                "Retained package mapping differs from its original identity")
+        require(_hash(directory, row.snapshot_path, MAX_PACKAGE_BYTES, row.size_bytes) == row.sha256,
+                "Retained package bytes differ")
+
+
 def _create_snapshot(
     original: int, raw: bytes, release: ReleaseInput, source: _SourceCheckout, output: Path, release_fd: int,
 ) -> PreparedRelease:
@@ -522,6 +532,15 @@ def _create_snapshot(
     receipt_bytes = record_bytes(receipt)
     _write_atomic(release_fd, _INPUT, raw)
     _write_atomic(release_fd, _PLAN, plan_bytes)
+
+    # Read the retained files afresh. Copy-time hashes describe the source stream.
+    readback = _RetainedEvidence(release_fd, evidence)
+    for row in receipt.evidence:
+        expected_size = retained.sizes[row.original_path]
+        observed_size = readback.validate(Ref(row.original_path, row.sha256), maximum=expected_size)
+        require(observed_size == expected_size, "Retained evidence size differs")
+    _verify_packages(release_fd, release, receipt.packages)
+
     _write_atomic(release_fd, _RECEIPT, receipt_bytes)
     return PreparedRelease(output, release, profile, inspections, acceptance, receipt, plan)
 
@@ -572,13 +591,7 @@ def load_prepared_release(release_dir: Path) -> PreparedRelease:
             retained = _RetainedEvidence(directory, mapping)
             profile, inspections, acceptance = _validate_evidence(release, retained)
             require(retained.sizes.keys() == mapping.keys(), "Unexpected unreferenced evidence mapping")
-            artifacts = {row.id: row for row in release.artifacts}
-            for row in receipt.packages:
-                original = artifacts[row.id]
-                require((row.original_path, row.size_bytes, row.sha256) == (original.path, original.size_bytes, original.sha256),
-                        "Retained package mapping differs from its original identity")
-                require(_hash(directory, row.snapshot_path, MAX_PACKAGE_BYTES, row.size_bytes) == row.sha256,
-                        "Retained package bytes differ")
+            _verify_packages(directory, release, receipt.packages)
     except OSError as exc:
         raise PublicationError(2, "Cannot read a contained regular snapshot file") from exc
     return PreparedRelease(root, release, profile, inspections, acceptance, receipt, plan)
