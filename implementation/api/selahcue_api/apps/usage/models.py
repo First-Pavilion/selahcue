@@ -267,6 +267,7 @@ class UsageScan(_UuidObservation):
     scope = _fk(UsageScope)
     profile = _enum(UsageProfile)
     purpose = _enum(ScanPurpose)
+    planning = models.BooleanField(default=False)
     generation = models.PositiveBigIntegerField()
     requested_start = models.DateTimeField()
     requested_end = models.DateTimeField()
@@ -286,7 +287,7 @@ class UsageScan(_UuidObservation):
         constraints = [
             _uniq("scan_generation", "scope", "generation"),
             _uniq("scan_unfinished", "scope", "profile", "requested_start", "requested_end",
-                  condition=Q(state=ScanState.PARTIAL)),
+                  condition=Q(state=ScanState.PARTIAL, planning=False)),
             _check(
                 "scan_shape",
                 Q(
@@ -294,6 +295,7 @@ class UsageScan(_UuidObservation):
                     requested_start__lt=F("requested_end"), requested_end__lte=F("started_at"),
                 )
                 & _pair("policy_epoch", "policy_digest")
+                & (Q(planning=False) | Q(purpose=ScanPurpose.RECENT, state=ScanState.PARTIAL, page_ordinal=0))
                 & (
                     Q(state=ScanState.PARTIAL, terminal_page_seen=False)
                     & _all_null("finished_at", "failure_code", "replacement_not_before")
@@ -464,6 +466,7 @@ class ProviderUsageRecord(_MutableObservation):
     attribution = _enum(Attribution)
     current_version = _fk("ProviderUsageVersion", nullable=True, related_name="+")
     accepted_generation = models.PositiveBigIntegerField(default=0)
+    conflict_generation = models.PositiveBigIntegerField(default=0)
     issue = _enum(ObservationIssue, nullable=True)
     placed_week = _fk(UsageWeek, nullable=True)
     returned_project_id = _text(nullable=True)
@@ -762,7 +765,7 @@ class UsageOutbox(_UuidObservation):
 
 
 class UsageDiscoveryCursor(_MutableObservation):
-    purpose = _enum(("INITIAL_MAPPING", "RECENT_SCOPE", "HISTORY_SCOPE", "RECOVERY", "RETENTION"))
+    purpose = _enum(("INITIAL_MAPPING", "RECENT_SCOPE", "HISTORY_SCOPE", "RECOVERY", "RETENTION", "RECONCILE"))
     last_id = models.PositiveBigIntegerField(null=True)
     last_uuid = _uuid()
     last_at = _date()
@@ -780,3 +783,33 @@ class UsageRetentionCursor(_MutableObservation):
 
     class Meta:
         constraints = [_uniq("retention_kind", "kind")]
+
+
+class UsageRecentPlan(_MutableObservation):
+    scope = _one(UsageScope)
+    epoch = _fk(_EPOCH)
+    scan = _one(UsageScan, nullable=True)
+    generation = models.PositiveBigIntegerField()
+    captured_at = models.DateTimeField()
+    cutoff = models.DateTimeField()
+    lowest_start = _date()
+    mapping_after = _uuid()
+    open_after = _uuid()
+    phase = _enum(("MAPPINGS", "OPEN", "TRANSFER", "DISCARD"), default="MAPPINGS")
+
+    class Meta:
+        constraints = [
+            _check("recent_capture", Q(generation__gte=1, cutoff__lte=F("captured_at"))
+                   & (Q(lowest_start__isnull=True) | Q(lowest_start__lt=F("cutoff")))),
+        ]
+
+
+class UsageRecentMember(_ObservationRow):
+    plan = _fk(UsageRecentPlan)
+    org = _fk(_ORG)
+    kind = _enum(("CURRENT", "OPEN"))
+    mapping = _uuid()
+    required_start = models.DateTimeField()
+
+    class Meta:
+        indexes = [_index("recent_plan_members", "plan", "id")]

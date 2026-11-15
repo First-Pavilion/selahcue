@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from selahcue_api.apps.providers.adapters import deepgram_usage, openai_usage
 from selahcue_api.apps.providers.contracts import ProviderScope
-from selahcue_api.apps.providers.models import ProviderCapacityPool, ProviderCredential
+from selahcue_api.apps.providers.models import ProviderCapacityPool
 
 from . import health
 from .contracts import UTCInterval
@@ -20,7 +20,7 @@ from .models import (
 from .observation_contracts import (
     Attribution, DGCompletion, ObservedCoverage, ScanPurpose, ScanState, UsageClaim, UsageFailureCode as Code, UsageProfile, UsageRejected,
 )
-from .observations import RETENTION_AGE, bump_scope, dirty_orgs, ingest_observations, set_gap
+from .observations import RETENTION_AGE, bump_scope, ingest_observations, set_gap
 from .usage_tasks import _PAGE_OR_PUBLISH_DELAYS, bounded_transaction, ensure_work, require_usage_role
 
 _COOLDOWN = timedelta(seconds=120)
@@ -59,14 +59,14 @@ def profile_for(provider):
     return UsageProfile.DG_LISTEN_V1 if provider == "deepgram" else UsageProfile.OA_COMPLETIONS_1H_V1
 
 
-def schedule_scan(scope, purpose, start, end, now, epoch, *, requirements=()):
+def schedule_scan(scope, purpose, start, end, now, epoch, *, requirements=(), plan=None):
     if end <= start:
         return None
     probe = UsageScan.objects.filter(
         scope=scope, profile=profile_for(scope.provider), requested_start=start, requested_end=end,
     )
-    scan = probe.filter(state=ScanState.PARTIAL).first()
-    if scan is not None and scan.policy_epoch_id != epoch.pk:
+    scan = probe.filter(state=ScanState.PARTIAL, planning=plan is not None).first()
+    if scan is not None and (scan.policy_epoch_id != epoch.pk or plan is not None):
         return None  # The old claim must fail under its own policy provenance.
     if scan is None:
         prior = probe if purpose == ScanPurpose.HISTORY else UsageScan.objects.filter(scope=scope, purpose=purpose)
@@ -74,9 +74,12 @@ def schedule_scan(scope, purpose, start, end, now, epoch, *, requirements=()):
             return None
         scan = UsageScan.objects.create(
             scope=scope, purpose=purpose, profile=profile_for(scope.provider),
-            requested_start=start, requested_end=end, generation=scope.next_scan_generation,
-            policy_epoch=epoch, policy_digest=epoch.digest, started_at=now, created_at=now, updated_at=now,
+            requested_start=start, requested_end=end, generation=scope.next_scan_generation if plan is None else plan.generation,
+            policy_epoch=epoch, policy_digest=epoch.digest, started_at=now if plan is None else plan.captured_at,
+            created_at=now, updated_at=now, planning=plan is not None,
         )
+        if plan is not None:
+            return scan
         scope.next_scan_generation += 1
         scope.updated_at = now
         scope.save(update_fields=("next_scan_generation", "updated_at"))
@@ -167,16 +170,6 @@ def _matching_policy(scope, scan):
     return local
 
 
-def _scope_orgs(scope, scan):
-    if scope.provider != "deepgram":
-        return ()
-    orgs = set(scan.usagescanrequirement_set.exclude(org=None).values_list("org_id", flat=True))
-    orgs.update(ProviderCredential.objects.filter(
-        provider="deepgram", parent_scope_id=scope.parent_scope_id, state="ACTIVE",
-    ).values_list("org_id", flat=True))
-    return orgs
-
-
 def _finish_failed(provider, scope, evaluation, scan, code, now):
     scan.state, scan.failure_code = ScanState.FAILED, code
     scan.finished_at = scan.updated_at = now
@@ -187,8 +180,6 @@ def _finish_failed(provider, scope, evaluation, scan, code, now):
         "usage.scan_failed", "UsageScan", scan.pk, request_id=scan.pk, reason=code,
         after={"scope_id": scope.pk, "generation": scan.generation},
     )
-    if scan.page_ordinal > 0 and scope.provider == "deepgram":
-        dirty_orgs(scan.usagescanrequirement_set.exclude(org=None).values_list("org_id", flat=True), now)
     if code in (Code.CONFIG_UNAVAILABLE, Code.SCOPE_MISSING, Code.POLICY_MISMATCH):
         health.producer_failure(provider, evaluation, code, now)
 
@@ -234,8 +225,8 @@ def _next_page(scope, now):
 
 
 def _claim_page(work, *, clock, monotonic_ns, deadline):
-    hint = UsageScope.objects.values_list("provider", flat=True).get(pk=work.scope_id)
-    with bounded_transaction():
+    with bounded_transaction(deadline_ns=deadline, monotonic_ns=monotonic_ns):
+        hint = UsageScope.objects.values_list("provider", flat=True).get(pk=work.scope_id)
         now = clock()
         provider = health.lock_provider(hint, now)
         scope = health.lock_scope(hint, work.scope_id)
@@ -286,9 +277,9 @@ def _claim_page(work, *, clock, monotonic_ns, deadline):
         ), ProviderScope(scope.provider, scope.parent_scope_id), UTCInterval(scan.requested_start, scan.requested_end), page.requested_cursor
 
 
-def _apply_failure(work, claim, code, clock):
-    provider_name = UsageScope.objects.values_list("provider", flat=True).get(pk=work.scope_id)
-    with bounded_transaction():
+def _apply_failure(work, claim, code, clock, *, deadline_ns=None, monotonic_ns=time.monotonic_ns):
+    with bounded_transaction(deadline_ns=deadline_ns, monotonic_ns=monotonic_ns):
+        provider_name = UsageScope.objects.values_list("provider", flat=True).get(pk=work.scope_id)
         now = clock()
         provider = health.lock_provider(provider_name, now)
         scope = health.lock_scope(provider_name, work.scope_id)
@@ -331,12 +322,12 @@ def _terminal_chain(scan):
     return count == scan.page_ordinal and count > 0 and invalid == 0
 
 
-def finish_scan(scan_id, coverage: ObservedCoverage) -> None:
+def finish_scan(scan_id, coverage: ObservedCoverage, *, deadline_ns=None, monotonic_ns=time.monotonic_ns) -> None:
     require_usage_role()
-    hint = UsageScan.objects.filter(pk=scan_id).values_list("scope_id", "scope__provider").first()
-    if hint is None:
-        raise UsageRejected(Code.CLAIM_STALE)
-    with bounded_transaction():
+    with bounded_transaction(deadline_ns=deadline_ns, monotonic_ns=monotonic_ns):
+        hint = UsageScan.objects.filter(pk=scan_id).values_list("scope_id", "scope__provider").first()
+        if hint is None:
+            raise UsageRejected(Code.CLAIM_STALE)
         now = timezone.now()
         provider = health.lock_provider(hint[1], now)
         scope = health.lock_scope(hint[1], hint[0])
@@ -394,23 +385,30 @@ def finish_scan(scan_id, coverage: ObservedCoverage) -> None:
         ).update(state="RESOLVED", resolved_at=now, updated_at=now)
         if scan.usagescanrequirement_set.filter(kind="HISTORY").exists():
             _advance_history(scope, scan.requested_start, scan.requested_end)
-        dirty_orgs(_scope_orgs(scope, scan), now)
 
 
-def run_scan(work, *, clock, monotonic_ns):
-    deadline = monotonic_ns() + 120_000_000_000
+def run_scan(work, *, clock, monotonic_ns, deadline_ns=None):
+    deadline = monotonic_ns() + 120_000_000_000 if deadline_ns is None else deadline_ns
     for _ in range(11):
+        if monotonic_ns() >= deadline:
+            return "PENDING", None, Code.TASK_BUDGET
         # Also checks immediately after the tenth read to recover applied terminal
         # metadata without spending a new provider attempt.
-        scan = UsageScan.objects.select_related("scope").get(pk=work.scan_id)
-        if scan.state != ScanState.PARTIAL:
-            return scan.state, None, scan.failure_code
-        if UsagePageClaim.objects.filter(scan=scan, ordinal=scan.page_ordinal - 1, state="APPLIED", terminal=True).exists():
+        with bounded_transaction(deadline_ns=deadline, monotonic_ns=monotonic_ns):
+            scan = UsageScan.objects.select_related("scope").get(pk=work.scan_id)
+            if scan.state != ScanState.PARTIAL:
+                return scan.state, None, scan.failure_code
+            terminal = UsagePageClaim.objects.filter(
+                scan=scan, ordinal=scan.page_ordinal - 1, state="APPLIED", terminal=True,
+            ).exists()
+        if terminal:
             finish_scan(
                 scan.pk, ObservedCoverage(scan.pk, ProviderScope(scan.scope.provider, scan.scope.parent_scope_id),
                                           UTCInterval(scan.requested_start, scan.requested_end), scan.started_at, clock(), True),
+                deadline_ns=deadline, monotonic_ns=monotonic_ns,
             )
-            scan.refresh_from_db()
+            with bounded_transaction(deadline_ns=deadline, monotonic_ns=monotonic_ns):
+                scan.refresh_from_db()
             return scan.state, None, scan.failure_code
         if _ == 10:
             break
@@ -421,12 +419,17 @@ def run_scan(work, *, clock, monotonic_ns):
         reader = deepgram_usage if scope.provider == "deepgram" else openai_usage
         try:
             page = reader.read_usage_page(scope, interval, cursor)
-            ingest_observations(page, work.scan_id, claim=claim)
+            ingest_observations(page, work.scan_id, claim=claim, deadline_ns=deadline, monotonic_ns=monotonic_ns)
         except UsageRejected as error:
-            _apply_failure(work, claim, error.code, clock)
+            if error.code == Code.TASK_BUDGET:
+                return "PENDING", None, error.code
+            _apply_failure(work, claim, error.code, clock, deadline_ns=deadline, monotonic_ns=monotonic_ns)
             break
-    scan = UsageScan.objects.get(pk=work.scan_id)
-    if scan.state != ScanState.PARTIAL:
-        return scan.state, None, scan.failure_code
-    retry_at = UsagePageClaim.objects.filter(scan=scan, ordinal=scan.page_ordinal).values_list("retry_at", flat=True).first()
+    with bounded_transaction(deadline_ns=deadline, monotonic_ns=monotonic_ns):
+        scan = UsageScan.objects.get(pk=work.scan_id)
+        if scan.state != ScanState.PARTIAL:
+            return scan.state, None, scan.failure_code
+        retry_at = UsagePageClaim.objects.filter(
+            scan=scan, ordinal=scan.page_ordinal,
+        ).values_list("retry_at", flat=True).first()
     return "PENDING", retry_at or clock() + timedelta(seconds=1), None

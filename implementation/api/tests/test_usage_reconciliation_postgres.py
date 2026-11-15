@@ -239,7 +239,7 @@ from selahcue_api.celery import app
 app.conf.broker_transport_options = {
     **app.conf.broker_transport_options, 'global_keyprefix': os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
 }
-app.worker_main(['worker', '-P', 'solo', '-Q', 'provider_usage', '--without-gossip',
+app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_usage', '--without-gossip',
                  '--without-mingle', '--without-heartbeat', '--loglevel=INFO'])
 """
     prefix = f"task6-{uuid4().hex}:"
@@ -336,3 +336,223 @@ def test_concurrent_history_sweeps_share_older_and_retained_windows(usage_runtim
     scope.refresh_from_db()
     assert scope.history_recovery_pending == first_day
     assert scope.history_recovery_after is None
+
+
+def test_retired_binding_dirties_running_work_after_reconcile_commit_without_health_bump(
+    usage_runtime, clock, provider_mounts,
+):
+    from selahcue_api.apps.usage.models import UsageOrgState
+    from selahcue_api.apps.usage.observations import dirty_orgs
+    from selahcue_api.apps.usage.usage_tasks import _claim_publication, claim_work, finish_work
+
+    org = church()
+    mapping = active_mapping(org, identity(key="retired-handoff"))
+    usage_runtime()
+    initial = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, NOW))
+    observed(initial, [], NOW)
+    with bounded_transaction():
+        dirty_orgs((org.pk,), NOW)
+    work = UsageWork.objects.get(kind="RECONCILE", org=org)
+    delivery = _claim_publication(work.pk, False, clock)
+    claimed = claim_work(work.pk, delivery[1], "RECONCILE", "provider_usage", clock=clock)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    provider_mounts("provisioner", capable=True)
+    initialize_provider_runtime(entrypoint="operator")
+    retire(mapping)
+    usage_runtime()
+    clock.value = NOW + timedelta(seconds=1)
+    interval = UTCInterval(MONDAY, clock())
+    late = begin_scan(DEEPGRAM, interval=interval, start=clock())
+    late_work = task_for(late, clock())
+    page = parse_dg(dg_data([request("retired-later", key="retired-handoff", duration=8)]), interval=interval)
+    page_authority = page_claim(late_work, clock())
+    before = ProviderUsageHealthState.objects.get(pk="deepgram").revision
+    barrier = Barrier(2, timeout=5)
+
+    def writer():
+        close_old_connections()
+        try:
+            barrier.wait()
+            ingest_observations(page, late.pk, claim=page_authority)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(writer)
+        barrier.wait()
+        future.result(timeout=10)
+    assert ProviderUsageHealthState.objects.get(pk="deepgram").revision == before
+    finish_work(claimed.pk, claimed.lease_id, clock=clock)
+    state = UsageOrgState.objects.get(org=org)
+    claimed.refresh_from_db()
+    assert state.dirty_revision == state.applied_revision + 1
+    assert claimed.state == "PENDING" and claimed.execution_generation == 2
+    assert UsageOutbox.objects.filter(work=claimed, generation=2, state="PENDING").exists()
+    reconcile_org(org.pk, clock(), clock=clock)
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 8
+
+
+def test_postgres_statement_obeys_remaining_batch_time():
+    from django.db import OperationalError
+
+    started = time.monotonic()
+    with pytest.raises(OperationalError) as caught:
+        with bounded_transaction(deadline=started + 0.25), connection.cursor() as cursor:
+            cursor.execute("SELECT pg_sleep(2)")
+    elapsed = time.monotonic() - started
+    assert getattr(caught.value.__cause__, "sqlstate", None) == "57014"
+    assert elapsed < 1.5
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone() == (1,)
+
+
+def test_postgres_exact_fraction_ceiling_and_aggregate_overflow_leave_totals_intact(usage_runtime, clock):
+    from decimal import Decimal
+
+    org = church()
+    mapping = active_mapping(org, identity(key="exact-sum"))
+    usage_runtime()
+    interval = UTCInterval(MONDAY, NOW)
+    initial = begin_scan(DEEPGRAM, interval=interval)
+    observed(initial, [
+        request("part-a", key="exact-sum", duration=0.1),
+        request("part-b", key="exact-sum", duration=0.2),
+    ], NOW)
+    assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 1
+    assert ProviderUsageRecord.objects.get(request_id="part-a").current_version.duration_seconds == Decimal("0.1")
+
+    clock.value += timedelta(seconds=1)
+    overflow = begin_scan(DEEPGRAM, interval=UTCInterval(MONDAY, clock()), start=clock())
+    observed(overflow, [
+        request("part-a", key="exact-sum", duration=2**63 - 1),
+        request("part-b", key="exact-sum", duration=1),
+    ], clock())
+    result = reconcile_org(org.pk, clock(), clock=clock)
+    assert result.blocked_reason == "ARITHMETIC_OVERFLOW"
+    assert UsageWeek.objects.get(org=org).stt_seconds_settled == 1
+
+
+@pytest.mark.parametrize("failure", ("checkpoint", "lost-after-page"))
+def test_prefork_usage_scan_checkpoints_and_recovers_terminal_page(usage_runtime, tmp_path, failure):
+    from celery import Celery
+    from django.utils import timezone
+    from selahcue_api.apps.usage.models import UsagePageClaim, UsageScan
+    from selahcue_api.apps.usage.usage_tasks import repair_delivery_batch
+
+    broker = os.getenv("CELERY_BROKER_URL")
+    if not broker or not broker.startswith(("redis://", "rediss://")):
+        pytest.skip("Requires the existing disposable Redis broker")
+    usage_runtime()
+    original_at = timezone.now().replace(microsecond=0)
+    scan = begin_scan(DEEPGRAM, interval=UTCInterval(original_at - timedelta(days=1), original_at), start=original_at)
+    work = scan.usagework_set.get()
+    env = _worker_environment(f"task6-prefork-{uuid4().hex}:")
+    env.update({
+        "SELAHCUE_TEST_USAGE_FAILURE": failure,
+        "SELAHCUE_TEST_USAGE_READS": str(tmp_path / "reads"),
+        "SELAHCUE_TEST_USAGE_WALL": str(tmp_path / "wall"),
+    })
+    app = Celery("task6-prefork-test", broker=broker)
+    app.conf.broker_transport_options = {
+        **settings.CELERY_BROKER_TRANSPORT_OPTIONS, "global_keyprefix": env["SELAHCUE_TEST_USAGE_PREFIX"],
+    }
+    source = """
+import os, django
+from datetime import datetime
+from pathlib import Path
+import time
+django.setup()
+from selahcue_api.celery import app
+from selahcue_api.apps.usage import scans, tasks
+from selahcue_api.apps.providers.adapters import deepgram_usage
+from django.utils import timezone
+app.loader.import_default_modules()
+app.conf.broker_transport_options = {
+    **app.conf.broker_transport_options, 'global_keyprefix': os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
+}
+behavior = os.environ['SELAHCUE_TEST_USAGE_FAILURE']
+reads = Path(os.environ['SELAHCUE_TEST_USAGE_READS'])
+clock_path = Path(os.environ['SELAHCUE_TEST_USAGE_WALL'])
+real_claim = tasks.claim_work
+def claim(*args, **kwargs):
+    def clock():
+        return datetime.fromisoformat(clock_path.read_text()) if clock_path.exists() else timezone.now()
+    return real_claim(*args, clock=clock, **kwargs)
+tasks.claim_work = claim
+def read(scope, interval, cursor):
+    with reads.open('a') as stream:
+        stream.write('read\\n')
+    if behavior == 'checkpoint':
+        time.sleep(20)
+    return deepgram_usage._parse_page({'page': 0, 'limit': 100, 'requests': []}, scope, interval, cursor)
+deepgram_usage.read_usage_page = read
+actual_ingest = scans.ingest_observations
+def ingest(*args, **kwargs):
+    result = actual_ingest(*args, **kwargs)
+    if behavior == 'lost-after-page':
+        os._exit(71)
+    return result
+scans.ingest_observations = ingest
+if behavior == 'checkpoint':
+    task = app.tasks['usage.scan']
+    task.soft_time_limit = 2
+    task.time_limit = 4
+app.worker_main(['worker', '-P', 'prefork', '--concurrency=1', '-Q', 'provider_usage',
+                 '--without-gossip', '--without-mingle', '--without-heartbeat', '--loglevel=INFO'])
+"""
+    with (tmp_path / "worker.log").open("w+") as output:
+        process = subprocess.Popen([sys.executable, "-c", source], stdout=output, stderr=subprocess.STDOUT, env=env)
+
+        def wait_for(query):
+            limit = time.monotonic() + 15
+            while time.monotonic() < limit and process.poll() is None:
+                if query():
+                    return
+                time.sleep(0.04)
+            output.seek(0)
+            pytest.fail("Expected prefork checkpoint was not observed. " + output.read()[-2500:])
+
+        try:
+            publish_work(work.pk, app=app, clock=lambda: original_at)
+            if failure == "checkpoint":
+                wait_for(lambda: UsageWork.objects.filter(pk=work.pk, state="PENDING", execution_generation=2).exists())
+                assert UsagePageClaim.objects.get(scan=scan).attempts == 1
+                assert UsageScan.objects.get(pk=scan.pk).state == "PARTIAL"
+            else:
+                wait_for(lambda: UsagePageClaim.objects.filter(scan=scan, state="APPLIED", terminal=True).exists())
+                work.refresh_from_db()
+                assert work.state == "RUNNING"
+                resumed_at = work.lease_until + timedelta(seconds=1)
+                (tmp_path / "wall").write_text(resumed_at.isoformat())
+                repair_delivery_batch(
+                    app, maintenance=False, remaining=1, deadline=time.monotonic() + 8, clock=lambda: resumed_at,
+                )
+                wait_for(lambda: UsageWork.objects.filter(pk=work.pk, state="COMPLETE", execution_generation=2).exists())
+                assert UsageScan.objects.get(pk=scan.pk).state == "COMPLETE"
+                assert UsagePageClaim.objects.get(scan=scan).attempts == 1
+                assert UsageOutbox.objects.filter(work=work, state="ACKED").count() == 2
+            assert (tmp_path / "reads").read_text().splitlines() == ["read"]
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=4)
+
+
+def test_migration_installs_oa_page_json_guard_with_safe_shape_refusal(usage_runtime, clock):
+    from provider_helpers import OPENAI
+    from selahcue_api.apps.usage.models import UsagePageClaim
+
+    usage_runtime()
+    scan = begin_scan(OPENAI)
+    with pytest.raises(IntegrityError) as caught, transaction.atomic():
+        UsagePageClaim.objects.create(
+            scan=scan, ordinal=2, oa_bucket_starts={"wrong": 0},
+            created_at=NOW, updated_at=NOW,
+        )
+    assert getattr(caught.value.__cause__, "sqlstate", None) == "23514"
+    assert UsagePageClaim.objects.filter(scan=scan, ordinal=0).exists()

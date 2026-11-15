@@ -13,7 +13,9 @@ from .models import (
     ProviderUsageRecord, ProviderUsageVersion, UsageCoverageGap, UsageObservedInterval,
     UsageOutbox, UsagePageClaim, UsageReservation, UsageRetentionCursor, UsageScanRequirement, UsageWeek, UsageWork,
 )
-from .observation_contracts import Attribution, DGCompletion, RetentionBatchResult, RetentionKind
+from .observation_contracts import (
+    Attribution, DGCompletion, RetentionBatchResult, RetentionKind, UsageFailureCode, UsageRejected,
+)
 from .observations import RETENTION_AGE, bump_scope
 from .usage_tasks import bounded_transaction, require_usage_role
 
@@ -153,12 +155,12 @@ def _scan_cleanup(work, cutoff, budget, now):
 
 
 
-def _prune_candidate(kind, key, cutoff, budget, now):
-    query = _candidates(kind, cutoff)
-    hint = query.filter(pk=key).first()
-    if hint is None:
-        return 0
-    with bounded_transaction():
+def _prune_candidate(kind, key, cutoff, budget, now, *, deadline):
+    with bounded_transaction(deadline=deadline):
+        query = _candidates(kind, cutoff)
+        hint = query.filter(pk=key).first()
+        if hint is None:
+            return 0
         if kind == RetentionKind.NORMALIZED_RECORD:
             if hint.mapping_id is not None:
                 CustomerOrg.objects.select_for_update(no_key=True).get(pk=hint.mapping.org_id)
@@ -206,45 +208,57 @@ def _prune_candidate(kind, key, cutoff, budget, now):
         return _delete_single(row)
 
 
-def prune_usage_batch(kind: RetentionKind, *, clock=timezone.now) -> RetentionBatchResult:
+def prune_usage_batch(kind: RetentionKind, *, clock=timezone.now, deadline=None) -> RetentionBatchResult:
     require_usage_role(maintenance=True)
     if type(kind) is not RetentionKind:
         raise ValueError("Expected a retention kind")
-    deadline = time.monotonic() + 10
+    limit = time.monotonic() + 10
+    deadline = limit if deadline is None else min(deadline, limit)
     now = clock()
     detail = kind in (RetentionKind.PAGE_DETAIL, RetentionKind.SUPERSEDED_VERSION, RetentionKind.TERMINAL_SCAN_WORK)
     uuid_cursor = kind in (RetentionKind.TERMINAL_SCAN_WORK, RetentionKind.TERMINAL_RESERVATION)
     scanned = deleted = deferred = 0
     next_key = None
     while scanned < _LIMIT and deleted < _LIMIT and time.monotonic() < deadline:
-        with bounded_transaction():
-            cursor, _ = UsageRetentionCursor.objects.select_for_update().get_or_create(
-                kind=kind, defaults={
-                    "cutoff_at": now - (DETAIL_AGE if detail else RETENTION_AGE),
-                    "cycle_started_at": now, "created_at": now, "updated_at": now,
-                },
-            )
-            cutoff = cursor.cutoff_at
-            position = cursor.after_uuid if uuid_cursor else cursor.after_id
-            candidates = _candidates(kind, cutoff)
-            if position is not None:
-                candidates = candidates.filter(pk__gt=position)
-            next_key = candidates.order_by("pk").values_list("pk", flat=True).first()
-            if next_key is None:
-                cursor.after_id = cursor.after_uuid = None
-                cursor.cutoff_at = now - (DETAIL_AGE if detail else RETENTION_AGE)
-                cursor.cycle_started_at = now
-            elif uuid_cursor:
-                cursor.after_uuid = next_key
-            else:
-                cursor.after_id = next_key
-            cursor.updated_at = now
-            cursor.save()
+        try:
+            with bounded_transaction(deadline=deadline):
+                cursor, _ = UsageRetentionCursor.objects.select_for_update().get_or_create(
+                    kind=kind, defaults={
+                        "cutoff_at": now - (DETAIL_AGE if detail else RETENTION_AGE),
+                        "cycle_started_at": now, "created_at": now, "updated_at": now,
+                    },
+                )
+                cutoff = cursor.cutoff_at
+                position = cursor.after_uuid if uuid_cursor else cursor.after_id
+                candidates = _candidates(kind, cutoff)
+                if position is not None:
+                    candidates = candidates.filter(pk__gt=position)
+                next_key = candidates.order_by("pk").values_list("pk", flat=True).first()
+                if next_key is None:
+                    cursor.after_id = cursor.after_uuid = None
+                    cursor.cutoff_at = now - (DETAIL_AGE if detail else RETENTION_AGE)
+                    cursor.cycle_started_at = now
+                elif uuid_cursor:
+                    cursor.after_uuid = next_key
+                else:
+                    cursor.after_id = next_key
+                cursor.updated_at = now
+                cursor.save()
+        except UsageRejected as error:
+            if error.code != UsageFailureCode.TASK_BUDGET:
+                raise
+            break
         if next_key is None:
             return RetentionBatchResult(scanned, deleted, deferred, False)
         scanned += 1
+        if time.monotonic() >= deadline:
+            break
         try:
-            count = _prune_candidate(kind, next_key, cutoff, _LIMIT - deleted, now)
+            count = _prune_candidate(kind, next_key, cutoff, _LIMIT - deleted, now, deadline=deadline)
+        except UsageRejected as error:
+            if error.code != UsageFailureCode.TASK_BUDGET:
+                raise
+            break
         except IntegrityError:
             count = 0
         deferred += count == 0

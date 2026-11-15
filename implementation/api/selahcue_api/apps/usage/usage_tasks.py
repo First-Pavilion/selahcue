@@ -30,19 +30,20 @@ def require_usage_role(*, maintenance=False):
 
 
 @contextmanager
-def bounded_transaction(*, deadline=None):
-    deadline_ns = time.monotonic_ns() + 10_000_000_000
+def bounded_transaction(*, deadline=None, deadline_ns=None, monotonic_ns=time.monotonic_ns):
+    local_limit = monotonic_ns() + 10_000_000_000
+    deadline_ns = local_limit if deadline_ns is None else min(local_limit, deadline_ns)
     if deadline is not None:
         deadline_ns = min(deadline_ns, int(deadline * 1_000_000_000))
-        if deadline_ns <= time.monotonic_ns():
-            raise UsageRejected(Code.TASK_BUDGET)
+    if deadline_ns <= monotonic_ns():
+        raise UsageRejected(Code.TASK_BUDGET)
     with transaction.atomic():
         if connection.vendor != "postgresql":
             yield
             return
 
         def guard(execute, sql, params, many, context):
-            remaining_ms = (deadline_ns - time.monotonic_ns()) // 1_000_000
+            remaining_ms = (deadline_ns - monotonic_ns()) // 1_000_000
             if remaining_ms <= 0:
                 raise UsageRejected(Code.TASK_BUDGET)
             # Use the same atomic driver cursor without recursing through this
@@ -186,10 +187,10 @@ def publish_work(work_id, *, app, maintenance=False, clock=timezone.now):
     _finish_publication(work_id, delivery_id, lease, sent, clock)
 
 
-def claim_work(work_id, delivery_id, kind, queue, *, clock=timezone.now):
+def claim_work(work_id, delivery_id, kind, queue, *, clock=timezone.now, deadline_ns=None):
     if queue != queue_for(kind):
         return None
-    with bounded_transaction():
+    with bounded_transaction(deadline_ns=deadline_ns):
         work = UsageWork.objects.select_for_update().filter(pk=work_id, kind=kind, state="PENDING").first()
         if work is None:
             return None
@@ -211,14 +212,20 @@ def claim_work(work_id, delivery_id, kind, queue, *, clock=timezone.now):
         return work
 
 
-def finish_work(work_id, lease, *, pending=False, due_at=None, code=None, clock=timezone.now):
-    with bounded_transaction():
+def finish_work(work_id, lease, *, pending=False, due_at=None, code=None, clock=timezone.now,
+                deadline_ns=None, monotonic_ns=time.monotonic_ns):
+    with bounded_transaction(deadline_ns=deadline_ns, monotonic_ns=monotonic_ns):
+        from .models import UsageOrgState
+
+        org_id = UsageWork.objects.filter(pk=work_id, kind="RECONCILE").values_list("org_id", flat=True).first()
+        subject = UsageOrgState.objects.select_for_update().filter(org_id=org_id).first() if org_id else None
         work = UsageWork.objects.select_for_update().filter(pk=work_id, state="RUNNING", lease_id=lease).first()
         now = clock()
         if work is None or work.lease_until <= now:
             return
-        if pending:
-            next_generation(work, now, due_at=due_at, code=code)
+        dirty = subject is not None and subject.applied_revision < subject.dirty_revision
+        if pending or dirty:
+            next_generation(work, now, due_at=due_at if pending else subject.next_due_at, code=code)
         else:
             work.state = "COMPLETE" if code is None else "FAILED"
             work.finished_at = work.updated_at = now
@@ -227,20 +234,25 @@ def finish_work(work_id, lease, *, pending=False, due_at=None, code=None, clock=
             work.save()
 
 
-def run_scan_work(work_id: UUID, *, clock=timezone.now, monotonic_ns=time.monotonic_ns) -> None:
+def run_scan_work(work_id: UUID, *, clock=timezone.now, monotonic_ns=time.monotonic_ns, deadline_ns=None) -> None:
     from .scans import run_scan
 
+    deadline_ns = monotonic_ns() + 120_000_000_000 if deadline_ns is None else deadline_ns
     require_usage_role()
-    work = UsageWork.objects.filter(pk=work_id, kind="SCAN", state="RUNNING").first()
+    with bounded_transaction(deadline_ns=deadline_ns, monotonic_ns=monotonic_ns):
+        work = UsageWork.objects.filter(pk=work_id, kind="SCAN", state="RUNNING").first()
     if work is None:
         return
-    status, due_at, error = run_scan(work, clock=clock, monotonic_ns=monotonic_ns)
-    finish_work(work_id, work.lease_id, pending=status == "PENDING", due_at=due_at, code=error, clock=clock)
+    status, due_at, error = run_scan(work, clock=clock, monotonic_ns=monotonic_ns, deadline_ns=deadline_ns)
+    finish_work(
+        work_id, work.lease_id, pending=status == "PENDING", due_at=due_at, code=error, clock=clock,
+        deadline_ns=deadline_ns, monotonic_ns=monotonic_ns,
+    )
 
 
-def run_claimed(work, *, clock=timezone.now):
+def run_claimed(work, *, clock=timezone.now, deadline_ns=None):
     if work.kind == "SCAN":
-        run_scan_work(work.pk, clock=clock)
+        run_scan_work(work.pk, clock=clock, deadline_ns=deadline_ns)
         return
     now = clock()
     if work.kind == "RECONCILE":
@@ -258,11 +270,14 @@ def run_claimed(work, *, clock=timezone.now):
         pending, error = result.state == "unavailable", None
     else:
         from .retention import prune_usage_batch
-        result = prune_usage_batch(RetentionKind(work.retention_kind), clock=clock)
+        result = prune_usage_batch(
+            RetentionKind(work.retention_kind), clock=clock,
+            deadline=None if deadline_ns is None else (deadline_ns - 2_000_000_000) / 1_000_000_000,
+        )
         pending, error = result.has_more, None
     finish_work(
         work.pk, work.lease_id, pending=pending, due_at=now + timedelta(seconds=60) if pending else None,
-        code=error, clock=clock,
+        code=error, clock=clock, deadline_ns=deadline_ns,
     )
 
 
@@ -323,12 +338,12 @@ def _accounting_start(mapping, now):
     return bounds.start
 
 
-def _initial_candidate(clock):
+def _initial_candidate(clock, *, deadline=None):
     from django.db.models import Exists, OuterRef
     from selahcue_api.apps.providers.models import ProviderCredential
     from .models import SttOrgReadiness
 
-    with bounded_transaction():
+    with bounded_transaction(deadline=deadline):
         now = clock()
         cursor = _cursor("INITIAL_MAPPING", now)
         published = SttOrgReadiness.objects.filter(org_id=OuterRef("org_id"), mapping=OuterRef("pk"))
@@ -343,14 +358,14 @@ def _initial_candidate(clock):
         return mapping
 
 
-def _initial_scan(mapping, clock):
+def _initial_scan(mapping, clock, *, deadline=None):
     from . import health
     from .models import UsageObservedInterval, UsageScan, UsageScanRequirement
     from .observation_contracts import ScanPurpose, ScanState
     from .observations import dirty_orgs
     from .scans import enroll_scope, floor_second, schedule_scan
 
-    with bounded_transaction():
+    with bounded_transaction(deadline=deadline):
         start_hint = clock()
         row, scope, evaluation = enroll_scope(mapping.provider, mapping.parent_scope_id, start_hint)
         now = clock()
@@ -363,7 +378,7 @@ def _initial_scan(mapping, clock):
         if start >= end:
             return False
         scan = UsageScan.objects.filter(
-            scope=scope, policy_epoch=epoch, started_at__gte=mapping.activated_at,
+            scope=scope, policy_epoch=epoch, planning=False, started_at__gte=mapping.activated_at,
             started_at__gt=now - health.FRESHNESS, requested_start__lte=start, requested_end__gt=start,
             state__in=(ScanState.PARTIAL, ScanState.COMPLETE),
         ).order_by("-requested_end", "-generation").first()
@@ -386,11 +401,18 @@ def _initial_scan(mapping, clock):
 def _initial_batch(limit, deadline, clock):
     scanned, scheduled = 0, 0
     while scanned < limit and time.monotonic() < deadline:
-        mapping = _initial_candidate(clock)
-        if mapping is None:
+        try:
+            mapping = _initial_candidate(clock, deadline=deadline)
+            if mapping is None:
+                break
+            scanned += 1
+            if time.monotonic() >= deadline:
+                break
+            scheduled += _initial_scan(mapping, clock, deadline=deadline)
+        except UsageRejected as error:
+            if error.code != Code.TASK_BUDGET:
+                raise
             break
-        scanned += 1
-        scheduled += _initial_scan(mapping, clock)
     return scanned, scheduled
 
 
@@ -442,34 +464,7 @@ def _scope_candidate(purpose, clock):
         return scope
 
 
-def _recent_requirements(scope, now, end):
-    from selahcue_api.apps.providers.models import ProviderCredential
-    from .models import UsageReservation
-    from .reconciliation import settlement_floor
-    from .scans import floor_second
-
-    requirements = []
-    mappings = ProviderCredential.objects.filter(
-        provider="deepgram", parent_scope_id=scope.parent_scope_id, state="ACTIVE",
-    ).select_related("org")
-    for mapping in mappings.iterator(chunk_size=50):
-        start = floor_second(_accounting_start(mapping, now))
-        if start < end:
-            requirements.append(("CURRENT", mapping.org_id, mapping.pk, start, end))
-    reservations = UsageReservation.objects.filter(
-        meter="stt", state="ISSUED", provider_mapping__parent_scope_id=scope.parent_scope_id,
-        provider_mapping__provider="deepgram",
-    ).select_related("week")
-    for reservation in reservations.iterator(chunk_size=50):
-        floor = settlement_floor(reservation)
-        if floor <= end:
-            start = floor_second(min(reservation.week.counted_from, reservation.authorized_from))
-            if start < end:
-                requirements.append(("OPEN", reservation.org_id, None, start, end))
-    return requirements
-
-
-def _schedule_periodic(hint, purpose, clock, *, deadline=None):
+def _schedule_periodic(hint, purpose, clock, *, deadline=None, limit=100):
     from . import health
     from .models import UsageScope
     from .observation_contracts import ScanPurpose
@@ -485,24 +480,21 @@ def _schedule_periodic(hint, purpose, clock, *, deadline=None):
             epoch, _ = health.producer_policy(scope)
         except UsageRejected as error:
             health.producer_failure(provider, evaluation, error.code, now)
-            return
+            return 1
         aligned_end = floor_second(now) if scope.provider == "deepgram" else floor_hour(now)
         if purpose == "RECENT_SCOPE":
-            requirements = _recent_requirements(scope, now, aligned_end) if scope.provider == "deepgram" else []
-            start = min((row[3] for row in requirements), default=aligned_end - health.HEALTH_WINDOW)
+            from .recent import advance_recent
+
+            consumed = advance_recent(scope, epoch, now, aligned_end, limit=limit) if scope.provider == "deepgram" else 1
             health_start = aligned_end - health.HEALTH_WINDOW
-            if requirements:
-                all_requirements = requirements + ([("HEALTH", None, None, health_start, aligned_end)]
-                                                       if start <= health_start else [])
-                schedule_scan(scope, ScanPurpose.RECENT, start, aligned_end, now, epoch, requirements=all_requirements)
-            if not requirements or start > health_start:
-                schedule_scan(
-                    scope, ScanPurpose.HEALTH, health_start, aligned_end, now, epoch,
-                    requirements=(("HEALTH", None, None, health_start, aligned_end),),
-                )
+            schedule_scan(
+                scope, ScanPurpose.HEALTH, health_start, aligned_end, now, epoch,
+                requirements=(("HEALTH", None, None, health_start, aligned_end),),
+            )
             ensure_work("ATTRIBUTE", str(scope.pk), now, scope=scope)
-            return
+            return consumed
         schedule_history(scope, epoch, aligned_end, now)
+        return 1
 
 
 def _recover_candidate(clock):
@@ -525,20 +517,37 @@ def _recover_candidate(clock):
 
 
 def _reschedule_publications(clock, limit, deadline):
-    from django.db.models import F
-    from .models import SttOrgReadiness
+    from django.db.models import Exists, F, OuterRef, Subquery
+    from selahcue_api.apps.accounts.models import CustomerOrg
+    from selahcue_api.apps.providers.models import ProviderCredential
+    from .models import SttOrgReadiness, SttOrgReadinessScope, SttScopeReadiness, UsageOrgState
 
-    pending = SttOrgReadiness.objects.filter(
-        health_revision__lt=F("health__revision"),
-    ).order_by("org_id").values_list("org_id", flat=True)
-    count = 0
-    for org_id in pending[:limit]:
-        if time.monotonic() >= deadline:
-            break
-        with bounded_transaction():
-            ensure_work("RECONCILE", str(org_id), clock(), org_id=org_id)
-        count += 1
-    return count
+    if limit == 0:
+        return 0
+    with bounded_transaction(deadline=deadline):
+        now = clock()
+        cursor = _cursor("RECONCILE", now)
+        stale_health = SttOrgReadiness.objects.filter(org_id=OuterRef("pk"), health_revision__lt=F("health__revision"))
+        stale_scope = SttOrgReadinessScope.objects.filter(
+            publication_id=OuterRef("pk"), scope_revision__lt=F("scope__revision")
+        )
+        dirty = UsageOrgState.objects.filter(org_id=OuterRef("pk"), dirty_revision__gt=F("applied_revision"))
+        observed = SttScopeReadiness.objects.filter(valid_until__gt=now).values("scope__parent_scope_id")
+        published = SttOrgReadiness.objects.filter(org_id=OuterRef("org_id"), mapping=OuterRef("pk"))
+        initial = ProviderCredential.objects.filter(
+            org_id=OuterRef("pk"), state="ACTIVE", provider="deepgram",
+            parent_scope_id__in=Subquery(observed),
+        ).filter(~Exists(published))
+        pending = UsageWork.objects.filter(
+            org_id=OuterRef("pk"), kind="RECONCILE", state__in=("PENDING", "RUNNING"),
+        )
+        orgs = list(CustomerOrg.objects.filter(pk__gt=cursor.last_id or 0).filter(
+            (Exists(stale_health) | Exists(stale_scope) | Exists(dirty) | Exists(initial)) & ~Exists(pending),
+        ).order_by("pk").values_list("pk", flat=True)[:limit])
+        for org_id in orgs:
+            ensure_work("RECONCILE", str(org_id), now, org_id=org_id)
+        _save_cursor(cursor, now, numeric=orgs[-1] if len(orgs) == limit else None)
+        return len(orgs)
 
 
 def sweep_usage(*, limit: int = 100, clock=timezone.now) -> int:
@@ -559,8 +568,11 @@ def sweep_usage(*, limit: int = 100, clock=timezone.now) -> int:
             scope = _scope_candidate(purpose, clock)
             if scope is None:
                 break
-            _schedule_periodic(scope, purpose, clock, deadline=deadline)
-            consumed += 1
+            if consumed >= limit:
+                break
+            remaining = limit - consumed
+            batch = max(1, remaining - min(remaining // 4, 12)) if purpose == "RECENT_SCOPE" else 1
+            consumed += _schedule_periodic(scope, purpose, clock, deadline=deadline, limit=batch)
     for _ in range(min(limit - consumed, max(1, limit // 8))):
         if time.monotonic() >= deadline or not _recover_candidate(clock):
             break

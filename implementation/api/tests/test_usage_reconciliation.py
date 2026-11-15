@@ -177,6 +177,23 @@ def test_westward_accounting_placement_and_current_debt_leave_notes_unchanged(us
     assert (prior.stt_seconds_settled, successor.stt_seconds_settled, successor.stt_seconds_carried_debt) == (3000, 3, 1200)
     assert (prior.notes_settled, successor.notes_settled, successor.notes_carried_debt) == (1, 0, 0)
     assert UsageWeekProjection.objects.get(week=successor).selected_timezone == west
+    from selahcue_api.apps.usage.models import UsageReconcileAudit
+    assert set(UsageReconcileAudit.objects.values_list("action", "units")) == {
+        ("OVERRUN_RECORDED", 1800), ("OVERRUN_WRITTEN_OFF", 600),
+    }
+    assert all(row.audit_event.actor_kind == "service" for row in UsageReconcileAudit.objects.select_related("audit_event"))
+
+    clock.value += timedelta(seconds=1)
+    revision = begin_scan(DEEPGRAM, interval=UTCInterval(prior.starts_at, clock()), start=clock())
+    observed(revision, [
+        request("prior-overrun", key="mapped-west", duration=2000, created=prior_end - timedelta(seconds=1)),
+    ], clock())
+    assert reconcile_org(org.pk, clock(), clock=clock).blocked_reason is None
+    assert reconcile_org(org.pk, clock(), clock=clock).blocked_reason is None
+    prior.refresh_from_db()
+    successor.refresh_from_db()
+    assert (prior.stt_seconds_settled, successor.stt_seconds_carried_debt) == (2000, 800)
+    assert UsageReconcileAudit.objects.count() == 3
 
 
 @pytest.mark.django_db

@@ -158,18 +158,20 @@ def _weekly_totals(records):
 
 def _audit(org, revision, action, week, successor, amount, now):
     subject = str(week.pk)
-    row, created = UsageReconcileAudit.objects.get_or_create(
-        org=org, dirty_revision=revision, action=action, subject=subject,
-        defaults={"source_week": week, "successor_week": successor, "units": amount, "event_at": now, "created_at": now},
+    key = {"org": org, "dirty_revision": revision, "action": action, "subject": subject}
+    # The org lock serializes this identity with other reconciliation writers.
+    if UsageReconcileAudit.objects.filter(**key).exists():
+        return
+    event = record_audit_event(
+        _ACTOR, action="usage." + action.lower(), target_type="UsageWeek", target_id=subject,
+        request_id=f"{org.pk}:{revision}:{action}:{subject}",
+        after={"org_id": org.pk, "revision": revision, "units": amount},
+        source_surface="provider_usage",
     )
-    if created:
-        event = record_audit_event(
-            _ACTOR, action="usage." + action.lower(), target_type="UsageWeek", target_id=subject,
-            request_id=str(row.pk), after={"org_id": org.pk, "revision": revision, "units": amount},
-            source_surface="provider_usage",
-        )
-        row.audit_event = event
-        row.save(update_fields=("audit_event",))
+    UsageReconcileAudit.objects.create(
+        **key, source_week=week, successor_week=successor, units=amount, event_at=now,
+        created_at=now, audit_event=event,
+    )
 
 
 def _publish_totals(org, revision, weeks, current, totals, affected, now):

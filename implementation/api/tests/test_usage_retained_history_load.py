@@ -1,0 +1,464 @@
+"""Bounded representative Task 6 qualification on the existing hosted PostgreSQL runner."""
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
+from decimal import Decimal
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import resource
+import subprocess
+import sys
+from threading import Barrier
+import time
+from uuid import UUID
+
+import pytest
+from django.db import close_old_connections, connection, connections
+from django.test.utils import CaptureQueriesContext
+
+from provider_helpers import DEEPGRAM, cold_provider_cache, identity, policy_rows, provider_mounts, write_mount
+from selahcue_api.apps.providers.adapters import deepgram_usage
+from selahcue_api.apps.providers.bootstrap import initialize_provider_runtime
+from selahcue_api.apps.providers.contracts import ProviderScope, ProvisioningAuditContext
+from selahcue_api.apps.providers.models import ProviderCapacityPool, ScopePolicyEpoch
+from selahcue_api.apps.providers.policy_publication import canonical, digest, publish_provider_policy
+from selahcue_api.apps.usage import health
+from selahcue_api.apps.usage.contracts import UTCInterval
+from selahcue_api.apps.usage.models import (
+    ProviderUsageRecord, ProviderUsageVersion, ScopeUsageHealth, SttScopeReadiness,
+    UsageObservedInterval, UsageOutbox, UsagePageClaim, UsageRecentPlan, UsageReservation, UsageScan, UsageWeek, UsageWork,
+)
+from selahcue_api.apps.usage.observation_contracts import ObservedCoverage, RetentionKind
+from selahcue_api.apps.usage.observations import attribute_scope_batch, ingest_observations, safe_digest
+from selahcue_api.apps.usage.readiness import read_stt_readiness
+from selahcue_api.apps.usage.reconciliation import _weekly_totals, reconcile_org
+from selahcue_api.apps.usage.retention import DETAIL_AGE, _candidates
+from selahcue_api.apps.usage.recent import _mapping_batch
+from selahcue_api.apps.usage.scans import enroll_scope, finish_scan
+from selahcue_api.apps.usage.usage_tasks import _schedule_periodic, bounded_transaction
+from test_cloud_grant_postgres import token_for
+from test_effective_org_plan import church, device, licence
+from test_provider_observations import NOW, begin_scan, clock, dg_data, page_claim, task_for
+from test_provider_reservation_binding import active_mapping
+from test_usage_reconciliation import MONDAY
+
+pytestmark = pytest.mark.django_db(transaction=True)
+SEED = "task6-retained-64-8-104x8-plus-32-history-250-hot-v1"
+
+
+def _runtime(role, provider_mounts, settings, tmp_path, scopes):
+    provider_mounts(role, capable=True)
+    policy = policy_rows(capable=True)
+    original = policy["deepgram"][0]
+    policy["deepgram"] = [{**original, "project_id": scope.parent_scope_id} for scope in scopes]
+    settings.SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE = write_mount(tmp_path, "load-policy", policy)
+    settings.SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE = write_mount(tmp_path, "load-usage", {
+        "schema_version": 1,
+        "deepgram": [{"project_id": scope.parent_scope_id, "api_key": "synthetic-load"} for scope in scopes],
+        "openai": [{"organization_id": "synthetic-organization", "admin_api_key": "synthetic-openai-load"}],
+    })
+    settings.SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE = write_mount(tmp_path, "load-provisioner", {
+        "schema_version": 1,
+        "deepgram": [{"project_id": scope.parent_scope_id, "keys_write_api_key": "synthetic-provisioner"} for scope in scopes],
+        "openai": [{"organization_id": "synthetic-organization", "admin_api_key": "synthetic-openai-provisioner"}],
+    })
+    initialize_provider_runtime(entrypoint="operator" if role == "provisioner" else "celery_worker")
+
+
+def _complete_scope(scope, start, end, capture, *, health_input=False):
+    now = capture
+    pool = ProviderCapacityPool.objects.get(provider="deepgram", parent_scope_id=scope.parent_scope_id)
+    with bounded_transaction():
+        _provider, row, evaluation = enroll_scope("deepgram", scope.parent_scope_id, now)
+        generation = row.next_scan_generation
+        row.next_scan_generation += 1
+        row.save(update_fields=("next_scan_generation",))
+        scan = UsageScan.objects.create(
+            scope=row, purpose="RECENT" if health_input else "HISTORY", profile="DG_LISTEN_V1",
+            generation=generation, requested_start=start, requested_end=end, started_at=capture, finished_at=capture,
+            created_at=now, updated_at=now, state="COMPLETE", page_ordinal=1, terminal_page_seen=True,
+            policy_epoch=pool.current_epoch, policy_digest=pool.current_epoch.digest,
+        )
+        page = UsagePageClaim.objects.create(
+            scan=scan, ordinal=0, attempts=1, state="APPLIED", terminal=True, dispatched_at=capture,
+            completed_at=capture, first_receipt_at=capture, response_digest="1" * 64, created_at=now, updated_at=now,
+        )
+        UsageObservedInterval.objects.create(
+            scan=scan, scope=row, start=start, end=end, profile=scan.profile,
+            scan_started_at=capture, scan_finished_at=capture, created_at=now,
+        )
+        if health_input:
+            ScopeUsageHealth.objects.filter(pk=evaluation.pk).update(
+                state="CURRENT", reason=None, applied_facts_revision=evaluation.facts_revision,
+                policy_epoch=pool.current_epoch, policy_digest=pool.current_epoch.digest, complete_scan=scan,
+                window_start=end - timedelta(days=1), window_end=end, scan_started_at=capture,
+                valid_until=capture + timedelta(seconds=300), observed_total=Decimal(0),
+                selected_generation=generation, selected_window_end=end,
+            )
+            SttScopeReadiness.objects.create(
+                scope=row, latest_complete_scan=scan, scan_started_at=capture, scan_finished_at=capture,
+                observed_through=end, valid_until=capture + timedelta(seconds=300), created_at=now, updated_at=now,
+            )
+        else:
+            work = UsageWork.objects.create(
+                kind="SCAN", scope=row, scan=scan, subject_key=str(scan.pk), state="COMPLETE", due_at=now,
+                started_at=now, finished_at=now, created_at=now, updated_at=now,
+            )
+            UsageOutbox.objects.create(
+                work=work, generation=1, state="ACKED", publish_attempts=1, available_at=now,
+                acked_at=now, sent_at=now, created_at=now, updated_at=now,
+            )
+    return scan, page
+
+
+def _historical_parent(template, label):
+    pool = ProviderCapacityPool.objects.create(
+        provider="deepgram", parent_scope_id=label, budget=template.budget, created_at=NOW, updated_at=NOW,
+    )
+    policy = {**template.current_epoch.policy, "parent_scope_id": label}
+    policy_digest = digest(canonical(policy))
+    pool.current_epoch = ScopePolicyEpoch.objects.create(
+        pool=pool, policy=policy, digest=policy_digest, publication_digest=policy_digest,
+        cleanup_authorized=False, published_by="load-fixture", request_id=UUID(int=999), evidence_ref="load-fixture",
+        created_at=NOW,
+    )
+    pool.save(update_fields=("current_epoch",))
+    return ProviderScope("deepgram", label)
+
+
+def _seed_org(org, mapping, fresh, expired, serial):
+    rows = UsageWeek.objects.bulk_create([
+        UsageWeek(
+            org=org, tz_name="UTC", week_start_local=(MONDAY - timedelta(weeks=offset)).date(),
+            starts_at=MONDAY - timedelta(weeks=offset), ends_at=MONDAY - timedelta(weeks=offset - 1),
+            admissions_start_at=MONDAY - timedelta(weeks=offset), counted_from=MONDAY - timedelta(weeks=offset),
+            high_water_rank=1, opening_stt_seconds_limit=1200, opening_notes_limit=1,
+            high_water_stt_seconds_limit=1200, high_water_notes_limit=1, stt_seconds_settled=1,
+        ) for offset in range(104)
+    ])
+    facts, attributes = [], []
+    for week in rows:
+        scan, page = fresh if week.starts_at == MONDAY else expired
+        for ordinal in range(8):
+            event = week.starts_at + timedelta(days=2, seconds=ordinal)
+            identifier = f"load-{serial}-{week.week_start_local.isoformat()}-{ordinal}"
+            identity_key = {"request_id": identifier, "provider": "deepgram"}
+            natural = {
+                "request_id": identifier, "project_id": scan.scope.parent_scope_id,
+                "api_key_id": f"load-key-{serial}",
+                "created_at": event.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            }
+            facts.append(ProviderUsageRecord(
+                scope_id=scan.scope_id, provider="deepgram", kind="DG_REQUEST", identity_key=safe_digest("usage-identity-v1", identity_key),
+                natural_identity=natural, first_seen_at=scan.started_at, event_at=event, retention_at=event,
+                mapping_id=mapping.mapping_id, attribution="EXACT_KEY", placed_week=week, request_id=identifier,
+                returned_project_id=scan.scope.parent_scope_id, returned_api_key_id=f"load-key-{serial}",
+                accepted_generation=scan.generation, created_at=scan.started_at, updated_at=scan.started_at,
+            ))
+            attributes.append((scan, page))
+    ProviderUsageRecord.objects.bulk_create(facts, batch_size=500)
+    versions = []
+    for fact, (scan, page) in zip(facts, attributes, strict=True):
+        for revision, amount in ((1, "0.1"), (2, "0.125")):
+            dto = {
+                "request_id": fact.request_id, "project_id": fact.returned_project_id,
+                "api_key_id": fact.returned_api_key_id, "created_at": fact.natural_identity["created_at"],
+                "completion": "COMPLETE",
+                "completed_at": (fact.event_at + timedelta(seconds=1)).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+                "duration_seconds": amount, "response_code": 200,
+            }
+            versions.append(ProviderUsageVersion(
+                record=fact, revision=revision, normalized_digest=safe_digest("usage-normalization-v1", dto),
+                safe_facts=dto, source_scan=scan, source_page=page, source_generation=scan.generation,
+                created_at=scan.started_at, first_receipt_at=scan.started_at, source_scope_id=scan.scope_id,
+                source_interval_start=scan.requested_start, source_interval_end=scan.requested_end,
+                source_scan_started_at=scan.started_at, completion="COMPLETE",
+                completed_at=fact.event_at + timedelta(seconds=1), duration_seconds=Decimal(amount), response_code=200,
+            ))
+    ProviderUsageVersion.objects.bulk_create(versions, batch_size=500)
+    for row, version in zip(facts, versions[1::2], strict=True):
+        row.current_version = version
+    ProviderUsageRecord.objects.bulk_update(facts, ("current_version",), batch_size=500)
+
+
+def _plans(call):
+    queries = []
+
+    def capture(execute, sql, params, many, context):
+        if sql.lstrip().upper().startswith(("SELECT", "WITH")):
+            queries.append((sql, params))
+        return execute(sql, params, many, context)
+
+    with connection.execute_wrapper(capture):
+        result = call()
+    plans = []
+    for sql, params in queries:
+        with connection.cursor() as cursor:
+            cursor.execute("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, params)
+            plans.append(cursor.fetchone()[0])
+    return result, plans
+
+
+def _latencies(kind, samples, outcomes, locks=(), queries=0):
+    ordered = sorted(samples)
+    return {
+        "kind": kind, "count": len(samples), "outcomes": outcomes, "locks": locks, "queries": queries,
+        "p50_ms": ordered[len(ordered)//2], "p95_ms": ordered[int(0.95 * (len(ordered)-1))],
+        "max_ms": ordered[-1],
+    }
+
+
+def run_web_admissions():
+    """Separate initialized web runtime for two real admission connections."""
+    from selahcue_api.apps.devices.models import DeviceToken
+    from test_cloud_grant_postgres import command, deps, submit
+
+    cfg = json.loads(Path(os.environ["TASK6_LOAD_CONTROL"]).read_text())
+    initialize_provider_runtime(entrypoint="wsgi")
+    ready, go = Path(cfg["ready"]), Path(cfg["go"])
+    ready.touch()
+    start_limit = time.monotonic() + 15
+    while not go.exists():
+        if time.monotonic() >= start_limit:
+            raise TimeoutError("No synchronized load start")
+        time.sleep(0.01)
+    at = datetime.fromisoformat(cfg["at"])
+
+    def admit(token_id):
+        samples, outcomes = [], {}
+        token = DeviceToken.objects.get(pk=token_id)
+        until = time.monotonic() + cfg["duration"]
+        try:
+            while time.monotonic() < until and len(samples) < 500:
+                start = time.monotonic()
+                with CaptureQueriesContext(connection) as statements:
+                    result = submit(token, command(), deps(clock=lambda: at, readiness_reader=read_stt_readiness))
+                query_count += len(statements)
+                name = result if isinstance(result, str) else "GRANTED"
+                outcomes[name] = outcomes.get(name, 0) + 1
+                samples.append(round((time.monotonic() - start) * 1000, 3))
+                time.sleep(0.05)
+            return _latencies("admit", samples, outcomes, queries=query_count)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result = list(pool.map(admit, cfg["tokens"]))
+    Path(cfg["result"]).write_text(json.dumps(result))
+
+
+def _web_load(at, duration, tokens, tmp_path, settings):
+    db = connection.settings_dict
+    path = tmp_path / ("web-" + str(at.second))
+    path.mkdir()
+    controls = path / "controls.json"
+    fields = {
+        "at": at.isoformat(), "duration": duration, "tokens": tokens,
+        "ready": str(path / "ready"), "go": str(path / "go"), "result": str(path / "result"),
+    }
+    controls.write_text(json.dumps(fields))
+    env = {
+        "PATH": "/usr/bin:/bin", "PYTHONPATH": str(Path(__file__).parent.absolute()), "PYTHONDONTWRITEBYTECODE": "1",
+        "ENVIRONMENT": "dev", "DJANGO_SETTINGS_MODULE": "selahcue_api.settings", "SQL_ENGINE": db["ENGINE"],
+        "SQL_DATABASE": db["NAME"], "SQL_USER": db["USER"], "SQL_PASSWORD": db["PASSWORD"],
+        "SQL_HOST": db["HOST"], "SQL_PORT": str(db["PORT"]), "SELAHCUE_PROVIDER_PROCESS_ROLE": "web",
+        "SELAHCUE_CLOUD_STT_ENABLED": "1",
+        "SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE": settings.SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE,
+        "SELAHCUE_PROVIDER_KEYRING_FILE": settings.SELAHCUE_PROVIDER_KEYRING_FILE,
+        "TASK6_LOAD_CONTROL": str(controls),
+    }
+    return env, fields, path / "web.log"
+
+
+def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, clock):
+    """Eight separate connections with bounded measurements and deterministic roles."""
+    barrier = Barrier(8, timeout=15)
+    options = ("reader", "reader", "reader", "reader", "admit", "admit", "reconcile", "ingest")
+    clock.value = at
+    interval = UTCInterval(MONDAY, at)
+    secondary = ProviderScope("deepgram", "load-active-6")
+    connections.close_all()
+
+    def operation(index, kind):
+        close_old_connections()
+        org, mapping = orgs[index % 8], mapping_rows[index % 8]
+        samples, outcomes, locks = [], {}, []
+        queries = writes = 0
+        try:
+            barrier.wait()
+            deadline = time.monotonic() + duration
+            while time.monotonic() < deadline:
+                started = time.monotonic()
+                with CaptureQueriesContext(connection) as statements:
+                    if kind == "reader" or kind == "ingest" and writes >= 5:
+                        result = read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=at)
+                        outcome = result.status
+                    elif kind == "reconcile":
+                        result = reconcile_org(org.pk, at, clock=lambda: at)
+                        outcome = "CORRECTED" if result.blocked_reason is None else result.blocked_reason.value
+                    else:
+                        # Repeated bounded writer operations on both a shared parent
+                        # and the reconciler's other parent. All provider pages are inert.
+                        parent = DEEPGRAM if writes % 2 == 0 else secondary
+                        scan = begin_scan(parent, interval=interval, start=at)
+                        work = task_for(scan, at)
+                        page = deepgram_usage._parse_page(dg_data(), parent, interval, None)
+                        ingest_observations(page, scan.pk, claim=page_claim(work, at))
+                        finish_scan(scan.pk, ObservedCoverage(scan.pk, parent, interval, at, at, True))
+                        attribute_scope_batch(scan.scope_id, after=None, limit=20, clock=lambda: at)
+                        writes += 1
+                        outcome = "APPLIED"
+                queries += len(statements)
+                samples.append(round((time.monotonic() - started) * 1000, 3))
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                if index == 0 and len(samples) % 50 == 1:
+                    with connection.cursor() as cursor:
+                        cursor.execute("""SELECT count(*), count(*) FILTER (WHERE cardinality(pg_blocking_pids(pid)) > 0)
+                            FROM pg_stat_activity WHERE datname=current_database() AND backend_type='client backend'""")
+                        locks.append(cursor.fetchone())
+                if len(samples) >= 1000:
+                    time.sleep(max(0, deadline - time.monotonic()))
+                    break
+                time.sleep(0.02)
+            return _latencies(kind, samples, outcomes, locks, queries)
+        finally:
+            connections.close_all()
+
+    env, controls, logfile = _web_load(at, duration, tokens, tmp_path, settings)
+    with logfile.open("w+") as logs:
+        web = subprocess.Popen(
+            [sys.executable, "-c",
+             "import django; django.setup(); from test_usage_retained_history_load import run_web_admissions; run_web_admissions()"],
+            env=env, stdout=logs, stderr=subprocess.STDOUT,
+        )
+        try:
+            client_ready = time.monotonic() + 8
+            while not Path(controls["ready"]).exists() and web.poll() is None and time.monotonic() < client_ready:
+                time.sleep(0.02)
+            if not Path(controls["ready"]).exists():
+                logs.seek(0)
+                pytest.fail(logs.read()[-3000:])
+            with ThreadPoolExecutor(max_workers=6) as executor:
+                measurements = [executor.submit(operation, n, name) for n, name in enumerate(options)]
+                Path(controls["go"]).touch()
+                result = [item.result(timeout=duration + 25) for item in measurements]
+            if web.wait(timeout=20) != 0:
+                logs.seek(0)
+                pytest.fail(logs.read()[-3000:])
+            return result + json.loads(Path(controls["result"]).read_text())
+        finally:
+            if web.poll() is None:
+                web.kill()
+                web.wait(timeout=5)
+
+
+
+def test_task6_bounded_retained_history_explain_and_concurrent_work(
+    provider_mounts, settings, tmp_path, clock, capsys,
+):
+    if connection.vendor != "postgresql":
+        pytest.skip("Requires the existing PostgreSQL retained-history runner")
+    started = time.monotonic()
+    scopes = [DEEPGRAM, *[ProviderScope("deepgram", f"load-active-{index}") for index in range(1, 8)]]
+    hot = ProviderScope("deepgram", "load-hot-parent")
+    _runtime("provisioner", provider_mounts, settings, tmp_path, (*scopes, hot))
+    publish_provider_policy(
+        cleanup_authorizations=(), audit=ProvisioningAuditContext("load-fixture", UUID(int=920), "retained-history"),
+        clock=lambda: NOW - timedelta(hours=2),
+    )
+    orgs = [church() for _ in range(64)]
+    mapping_rows = [
+        active_mapping(org, identity(scopes[index % 8], key=f"load-key-{index}"))
+        for index, org in enumerate(orgs)
+    ]
+    tokens = [token_for(device(licence(orgs[index])))[0].pk for index in (4, 5)]
+    template = ProviderCapacityPool.objects.get(provider="deepgram", parent_scope_id=DEEPGRAM.parent_scope_id)
+    historical = [_historical_parent(template, f"load-history-{i}") for i in range(32)]
+    hot_orgs = []
+    hot_evidence = []
+    for population in (1, 100, 250):
+        while len(hot_orgs) < population:
+            org = church()
+            active_mapping(org, identity(hot, key=f"hot-key-{len(hot_orgs)}"))
+            hot_orgs.append(org)
+        _runtime("usage", provider_mounts, settings, tmp_path, (*scopes, hot))
+        at = NOW + timedelta(seconds=population)
+        with bounded_transaction():
+            _, hot_scope, _ = enroll_scope("deepgram", hot.parent_scope_id, at)
+        batches = []
+        for _ in range(8):
+            with CaptureQueriesContext(connection) as statements:
+                count = _schedule_periodic(hot_scope, "RECENT_SCOPE", lambda: at, limit=100)
+            batches.append({"candidates": count, "sql": len(statements)})
+            if not UsageRecentPlan.objects.filter(scope=hot_scope).exists():
+                break
+        scan = UsageScan.objects.filter(scope=hot_scope, purpose="RECENT", requested_end=at).get()
+        assert scan.usagescanrequirement_set.filter(kind="CURRENT").count() == population
+        assert scan.usagework_set.count() == 1 and max(item["candidates"] for item in batches) <= 100
+        hot_evidence.append({"population": population, "batches": batches})
+        _runtime("provisioner", provider_mounts, settings, tmp_path, (*scopes, hot))
+    _runtime("usage", provider_mounts, settings, tmp_path, (*scopes, hot))
+
+    seeds = []
+    for scope in scopes:
+        expired = _complete_scope(scope, MONDAY - timedelta(weeks=103), MONDAY, MONDAY)
+        fresh = _complete_scope(scope, MONDAY, NOW, NOW, health_input=True)
+        seeds.append((fresh, expired))
+    for scope in [*historical, hot]:
+        _complete_scope(scope, MONDAY, NOW, NOW, health_input=True)
+    for index, (org, mapping) in enumerate(zip(orgs, mapping_rows, strict=True)):
+        assert time.monotonic() - started < 480
+        _seed_org(org, mapping, *seeds[index % 8], index)
+    from selahcue_api.apps.usage.models import UsageScope
+    from test_provider_observations import request
+    from test_usage_reconciliation import observed
+
+    ancient = NOW - timedelta(weeks=105)
+    old = begin_scan(DEEPGRAM, interval=UTCInterval(ancient - timedelta(days=1), ancient + timedelta(days=1)))
+    observed(old, [
+        request(f"load-ancient-{index}", completed=False, duration=None, created=ancient+timedelta(seconds=index))
+        for index in range(2)
+    ], NOW)
+    assert UsageScope.objects.filter(provider="deepgram").count() == 41
+    assert ProviderUsageRecord.objects.filter(issue="ANCIENT_FACT").count() == 2
+    assert ProviderUsageRecord.objects.count() == 53250
+    assert ProviderUsageVersion.objects.count() == 106498
+    for org in orgs[:8]:
+        assert reconcile_org(org.pk, NOW, clock=clock).blocked_reason is None
+    readiness, stt_plan = _plans(lambda: read_stt_readiness(org_id=orgs[0].pk, mapping_id=mapping_rows[0].mapping_id, at=NOW))
+    provider, health_plan = _plans(lambda: health.read_provider_usage_health("deepgram", NOW))
+    assert readiness.status == "current_observed" and provider.status == "CURRENT"
+    assert len(stt_plan) == len(health_plan) == 1
+    _, totals_plan = _plans(lambda: _weekly_totals(ProviderUsageRecord.objects.filter(mapping_id=mapping_rows[0].mapping_id)))
+    _, population_plan = _plans(lambda: health._population(seeds[0][0][0].scope, NOW - timedelta(days=1), NOW))
+    planning = UsageRecentPlan(scope=hot_scope, captured_at=NOW, cutoff=NOW)
+    _, recent_plan = _plans(lambda: _mapping_batch(planning, 100))
+    retention = {
+        kind.value: _plans(lambda: list(_candidates(
+            kind, NOW - (DETAIL_AGE if kind.value in ("PAGE_DETAIL", "SUPERSEDED_VERSION", "TERMINAL_SCAN_WORK")
+                         else timedelta(weeks=104)),
+        ).order_by("pk").values_list("pk", flat=True)[:100]))[1]
+        for kind in RetentionKind
+    }
+    warmup = _mixed_round(orgs, mapping_rows, tokens, NOW + timedelta(seconds=1), 5, tmp_path, settings, clock)
+    runs = [
+        _mixed_round(orgs, mapping_rows, tokens, NOW + timedelta(seconds=index), 30, tmp_path, settings, clock)
+        for index in (2, 3)
+    ]
+    assert all(all(item["count"] > 0 for item in run) for run in runs)
+    assert UsageReservation.objects.filter(state__in=("RESERVED", "ISSUED")).count() <= 8
+    assert UsageWeek.objects.filter(org_id__in=[org.pk for org in orgs], stt_seconds_settled=1).count() == 64 * 104
+    assert all(active <= 8 for run in runs for item in run for active, _ in item["locks"])
+    elapsed = time.monotonic() - started
+    assert elapsed < 600
+    with capsys.disabled():
+        print("TASK6_RETAINED_HISTORY", json.dumps({
+            "seed": SEED, "seed_sha256": sha256(SEED.encode()).hexdigest(), "elapsed_s": elapsed,
+            "max_rss_os_units": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+            "orgs": 64, "weeks": 64 * 104, "records": 53250, "versions": 106498, "scopes": 41,
+                "ancient_unresolved": 2,
+            "hot": hot_evidence, "warmup": warmup, "runs": runs,
+            "plans": {"stt": stt_plan, "health": health_plan, "health_window": population_plan,
+                      "totals": totals_plan, "recent": recent_plan, "retention": retention},
+        }, default=str))

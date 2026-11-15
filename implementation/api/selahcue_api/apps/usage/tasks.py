@@ -1,4 +1,6 @@
 """Fixed Celery names and argument/role boundaries for metadata work."""
+import time
+
 from celery import shared_task
 from celery.exceptions import SoftTimeLimitExceeded
 from django.db import DatabaseError
@@ -12,6 +14,7 @@ _TASK = dict(bind=True, ignore_result=True, acks_late=True, reject_on_worker_los
 
 
 def _run(task, work_id, kind):
+    deadline_ns = time.monotonic_ns() + (12 if kind == "RETENTION" else 120) * 1_000_000_000
     try:
         require_usage_role(maintenance=kind == "RETENTION")
         identifier = _parse_uuid(work_id)
@@ -19,15 +22,18 @@ def _run(task, work_id, kind):
     except (UsageRejected, ValueError):
         return
     try:
-        work = claim_work(identifier, task_id, kind, (task.request.delivery_info or {}).get("routing_key"))
+        work = claim_work(
+            identifier, task_id, kind, (task.request.delivery_info or {}).get("routing_key"),
+            deadline_ns=deadline_ns,
+        )
         if work is not None:
             try:
-                run_claimed(work)
+                run_claimed(work, deadline_ns=deadline_ns)
             except SoftTimeLimitExceeded:
-                finish_work(work.pk, work.lease_id, pending=True, code=Code.TASK_BUDGET)
+                finish_work(work.pk, work.lease_id, pending=True, code=Code.TASK_BUDGET, deadline_ns=deadline_ns)
             except UsageRejected as error:
-                finish_work(work.pk, work.lease_id, pending=True, code=error.code)
-    except DatabaseError:
+                finish_work(work.pk, work.lease_id, pending=True, code=error.code, deadline_ns=deadline_ns)
+    except (DatabaseError, UsageRejected):
         # Uncertain finalization remains fenced by the durable claim and lease.
         # Never emit database exceptions containing page cursors or metadata.
         return

@@ -1,5 +1,5 @@
 """Immutable metadata identity and ordered replacement of provider facts."""
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -17,7 +17,7 @@ from selahcue_api.apps.providers.models import ProviderCredential
 from . import health
 from .contracts import UTCInterval
 from .models import (
-    ProviderUsageRecord, ProviderUsageVersion, SttOrgReadinessScope, SttScopeReadiness, UsageCoverageGap, UsageOrgState,
+    ProviderUsageRecord, ProviderUsageVersion, SttScopeReadiness, UsageCoverageGap, UsageOrgState,
     UsagePageClaim, UsageScan, UsageScope, UsageWork,
 )
 from .observation_contracts import (
@@ -162,8 +162,10 @@ def _mark_conflict(row, scope, scan, now):
     was_conflict = row.issue == ObservationIssue.IDENTITY_CONFLICT
     row.attribution = Attribution.DISCREPANCY
     row.issue = ObservationIssue.IDENTITY_CONFLICT
+    generation = scan.generation if scan.scope_id == scope.pk else scope.next_scan_generation - 1
+    row.conflict_generation = max(row.conflict_generation, row.accepted_generation, generation)
     row.updated_at = now
-    row.save(update_fields=("attribution", "issue", "updated_at"))
+    row.save(update_fields=("attribution", "issue", "conflict_generation", "updated_at"))
     set_gap(scope, Code.IDENTITY_CONFLICT, now, record=row, org_id=row.mapping.org_id if row.mapping_id else None, scan=scan)
     if not was_conflict:
         health.operational_audit(
@@ -214,15 +216,22 @@ def _apply_fact(scope, scan, claim, observed, now):
         )
     old_version = row.current_version if row.current_version_id else None
     prior_health = None if initial else _health_identity(row, old_version)
+    prior_state = row.mapping_id, row.attribution, row.issue
     conflicting = (
         row.scope_id != scope.pk or row.event_at != event or row.request_id != request_id
         or (kind == "OA_BUCKET" and row.natural_identity != natural)
         or any(original is not None and incoming is not None and original != incoming
                for original, incoming in ((row.returned_project_id, project), (row.returned_api_key_id, key)))
     )
+    same_generation_conflict = facts != old_version.safe_facts if old_version is not None else False
+    if old_version is not None and kind == "DG_REQUEST":
+        same_generation_conflict = any(
+            value != old_version.safe_facts[field] for field, value in facts.items()
+            if field not in ("project_id", "api_key_id")
+        )
     if not initial and old_version is not None and scan.generation >= row.accepted_generation:
         conflicting |= (
-            scan.generation == row.accepted_generation and facts != old_version.safe_facts
+            scan.generation == row.accepted_generation and same_generation_conflict
             or isinstance(observed, DeepgramRequestObservation)
             and (
                 (old_version.completion == DGCompletion.COMPLETE and observed.completion != DGCompletion.COMPLETE)
@@ -232,7 +241,10 @@ def _apply_fact(scope, scan, claim, observed, now):
     if conflicting:
         _mark_conflict(row, row.scope, scan, now)
         return row, "revised", prior_health != _health_identity(row, old_version)
-    if not initial and scan.generation < row.accepted_generation:
+    if not initial and (
+        scan.generation < row.accepted_generation
+        or row.issue == ObservationIssue.IDENTITY_CONFLICT and scan.generation <= row.conflict_generation
+    ):
         return row, "duplicates", False
 
     row.returned_project_id = row.returned_project_id or project
@@ -243,22 +255,26 @@ def _apply_fact(scope, scan, claim, observed, now):
         return row, "revised", prior_health != _health_identity(row, old_version)
     row.mapping = mapping
     row.attribution = attribution
-    if row.issue != ObservationIssue.ANCIENT_FACT:
-        if retention < now - RETENTION_AGE and initial:
-            row.issue = ObservationIssue.ANCIENT_FACT
-        elif attribution == Attribution.DISCREPANCY:
-            row.issue = ObservationIssue.IDENTITY_CONFLICT
-        elif kind == "DG_REQUEST" and observed.completion == DGCompletion.COMPLETE and observed.duration_seconds is None:
+    if attribution == Attribution.DISCREPANCY:
+        row.conflict_generation = max(row.conflict_generation, scan.generation)
+        row.issue = ObservationIssue.IDENTITY_CONFLICT
+    elif retention < row.first_seen_at - RETENTION_AGE:
+        row.issue = ObservationIssue.ANCIENT_FACT
+    elif row.issue != ObservationIssue.ANCIENT_FACT:
+        if kind == "DG_REQUEST" and observed.completion == DGCompletion.COMPLETE and observed.duration_seconds is None:
             row.issue = ObservationIssue.METRIC_UNKNOWN
         elif row.issue != ObservationIssue.PLACEMENT_GAP:
             row.issue = None
+    if kind == "DG_REQUEST":
+        observed = replace(observed, project_id=row.returned_project_id, api_key_id=row.returned_api_key_id)
+        facts = _normalized(observed)
     version = _version(row, facts, observed, scan, claim, now)
     row.current_version = version
     row.accepted_generation = scan.generation
     row.updated_at = now
     row.save(update_fields=(
         "returned_project_id", "returned_api_key_id", "mapping", "attribution", "issue", "current_version",
-        "accepted_generation", "updated_at",
+        "accepted_generation", "conflict_generation", "updated_at",
     ))
     issue_code = {
         ObservationIssue.ANCIENT_FACT: Code.PLACEMENT_GAP,
@@ -271,7 +287,10 @@ def _apply_fact(scope, scan, claim, observed, now):
         UsageCoverageGap.objects.filter(record=row, state="OPEN", reason__in=(
             Code.IDENTITY_CONFLICT, Code.METRIC_UNKNOWN,
         )).update(state="RESOLVED", resolved_at=now, updated_at=now)
-    outcome = "inserted" if initial else "duplicates" if version.pk == old_version.pk else "revised"
+    unchanged = old_version is not None and version.pk == old_version.pk and prior_state == (
+        row.mapping_id, row.attribution, row.issue,
+    )
+    outcome = "inserted" if initial else "duplicates" if unchanged else "revised"
     return row, outcome, prior_health != _health_identity(row, version)
 
 
@@ -359,15 +378,16 @@ def _page_shape(page, scan, persisted):
     return epochs
 
 
-def ingest_observations(page: UsagePage, scan_id, *, claim: UsageClaim) -> IngestResult:
+def ingest_observations(page: UsagePage, scan_id, *, claim: UsageClaim, deadline_ns=None,
+                        monotonic_ns=time.monotonic_ns) -> IngestResult:
     from .usage_tasks import bounded_transaction, require_usage_role
 
     require_usage_role()
-    scope_hint = UsageScan.objects.filter(pk=scan_id).values_list("scope_id", "scope__provider").first()
-    if scope_hint is None or type(claim) is not UsageClaim:
-        raise UsageRejected(Code.CLAIM_STALE)
-    scope_id, provider_name = scope_hint
-    with bounded_transaction():
+    with bounded_transaction(deadline_ns=deadline_ns, monotonic_ns=monotonic_ns):
+        scope_hint = UsageScan.objects.filter(pk=scan_id).values_list("scope_id", "scope__provider").first()
+        if scope_hint is None or type(claim) is not UsageClaim:
+            raise UsageRejected(Code.CLAIM_STALE)
+        scope_id, provider_name = scope_hint
         now = timezone.now()
         provider = health.lock_provider(provider_name, now)
         prior_scopes = ProviderUsageRecord.objects.filter(
@@ -417,7 +437,7 @@ def ingest_observations(page: UsagePage, scan_id, *, claim: UsageClaim) -> Inges
         counts = {"inserted": 0, "revised": 0, "duplicates": 0, "unattributed": 0}
         changed_scopes = {scope_id}
         health_changes = set()
-        dirty_ids = set(scan.usagescanrequirement_set.exclude(org_id=None).values_list("org_id", flat=True))
+        dirty_ids = set()
         oa_applied = []
         for item in page.records:
             row, outcome, changed = _apply_fact(scope, scan, persisted, item, now)
@@ -445,9 +465,6 @@ def ingest_observations(page: UsagePage, scan_id, *, claim: UsageClaim) -> Inges
             if pk in changed_scopes:
                 bump_scope(scopes[pk], now)
         if provider_name == "deepgram":
-            dirty_ids.update(SttOrgReadinessScope.objects.filter(
-                scope__scope_id__in=changed_scopes,
-            ).values_list("publication_id", flat=True))
             dirty_orgs(dirty_ids, now)
 
         persisted.state = "APPLIED"
@@ -504,6 +521,8 @@ def attribute_scope_batch(scope_id: int, *, after: int | None, limit: int = 100,
             if row.event_at >= (evaluation.window_start or version.source_interval_end - health.HEALTH_WINDOW):
                 health.invalidate(provider, evaluation, row.accepted_generation, version.source_interval_end, now)
             if provider_name == "deepgram":
+                if row.issue in (ObservationIssue.ANCIENT_FACT, ObservationIssue.PLACEMENT_GAP):
+                    set_gap(scope, Code.PLACEMENT_GAP, now, record=row, org_id=mapping.org_id)
                 dirty.add(mapping.org_id)
             changes += 1
         exhausted = count == len(rows) and len(rows) < limit

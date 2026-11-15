@@ -38,7 +38,7 @@ _HISTORY = {
     ),
     "providerusagerecord": (
         "id scope_id provider kind identity_key natural_identity first_seen_at event_at retention_at request_id created_at",
-        "accepted_generation", "mapping_id returned_project_id returned_api_key_id", "",
+        "accepted_generation conflict_generation", "mapping_id returned_project_id returned_api_key_id", "",
     ),
     "providerusageversion": (
         "id record_id revision normalized_digest normalization_version safe_facts source_generation source_scope_id "
@@ -106,11 +106,11 @@ _SHAPES = {
         "NEW.parent_scope_id !~ '^[!-~]{1,256}$'",
     ),
     "usagepageclaim": (
-        """CASE WHEN jsonb_typeof(NEW.oa_bucket_starts) <> 'array' THEN TRUE ELSE
-            jsonb_array_length(NEW.oa_bucket_starts) > 24 OR EXISTS (
-                SELECT 1 FROM jsonb_array_elements(NEW.oa_bucket_starts) AS bucket(stamp)
-                WHERE jsonb_typeof(stamp) <> 'number' OR stamp::text !~ '^-?[0-9]{1,12}$'
-            ) END""",
+        "jsonb_typeof(NEW.oa_bucket_starts) IS DISTINCT FROM 'array'",
+        """jsonb_array_length(NEW.oa_bucket_starts) > 24 OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(NEW.oa_bucket_starts) AS bucket(stamp)
+            WHERE jsonb_typeof(stamp) <> 'number' OR stamp::text !~ '^-?[0-9]{1,12}$'
+        )""",
         "NEW.requested_cursor IS NOT NULL AND (octet_length(NEW.requested_cursor) NOT BETWEEN 1 AND 4096)",
         "NEW.next_cursor IS NOT NULL AND (octet_length(NEW.next_cursor) NOT BETWEEN 1 AND 4096)",
     ),
@@ -164,7 +164,7 @@ _VERSION_OA = (
 
 
 def _guard(condition, message):
-    return "IF " + condition + " THEN RAISE EXCEPTION 'Usage " + message + "' USING ERRCODE='23514'; END IF;"
+    return "IF (" + condition + ") THEN RAISE EXCEPTION 'Usage " + message + "' USING ERRCODE='23514'; END IF;"
 
 
 def _accepted_keys(expression, keys):
@@ -210,6 +210,8 @@ def _write_guards(name):
             allowed = ", ".join(repr(value) for value in new.split(","))
             clauses.append(f"(OLD.state = '{old}' AND NEW.state IN ({allowed}))")
         checks.append(_guard("NOT (" + " OR ".join(clauses) + ")", "state transition refused"))
+    if name == "usagescan":
+        checks.append(_guard("NEW.planning AND NOT OLD.planning", "cannot reopen scan planning"))
     if name == _VERSION:
         checks.extend(
             _guard(f"NEW.{key} IS NOT NULL AND NEW.{key} IS DISTINCT FROM OLD.{key}", "provenance may only be detached")
@@ -355,6 +357,7 @@ class Migration(migrations.Migration):
                 ('retention_at', models.DateTimeField()),
                 ('attribution', models.CharField(choices=[(selahcue_api.apps.usage.observation_contracts.Attribution['EXACT_KEY'], selahcue_api.apps.usage.observation_contracts.Attribution['EXACT_KEY']), (selahcue_api.apps.usage.observation_contracts.Attribution['PROJECT_ONLY'], selahcue_api.apps.usage.observation_contracts.Attribution['PROJECT_ONLY']), (selahcue_api.apps.usage.observation_contracts.Attribution['UNATTRIBUTED'], selahcue_api.apps.usage.observation_contracts.Attribution['UNATTRIBUTED']), (selahcue_api.apps.usage.observation_contracts.Attribution['DISCREPANCY'], selahcue_api.apps.usage.observation_contracts.Attribution['DISCREPANCY'])], max_length=12)),
                 ('accepted_generation', models.PositiveBigIntegerField(default=0)),
+                ('conflict_generation', models.PositiveBigIntegerField(default=0)),
                 ('issue', models.CharField(choices=[(selahcue_api.apps.usage.observation_contracts.ObservationIssue['METRIC_UNKNOWN'], selahcue_api.apps.usage.observation_contracts.ObservationIssue['METRIC_UNKNOWN']), (selahcue_api.apps.usage.observation_contracts.ObservationIssue['IDENTITY_CONFLICT'], selahcue_api.apps.usage.observation_contracts.ObservationIssue['IDENTITY_CONFLICT']), (selahcue_api.apps.usage.observation_contracts.ObservationIssue['PLACEMENT_GAP'], selahcue_api.apps.usage.observation_contracts.ObservationIssue['PLACEMENT_GAP']), (selahcue_api.apps.usage.observation_contracts.ObservationIssue['ARITHMETIC_OVERFLOW'], selahcue_api.apps.usage.observation_contracts.ObservationIssue['ARITHMETIC_OVERFLOW']), (selahcue_api.apps.usage.observation_contracts.ObservationIssue['ANCIENT_FACT'], selahcue_api.apps.usage.observation_contracts.ObservationIssue['ANCIENT_FACT'])], max_length=19, null=True)),
                 ('returned_project_id', models.CharField(max_length=256, null=True)),
                 ('returned_api_key_id', models.CharField(max_length=256, null=True)),
@@ -432,7 +435,7 @@ class Migration(migrations.Migration):
                 ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
                 ('created_at', models.DateTimeField()),
                 ('updated_at', models.DateTimeField()),
-                ('purpose', models.CharField(choices=[('INITIAL_MAPPING', 'INITIAL_MAPPING'), ('RECENT_SCOPE', 'RECENT_SCOPE'), ('HISTORY_SCOPE', 'HISTORY_SCOPE'), ('RECOVERY', 'RECOVERY'), ('RETENTION', 'RETENTION')], max_length=15)),
+                ('purpose', models.CharField(choices=[('INITIAL_MAPPING', 'INITIAL_MAPPING'), ('RECENT_SCOPE', 'RECENT_SCOPE'), ('HISTORY_SCOPE', 'HISTORY_SCOPE'), ('RECOVERY', 'RECOVERY'), ('RETENTION', 'RETENTION'), ('RECONCILE', 'RECONCILE')], max_length=15)),
                 ('last_id', models.PositiveBigIntegerField(null=True)),
                 ('last_uuid', models.UUIDField(null=True)),
                 ('last_at', models.DateTimeField(null=True)),
@@ -508,6 +511,7 @@ class Migration(migrations.Migration):
                 ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
                 ('profile', models.CharField(choices=[(selahcue_api.apps.usage.observation_contracts.UsageProfile['DG_LISTEN_V1'], selahcue_api.apps.usage.observation_contracts.UsageProfile['DG_LISTEN_V1']), (selahcue_api.apps.usage.observation_contracts.UsageProfile['OA_COMPLETIONS_1H_V1'], selahcue_api.apps.usage.observation_contracts.UsageProfile['OA_COMPLETIONS_1H_V1'])], max_length=20)),
                 ('purpose', models.CharField(choices=[(selahcue_api.apps.usage.observation_contracts.ScanPurpose['INITIAL'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['INITIAL']), (selahcue_api.apps.usage.observation_contracts.ScanPurpose['RECENT'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['RECENT']), (selahcue_api.apps.usage.observation_contracts.ScanPurpose['HEALTH'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HEALTH']), (selahcue_api.apps.usage.observation_contracts.ScanPurpose['HISTORY'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HISTORY'])], max_length=7)),
+                ('planning', models.BooleanField(default=False)),
                 ('generation', models.PositiveBigIntegerField()),
                 ('requested_start', models.DateTimeField()),
                 ('requested_end', models.DateTimeField()),
@@ -787,11 +791,11 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='usagescan',
-            constraint=models.UniqueConstraint(condition=models.Q(('state', selahcue_api.apps.usage.observation_contracts.ScanState['PARTIAL'])), fields=('scope', 'profile', 'requested_start', 'requested_end'), name='usage_scan_unfinished'),
+            constraint=models.UniqueConstraint(condition=models.Q(('planning', False), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['PARTIAL'])), fields=('scope', 'profile', 'requested_start', 'requested_end'), name='usage_scan_unfinished'),
         ),
         migrations.AddConstraint(
             model_name='usagescan',
-            constraint=models.CheckConstraint(condition=models.Q(('generation__gte', 1), ('profile__in', (selahcue_api.apps.usage.observation_contracts.UsageProfile['DG_LISTEN_V1'], selahcue_api.apps.usage.observation_contracts.UsageProfile['OA_COMPLETIONS_1H_V1'])), ('purpose__in', (selahcue_api.apps.usage.observation_contracts.ScanPurpose['INITIAL'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['RECENT'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HEALTH'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HISTORY'])), ('requested_end__lte', models.F('started_at')), ('requested_start__lt', models.F('requested_end')), models.Q(models.Q(('policy_digest__isnull', True), ('policy_epoch__isnull', True)), models.Q(('policy_digest__isnull', False), ('policy_epoch__isnull', False)), _connector='OR'), models.Q(models.Q(('state', selahcue_api.apps.usage.observation_contracts.ScanState['PARTIAL']), ('terminal_page_seen', False), ('failure_code__isnull', True), ('finished_at__isnull', True), ('replacement_not_before__isnull', True)), models.Q(('failure_code__isnull', True), ('finished_at__gte', models.F('started_at')), ('finished_at__isnull', False), ('replacement_not_before__isnull', True), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['COMPLETE']), ('terminal_page_seen', True)), models.Q(('failure_code__in', (selahcue_api.apps.usage.observation_contracts.UsageFailureCode['CONFIG_UNAVAILABLE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['POLICY_MISMATCH'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['SCOPE_MISSING'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['INVALID_CURSOR'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['INVALID_RESPONSE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['RESPONSE_TOO_LARGE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TRANSPORT_TIMEOUT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TRANSPORT_ERROR'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['CLAIM_STALE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['RETRIES_EXHAUSTED'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['HISTORY_UNAVAILABLE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['IDENTITY_CONFLICT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['METRIC_UNKNOWN'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['ARITHMETIC_OVERFLOW'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['PLACEMENT_GAP'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['REVISION_CONFLICT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['DATABASE_BUSY'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['PUBLICATION_FAILED'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TASK_BUDGET'])), ('finished_at__gte', models.F('started_at')), ('replacement_not_before__gte', models.F('finished_at')), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['FAILED']), ('terminal_page_seen', False), ('failure_code__isnull', False), ('finished_at__isnull', False), ('replacement_not_before__isnull', False)), _connector='OR')), name='usage_scan_shape'),
+            constraint=models.CheckConstraint(condition=models.Q(('generation__gte', 1), ('profile__in', (selahcue_api.apps.usage.observation_contracts.UsageProfile['DG_LISTEN_V1'], selahcue_api.apps.usage.observation_contracts.UsageProfile['OA_COMPLETIONS_1H_V1'])), ('purpose__in', (selahcue_api.apps.usage.observation_contracts.ScanPurpose['INITIAL'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['RECENT'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HEALTH'], selahcue_api.apps.usage.observation_contracts.ScanPurpose['HISTORY'])), ('requested_end__lte', models.F('started_at')), ('requested_start__lt', models.F('requested_end')), models.Q(models.Q(('policy_digest__isnull', True), ('policy_epoch__isnull', True)), models.Q(('policy_digest__isnull', False), ('policy_epoch__isnull', False)), _connector='OR'), models.Q(('planning', False), models.Q(('page_ordinal', 0), ('purpose', selahcue_api.apps.usage.observation_contracts.ScanPurpose['RECENT']), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['PARTIAL'])), _connector='OR'), models.Q(models.Q(('state', selahcue_api.apps.usage.observation_contracts.ScanState['PARTIAL']), ('terminal_page_seen', False), ('failure_code__isnull', True), ('finished_at__isnull', True), ('replacement_not_before__isnull', True)), models.Q(('failure_code__isnull', True), ('finished_at__gte', models.F('started_at')), ('finished_at__isnull', False), ('replacement_not_before__isnull', True), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['COMPLETE']), ('terminal_page_seen', True)), models.Q(('failure_code__in', (selahcue_api.apps.usage.observation_contracts.UsageFailureCode['CONFIG_UNAVAILABLE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['POLICY_MISMATCH'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['SCOPE_MISSING'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['INVALID_CURSOR'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['INVALID_RESPONSE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['RESPONSE_TOO_LARGE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TRANSPORT_TIMEOUT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TRANSPORT_ERROR'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['CLAIM_STALE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['RETRIES_EXHAUSTED'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['HISTORY_UNAVAILABLE'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['IDENTITY_CONFLICT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['METRIC_UNKNOWN'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['ARITHMETIC_OVERFLOW'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['PLACEMENT_GAP'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['REVISION_CONFLICT'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['DATABASE_BUSY'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['PUBLICATION_FAILED'], selahcue_api.apps.usage.observation_contracts.UsageFailureCode['TASK_BUDGET'])), ('finished_at__gte', models.F('started_at')), ('replacement_not_before__gte', models.F('finished_at')), ('state', selahcue_api.apps.usage.observation_contracts.ScanState['FAILED']), ('terminal_page_seen', False), ('failure_code__isnull', False), ('finished_at__isnull', False), ('replacement_not_before__isnull', False)), _connector='OR')), name='usage_scan_shape'),
         ),
         migrations.AddIndex(
             model_name='usageobservedinterval',
@@ -892,6 +896,64 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='usageoutbox',
             constraint=models.CheckConstraint(condition=models.Q(('generation__gte', 1), ('publish_attempts__lte', 3), models.Q(models.Q(('publish_attempts__gte', 1), ('state', 'PUBLISHING'), ('lease_id__isnull', False), ('lease_until__isnull', False)), models.Q(('state__in', ('PENDING', 'SENT', 'ACKED', 'FAILED', 'CANCELLED')), ('lease_id__isnull', True), ('lease_until__isnull', True)), _connector='OR'), models.Q(models.Q(('state', 'SENT'), _negated=True), ('sent_at__isnull', False), _connector='OR'), models.Q(models.Q(('state', 'ACKED'), _negated=True), ('acked_at__isnull', False), _connector='OR')), name='usage_outbox_shape'),
+        ),
+        migrations.CreateModel(
+            name='UsageRecentMember',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('created_at', models.DateTimeField()),
+                ('kind', models.CharField(choices=[('CURRENT', 'CURRENT'), ('OPEN', 'OPEN')], max_length=7)),
+                ('mapping', models.UUIDField(null=True)),
+                ('required_start', models.DateTimeField()),
+            ],
+        ),
+        migrations.CreateModel(
+            name='UsageRecentPlan',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('created_at', models.DateTimeField()),
+                ('updated_at', models.DateTimeField()),
+                ('generation', models.PositiveBigIntegerField()),
+                ('captured_at', models.DateTimeField()),
+                ('cutoff', models.DateTimeField()),
+                ('lowest_start', models.DateTimeField(null=True)),
+                ('mapping_after', models.UUIDField(null=True)),
+                ('open_after', models.UUIDField(null=True)),
+                ('phase', models.CharField(choices=[('MAPPINGS', 'MAPPINGS'), ('OPEN', 'OPEN'), ('TRANSFER', 'TRANSFER'), ('DISCARD', 'DISCARD')], default='MAPPINGS', max_length=8)),
+            ],
+        ),
+        migrations.AddField(
+            model_name='usagerecentmember',
+            name='org',
+            field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='selahcue_accounts.customerorg'),
+        ),
+        migrations.AddField(
+            model_name='usagerecentplan',
+            name='epoch',
+            field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='selahcue_providers.scopepolicyepoch'),
+        ),
+        migrations.AddField(
+            model_name='usagerecentplan',
+            name='scan',
+            field=models.OneToOneField(null=True, on_delete=django.db.models.deletion.PROTECT, to='selahcue_usage.usagescan'),
+        ),
+        migrations.AddField(
+            model_name='usagerecentplan',
+            name='scope',
+            field=models.OneToOneField(on_delete=django.db.models.deletion.PROTECT, to='selahcue_usage.usagescope'),
+        ),
+        migrations.AddField(
+            model_name='usagerecentmember',
+            name='plan',
+            field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='selahcue_usage.usagerecentplan'),
+        ),
+        migrations.AddConstraint(
+            model_name='usagerecentplan',
+            constraint=models.CheckConstraint(condition=models.Q(('cutoff__lte', models.F('captured_at')), ('generation__gte', 1), models.Q(('lowest_start__isnull', True), ('lowest_start__lt', models.F('cutoff')), _connector='OR')), name='usage_recent_capture'),
+        ),
+        migrations.AddIndex(
+            model_name='usagerecentmember',
+            index=models.Index(fields=['plan', 'id'], name='usage_recent_plan_members'),
         ),
         migrations.RunPython(seed_health, migrations.RunPython.noop),
         migrations.RunPython(install_guards, uninstall_guards),
