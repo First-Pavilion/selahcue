@@ -22,9 +22,7 @@
  *   - the unbacked claims the audit named stay out of the rendered text (honest content wins over
  *     Figma: owner decision). There is NO allow-listed region any more: the Pricing FAQ and its unbacked
  *     answers were removed by ClickUp 17tnw2b0x3h;
- *   - Pricing: no plan, price, comparison table, billing toggle or FAQ (plan names and prices come from the API once
- *     it serves them), no `text="Save 20%"`, no `variant="gradient"`, the billing toggle
- *     is a named radio group;
+ *   - Pricing: show the ongoing Free offer without a paid price, comparison table, billing toggle or FAQ;
  *   - the views use the shared container and carry no container rule of their own.
  */
 import assert from 'node:assert/strict'
@@ -174,7 +172,7 @@ const BANNED: readonly Banned[] = [
   { id: 'never blanks (stronger than NFR-024)', pattern: /never[- ]blank|never blanks/, because: 'say it is designed so a fault cannot black out live output (Cody N19)' },
   { id: 'forever or lifetime', pattern: /\bforever\b|lifetime/, because: 'pricing-15: "free forever" is not decided' },
   { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline|stays offline|offline by default|offline when it matters|keeps working offline|doesn.t either/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1, Cody N20, Quinn N6)' },
-  { id: 'cloud transcription', pattern: /\bcloud\b/, because: 'cloud-stt is RELEASE: UNSAFE and stripped from release builds (Cody N4)' },
+  { id: 'cloud transcription', pattern: /\bcloud\b/, pages: ['features', 'download', 'about'], because: 'capability wording outside the approved Free offer is reviewed separately' },
   { id: 'jargon the owner did not choose', pattern: /compositor|desktop-authoritative/, because: 'plain English (Cody N19)' },
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
@@ -363,8 +361,11 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   pricing: [
     "PRICING",
     "Pricing that grows with your church",
-    "Plans and pricing",
-    "Plans and prices have not been published yet.",
+    "SelahCue Free",
+    "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.",
+    "Paid subscriptions will come later.",
+    "View downloads",
+    "Create an account",
   ],
   features: [
     "FEATURES",
@@ -420,8 +421,8 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "ON-DEVICE",
     "Ready to run your best service yet?",
     "Start with the Free plan. Core live controls keep working with no network.",
-    "Download free",
-    "See pricing",
+    "View downloads",
+    "Create an account",
   ],
   download: [
     "DOWNLOAD",
@@ -485,8 +486,8 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Memory use is designed to stay within fixed limits, so SelahCue stays light.",
     "Ready to run your best service yet?",
     "Start with the Free plan. Core live controls keep working with no network.",
-    "Download free",
-    "See pricing",
+    "View downloads",
+    "Create an account",
   ],
 }
 
@@ -573,35 +574,28 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
 // ------------------------------------------------------------------------------------ Pricing
 
 describe('Pricing', () => {
-  test('hero: the PRICING eyebrow and the Figma headline, then an h2 over the empty state that says plans and prices are not published', () => {
-    const h1 = byTag(pages.pricing, 'h1')[0] as HtmlNode
-    assert.equal(textOf(h1), 'Pricing that grows with your church')
-    assert.ok(textOf(pages.pricing).includes('PRICING'), 'no PRICING eyebrow')
-    assert.deepEqual(byClass(pages.pricing, 'hero-lead'), [], 'the subline went with the plans it introduced')
-    assert.deepEqual(byTag(pages.pricing, 'h2').map((h) => textOf(h)), ['Plans and pricing'], 'the h2 keeps the outline from skipping to the footer h3s')
-    const empty = byClass(pages.pricing, 'plans-empty')[0]
-    assert.ok(empty, 'no empty state')
-    assert.equal(textOf(empty as HtmlNode), 'Plans and prices have not been published yet.')
+  test('the existing pricing layout shows the Free offer and both acquisition paths', () => {
+    assert.equal(textOf(byTag(pages.pricing, 'h1')[0] as HtmlNode), 'Pricing that grows with your church')
+    assert.deepEqual(byTag(pages.pricing, 'h2').map(textOf), ['SelahCue Free'])
+    const plan = byClass(pages.pricing, 'free-plan')[0] as HtmlNode
+    assert.deepEqual(byTag(plan, 'p').map(textOf), [
+      'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.',
+      'Paid subscriptions will come later.',
+    ])
+    assert.deepEqual(byTag(plan, 'a').map((link) => [textOf(link), link.attrs.href]), [
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
+    ])
   })
 
-  // ClickUp 17tnw2b0x3h: plan names, prices and limits are the API catalogue's data, so until it serves them the page shows none.
-  test('the page draws no plan, price, limit, comparison table, billing toggle or FAQ: it says plans and prices are not published yet', () => {
-    assert.deepEqual(byClass(pages.pricing, 'pricing-card'), [], 'a plan card is back')
+  test('pricing shows no paid tier, price, comparison table, billing toggle or checkout', () => {
+    assert.deepEqual(byClass(pages.pricing, 'pricing-card'), [])
     assert.deepEqual(byClass(pages.pricing, 'pricing-grid'), [])
-    assert.deepEqual(byTag(pages.pricing, 'table'), [], 'a comparison table is back')
-    assert.deepEqual(all(pages.pricing, (n) => n.attrs['role'] === 'radiogroup'), [], 'a billing toggle is back')
-    assert.deepEqual(byClass(pages.pricing, 'faq-section'), [], 'a FAQ is back')
-    assert.deepEqual(byTag(pages.pricing, 'h3'), [], 'a plan name is back')
-    assert.deepEqual(byClass(pages.pricing, 'ui-button'), [], 'a plan button is back')
-    const text = textOf(pages.pricing)
-    assert.doesNotMatch(text, /\$|\bPro\b|\bPlatinum\b|\bCore\b|\bChurch plan\b|devices?\b|NDI|watermark|prorat|PayPal|ACH|non-profit|MOST POPULAR|Monthly|Annual/i)
-  })
-
-  test('the view types no plan name and no limit: they will come from the API, not from this file', () => {
-    const { descriptor } = parse(readFileSync(path.join(SRC, 'views/PricingView.vue'), 'utf8'), { filename: 'PricingView.vue' })
-    const code = (descriptor.scriptSetup?.content ?? '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    assert.doesNotMatch(code, /name:|price:|LIMITS|plans\b|rows\b|pricingFaqItems|PricingCard|SegmentedToggle/, 'PricingView holds plan data again')
-    assert.doesNotMatch(descriptor.template?.content ?? '', /PricingCard|SegmentedToggle|FaqAccordion|<table/)
+    assert.deepEqual(byTag(pages.pricing, 'table'), [])
+    assert.deepEqual(all(pages.pricing, (n) => n.attrs.role === 'radiogroup'), [])
+    assert.deepEqual(byClass(pages.pricing, 'faq-section'), [])
+    assert.deepEqual(byTag(pages.pricing, 'form'), [])
+    assert.doesNotMatch(textOf(pages.pricing), /\$|\bPro\b|\bPlatinum\b|\bCore\b|checkout|prorat|PayPal|ACH|MOST POPULAR|Monthly|Annual/i)
   })
 })
 
@@ -726,13 +720,13 @@ describe('Features', () => {
     assert.deepEqual(rows().map((r) => hasClass(r, 'reverse')), [false, true, false, true, false, true])
   })
 
-  test('features-06: the closing band has Figma wording and two links, Download free and See pricing', () => {
+  test('features-06: the closing band has Figma wording and two links, View downloads and Create an account', () => {
     const band = byClass(pages.features, 'cta-band')[0] as HtmlNode
     assert.equal(textOf(byTag(band, 'h2')[0] as HtmlNode), 'Ready to run your best service yet?')
     const links = byTag(band, 'a')
     assert.deepEqual(links.map((l) => [textOf(l), l.attrs['href']]), [
-      ['Download free', '/download'],
-      ['See pricing', '/pricing'],
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
     ])
   })
 
@@ -762,7 +756,6 @@ describe('Download', () => {
     ])
     const panel = all(pages.download, (node) => node.attrs.id === 'public-downloads')[0] as HtmlNode
     assert.deepEqual(byTag(panel, 'button', 'a'), [])
-    assert.equal(all(pages.download, (node) => node.attrs.id === 'pilot-downloads').length, 0)
   })
 
   test('download-07: the mobile section has the pill, the heading, three bullets and the controller mock, and no placeholder phone', () => {
@@ -822,8 +815,8 @@ describe('About', () => {
     const band = byClass(pages.about, 'cta-band')[0] as HtmlNode
     assert.equal(textOf(byTag(band, 'h2')[0] as HtmlNode), 'Ready to run your best service yet?')
     assert.deepEqual(byTag(band, 'a').map((l) => [textOf(l), l.attrs['href']]), [
-      ['Download free', '/download'],
-      ['See pricing', '/pricing'],
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
     ])
   })
 })

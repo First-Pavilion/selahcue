@@ -1882,10 +1882,11 @@ DRIVER = r"""
       await wait(800);
       var text = cardText();
       check('V2 title', has(text, 'Email address verified'));
-      check('V2 body mentions the account is active', has(text, 'your SelahCue account is active'));
-      check('V2 primary CTA', has(text, 'Continue to sign in'));
-      check('V2 never-blank banner present',
-            has(text, "You don't need an account to run SelahCue"));
+      check('V2 body directs the verified customer to native sign-in and activation',
+            has(text, 'sign in and activate your device'));
+      check('V2 primary CTA opens the public installers',
+            !!document.querySelector('.au-actions a[href="/download#public-downloads"]') &&
+            has(text, 'View downloads'));
       check('V2 banner explains offline presentation', has(text, 'Live presentation works offline'));
       check('V2 success disc', document.querySelector('.au-disc-success') !== null);
       check('V2 focus moved to the heading', document.activeElement === document.querySelector('h1'));

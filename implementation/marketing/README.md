@@ -54,8 +54,7 @@ Defined in `src/router/index.ts`; every page except the home page is lazy-loaded
 - Marketing: `/`, `/features`, `/pricing`, `/download`, `/about`, `/contact`, `/support`, `/docs`, `/changelog`, `/blog`, `/careers`, `/privacy`, `/terms`.
 - Auth, with no site nav or footer (`meta.bare`): `/signin`, `/signup`, `/forgot-password`, `/verify`, `/reset`. The last two are linked from emails that are already delivered, so their paths must not change.
 - Account: `/account`, behind a guard that asks the server whether the session is live. The guard is a convenience, not a security boundary; the API authorises every request.
-- Affiliates: `/affiliates` (marketing) and `/affiliates/{dashboard,referrals,payouts,resources,settings,help}` (portal).
-- Staff admin console: `/admin` and `/admin/{customers,customers/:id,users,subscriptions,licenses,affiliates,payouts,settings}`.
+- `/affiliates` describes the closed affiliate program. Former staff and affiliate portal paths resolve to the public not-found view.
 - Anything else renders `NotFoundView`.
 
 ## How it talks to the API
@@ -94,7 +93,7 @@ templates only (no `v-html`).
 
 ## Known gaps
 
-- **Mock data.** `/account` (past the session guard), the affiliate portal and the admin console render hard-coded sample data. The affiliate portal and admin console have no route guard at all, so treat them as unfinished, not as secured.
+- **Mock data.** `/account` (past the session guard) still renders hard-coded sample data pending the account API integration.
 - **`tests/` and `scripts/email_mirror_probe.ts` are linted but not type-checked.** `tsconfig.node.json` lists only `vite.config.ts` and the two legal scripts, `scripts/legal_markdown.ts` and `scripts/sync_legal.ts`, so `npm run type-check` covers those and nothing else under `scripts/`. Checking `tests/` by hand with `tsc --strict` shows type errors in `tests/authCopy.test.ts` that no gate reports today.
 - **Lint covers error prevention only.** It uses the `essential` tier of `eslint-plugin-vue` and has no formatter. The style tiers flagged about 1,300 existing sites and were left out on purpose.
 - **Node versions differ.** The `Dockerfile` builds on `node:20-alpine`, while CI and the tests use Node 22.
@@ -139,73 +138,17 @@ python3 tests/public_downloads_headless.py --engine both
 The browser check uses the built site, installed Playwright Chromium and WebKit, and
 synthetic fixtures for publication and installer navigation.
 
-## Historical pilot registration configuration (P14, 17tnw2bbhxu)
+## Archived pilot notice and tooling
 
-The pilot panel is retained in source for historical reference. The public
-download view mounts the public installer cards.
+`/pilot-privacy` displays the historical notice from
+`docs/release/pilot-registration/notice.json`. Keep the source and its Docker
+copy together. The public site no longer collects pilot registrations.
+Bookmarks to `/download#pilot-downloads` open the public installer section.
 
-`public/pilot-downloads.json` is nonsecret, same-origin deployment configuration, fetched without cookies
-or caching, with a 10-second timeout and 32-KiB body limit. The committed deployment is deliberately:
-
-```json
-{"schema_version":1,"enabled":false}
-```
-
-Missing/invalid/unavailable configuration keeps registration closed and offers retry on fetch errors.
-Enable only after actual artifacts, P12 grants, deployed n8n form and approved collection policy are ready.
-The owner selected a six-month pilot ending **2027-04-30T23:59:59Z**; release manifest expiry remains the
-source of truth. Do not turn fixture metadata into a published release or infer data retention from the
-six-month credential lifetime. Actual data owner/retention and notice approval are still external decisions.
-
-Enabled schema (every listed field is required; unknown fields rejected):
-
-- `schema_version`: integer `1`; `enabled`: boolean `true`.
-- `form_origin`: exact HTTPS origin of the deployed production n8n form, without credentials/query/fragment.
-- `notice`: `approved: true`, approved non-draft `version`, HTTPS `url`, public `data_owner` label and
-  positive integer `retention_days` (max3650). This public declaration is deployment input; it cannot
-  establish legal approval by itself. Confirm approval before publishing it.
-- `entries`: up to six unique OS/architecture targets. Each has exact `platform` (`Windows`, `Ubuntu`,
-  `macOS`), `architecture` (`x64`, `arm64`), nonempty `version` and `release_id`, strict UTC `expires_at`
-  (`YYYY-MM-DDTHH:mm:ssZ`), boolean `available`, and complete opaque HTTPS `registration_url`.
-  Omit absent artifacts; mark present unavailable targets `available:false`. No sizes/OS floors inferred.
-- `registration_url`: actual production n8n `/form/<slug-or-webhook-id>` on `form_origin`; query-free,
-  no fragment or embedded credentials. Provision the correct form per artifact/release; the frontend
-  never invents route names, architecture/release query fields, grants or object paths.
-
-The panel appends only non-PII `registration_id` (crypto UUIDv4) and allowlisted `platform` query fields.
-The UUID persists in sessionStorage per platform/architecture/release/form attempt across re-click,
-reload and return navigation. Selecting another target has its own attempt; selecting the original target
-restores its identity. Only the explicitly labelled new-registration action replaces an existing identity.
-Storage failure/corruption fails closed; no new UUID silently replaces an ambiguous attempt. A new browser
-session/tab may be a distinct attempt; sessionStorage is not a cross-device deduplication guarantee.
-
-The UUID and platform are **untrusted inputs, not authorization**. The backend must bind identity/payload
-and reject conflicts. n8n must reserve/reuse the durable row, write Sheets with RAW values, reconcile ambiguous
-writes and issue a server receipt only after confirmed persistence; P12 validates it and grants only an
-allowlisted available unexpired private artifact. Form-side retries preserve the UUID and unchanged payload.
-The site offers no fake success/download step while these services remain unconfigured.
-
-Official [n8n Form Trigger documentation](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.formtrigger/)
-confirms query prefill/Hidden Fields operate on **production URLs**, not Test URLs; nodev2.2 custom paths live
-at `parameters.options.path`. Actual pinned n8n import/runtime field mapping is a separate P13 gate.
-The form must validate/bind the requested target server-side; editing a hidden field cannot grant access.
-
-Verification from this folder:
-
-```sh
-node --test tests/pilotDownloads.test.ts
-npm test
-npm run build
-npm run lint
-python3 tests/pilot_downloads_headless.py --shots /private/tmp/pilot-shots
-```
-
-The runtime harness requires installed Playwright Chromium **and** WebKit, serves the actual built Vue bundle,
-and intercepts config/form responses with synthetic fixtures only. It covers selection, keyboard navigation,
-retry identity/reset, unavailable/expired/policy/error/storage states and320/375/768/1440px widths. Ready screenshot
-metadata is synthetic, not a real package/retention claim. No live registration, Sheet write, provider request
-or installer download occurs. Native installer/platform acceptance belongs to separate QA tickets.
-
+The pilot registration component, its fixtures and
+`public/pilot-downloads.json` are retained as historical tooling. The
+committed configuration stays disabled (`{"schema_version":1,"enabled":false}`).
+The public installer cards use only `/releases/current.json`.
 
 ### Production security gate (17tnw2b0x3m)
 

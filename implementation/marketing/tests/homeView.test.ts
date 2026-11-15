@@ -187,7 +187,7 @@ describe('the page is the eight designed sections, in Figma\'s order (the testim
       "Built for the one moment you can't repeat",
       'One live moment, every output',
       'Live in three steps',
-      'Plans and pricing',
+      'SelahCue Free',
       'Questions, answered',
       'Ready to run your best service yet?',
     ])
@@ -464,12 +464,12 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.deepEqual(controlProblems(page), [])
   })
 
-  test('the hero: View pilot downloads goes to /download; the demo button is disabled and described, not a link to #demo', () => {
+  test('the hero: View downloads goes to /download; the demo button is disabled and described, not a link to #demo', () => {
     const hero = section(page, 'hero-section')
     const buttons = findAll(hero, (e) => hasClass(e, 'ui-button'))
-    const dl = buttons.find((b) => textOf(b) === 'View pilot downloads') as El
+    const dl = buttons.find((b) => textOf(b) === 'View downloads') as El
     assert.equal(dl.tag, 'a')
-    assert.equal(dl.attrs['href'], '/download#pilot-downloads')
+    assert.equal(dl.attrs['href'], '/download#public-downloads')
     assert.ok(hasClass(dl, 'variant-primary'), 'the hero button is primary, not the gradient alias')
     const demo = buttons.find((b) => textOf(b) === 'Watch 2-min demo') as El
     assert.ok(demo, 'the demo button is still drawn, as Figma has it')
@@ -501,23 +501,22 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.equal(rule['color'], 'var(--sc-text-secondary)')
   })
 
-  // ClickUp 17tnw2b0x3h: plan names and prices come from the API, so until it serves them the page draws no plan, no price and no billing term.
-  test('the pricing section draws no plan card, no price and no plan button: it says plans and prices are not published yet', () => {
+  test('the pricing section describes ongoing Free without paid tiers or a billing period', () => {
     const pricing = section(page, 'pricing-section')
     assert.equal(findAll(pricing, (e) => hasClass(e, 'pricing-card')).length, 0)
     assert.equal(findAll(pricing, (e) => hasClass(e, 'ui-button')).length, 0, 'no plan button')
     assert.equal(findAll(pricing, (e) => e.tag === 'a').length, 0, 'and nothing in the section links anywhere')
     assert.deepEqual(findAll(pricing, (e) => e.tag === 'h3'), [], 'no plan name')
-    assert.match(textOf(pricing), /Plans and prices have not been published yet\./)
-    assert.doesNotMatch(textOf(pricing), /\$|\bFree\b|\bPro\b|\bChurch\b|month|year|forever/i, 'no price, tier name or billing period')
+    assert.match(textOf(pricing), /The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week\. Paid subscriptions will come later\./)
+    assert.doesNotMatch(textOf(pricing), /\$|\bPro\b|month|year|forever|trial/i)
     assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '/contact').length, 0, 'nothing on Home sends a visitor to the contact form')
   })
 
-  test('the final band: View pilot downloads and See pricing, as the white and outlined buttons for a gradient card', () => {
+  test('the final band: View downloads and Create an account, as the white and outlined buttons for a gradient card', () => {
     const band = section(page, 'final-cta-section')
-    const [dl, pricing] = findAll(band, (e) => hasClass(e, 'ui-button')) as [El, El]
-    assert.deepEqual([textOf(dl), dl.attrs['href'], hasClass(dl, 'variant-inverse')], ['View pilot downloads', '/download#pilot-downloads', true])
-    assert.deepEqual([textOf(pricing), pricing.attrs['href'], hasClass(pricing, 'variant-inverse-outline')], ['See pricing', '/pricing', true])
+    const [dl, signup] = findAll(band, (e) => hasClass(e, 'ui-button')) as [El, El]
+    assert.deepEqual([textOf(dl), dl.attrs['href'], hasClass(dl, 'variant-inverse')], ['View downloads', '/download#public-downloads', true])
+    assert.deepEqual([textOf(signup), signup.attrs['href'], hasClass(signup, 'variant-inverse-outline')], ['Create an account', '/signup', true])
   })
 
   test('CONTROL: each dead end is reported', () => {
@@ -577,11 +576,11 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Run your service with total confidence.',
     // "controlled from anywhere" is gone: PRD NG-5 says mobile control is LAN-based (ClickUp 17tnw2b0x3h).
     'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, slides, a service countdown, stage display, and NDI outputs.',
-    'View pilot downloads',
+    'View downloads',
     'Watch 2-min demo',
     // The reason the demo button is disabled, VISIBLE as the Pro plan's note is (owner decision, 2026-10-04).
     'Demo video not available yet',
-    'Pilot registration · Core live controls work offline · Windows, Ubuntu & macOS',
+    'Free to start · Core live controls work offline · Windows, Ubuntu & macOS',
     // The console mock (Figma 470:124): one named image for assistive technology, its drawing hidden from it.
     'SelahCue operator console showing a Preview and a Live scripture slide',
     'SelahCue — Live Console',
@@ -608,7 +607,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'NDI & multi-output',
     'Broadcast an audience output as an NDI source for OBS or vMix. Orientation, scaling and mirror apply to the projector and stage windows.',
     'Optional cloud AI assistance',
-    'Pilot Deepgram transcription and OpenAI assistance require internet access and consent. Provider access expires with the pilot; core offline controls remain available.',
+    'Cloud transcription and sermon notes require an internet connection and consent.',
   ],
   'reliability-section': [
     'WHY SELAHCUE',
@@ -661,18 +660,17 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Control from your phone',
     'Drive it from the console — or pair your phone over the local network. No internet needed.',
   ],
-  // The plan cards, prices, tier names, "MOST POPULAR" and "Cancel anytime" are gone (ClickUp 17tnw2b0x3h): plan names and
-  // prices come from the API once it serves them.
+  // The single Free offer replaces the older empty pricing state.
   'pricing-section': [
     'PRICING',
-    'Plans and pricing',
-    'Plans and prices have not been published yet.',
+    'SelahCue Free',
+    'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.',
   ],
   'faq-section': [
     'Questions, answered',
     'Do I need an internet connection?',
     // NFR-015: core live controls work with the network off. Sign-in, activation and the first speech-model download need it.
-    'Core live controls work with no internet. Optional pilot Deepgram transcription and OpenAI assistance need internet access and consent, and provider access expires with the pilot.',
+    'Core live controls work offline. Cloud transcription and sermon notes require an internet connection and consent.',
     'Which platforms are supported?',
     // No version number, architecture or file format: the product is available for Windows, macOS and Linux (owner, 2026-10-04).
     'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.',
@@ -680,14 +678,14 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Yes. Build multi-slide presentations with text, shapes and images, stage any scripture from the bundled Bibles, and design your own scripture themes in the Theme Designer.',
     'What is NDI, and do I need it?',
     "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
-    'How does billing work?',
-    'Plans and prices have not been published yet.',
+    'What does Free include?',
+    'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.',
   ],
   'final-cta-section': [
     'Ready to run your best service yet?',
     'Start free. Core live controls keep working with no network.',
-    'View pilot downloads',
-    'See pricing',
+    'View downloads',
+    'Create an account',
   ],
 }
 
@@ -729,7 +727,7 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     assert.deepEqual(unlistedBlocks(planted), ['Trusted by 5,000 churches.'])
     const reworded = parseHtml('<p>Start free. Core live controls keep working with no network!</p>')
     assert.equal(unlistedBlocks(reworded).length, 1)
-    assert.deepEqual(unlistedBlocks(parseHtml('<p>View pilot downloads</p><p>See pricing</p>')), [])
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>View downloads</p><p>Create an account</p>')), [])
     // The claims that were tolerated before ClickUp 17tnw2b0x3h are now reported, not allow-listed.
     assert.deepEqual(unlistedBlocks(parseHtml('<p>$19</p><p>MOST POPULAR</p><p>Sarah Jenkins</p>')), ['$19', 'MOST POPULAR', 'Sarah Jenkins'])
   })
@@ -764,13 +762,13 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     const trust = findAll(section(page, 'hero-section'), (e) => hasClass(e, 'hero-trust'))[0] as El
     assert.ok(trust, 'no .hero-trust')
     const raw = trust.children.filter((c): c is string => typeof c === 'string').join('')
-    for (const item of ['Pilot registration', 'Core live controls work offline', 'Windows, Ubuntu & macOS']) {
+    for (const item of ['Free to start', 'Core live controls work offline', 'Windows, Ubuntu & macOS']) {
       const joined = item.replace(/ /g, '\u00a0')
       assert.ok(raw.includes(joined), `"${item}" can break inside itself: ${JSON.stringify(raw)}`)
     }
     // ...and a real space (a place to break) follows each separator.
     assert.equal((raw.match(/·\u00a0 /g) ?? []).length, 2, 'a breakable space after each dot')
-    assert.equal(raw.replace(/\u00a0/g, ' ').replace(/\s+/g, ' '), 'Pilot registration · Core live controls work offline · Windows, Ubuntu & macOS')
+    assert.equal(raw.replace(/\u00a0/g, ' ').replace(/\s+/g, ' '), 'Free to start · Core live controls work offline · Windows, Ubuntu & macOS')
   })
 
   test('showcase (home-24): three single-line checks', () => {
@@ -798,7 +796,7 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
       'Which platforms are supported?',
       'Can I use my own slides and designs?',
       'What is NDI, and do I need it?',
-      'How does billing work?',
+      'What does Free include?',
     ])
   })
 })
@@ -862,7 +860,7 @@ describe('no unbacked claim is added', () => {
 
   test('CONTROL: the list catches a planted claim of each kind, and passes the honest wording', () => {
     for (const { re, why, sample } of FORBIDDEN) assert.ok(re.test(sample), `${re} does not catch "${sample}" (${why})`)
-    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. Plans and prices have not been published yet.'
+    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.'
     assert.deepEqual(FORBIDDEN.filter(({ re }) => re.test(honest)), [])
   })
 })

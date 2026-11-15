@@ -84,6 +84,8 @@ onUnmounted(() => lifetime.abort())
 
 <template>
   <section id="public-downloads" class="platforms-section" aria-labelledby="public-download-heading">
+    <!-- Keep old download bookmarks at the installer cards. -->
+    <div id="pilot-downloads" aria-hidden="true"></div>
     <div class="container">
       <h2 id="public-download-heading" ref="heading" class="platforms-heading" tabindex="-1">Desktop installers</h2>
       <p class="platform-status" role="status">{{ statusText }}</p>
