@@ -1,6 +1,7 @@
 """Finite quota-query allowance; this is not a general SQL read-only parser."""
 from contextlib import nullcontext
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from types import SimpleNamespace
 from uuid import UUID
@@ -14,8 +15,8 @@ from selahcue_api.apps.usage import readiness
 _POSTGRES_READINESS_SHA256 = "ecc5841285739a051250dce9a33b6d635ed9fe435865ddc542bc40db9f4b722c"
 
 
-def quota_read_only_query(execute, sql, params, many, context):
-    """Check parameterized SQL, without exposing statement values in failures."""
+def quota_read_only_query(execute, sql, params, many, context, *, rejection=None):
+    """Refuse before execution; optionally retain only the first safe diagnostic."""
     __tracebackhide__ = True
     upper = " ".join(sql.upper().split())
     shape = "SELECT" if upper.startswith("SELECT") else "WITH" if upper.startswith("WITH") else "OTHER"
@@ -24,9 +25,10 @@ def quota_read_only_query(execute, sql, params, many, context):
     ))
     fingerprint = sha256(sql.encode()).hexdigest()
     if locked or (shape != "SELECT" and fingerprint != _POSTGRES_READINESS_SHA256):
-        raise AssertionError(
-            f"Unexpected quota SQL: shape={shape}, locking={locked}, sha256={fingerprint}"
-        )
+        message = f"Unexpected quota SQL: shape={shape}, locking={locked}, sha256={fingerprint}"
+        if rejection is not None and not rejection:
+            rejection.append(message)
+        raise AssertionError(message)
     return execute(sql, params, many, context)
 
 
@@ -86,11 +88,16 @@ def test_quota_guard_refuses_unapproved_ctes_and_locks_before_execution(sql):
 def test_quota_guard_diagnostic_omits_query_text_and_parameters():
     marker = "synthetic-private-value"
     sql = f"WITH rejected AS (SELECT '{marker}') SELECT * FROM rejected"
+    rejection = []
     with pytest.raises(AssertionError) as caught:
-        quota_read_only_query(None, sql, [marker], False, {})
+        quota_read_only_query(None, sql, [marker], False, {}, rejection=rejection)
     message = str(caught.value)
     assert marker not in message and sql not in message
     assert message == f"Unexpected quota SQL: shape=WITH, locking=False, sha256={sha256(sql.encode()).hexdigest()}"
+    # Further refusals do not accumulate or replace the first request diagnostic.
+    with pytest.raises(AssertionError, match="shape=SELECT, locking=True"):
+        quota_read_only_query(None, "SELECT 1 FOR UPDATE", [], False, {}, rejection=rejection)
+    assert rejection == [message]
 
 
 @pytest.mark.django_db
@@ -104,3 +111,46 @@ def test_quota_guard_intercepts_database_execution():
         # refusal proves the wrapper, rather than the driver, enforces the pin.
         with pytest.raises(AssertionError, match="shape=WITH"):
             cursor.execute("WITH unexpected AS (SELECT 1) SELECT * FROM unexpected")
+
+
+@pytest.mark.django_db
+def test_quota_guard_retains_safe_rejection_across_actual_view(monkeypatch):
+    from django.db import connection
+    from django.test import RequestFactory
+    from django.test.utils import CaptureQueriesContext
+
+    from selahcue_api.platform import cloud_views
+
+    marker = "synthetic-private-value"
+    sql = f"WITH unexpected AS (SELECT %s, '{marker}') SELECT * FROM unexpected"
+    token = SimpleNamespace(device=SimpleNamespace(customer_id=1), device_id=1)
+    monkeypatch.setattr(cloud_views, "_authenticate", lambda request: token)
+    monkeypatch.setattr(cloud_views, "evaluate_cloud_budget", lambda **kwargs: SimpleNamespace(
+        outcome=cloud_views.BudgetOutcome.ALLOWED,
+    ))
+
+    def rejected_envelope(*args):
+        with connection.cursor() as cursor:
+            cursor.execute(sql, [marker])
+
+    def forbidden_execution(*args):
+        pytest.fail("Rejected query reached execution")
+
+    monkeypatch.setattr(cloud_views, "_quota_envelope", rejected_envelope)
+    rejection = []
+    guard = partial(quota_read_only_query, rejection=rejection)
+    with connection.execute_wrapper(guard), connection.execute_wrapper(
+        forbidden_execution,
+    ), CaptureQueriesContext(connection):
+        response = cloud_views.cloud_quota(RequestFactory().get("/v1/quota"))
+    # This is the owning request-level assertion, outside the view's broad catch.
+    with pytest.raises(AssertionError) as caught:
+        assert not rejection, rejection[0]
+    message = str(caught.value)
+    expected = f"Unexpected quota SQL: shape=WITH, locking=False, sha256={sha256(sql.encode()).hexdigest()}"
+    # Pytest may append its assertion explanation after the explicit message.
+    assert message.splitlines()[0] == expected
+    assert marker not in message and sql not in message
+    assert rejection == [expected]
+    assert response.status_code == 500
+    assert b'"INTERNAL"' in response.content

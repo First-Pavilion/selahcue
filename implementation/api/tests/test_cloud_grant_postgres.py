@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from threading import Barrier, Event
 from time import monotonic_ns
 from uuid import uuid4
@@ -521,8 +522,11 @@ def test_quota_is_read_only_for_authenticated_commercially_ineligible_token(clie
     org, key, token, raw, _ = live_org()
     type(key).objects.filter(pk=key.pk).update(status="SUSPENDED", prior_status="ACTIVATED")
     # Inspect parameterized statements before debug capture interpolates values.
-    with connection.execute_wrapper(quota_read_only_query), CaptureQueriesContext(connection) as queries:
+    rejection = []
+    guard = partial(quota_read_only_query, rejection=rejection)
+    with connection.execute_wrapper(guard), CaptureQueriesContext(connection) as queries:
         response = client.get("/v1/quota", headers={"Authorization": f"Bearer {raw}"})
+    assert not rejection, rejection[0]
     assert response.status_code == 200 and response["Cache-Control"] == "no-store"
     assert not any("FOR UPDATE" in query["sql"].upper() for query in queries)
     assert response.json()["stt"]["remaining"] == 1200
