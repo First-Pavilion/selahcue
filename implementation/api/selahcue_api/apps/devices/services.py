@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import uuid4
 
 from django.conf import settings
@@ -27,7 +28,9 @@ from selahcue_api.apps.license_keys.free_lifecycle import (
     renew_free_license_for_device,
 )
 from selahcue_api.apps.license_keys.selection import (
-    ACTIVATABLE_KEY_STATUSES,
+    ACTIVATABLE_KEY_STATUSES as ACTIVATABLE_KEY_STATUSES,
+    aware_utc,
+    license_window_allows_service,
     find_eligible_org_license,
 )
 from selahcue_api.apps.license_keys.services import lock_customer_for_key_changes
@@ -198,19 +201,12 @@ def _assert_device_activatable(device: Device) -> None:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
-def license_allows_commercial_service(license_key: AppLicenseKey) -> bool:
-    """Whether the licence is in an activatable status and inside its window RIGHT NOW.
-
-    The one predicate behind `require_commercial_service` (which refuses) and
-    `refresh_license` (which reports it as `valid_now`), so the two cannot drift. Allow-list,
-    not deny-list: a status added later is not activatable until it is added here.
-    """
-    now = timezone.now()
-    return (
-        license_key.status in ACTIVATABLE_KEY_STATUSES
-        and license_key.starts_at <= now < license_key.expires_at
+def license_allows_commercial_service(license_key: AppLicenseKey, *, at: datetime | None = None) -> bool:
+    """Whether the licence is in an activatable status and inside its validity window."""
+    return license_window_allows_service(
+        status=license_key.status, starts_at=license_key.starts_at, expires_at=license_key.expires_at,
+        at=timezone.now() if at is None else aware_utc(at),
     )
-
 
 def require_commercial_service(license_key: AppLicenseKey) -> None:
     """THE enforcement point for commercial device calls: POLICY_DENIED unless

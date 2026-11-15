@@ -4,7 +4,7 @@ from typing import Literal
 
 from django.conf import settings
 
-from .configuration import _load, _reset_cache_lock_after_fork, get_provider_configuration, selected_role
+from .configuration import _initialized_entrypoint, _load, _reset_cache_lock_after_fork, get_provider_configuration, selected_role
 from .contracts import ConfigErrorCode as Code, ConfigSource as Source, ProviderConfiguration, ProviderConfigurationError
 
 Entrypoint = Literal["wsgi", "asgi", "celery_worker", "celery_beat", "operator"]
@@ -32,7 +32,11 @@ def initialize_provider_runtime(*, entrypoint: Entrypoint) -> ProviderConfigurat
         raise ProviderConfigurationError(Code.PCFG_ROLE_MISMATCH, Source.SETTINGS)
     if role == "notes" or (role == "web" and settings.SELAHCUE_CLOUD_NOTES_ENABLED):
         raise ProviderConfigurationError(Code.PCFG_NOTES_RUNTIME_UNAVAILABLE)
-    return _load(role, initialize=True)
+    return _load(role, entrypoint=entrypoint)
+
+
+def get_initialized_provider_entrypoint() -> Entrypoint | None:
+    return _initialized_entrypoint()
 
 
 def _fatal(error: ProviderConfigurationError) -> None:

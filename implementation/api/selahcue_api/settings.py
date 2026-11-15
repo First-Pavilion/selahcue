@@ -462,7 +462,17 @@ from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it
 # be declared with @shared_task inside some installed app's `tasks.py`, the only module
 # `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
 # interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
+CELERY_TASK_ROUTES = {
+    f"providers.{name}": {"queue": "provider_provisioning"}
+    for name in ("provision", "recover", "inventory_page", "publish_outbox", "sweep")
+}
+
 CELERY_BEAT_SCHEDULE = {
+    "sweep-provider-provisioning": {
+        "task": "providers.sweep",
+        "schedule": 5.0,
+        "options": {"queue": "provider_provisioning"},
+    },
     # Hourly: a revoked licence should stop working within the hour, not at expiry.
     "cascade-license-revocations": {
         "task": "devices.cascade_license_revocations",

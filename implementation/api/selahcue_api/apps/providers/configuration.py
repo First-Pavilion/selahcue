@@ -17,6 +17,7 @@ from .contracts import (
     ConfigSource as Source,
     ProviderConfiguration,
     ProviderConfigurationError,
+    ProviderCreationBudget,
     ProviderDeploymentPolicy,
     ProviderKeyring,
     ProviderProcessRole,
@@ -52,6 +53,7 @@ _KEY = re.compile(r"[A-Za-z0-9_-]{43}")
 _cache_lock = RLock()
 _snapshot: ProviderConfiguration | None = None
 _runtime_ready = False
+_entrypoint = None
 
 
 def valid_id(value: object) -> bool:
@@ -249,7 +251,7 @@ def _read_policy() -> ProviderDeploymentPolicy:
     source = Source.POLICY
     data = _read_json(source)
     fields = {"schema_version", "accounting_mode", "accepted_by", "accepted_at", *PROVIDERS}
-    if not _fields(data, fields) or not _version(data) or data["accounting_mode"] != ACCOUNTING_MODE:
+    if not _fields(data, fields, ("creation_budgets",)) or not _version(data) or data["accounting_mode"] != ACCOUNTING_MODE:
         raise _schema(source)
     at = data["accepted_at"]
     if not valid_id(data["accepted_by"]) or type(at) is not str or not _UTC.fullmatch(at):
@@ -259,7 +261,24 @@ def _read_policy() -> ProviderDeploymentPolicy:
     except ValueError:
         raise _schema(source) from None
     rows = [_policy_scope(*scoped) for scoped in _scoped_rows(data, source)]
-    return ProviderDeploymentPolicy(1, ACCOUNTING_MODE, data["accepted_by"], when, _unique_scopes(rows, source))
+    budgets = data.get("creation_budgets", [])
+    if type(budgets) is not list or len(budgets) > len(PROVIDERS):
+        raise _schema(source)
+    parsed_budgets = {}
+    for row in budgets:
+        if (
+            not _fields(row, {"provider", "create_per_hour", "create_per_day"})
+            or type(row["provider"]) is not str or row["provider"] not in PROVIDERS
+            or row["provider"] in parsed_budgets
+            or any(type(row[name]) is not int or not 0 <= row[name] <= 9223372036854775807
+                   for name in ("create_per_hour", "create_per_day"))
+        ):
+            raise _schema(source)
+        parsed_budgets[row["provider"]] = ProviderCreationBudget(**row)
+    return ProviderDeploymentPolicy(
+        1, ACCOUNTING_MODE, data["accepted_by"], when, _unique_scopes(rows, source),
+        tuple(parsed_budgets[provider] for provider in sorted(parsed_budgets)),
+    )
 
 
 def is_create_capable(policy: ProviderScopePolicy) -> bool:
@@ -271,6 +290,13 @@ def is_create_capable(policy: ProviderScopePolicy) -> bool:
             (policy.stream_concurrency_capacity or 0) > 0 if policy.scope.provider == "deepgram"
             else bool(policy.notes_policy_id)
         )
+    )
+
+
+def has_creation_authority(policy: ProviderDeploymentPolicy, scope: ProviderScopePolicy) -> bool:
+    return is_create_capable(scope) and any(
+        budget.provider == scope.scope.provider and budget.create_per_hour > 0 and budget.create_per_day > 0
+        for budget in policy.creation_budgets
     )
 
 
@@ -286,7 +312,14 @@ def _parse(role: ProviderProcessRole, public: frozenset) -> ProviderConfiguratio
             raise ProviderConfigurationError(Code.PCFG_CAPABILITY_UNCONFIGURED, Source.POLICY)
     if role == "notes" and not any(scope.provider == "openai" for scope in scopes):
         raise ProviderConfigurationError(Code.PCFG_SCOPE_MISMATCH, Source.POLICY)
-    if role == "provisioner" and provisioning and not any(map(is_create_capable, policy.scopes)):
+    creates = [scope for scope in policy.scopes if has_creation_authority(policy, scope)]
+    if provisioning and (
+        (role == "provisioner" and not creates)
+        or (role == "web" and any(
+            scope.scope.provider in public and is_create_capable(scope) and scope not in creates
+            for scope in policy.scopes
+        ))
+    ):
         raise ProviderConfigurationError(Code.PCFG_CAPABILITY_UNCONFIGURED, Source.POLICY)
 
     usage = provisioners = ()
@@ -303,8 +336,8 @@ def _parse(role: ProviderProcessRole, public: frozenset) -> ProviderConfiguratio
     return ProviderConfiguration(role, public, provisioning, policy, ring, usage, provisioners)
 
 
-def _load(role: ProviderProcessRole, *, initialize: bool = False) -> ProviderConfiguration:
-    global _snapshot, _runtime_ready
+def _load(role: ProviderProcessRole, *, entrypoint: str | None = None) -> ProviderConfiguration:
+    global _snapshot, _runtime_ready, _entrypoint
     if role not in ROLES:
         raise ProviderConfigurationError(Code.PCFG_ROLE_INVALID, Source.SETTINGS)
     selected = selected_role()
@@ -316,7 +349,10 @@ def _load(role: ProviderProcessRole, *, initialize: bool = False) -> ProviderCon
             raise ProviderConfigurationError(Code.PCFG_ROLE_MISMATCH, Source.SETTINGS)
         if _snapshot is None:
             _snapshot = _parse(role, public)
-        if initialize:
+        if entrypoint is not None:
+            if _entrypoint is not None and _entrypoint != entrypoint:
+                raise ProviderConfigurationError(Code.PCFG_ROLE_MISMATCH, Source.SETTINGS)
+            _entrypoint = entrypoint
             _runtime_ready = True
         return _snapshot
 
@@ -335,12 +371,18 @@ def get_provider_configuration(*, required_role: ProviderProcessRole) -> Provide
 
 
 def _reset_provider_configuration_for_tests() -> None:
-    global _snapshot, _runtime_ready
+    global _snapshot, _runtime_ready, _entrypoint
     with _cache_lock:
         _snapshot = None
         _runtime_ready = False
+        _entrypoint = None
 
 
 def _reset_cache_lock_after_fork() -> None:
     global _cache_lock
     _cache_lock = RLock()
+
+
+def _initialized_entrypoint():
+    with _cache_lock:
+        return _entrypoint
