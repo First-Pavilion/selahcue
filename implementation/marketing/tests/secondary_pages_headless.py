@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import mimetypes
 import os
 import re
@@ -262,6 +263,143 @@ def check_contact(page, c: Checks, base: str) -> None:
     c.eq(page.locator("[aria-required='true']").count(), 3, "contact: three fields are aria-required")
 
 
+CONTACT_TAB_TRACE_PREFIX = "CONTACT_700_TAB "
+CONTACT_TAB_TRACE_LIMIT = 32
+CONTACT_TAB_TRACE_JS = r"""
+({ prefix, limit }) => {
+  const link = document.querySelector('.method-link');
+  let count = 0;
+  let focused = false;
+  let insideObservedFrame = false;
+  function record(event) {
+    if (count > limit) return;
+    try {
+      console.debug(prefix + JSON.stringify(count === limit ? ['overflow'] : event));
+    } catch (_) {}
+    count++;
+  }
+  // Keep the property flags and the original frame ID, return value or exception.
+  function install(name, wrap) {
+    let installed = false;
+    try {
+      let owner = window;
+      while (owner && !Object.hasOwn(owner, name)) owner = Object.getPrototypeOf(owner);
+      const descriptor = owner && Object.getOwnPropertyDescriptor(owner, name);
+      if (typeof descriptor?.value === 'function') {
+        Object.defineProperty(owner, name, { ...descriptor, value: wrap(descriptor.value) });
+        installed = true;
+      }
+    } catch (_) {}
+    record(['hook', name, installed]);
+  }
+  const active = () => document.activeElement === link;
+  const bounded = (n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 100000
+    ? Math.round(n) : null;
+  record(['link', !!link]);
+  if (!link) return;
+  document.addEventListener('focus', event => {
+    const isLink = event.target === link;
+    focused = focused || isLink;
+    record(['focus', isLink, active(), isLink && link.matches(':focus-visible')]);
+  }, true);
+  install('requestAnimationFrame', original => function (...args) {
+    if (!focused || !active() || typeof args[0] !== 'function') return Reflect.apply(original, this, args);
+    const callback = args[0];
+    const frame = Reflect.apply(original, this, [function (...callbackArgs) {
+      const previous = insideObservedFrame;
+      insideObservedFrame = true;
+      record(['frame-delivery', active()]);
+      try {
+        return Reflect.apply(callback, this, callbackArgs);
+      } finally {
+        insideObservedFrame = previous;
+      }
+    }, ...args.slice(1)]);
+    record(['frame-request', true]);
+    return frame;
+  });
+  install('scrollBy', original => function (...args) {
+    if (!focused || (!active() && !insideObservedFrame)) return Reflect.apply(original, this, args);
+    const fromFrame = insideObservedFrame;
+    // Read only an own data property. Do not invoke an options accessor before native scrollBy.
+    let relativeTop = null;
+    try { relativeTop = bounded(Object.getOwnPropertyDescriptor(args[0], 'top')?.value); } catch (_) {}
+    record(['scroll-call', fromFrame, bounded(window.scrollY), relativeTop]);
+    let result;
+    try {
+      result = Reflect.apply(original, this, args);
+    } catch (error) {
+      record(['scroll-throw', fromFrame]);
+      throw error;
+    }
+    record(['scroll-return', fromFrame, bounded(window.scrollY)]);
+    return result;
+  });
+}
+"""
+
+
+class ContactTabTrace:
+    """Collect only bounded safe scalars from the real WebKit Tab scenario."""
+
+    def __init__(self, page):
+        self.page = page
+        self.events = []
+        self.overflow = False
+        self.setup = False
+        try:
+            page.on("console", self.on_console)
+            page.evaluate(CONTACT_TAB_TRACE_JS, {"prefix": CONTACT_TAB_TRACE_PREFIX, "limit": CONTACT_TAB_TRACE_LIMIT})
+            self.setup = True
+        except Exception:
+            pass  # Evidence setup cannot turn a browser acceptance check into a diagnostic failure.
+
+    def on_console(self, message):
+        if message.type != "debug" or not message.text.startswith(CONTACT_TAB_TRACE_PREFIX):
+            return
+        payload = message.text[len(CONTACT_TAB_TRACE_PREFIX):]
+        if len(payload) > 128:
+            return
+        try:
+            event = json.loads(payload)
+        except (ValueError, RecursionError):
+            return
+        if type(event) is not list:
+            return
+
+        def numeric(value):
+            return value is None or (type(value) is int and abs(value) <= 100000)
+
+        match event:
+            case ["overflow"]:
+                self.overflow = True
+                return
+            case ["link" | "frame-request" | "frame-delivery" | "scroll-throw", flag] if type(flag) is bool:
+                pass
+            case ["hook", "requestAnimationFrame" | "scrollBy", flag] if type(flag) is bool:
+                pass
+            case ["focus", is_link, active, visible] if all(type(flag) is bool for flag in (is_link, active, visible)):
+                pass
+            case ["scroll-call", frame, y, top] if type(frame) is bool and numeric(y) and numeric(top):
+                pass
+            case ["scroll-return", frame, y] if type(frame) is bool and numeric(y):
+                pass
+            case _:
+                return
+        if len(self.events) == CONTACT_TAB_TRACE_LIMIT:
+            self.overflow = True
+        else:
+            self.events.append(event)
+
+    def emit(self):
+        print(CONTACT_TAB_TRACE_PREFIX + json.dumps(
+            {"setup": self.setup, "events": self.events, "overflow": self.overflow}, separators=(",", ":")), flush=True)
+        try:
+            self.page.remove_listener("console", self.on_console)
+        except Exception:
+            pass
+
+
 def settle_scroll(page) -> None:
     """The site scrolls smoothly, so a Tab that moves the page is still moving it when the call returns: wait until it stops."""
     last = None
@@ -337,24 +475,29 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
           linkTop: document.querySelector('.method-link').getBoundingClientRect().top,
           y: scrollY,
         })""")
-        press_tab(page, c)
-        settle_scroll(page)
-        got = page.evaluate(
-            """() => { const a = document.activeElement, r = a.getBoundingClientRect();
-              return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom,
-                vh: innerHeight, width: document.documentElement.clientWidth, y: scrollY,
-                margin: getComputedStyle(a).scrollMarginTop, focusVisible: a.matches(':focus-visible') }; }"""
-        )
-        c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
-        c.ok(
-            got["top"] >= got["nav"] - 1,
-            f"contact: at {height} high the focused link is not under the sticky navbar "
-            f"(top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11; "
-            f"before Tab: link top {before['linkTop']:.0f}, scrollY {before['y']:.0f}; "
-            f"after Tab: scrollY {got['y']:.0f}, margin {got['margin']}, "
-            f"focus-visible {got['focusVisible']}, layout width {got['width']})",
-        )
-        c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
+        trace = ContactTabTrace(page) if c.engine == "webkit" and height == 700 else None
+        try:
+            press_tab(page, c)
+            settle_scroll(page)
+            got = page.evaluate(
+                """() => { const a = document.activeElement, r = a.getBoundingClientRect();
+                  return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom,
+                    vh: innerHeight, width: document.documentElement.clientWidth, y: scrollY,
+                    margin: getComputedStyle(a).scrollMarginTop, focusVisible: a.matches(':focus-visible') }; }"""
+            )
+            c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
+            c.ok(
+                got["top"] >= got["nav"] - 1,
+                f"contact: at {height} high the focused link is not under the sticky navbar "
+                f"(top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11; "
+                f"before Tab: link top {before['linkTop']:.0f}, scrollY {before['y']:.0f}; "
+                f"after Tab: scrollY {got['y']:.0f}, margin {got['margin']}, "
+                f"focus-visible {got['focusVisible']}, layout width {got['width']})",
+            )
+            c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
+        finally:
+            if trace is not None:
+                trace.emit()
     page.set_viewport_size(size)
 
 

@@ -491,16 +491,21 @@ def sheet_state(page):
 # are decoration and never settle). Waiting on THIS, not on a sleep, is what makes a
 # measurement taken straight after a load/open/close independent of machine load: a card
 # measured mid `slideUp` is 0.97-scaled, so a 44px control reads 43px and fails for no reason.
-SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
-  (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
-)"""
+SETTLE_JS = """(observeBlocker) => document.getAnimations({ subtree: true }).every((animation) => {
+  if (animation.playState !== 'running') return true;
+  const effect = animation.effect;
+  if (effect && effect.getComputedTiming().iterations === Infinity) return true;
+  if (typeof observeBlocker === 'function') observeBlocker(animation, effect);
+  return false;
+})"""
 
 # The WebKit wait still uses Playwright's default frame polling and the same predicate.
 # Record the first invocation and the first frame-driven poll. An independent
 # timer probes renderer progress when the first invocation returns false.
 OBSERVED_SETTLE_JS = """() => {
-  const settled = (__SETTLE_PREDICATE__)();
-  try { window.__selahcueObserveSettlePoll?.(settled); } catch (_) {}
+  let blocker;
+  const settled = (__SETTLE_PREDICATE__)((animation, effect) => { blocker = [animation, effect]; });
+  try { window.__selahcueObserveSettlePoll?.(settled, blocker); } catch (_) {}
   return settled;
 }""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
 
@@ -514,6 +519,8 @@ ANIMATION_LABELS = {
     ),
     "target": ("navbar-header", "mobile-sheet", "dialog-card", "loading"),
     "pseudoElement": ("::before", "::after"),
+    "targetTag": ("a", "article", "body", "button", "div", "footer", "form", "h1", "h2",
+                  "header", "main", "nav", "p", "section", "span"),
 }
 
 # Diagnostic only: the original settlement predicate above remains the gate. The init
@@ -531,7 +538,7 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
   const ids = new WeakMap(), targetIds = new WeakMap();
   let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
   let raf = null, timer = null, earlyTimer = null, lateTimer = null, stopped = false;
-  let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false;
+  let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false, blockerReported = false;
   const start = performance.now();
   const stop = () => {
     stopped = true;
@@ -601,7 +608,7 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
     clearTimeout(deadline);
     stop();
   }, { once: true });
-  window.__selahcueObserveSettlePoll = (result) => {
+  window.__selahcueObserveSettlePoll = (result, blocker) => {
     if (stopped || typeof result !== 'boolean') return;
     lastPollResult = result;
     pollCount++;
@@ -616,6 +623,16 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       }
     } else if (pollCount === 2) {
       marker('firstFramePoll');
+    }
+    if (!result && blocker && !blockerReported) {
+      blockerReported = true;
+      const [animation, effect] = blocker;
+      const target = effect?.target;
+      const targetLabel = target?.classList && labels.target.find(name => target.classList.contains(name));
+      console.debug('WEBKIT_SETTLE_BLOCKER ' + JSON.stringify({
+        type: label('type', animation.constructor?.name), state: 'running',
+        tag: label('targetTag', target?.localName), target: target ? targetLabel || 'other' : '',
+      }));
     }
   };
   const tick = () => {
@@ -634,6 +651,12 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
 
 
 SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleStart", "lateTimer", "pageHide")
+
+
+def valid_settle_blocker(value):
+    labels = {"type": "type", "tag": "targetTag", "target": "target"}
+    return (type(value) is dict and set(value) == {*labels, "state"} and value["state"] == "running"
+            and all(value[key] in ("", "other", *ANIMATION_LABELS[label]) for key, label in labels.items()))
 
 
 def valid_settle_marker(value):
@@ -742,6 +765,7 @@ class SettleDiagnostic:
         self.closed = False
         self.events: list[dict] = []
         self.markers: dict[str, dict] = {}
+        self.first_blocker: dict | None = None
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
@@ -785,10 +809,10 @@ class SettleDiagnostic:
                 return
             if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
                 prefix, _, body = message.text.partition(" ")
-                if prefix not in ("WEBKIT_SETTLE_MARKER", "WEBKIT_SETTLE_SAMPLE"):
+                if prefix not in ("WEBKIT_SETTLE_MARKER", "WEBKIT_SETTLE_SAMPLE", "WEBKIT_SETTLE_BLOCKER"):
                     return
-                is_marker = prefix == "WEBKIT_SETTLE_MARKER"
-                if len(body) > (512 if is_marker else 24576) or (not is_marker and len(self.samples) == 13):
+                is_sample = prefix == "WEBKIT_SETTLE_SAMPLE"
+                if len(body) > (24576 if is_sample else 512) or (is_sample and len(self.samples) == 13):
                     self.dropped["samples"] += 1
                     return
                 try:
@@ -796,7 +820,12 @@ class SettleDiagnostic:
                 except ValueError:
                     self.dropped["samples"] += 1
                     return
-                if is_marker:
+                if prefix == "WEBKIT_SETTLE_BLOCKER":
+                    if self.first_blocker is None and valid_settle_blocker(sample):
+                        self.first_blocker = sample
+                    else:
+                        self.dropped["samples"] += 1
+                elif prefix == "WEBKIT_SETTLE_MARKER":
                     if not valid_settle_marker(sample) or sample["event"] in self.markers:
                         self.dropped["samples"] += 1
                         return
@@ -823,6 +852,7 @@ class SettleDiagnostic:
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
                    "events": self.events[:], **{event: self.markers.get(event) for event in SETTLE_MARKERS},
+                   "firstBlocker": self.first_blocker,
                    "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
