@@ -3,8 +3,8 @@
 
 `tests/secondaryPages.test.ts` reads the source and server-renders the views. This drives the BUILT
 site (`dist/`) in a real browser, because what it cannot see is what the Figma audit found wrong:
-computed size and colour, where a box lands, the order Tab visits things in, whether a focus ring is
-drawn, whether the whole featured card is one link, whether the page scrolls sideways. Every number
+computed size and colour, where a box lands, Tab order, focus and :focus-visible matching, link
+activation, whether the whole featured card is one link, whether the page scrolls sideways. Every number
 quoted next to a check is a Figma value from `docs/design/visual-parity/marketing/figma-style/*.json`
 or an accessibility floor (WCAG AA 4.5:1 for normal text).
 
@@ -14,8 +14,7 @@ Usage (from implementation/marketing, after `npm run build`):
 Needs Playwright and an engine, and the network for Inter. If either is missing this exits 0 with a
 LOUD skip unless SELAHCUE_HEADLESS_REQUIRE=1, which makes a missing engine a hard failure.
 
-This file is not wired into `npm test` (that globs `tests/*.test.ts`) or CI: that needs a `package.json`
-script and a workflow line, which are outside this ticket's footprint (reported to the coordinator).
+CI runs this check through `npm run test:secondary`. The `npm test` glob covers Node tests only.
 
 Exit codes: 0 pass (or loud skip), 1 a check failed, 2 infrastructure problem, 3 a required engine is unavailable.
 """
@@ -605,6 +604,51 @@ def check_affiliates(page, c: Checks, base: str) -> None:
     c.ok(text_contrast(page, "#signin-note") >= 4.5, "affiliates: the sign-in note passes AA")
 
 
+def check_cloud_help(page, c: Checks, base: str) -> None:
+    support = "/support/troubleshooting/transcription-will-not-start"
+    links_to_help = (
+        "/docs/getting-started/offline-and-autosave",
+        "/blog/why-offline-first-matters-for-sunday-morning",
+    )
+    consent = re.compile(r"cloud transcription.*sermon notes.*internet access.*separate consent", re.I)
+    try:
+        for width in (375, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            for path in links_to_help:
+                page.goto(base + path, wait_until="load")
+                article = page.locator("main article")
+                text = " ".join(article.inner_text().split())
+                c.ok(consent.search(text) is not None, f"{path} at {width}px distinguishes online cloud assistance and consent")
+                c.eq(article.get_by_role("link", name="Transcription will not start", exact=True).count(), 1,
+                     f"{path} at {width}px links to transcription troubleshooting")
+                c.ok(page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"),
+                     f"{path} fits at {width}px")
+            page.locator("main article h1").focus()
+            help_link = page.locator("main article").get_by_role("link", name="Transcription will not start", exact=True)
+            for _ in range(20):
+                press_tab(page, c)
+                if help_link.evaluate("(el) => el === document.activeElement"):
+                    break
+            c.ok(help_link.evaluate("(el) => el === document.activeElement && el.matches(':focus-visible')"),
+                 f"blog: Tab reaches the transcription help link and it matches :focus-visible at {width}px")
+            page.keyboard.press("Enter")
+            page.wait_for_url(base + support)
+            page.get_by_role("heading", name="Transcription will not start", exact=True).wait_for()
+            text = " ".join(page.locator("main article").inner_text().split())
+            for pattern, label in (
+                (r"local mode.*Start listening.*internet", "local model setup"),
+                (r"on macOS, grant microphone access in System Settings.*stop and start listening", "macOS microphone troubleshooting"),
+                (r"audio directly to Deepgram.*sends the transcript text to SelahCue.*separate consent", "the two processing paths"),
+                (r"activated.*weekly allowance.*temporarily unavailable.*switch to local mode", "cloud access checks and local fallback"),
+                (r"keep the source transcript and any prior draft.*Retry when", "recovery guidance for a failed note"),
+            ):
+                c.ok(re.search(pattern, text, re.I) is not None, f"support at {width}px shows {label}")
+            c.ok(page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"),
+                 f"transcription support fits at {width}px")
+    finally:
+        page.set_viewport_size({"width": 1440, "height": 900})
+
+
 def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
     """The nine pages never scroll sideways at the three widths the ticket names."""
     for w in (375, 768, 1440):
@@ -625,6 +669,7 @@ GROUPS = {
     "docs": check_docs,
     "changelog": check_changelog,
     "blog": check_blog,
+    "cloud-help": check_cloud_help,
     "careers": check_careers,
     "affiliates": check_affiliates,
 }

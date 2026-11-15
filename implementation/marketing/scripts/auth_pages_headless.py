@@ -153,7 +153,12 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # 2765 -> 2817 in bounded initial verify-resend readiness: the complete local
 # 78-scenario run measured this count with zero behavioral failures; the added
 # delayed case shares the original 52 checks. Keep the exact equality guard.
-EXPECTED_MIN_CHECKS = 2817
+# 2817 -> 2816 in the public website integration: 78 scenarios are unchanged.
+# The V2 never-blank account banner check was removed with that copy. The body
+# and installer CTA were replaced one-for-one and the offline banner, success
+# glyph, alignment and heading focus checks remain. Task 5 measured 2816 (exit 4
+# at the old guard); verify the reconciled count in the required hosted run.
+EXPECTED_MIN_CHECKS = 2816
 
 
 def find_chrome() -> str | None:
@@ -1882,10 +1887,11 @@ DRIVER = r"""
       await wait(800);
       var text = cardText();
       check('V2 title', has(text, 'Email address verified'));
-      check('V2 body mentions the account is active', has(text, 'your SelahCue account is active'));
-      check('V2 primary CTA', has(text, 'Continue to sign in'));
-      check('V2 never-blank banner present',
-            has(text, "You don't need an account to run SelahCue"));
+      check('V2 body directs the verified customer to native sign-in and activation',
+            has(text, 'sign in and activate your device'));
+      check('V2 primary CTA opens the public installers',
+            !!document.querySelector('.au-actions a[href="/download#public-downloads"]') &&
+            has(text, 'View downloads'));
       check('V2 banner explains offline presentation', has(text, 'Live presentation works offline'));
       check('V2 success disc', document.querySelector('.au-disc-success') !== null);
       check('V2 focus moved to the heading', document.activeElement === document.querySelector('h1'));

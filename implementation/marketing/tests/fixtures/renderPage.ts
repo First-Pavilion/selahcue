@@ -22,7 +22,7 @@ const SRC = path.join(ROOT, 'src')
 
 export interface RenderServer {
   /** Render a component file under `src/` (for example `views/HomeView.vue`) to an HTML string. */
-  render(file: string, props?: Record<string, unknown>): Promise<string>
+  render(file: string, props?: Record<string, unknown>, onVueWarning?: (message: string) => void): Promise<string>
   close(): Promise<void>
 }
 
@@ -38,9 +38,10 @@ export async function startRenderServer(): Promise<RenderServer> {
     optimizeDeps: { noDiscovery: true, include: [] },
   })
   return {
-    async render(file, props = {}) {
+    async render(file, props = {}, onVueWarning) {
       const mod = (await server.ssrLoadModule(`/src/${file}`)) as { default: Component }
       const app = createSSRApp({ render: () => h(mod.default, props) })
+      if (onVueWarning) app.config.warnHandler = onVueWarning
       // vue-router's link, as an anchor carrying the destination: all these tests need to see.
       app.component('RouterLink', {
         props: { to: { type: [String, Object], required: true } },

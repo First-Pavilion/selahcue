@@ -293,6 +293,21 @@ NAV_STATE_JS = r"""
 
 TOUCH_JS = r"""
 (selectors) => {
+  // A generated section reference can sit directly inside a legal table cell.
+  function isLegalTableProseRef(el) {
+    if (!el.matches('a.li-link') || el.matches('.btn, [role="button"]')) return false;
+    const fragment = el.getAttribute('href') || '';
+    if (!/^#s-\d+(?:-\d+)*$/.test(fragment) || el.textContent.trim() !== fragment.slice(3).replaceAll('-', '.')) return false;
+    if (!el.parentElement?.matches('table.lt-table > tbody > tr > td')) return false;
+    return ['previousSibling', 'nextSibling'].some(direction => {
+      let sibling = el[direction];
+      while (sibling?.nodeType === Node.COMMENT_NODE ||
+             (sibling?.nodeType === Node.TEXT_NODE && !sibling.textContent.trim())) {
+        sibling = sibling[direction];
+      }
+      return sibling?.nodeType === Node.TEXT_NODE && /[\p{L}\p{N}]/u.test(sibling.textContent);
+    });
+  }
   const bad = [];
   const seen = new Set();
   for (const sel of selectors) {
@@ -307,7 +322,8 @@ TOUCH_JS = r"""
       // Visually hidden until focused (a clipped 1x1 skip link) is not a touch target.
       if (r.width <= 1 && r.height <= 1) continue;
       // Inline links inside running prose are exempt (WCAG 2.5.8 inline exception).
-      if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote, label')) continue;
+      if (el.tagName === 'A' && cs.display === 'inline' &&
+          (el.closest('p, li, dd, blockquote, label') || isLegalTableProseRef(el))) continue;
       if (Math.min(r.width, r.height) < 43.5) {
         const cls = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/).slice(0, 2).join('.');
         bad.push(`${el.tagName.toLowerCase()}${cls ? '.' + cls : ''} "${(el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 24)}" ${Math.round(r.width)}x${Math.round(r.height)}`);

@@ -24,18 +24,16 @@ export const privacyPolicy: LegalDocument = {
       {
         "kind": "paragraph",
         "inline": [
-          { "kind": "text", "text": "Version 0.3 (draft, 2026-10-01). Status: Draft — every " },
+          { "kind": "text", "text": "Version 0.4 (draft, 2026-11-15). Status: Draft — every " },
           { "kind": "placeholder", "name": "PLACEHOLDER" },
           { "kind": "text", "text": " must be filled and every launch-readiness condition in " },
           { "kind": "code", "text": "docs/legal/LEGAL-DRAFT-NOTES.md" },
-          { "kind": "text", "text": " §4 must be satisfied before publication. This policy describes SelahCue as it operates at launch. Publishing it while any launch-readiness condition is unmet would make it inaccurate. The SelahCue Controller mobile app also has its own policy (" },
-          { "kind": "code", "text": "docs/legal/PRIVACY.md" },
-          { "kind": "text", "text": "), which this policy does not replace." }
+          { "kind": "text", "text": " §4 must be satisfied before publication. This draft describes the planned Free desktop release. The operational checks required before publication are recorded in the launch-readiness notes." }
         ]
       }
     ]
   },
-  "version": { "number": "0.3", "status": "draft", "date": "2026-10-01", "line": "Version 0.3 (draft, 2026-10-01)", "source": "banner" },
+  "version": { "number": "0.4", "status": "draft", "date": "2026-11-15", "line": "Version 0.4 (draft, 2026-11-15)", "source": "banner" },
   "facts": [
     {
       "inline": [
@@ -94,10 +92,12 @@ export const privacyPolicy: LegalDocument = {
               {
                 "kind": "strong",
                 "children": [
-                  { "kind": "text", "text": "Your church's content stays on your church's computers." }
+                  { "kind": "text", "text": "Your church's content is stored on your church's computers." }
                 ]
               },
-              { "kind": "text", "text": " Slides, songs, scripture, media, service plans, sermon transcripts and sermon notes are stored on the computers where you run SelahCue. We do not receive them unless you use a cloud feature or send them to us." }
+              { "kind": "text", "text": " This includes slides, songs, scripture, service plans, sermon transcripts and sermon notes. Section " },
+              { "kind": "ref", "anchor": "s-3", "text": "3" },
+              { "kind": "text", "text": " explains what leaves those computers when you request a cloud feature or send us content for support." }
             ],
             "children": []
           },
@@ -105,9 +105,9 @@ export const privacyPolicy: LegalDocument = {
             "inline": [
               {
                 "kind": "strong",
-                "children": [{ "kind": "text", "text": "Live transcription runs on your computer by default." }]
+                "children": [{ "kind": "text", "text": "Local transcription runs on your computer." }]
               },
-              { "kind": "text", "text": " Audio is not sent anywhere. The first time you use it, the app downloads a speech-recognition model file from Hugging Face, a third-party website." }
+              { "kind": "text", "text": " The first time you use it, the app may need to download a speech-recognition model from Hugging Face." }
             ],
             "children": []
           },
@@ -115,19 +115,9 @@ export const privacyPolicy: LegalDocument = {
             "inline": [
               {
                 "kind": "strong",
-                "children": [{ "kind": "text", "text": "Cloud features are optional and off by default." }]
+                "children": [{ "kind": "text", "text": "Cloud features require opt-in." }]
               },
-              { "kind": "text", "text": " Only an administrator can turn them on. Cloud transcription sends live audio to Deepgram. AI sermon notes send the finished transcript text to OpenAI. That data leaves your church's network and can be processed in another country." }
-            ],
-            "children": []
-          },
-          {
-            "inline": [
-              {
-                "kind": "strong",
-                "children": [{ "kind": "text", "text": "The mobile controller talks only to your desktop" }]
-              },
-              { "kind": "text", "text": ", over your own local network." }
+              { "kind": "text", "text": " Cloud transcription streams audio directly to Deepgram. For a notes request, the app sends the selected transcript text to SelahCue for temporary processing with OpenAI. This processing can happen outside your country." }
             ],
             "children": []
           },
@@ -137,7 +127,7 @@ export const privacyPolicy: LegalDocument = {
                 "kind": "strong",
                 "children": [{ "kind": "text", "text": "Your SelahCue account" }]
               },
-              { "kind": "text", "text": " holds your email address, a password (stored only in scrambled, one-way form), your church or organisation name, your country and time zone, and, if you give it, your name." }
+              { "kind": "text", "text": " holds your email address, a one-way password hash, your church or organisation name, your country and time zone, and your name if you give it." }
             ],
             "children": []
           },
@@ -147,14 +137,7 @@ export const privacyPolicy: LegalDocument = {
                 "kind": "strong",
                 "children": [{ "kind": "text", "text": "Licences, devices and downloads." }]
               },
-              { "kind": "text", "text": " When you activate SelahCue on a computer, we record a device identifier, its platform, app version and the name you give it. We also record what you download." }
-            ],
-            "children": []
-          },
-          {
-            "inline": [
-              { "kind": "strong", "children": [{ "kind": "text", "text": "Payments" }] },
-              { "kind": "text", "text": " go through Paystack's checkout. Paystack collects your card or bank details. Your full card number never reaches us." }
+              { "kind": "text", "text": " Activation registers your device with your account. When installers are published, you can download them without signing in." }
             ],
             "children": []
           },
@@ -162,9 +145,9 @@ export const privacyPolicy: LegalDocument = {
             "inline": [
               {
                 "kind": "strong",
-                "children": [{ "kind": "text", "text": "Our website uses only the cookies it needs" }]
+                "children": [{ "kind": "text", "text": "Website cookies and storage" }]
               },
-              { "kind": "text", "text": " to keep you signed in and to protect our forms, plus Paystack's own cookies on its checkout. We do not use advertising or analytics cookies. Our website loads a font from Google, so Google receives your IP address when you visit." }
+              { "kind": "text", "text": " support sign-in and security. The website loads a font from Google, so Google receives your IP address when your browser requests it." }
             ],
             "children": []
           },
@@ -181,10 +164,12 @@ export const privacyPolicy: LegalDocument = {
           },
           {
             "inline": [
-              { "kind": "strong", "children": [{ "kind": "text", "text": "You have choices." }] },
-              { "kind": "text", "text": " You can delete your account yourself in your account settings. To get a copy of your data, or for any other request, email " },
+              { "kind": "strong", "children": [{ "kind": "text", "text": "Privacy requests." }] },
+              { "kind": "text", "text": " Contact us at " },
               { "kind": "code", "text": "support@selahcueapp.com" },
-              { "kind": "text", "text": "." }
+              { "kind": "text", "text": " (see section " },
+              { "kind": "ref", "anchor": "s-11", "text": "11" },
+              { "kind": "text", "text": ")." }
             ],
             "children": []
           }
@@ -230,12 +215,8 @@ export const privacyPolicy: LegalDocument = {
                   "children": []
                 },
                 {
-                  "inline": [{ "kind": "text", "text": "buy or manage a SelahCue plan;" }],
-                  "children": []
-                },
-                {
                   "inline": [
-                    { "kind": "text", "text": "activate SelahCue on a computer, or download SelahCue, updates or Bible translations;" }
+                    { "kind": "text", "text": "activate SelahCue on a computer, or download the desktop software;" }
                   ],
                   "children": []
                 },
@@ -255,7 +236,7 @@ export const privacyPolicy: LegalDocument = {
               "inline": [
                 { "kind": "text", "text": "We decide why and how the personal data described in section " },
                 { "kind": "ref", "anchor": "s-3", "text": "3" },
-                { "kind": "text", "text": " is used. The exception is audio and transcripts sent to our optional cloud features: we handle those only to provide the feature to your church (see section " },
+                { "kind": "text", "text": " is used. The exception is the selected transcript text you send to SelahCue when you request a sermon-note draft. We process that text to provide the requested feature to your church. Cloud transcription audio goes from your device directly to Deepgram (see section " },
                 { "kind": "ref", "anchor": "s-3-8", "text": "3.8" },
                 { "kind": "text", "text": ")." }
               ],
@@ -285,9 +266,7 @@ export const privacyPolicy: LegalDocument = {
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "the SelahCue Controller mobile app, which is covered in section " },
-                    { "kind": "ref", "anchor": "s-3-11", "text": "3.11" },
-                    { "kind": "text", "text": " below and does not collect personal data; or" }
+                    { "kind": "text", "text": "the separately documented SelahCue Controller app; or" }
                   ],
                   "children": []
                 },
@@ -347,7 +326,11 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "We do not have access to this data. Your church decides what is created, how long it is kept and who can use the computer, and is responsible for it." }
+                { "kind": "text", "text": "Your church controls what it creates and keeps on its computers, who can access it and how long it stays there. Sections " },
+                { "kind": "ref", "anchor": "s-2-6", "text": "2.6" },
+                { "kind": "text", "text": " and " },
+                { "kind": "ref", "anchor": "s-3-8", "text": "3.8" },
+                { "kind": "text", "text": " explain what happens if you send us content." }
               ],
               "clause": "2.2",
               "anchor": "s-2-2"
@@ -436,39 +419,10 @@ export const privacyPolicy: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Local network features." }]
                 },
-                { "kind": "text", "text": " These features send data across your church's local network, but not to us:" }
+                { "kind": "text", "text": " Where enabled, discovery advertises the desktop app on your church's local network. NDI output sends presentation video to other equipment on that network. These local connections do not send your presentation content to SelahCue." }
               ],
               "clause": "2.5",
               "anchor": "s-2-5"
-            },
-            {
-              "kind": "list",
-              "items": [
-                {
-                  "inline": [
-                    {
-                      "kind": "strong",
-                      "children": [{ "kind": "text", "text": "Mobile controller." }]
-                    },
-                    { "kind": "text", "text": " A paired phone or tablet receives the current and next slide, timers and, where enabled, a live transcript preview. The connection is encrypted and tied to the specific desktop the device was paired with." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Discovery." }] },
-                    { "kind": "text", "text": " The desktop app announces itself on the local network so paired devices can find it." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "NDI output." }] },
-                    { "kind": "text", "text": " If you turn on NDI output, the app broadcasts your presentation video on the local network for other NDI equipment to receive." }
-                  ],
-                  "children": []
-                }
-              ]
             },
             {
               "kind": "paragraph",
@@ -505,7 +459,9 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "You do not need an account to use SelahCue's core presentation features. You need one to buy and manage a plan, activate SelahCue on your computers, manage your devices, and use cloud features." }
+                    { "kind": "text", "text": "You need an account to activate SelahCue on your computers, manage devices and use optional cloud features. See section " },
+                    { "kind": "ref", "anchor": "s-3-3", "text": "3.3" },
+                    { "kind": "text", "text": " for public desktop downloads." }
                   ]
                 },
                 {
@@ -544,9 +500,7 @@ export const privacyPolicy: LegalDocument = {
                       [
                         { "kind": "text", "text": "You, at sign-up (the form suggests one from your browser settings)" }
                       ],
-                      [
-                        { "kind": "text", "text": "To set up your account and apply the right terms and taxes" }
-                      ],
+                      [{ "kind": "text", "text": "To set up your account" }],
                       [{ "kind": "text", "text": "To provide the service" }]
                     ],
                     [
@@ -566,19 +520,11 @@ export const privacyPolicy: LegalDocument = {
                       [{ "kind": "text", "text": "To provide the service" }]
                     ],
                     [
-                      [{ "kind": "text", "text": "Billing contact email (optional)" }],
-                      [{ "kind": "text", "text": "You" }],
-                      [{ "kind": "text", "text": "To send invoices and billing notices" }],
-                      [{ "kind": "text", "text": "To provide the service" }]
-                    ],
-                    [
                       [
                         { "kind": "text", "text": "Account role (administrator or member) and status" }
                       ],
                       [{ "kind": "text", "text": "Created by our system" }],
-                      [
-                        { "kind": "text", "text": "To control who can manage plans, licences and devices" }
-                      ],
+                      [{ "kind": "text", "text": "To control who can manage licences and devices" }],
                       [{ "kind": "text", "text": "To provide the service" }]
                     ],
                     [
@@ -586,18 +532,6 @@ export const privacyPolicy: LegalDocument = {
                       [{ "kind": "text", "text": "Created by our system" }],
                       [{ "kind": "text", "text": "To confirm you control the email address" }],
                       [{ "kind": "text", "text": "To provide the service" }]
-                    ],
-                    [
-                      [
-                        { "kind": "text", "text": "Record of your acceptance of our Terms and this policy (version and time)" }
-                      ],
-                      [{ "kind": "text", "text": "Created by our system when you accept" }],
-                      [
-                        { "kind": "text", "text": "To show which terms apply to you and when you agreed" }
-                      ],
-                      [
-                        { "kind": "text", "text": "To provide the service; to meet legal requirements" }
-                      ]
                     ],
                     [
                       [
@@ -617,12 +551,10 @@ export const privacyPolicy: LegalDocument = {
                     ],
                     [
                       [
-                        { "kind": "text", "text": "Notes our staff record about your account, and your plan and licence details" }
+                        { "kind": "text", "text": "Notes our staff record about your account, and licence details" }
                       ],
                       [{ "kind": "text", "text": "Our staff and our system" }],
-                      [
-                        { "kind": "text", "text": "To support you and manage your plan and licence" }
-                      ],
+                      [{ "kind": "text", "text": "To support you and manage your licence" }],
                       [{ "kind": "text", "text": "To provide the service; to run our business" }]
                     ]
                   ]
@@ -645,7 +577,7 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "We send you these emails because they are needed to run your account and your plan:" }
+                    { "kind": "text", "text": "These emails help you set up and recover your account:" }
                   ]
                 },
                 {
@@ -665,18 +597,8 @@ export const privacyPolicy: LegalDocument = {
                     },
                     {
                       "inline": [
-                        { "kind": "text", "text": "a notice if someone tries to create an account with your email address. We send this instead of telling the person signing up that the address is already registered;" }
+                        { "kind": "text", "text": "a notice if someone tries to create an account with your email address. We send this instead of telling the person signing up that the address is already registered." }
                       ],
-                      "children": []
-                    },
-                    {
-                      "inline": [
-                        { "kind": "text", "text": "notices about your licence and plan, such as renewal reminders, and notices that a licence has expired or been suspended; and" }
-                      ],
-                      "children": []
-                    },
-                    {
-                      "inline": [{ "kind": "text", "text": "receipts, invoices and payment notices." }],
                       "children": []
                     }
                   ]
@@ -684,7 +606,9 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "We send these emails through Amazon Simple Email Service (AWS SES)." }
+                    { "kind": "text", "text": "We use an email delivery provider to send these messages: " },
+                    { "kind": "placeholder", "name": "TRANSACTIONAL_EMAIL_PROVIDER" },
+                    { "kind": "text", "text": "." }
                   ]
                 },
                 {
@@ -754,25 +678,19 @@ export const privacyPolicy: LegalDocument = {
                   "kind": "paragraph",
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Downloads." }] },
-                    { "kind": "text", "text": " We keep SelahCue installers in private, encrypted storage provided by DigitalOcean Spaces in Frankfurt, Germany (fra1). When you download SelahCue, an update or an additional Bible translation through your account or an activated device, we give you a download link that expires after a short time. We record what was downloaded, for which platform, when, and for which account or device. The file comes directly from DigitalOcean Spaces, which receives your IP address and standard request information when you download." }
+                    { "kind": "text", "text": " When installers are published, you can download them without an account or an activated device. The public installer files use immutable release paths in DigitalOcean Spaces in SFO3 (San Francisco). Your browser connects directly to that service, which receives your IP address and standard request information. The public links use no SelahCue account or device credential." }
                   ]
                 },
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "We use this information to apply your plan's device limit and usage allowances, to show your administrators which devices are active, to let them remove devices, to deliver the software and content your plan includes, and to prevent misuse of licences." }
+                    { "kind": "text", "text": "We use activation and check-in information to apply device limits and usage allowances, manage devices and prevent misuse of licences. Activation and check-ins do not send us slides, transcripts or audio." }
                   ]
                 },
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "Activation, check-ins and downloads do not send us your slides, transcripts, audio or network logs." }
-                  ]
-                },
-                {
-                  "kind": "paragraph",
-                  "inline": [
-                    { "kind": "text", "text": "If your organisation uses an enrolment key to activate, we store the key only in hashed form, plus a short masked version so you and our staff can recognise it." }
+                    { "kind": "text", "text": "If your organisation uses an enrolment key to activate, we store the key in hashed form, with a short masked version for recognition." }
                   ]
                 }
               ],
@@ -781,19 +699,13 @@ export const privacyPolicy: LegalDocument = {
             {
               "id": "s-3-4",
               "number": "3.4",
-              "title": "Plans and payments",
+              "title": "Free service",
               "level": 3,
               "blocks": [
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "When you buy a paid plan, you pay on a checkout page provided by Paystack, our payment processor. Paystack collects your card or bank details directly. Your full card number never reaches our servers, and we do not store it. Paystack sends us the transaction reference, amount, status, card type and last four digits of the card, and Paystack handles your payment details under its own terms and privacy policy." }
-                  ]
-                },
-                {
-                  "kind": "paragraph",
-                  "inline": [
-                    { "kind": "text", "text": "We keep your plan, billing history, invoices and billing contact details. We use them to take payment, manage your subscription, send receipts and notices, handle refunds and failed payments, and keep the tax and accounting records the law requires." }
+                    { "kind": "text", "text": "This release offers ongoing Free access. It has no paid checkout, and we do not ask for payment details when you sign up, activate a device or download a public installer." }
                   ]
                 }
               ],
@@ -808,7 +720,7 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "When you use our website or our online services, our servers and our hosting provider Hetzner Cloud process technical information, including your IP address, browser type, and the pages and requests you make. We use it to deliver the website, keep it secure, and fix problems." }
+                    { "kind": "text", "text": "When you use our website or online services, we and our hosting providers process technical information such as your IP address, browser type and requests. We use it to deliver the service, keep it secure and fix problems." }
                   ]
                 },
                 {
@@ -820,7 +732,7 @@ export const privacyPolicy: LegalDocument = {
                           "kind": "strong",
                           "children": [{ "kind": "text", "text": "Rate limiting." }]
                         },
-                        { "kind": "text", "text": " To stop abuse, such as repeated password-reset requests, we count requests from each network address for a short time. For IPv6 addresses we keep only the network part. These counters expire within one hour." }
+                        { "kind": "text", "text": " We use short-lived counters to limit repeated requests, such as password resets." }
                       ],
                       "children": []
                     },
@@ -828,9 +740,11 @@ export const privacyPolicy: LegalDocument = {
                       "inline": [
                         {
                           "kind": "strong",
-                          "children": [{ "kind": "text", "text": "Server logs." }]
+                          "children": [{ "kind": "text", "text": "Operational logs." }]
                         },
-                        { "kind": "text", "text": " We do not retain server logs." }
+                        { "kind": "text", "text": " See section " },
+                        { "kind": "ref", "anchor": "s-8", "text": "8" },
+                        { "kind": "text", "text": " for retention." }
                       ],
                       "children": []
                     },
@@ -840,7 +754,9 @@ export const privacyPolicy: LegalDocument = {
                           "kind": "strong",
                           "children": [{ "kind": "text", "text": "Security and audit records." }]
                         },
-                        { "kind": "text", "text": " We record important account, licence, plan and cloud-feature actions, such as sign-up, device activation, licence changes, and cloud-feature requests that were allowed or refused. Each record says who acted (by internal identifier), what changed, the result and when. Passwords, keys and access credentials are never included. We keep these records for two years." }
+                        { "kind": "text", "text": " We record important account, licence and cloud-feature actions such as sign-up, device activation and cloud access decisions. These records can include an internal identifier, the action, its outcome and the time. Cloud usage records are described in section " },
+                        { "kind": "ref", "anchor": "s-3-8", "text": "3.8" },
+                        { "kind": "text", "text": "." }
                       ],
                       "children": []
                     }
@@ -858,11 +774,9 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "If you use the contact form on our website, or email us at " },
+                    { "kind": "text", "text": "When you email us at " },
                     { "kind": "code", "text": "support@selahcueapp.com" },
-                    { "kind": "text", "text": " or " },
-                    { "kind": "code", "text": "support@selahcueapp.com" },
-                    { "kind": "text", "text": ", we use your name, contact details and message, and anything you attach, to reply and to improve our help. Please do not send us transcripts or other church content unless we need it to solve your problem." }
+                    { "kind": "text", "text": ", we use your contact details, message and any attachments to deal with your request and improve our support. Please avoid sending transcripts or other church content unless we need it to help you." }
                   ]
                 }
               ],
@@ -891,7 +805,7 @@ export const privacyPolicy: LegalDocument = {
                       "inline": [
                         {
                           "kind": "strong",
-                          "children": [{ "kind": "text", "text": "activate, check in and download" }]
+                          "children": [{ "kind": "text", "text": "activate and check in" }]
                         },
                         { "kind": "text", "text": ", as described in section " },
                         { "kind": "ref", "anchor": "s-3-3", "text": "3.3" },
@@ -919,17 +833,7 @@ export const privacyPolicy: LegalDocument = {
                         },
                         { "kind": "text", "text": " The first time you use live transcription, the app downloads a model file from Hugging Face (" },
                         { "kind": "code", "text": "huggingface.co" },
-                        { "kind": "text", "text": "). Your computer's IP address and a standard web request go to Hugging Face, as with any download. The app checks the file has not been altered before using it. Hugging Face handles that request under its own privacy policy; and" }
-                      ],
-                      "children": []
-                    },
-                    {
-                      "inline": [
-                        {
-                          "kind": "strong",
-                          "children": [{ "kind": "text", "text": "download Bible translations" }]
-                        },
-                        { "kind": "text", "text": " that are not built into the app, from our bible-downloads storage on DigitalOcean Spaces. The translations built into the app need no download." }
+                        { "kind": "text", "text": "). Your computer's IP address and a standard web request go to Hugging Face, as with any download. The app checks the file has not been altered before using it. Hugging Face handles that request under its own privacy policy." }
                       ],
                       "children": []
                     }
@@ -946,7 +850,9 @@ export const privacyPolicy: LegalDocument = {
               "blocks": [
                 {
                   "kind": "paragraph",
-                  "inline": [{ "kind": "text", "text": "SelahCue offers two optional cloud features:" }]
+                  "inline": [
+                    { "kind": "text", "text": "This Free release is designed to provide two optional cloud features:" }
+                  ]
                 },
                 {
                   "kind": "list",
@@ -957,7 +863,7 @@ export const privacyPolicy: LegalDocument = {
                           "kind": "strong",
                           "children": [{ "kind": "text", "text": "Cloud transcription." }]
                         },
-                        { "kind": "text", "text": " While it is switched on and listening, the desktop app streams live audio from the selected microphone directly to Deepgram, using a short-lived access credential our servers issue. Deepgram returns text. We do not receive the audio." }
+                        { "kind": "text", "text": " After an administrator opts in and an operator starts cloud transcription, the desktop app streams live audio directly to Deepgram using a short-lived access credential. Deepgram returns text to the app. SelahCue does not receive the audio." }
                       ],
                       "children": []
                     },
@@ -967,7 +873,7 @@ export const privacyPolicy: LegalDocument = {
                           "kind": "strong",
                           "children": [{ "kind": "text", "text": "AI sermon notes." }]
                         },
-                        { "kind": "text", "text": " When an operator presses Generate, the app sends the completed transcript text (never audio) to OpenAI directly from the desktop app, which returns a draft." }
+                        { "kind": "text", "text": " When an operator requests a draft, the desktop app sends the selected transcript text to SelahCue. A SelahCue server worker uses a server-held OpenAI credential to process the text with OpenAI and stage the draft for the desktop app to retrieve. The notes request contains transcript text rather than audio." }
                       ],
                       "children": []
                     }
@@ -976,19 +882,35 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "These features are off by default. Only an administrator can turn them on, separately for each feature, after the app shows what data is sent, to which provider, and that it can be processed in another country. While cloud transcription is active, the app shows an indicator." }
+                    { "kind": "text", "text": "The features are off by default and an administrator opts in to each separately. The app explains what it sends, who receives it and that processing can occur abroad. The app shows when cloud transcription is active." }
                   ]
                 },
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "When you use these features, your sermon audio or transcript leaves your church's network and is processed on Deepgram's or OpenAI's servers, which can be in a different country from yours. Deepgram and OpenAI handle this data under their own terms and privacy policies, which say how long they keep it and whether they use it to improve their services. We and they handle it only to provide the feature to your church. We do not store it; Deepgram and OpenAI keep it under their own terms." }
+                    {
+                      "kind": "strong",
+                      "children": [{ "kind": "text", "text": "Temporary staging for notes." }]
+                    },
+                    { "kind": "text", "text": " The intended limit for keeping source text in temporary storage is 5 minutes. The staged draft is retrievable for up to 15 minutes from staging. The desktop app validates the draft and acknowledges receipt after it durably saves it locally. Acknowledgement triggers deletion of the staged copy. The intended physical limit for the staged draft is 20 minutes from staging if cleanup fails. The design excludes source text and drafts from the account database, job broker, logs, traces and backups." }
                   ]
                 },
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "To apply your plan's usage allowances, we record how much of each feature your organisation uses (for example, transcription time and number of note drafts), and each request that was allowed or refused, with the reason. These usage records do not contain audio or sermon content." }
+                    {
+                      "kind": "strong",
+                      "children": [{ "kind": "text", "text": "Provider retention." }]
+                    },
+                    { "kind": "text", "text": " The temporary staging limits apply to SelahCue's storage. Deepgram's handling of audio and OpenAI's handling of transcript text and responses are separate. " },
+                    { "kind": "placeholder", "name": "CLOUD_PROVIDER_RETENTION_AND_USE" }
+                  ]
+                },
+                {
+                  "kind": "paragraph",
+                  "inline": [
+                    { "kind": "strong", "children": [{ "kind": "text", "text": "Usage records." }] },
+                    { "kind": "text", "text": " We use records such as organisation and request identifiers, timestamps, outcomes and usage units to administer weekly allowances and investigate errors or misuse. These records exclude audio, transcript text and generated drafts." }
                   ]
                 }
               ],
@@ -997,13 +919,15 @@ export const privacyPolicy: LegalDocument = {
             {
               "id": "s-3-9",
               "number": "3.9",
-              "title": "Licensed Bible translations",
+              "title": "Bible texts",
               "level": 3,
               "blocks": [
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "Some plans include copyrighted Bible translations licensed from their publishers. When your plan includes one, the app downloads it after your device is activated. Our licences with publishers require us to report the usage information their licences require to them. We do not send publishers your sermon content or transcripts." }
+                    { "kind": "text", "text": "Bundled Bible texts can be used locally. The installer storage described in section " },
+                    { "kind": "ref", "anchor": "s-3-3", "text": "3.3" },
+                    { "kind": "text", "text": " is for the desktop software." }
                   ]
                 }
               ],
@@ -1048,7 +972,9 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "The SelahCue Controller is a remote control for a SelahCue desktop on your church's local network. It talks only to the desktop it is paired with, over an encrypted, certificate-pinned connection. We do not receive its data, and it has no accounts, advertising or analytics. It stores a pairing credential, the paired desktop's address and certificate pin, and your app preferences on your device only. It asks for camera access only to scan the pairing QR code, and for local-network access (iOS) to find the desktop. It does not record audio or keep transcripts. You can erase everything it stores by disconnecting the device in the app or uninstalling it. The rest of this policy applies to it as it does to the desktop app." }
+                    { "kind": "text", "text": "The SelahCue Controller has a separate privacy policy in " },
+                    { "kind": "code", "text": "docs/legal/PRIVACY.md" },
+                    { "kind": "text", "text": ". This policy covers the desktop and website release." }
                   ]
                 }
               ],
@@ -1101,14 +1027,6 @@ export const privacyPolicy: LegalDocument = {
                   ],
                   [
                     { "kind": "text", "text": "Removed when you sign out, or ignored once the session has expired" }
-                  ]
-                ],
-                [
-                  [{ "kind": "text", "text": "Paystack checkout cookies and scripts" }],
-                  [{ "kind": "text", "text": "Set by Paystack on its checkout page" }],
-                  [{ "kind": "text", "text": "Process your payment securely and prevent fraud" }],
-                  [
-                    { "kind": "text", "text": "As set by Paystack; Paystack's cookie policy applies" }
                   ]
                 ]
               ]
@@ -1209,7 +1127,7 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "If you do not give us the information marked as needed at sign-up or checkout, we cannot create your account or process your purchase." }
+                { "kind": "text", "text": "We need the information marked as required at sign-up to create your account." }
               ],
               "clause": "5.2",
               "anchor": "s-5-2"
@@ -1225,7 +1143,7 @@ export const privacyPolicy: LegalDocument = {
           "blocks": [
             {
               "kind": "paragraph",
-              "inline": [{ "kind": "text", "text": "We share personal data only with:" }],
+              "inline": [{ "kind": "text", "text": "Recipients include:" }],
               "clause": "6.1",
               "anchor": "s-6-1"
             },
@@ -1236,34 +1154,10 @@ export const privacyPolicy: LegalDocument = {
                   "inline": [
                     {
                       "kind": "strong",
-                      "children": [{ "kind": "text", "text": "Service providers" }]
+                      "children": [{ "kind": "text", "text": "Hosting and infrastructure providers" }]
                     },
-                    { "kind": "text", "text": " that run parts of our service for us:" }
-                  ],
-                  "children": [
-                    {
-                      "inline": [{ "kind": "text", "text": "hosting: Hetzner Cloud" }],
-                      "children": []
-                    },
-                    {
-                      "inline": [
-                        { "kind": "text", "text": "installer storage and downloads: DigitalOcean Spaces" }
-                      ],
-                      "children": []
-                    },
-                    {
-                      "inline": [
-                        { "kind": "text", "text": "email delivery: Amazon Simple Email Service (AWS SES)" }
-                      ],
-                      "children": []
-                    }
-                  ]
-                },
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Paystack" }] },
-                    { "kind": "text", "text": ", which processes payments for us (section " },
-                    { "kind": "ref", "anchor": "s-3-4", "text": "3.4" },
+                    { "kind": "text", "text": " that operate the website and account services (section " },
+                    { "kind": "ref", "anchor": "s-7", "text": "7" },
                     { "kind": "text", "text": ")." }
                   ],
                   "children": []
@@ -1272,9 +1166,32 @@ export const privacyPolicy: LegalDocument = {
                   "inline": [
                     {
                       "kind": "strong",
-                      "children": [{ "kind": "text", "text": "Deepgram and OpenAI" }]
+                      "children": [{ "kind": "text", "text": "DigitalOcean Spaces" }]
                     },
-                    { "kind": "text", "text": ", when an administrator has turned on a cloud feature (section " },
+                    { "kind": "text", "text": ", which receives public installer requests (section " },
+                    { "kind": "ref", "anchor": "s-3-3", "text": "3.3" },
+                    { "kind": "text", "text": ")." }
+                  ],
+                  "children": []
+                },
+                {
+                  "inline": [
+                    {
+                      "kind": "strong",
+                      "children": [{ "kind": "text", "text": "Our email delivery provider" }]
+                    },
+                    { "kind": "text", "text": ", which sends account emails (section " },
+                    { "kind": "ref", "anchor": "s-3-2", "text": "3.2" },
+                    { "kind": "text", "text": ")." }
+                  ],
+                  "children": []
+                },
+                {
+                  "inline": [
+                    { "kind": "strong", "children": [{ "kind": "text", "text": "Deepgram" }] },
+                    { "kind": "text", "text": ", which receives audio from your device for cloud transcription, and " },
+                    { "kind": "strong", "children": [{ "kind": "text", "text": "OpenAI" }] },
+                    { "kind": "text", "text": ", which processes transcript text for requested sermon notes (section " },
                     { "kind": "ref", "anchor": "s-3-8", "text": "3.8" },
                     { "kind": "text", "text": ")." }
                   ],
@@ -1282,20 +1199,8 @@ export const privacyPolicy: LegalDocument = {
                 },
                 {
                   "inline": [
-                    {
-                      "kind": "strong",
-                      "children": [{ "kind": "text", "text": "Bible publishers" }]
-                    },
-                    { "kind": "text", "text": ", to the extent described in section " },
-                    { "kind": "ref", "anchor": "s-3-9", "text": "3.9" },
-                    { "kind": "text", "text": "." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Google" }] },
-                    { "kind": "text", "text": ", when our website loads the Inter font (section " },
+                    { "kind": "text", "text": ", when your browser loads the site font (section " },
                     { "kind": "ref", "anchor": "s-4-3", "text": "4.3" },
                     { "kind": "text", "text": ")." }
                   ],
@@ -1333,7 +1238,7 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "Your organisation's administrators can see, in the customer portal, the account information of members of the same organisation, and the organisation's plan, licence, devices, usage and billing history." }
+                { "kind": "text", "text": "The customer portal is intended to show administrators the licence, device and weekly allowance information for their organisation." }
               ],
               "clause": "6.2",
               "anchor": "s-6-2"
@@ -1350,7 +1255,9 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "We are based in Nigeria. Our servers run with Hetzner Cloud in Falkenstein, Germany, and our installers are stored with DigitalOcean Spaces in Frankfurt, Germany (fra1). Paystack, Deepgram, OpenAI and our other providers process data on their own servers." }
+                { "kind": "text", "text": "We are based in Nigeria. Public desktop installer requests go to DigitalOcean Spaces in SFO3 (San Francisco). The providers and locations for the site, account API, database, notes worker and logs are " },
+                { "kind": "placeholder", "name": "SERVICE_HOSTING_LOCATIONS" },
+                { "kind": "text", "text": ". Deepgram, OpenAI and other service providers may process data outside the country where the church is located." }
               ],
               "clause": "7.1",
               "anchor": "s-7-1"
@@ -1358,7 +1265,8 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "These places can be outside your country, and the data protection rules there may differ from the rules where you live. To protect data processed abroad, we choose providers that publish security and privacy commitments." }
+                { "kind": "text", "text": "Data protection rules can differ between countries. " },
+                { "kind": "placeholder", "name": "TRANSFER_SAFEGUARDS_SUMMARY" }
               ],
               "clause": "7.2",
               "anchor": "s-7-2"
@@ -1377,55 +1285,51 @@ export const privacyPolicy: LegalDocument = {
               "header": [[{ "kind": "text", "text": "Data" }], [{ "kind": "text", "text": "How long" }]],
               "rows": [
                 [
-                  [{ "kind": "text", "text": "Account details" }],
-                  [{ "kind": "text", "text": "While your account is open, then six months" }]
-                ],
-                [
-                  [{ "kind": "text", "text": "Accounts that are never verified" }],
-                  [{ "kind": "text", "text": "7 days" }]
+                  [{ "kind": "text", "text": "Account details, including unverified sign-ups" }],
+                  [{ "kind": "placeholder", "name": "ACCOUNT_RETENTION" }]
                 ],
                 [
                   [{ "kind": "text", "text": "Sign-in sessions" }],
                   [
-                    { "kind": "text", "text": "Until you sign out or they expire (up to 30 days); expired records are deleted by a nightly job" }
+                    { "kind": "text", "text": "Usable until revoked or expired, up to 30 days. Stored-record retention: " },
+                    { "kind": "placeholder", "name": "SESSION_RECORD_RETENTION" }
                   ]
                 ],
                 [
                   [{ "kind": "text", "text": "Email-verification and password-reset links" }],
                   [
-                    { "kind": "text", "text": "Until used or expired (24 hours and 1 hour); expired records are deleted by a nightly job" }
+                    { "kind": "text", "text": "Usable until used or expired, after 24 hours or 1 hour respectively. Stored-record retention: " },
+                    { "kind": "placeholder", "name": "CREDENTIAL_RECORD_RETENTION" }
                   ]
                 ],
                 [
-                  [{ "kind": "text", "text": "Rate-limiting counters" }],
-                  [{ "kind": "text", "text": "Up to 1 hour" }]
+                  [{ "kind": "text", "text": "Rate-limiting counters and operational logs" }],
+                  [{ "kind": "placeholder", "name": "OPERATIONAL_LOG_RETENTION" }]
                 ],
                 [
-                  [{ "kind": "text", "text": "Server logs" }],
-                  [{ "kind": "text", "text": "Not retained" }]
-                ],
-                [
-                  [{ "kind": "text", "text": "Security and audit records" }],
-                  [{ "kind": "text", "text": "two years" }]
-                ],
-                [
-                  [{ "kind": "text", "text": "Licence, device, download and usage records" }],
                   [
-                    { "kind": "text", "text": "While your organisation's account is open, then two years" }
-                  ]
-                ],
-                [
-                  [{ "kind": "text", "text": "Payment, invoice and tax records" }],
-                  [{ "kind": "text", "text": "Seven years, as tax law requires" }]
+                    { "kind": "text", "text": "Security, licence, device and content-free usage records" }
+                  ],
+                  [{ "kind": "placeholder", "name": "SECURITY_AND_USAGE_RETENTION" }]
                 ],
                 [
                   [{ "kind": "text", "text": "Support messages" }],
-                  [{ "kind": "text", "text": "60 days" }]
+                  [{ "kind": "placeholder", "name": "SUPPORT_RETENTION" }]
                 ],
                 [
-                  [{ "kind": "text", "text": "Audio and transcripts sent to cloud features" }],
+                  [{ "kind": "text", "text": "SelahCue's temporary notes source and draft" }],
                   [
-                    { "kind": "text", "text": "We do not store it; Deepgram and OpenAI keep it under their own terms" }
+                    { "kind": "text", "text": "See the intended staging limits in section " },
+                    { "kind": "ref", "anchor": "s-3-8", "text": "3.8" }
+                  ]
+                ],
+                [
+                  [
+                    { "kind": "text", "text": "Audio and transcript text processed by cloud providers" }
+                  ],
+                  [
+                    { "kind": "text", "text": "See provider retention in section " },
+                    { "kind": "ref", "anchor": "s-3-8", "text": "3.8" }
                   ]
                 ]
               ]
@@ -1484,19 +1388,13 @@ export const privacyPolicy: LegalDocument = {
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "serving our website and services only over encrypted connections (HTTPS);" }
+                    { "kind": "text", "text": "serving our website and online services over encrypted connections (HTTPS); and" }
                   ],
                   "children": []
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "keeping installers in private, encrypted storage and delivering them only through expiring links; and" }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "in the desktop app, encrypting the transcript database on disk, keeping credentials in the operating system's secure store, and encrypting the local-network link to paired mobile devices." }
+                    { "kind": "text", "text": "in the desktop app, encrypting the transcript database on disk and keeping credentials in the operating system's secure store." }
                   ],
                   "children": []
                 }
@@ -1522,7 +1420,7 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "SelahCue is a tool for church production teams. It is not directed at children. You must be at least 18 years old to create an account, and we ask you to confirm this at sign-up." }
+                { "kind": "text", "text": "SelahCue is a tool for church production teams. It is not directed at children. You must be at least 18 years old to create an account." }
               ],
               "clause": "10.1",
               "anchor": "s-10-1"
@@ -1602,9 +1500,11 @@ export const privacyPolicy: LegalDocument = {
               "inline": [
                 {
                   "kind": "strong",
-                  "children": [{ "kind": "text", "text": "Deleting your account." }]
+                  "children": [{ "kind": "text", "text": "Requests to close or delete an account." }]
                 },
-                { "kind": "text", "text": " You can delete your user account yourself in your account settings. An administrator can close your organisation's account in the customer portal. When we delete an account, we delete or anonymise the personal data in it, and we keep security and audit records only in a form that no longer identifies you, except where the law requires us to keep them." }
+                { "kind": "text", "text": " Email " },
+                { "kind": "code", "text": "support@selahcueapp.com" },
+                { "kind": "text", "text": " to request closure or deletion. We may ask you to confirm your identity or your authority to act for your organisation." }
               ],
               "clause": "11.2",
               "anchor": "s-11-2"
@@ -1614,11 +1514,11 @@ export const privacyPolicy: LegalDocument = {
               "inline": [
                 {
                   "kind": "strong",
-                  "children": [{ "kind": "text", "text": "Getting a copy of your data." }]
+                  "children": [{ "kind": "text", "text": "Access and data copies." }]
                 },
                 { "kind": "text", "text": " Email " },
                 { "kind": "code", "text": "support@selahcueapp.com" },
-                { "kind": "text", "text": ". We confirm your identity, then prepare an export of your account data and send it to you through a download link that expires. We do this within 14 days." }
+                { "kind": "text", "text": " to request a copy of your personal data. We may ask you to confirm your identity before providing it." }
               ],
               "clause": "11.3",
               "anchor": "s-11-3"
@@ -1627,9 +1527,10 @@ export const privacyPolicy: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Other requests." }] },
-                { "kind": "text", "text": " For any other request about your personal data, email " },
+                { "kind": "text", "text": " For other requests about your personal data, email " },
                 { "kind": "code", "text": "support@selahcueapp.com" },
-                { "kind": "text", "text": ". We may ask you to confirm your identity, and we reply within 14 days. We do not charge for requests unless a request is clearly unfounded or excessive." }
+                { "kind": "text", "text": ". " },
+                { "kind": "placeholder", "name": "RIGHTS_REQUEST_PROCESS_AND_TIMING" }
               ],
               "clause": "11.4",
               "anchor": "s-11-4"
@@ -1668,7 +1569,7 @@ export const privacyPolicy: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "text", "text": "We update this policy when our services or the law change. We post the new version at " },
-                { "kind": "code", "text": "https://selahcueapp.com/privacy-policy" },
+                { "kind": "code", "text": "https://selahcueapp.com/privacy" },
                 { "kind": "text", "text": " and change the effective date." }
               ],
               "clause": "12.1",

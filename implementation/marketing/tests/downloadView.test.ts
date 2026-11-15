@@ -1,12 +1,6 @@
 /**
  * The Download page may not show a control that looks clickable and does nothing.
  *
- * 17tnw2b0q9j. `/download` shipped two store badges as plain boxes and two download
- * buttons with no link and no handler; nothing in the build noticed, because a button that
- * does nothing is valid markup and valid TypeScript. They are disabled now, with visible
- * text that says why. This file is the control that stops them quietly turning back into
- * dead buttons — or the explanation being orphaned — without anyone deciding to.
- *
  * It parses the real `DownloadView.vue` with Vue's own SFC compiler rather than
  * pattern-matching its text: a template is full of apostrophes, line wraps and attribute
  * orderings that make a regex a guess, and the compiler's AST is exactly what ships.
@@ -170,19 +164,23 @@ describe('the Download page shows no control that looks clickable and does nothi
     assert.deepEqual(violations(DOWNLOAD_VIEW), [])
   })
 
-  // The page was rebuilt to the Figma frame (ClickUp 17tnw2b2cey) and the platform cards must stay in
-  // THIS file, where the checks above can see them: a card moved into a child component would take its
-  // buttons out of the AST this file reads, and every check above would still pass.
-  test('the two platform download buttons and the two store badges are all in this template, disabled and described', () => {
+  test('the download route mounts public cards and keeps only unavailable mobile controls', () => {
     const els = elementsOf(DOWNLOAD_VIEW)
-    const platform = els.filter((el) => isUiButton(el.tag) && prop(el, 'disabled'))
-    const stores = els.filter((el) => el.tag === 'button' && prop(el, 'disabled'))
-    assert.deepEqual(
-      platform.map((el) => staticValue(prop(el, 'aria-describedby'))),
-      ['windows-availability', 'macos-availability'],
-    )
-    assert.equal(stores.length, 2, 'the two store badges are not both native disabled buttons here')
-    for (const el of [...platform, ...stores]) assert.equal(staticValue(prop(el, 'aria-disabled')), 'true')
+    assert.equal(els.filter((el) => el.tag === 'PublicDownloads').length, 1)
+    assert.equal(els.some((el) => el.tag === 'PilotDownloads'), false)
+    const stores = buttonsOf(els)
+    assert.equal(stores.length, 2)
+    for (const el of stores) {
+      assert.equal(el.tag, 'button')
+      assert.ok(prop(el, 'disabled'))
+      assert.equal(staticValue(prop(el, 'aria-disabled')), 'true')
+      assert.equal(staticValue(prop(el, 'aria-describedby')), 'store-availability')
+    }
+  })
+
+  test('public installer controls have a working action or destination', () => {
+    const source = readFileSync(new URL('../src/components/PublicDownloads.vue', import.meta.url), 'utf8')
+    assert.deepEqual(violations(source), [])
   })
 })
 

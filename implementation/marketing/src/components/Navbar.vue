@@ -9,6 +9,7 @@ import { pageInertLock } from '@/lib/ui/inertLock.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '@/lib/ui/focusTrap.ts'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
 import UiButton from '@/components/UiButton.vue'
+import { freeOffer } from '@/lib/content/freeOffer.ts'
 import SrOnly from '@/components/core/SrOnly.vue'
 
 const route = useRoute()
@@ -193,7 +194,7 @@ onBeforeUnmount(() => {
             <a :href="href" class="nav-item" @click="navigate">How it works</a>
           </router-link>
           <router-link to="/pricing" class="nav-item" active-class="active">Pricing</router-link>
-          <router-link to="/download#pilot-downloads" class="nav-item" active-class="active">Download</router-link>
+          <router-link :to="freeOffer.downloadTo" class="nav-item" active-class="active">Download</router-link>
         </nav>
       </div>
 
@@ -216,7 +217,7 @@ onBeforeUnmount(() => {
           </button>
         </template>
         <router-link v-else to="/signin" class="signin-btn">Sign in</router-link>
-        <UiButton to="/download#pilot-downloads" size="compact" class="download-cta">Pilot downloads</UiButton>
+        <UiButton :to="freeOffer.downloadTo" size="compact" class="download-cta">View downloads</UiButton>
       </div>
 
       <!-- Mobile Hamburger Toggle (< 768px) -->
@@ -264,7 +265,7 @@ onBeforeUnmount(() => {
               <a :href="href" class="mobile-link" @click="navigate($event); closeMobileMenu()">How it works</a>
             </router-link>
             <router-link to="/pricing" class="mobile-link" @click="closeMobileMenu()">Pricing</router-link>
-            <router-link to="/download#pilot-downloads" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
+            <router-link :to="freeOffer.downloadTo" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
           </nav>
 
           <div class="mobile-actions">
@@ -282,7 +283,7 @@ onBeforeUnmount(() => {
               </button>
             </template>
             <router-link v-else to="/signin" class="mobile-link account-link" @click="closeMobileMenu()">Sign in</router-link>
-            <router-link to="/download#pilot-downloads" class="sheet-cta" @click="closeMobileMenu()">Pilot downloads</router-link>
+            <router-link :to="freeOffer.downloadTo" class="sheet-cta" @click="closeMobileMenu()">View downloads</router-link>
           </div>
         </div>
       </div>

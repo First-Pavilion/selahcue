@@ -1805,6 +1805,13 @@ jobs:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine webkit
 
+      - name: Responsive touch-target and geometry controls (WebKit)
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 tests/responsive_diagnostic_regression.py
+          DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
+          DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
+
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.
       - name: Shared components (Chromium + WebKit)
@@ -1827,6 +1834,21 @@ jobs:
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:secondary
+
+      - name: Legal source and generated pages agree
+        if: ${{ !cancelled() }}
+        run: npm run check:legal
+      - name: Legal pages (full Chromium suite)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/legal_pages_headless.py --only all
+      - name: Public acquisition and route exclusions (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: python3 tests/public_routes_headless.py --engine both
+      - name: Public downloads (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: python3 tests/public_downloads_headless.py --engine both
 
       # Build the shipping nginx configuration, then exercise real response headers in
       # both installed browsers. A preview server cannot verify nginx CSP inheritance.

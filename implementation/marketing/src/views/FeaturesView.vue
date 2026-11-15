@@ -12,11 +12,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
  *  - "Unlimited virtual outputs" and "Per-output theme & framing" are not shipped: DEC-008 caps
  *    outputs at 2, 5 and 10 by plan, and per-output configuration is R2 (FR-038). The NDI row says
  *    what ships.
- *  - "nothing leaves the machine / entirely on the machine" is stated as absolute. The row says what a
- *    release build does: transcription runs on the machine (FR-101). It does NOT advertise cloud
- *    transcription: `cloud-stt` is RELEASE: UNSAFE and stripped from release builds (selahcue-operator
- *    Cargo.toml, Makefile `release-ai-guard`), so a release has no cloud path to describe (review round 1,
- *    Cody N4). Bring it back only when a release ships it.
+ *  - The assist row distinguishes on-device listening from optional cloud assistance when available.
  *  - "Never-blank guarantee" and "the screen never blanks" are stronger than NFR-024 (failure isolation;
  *    the emergency blackout exists), so the row says it is designed so a fault cannot black out live
  *    output (review round 1, Cody N19).
@@ -39,7 +35,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
       <template #eyebrow>
         <UiBadge variant="featured">FEATURES</UiBadge>
       </template>
-      From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.
+      From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output together in one offline-first desktop console.
     </PageHero>
 
     <div class="feature-rows">
@@ -118,9 +114,9 @@ import CtaBand from '@/components/core/CtaBand.vue'
       <FeatureRow
         tone="ready"
         eyebrow="ASSIST"
-        title="On-device transcript & detection"
-        text="An optional live transcript runs on your machine. It assists the operator but never gates your core controls."
-        :bullets="['Live transcript, on-device', 'Scripture detection that assists the operator', 'Assists — never gates — core controls']"
+        title="Transcription & sermon notes"
+        text="Listen on-device after a one-time model download. When available, optional cloud assistance needs internet access and consent."
+        :bullets="['Cloud transcription and requested sermon notes', 'Scripture detection that assists the operator', 'Core live controls work offline']"
         panel-title="ASSIST"
         panel-chip="ON-DEVICE"
         reverse

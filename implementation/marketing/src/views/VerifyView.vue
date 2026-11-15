@@ -34,6 +34,7 @@ import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification, verifyEmail } from '@/lib/api/account.ts'
+import { freeOffer } from '@/lib/content/freeOffer.ts'
 import { ApiError } from '@/lib/api/graphql.ts'
 import { validateEmail } from '@/lib/auth/emailPolicy.ts'
 import { takeLandingToken } from '@/lib/auth/useLandingToken.ts'
@@ -220,17 +221,15 @@ onBeforeUnmount(() => {
       <StatusDisc tone="success" glyph="✓" />
       <h1 ref="heading" tabindex="-1" class="au-title">Email address verified</h1>
       <p class="au-body">
-        Thanks — your SelahCue account is active. Sign in to manage your plan, license and
-        devices.
+        Open SelahCue on your computer, then sign in and activate your device to use cloud features.
       </p>
       <div class="au-actions">
-        <UiButton to="/signin" variant="primary" size="lg" class="au-btn au-btn-primary">
-          Continue to sign in
+        <UiButton :to="freeOffer.downloadTo" variant="primary" size="lg" class="au-btn au-btn-primary">
+          View downloads
         </UiButton>
       </div>
-      <AuthBanner kind="success" title="You don't need an account to run SelahCue">
-        Verification only unlocks plan, license and device management. Live presentation
-        works offline, always.
+      <AuthBanner kind="success" title="Live presentation works offline">
+        Core live controls work without an internet connection.
       </AuthBanner>
     </template>
 
