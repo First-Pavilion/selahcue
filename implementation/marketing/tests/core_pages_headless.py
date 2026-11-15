@@ -231,6 +231,10 @@ def check_features(page, base: str, engine: str) -> None:
     hero_lead_ok(page, "features", 90)  # Figma 485:139
     rows = rects(page, ".feature-row")
     check("features: six rows", len(rows) == 6, str(len(rows)))
+    assist = " ".join(page.locator(".feature-row").last.inner_text().lower().split())
+    check("features: separates local listening and optional cloud assistance",
+          "on-device" in assist and "model download" in assist and "when available" in assist and
+          "internet access and consent" in assist and "core live controls work offline" in assist, assist)
     for i, r in enumerate(rows):
         # Figma 486:124: 336px (40 / 256 / 40). The paragraph is never taller than the panel, so wording cannot move it.
         near(f"features: row {i + 1} is 336 tall", r["h"], 336, 3)

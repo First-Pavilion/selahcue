@@ -172,7 +172,7 @@ const BANNED: readonly Banned[] = [
   { id: 'never blanks (stronger than NFR-024)', pattern: /never[- ]blank|never blanks/, because: 'say it is designed so a fault cannot black out live output (Cody N19)' },
   { id: 'forever or lifetime', pattern: /\bforever\b|lifetime/, because: 'pricing-15: "free forever" is not decided' },
   { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline|stays offline|offline by default|offline when it matters|keeps working offline|doesn.t either/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1, Cody N20, Quinn N6)' },
-  { id: 'cloud transcription', pattern: /\bcloud\b/, pages: ['features', 'download', 'about'], because: 'capability wording outside the approved Free offer is reviewed separately' },
+  { id: 'unqualified cloud availability', pattern: /cloud (?:transcription|assistance) (?:works offline|is available now|is enabled by default)/, because: 'cloud paths require connectivity, consent and release acceptance' },
   { id: 'jargon the owner did not choose', pattern: /compositor|desktop-authoritative/, because: 'plain English (Cody N19)' },
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
@@ -254,7 +254,7 @@ describe('no claim the repo does not back is on the page', () => {
       'never blanks (stronger than NFR-024)': { text: 'The screen never blanks.', page: 'about' },
       'forever or lifetime': { text: 'Start free forever', page: 'pricing' },
       'fully offline': { text: 'SelahCue runs fully offline', page: 'download' },
-      'cloud transcription': { text: 'Cloud transcription only if you turn it on', page: 'features' },
+      'unqualified cloud availability': { text: 'Cloud transcription works offline', page: 'features' },
       'jargon the owner did not choose': { text: 'where the compositor never blanks', page: 'about' },
       'an installer version, format or size': { text: 'v1.0 · .msi installer · ~84 MB', page: 'download' },
       'an OS floor': { text: 'macOS 12 Monterey+', page: 'download' },
@@ -370,7 +370,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   features: [
     "FEATURES",
     "Everything you need to run a confident service",
-    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.",
+    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output together in one offline-first desktop console.",
     "OUTPUTS",
     "Live presentation & outputs",
     "Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up.",
@@ -412,11 +412,11 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "STREAMING",
     "NDI",
     "ASSIST",
-    "On-device transcript & detection",
-    "An optional live transcript runs on your machine. It assists the operator but never gates your core controls.",
-    "Live transcript, on-device",
+    "Transcription & sermon notes",
+    "Listen on-device after a one-time model download. When available, optional cloud assistance needs internet access and consent.",
+    "Cloud transcription and requested sermon notes",
     "Scripture detection that assists the operator",
-    "Assists — never gates — core controls",
+    "Core live controls work offline",
     "ASSIST",
     "ON-DEVICE",
     "Ready to run your best service yet?",
@@ -440,7 +440,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Ubuntu 24.04 x64",
     "MOBILE CONTROL",
     "Control from your phone",
-    "The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
+    "If you already have the SelahCue Controller, you can pair it over your local network. Scan the QR code and approve the phone on the desktop. You can keep running the service from the desktop if the phone disconnects.",
     "Pairs over your LAN — no internet needed",
     "iOS and Android apps are not available yet",
     "Desktop stays authoritative if the phone drops",
@@ -687,7 +687,7 @@ describe('Features', () => {
         'Service plans & timers',
         'Stage & confidence monitor',
         'NDI & multi-output',
-        'On-device transcript & detection',
+        'Transcription & sermon notes',
       ],
     )
   })
@@ -730,12 +730,25 @@ describe('Features', () => {
     ])
   })
 
-  test('features-11 and review round 1, Cody N4: the transcript row says the transcript runs on the machine and mentions no cloud path (cloud-stt is stripped from release builds)', () => {
+  test('the assist row separates on-device listening from optional, connected cloud assistance', () => {
     const last = textOf(rows()[5] as HtmlNode).toLowerCase()
     assert.match(last, /on-device|on your machine/)
-    assert.match(last, /never gates/)
-    assert.doesNotMatch(last, /cloud/)
+    assert.match(last, /model download/)
+    assert.match(last, /when available,.*cloud.*needs.*internet.*consent/)
+    assert.match(last, /core live controls.*offline/)
   })
+})
+
+test('Home platform FAQ names the supported targets without advertising a mobile download', async () => {
+  const home = await render('views/HomeView.vue')
+  const platforms = byClass(home, 'faq-item').find((item) => textOf(item).includes('Which platforms are supported?'))
+  assert.ok(platforms)
+  const answer = textOf(platforms)
+  assert.match(answer, /Windows x64/)
+  assert.match(answer, /macOS.*arm64.*x64/)
+  assert.match(answer, /Ubuntu 24\.04 x64/)
+  assert.match(answer, /controller app is not in the App Store or Google Play/i)
+  assert.doesNotMatch(answer, /available for Windows, macOS and Linux/i)
 })
 
 // ------------------------------------------------------------------------------------ Download

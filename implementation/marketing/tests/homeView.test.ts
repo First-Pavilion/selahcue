@@ -251,7 +251,7 @@ describe('the heading outline never skips a level (home-bug-01)', () => {
       'Service plans & timers',
       'Stage & confidence monitor',
       'NDI & multi-output',
-      'Optional cloud AI assistance',
+      'Optional transcription & sermon notes',
       'Never blanks the screen',
       'Core live controls work offline',
       'Fast & bounded',
@@ -601,13 +601,13 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Scripture at your fingertips',
     'A bundled public-domain Bible with instant reference parsing and keyword search.',
     'Service plans & timers',
-    'Build the order of service and run a service countdown from the console or your phone.',
+    'Build the order of service and run a service countdown from the console.',
     'Stage & confidence monitor',
     "A dedicated speaker view — current line, what's next, and the service timer — that the audience never sees.",
     'NDI & multi-output',
     'Broadcast an audience output as an NDI source for OBS or vMix. Orientation, scaling and mirror apply to the projector and stage windows.',
-    'Optional cloud AI assistance',
-    'Cloud transcription and sermon notes require an internet connection and consent.',
+    'Optional transcription & sermon notes',
+    'Listen on-device or, when available, opt in to cloud transcription and request sermon notes online.',
   ],
   'reliability-section': [
     'WHY SELAHCUE',
@@ -658,7 +658,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     '3',
     // "Control from anywhere" is gone: mobile control is LAN-based (PRD NG-5). "No lag" went earlier: unmeasured (NFR-009).
     'Control from your phone',
-    'Drive it from the console — or pair your phone over the local network. No internet needed.',
+    'If you already have the SelahCue Controller, you can pair it over your local network to control slides.',
   ],
   // The single Free offer replaces the older empty pricing state.
   'pricing-section': [
@@ -670,10 +670,9 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Questions, answered',
     'Do I need an internet connection?',
     // NFR-015: core live controls work with the network off. Sign-in, activation and the first speech-model download need it.
-    'Core live controls work offline. Cloud transcription and sermon notes require an internet connection and consent.',
+    'Core live controls work offline. Sign-in, device activation and the first download of the on-device speech model need internet access. When available, optional cloud transcription and requested sermon notes need internet access and separate consent.',
     'Which platforms are supported?',
-    // No version number, architecture or file format: the product is available for Windows, macOS and Linux (owner, 2026-10-04).
-    'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.',
+    'Desktop releases target Windows x64, macOS on Apple silicon (arm64) and Intel (x64), and Ubuntu 24.04 x64. The SelahCue Controller app is not in the App Store or Google Play yet.',
     'Can I use my own slides and designs?',
     'Yes. Build multi-slide presentations with text, shapes and images, stage any scripture from the bundled Bibles, and design your own scripture themes in the Theme Designer.',
     'What is NDI, and do I need it?',
@@ -818,8 +817,8 @@ const FORBIDDEN: ReadonlyArray<{ re: RegExp; why: string; sample: string }> = [
   { re: /Always on the latest version/i, why: 'no update channel ships', sample: 'Always on the latest version' },
   { re: /One physical output|Single display projector/i, why: 'DEC-008 gives Free two outputs (home-34)', sample: 'One physical output' },
   { re: /\bno account\b/i, why: 'account sign-in is the primary activation path (DEC-007)', sample: 'no internet, no account, no cloud' },
-  { re: /Linux is on the roadmap|roadmap/i, why: 'the product is available on Linux (owner, 2026-10-04); Figma\'s "on the roadmap" is wrong (home-45)', sample: 'Linux is on the roadmap' },
-  { re: /Windows\s*1[01]|macOS\s*1\d|64-bit|Apple Silicon|\bIntel\b|\bARM\b/i, why: 'OS versions and architectures with no source in the repo (home-40)', sample: 'Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel)' },
+  { re: /Linux is on the roadmap|roadmap/i, why: 'the desktop target is Ubuntu 24.04 x64 (home-45)', sample: 'Linux is on the roadmap' },
+  { re: /Windows\s*1[01]|macOS\s*1\d|\b(?:Windows|Ubuntu)\s+arm64\b/i, why: 'unverified Windows/macOS version floors or unsupported arm64 targets (home-40)', sample: 'Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel)' },
   { re: /cancel anytime/i, why: 'no billing exists, so there is nothing to cancel (home-33)', sample: 'Simple pricing. Cancel anytime.' },
   { re: /\$\s?\d|\/\s?month|\bper month\b/i, why: 'a price or billing period: prices are undecided and come from the API (home-33)', sample: '$19 / month' },
   { re: /MOST POPULAR/, why: 'Pro cannot be bought yet (home-33)', sample: 'MOST POPULAR' },

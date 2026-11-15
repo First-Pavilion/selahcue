@@ -29,7 +29,7 @@ const features = [
   {
     icon: 'list',
     title: 'Service plans & timers',
-    description: 'Build the order of service and run a service countdown from the console or your phone.'
+    description: 'Build the order of service and run a service countdown from the console.'
   },
   {
     icon: 'layout',
@@ -43,8 +43,8 @@ const features = [
   },
   {
     icon: 'mic',
-    title: 'Optional cloud AI assistance',
-    description: 'Cloud transcription and sermon notes require an internet connection and consent.'
+    title: 'Optional transcription & sermon notes',
+    description: 'Listen on-device or, when available, opt in to cloud transcription and request sermon notes online.'
   }
 ]
 
@@ -86,19 +86,18 @@ const steps = [
   },
   {
     title: 'Control from your phone',
-    description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
+    description: 'If you already have the SelahCue Controller, you can pair it over your local network to control slides.'
   }
 ]
 
-/* The platforms answer names Windows, macOS and Linux and no version number, architecture or file format: the product is available for all three (owner, 2026-10-04) and the repo gives no figure (audit home-38, 40, 45). */
 const faqItems = [
   {
     question: 'Do I need an internet connection?',
-    answer: 'Core live controls work offline. Cloud transcription and sermon notes require an internet connection and consent.'
+    answer: 'Core live controls work offline. Sign-in, device activation and the first download of the on-device speech model need internet access. When available, optional cloud transcription and requested sermon notes need internet access and separate consent.'
   },
   {
     question: 'Which platforms are supported?',
-    answer: 'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.'
+    answer: 'Desktop releases target Windows x64, macOS on Apple silicon (arm64) and Intel (x64), and Ubuntu 24.04 x64. The SelahCue Controller app is not in the App Store or Google Play yet.'
   },
   {
     question: 'Can I use my own slides and designs?',

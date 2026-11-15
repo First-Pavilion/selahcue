@@ -357,16 +357,16 @@ export const supportArticles: readonly KnowledgeArticle[] = [
     slug: 'transcription-will-not-start',
     keywords: ['speech', 'whisper', 'microphone', 'mic', 'model', 'download', 'transcript'],
     title: 'Transcription will not start',
-    summary: 'The first-time model download, the error messages you may see, and a silent microphone.',
+    summary: 'First-time setup for on-device transcription, microphone errors, and what to check when cloud assistance is unavailable.',
     body: [
       { type: 'h2', text: 'The first time: a model download' },
       {
         type: 'p',
-        text: 'Transcription runs on your computer. The speech model is not part of the installer: it is downloaded the first time you press **Start listening**, and that needs an internet connection once. After it finishes, SelahCue works fully offline. Cancelling or an interruption does not resume; start the download again.',
+        text: 'In local mode, the speech model runs on your computer. The first time you press **Start listening** in local mode, connect to the internet to download the model. Local transcription can run offline once the download finishes. If the download stops or you cancel it, start it again from the beginning.',
       },
       {
         type: 'p',
-        text: 'The size depends on the build: roughly 1.6 GB for a GPU build, about 490 MB for a CPU-only build such as the Windows installer, and about 150 MB for the smallest. The dialog may quote one figure for every build.',
+        text: 'The download size depends on the model in your build. Allow time and disk space for the download before the service.',
       },
       { type: 'h2', text: 'Messages and what they mean' },
       {
@@ -388,7 +388,15 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'callout',
         variant: 'info',
         title: 'Where the audio goes',
-        text: 'Transcription is on-device by default. Cloud transcription is a developer option that is not part of release builds, so a release build uses on-device transcription. If cloud is selected in Settings, the console says why it is using on-device instead, for example that cloud-transcription consent has not been granted or that the build does not include it.',
+        text: 'If cloud transcription is available and you opt in, the desktop app streams audio directly to Deepgram over the internet. When you request a sermon note, the app sends the transcript text to SelahCue for processing. That request needs separate consent and an internet connection.',
+      },
+      {
+        type: 'p',
+        text: 'For cloud assistance, check that you’re signed in, your desktop is activated, your consent for that feature is current, and your church has weekly allowance left. Cloud access may still be getting set up for your account, or the service may be temporarily unavailable. For transcription, you can switch to local mode if you have its model downloaded.',
+      },
+      {
+        type: 'p',
+        text: 'If a sermon note request fails, keep the source transcript and any prior draft. Retry when the connection and cloud service are working again and you have consent and allowance for a new request.',
       },
     ],
   },

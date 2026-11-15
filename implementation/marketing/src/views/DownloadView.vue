@@ -34,7 +34,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
           <ToneChip kind="row" tone="brand">MOBILE CONTROL</ToneChip>
           <h2>Control from your phone</h2>
           <p class="mobile-lead">
-            The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.
+            If you already have the SelahCue Controller, you can pair it over your local network. Scan the QR code and approve the phone on the desktop. You can keep running the service from the desktop if the phone disconnects.
           </p>
           <ul class="mobile-bullets">
             <li>
