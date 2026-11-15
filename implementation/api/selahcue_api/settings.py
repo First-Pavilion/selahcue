@@ -157,6 +157,7 @@ INSTALLED_APPS = [
     "selahcue_api.apps.license_keys.apps.SelahCueLicenseKeysConfig",
     "selahcue_api.apps.catalogue.apps.SelahCueCatalogueConfig",
     "selahcue_api.apps.usage.apps.SelahCueUsageConfig",
+    "selahcue_api.apps.providers.apps.SelahCueProvidersConfig",
     "selahcue_api.apps.entitlements.apps.SelahCueEntitlementsConfig",
     "selahcue_api.apps.downloads.apps.SelahCueDownloadsConfig",
     "selahcue_api.apps.pilot_downloads.apps.SelahCuePilotDownloadsConfig",
@@ -461,7 +462,17 @@ from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it
 # be declared with @shared_task inside some installed app's `tasks.py`, the only module
 # `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
 # interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
+CELERY_TASK_ROUTES = {
+    f"providers.{name}": {"queue": "provider_provisioning"}
+    for name in ("provision", "recover", "inventory_page", "publish_outbox", "sweep")
+}
+
 CELERY_BEAT_SCHEDULE = {
+    "sweep-provider-provisioning": {
+        "task": "providers.sweep",
+        "schedule": 5.0,
+        "options": {"queue": "provider_provisioning"},
+    },
     # Hourly: a revoked licence should stop working within the hour, not at expiry.
     "cascade-license-revocations": {
         "task": "devices.cascade_license_revocations",
@@ -831,3 +842,23 @@ ACCOUNT_RESET_REQUEST_MIN_SECONDS = float(os.getenv("ACCOUNT_RESET_REQUEST_MIN_S
 # Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
 # the emails minted here link to live token-landing pages.
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
+
+
+def _provider_flag(name: str) -> bool:
+    raw = os.getenv(name, "")
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if raw == "" or normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ImproperlyConfigured(f"PCFG_SCHEMA_INVALID ({name})")
+
+
+SELAHCUE_PROVIDER_PROCESS_ROLE = os.getenv("SELAHCUE_PROVIDER_PROCESS_ROLE", "maintenance")
+SELAHCUE_CLOUD_STT_ENABLED = _provider_flag("SELAHCUE_CLOUD_STT_ENABLED")
+SELAHCUE_CLOUD_NOTES_ENABLED = _provider_flag("SELAHCUE_CLOUD_NOTES_ENABLED")
+SELAHCUE_PROVIDER_PROVISIONING_ENABLED = _provider_flag("SELAHCUE_PROVIDER_PROVISIONING_ENABLED")
+SELAHCUE_PROVIDER_KEYRING_FILE = os.getenv("SELAHCUE_PROVIDER_KEYRING_FILE", "")
+SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE = os.getenv("SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE", "")
+SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE = os.getenv("SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE", "")
+SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE = os.getenv("SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE", "")

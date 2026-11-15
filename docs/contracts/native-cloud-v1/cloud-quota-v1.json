@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "disabled_uninitialized",
+      "valid": true,
+      "expected": "quota",
+      "request": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "stt": {
+            "meter": "stt",
+            "limit": 1200,
+            "settled": 0,
+            "held": 0,
+            "carried_debt": 0,
+            "remaining": 1200,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "not_initialized"
+          },
+          "notes": {
+            "meter": "notes",
+            "limit": 1,
+            "settled": 0,
+            "held": 0,
+            "carried_debt": 0,
+            "remaining": 1,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "not_initialized"
+          },
+          "policies": {
+            "stt": null,
+            "notes": null
+          }
+        }
+      }
+    },
+    {
+      "name": "enabled_stt_fresh_observation",
+      "valid": true,
+      "expected": "quota",
+      "request": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "stt": {
+            "meter": "stt",
+            "limit": 1200,
+            "settled": 300,
+            "held": 300,
+            "carried_debt": 0,
+            "remaining": 600,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "current_observed"
+          },
+          "notes": {
+            "meter": "notes",
+            "limit": 1,
+            "settled": 0,
+            "held": 1,
+            "carried_debt": 0,
+            "remaining": 0,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "stale"
+          },
+          "policies": {
+            "stt": {
+              "policy_version": "stt-direct-v1",
+              "consent_version": "stt-direct-audio-v1"
+            },
+            "notes": null
+          }
+        }
+      }
+    },
+    {
+      "name": "enabled_stt_stale_observation",
+      "valid": true,
+      "expected": "quota",
+      "request": null,
+      "response": {
+        "status": 200,
+        "headers": {
+          "Cache-Control": "no-store"
+        },
+        "body": {
+          "stt": {
+            "meter": "stt",
+            "limit": 1200,
+            "settled": 301,
+            "held": 600,
+            "carried_debt": 42,
+            "remaining": 257,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "stale"
+          },
+          "notes": {
+            "meter": "notes",
+            "limit": 1,
+            "settled": 1,
+            "held": 0,
+            "carried_debt": 0,
+            "remaining": 0,
+            "as_of": "2026-11-15T12:00:00.000000Z",
+            "resets_at": "2026-11-16T00:00:00.000000Z",
+            "status": "stale"
+          },
+          "policies": {
+            "stt": {
+              "policy_version": "stt-direct-v1",
+              "consent_version": "stt-direct-audio-v1"
+            },
+            "notes": null
+          }
+        }
+      }
+    }
+  ]
+}

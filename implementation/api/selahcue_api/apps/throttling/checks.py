@@ -49,3 +49,23 @@ def trusted_proxy_count_is_set_behind_a_proxy(app_configs, **kwargs):
             id=SHARED_BUCKET_WARNING,
         )
     ]
+
+
+
+def _cloud_cache_key_valid():
+    from django.core.cache import caches
+
+    if not _uses_a_shared_cache():
+        return True
+    key = "cloud:v1:{org:1}:admission:org"
+    sample = caches["default"].make_key(key)
+    return sample.endswith(key) and sample.find("{") == sample.find("{org:1}")
+
+
+@register()
+def cloud_cache_key_prefix_is_safe(app_configs=None, **kwargs):
+    from django.core.checks import Error
+
+    if _cloud_cache_key_valid():
+        return []
+    return [Error("The cache key format must preserve the cloud budget hash tag.", id="selahcue_throttling.E001")]

@@ -71,6 +71,10 @@ EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/downloads:prepare",
     "v1/downloads/<str:lease_id>:complete",
     "v1/usage-events:batch",
+    # Cloud views authenticate only the Bearer header. They cannot use the
+    # account cookie and own their method-only refusals.
+    "v1/stt/session",
+    "v1/quota",
     # Dedicated authenticated n8n server callbacks; never ambient cookie/device
     # auth, and disabled until explicit collection policy is configured (P13).
     "v1/pilot/registrations:reserve",

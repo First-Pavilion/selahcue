@@ -1,9 +1,11 @@
 from django.urls import path
 
-from selahcue_api.platform import views
+from selahcue_api.platform import cloud_views, views
 
 
 urlpatterns = [
+    path("stt/session", cloud_views.stt_session, name="stt-session"),
+    path("quota", cloud_views.cloud_quota, name="cloud-quota"),
     path("activations:bound", views.activate_device_bound, name="activation-bound"),
     path("activations:bound-with-session", views.activate_device_bound_with_session,
          name="activation-bound-with-session"),

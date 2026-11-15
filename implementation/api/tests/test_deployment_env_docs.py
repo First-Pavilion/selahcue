@@ -347,7 +347,7 @@ def _describe(mentions: list[Mention], names) -> str:
 # the extractor has gone blind to something, which a hard-coded "at least N reads" would not notice
 # until N happened to be crossed.
 NAIVE_READ = re.compile(
-    r"""(?:\b(?:getenv|env_bool|env_list|_socket_timeout_seconds|_csrf_trusted_origins)\(|environ\.get\(|environ\[)"""
+    r"""(?:\b(?:getenv|env_bool|env_list|_provider_flag|_socket_timeout_seconds|_csrf_trusted_origins)\(|environ\.get\(|environ\[)"""
     r"""\s*["']([A-Z][A-Z0-9_]*)["']"""
 )
 
