@@ -92,3 +92,15 @@ describe('legal-drift workflow', { skip: !PRESENT && 'repository workflows are n
     assert.ok(!ci.includes('check:legal'), 'keep the drift guard in its own workflow')
   })
 })
+
+const NOTES = `${REPO}docs/legal/LEGAL-DRAFT-NOTES.md`
+
+test('publication gates distinguish runtime evidence from deferred paid features', { skip: !existsSync(NOTES) && 'legal notes are not present' }, () => {
+  const gates = readFileSync(NOTES, 'utf8').split('\n## 4. ')[1].split('\n## 5. ')[0]
+  for (const id of ['L-1', 'L-16', 'L-26', 'L-28', 'L-29b', 'L-30', 'L-36', 'L-37', 'L-38']) {
+    assert.match(gates, new RegExp(`^\\| ${id} \\| Gate`, 'm'), `${id} must remain a publication gate`)
+  }
+  for (const id of ['L-20', 'L-21', 'L-22', 'L-23', 'L-25', 'L-49', 'L-57']) {
+    assert.match(gates, new RegExp(`^\\| ${id} \\| Out of scope`, 'm'), `${id} must retain its history with the current release scope`)
+  }
+})

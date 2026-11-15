@@ -83,11 +83,12 @@ templates only (no `v-html`).
 - **A draft fails closed.** A page shows the draft banner, highlights placeholders and sends `noindex`
   while ANY of these holds: a `{{PLACEHOLDER}}` remains, the document still has its DRAFT banner, or its
   version status is anything other than exactly `final` (so `final draft`, `pending review` or a typo stay drafts). Filling every placeholder is not publishing.
-- **To publish** (only once the launch-readiness conditions in `docs/legal/LEGAL-DRAFT-NOTES.md`
-  section 4 are met): in the markdown, delete the DRAFT `>` banner, make sure a
+- **To publish**, fill every placeholder, satisfy the publication gates in
+  `docs/legal/LEGAL-DRAFT-NOTES.md` section 4 and obtain qualified counsel's sign-off. In the
+  markdown, delete the DRAFT `>` banner and make sure a
   `Version X.Y (final, YYYY-MM-DD).` paragraph sits directly under the `#` title (generation fails if there
-  is no version line, so "Last updated" cannot silently disappear), and fill every placeholder; then run
-  `npm run sync:legal`. No code changes.
+  is no version line, so "Last updated" cannot silently disappear). Then run `npm run sync:legal`
+  and commit the source and generated files together.
 - Tests: `npm test` (content pipeline, drift, rendering). `npm run test:legal-pages` builds the site and
   drives `/privacy` and `/terms` in real Chrome at five widths (needs `pip install playwright`).
 
