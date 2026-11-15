@@ -434,7 +434,8 @@ def activate_device_bound_with_session(request):
 @throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
-    status to refresh its cached offline entitlement (DEC-004). Pure read; device-token auth."""
+    status to update its cached offline entitlement (DEC-004). An eligible managed Free licence
+    and the presented live device token may be renewed."""
     try:
         result = _refresh_license_service(_device_bearer_token(request))
     except SafeAPIError as error:
