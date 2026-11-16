@@ -358,6 +358,45 @@ class CrashJournalCLI(unittest.TestCase):
         self.assertFalse(overflow["candidate_scan_complete"])
         self.assertTrue({"thread_limit", "join_incomplete"} <= set(overflow["omission_reasons"]))
 
+    def test_malformed_header_cannot_attach_frame_zero_to_previous_thread(self):
+        collector = runpy.run_path(str(COLLECTOR))
+        for header in ("Stack trace  of thread 4204:", "Stack\ttrace of thread 4204:"):
+            with self.subTest(header=header):
+                data = jsonl(record(
+                    COREDUMP_SIGNAL_NAME="SIGSEGV",
+                    MESSAGE=(
+                        "Stack trace of thread 4201:\n"
+                        f"#4 {ABSOLUTE_PC} abort (libc.so.6 + 0x12)\n"
+                        f"{header}\n"
+                        "#0  0x00007f0000001234 n/a (libWPEWebKit-2.0.so.1 + 0x1234)\n"
+                    ),
+                ))
+                result = collector["summary"]("available")
+                collector["collect"](result, data, False, int(SINCE), int(UNTIL))
+                threads = result["records"][0]["threads"]
+                self.assertEqual([(t["tid"], [f["ordinal"] for f in t["frames"]]) for t in threads],
+                                 [(4201, [4])])
+                self.assertIsNone(threads[0]["_frame_zero"])
+                self.assertFalse(result["candidate_scan_complete"])
+                self.assertTrue({"malformed", "join_incomplete"} <= set(result["omission_reasons"]))
+
+    def test_unclassifiable_frame_ordinal_invalidates_zero_regardless_of_order(self):
+        collector = runpy.run_path(str(COLLECTOR))
+        canonical = f"#0 {ABSOLUTE_PC} abort (libc.so.6 + 0x12)\n"
+        conflicting = "#\t0  0x00007f0000001234 n/a (libWPEWebKit-2.0.so.1 + 0x1234)\n"
+        for frames in (canonical + conflicting, conflicting + canonical):
+            with self.subTest(frames=frames):
+                data = jsonl(record(
+                    COREDUMP_SIGNAL_NAME="SIGSEGV",
+                    MESSAGE="Stack trace of thread 4201:\n" + frames,
+                ))
+                result = collector["summary"]("available")
+                collector["collect"](result, data, False, int(SINCE), int(UNTIL))
+                thread = result["records"][0]["threads"][0]
+                self.assertIsNone(thread["_frame_zero"])
+                self.assertEqual(thread["frames"], [])
+                self.assertTrue({"malformed", "ordinal_missing"} <= set(result["omission_reasons"]))
+
     def test_duplicate_tid_and_ordinal_leave_frame_zero_unusable(self):
         first = record()["MESSAGE"]
         cases = [

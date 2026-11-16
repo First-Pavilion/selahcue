@@ -88,7 +88,8 @@ FRAME = re.compile(
 )
 # Parse canonical spellings, but recognize malformed structural lines so they
 # cannot silently change the owner or reliability of following frame evidence.
-LEADING_CONTROL = re.compile(r"^[\x00-\x20]*")
+LEADING_CONTROL = re.compile(r"^[\s\x00-\x1f\x7f]*")
+THREAD_START = re.compile(r"Stack[\s\x00-\x1f\x7f]*trace", re.IGNORECASE)
 MODULE_ID_LINE = re.compile(r"Module ([!-~]+), build-id=([0-9a-f]{8,128})")
 BUILD_ID = re.compile(r"(?:[0-9a-f]{2}){4,64}")
 BOOT_ID = re.compile(r"[0-9a-f]{32}")
@@ -261,8 +262,8 @@ def stack(message, parity_exe=None):
         return [], {"malformed", "ordinal_missing"}, False
 
     for line in message.split("\n"):
-        possible = LEADING_CONTROL.sub("", line).lstrip()
-        if possible.startswith("Stack trace of thread"):
+        possible = LEADING_CONTROL.sub("", line)
+        if THREAD_START.match(possible):
             current = None
             match = THREAD.fullmatch(line)
             if not match or int(match[1]) > MAX_TID:
@@ -295,10 +296,9 @@ def stack(message, parity_exe=None):
             continue
 
         ordinal_match = ORDINAL.match(possible)
-        if ordinal_match is None:
-            reasons.add("malformed")
-            continue
-        ordinal = int(ordinal_match[1])
+        # An unclassifiable ordinal may be a competing zero. Reserve that
+        # ordinal so the duplicate check handles either order of the lines.
+        ordinal = int(ordinal_match[1]) if ordinal_match else 0
         bit = 1 << ordinal
         frames = current["frames"]
         if ordinals & bit:
