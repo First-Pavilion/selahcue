@@ -241,16 +241,27 @@ def test_actual_loopback_usage_network_stalls_respect_absolute_deadline(tmp_path
         fixture = Thread(target=server, daemon=True)
         fixture.start()
         stub = tmp_path / "transport.py"
-        connection_type = "HTTPSConnection" if mode == "tls-handshake" else "HTTPConnection"
-        context_argument = ", context=context" if mode == "tls-handshake" else ""
+        if mode == "tls-handshake":
+            # The stdlib constructor resolves HTTPSConnection in its explicit super() call.
+            redirect = (
+                "original=http.client.HTTPSConnection.__init__\n"
+                "def loopback(self, host, *, port, timeout, context):\n"
+                "    assert (host,port)==('api.deepgram.com',443)\n"
+                f"    original(self, '127.0.0.1', port={port}, timeout=timeout, context=context)\n"
+                "http.client.HTTPSConnection.__init__=loopback\n"
+            )
+        else:
+            redirect = (
+                "original=http.client.HTTPConnection\n"
+                "def loopback(host, *, port, timeout, context):\n"
+                "    assert (host,port)==('api.deepgram.com',443)\n"
+                f"    return original('127.0.0.1', port={port}, timeout=timeout)\n"
+                "http.client.HTTPSConnection=loopback\n"
+            )
         stub.write_text(
             "import http.client,runpy\n"
-            f"original=http.client.{connection_type}\n"
-            "def loopback(host, *, port, timeout, context):\n"
-            "    assert (host,port)==('api.deepgram.com',443)\n"
-            f"    return original('127.0.0.1', port={port}, timeout=timeout{context_argument})\n"
-            "http.client.HTTPSConnection=loopback\n"
-            f"runpy.run_path({str(usage_transport._CHILD)!r},run_name='__main__')\n"
+            + redirect
+            + f"runpy.run_path({str(usage_transport._CHILD)!r},run_name='__main__')\n"
         )
         started = time.monotonic_ns() - 7_800_000_000
         try:
