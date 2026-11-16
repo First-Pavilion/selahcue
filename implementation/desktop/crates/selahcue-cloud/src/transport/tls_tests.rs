@@ -195,20 +195,18 @@ fn serve(leaf_der: Vec<u8>, key_der: Vec<u8>, connections: usize) -> TestServer 
             let mut tls = rustls::StreamOwned::new(conn, tcp);
             let mut head = Vec::new();
             let mut buf = [0u8; 2048];
-            let mut got_request = false;
             loop {
                 match tls.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         head.extend_from_slice(&buf[..n]);
                         if head.windows(4).any(|w| w == b"\r\n\r\n") {
-                            got_request = true;
                             break;
                         }
                     }
                 }
             }
-            if !got_request {
+            if head.is_empty() {
                 let _ = tx.send(Seen::HandshakeFailed);
                 continue;
             }
@@ -234,42 +232,11 @@ fn transport_trusting(ca: &TestCa) -> ReqwestTransport {
     ReqwestTransport::build(&[root]).expect("a client that trusts the test root")
 }
 
-/// Send the probe request through the real client and return the whole error chain, panicking if
-/// it succeeds. The chain (not just `TransportError`'s top line, which reads only "error sending
-/// request") is what proves a refusal was a *certificate* refusal and not, say, a refused
-/// connection that would make every "refused" assertion pass for the wrong reason. The leading
-/// text of the certificate cause comes from rustls and is the same on every platform.
-fn refusal_chain(t: &ReqwestTransport, url: &str) -> String {
-    use std::error::Error as _;
-    let err = match t
-        .client
-        .post(url)
-        .header("content-type", "application/json")
-        .body(BODY)
-        .bearer_auth(BEARER)
-        .send()
-    {
-        Ok(r) => panic!(
-            "the request was accepted ({}) when it had to be refused",
-            r.status()
-        ),
-        Err(e) => e,
-    };
-    let mut chain = vec![err.to_string()];
-    let mut cause = err.source();
-    while let Some(c) = cause {
-        chain.push(c.to_string());
-        cause = c.source();
-    }
-    let text = chain.join(" | ");
-    assert!(!text.contains(BEARER), "the bearer leaked into: {text}");
-    assert!(!text.contains("PROBE-BODY"), "the body leaked into: {text}");
-    assert!(
-        text.contains("invalid peer certificate"),
-        "the request failed, but not because the certificate was refused (so a refusal test \
-         would pass for the wrong reason): {text}"
-    );
-    text
+/// Exercise the public transport seam; a connection failure must not pass for TLS refusal.
+fn assert_certificate_refused(t: &ReqwestTransport, url: &str) {
+    let err = post(t, url).expect_err("a bad certificate must be refused");
+    must_not_have_leaked(&err);
+    assert_eq!(err.0, "cloud TLS certificate rejected");
 }
 
 fn post(t: &ReqwestTransport, url: &str) -> Result<crate::transport::HttpResponse, TransportError> {
@@ -309,42 +276,64 @@ fn a_server_signed_by_a_root_outside_the_store_is_refused_and_sees_no_request() 
     assert_loopback_is_not_proxied();
     let ca = new_ca("Probe Root B (not in any store)");
     let (leaf_der, key) = leaf(&ca, &["localhost"], valid_now());
-    let server = serve(leaf_der, key, 2);
+    let server = serve(leaf_der, key, 3);
     // The production constructor: no extra root, so only the operating-system store counts.
     let t = ReqwestTransport::new().expect("production transport");
-    // Once through the public seam (what the operator sees) ...
-    let err = post(&t, &server.url())
-        .expect_err("a certificate from a root the machine does not trust must be refused");
-    must_not_have_leaked(&err);
-    // The text a user sees must say WHY (a bare "error sending request" cannot tell a certificate
-    // problem from a dead network), while still naming the URL as before and nothing the request
-    // carried.
-    let shown = err.to_string();
-    assert!(
-        shown.starts_with("error sending request for url ("),
-        "the URL-bearing first line should be kept as it was: {shown}"
+    assert_certificate_refused(&t, &format!("{}?secret=PROBE-QUERY", server.url()));
+    assert!(matches!(server.outcome(), Seen::HandshakeFailed));
+
+    let mut config = selahcue_core::providers::ProvidersConfig::default();
+    config.consent.cloud_notes = true;
+    let outcome = crate::generate_sermon_notes_with_factory(
+        &config,
+        "Probe transcript stays on this computer.",
+        true,
+        || {
+            Ok(crate::SelahCueCloudClient::new(
+                t,
+                format!("https://localhost:{}", server.addr.port()),
+                crate::Token::new(BEARER),
+            ))
+        },
+        &crate::LocalNoteProvider::new(),
+    )
+    .expect("TLS refusal must produce a local draft");
+    assert_eq!(outcome.provider_label, "Local (offline)");
+    assert_eq!(
+        outcome.draft.title,
+        "Probe transcript stays on this computer"
     );
-    assert!(
-        shown.contains("invalid peer certificate"),
-        "the send error dropped the certificate cause: {shown}"
+    assert_eq!(
+        outcome.degraded_reason,
+        Some(super::DegradedNoteReason::CertificateRejected)
     );
-    assert!(
-        matches!(server.outcome(), Seen::HandshakeFailed),
-        "first connection"
-    );
-    // ... and once for the cause, which must be the certificate and nothing the request carried.
-    let chain = refusal_chain(&t, &server.url());
-    assert!(
-        chain.contains("UnknownIssuer") || chain.contains("certificate"),
-        "unexpected refusal reason: {chain}"
-    );
-    match server.outcome() {
-        Seen::HandshakeFailed => {}
-        Seen::Request(head) => panic!(
-            "the client wrote a request to a server it could not verify, so the bearer and the \
-             body left the machine: {head}"
-        ),
+    assert!(matches!(server.outcome(), Seen::HandshakeFailed));
+
+    // The native pilot's async client must carry the same category.
+    struct WallClock;
+    impl selahcue_core::deadline::Clock for WallClock {
+        fn now(&self) -> selahcue_core::deadline::ClockReading {
+            selahcue_core::deadline::ClockReading {
+                wall: Some(std::time::SystemTime::now()),
+                monotonic: std::time::Instant::now(),
+            }
+        }
     }
+    let deadline = selahcue_core::deadline::AccessDeadline::admit(
+        std::time::SystemTime::now() + Duration::from_secs(30),
+        Arc::new(WallClock),
+    )
+    .expect("admit a synthetic deadline");
+    let t = crate::deadline_transport::DeadlineTransport::new(
+        deadline,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .expect("deadline-bound transport");
+    let err = t
+        .post_json(&server.url(), BODY, Some(BEARER))
+        .expect_err("async transport must also refuse the certificate");
+    assert_eq!(err.0, "cloud TLS certificate rejected");
+    assert!(matches!(server.outcome(), Seen::HandshakeFailed));
 }
 
 #[test]
@@ -354,7 +343,7 @@ fn a_certificate_for_another_name_is_refused_even_when_its_root_is_trusted() {
     let (leaf_der, key) = leaf(&ca, &["not-localhost.example"], valid_now());
     let server = serve(leaf_der, key, 1);
     let t = transport_trusting(&ca);
-    refusal_chain(&t, &server.url());
+    assert_certificate_refused(&t, &server.url());
     assert!(
         matches!(server.outcome(), Seen::HandshakeFailed),
         "a request reached a server whose certificate names a different host"
@@ -368,7 +357,7 @@ fn an_expired_certificate_is_refused_even_when_its_root_is_trusted() {
     let (leaf_der, key) = leaf(&ca, &["localhost"], EXPIRED);
     let server = serve(leaf_der, key, 1);
     let t = transport_trusting(&ca);
-    refusal_chain(&t, &server.url());
+    assert_certificate_refused(&t, &server.url());
     assert!(
         matches!(server.outcome(), Seen::HandshakeFailed),
         "a request reached a server presenting an expired certificate"
@@ -383,7 +372,7 @@ fn trusting_one_root_does_not_trust_a_certificate_signed_by_another() {
     let (leaf_der, key) = leaf(&rogue, &["localhost"], valid_now());
     let server = serve(leaf_der, key, 1);
     let t = transport_trusting(&trusted);
-    refusal_chain(&t, &server.url());
+    assert_certificate_refused(&t, &server.url());
     assert!(
         matches!(server.outcome(), Seen::HandshakeFailed),
         "a request reached a server signed by a root the client was not given"
@@ -408,7 +397,7 @@ fn a_root_given_to_one_client_does_not_leak_into_a_production_client() {
     let (l2, k2) = leaf(&ca, &["localhost"], valid_now());
     let second = serve(l2, k2, 1);
     let production = ReqwestTransport::new().expect("a second production transport");
-    refusal_chain(&production, &second.url());
+    assert_certificate_refused(&production, &second.url());
     assert!(
         matches!(second.outcome(), Seen::HandshakeFailed),
         "the production client wrote a request after another client was given the root"
@@ -417,23 +406,14 @@ fn a_root_given_to_one_client_does_not_leak_into_a_production_client() {
 
 #[test]
 fn a_client_that_cannot_be_built_is_a_transport_error_with_a_reason_not_a_panic() {
-    // A root that is not a certificate stands in for "the TLS roots could not be loaded" (on Linux,
-    // an empty CA bundle takes the same road: `Client::build` fails and `new()` must say why).
-    let bogus = reqwest::Certificate::from_der(b"this is not a certificate")
-        .expect("reqwest defers validation of a DER root to build time");
-    let err = match ReqwestTransport::build(&[bogus]) {
+    // reqwest holds the invalid header until build. An unrelated builder error
+    // must be labeled generically and must not expose the diagnostic.
+    let builder = ReqwestTransport::shipped_builder(&[]).user_agent("PROBE-SETUP\r\n<img src=x>");
+    let err = match ReqwestTransport::from_builder(builder) {
         Err(e) => e,
-        Ok(_) => panic!("a client was built from a root that is not a certificate"),
+        Ok(_) => panic!("a client was built with a malformed User-Agent"),
     };
-    let text = err.to_string();
-    assert!(
-        text.starts_with("could not set up TLS"),
-        "the failure should say it is a TLS set-up failure, not just 'builder error': {text}"
-    );
-    assert!(
-        text.len() > "could not set up TLS".len(),
-        "no reason was given: {text}"
-    );
+    assert_eq!(err.0, "cloud HTTP client setup failed");
 }
 
 #[test]
@@ -514,10 +494,7 @@ fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
         "took {:?}",
         started.elapsed()
     );
-    assert!(
-        err.to_string().to_lowercase().contains("timed out"),
-        "the failure should say it timed out: {err}"
-    );
+    assert_eq!(err.0, "cloud transport unavailable");
 }
 
 // Bypass our request wrapper deliberately: this pins the separate reqwest builder guard.

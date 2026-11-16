@@ -1017,18 +1017,25 @@ impl<T: HttpTransport> OpenAiNoteProvider<T> {
     /// case: a release build must not construct a working provider from a key that happens to
     /// already be exported, not merely report one it declines to use.
     pub fn from_env(transport: T) -> Option<Self> {
+        Self::from_env_with_transport(|| Ok(transport)).ok()
+    }
+
+    /// Select the developer credentials before attempting fallible transport construction.
+    /// Consent is enforced separately by the shared note generator.
+    pub fn from_env_with_transport<F>(build: F) -> Result<Self, NoteError>
+    where
+        F: FnOnce() -> Result<T, NoteError>,
+    {
         if !direct_key_permitted(cfg!(debug_assertions)) {
-            return None;
+            return Err(NoteError::NotConfigured);
         }
-        let key = std::env::var(API_KEY_ENV).ok()?;
+        let key = std::env::var(API_KEY_ENV).map_err(|_| NoteError::NotConfigured)?;
         if key.trim().is_empty() {
-            return None;
+            return Err(NoteError::NotConfigured);
         }
-        Some(OpenAiNoteProvider::new(
-            transport,
-            crate::secret::Token::new(key),
-            model_from_env(),
-        ))
+        let key = crate::secret::Token::new(key);
+        let model = model_from_env();
+        Ok(Self::new(build()?, key, model))
     }
 
     /// The model this provider will call. Never secret.

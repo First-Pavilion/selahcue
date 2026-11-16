@@ -4,8 +4,8 @@
 //! a root INTO "the platform store" and so exercise the production constructor, `new()`, with no
 //! test-only trust hook at all.
 //!
-//! - an empty CA bundle: `ReqwestTransport::new()` fails CLOSED with a `TransportError` that says
-//!   why ("No CA certificates were loaded from the system"), never panics, never trusts anything;
+//! - an empty CA bundle: `ReqwestTransport::new()` fails closed and eligible generation uses
+//!   the offline provider with the fixed empty-root reason;
 //! - a bundle holding the test CA: `new()` succeeds and a server signed by that CA is ACCEPTED
 //!   (the case the other TLS tests can only reach through a private constructor);
 //! - the same client refuses a server signed by a CA that is not in the bundle, and that server
@@ -13,8 +13,7 @@
 //!
 //! Compiled only on Unix that is not Apple and not Android, the platforms where this verifier reads
 //! a bundle, and written without being able to run it on macOS: it runs under Linux (CI, and a
-//! container in the PR evidence). Its own process with one test, because it edits the environment
-//! before the first client reads it.
+//! container in the PR evidence). Each environment runs in its own child process.
 
 #![cfg(all(
     feature = "http",
@@ -29,6 +28,11 @@ use rcgen::{
     Issuer, KeyPair, KeyUsagePurpose,
 };
 use selahcue_cloud::transport::{HttpTransport, ReqwestTransport};
+use selahcue_cloud::{
+    generate_sermon_notes_with_factory, DegradedNoteReason, LocalNoteProvider, SelahCueCloudClient,
+    Token,
+};
+use selahcue_core::providers::{NoteError, ProvidersConfig};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{mpsc, Arc};
@@ -115,19 +119,18 @@ fn serve_once(ca: &Ca) -> (u16, mpsc::Receiver<bool>) {
         let mut tls = rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), tcp);
         let mut head = Vec::new();
         let mut buf = [0u8; 2048];
-        let mut got = false;
         loop {
             match tls.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     head.extend_from_slice(&buf[..n]);
                     if head.windows(4).any(|w| w == b"\r\n\r\n") {
-                        got = true;
                         break;
                     }
                 }
             }
         }
+        let got = !head.is_empty();
         let _ = tx.send(got);
         if got {
             let _ = tls
@@ -142,41 +145,153 @@ fn serve_once(ca: &Ca) -> (u16, mpsc::Receiver<bool>) {
 
 #[test]
 fn the_system_store_decides_who_is_trusted_and_an_empty_one_fails_closed() {
-    let dir = std::env::temp_dir().join(format!("selahcue-cloud-store-{}", std::process::id()));
-    let empty_dir = dir.join("empty-dir");
-    std::fs::create_dir_all(&empty_dir).unwrap();
-    let empty_bundle = dir.join("empty.pem");
-    std::fs::write(&empty_bundle, b"").unwrap();
+    use std::{path::PathBuf, process::Command};
 
-    // 1. An empty bundle: fail closed, say why, do not panic.
-    std::env::set_var("SSL_CERT_FILE", &empty_bundle);
-    std::env::set_var("SSL_CERT_DIR", &empty_dir);
-    for v in [
-        "NO_PROXY",
-        "no_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-    ] {
-        std::env::remove_var(v);
+    struct Cleanup(PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
-    let err = match ReqwestTransport::new() {
-        Err(e) => e,
-        Ok(_) => panic!("a transport was built with no CA certificates at all"),
-    };
-    let text = err.to_string();
-    assert!(text.starts_with("could not set up TLS"), "{text}");
-    assert!(
-        text.contains("No CA certificates were loaded from the system"),
-        "the failure should name the cause: {text}"
-    );
 
-    // 2. A bundle holding the test CA: new() works with no test-only hook, and a server signed by
-    //    that CA is accepted.
+    const CHILD: &str = "SELAHCUE_TRUST_STORE_TEST_CASE";
+    let Ok(case) = std::env::var(CHILD) else {
+        let dir = std::env::temp_dir().join(format!("selahcue-cloud-store-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let _cleanup = Cleanup(dir.clone());
+        let empty_dir = dir.join("empty-dir");
+        std::fs::create_dir(&empty_dir).unwrap();
+        let empty_bundle = dir.join("empty.pem");
+        std::fs::write(&empty_bundle, b"").unwrap();
+
+        for (case, key) in [
+            ("empty", None::<&str>),
+            ("trusted", None),
+            #[cfg(feature = "openai")]
+            ("missing-key", None),
+            #[cfg(feature = "openai")]
+            ("blank-key", Some("   ")),
+        ] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "the_system_store_decides_who_is_trusted_and_an_empty_one_fails_closed",
+                ])
+                .env(CHILD, case)
+                .env("SSL_CERT_FILE", &empty_bundle)
+                .env("SSL_CERT_DIR", &empty_dir)
+                .env_remove("OPENAI_API_KEY");
+            for var in [
+                "NO_PROXY",
+                "no_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+            ] {
+                child.env_remove(var);
+            }
+            if let Some(key) = key {
+                child.env("OPENAI_API_KEY", key);
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "{case}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+        return;
+    };
+
+    let mut config = ProvidersConfig::default();
+    config.consent.cloud_notes = true;
+    let local = LocalNoteProvider::new();
+    let build = || ReqwestTransport::new().map_err(|e| NoteError::Transport(e.to_string()));
+    if case == "empty" {
+        use selahcue_cloud::deadline_transport::DeadlineTransport;
+        use selahcue_core::deadline::{AccessDeadline, Clock, ClockReading};
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Instant, SystemTime},
+        };
+
+        struct WallClock;
+        impl Clock for WallClock {
+            fn now(&self) -> ClockReading {
+                ClockReading {
+                    wall: Some(SystemTime::now()),
+                    monotonic: Instant::now(),
+                }
+            }
+        }
+        let deadline = AccessDeadline::admit(
+            SystemTime::now() + Duration::from_secs(30),
+            Arc::new(WallClock),
+        )
+        .unwrap();
+        let error = DeadlineTransport::new(deadline, Arc::new(AtomicBool::new(false)))
+            .err()
+            .expect("empty trust must also prevent construction of the deadline transport");
+        assert_eq!(error.0, "cloud TLS trust store empty");
+
+        let result = generate_sermon_notes_with_factory(
+            &config,
+            "Opening point. Another point.",
+            true,
+            || {
+                let transport = build()?;
+                Ok(SelahCueCloudClient::new(
+                    transport,
+                    "https://localhost:1",
+                    Token::new(BEARER),
+                ))
+            },
+            &local,
+        )
+        .expect("broken trust must yield the existing local outline");
+        assert!(result.degraded);
+        assert_eq!(result.provider_label, "Local (offline)");
+        assert_eq!(result.draft.title, "Opening point");
+        assert_eq!(
+            result.degraded_reason,
+            Some(DegradedNoteReason::NoTrustedCertificates)
+        );
+        return;
+    }
+    #[cfg(feature = "openai")]
+    if matches!(case.as_str(), "missing-key" | "blank-key") {
+        let calls = std::cell::Cell::new(0);
+        let result = generate_sermon_notes_with_factory(
+            &config,
+            "Opening point. Another point.",
+            true,
+            || {
+                selahcue_cloud::OpenAiNoteProvider::from_env_with_transport(|| {
+                    calls.set(calls.get() + 1);
+                    build()
+                })
+            },
+            &local,
+        );
+        assert_eq!(result.unwrap_err(), NoteError::NotConfigured);
+        assert_eq!(calls.get(), 0);
+        return;
+    }
+
+    assert_eq!(case, "trusted");
+    // A bundle holding the test CA works without a private trust hook.
     let trusted = new_ca("Linux Store Probe CA (in the bundle)");
-    let bundle = dir.join("bundle.pem");
+    let bundle = std::env::var_os("SSL_CERT_FILE")
+        .map(PathBuf::from)
+        .unwrap()
+        .with_file_name("trusted.pem");
     std::fs::write(&bundle, trusted.pem.as_bytes()).unwrap();
+    // Only this single selected test runs in the child, before any verifier is constructed.
     std::env::set_var("SSL_CERT_FILE", &bundle);
     let transport = ReqwestTransport::new().expect("a transport over a bundle that holds a CA");
     let (port, seen) = serve_once(&trusted);
@@ -201,10 +316,9 @@ fn the_system_store_decides_who_is_trusted_and_an_empty_one_fails_closed() {
     );
     let err =
         refused.expect_err("a server signed by a CA outside the system store must be refused");
-    assert!(!err.to_string().contains(BEARER), "{err}");
+    assert_eq!(err.0, "cloud TLS certificate rejected");
     assert!(
         !seen.recv_timeout(Duration::from_secs(10)).unwrap(),
         "the client wrote a request to a server signed by an untrusted CA"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
