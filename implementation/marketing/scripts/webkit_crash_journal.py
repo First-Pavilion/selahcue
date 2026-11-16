@@ -110,10 +110,16 @@ def core_handler():
 def replay(path):
     # Opening a FIFO with ordinary read flags would block before fstat.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-    with os.fdopen(fd, "rb") as source:
+    # Keep the one-byte overflow probe from filling a read-ahead buffer.
+    with os.fdopen(fd, "rb", buffering=0) as source:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return "unavailable", b"", False
-        data = source.read(RAW_LIMIT)
+        data = bytearray()
+        while len(data) < RAW_LIMIT:
+            chunk = source.read(RAW_LIMIT - len(data))
+            if not chunk:
+                return "available", data, False
+            data.extend(chunk)
         return "available", data, bool(source.read(1))
 
 
