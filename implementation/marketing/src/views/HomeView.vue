@@ -8,14 +8,9 @@ import FeatureCard from '@/components/FeatureCard.vue'
 import ReliabilityPillar from '@/components/ReliabilityPillar.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import HomeIcon from '@/components/home/HomeIcon.vue'
+import { freeOffer } from '@/lib/content/freeOffer.ts'
 
-/*
- * COPY. Figma frame 468:125 is the wording wherever the repo backs it. Where Figma claims more than the
- * repo can show, the backed part is what ships (the ledger in docs/delivery/goals/17tnw2b2cex-figma-home.md
- * lists each line and why; tests/homeView.test.ts pins it). Nothing on this page may state a price, a plan, a billing
- * term, a testimonial, an OS version or a capability the repo does not back (ClickUp 17tnw2b0x3h): plan names and prices
- * come from the API once it serves them, and until then the pricing section says so.
- */
+// Use the shared Free offer so the Home and Pricing pages describe the same weekly allowance.
 
 /** Ties the disabled demo button to the sentence that says why (read after it in the page). */
 const demoNoteId = `${useId()}-demo-note`
@@ -34,7 +29,7 @@ const features = [
   {
     icon: 'list',
     title: 'Service plans & timers',
-    description: 'Build the order of service and run a service countdown from the console or your phone.'
+    description: 'Build the order of service and run a service countdown from the console.'
   },
   {
     icon: 'layout',
@@ -48,8 +43,8 @@ const features = [
   },
   {
     icon: 'mic',
-    title: 'On-device transcript',
-    description: 'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.'
+    title: 'Optional transcription & sermon notes',
+    description: 'Listen on-device or, when available, opt in to cloud transcription and request sermon notes online.'
   }
 ]
 
@@ -62,7 +57,7 @@ const pillars = [
   },
   {
     icon: 'wifi-off',
-    title: 'Works fully offline',
+    title: 'Core live controls work offline',
     description: 'Every core live control works with no internet and no cloud dependency during the service. It just works.',
     variant: 'preview'
   },
@@ -91,19 +86,18 @@ const steps = [
   },
   {
     title: 'Control from your phone',
-    description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
+    description: 'If you already have the SelahCue Controller, you can pair it over your local network to control slides.'
   }
 ]
 
-/* The platforms answer names Windows, macOS and Linux and no version number, architecture or file format: the product is available for all three (owner, 2026-10-04) and the repo gives no figure (audit home-38, 40, 45). */
 const faqItems = [
   {
     question: 'Do I need an internet connection?',
-    answer: 'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.'
+    answer: 'Core live controls work offline. Sign-in, device activation and the first download of the on-device speech model need internet access. When available, optional cloud transcription and requested sermon notes need internet access and separate consent.'
   },
   {
     question: 'Which platforms are supported?',
-    answer: 'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.'
+    answer: 'Desktop releases target Windows x64, macOS on Apple silicon (arm64) and Intel (x64), and Ubuntu 24.04 x64. The SelahCue Controller app is not in the App Store or Google Play yet.'
   },
   {
     question: 'Can I use my own slides and designs?',
@@ -114,8 +108,8 @@ const faqItems = [
     answer: "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional."
   },
   {
-    question: 'How does billing work?',
-    answer: 'Plans and prices have not been published yet.'
+    question: 'What does Free include?',
+    answer: `${freeOffer.summary} ${freeOffer.paidLater}`
   }
 ]
 </script>
@@ -141,8 +135,8 @@ const faqItems = [
         </p>
 
         <div class="hero-actions">
-          <UiButton variant="primary" size="lg" to="/download">
-            Download free
+          <UiButton variant="primary" size="lg" :to="freeOffer.downloadTo">
+            View downloads
           </UiButton>
           <!-- The demo video does not exist yet (audit home-18). It was a link to #demo, which did nothing. The
                owner's decision (2026-10-04): keep the button, disabled, with the reason VISIBLE, as the Pro
@@ -159,7 +153,7 @@ const faqItems = [
         <!-- One text node, as Figma draws it. Inside an item every space is a non-breaking one and the two spaces
              either side of a dot are non-breaking too except the last, which is the place a narrow phone breaks:
              between items, never inside one ("Free to start · Works fully / offline · ..." is what a plain space did). -->
-        <p class="hero-trust">Free&nbsp;to&nbsp;start&nbsp;&nbsp;&middot;&nbsp; Works&nbsp;fully&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;macOS&nbsp;&amp;&nbsp;mobile&nbsp;control</p>
+        <p class="hero-trust">Free&nbsp;to&nbsp;start&nbsp;&nbsp;&middot;&nbsp; Core&nbsp;live&nbsp;controls&nbsp;work&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;Ubuntu&nbsp;&amp;&nbsp;macOS</p>
 
         <!-- Product Window Mockup -->
         <div class="hero-mockup-frame">
@@ -259,14 +253,13 @@ const faqItems = [
       </div>
     </section>
 
-    <!-- Section 6: Pricing. No plan, price or billing term is shown: none is decided, and the names and prices will come from the
-         API (ClickUp 17tnw2b0x3h). Until it serves them the section says so and draws nothing else. -->
+    <!-- Section 6: Free plan -->
     <section class="pricing-section">
       <div class="container">
         <div class="section-header">
           <UiBadge variant="eyebrow">PRICING</UiBadge>
-          <h2 class="section-title">Plans and pricing</h2>
-          <p class="section-subtitle">Plans and prices have not been published yet.</p>
+          <h2 class="section-title">SelahCue Free</h2>
+          <p class="section-subtitle">{{ freeOffer.summary }} {{ freeOffer.paidLater }}</p>
         </div>
       </div>
     </section>
@@ -293,8 +286,8 @@ const faqItems = [
             Start free. Core live controls keep working with no network.
           </p>
           <div class="cta-btn-group">
-            <UiButton variant="inverse" size="lg" to="/download">Download free</UiButton>
-            <UiButton variant="inverse-outline" size="lg" to="/pricing">See pricing</UiButton>
+            <UiButton variant="inverse" size="lg" :to="freeOffer.downloadTo">View downloads</UiButton>
+            <UiButton variant="inverse-outline" size="lg" :to="freeOffer.signupTo">Create an account</UiButton>
           </div>
         </div>
       </div>
@@ -632,8 +625,7 @@ const faqItems = [
   color: var(--sc-text-secondary);
 }
 
-/* Section 6: Pricing (Figma 477:124: 90px). The three plan cards are gone (ClickUp 17tnw2b0x3h), so the header has nothing under
-   it to leave a gap for. */
+/* Section 6: Free plan (Figma 477:124: 90px). */
 .pricing-section {
   padding-block: calc(var(--section-pad) + 2px);
   --title-lh: 48px;

@@ -58,12 +58,19 @@ const SessionException _malformedFrame =
 /// Writes the runtime TYPE and a bounded stack, **never** `error.toString()` or
 /// its message: a `FormatException` embeds the source text it failed to parse,
 /// which here is a frame the host chose, so it must not reach a log.
+/// Reporting is intentionally enabled in release builds too: only the type
+/// and at most eight frames are written. It is best-effort; an app-level
+/// printer override must not turn a survivable connect failure into an error.
 void debugReportUnexpectedConnectFailure(Object error, StackTrace stack) {
-  debugPrintStack(
-    stackTrace: stack,
-    label: 'connect failed with an unexpected ${error.runtimeType}',
-    maxFrames: 8,
-  );
+  try {
+    debugPrintStack(
+      stackTrace: stack,
+      label: 'connect failed with an unexpected ${error.runtimeType}',
+      maxFrames: 8,
+    );
+  } on Object {
+    // Diagnostics must not interrupt reconnect or the launcher's fallback.
+  }
 }
 
 /// Credentials issued at pairing time (store securely; reused on reconnect).

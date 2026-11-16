@@ -29,7 +29,9 @@ import time
 from django.conf import settings
 from django.core.cache import cache
 
-from selahcue_api.apps.throttling.services import BudgetOutcome, CacheStore, evaluate_budget
+from selahcue_api.apps.throttling.services import (
+    BudgetOutcome, CacheStore, evaluate_budget, ip_bucket_identity,
+)
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 logger = logging.getLogger(__name__)
@@ -121,6 +123,15 @@ def report_native_login_failure() -> None:
     )
 
 
+# These existing service scopes carry resolved IP buckets, not account/actor
+# identities. Register new IP scopes here alongside their real-consumer tests;
+# global, address-fingerprint and audit-allowance keys retain their own scheme.
+_IP_BUDGET_SCOPES = frozenset({
+    "verify_email_ip", "resend_verify_ip", "password_reset_request_ip",
+    "password_reset_confirm_ip",
+})
+
+
 def spend_budget(
     scope: str,
     identity: str,
@@ -131,8 +142,9 @@ def spend_budget(
 ) -> BudgetOutcome:
     """Spend one unit of `identity`'s `scope` budget and report the outcome.
 
-    `identity` must never be raw PII: cache keys land in Redis and in slow-log output, so
-    callers pass an HMAC fingerprint of an address rather than the address itself.
+    Existing IP scopes supply a resolved bucket, protected here by the dedicated
+    IP-key HMAC. Other scopes must never supply raw PII: their callers retain
+    address fingerprints, actor digests or fixed labels, not literal addresses.
 
     Returning the outcome rather than a bool is what lets a caller distinguish a real allow
     from a fail-open. That matters wherever the guarded action is expensive or externally
@@ -149,7 +161,8 @@ def spend_budget(
     be false there.
     """
     limit, window = getattr(settings, setting_name, default)
-    outcome = evaluate_budget(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
+    cache_identity = ip_bucket_identity(identity) if scope in _IP_BUDGET_SCOPES else identity
+    outcome = evaluate_budget(CacheStore(cache), f"throttle:{scope}:{cache_identity}", limit, window)
     if outcome is BudgetOutcome.DENIED and report_denial:
         _report_sustained_denial(scope)
     return outcome

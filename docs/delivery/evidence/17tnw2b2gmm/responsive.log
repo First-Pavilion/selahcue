@@ -1,0 +1,320 @@
+VIEWPORT 375: signup-validation-focus
+RESULTS
+PASS [signup-validation-focus-narrow] narrow viewport is exactly 375 CSS pixels
+PASS [signup-validation-focus-narrow] Sign up Church first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Church is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Church has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Church error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Name first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Name is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Name has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Name error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Email first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Email is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Email has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Email error wraps within card
+PASS [signup-validation-focus-narrow] Sign up malformed email first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up malformed email is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up malformed email has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up malformed email error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Country first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Country is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Country has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Country error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Password first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Password is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Password has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Password error wraps within card
+PASS [signup-validation-focus-narrow] Sign up short password first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up short password is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up short password has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up short password error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Confirm first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Confirm is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Confirm has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Confirm error wraps within card
+PASS [signup-validation-focus-narrow] Sign up password mismatch first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up password mismatch is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up password mismatch has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up password mismatch error wraps within card
+PASS [signup-validation-focus-narrow] Sign up Terms first invalid field receives focus
+PASS [signup-validation-focus-narrow] Sign up Terms is invalid and described by its error
+PASS [signup-validation-focus-narrow] Sign up Terms has exactly one decorative cross and no circle
+PASS [signup-validation-focus-narrow] Sign up Terms error wraps within card
+PASS [signup-validation-focus-narrow] validation never sends a request
+PASS [signup-validation-focus-narrow] validation card has no horizontal overflow
+PASS [signup-validation-focus-narrow] no token in location.search
+PASS [signup-validation-focus-narrow] token absent from rendered page text
+PASS [signup-validation-focus-narrow] no enumeration phrase: "already registered"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "already exists"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "no account"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "not found"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "we've sent"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "we have sent"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "does not exist"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "isn't registered"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "is not registered"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "unknown email"
+PASS [signup-validation-focus-narrow] no enumeration phrase: "no user"
+PASS [signup-validation-focus-narrow] no site nav rendered
+PASS [signup-validation-focus-narrow] exactly one h1
+PASS [signup-validation-focus-narrow] copy never says 15 minutes
+PASS [signup-validation-focus-narrow] copy never says 8 characters
+PASS [signup-validation-focus-narrow] copy never claims an address is taken
+PASS [signup-validation-focus-narrow] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [signup-validation-focus-narrow] no CSRF bootstrap without a GraphQL call
+PASS [signup-validation-focus-narrow] the card offers a primary button
+PASS [signup-validation-focus-narrow] primary button uses the auth card 12px radius, not the marketing pill
+PASS [signup-validation-focus-narrow] primary button clears the 44px touch target
+PASS [signup-validation-focus-narrow] primary button is full width inside the card
+PASS [signup-validation-focus-narrow] card is not full-bleed
+PASS [signup-validation-focus-narrow] every primary button is 47px tall at weight 600
+PASS [signup-validation-focus-narrow] every secondary button is 44px tall with a 1px hairline
+PASS [signup-validation-focus-narrow] narrow card content remains within viewport
+PASS [signup-validation-focus-narrow] every drawn mark is the size it is drawn at
+PASS [signup-validation-focus-narrow] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [signup-validation-focus-narrow] every banner keeps its glyph column and its 12px gap to the copy
+DONE(74)
+VIEWPORT 375: forgot-empty-focus
+RESULTS
+PASS [forgot-empty-focus-narrow] narrow viewport is exactly 375 CSS pixels
+PASS [forgot-empty-focus-narrow] Forgot empty email first invalid field receives focus
+PASS [forgot-empty-focus-narrow] Forgot empty email is invalid and described by its error
+PASS [forgot-empty-focus-narrow] Forgot empty email has exactly one decorative cross and no circle
+PASS [forgot-empty-focus-narrow] Forgot empty email error wraps within card
+PASS [forgot-empty-focus-narrow] blank email sends no request
+PASS [forgot-empty-focus-narrow] no token in location.search
+PASS [forgot-empty-focus-narrow] token absent from rendered page text
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "already registered"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "already exists"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "no account"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "not found"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "we've sent"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "we have sent"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "does not exist"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "isn't registered"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "is not registered"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "unknown email"
+PASS [forgot-empty-focus-narrow] no enumeration phrase: "no user"
+PASS [forgot-empty-focus-narrow] no site nav rendered
+PASS [forgot-empty-focus-narrow] exactly one h1
+PASS [forgot-empty-focus-narrow] copy never says 15 minutes
+PASS [forgot-empty-focus-narrow] copy never says 8 characters
+PASS [forgot-empty-focus-narrow] copy never claims an address is taken
+PASS [forgot-empty-focus-narrow] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [forgot-empty-focus-narrow] no CSRF bootstrap without a GraphQL call
+PASS [forgot-empty-focus-narrow] the card offers a primary button
+PASS [forgot-empty-focus-narrow] primary button uses the auth card 12px radius, not the marketing pill
+PASS [forgot-empty-focus-narrow] primary button clears the 44px touch target
+PASS [forgot-empty-focus-narrow] primary button is full width inside the card
+PASS [forgot-empty-focus-narrow] card is not full-bleed
+PASS [forgot-empty-focus-narrow] every primary button is 47px tall at weight 600
+PASS [forgot-empty-focus-narrow] every secondary button is 44px tall with a 1px hairline
+PASS [forgot-empty-focus-narrow] narrow card content remains within viewport
+PASS [forgot-empty-focus-narrow] every drawn mark is the size it is drawn at
+PASS [forgot-empty-focus-narrow] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [forgot-empty-focus-narrow] every banner keeps its glyph column and its 12px gap to the copy
+DONE(37)
+VIEWPORT 375: forgot-bad-email
+RESULTS
+PASS [forgot-bad-email-narrow] narrow viewport is exactly 375 CSS pixels
+PASS [forgot-bad-email-narrow] malformed address is caught on the field
+PASS [forgot-bad-email-narrow] NO API call for a malformed address
+PASS [forgot-bad-email-narrow] errored field is marked invalid
+PASS [forgot-bad-email-narrow] the field is still on screen to be corrected
+PASS [forgot-bad-email-narrow] Forgot malformed email first invalid field receives focus
+PASS [forgot-bad-email-narrow] Forgot malformed email is invalid and described by its error
+PASS [forgot-bad-email-narrow] Forgot malformed email has exactly one decorative cross and no circle
+PASS [forgot-bad-email-narrow] Forgot malformed email error wraps within card
+PASS [forgot-bad-email-narrow] a way forward is offered — an enabled button or a real link: a malformed address on forgot-password
+PASS [forgot-bad-email-narrow] no token in location.search
+PASS [forgot-bad-email-narrow] token absent from rendered page text
+PASS [forgot-bad-email-narrow] no enumeration phrase: "already registered"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "already exists"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "no account"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "not found"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "we've sent"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "we have sent"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "does not exist"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "isn't registered"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "is not registered"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "unknown email"
+PASS [forgot-bad-email-narrow] no enumeration phrase: "no user"
+PASS [forgot-bad-email-narrow] no site nav rendered
+PASS [forgot-bad-email-narrow] exactly one h1
+PASS [forgot-bad-email-narrow] copy never says 15 minutes
+PASS [forgot-bad-email-narrow] copy never says 8 characters
+PASS [forgot-bad-email-narrow] copy never claims an address is taken
+PASS [forgot-bad-email-narrow] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [forgot-bad-email-narrow] no CSRF bootstrap without a GraphQL call
+PASS [forgot-bad-email-narrow] the card offers a primary button
+PASS [forgot-bad-email-narrow] primary button uses the auth card 12px radius, not the marketing pill
+PASS [forgot-bad-email-narrow] primary button clears the 44px touch target
+PASS [forgot-bad-email-narrow] primary button is full width inside the card
+PASS [forgot-bad-email-narrow] card is not full-bleed
+PASS [forgot-bad-email-narrow] every primary button is 47px tall at weight 600
+PASS [forgot-bad-email-narrow] every secondary button is 44px tall with a 1px hairline
+PASS [forgot-bad-email-narrow] narrow card content remains within viewport
+PASS [forgot-bad-email-narrow] every drawn mark is the size it is drawn at
+PASS [forgot-bad-email-narrow] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [forgot-bad-email-narrow] every banner keeps its glyph column and its 12px gap to the copy
+DONE(41)
+VIEWPORT 1440: signup-validation-focus
+RESULTS
+PASS [signup-validation-focus] Sign up Church first invalid field receives focus
+PASS [signup-validation-focus] Sign up Church is invalid and described by its error
+PASS [signup-validation-focus] Sign up Church has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Church error wraps within card
+PASS [signup-validation-focus] Sign up Name first invalid field receives focus
+PASS [signup-validation-focus] Sign up Name is invalid and described by its error
+PASS [signup-validation-focus] Sign up Name has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Name error wraps within card
+PASS [signup-validation-focus] Sign up Email first invalid field receives focus
+PASS [signup-validation-focus] Sign up Email is invalid and described by its error
+PASS [signup-validation-focus] Sign up Email has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Email error wraps within card
+PASS [signup-validation-focus] Sign up malformed email first invalid field receives focus
+PASS [signup-validation-focus] Sign up malformed email is invalid and described by its error
+PASS [signup-validation-focus] Sign up malformed email has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up malformed email error wraps within card
+PASS [signup-validation-focus] Sign up Country first invalid field receives focus
+PASS [signup-validation-focus] Sign up Country is invalid and described by its error
+PASS [signup-validation-focus] Sign up Country has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Country error wraps within card
+PASS [signup-validation-focus] Sign up Password first invalid field receives focus
+PASS [signup-validation-focus] Sign up Password is invalid and described by its error
+PASS [signup-validation-focus] Sign up Password has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Password error wraps within card
+PASS [signup-validation-focus] Sign up short password first invalid field receives focus
+PASS [signup-validation-focus] Sign up short password is invalid and described by its error
+PASS [signup-validation-focus] Sign up short password has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up short password error wraps within card
+PASS [signup-validation-focus] Sign up Confirm first invalid field receives focus
+PASS [signup-validation-focus] Sign up Confirm is invalid and described by its error
+PASS [signup-validation-focus] Sign up Confirm has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Confirm error wraps within card
+PASS [signup-validation-focus] Sign up password mismatch first invalid field receives focus
+PASS [signup-validation-focus] Sign up password mismatch is invalid and described by its error
+PASS [signup-validation-focus] Sign up password mismatch has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up password mismatch error wraps within card
+PASS [signup-validation-focus] Sign up Terms first invalid field receives focus
+PASS [signup-validation-focus] Sign up Terms is invalid and described by its error
+PASS [signup-validation-focus] Sign up Terms has exactly one decorative cross and no circle
+PASS [signup-validation-focus] Sign up Terms error wraps within card
+PASS [signup-validation-focus] validation never sends a request
+PASS [signup-validation-focus] validation card has no horizontal overflow
+PASS [signup-validation-focus] no token in location.search
+PASS [signup-validation-focus] token absent from rendered page text
+PASS [signup-validation-focus] no enumeration phrase: "already registered"
+PASS [signup-validation-focus] no enumeration phrase: "already exists"
+PASS [signup-validation-focus] no enumeration phrase: "no account"
+PASS [signup-validation-focus] no enumeration phrase: "not found"
+PASS [signup-validation-focus] no enumeration phrase: "we've sent"
+PASS [signup-validation-focus] no enumeration phrase: "we have sent"
+PASS [signup-validation-focus] no enumeration phrase: "does not exist"
+PASS [signup-validation-focus] no enumeration phrase: "isn't registered"
+PASS [signup-validation-focus] no enumeration phrase: "is not registered"
+PASS [signup-validation-focus] no enumeration phrase: "unknown email"
+PASS [signup-validation-focus] no enumeration phrase: "no user"
+PASS [signup-validation-focus] no site nav rendered
+PASS [signup-validation-focus] exactly one h1
+PASS [signup-validation-focus] copy never says 15 minutes
+PASS [signup-validation-focus] copy never says 8 characters
+PASS [signup-validation-focus] copy never claims an address is taken
+PASS [signup-validation-focus] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [signup-validation-focus] no CSRF bootstrap without a GraphQL call
+PASS [signup-validation-focus] the card offers a primary button
+PASS [signup-validation-focus] primary button uses the auth card 12px radius, not the marketing pill
+PASS [signup-validation-focus] primary button clears the 44px touch target
+PASS [signup-validation-focus] primary button is full width inside the card
+PASS [signup-validation-focus] card is not full-bleed
+PASS [signup-validation-focus] every primary button is 47px tall at weight 600
+PASS [signup-validation-focus] every secondary button is 44px tall with a 1px hairline
+PASS [signup-validation-focus] the card content column is 358px wide
+PASS [signup-validation-focus] every drawn mark is the size it is drawn at
+PASS [signup-validation-focus] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [signup-validation-focus] every banner keeps its glyph column and its 12px gap to the copy
+DONE(73)
+VIEWPORT 1440: forgot-empty-focus
+RESULTS
+PASS [forgot-empty-focus] Forgot empty email first invalid field receives focus
+PASS [forgot-empty-focus] Forgot empty email is invalid and described by its error
+PASS [forgot-empty-focus] Forgot empty email has exactly one decorative cross and no circle
+PASS [forgot-empty-focus] Forgot empty email error wraps within card
+PASS [forgot-empty-focus] blank email sends no request
+PASS [forgot-empty-focus] no token in location.search
+PASS [forgot-empty-focus] token absent from rendered page text
+PASS [forgot-empty-focus] no enumeration phrase: "already registered"
+PASS [forgot-empty-focus] no enumeration phrase: "already exists"
+PASS [forgot-empty-focus] no enumeration phrase: "no account"
+PASS [forgot-empty-focus] no enumeration phrase: "not found"
+PASS [forgot-empty-focus] no enumeration phrase: "we've sent"
+PASS [forgot-empty-focus] no enumeration phrase: "we have sent"
+PASS [forgot-empty-focus] no enumeration phrase: "does not exist"
+PASS [forgot-empty-focus] no enumeration phrase: "isn't registered"
+PASS [forgot-empty-focus] no enumeration phrase: "is not registered"
+PASS [forgot-empty-focus] no enumeration phrase: "unknown email"
+PASS [forgot-empty-focus] no enumeration phrase: "no user"
+PASS [forgot-empty-focus] no site nav rendered
+PASS [forgot-empty-focus] exactly one h1
+PASS [forgot-empty-focus] copy never says 15 minutes
+PASS [forgot-empty-focus] copy never says 8 characters
+PASS [forgot-empty-focus] copy never claims an address is taken
+PASS [forgot-empty-focus] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [forgot-empty-focus] no CSRF bootstrap without a GraphQL call
+PASS [forgot-empty-focus] the card offers a primary button
+PASS [forgot-empty-focus] primary button uses the auth card 12px radius, not the marketing pill
+PASS [forgot-empty-focus] primary button clears the 44px touch target
+PASS [forgot-empty-focus] primary button is full width inside the card
+PASS [forgot-empty-focus] card is not full-bleed
+PASS [forgot-empty-focus] every primary button is 47px tall at weight 600
+PASS [forgot-empty-focus] every secondary button is 44px tall with a 1px hairline
+PASS [forgot-empty-focus] the card content column is 358px wide
+PASS [forgot-empty-focus] every drawn mark is the size it is drawn at
+PASS [forgot-empty-focus] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [forgot-empty-focus] every banner keeps its glyph column and its 12px gap to the copy
+DONE(36)
+VIEWPORT 1440: forgot-bad-email
+RESULTS
+PASS [forgot-bad-email] malformed address is caught on the field
+PASS [forgot-bad-email] NO API call for a malformed address
+PASS [forgot-bad-email] errored field is marked invalid
+PASS [forgot-bad-email] the field is still on screen to be corrected
+PASS [forgot-bad-email] Forgot malformed email first invalid field receives focus
+PASS [forgot-bad-email] Forgot malformed email is invalid and described by its error
+PASS [forgot-bad-email] Forgot malformed email has exactly one decorative cross and no circle
+PASS [forgot-bad-email] Forgot malformed email error wraps within card
+PASS [forgot-bad-email] a way forward is offered — an enabled button or a real link: a malformed address on forgot-password
+PASS [forgot-bad-email] no token in location.search
+PASS [forgot-bad-email] token absent from rendered page text
+PASS [forgot-bad-email] no enumeration phrase: "already registered"
+PASS [forgot-bad-email] no enumeration phrase: "already exists"
+PASS [forgot-bad-email] no enumeration phrase: "no account"
+PASS [forgot-bad-email] no enumeration phrase: "not found"
+PASS [forgot-bad-email] no enumeration phrase: "we've sent"
+PASS [forgot-bad-email] no enumeration phrase: "we have sent"
+PASS [forgot-bad-email] no enumeration phrase: "does not exist"
+PASS [forgot-bad-email] no enumeration phrase: "isn't registered"
+PASS [forgot-bad-email] no enumeration phrase: "is not registered"
+PASS [forgot-bad-email] no enumeration phrase: "unknown email"
+PASS [forgot-bad-email] no enumeration phrase: "no user"
+PASS [forgot-bad-email] no site nav rendered
+PASS [forgot-bad-email] exactly one h1
+PASS [forgot-bad-email] copy never says 15 minutes
+PASS [forgot-bad-email] copy never says 8 characters
+PASS [forgot-bad-email] copy never claims an address is taken
+PASS [forgot-bad-email] no unbacked OAuth affordance (DEC-007 chose email/password)
+PASS [forgot-bad-email] no CSRF bootstrap without a GraphQL call
+PASS [forgot-bad-email] the card offers a primary button
+PASS [forgot-bad-email] primary button uses the auth card 12px radius, not the marketing pill
+PASS [forgot-bad-email] primary button clears the 44px touch target
+PASS [forgot-bad-email] primary button is full width inside the card
+PASS [forgot-bad-email] card is not full-bleed
+PASS [forgot-bad-email] every primary button is 47px tall at weight 600
+PASS [forgot-bad-email] every secondary button is 44px tall with a 1px hairline
+PASS [forgot-bad-email] the card content column is 358px wide
+PASS [forgot-bad-email] every drawn mark is the size it is drawn at
+PASS [forgot-bad-email] every info and danger banner draws its mark, and no disc types a cross or an envelope
+PASS [forgot-bad-email] every banner keeps its glyph column and its 12px gap to the copy
+DONE(40)
+Responsive auth-card result: 0 failures

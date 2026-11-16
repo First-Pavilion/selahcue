@@ -1,0 +1,139 @@
+{
+  "mirrors": 0,
+  "focused": 0,
+  "actionlint": 0,
+  "workflow-selftest": 0,
+  "workflow": 0,
+  "minutes-selftest": 0,
+  "minutes": 0,
+  "python-compile": 0,
+  "diff-whitespace": 0,
+  "npm-ci-ignore-scripts": 0,
+  "npm-audit-real-high-threshold": 0,
+  "npm-audit-synthetic-high-fixture": 1,
+  "make-marketing-check": 0,
+  "production-docker-build": 0,
+  "production-nginx-config": 0,
+  "production-csp-chromium-and-webkit": 0,
+  "components": 0,
+  "core-and-frame-regression": 0,
+  "home": 0,
+  "secondary": 0,
+  "responsive-chromium": 0,
+  "auth-states-final": 0,
+  "responsive-webkit-final": 0,
+  "review-remediation": {
+    "visual-green": {
+      "exit": 0,
+      "elapsed_seconds": 4.151
+    },
+    "workflow-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.193
+    },
+    "workflow": {
+      "exit": 0,
+      "elapsed_seconds": 0.144
+    },
+    "minutes-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.67
+    },
+    "minutes": {
+      "exit": 0,
+      "elapsed_seconds": 0.194
+    },
+    "actionlint": {
+      "exit": 0,
+      "elapsed_seconds": 0.486
+    },
+    "unit-tests": {
+      "exit": 0,
+      "elapsed_seconds": 4.702
+    },
+    "diff": {
+      "exit": 0,
+      "elapsed_seconds": 0.029
+    }
+  },
+  "postmerge-main-b3ae75f8": {
+    "visual-green": {
+      "exit": 0,
+      "elapsed_seconds": 3.759
+    },
+    "workflow-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.206
+    },
+    "workflow": {
+      "exit": 0,
+      "elapsed_seconds": 0.237
+    },
+    "minutes-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.736
+    },
+    "minutes": {
+      "exit": 0,
+      "elapsed_seconds": 0.191
+    },
+    "actionlint": {
+      "exit": 0,
+      "elapsed_seconds": 0.344
+    },
+    "unit-tests": {
+      "exit": 0,
+      "elapsed_seconds": 3.424
+    },
+    "diff": {
+      "exit": 0,
+      "elapsed_seconds": 0.018
+    }
+  },
+  "iteration5": {
+    "api-green": {
+      "exit": 0,
+      "elapsed_seconds": 1.007
+    },
+    "marketing-check": {
+      "exit": 0,
+      "elapsed_seconds": 9.722
+    },
+    "workflow-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.145
+    },
+    "workflow": {
+      "exit": 0,
+      "elapsed_seconds": 0.12
+    },
+    "minutes-selftest": {
+      "exit": 0,
+      "elapsed_seconds": 0.468
+    },
+    "minutes": {
+      "exit": 0,
+      "elapsed_seconds": 0.154
+    },
+    "visual": {
+      "exit": 0,
+      "elapsed_seconds": 3.376
+    },
+    "actionlint": {
+      "exit": 0,
+      "elapsed_seconds": 0.357
+    },
+    "final-marketing-check": 0,
+    "production": {
+      "container_start": 0,
+      "nginx_config": 0,
+      "exact_image_config": 0,
+      "unused_include_absent": 0,
+      "production_csp": {
+        "exit": 0,
+        "elapsed_seconds": 149.44
+      },
+      "container_stop": 0
+    }
+  }
+}

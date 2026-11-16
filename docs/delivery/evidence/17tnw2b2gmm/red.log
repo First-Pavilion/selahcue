@@ -1,0 +1,22 @@
+Baseline browser proof before view implementation. Focused subset, so whole-suite enumeration/count guards also fail; only the ticket assertions are retained here.
+FAIL [signup-validation-focus] Sign up Church first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Church has exactly one decorative cross and no circle -- 
+FAIL [signup-validation-focus] Sign up Email first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Email has exactly one decorative cross and no circle -- 
+FAIL [signup-validation-focus] Sign up Country first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Country has exactly one decorative cross and no circle -- 
+FAIL [signup-validation-focus] Sign up Password first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Password has exactly one decorative cross and no circle -- 
+FAIL [signup-validation-focus] Sign up Confirm first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Confirm has exactly one decorative cross and no circle -- 
+FAIL [signup-validation-focus] Sign up Terms first invalid field receives focus -- 
+FAIL [signup-validation-focus] Sign up Terms has exactly one decorative cross and no circle -- 
+FAIL [forgot-empty-focus] Forgot empty email first invalid field receives focus -- 
+FAIL [forgot-empty-focus] Forgot empty email has exactly one decorative cross and no circle -- 
+FAIL [signup-submitting] Sign up inputs dim only once -- 
+FAIL [signup-submitting] Sign up labels remain full strength -- 
+FAIL [signup-submitting] both reveal controls are disabled for keyboard -- 
+FAIL [forgot-bad-email] Forgot malformed email first invalid field receives focus -- 
+FAIL [forgot-bad-email] Forgot malformed email has exactly one decorative cross and no circle -- 
+FAIL [forgot-submitting] Forgot password inputs dim only once -- 
+FAIL [forgot-submitting] Forgot password labels remain full strength -- 

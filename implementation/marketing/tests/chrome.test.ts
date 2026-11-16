@@ -12,6 +12,7 @@
  * wording is asserted to stay what the repo can back, so a Figma claim cannot slip in unnoticed.
  */
 import assert from 'node:assert/strict'
+import { freeOffer } from '../src/lib/content/freeOffer.ts'
 import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 
@@ -131,11 +132,11 @@ describe('navbar: ink and weight (shared-chrome-04, 05)', () => {
   })
 })
 
-describe('navbar: the Download free button (shared-chrome-06, 25)', () => {
+describe('navbar: the View downloads button (shared-chrome-06, 25)', () => {
   test('it is rendered by UiButton, compact, so the nav no longer carries a private copy of the button', () => {
     const tag = /<UiButton[^>]*class="download-cta"[^>]*>/.exec(navbar)?.[0] ?? ''
     assert.ok(tag, 'the navbar CTA is not a UiButton with class download-cta')
-    assert.match(tag, /to="\/download"/)
+    assert.match(tag, /:to="freeOffer\.downloadTo"/)
     assert.match(tag, /size="compact"/)
     assert.match(navbar, /import UiButton from '@\/components\/UiButton\.vue'/)
   })
@@ -260,9 +261,12 @@ describe('navbar: How it works is a real link (shared-chrome-07)', () => {
 
   test('every other navbar link goes to a real route', () => {
     const links = [...navbar.matchAll(/<(?:router-link|UiButton)\b[^>]*>/g)].map((m) => m[0])
-    const targets = links.flatMap((tag) => [...tag.matchAll(/(?<![:\w])to="([^"]+)"/g)].map((m) => m[1] as string))
+    const targets = links.flatMap((tag) => {
+      if (tag.includes(':to="freeOffer.downloadTo"')) return [freeOffer.downloadTo]
+      return [...tag.matchAll(/(?<![:\w])to="([^"]+)"/g)].map((m) => m[1] as string)
+    })
     assert.ok(targets.length >= 8)
-    for (const to of targets) assert.ok(routerPaths.has(to), `navbar links to ${to}, which the router does not serve`)
+    for (const to of targets) assert.ok(routerPaths.has(to.split('#')[0]!), `navbar links to ${to}, which the router does not serve`)
   })
 })
 
@@ -272,7 +276,10 @@ function footerColumns(source: string): { title: string; links: { to: string; la
   const block = /const columns = \[([\s\S]*?)\n\]\n/.exec(source)?.[1] ?? ''
   return [...block.matchAll(/title:\s*'([^']+)',\s*links:\s*\[([\s\S]*?)\],?\s*\}/g)].map((m) => ({
     title: m[1] as string,
-    links: [...(m[2] ?? '').matchAll(/\{\s*to:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)].map((l) => ({ to: l[1] as string, label: l[2] as string })),
+    links: [...(m[2] ?? '').matchAll(/\{\s*to:\s*(?:'([^']+)'|(freeOffer\.downloadTo)),\s*label:\s*'([^']+)'\s*\}/g)].map((l) => ({
+      to: l[2] ? freeOffer.downloadTo : l[1] as string,
+      label: l[3] as string,
+    })),
   }))
 }
 
@@ -291,7 +298,7 @@ describe('footer: Figma\'s three columns and bottom bar (shared-chrome-14, 15)',
         links: [
           { to: '/features', label: 'Features' },
           { to: '/pricing', label: 'Pricing' },
-          { to: '/download', label: 'Download' },
+          { to: '/download#public-downloads', label: 'Download' },
           { to: '/changelog', label: 'Changelog' },
         ],
       },
@@ -327,20 +334,20 @@ describe('footer: Figma\'s three columns and bottom bar (shared-chrome-14, 15)',
   })
 
   test('the bottom bar names the platforms the build ships for', () => {
-    assert.match(footer, /Windows · macOS/)
+    assert.match(footer, /Windows · Ubuntu · macOS/)
   })
 
   test('EVERY footer link resolves to a real route: none is /how-it-works, none falls to the 404 page', () => {
     const all = [...columns.flatMap((c) => c.links), ...legalLinks(footer)]
     assert.ok(all.length >= 15, 'the footer link parse found suspiciously few links')
-    for (const link of all) assert.ok(routerPaths.has(link.to), `footer "${link.label}" -> ${link.to} is not a route`)
+    for (const link of all) assert.ok(routerPaths.has(link.to.split('#')[0]!), `footer "${link.label}" -> ${link.to} is not a route`)
     assert.ok(!all.some((l) => l.to === '/how-it-works'))
   })
 
   test('control: the walk bites. A link to a path with no route is reported', () => {
     const tampered = footer.replace("{ to: '/changelog', label: 'Changelog' }", "{ to: '/how-it-works', label: 'How it works' }")
     const all = footerColumns(tampered).flatMap((c) => c.links)
-    assert.ok(all.some((l) => !routerPaths.has(l.to)), 'the route walk could not tell a missing route from a real one')
+    assert.ok(all.some((l) => !routerPaths.has(l.to.split('#')[0]!)), 'the route walk could not tell a missing route from a real one')
   })
 
   test('links that share a target keep their own keys (Documentation and Setup guides are both /docs)', () => {

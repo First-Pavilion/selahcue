@@ -24,7 +24,7 @@
 #
 # WHAT IT DOES NOT CLOSE, stated here because this comment used to claim it closed "any future
 # runtime loader" and it does not. The scan is a literal byte-substring search of the emitted
-# rlib (dev_key_scan.py, `key in p.read_bytes()`). So it answers exactly one question:
+# licensing rlib and, in operator mode, the linked executable (dev_key_scan.py, `key in p.read_bytes()`). So it answers exactly one question:
 #
 #     "is the dev key COMPILED INTO the release artefact?"
 #
@@ -59,18 +59,36 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DESKTOP="$ROOT/implementation/desktop"
 CARGO=${CARGO:-cargo}
 TRUST_RS="$DESKTOP/crates/selahcue-licensing/src/trust.rs"
-WORK=${TMPDIR:-/tmp}
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/selahcue-key-scan.XXXXXX")
+trap 'rm -rf "$WORK"' EXIT HUP INT TERM
 
 [ -f "$TRUST_RS" ] || {
   echo "DEV KEY SCAN FAILED: cannot find $TRUST_RS -- repoint this scan, never drop it" >&2
   exit 1
 }
 
-echo ">> building selahcue-licensing in both profiles for the dev-key byte scan"
-"$CARGO" build --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-licensing --release \
-  --message-format=json > "$WORK/sc_release_artifacts.json"
-"$CARGO" build --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-licensing \
-  --message-format=json > "$WORK/sc_debug_artifacts.json"
+case "${1:-}" in
+  "")
+    echo ">> building selahcue-licensing in both profiles for the dev-key byte scan"
+    set -- --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-licensing --locked
+    SCAN_MODE=desktop
+    ;;
+  --operator)
+    echo ">> building the standalone operator with release installer features for the dev-key byte scan"
+    # Match the Windows installer profile and feature selection. Tauri's normal build
+    # adds tauri/custom-protocol to use compiled assets rather than a development URL.
+    set -- --manifest-path "$DESKTOP/crates/selahcue-operator/Cargo.toml" \
+      --locked --features stt,tauri/custom-protocol --bin selahcue-operator
+    SCAN_MODE=operator
+    ;;
+  *)
+    echo "usage: $0 [--operator]" >&2
+    exit 2
+    ;;
+esac
 
-python3 "$ROOT/scripts/dev_key_scan.py" \
-  "$TRUST_RS" "$WORK/sc_release_artifacts.json" "$WORK/sc_debug_artifacts.json"
+"$CARGO" build "$@" --message-format=json > "$WORK/debug.json"
+"$CARGO" build "$@" --release --message-format=json > "$WORK/release.json"
+
+python3 "$ROOT/scripts/dev_key_scan.py" "$TRUST_RS" "$WORK/release.json" \
+  "$WORK/debug.json" "$SCAN_MODE"

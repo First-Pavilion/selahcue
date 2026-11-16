@@ -218,6 +218,8 @@ pub enum ErrorCode {
     ValidationFailed,
     NotFound,
     Conflict,
+    ActivationOperationConflict,
+    ActivationOperationCompleted,
     PolicyDenied,
     RateLimited,
     NotImplemented,
@@ -228,7 +230,7 @@ pub enum ErrorCode {
     Unknown(String),
 }
 
-/// The longest code this client will carry. The server's longest is 17 characters.
+/// The longest code this client will carry. This bounds both current and future server codes.
 pub const MAX_CODE_LEN: usize = 64;
 
 /// What an [`ErrorCode::Unknown`] holds when the wire value was not shaped like a code.
@@ -258,6 +260,8 @@ impl ErrorCode {
             "VALIDATION_FAILED" => ErrorCode::ValidationFailed,
             "NOT_FOUND" => ErrorCode::NotFound,
             "CONFLICT" => ErrorCode::Conflict,
+            "ACTIVATION_OPERATION_CONFLICT" => ErrorCode::ActivationOperationConflict,
+            "ACTIVATION_OPERATION_COMPLETED" => ErrorCode::ActivationOperationCompleted,
             "POLICY_DENIED" => ErrorCode::PolicyDenied,
             "RATE_LIMITED" => ErrorCode::RateLimited,
             "NOT_IMPLEMENTED" => ErrorCode::NotImplemented,
@@ -275,6 +279,8 @@ impl ErrorCode {
             ErrorCode::ValidationFailed => "VALIDATION_FAILED",
             ErrorCode::NotFound => "NOT_FOUND",
             ErrorCode::Conflict => "CONFLICT",
+            ErrorCode::ActivationOperationConflict => "ACTIVATION_OPERATION_CONFLICT",
+            ErrorCode::ActivationOperationCompleted => "ACTIVATION_OPERATION_COMPLETED",
             ErrorCode::PolicyDenied => "POLICY_DENIED",
             ErrorCode::RateLimited => "RATE_LIMITED",
             ErrorCode::NotImplemented => "NOT_IMPLEMENTED",
@@ -361,6 +367,54 @@ pub struct SessionActivationRequest {
     pub platform: String,
     pub app_version: String,
     pub display_name: String,
+}
+
+/// Versioned native protocol. Sending a missing expectation explicitly is part
+/// of the frozen request and distinguishes an initial operation from recovery.
+#[derive(Serialize)]
+pub(crate) struct BoundActivationRequest<'a> {
+    pub operation_version: u8,
+    pub mode: &'static str,
+    pub idempotency_key: &'a str,
+    pub expected_device_public_id: Option<&'a str>,
+    pub device_fingerprint: &'a str,
+    pub platform: &'a str,
+    pub app_version: &'a str,
+    pub display_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub license_key: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BoundActivationResponse {
+    pub operation_version: u8,
+    pub idempotency_key: String,
+    pub operation_state: BoundOperationState,
+    #[serde(flatten)]
+    pub activation: ActivationResponse,
+}
+
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BoundOperationState {
+    Completed,
+    Replay,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BoundActivationError {
+    pub operation_version: u8,
+    pub surface: Option<String>,
+    pub operation: Option<String>,
+    pub error: ApiErrorBody,
+    pub completed_activation: Option<CompletedActivationReceipt>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CompletedActivationReceipt {
+    pub idempotency_key: String,
+    pub device_public_id: String,
+    pub platform: String,
 }
 
 // ---------------------------------------------------------------------------

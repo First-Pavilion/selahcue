@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "outcome": "insufficient",
+  "selected_profile": null,
+  "evidence_kind": "unavailable",
+  "normalization": "Scoring only: NFC, casefold, Unicode letters/marks/numbers; punctuation to spaces; whitespace word tokens. Diacritics retained. WER S/D/I tie order; silence insertions separate. Mixed WER not attributed per language. Tuning and held_out rows retain split; aggregate includes both. Retrieval macro averages across observed rows only.",
+  "coverage": {
+    "required_languages": [
+      "English",
+      "Yoruba",
+      "Igbo",
+      "Hausa"
+    ],
+    "missing_languages": [
+      "English",
+      "Hausa",
+      "Igbo",
+      "Yoruba"
+    ],
+    "held_out_missing_languages": [
+      "English",
+      "Hausa",
+      "Igbo",
+      "Yoruba"
+    ],
+    "sample_count": 0,
+    "missing_scenarios": [
+      "ambiguous_scripture",
+      "interpreter_alternation",
+      "language_switch",
+      "ordinary_speech",
+      "silence"
+    ]
+  },
+  "missing_evidence": [
+    "owner-approved quality/operating thresholds and acceptance decision",
+    "actual Windows 10 / 4 GB integrated installed-app evidence with timer and stage/audience output",
+    "authorized real four-language corpus and fluent-speaker references",
+    "missing_languages: English, Hausa, Igbo, Yoruba",
+    "held_out_missing_languages: English, Hausa, Igbo, Yoruba",
+    "missing_scenarios: ambiguous_scripture, interpreter_alternation, language_switch, ordinary_speech, silence",
+    "unpinned assets/configuration or rights for profile production-whisper-baseline",
+    "profile language coverage incomplete: production-whisper-baseline",
+    "unpinned assets/configuration or rights for profile experimental-omnilingual-ctc-300m-int8-investigation"
+  ],
+  "per_profile": [
+    {
+      "profile_id": "production-whisper-baseline",
+      "engine_sha256": null,
+      "model_sha256": null,
+      "config_sha256": null,
+      "languages": [
+        "English",
+        "Yoruba",
+        "Hausa"
+      ],
+      "rights_source": "https://github.com/openai/whisper#license",
+      "role": "production_baseline",
+      "completed_runs": 0,
+      "complete": false,
+      "missing_run_ids": [],
+      "samples": [],
+      "per_language": {
+        "English": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Yoruba": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Igbo": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Hausa": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        }
+      },
+      "mixed_language": {
+        "scored_samples": 0,
+        "reference_words": 0,
+        "word_error_rate": null
+      },
+      "per_split": {
+        "tuning": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "held_out": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        }
+      },
+      "aggregate": {
+        "represented_samples": 0,
+        "scored_monolingual_samples": 0,
+        "mixed_language_samples": 0,
+        "reference_words": 0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "silence_hallucination_words": 0,
+        "word_error_rate": null,
+        "retrieval_evaluated_samples": 0,
+        "retrieval_recall_at_5": null,
+        "retrieval_mrr": null,
+        "false_passage_suggestions": null
+      }
+    },
+    {
+      "profile_id": "experimental-omnilingual-ctc-300m-int8-investigation",
+      "engine_sha256": null,
+      "model_sha256": null,
+      "config_sha256": null,
+      "languages": [
+        "English",
+        "Yoruba",
+        "Igbo",
+        "Hausa"
+      ],
+      "rights_source": "https://github.com/facebookresearch/omnilingual-asr",
+      "role": "experimental",
+      "completed_runs": 0,
+      "complete": false,
+      "missing_run_ids": [],
+      "samples": [],
+      "per_language": {
+        "English": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Yoruba": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Igbo": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "Hausa": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        }
+      },
+      "mixed_language": {
+        "scored_samples": 0,
+        "reference_words": 0,
+        "word_error_rate": null
+      },
+      "per_split": {
+        "tuning": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        },
+        "held_out": {
+          "represented_samples": 0,
+          "scored_monolingual_samples": 0,
+          "mixed_language_samples": 0,
+          "reference_words": 0,
+          "substitutions": 0,
+          "deletions": 0,
+          "insertions": 0,
+          "silence_hallucination_words": 0,
+          "word_error_rate": null,
+          "retrieval_evaluated_samples": 0,
+          "retrieval_recall_at_5": null,
+          "retrieval_mrr": null,
+          "false_passage_suggestions": null
+        }
+      },
+      "aggregate": {
+        "represented_samples": 0,
+        "scored_monolingual_samples": 0,
+        "mixed_language_samples": 0,
+        "reference_words": 0,
+        "substitutions": 0,
+        "deletions": 0,
+        "insertions": 0,
+        "silence_hallucination_words": 0,
+        "word_error_rate": null,
+        "retrieval_evaluated_samples": 0,
+        "retrieval_recall_at_5": null,
+        "retrieval_mrr": null,
+        "false_passage_suggestions": null
+      }
+    }
+  ]
+}

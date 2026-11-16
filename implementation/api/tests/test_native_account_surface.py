@@ -63,6 +63,8 @@ EMAIL = "pastor@grace.example"
 # an exempt route must not be able to authenticate from, or set, an ambient browser credential.
 EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/activations",
+    "v1/activations:bound",
+    "v1/activations:bound-with-session",
     "v1/sessions",
     "v1/sessions:revoke",
     "v1/activations:with-session",
@@ -70,6 +72,17 @@ EXPECTED_CSRF_EXEMPT_ROUTES = {
     "v1/downloads:prepare",
     "v1/downloads/<str:lease_id>:complete",
     "v1/usage-events:batch",
+    # Cloud views authenticate only the Bearer header. They cannot use the
+    # account cookie and own their method-only refusals.
+    "v1/stt/session",
+    "v1/quota",
+    # Dedicated authenticated n8n server callbacks; never ambient cookie/device
+    # auth, and disabled until explicit collection policy is configured (P13).
+    "v1/pilot/registrations:reserve",
+    "v1/pilot/registrations:confirm",
+    # P12 uses its own server Bearer token, never cookie/device authority.
+    # Off by default; missing real private-read signer still refuses503.
+    "v1/pilot/downloads:grant",
     "webhooks/billing/<str:provider>",
 }
 

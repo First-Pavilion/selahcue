@@ -738,7 +738,7 @@ def test_csrf_trusted_origins_are_parsed_normalised_and_validated(env, expected)
 
 
 # A pasted `https://user:secret@host` is refused, and the message (which lands in logs and
-# terminals) must not echo the secret: everything before the last `@` becomes `***`.
+# terminals) must not echo the secret: raw userinfo makes the entire entry scheme-and-mask only.
 SECRET = "hunter2"
 CREDENTIAL_ENTRIES = [
     f"https://user:{SECRET}@a.example.com",
@@ -763,8 +763,9 @@ def test_a_refused_entry_never_echoes_a_password(env):
     assert error.startswith("ImproperlyConfigured"), error
     assert "DJANGO_CSRF_TRUSTED_ORIGINS" in error
     assert SECRET not in error
-    assert "***@" in error
-    assert "a.example.com" in error or ".example.com" in error  # still identifies the entry
+    shown = "https://***" if env["DJANGO_CSRF_TRUSTED_ORIGINS"].startswith("https://") else "***"
+    assert f"entry {shown!r} is not accepted" in error
+    assert "example.com" not in error
 
 
 def test_a_refused_credential_entry_leaks_nothing_through_manage_py_either():
@@ -910,3 +911,64 @@ def test_the_spelling_of_the_flag_decides_the_end_to_end_outcome(raw, trusted):
 
     assert outcome["status"] == (200 if trusted else 403)
     assert (outcome["hsts"] is not None) is trusted
+
+
+# 17tnw2b9adv: delimiter splitting must not turn a userinfo password into a
+# printable fragment, and malformed origin queries can contain credentials too.
+ORIGIN_DIAGNOSTIC_CASES = [
+    ("https://user:COMMA_SECRET,TAIL_SECRET@app.example.com", ("COMMA_SECRET", "TAIL_SECRET"), "https://***"),
+    ("https://user:SPACE_SECRET TAIL_SECRET@app.example.com", ("SPACE_SECRET", "TAIL_SECRET"), "https://***"),
+    ("https://user:PLAIN_SECRET@app.example.com", ("PLAIN_SECRET",), "https://***"),
+    ("user:SCHEMELESS_SECRET@app.example.com", ("SCHEMELESS_SECRET",), "***"),
+    ("https://evil.example/?token=QUERY_SECRET", ("QUERY_SECRET",), None),
+    ("https://evil.example/#FRAGMENT_SECRET", ("FRAGMENT_SECRET",), None),
+    # The raw value, not only the failing split entry, determines whether it is
+    # safe to identify that entry. Here the failing entry precedes the @ entry.
+    ("https://bad.example/path https://user:LATER_SECRET@app.example.com", ("LATER_SECRET",), "https://***"),
+]
+ORIGIN_DIAGNOSTIC_PARAMS = [
+    pytest.param(_case(DJANGO_CSRF_TRUSTED_ORIGINS=raw), secrets, shown, id=case_id)
+    for (raw, secrets, shown), case_id in zip(
+        ORIGIN_DIAGNOSTIC_CASES,
+        ["comma-password", "space-password", "plain-password", "schemeless-password",
+         "query-secret", "fragment-secret", "userinfo-in-later-entry"],
+        strict=True,
+    )
+]
+
+
+@pytest.mark.parametrize(("env", "secrets", "shown"), ORIGIN_DIAGNOSTIC_PARAMS)
+def test_origin_refusal_diagnostic_never_echoes_raw_secret_fragments(env, secrets, shown):
+    error = _settings_for(env).get("error", "")
+    assert error.startswith("ImproperlyConfigured"), error
+    assert "DJANGO_CSRF_TRUSTED_ORIGINS" in error
+    assert "section 6c" in error
+    for secret in secrets:
+        assert secret not in error
+    if shown is not None:
+        assert f"entry {shown!r} is not accepted" in error
+        assert "app.example.com" not in error
+        assert "bad.example" not in error
+
+
+@pytest.mark.parametrize("raw,secrets,shown", ORIGIN_DIAGNOSTIC_CASES)
+def test_origin_secrets_are_absent_from_actual_manage_py_stderr(raw, secrets, shown):
+    refused = _run_manage_check(DJANGO_CSRF_TRUSTED_ORIGINS=raw)
+    output = refused.stdout + refused.stderr
+    assert refused.returncode != 0
+    assert "ImproperlyConfigured" in output
+    for secret in secrets:
+        assert secret not in output
+    if shown is not None:
+        assert f"entry {shown!r} is not accepted" in output
+
+
+@pytest.mark.parametrize("separator", [",", " ", ", "])
+def test_legitimate_origin_lists_still_preserve_normalization_and_deduplication(separator):
+    env = {"ENVIRONMENT": "dev", "DEBUG": "0", "SECRET_KEY": None,
+           "DJANGO_CSRF_TRUSTED_ORIGINS": separator.join([
+               "https://APP.example.com/", "https://other.example.com:8443", "https://app.example.com"
+           ])}
+    assert _settings_for(env)["origins"] == [
+        "https://app.example.com", "https://other.example.com:8443"
+    ]

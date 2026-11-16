@@ -24,6 +24,16 @@ pairing (Y/N). Issued credentials are stored in the platform keystore
 
 ## Verification
 
+CI uses Flutter **3.47.5** on the stable channel as the tested reproducibility gate.
+Select the same SDK explicitly for local Make targets (from the repository root):
+
+```sh
+make mobile-test FLUTTER=/absolute/path/to/3.47.5/bin/flutter
+```
+
+For direct commands such as `flutter run`, check `flutter --version` first; PATH
+still selects the SDK. This pin does not establish Flutter 3.50 compatibility.
+
 ```sh
 make mobile-test   # flutter analyze + unit tests
 ```

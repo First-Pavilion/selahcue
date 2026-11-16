@@ -23,7 +23,7 @@ default = []
 #     `ReqwestTransport::new()` (`transport::ensure_crypto_provider`).
 #   * `scripts/import_guards.sh` fails the build if aws-lc or the webpki-roots bundle re-enter
 #     this crate's `http` tree.
-http = ["dep:reqwest", "dep:rustls"]
+http = ["dep:reqwest", "dep:rustls", "dep:tokio"]
 # Direct OpenAI GPT sermon-note generation with a DEVELOPER key (86akby7d8, Phase 1).
 # Off by default: the shipping path proxies notes through the SelahCue platform API, so
 # a default build must not contain a direct-to-provider path at all. It pulls NO new
@@ -40,6 +40,9 @@ keyring = ["dep:keyring"]
 selahcue-core = { path = "../selahcue-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Validate the parsed URL scheme/host even without the optional HTTP transport.
+# Reuses the already-locked URL parser; no hand-written scheme/authority parser.
+url = "2"
 # `rustls-no-provider`, NOT `rustls`: see the `http` feature comment. reqwest 0.13 renamed 0.12's
 # `rustls-tls` to `rustls` and made aws-lc-rs its provider; this feature keeps ring. Without a
 # provider installed first, building a Client PANICS, which `ensure_crypto_provider` prevents.
@@ -61,6 +64,8 @@ keyring = { version = "3", features = [
     "windows-native",
     "sync-secret-service",
 ], optional = true }
+
+tokio = { version = "1", features = ["rt", "time", "net", "macros"], optional = true }
 
 [dev-dependencies]
 # A throwaway certificate authority for the TLS trust tests (`transport.rs` unit tests): it signs

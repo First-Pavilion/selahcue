@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use rusqlite::params;
 use selahcue_core::plan::ServicePlan;
+use selahcue_core::providers::MAX_LINK_SEGMENTS;
 use selahcue_core::transcript::{MAX_SEGMENT_TEXT_LEN, MAX_TRANSCRIPT_SEGMENTS};
 use selahcue_data::sermon_note_repo::{self, NewSermonNote};
 use selahcue_data::transcript_repo::{self, NewTranscript, RetentionSettings};
@@ -94,6 +95,112 @@ fn creates_appends_across_many_calls_and_reads_back_in_order_unmodified() {
             "segment {i} order must be preserved"
         );
     }
+}
+
+fn seed_sparse_segments(db: &Database, transcript_id: i64, count: usize) {
+    // Descending insert order gives the smallest ord the largest row ID.
+    db.conn()
+        .execute(
+            "WITH RECURSIVE indices(i) AS (
+                 SELECT ?2 - 1 UNION ALL SELECT i - 1 FROM indices WHERE i > 0
+             )
+             INSERT INTO transcript_segment (transcript_id, ord, start_ms, end_ms, text)
+             SELECT ?1, i * 2, i * 1000, i * 1000 + 900, 'segment number ' || i
+             FROM indices",
+            params![transcript_id, i64::try_from(count).unwrap()],
+        )
+        .unwrap();
+}
+
+#[test]
+fn segment_prefix_matches_full_order_with_sparse_ord_and_handles_limits() {
+    const STORED_SEGMENTS: usize = 20_001;
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    seed_sparse_segments(&db, transcript_id, STORED_SEGMENTS);
+    let other_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    transcript_repo::append_segment(&db, other_id, 0, 1, "different transcript").unwrap();
+
+    let full = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(full.segments.len(), STORED_SEGMENTS);
+    let prefix =
+        transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS).unwrap();
+    assert_eq!(prefix.as_slice(), &full.segments[..MAX_LINK_SEGMENTS]);
+    assert_eq!(prefix[0].start_ms, 0);
+    assert_eq!(prefix[1].start_ms, 1000);
+    assert!(prefix[0].id > prefix[1].id);
+
+    assert_eq!(
+        transcript_repo::load_segments_prefix(&db, transcript_id, 2).unwrap(),
+        full.segments[..2]
+    );
+    assert_eq!(
+        transcript_repo::load_segments_prefix(&db, transcript_id, usize::MAX).unwrap(),
+        full.segments
+    );
+    assert!(transcript_repo::load_segments_prefix(&db, transcript_id, 0)
+        .unwrap()
+        .is_empty());
+    assert!(transcript_repo::load_segments_prefix(&db, other_id + 1, 1)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn segment_prefix_skips_malformed_tail_and_keeps_in_range_errors_private() {
+    const MARKER: &str = "FR082_SENSITIVE_TRANSCRIPT_SEGMENT_Confession";
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    seed_sparse_segments(&db, transcript_id, MAX_LINK_SEGMENTS + 1);
+    let tail_ord = i64::try_from(2 * MAX_LINK_SEGMENTS).unwrap();
+    assert_eq!(
+        db.conn()
+            .execute(
+                "UPDATE transcript_segment SET text = CAST(?1 AS BLOB)
+                 WHERE transcript_id = ?2 AND ord = ?3",
+                params![MARKER, transcript_id, tail_ord],
+            )
+            .unwrap(),
+        1
+    );
+
+    let prefix = transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS)
+        .expect("the malformed tail row must not be decoded");
+    assert_eq!(prefix.len(), MAX_LINK_SEGMENTS);
+    assert_is_sqlite_variant(
+        &transcript_repo::load(&db, transcript_id).unwrap_err(),
+        "full load with malformed tail",
+    );
+    // Raising the limit by one includes that same row and must surface a redacted error.
+    let error = transcript_repo::load_segments_prefix(&db, transcript_id, MAX_LINK_SEGMENTS + 1)
+        .unwrap_err();
+    assert_is_sqlite_variant(&error, "prefix with malformed text");
+    assert!(!contains_a_leak_window_of(
+        &format!("{error} {error:?}"),
+        MARKER
+    ));
+}
+
+#[test]
+fn segment_prefix_reads_without_decoding_related_transcript_data() {
+    let db = db();
+    let transcript_id = transcript_repo::create(&db, &sample_new_transcript()).unwrap();
+    let segment_id = transcript_repo::append_segment(&db, transcript_id, 0, 1, "raw").unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_correction (segment_id, corrected_text, corrected_at)
+             VALUES (?1, CAST('malformed correction' AS BLOB), 0)",
+            params![segment_id],
+        )
+        .unwrap();
+
+    let prefix = transcript_repo::load_segments_prefix(&db, transcript_id, 1).unwrap();
+    assert_eq!(prefix.len(), 1);
+    assert_eq!(prefix[0].text, "raw");
+    assert_is_sqlite_variant(
+        &transcript_repo::load(&db, transcript_id).unwrap_err(),
+        "full load with malformed correction",
+    );
 }
 
 #[test]
@@ -702,12 +809,12 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
     // attempted on connection C from a second thread, so C's attempts can genuinely
     // land while A's checkpoint is (pre-fix) holding the WAL write lock.
     //
-    // Mutation-verified by hand: reverting `Database::try_checkpoint_truncate` to the
-    // bare `let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");` (no
-    // scoped busy_timeout) turns this test RED — observed `delete()` at ~5.18s (over
-    // the bound below by 50x) and, on the same run, the `append_segment` probe failing
-    // outright with `SQLITE_BUSY: database is locked` rather than merely being slow.
-    // Restoring the fix turns it GREEN again.
+    // The deterministic companion tests in db::checkpoint_tests install a real
+    // SQLite busy handler and verify this checkpoint disables it. Removing the
+    // scoped timeout setting fails that assertion even on a paused/slow runner.
+    // Keep this public-API scenario for deletion, concurrent writer success and
+    // eventual WAL cleanup; elapsed times below are diagnostics, not correctness
+    // gates (17tnw2b2nxe; implementation/desktop/CLAUDE.md timing policy).
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_path_buf();
     let wal_path = wal_sidecar_path(&path);
@@ -729,19 +836,12 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
         .execute_batch("BEGIN; SELECT COUNT(*) FROM transcript;")
         .unwrap();
 
-    // Bound generous enough to never flake on a loaded CI box, but 10x tighter than
-    // the 5000ms `busy_timeout` the old code could stall for — nowhere close to the
-    // ~1-2ms this crate's own fix measures uncontended.
-    const BOUND: Duration = Duration::from_millis(500);
-
-    // Connection C's writes run on their own thread, started before A's delete() call
-    // below, so a scheduling hiccup cannot make them run only after A has already
-    // finished (which would trivially "pass" regardless of the fix).
+    // Keep C's public-API writes on an independent thread. Scheduling alone cannot
+    // prove overlap: the private busy-handler control above proves the checkpoint
+    // boundary, while this scenario checks actual writer success and WAL cleanup.
     let writer_thread = thread::spawn(move || {
-        // Tiny head start so A's DELETE + checkpoint call has begun before C's first
-        // attempt — irrelevant for correctness (the pre-fix bug's window is ~5s, five
-        // orders of magnitude longer than this sleep) but maximises the odds that a
-        // single hand-run of the mutated code actually overlaps.
+        // Preserve the original overlap pacing. This encourages C to attempt its
+        // writes after A starts, but is not the mechanism assertion or a time bound.
         thread::sleep(Duration::from_millis(5));
 
         let detection_start = Instant::now();
@@ -777,23 +877,14 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
     // Release the reader before the positive control below.
     reader.execute_batch("COMMIT;").unwrap();
 
-    assert!(
-        delete_elapsed < BOUND,
-        "delete() took {delete_elapsed:?} with a reader holding an open read \
-         transaction — Database::try_checkpoint_truncate's scoped busy_timeout = 0 \
-         fix (PR #30 review, Vera F5) must bound this to a few ms, not the \
-         connection's full 5s busy_timeout"
+    eprintln!(
+        "WAL contention timings (diagnostic only): delete={delete_elapsed:?}, \
+         append_detection={detection_elapsed:?}, append_segment={segment_elapsed:?}"
     );
     assert!(
         detection_result.is_ok(),
         "append_detection (an ordinary autocommit writer, concurrent with \
          delete()'s checkpoint) failed instead of succeeding: {detection_result:?}"
-    );
-    assert!(
-        detection_elapsed < BOUND,
-        "append_detection stalled for {detection_elapsed:?} while a concurrent \
-         delete() ran its checkpoint under WAL contention — a best-effort WAL \
-         truncate on one connection must not stall a write on another"
     );
     assert!(
         segment_result.is_ok(),
@@ -803,11 +894,6 @@ fn deleting_with_a_reader_holding_the_wal_open_does_not_stall_the_caller_or_othe
          handler on that read-to-write upgrade and this shape fails immediately \
          rather than merely waiting, exactly as Vera's report describes"
     );
-    assert!(
-        segment_elapsed < BOUND,
-        "append_segment stalled for {segment_elapsed:?}"
-    );
-
     // Positive control: with the reader released and no contention, delete()'s
     // checkpoint still fully truncates the WAL, exactly as it always could when
     // uncontended — proving the scoped busy_timeout = 0 fix doesn't simply make the
@@ -1328,6 +1414,27 @@ fn malformed_retention_days_is_reported_corrupt_not_silently_kept_forever() {
         matches!(err, selahcue_data::DataError::Corrupt(_)),
         "expected DataError::Corrupt for an unparseable retention_days, got {err:?}"
     );
+}
+
+#[test]
+fn corrupt_retention_diagnostic_never_quotes_the_stored_value() {
+    let db = db();
+    db.conn()
+        .execute(
+            "INSERT INTO transcript_setting (key, value) VALUES ('retention_days', ?1)",
+            params!["STORED-RETENTION-SENTINEL-17tnw2b9dq1"],
+        )
+        .unwrap();
+    let error = transcript_repo::load_retention_settings(&db).unwrap_err();
+    assert!(matches!(error, selahcue_data::DataError::Corrupt(_)));
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(rendered.contains("retention_days"));
+        assert!(rendered.contains("not a valid u32"));
+        assert!(
+            !rendered.contains("STORED-RETENTION-SENTINEL"),
+            "{rendered}"
+        );
+    }
 }
 
 #[test]

@@ -10,17 +10,21 @@
 
 #![forbid(unsafe_code)]
 
+mod json_failure;
 pub mod link;
 pub mod local_endpoint;
 pub mod protocol;
 pub mod rbac;
 pub mod session;
 
+pub use json_failure::{JsonFailure, JsonFailureKind};
 pub use link::{LinkState, LinkStatus};
 pub use rbac::{authorize, Permission, Role};
 pub use session::{DeviceId, PairingError, Session, SessionRegistry, SessionToken};
 
 // The TLS-pinned WebSocket transport (async) — only with the `server` feature.
+#[cfg(feature = "server")]
+pub mod admission;
 #[cfg(feature = "server")]
 pub mod client;
 #[cfg(feature = "server")]
@@ -41,6 +45,4 @@ pub use server::{
     generate_pairing_code, generate_token, ControlServer, Handler, Reply, MAX_MESSAGE_BYTES,
 };
 #[cfg(feature = "server")]
-pub use tls::{
-    client_config, server_config, JsonFailure, JsonFailureKind, SelfSigned, TransportError,
-};
+pub use tls::{client_config, server_config, SelfSigned, TransportError};

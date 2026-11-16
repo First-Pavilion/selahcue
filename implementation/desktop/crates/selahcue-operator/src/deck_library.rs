@@ -255,6 +255,10 @@ pub struct DeckLibrary {
     /// How many decks `heal` left out of the library at load. Only the COUNT is kept and logged (never
     /// a name: no user content in logs); the console is not told (ADR-0031 limit 4).
     left_out: usize,
+    /// A loaded/retried deck whose display name differs from its actual persisted row. Keyed only
+    /// by this library's repaired internal number, never by a copied/imported uid or JSON name.
+    /// Bounded by loaded decks and unsuccessful renames; successful rename/delete removes it.
+    storage_names: std::collections::HashMap<DeckId, String>,
 }
 
 impl DeckLibrary {
@@ -318,8 +322,17 @@ impl DeckLibrary {
             entropy,
             held_back: Vec::new(),
             left_out: 0,
+            storage_names: std::collections::HashMap::new(),
         };
         let stats = lib.heal(&mut row_keys, issued);
+        // A blank key (or a name reserved by a held-back row) still needs display-name healing.
+        // Keep its exact destination separately, after number healing has made ids unambiguous.
+        lib.storage_names = lib
+            .decks
+            .iter()
+            .zip(row_keys)
+            .filter_map(|(deck, key)| (deck.name != key).then_some((deck.id(), key)))
+            .collect();
         if lib.left_out > 0 {
             // The COUNT only: no names, no user content in a log. The console is not told (ADR-0031
             // limit 4), so this line is the only signal that presentations are missing from the list.
@@ -416,6 +429,11 @@ impl DeckLibrary {
             }
             self.held_back.push(key);
         }
+        // The row key, not an untrusted/stale name inside its JSON, owns the presentation's name.
+        // Do this AFTER leaving out unnumberable rows, so their existing reservations are kept.
+        for (deck, key) in self.decks.iter_mut().zip(row_keys.iter()) {
+            deck.name.clone_from(key);
+        }
         // Pass 2 — names: reserve every distinct non-empty name in order; anything empty or duplicate
         // is uniquified against the reserved set.
         let mut seen_names: HashSet<String> = self.held_back.iter().cloned().collect();
@@ -460,11 +478,9 @@ impl DeckLibrary {
             // would be given a different one every run and a bundle exported yesterday could not
             // name it today.
             //
-            // ONLY when the row the deck was read from is the row a write would land on: `save_one`
-            // upserts by the deck's own (in-memory) name, so for a deck whose JSON name differs
-            // from its row key -- or whose name pass 2 just changed -- the write would overwrite
-            // some OTHER presentation's row, or create a second row for this one. That deck keeps
-            // its identity in memory and gets a new one each launch until the row is repaired.
+            // Only backfill a name that is still its exact row key. Canonical key-derived names
+            // now land safely on their own row; pass-2 display-name healing (e.g. a blank key) is
+            // still skipped at load. Its later ordinary writes use the private row binding.
             let lands_on_own_row = row_keys.get(i).is_some_and(|k| *k == self.decks[i].name);
             if writing && self.decks[i].uid().is_some() && lands_on_own_row {
                 stats.attempted += 1;
@@ -1164,28 +1180,55 @@ impl DeckLibrary {
         };
         match serde_json::to_string(deck) {
             // Numbered: the row and the high-water mark (>= this deck's number) commit together.
-            Ok(json) => deck_repo::save_one_numbered(db, &deck.name, &json, deck.id().0).is_ok(),
+            Ok(json) => deck_repo::save_one_numbered(
+                db,
+                self.storage_name(deck, &deck.name),
+                &json,
+                deck.id().0,
+            )
+            .is_ok(),
             Err(_) => false,
         }
     }
 
     /// Remove the deck's row and record its number as retired in the same transaction, so the number
     /// is never reissued even when nothing else wrote the mark (17tnw2b9arx).
-    fn delete_persisted(&self, deck: &SlideDeck) {
+    fn delete_persisted(&mut self, deck: &SlideDeck) {
         if let Some(db) = &self.db {
-            let _ = deck_repo::delete_one_numbered(db, &deck.name, deck.id().0);
+            let key = self.storage_name(deck, &deck.name).to_owned();
+            if deck_repo::delete_one_numbered(db, &key, deck.id().0).is_ok() {
+                self.storage_names.remove(&deck.id());
+            } else {
+                // The row still exists. Reserve it against a new copy/import, and keep Undo
+                // delete on its own destination even when restore must change its display name.
+                self.storage_names.insert(deck.id(), key);
+            }
         }
     }
 
     /// Atomically move a deck's on-disk row from `old_name` to `deck.name` (one transaction) — a
     /// crash mid-rename can never lose the row. Best-effort (a DB error is swallowed).
-    fn persist_rename(&self, old_name: &str, deck: &SlideDeck) {
+    fn persist_rename(&mut self, old_name: &str, deck: &SlideDeck) {
         if let Some(db) = &self.db {
-            if let Ok(json) = serde_json::to_string(deck) {
-                let _ =
-                    deck_repo::rename_one_numbered(db, old_name, &deck.name, &json, deck.id().0);
+            let old_key = self.storage_name(deck, old_name).to_owned();
+            let moved = serde_json::to_string(deck).ok().is_some_and(|json| {
+                deck_repo::rename_one_numbered(db, &old_key, &deck.name, &json, deck.id().0).is_ok()
+            });
+            if moved {
+                self.storage_names.remove(&deck.id());
+            } else {
+                // Memory still reflects the requested rename (best-effort persistence). Reserve
+                // and retain the old destination until an atomic move actually succeeds.
+                self.storage_names.insert(deck.id(), old_key);
             }
         }
+    }
+
+    fn storage_name<'a>(&'a self, deck: &SlideDeck, fallback: &'a str) -> &'a str {
+        self.storage_names
+            .get(&deck.id())
+            .map(String::as_str)
+            .unwrap_or(fallback)
     }
 
     /// Every name a new deck must avoid: the saved decks' and those left out at load (their rows are
@@ -1195,6 +1238,7 @@ impl DeckLibrary {
             .iter()
             .map(|d| d.name.clone())
             .chain(self.held_back.iter().cloned())
+            .chain(self.storage_names.values().cloned())
             .collect()
     }
 }
@@ -1265,6 +1309,9 @@ fn uniquify_excluding(base: &str, taken: &std::collections::HashSet<String>, kee
 // file, because they are about the boundary between two libraries rather than about one.
 #[cfg(test)]
 mod identity_tests;
+
+#[cfg(test)]
+mod row_key_tests;
 
 // Deck-number reuse across restarts (17tnw2b9arx): its own file for the same reason, and because
 // every test in it needs a real database file and a simulated restart.

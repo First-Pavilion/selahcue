@@ -92,6 +92,12 @@ pub enum SessionState {
     Reconnecting { attempt: u32, of: u32 },
     /// Stopped on request.
     Stopped,
+    /// Native pilot budget retired; no courtesy flush or reconnect is allowed.
+    AccessExpired,
+    /// The admitted clock became unavailable; the budget is retired.
+    AccessUnavailable,
+    /// A pilot provider explicitly rejected authentication. No raw response is retained.
+    CredentialRejected,
     /// Stopped for good. Carries what the operator should do and a message safe to display —
     /// never the credential.
     Failed {
@@ -110,7 +116,14 @@ impl SessionState {
     /// console needs this distinction to decide between "reconnecting…" and an actionable
     /// message.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, SessionState::Stopped | SessionState::Failed { .. })
+        matches!(
+            self,
+            SessionState::Stopped
+                | SessionState::Failed { .. }
+                | SessionState::AccessExpired
+                | SessionState::AccessUnavailable
+                | SessionState::CredentialRejected
+        )
     }
 }
 
@@ -121,12 +134,22 @@ impl SessionState {
 #[derive(Debug, Clone, Default)]
 pub struct SessionStatus {
     inner: Arc<Mutex<SessionState>>,
+    rejection_latch: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl SessionStatus {
     /// A status starting at [`SessionState::Idle`].
     pub fn new() -> Self {
         SessionStatus::default()
+    }
+
+    /// Bind a sticky, nonsecret rejection observer. Ordinary status has no observer.
+    /// No callback is invoked and the latch is independent of capture-loop exits.
+    pub fn with_rejection_latch(latch: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            inner: Arc::default(),
+            rejection_latch: Some(latch),
+        }
     }
 
     /// The current state.
@@ -136,8 +159,43 @@ impl SessionStatus {
 
     /// Replace the current state.
     pub fn set(&self, state: SessionState) {
+        // Retire the source BEFORE publishing rejection, independently of any
+        // capture-loop exit. Only a boolean is observed: no callback can panic,
+        // block, or re-enter this status mutex. Clones share the same latch.
+        if state == SessionState::CredentialRejected {
+            if let Some(latch) = &self.rejection_latch {
+                latch.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = state;
     }
 }
 
 // Tests live in `tests/test_provider.rs` (public-API integration tests).
+
+#[cfg(test)]
+mod rejection_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[test]
+    fn rejection_observer_is_sticky_and_ordinary_status_has_no_observer() {
+        assert!(SessionStatus::new().rejection_latch.is_none());
+        let latch = Arc::new(AtomicBool::new(false));
+        let status = SessionStatus::with_rejection_latch(latch.clone());
+        for state in [
+            SessionState::Connecting,
+            SessionState::Streaming,
+            SessionState::AccessExpired,
+            SessionState::Stopped,
+        ] {
+            status.set(state);
+            assert!(!latch.load(Ordering::SeqCst));
+        }
+        let clone = status.clone();
+        clone.set(SessionState::CredentialRejected);
+        assert!(latch.load(Ordering::SeqCst));
+        assert_eq!(status.get(), SessionState::CredentialRejected);
+        status.set(SessionState::Stopped);
+        assert!(latch.load(Ordering::SeqCst));
+    }
+}

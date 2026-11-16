@@ -1,0 +1,101 @@
+{
+  "/changelog@375": {
+    "main": {
+      "top": 69,
+      "height": 449
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 518,
+      "height": 467
+    }
+  },
+  "/not-a-real-page@375": {
+    "main": {
+      "top": 69,
+      "height": 402
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 471,
+      "height": 467
+    }
+  },
+  "/changelog@768": {
+    "main": {
+      "top": 79,
+      "height": 545
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 624,
+      "height": 642
+    }
+  },
+  "/not-a-real-page@768": {
+    "main": {
+      "top": 79,
+      "height": 377
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 456,
+      "height": 642
+    }
+  },
+  "/changelog@1440": {
+    "main": {
+      "top": 79,
+      "height": 549
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 628,
+      "height": 358
+    }
+  },
+  "/not-a-real-page@1440": {
+    "main": {
+      "top": 79,
+      "height": 463
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 542,
+      "height": 358
+    }
+  },
+  "/pricing@375": {
+    "main": {
+      "top": 69,
+      "height": 448
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 517,
+      "height": 467
+    }
+  },
+  "/pricing@1440": {
+    "main": {
+      "top": 79,
+      "height": 554
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 633,
+      "height": 358
+    }
+  },
+  "/pricing@768": {
+    "main": {
+      "top": 79,
+      "height": 530
+    },
+    "mainMinimum": "auto",
+    "footer": {
+      "top": 609,
+      "height": 642
+    }
+  }
+}

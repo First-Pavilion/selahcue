@@ -14,8 +14,17 @@
       // out-of-scope green tint) so the new STAGED text label can never say something the host
       // has not actually confirmed.
       let lastStagedScripture = null;
+      // Operator usability policy (17tnw2bbhxp): secondary-click must not open
+      // native webview menus or descendant custom menus, including on inputs
+      // and dialogs. Capture before target handlers; keyboard editing shortcuts
+      // and the designer's explicit ContextMenu / Shift+F10 actions remain.
+      document.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }, true);
 
       function render(view) {
+        planRememberCanEdit(view);
         // Chrome (emergency footer, LIVE chip, timer, blackout) syncs on EVERY
         // view — the blackout toggle must read true state even while an editor
         // is open.
@@ -1592,6 +1601,8 @@
         // Transcripts (86akcffvt) reloads the list every time the surface is opened — a fresh read
         // from the shared store each visit, never a stale in-memory cache from a prior visit.
         if (name === "transcripts" && typeof trActivate === "function") trActivate();
+        if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
+        window.scAccount?.visibilityChanged();
       }
       // Settings sidebar routing (Design 2.0, Figma 338:124). Providers + Network & Mobile are built;
       // the rest show the shared "coming soon" page. Providers loads lazily via settingsActivate.
@@ -1618,6 +1629,7 @@
           about: "set-page-about",
           appearance: "set-page-appearance",
           general: "set-page-general",
+          account: "set-page-account",
           scripture: "set-page-scripture",
           outputs: "set-page-outputs",
           security: "set-page-security",
@@ -1629,6 +1641,7 @@
         if (built[page]) {
           document.getElementById(built[page]).hidden = false;
           if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
+          if (page === "account") window.scAccount?.activateSettings();
           if (page === "about" && typeof settingsAboutActivate === "function") settingsAboutActivate();
           if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
           if (page === "general" && typeof settingsGeneralActivate === "function") settingsGeneralActivate();
@@ -1637,10 +1650,12 @@
           if (page === "outputs" && typeof settingsOutputsActivate === "function") settingsOutputsActivate();
           if (page === "security" && typeof settingsSecurityActivate === "function") settingsSecurityActivate();
           if (page === "storage" && typeof settingsStorageActivate === "function") settingsStorageActivate();
+          if (window.scPilotAccess) window.scPilotAccess.visibilityChanged();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";
         }
+        window.scAccount?.visibilityChanged();
       }
       (function initSettingsSidebar() {
         const side = document.querySelector("#surface-settings .set-side");
@@ -3298,7 +3313,7 @@
         if (tdActiveIsEl()) { tdActive().align_h = e.target.value; tdPreview(); }
       };
 
-      // --- Right-click context menu (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
+      // --- Keyboard element actions (#4): Copy / Paste / Delete / Send-to-back / Bring-to-front ---
       let tdClip = null; // session clipboard: a deep-cloned element
       const tdMenu = document.getElementById("td-ctx"); // (tdCtx is the canvas 2D context)
       const tdCloseCtx = () => { tdMenu.hidden = true; };
@@ -3363,14 +3378,6 @@
           const n = e.key === "ArrowDown" ? (idx + 1) % items.length : (idx - 1 + items.length) % items.length;
           if (items[n]) items[n].focus();
         }
-      });
-      // Right-click on the canvas opens the menu (selecting the element under the cursor first).
-      tdBox.addEventListener("contextmenu", (e) => {
-        if (!tdTheme) return;
-        e.preventDefault();
-        const hit = tdHitTest(e.clientX, e.clientY);
-        if (hit >= 0 && hit !== tdSelEl) { tdSelEl = hit; tdSync(); }
-        tdOpenCtx(e.clientX, e.clientY);
       });
       // Close the menu on any pointerdown outside it (cheap no-op while hidden).
       document.addEventListener("pointerdown", (e) => { if (!tdMenu.hidden && !tdMenu.contains(e.target)) tdCloseCtx(); });
@@ -4331,7 +4338,7 @@
         // App menu: F10 opens/closes the surface navigation (reachable anywhere).
         // Cmd/Ctrl+M is intentionally NOT bound — it is the macOS "Minimize window"
         // accelerator. disarm() so opening the menu can't leave a Clear-all armed.
-        if (e.key === "F10") {
+        if (e.key === "F10" && !e.shiftKey) {
           e.preventDefault();
           disarm();
           toggleAppMenu();
@@ -4501,7 +4508,39 @@
       // (2x the host tail, generous headroom) BEFORE the prune/append so the DOM can never
       // grow 1:1 with the sermon. The prune below drops rows not in this sliced set.
       const MAX_TRANSCRIPT_ROWS = 120;
+      function syncTranscriptStorageHealth(health) {
+        const log = document.getElementById("transcript-log");
+        if (!log) return;
+        let status = document.getElementById("transcript-storage-health");
+        if (!status) {
+          status = document.createElement("div");
+          status.id = "transcript-storage-health";
+          status.className = "stream-note";
+          status.setAttribute("role", "status");
+          status.setAttribute("aria-live", "polite");
+          status.setAttribute("aria-atomic", "true");
+          log.parentNode.classList.add("has-storage-health");
+          log.parentNode.insertBefore(status, log);
+        }
+        let message = "Transcript storage status unknown.";
+        if (health && typeof health.available === "boolean") {
+          const lost = Number.isFinite(health.dropped_segments) ? health.dropped_segments : 0;
+          const truncated = Number.isFinite(health.truncated_segments) ? health.truncated_segments : 0;
+          const pending = Number.isFinite(health.pending_segments) ? health.pending_segments : 0;
+          if (!health.available || lost > 0 || truncated > 0) {
+            message = "⚠ Transcript not safely saved. " + lost + " lost, " + truncated +
+              " truncated; " + pending + " pending.";
+          } else if (pending > 0) {
+            message = "Saving transcript — " + pending + " segments pending.";
+          } else {
+            message = "Transcript saved.";
+          }
+        }
+        // Do not reannounce unchanged warnings on every poll. This runs before tail dedup.
+        if (status.textContent !== message) status.textContent = message;
+      }
       function syncTranscript(view) {
+        syncTranscriptStorageHealth(view.transcript_storage_health);
         const all = Array.isArray(view.transcript) ? view.transcript : [];
         const segs =
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
@@ -4604,29 +4643,11 @@
       // remembers what the operator already did with a reference. Every collection here is
       // bounded (repo convention: no unbounded queues/caches).
       //
-      // CON-137 REDESIGN (Sana's security review, PR #61): the original build here was an
-      // AUTOMATIC client-side "you already saw this" cooldown — a de-emphasised card, a
-      // countdown, "Show anyway" — triggered whenever the SAME reference reappeared shortly
-      // after being Staged/Approved/Dismissed. The PR's own justification for building it
-      // ("no dedup signal exists anywhere in the wire protocol") was WRONG: the host already
-      // dedupes at the source. selahcue-core::TranscriptEngine keeps a bounded ring
-      // (RECENT_DEDUP_WINDOW = 16, detection.rs) of recently-enqueued reference STRINGS and
-      // silently drops a re-detection of one still in that ring — BEFORE it is ever enqueued,
-      // so it never reaches view.detections at all. For the exact scenario this UI was built
-      // for (a preacher re-quoting a verse shortly after first saying it), the host has almost
-      // always already suppressed the second detection by the time it would have reached this
-      // client — the automatic client-side cooldown was therefore near-unreachable in normal
-      // production use, reachable mainly via a harness that bypasses the host or a busy service
-      // that cycles 16+ other distinct references through the ring in between. Shipping it
-      // added real bug surface (the mute-loop below) for a case the host already owns, so the
-      // automatic half of CON-137 is REMOVED here, not just relabelled.
-      //
-      // What stays, because it is NOT redundant with the host: "Mute this verse" is
-      // OPERATOR-DIRECTED, not automatic — an explicit "never show me this reference again this
-      // service" the host has no concept of (its ring is a blind, short, automatic eviction
-      // window with no operator control and no persistence). That is real, distinct value, so
-      // it now lives directly on every normal detection card instead of being gated behind the
-      // removed auto-duplicate state.
+      // The host owns automatic suppression: pending dedup plus a bounded 20-second
+      // cooldown after approve/dismiss (rehearsal timing, not confidence policy).
+      // Re-detection does not refresh it; eligible references return through the host
+      // view after expiry. No client countdown or automatic duplicate state is needed.
+      // "Mute this verse" remains a distinct, operator-directed per-console choice.
       const DET_HISTORY_MAX = 50;    // bounded session audit trail
       const DET_MUTED_MAX = 200;     // defence-in-depth cap against a pathological reference set
       let onAirDetection = null;        // {reference, translation, text, approvedAtMs} | null
@@ -8914,6 +8935,18 @@
       ];
       let planSelectedId = null;
       let planLastView = null; // last view rendered, for UI-only re-renders
+      // A failed open has no current viewer. Keep only the host's last explicit Boolean
+      // for its Restore offer; silence is neither a new grant nor a new restriction.
+      let planLastConfirmedCanEdit = null;
+      function planRememberCanEdit(view) {
+        const canEdit = planViewer(view).canEdit;
+        if (canEdit === null) return;
+        planLastConfirmedCanEdit = canEdit;
+        if (canEdit === false) {
+          const banner = document.querySelector(".plan-restore-banner");
+          if (banner) banner.remove();
+        }
+      }
       // After planRenderBuilder blanks + rebuilds the run sheet, keyboard focus would fall to
       // <body>; this records what the last user action should re-focus (the selected row, or a
       // moved row's ↑/↓ button) so focus survives the rebuild (WCAG 2.4.3). Null on a background
@@ -9003,8 +9036,12 @@
         // Restore last autosave (FR-005 last-3; 86ajy0hxg wire, wired here). A host that does not
         // implement the command (older build, or nothing to restore) answers with an empty list or
         // a rejected promise — either way this silently offers nothing rather than a dead button.
+        if (planLastConfirmedCanEdit === false) return;
         invoke("list_autosave_slots").then((slots) => {
           if (!Array.isArray(slots) || !slots.length) return;
+          // This exact failure must still own the surface. Loading, a successful render,
+          // or another failed open replaces p; a late lookup must not resurrect its offer.
+          if (planLastConfirmedCanEdit === false || !list.contains(p)) return;
           if (!document.body.contains(list) || document.querySelector(".plan-restore-banner")) return;
           const latest = slots[0]; // ServerMessage::AutosaveSlots is documented newest-first
           const banner = document.createElement("div");
@@ -9019,10 +9056,11 @@
           btn.className = "pm-btn-primary";
           btn.textContent = "Restore last autosave";
           btn.onclick = () => {
+            if (planLastConfirmedCanEdit === false || !list.contains(p)) return;
             btn.disabled = true;
             invoke("restore_autosave", { slot: latest.slot }).then((v) => {
               planSetSavedIndicator(null);
-              planRenderBuilder(v);
+              planRenderHostView(v);
               // Deliberately NOT "Restored" — `RestoreAutosave` always Acks even when nothing was
               // found to restore (an unknown slot, a failed integrity check, or a content-mismatch
               // refusal are all silent no-ops on the wire), so this message describes what was
@@ -9083,9 +9121,9 @@
         planRenderLoading();
         // Deck names/missing-status for link chips; then render with resolved names.
         planLoadDecks().then(() => {
-          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+          if (document.getElementById("plan-b-list")) invoke("view").then(planRenderHostView).catch(planRenderLoadFailed);
         });
-        invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+        invoke("view").then(planRenderHostView).catch(planRenderLoadFailed);
       }
       function buildPlanPalette() {
         const box = document.getElementById("plan-palette-btns");
@@ -9107,7 +9145,7 @@
             planSelectedId = v.items[v.items.length - 1].id;
             planFocusAfterRender = { kind: "row", id: planSelectedId }; // focus the new row
           }
-          planRenderBuilder(v);
+          planRenderHostView(v);
         } catch (e) {
           console.error(e);
         }
@@ -9120,7 +9158,7 @@
           // Any plan EDIT invalidates a lifecycle outcome message: "Plan published" is true of
           // the run sheet that was published, not of the one now on screen.
           planNotice("");
-          planRenderBuilder(await fn());
+          planRenderHostView(await fn());
           return true;
         } catch (e) {
           console.error(e);
@@ -9356,6 +9394,12 @@
         if (sig === planViewerSig) return;
         planViewerSig = sig;
         planLastView = view;
+        planRenderBuilder(view);
+      }
+      // Only fulfilled host replies enter here. UI selection/deselection and poll-driven
+      // repainting use the renderer below without re-confirming an older held snapshot.
+      function planRenderHostView(view) {
+        planRememberCanEdit(view);
         planRenderBuilder(view);
       }
       function planRenderBuilder(view) {
@@ -9775,7 +9819,7 @@
             planSelectedId = null;
             planFocusAfterRender = null;
           }
-          planRenderBuilder(v);
+          planRenderHostView(v);
           return true;
         } catch (e) {
           console.error(e);
@@ -10185,7 +10229,7 @@
                   // which would have left a failed attempt free to re-arm (or leave stranded)
                   // a dismissal it never actually reloaded past.
                   planReviewDismissedSig = null;
-                  planRenderBuilder(v);
+                  planRenderHostView(v);
                 }).catch((err) => {
                   console.error(err);
                   reloadBtn.disabled = false;
@@ -10513,7 +10557,7 @@
                   if (hostRemote === false) {
                     planNotice("status", "Removed “" + title + "”.", "Undo", () => {
                       invoke("plan_undo").then((v) => {
-                        planRenderBuilder(v);
+                        planRenderHostView(v);
                         planNotice("status", "Restored “" + title + "”.");
                       }).catch((err) => {
                         console.error(err);

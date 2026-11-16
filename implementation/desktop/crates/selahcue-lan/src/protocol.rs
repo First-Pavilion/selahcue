@@ -7,6 +7,7 @@
 //! explicitly rather than misinterpreting fields.
 
 use crate::rbac::Role;
+use crate::JsonFailure;
 use serde::{Deserialize, Serialize};
 
 /// Wire protocol version. Bumped on any breaking change to the message shapes.
@@ -324,7 +325,8 @@ pub enum Command {
     /// Requires the `Transcribe` permission (the same one `IngestTranscript` requires).
     StartTranscript { label: String, provider: String },
     /// Close the current durable transcript session, if one is open (a no-op otherwise):
-    /// sets `ended_at` so a Transcripts list can show a real duration. Sent once when
+    /// queues closure; ACK does not mean durable completion. The worker sets `ended_at`
+    /// only after final flush/discard accounting so history can show a real duration. Sent once when
     /// listening stops normally; a crash that skips this is handled separately, by a
     /// startup sweep over any transcript left with no `ended_at` — not by this command.
     /// Requires the `Transcribe` permission.
@@ -1209,6 +1211,9 @@ pub struct OperatorStateView {
     /// stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript: Vec<TranscriptSegmentView>,
+    /// Durable transcript status; absent on an older host means unknown, never saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_storage_health: Option<TranscriptStorageHealthView>,
     /// The current streaming INTERIM line (recognised words for the utterance still being
     /// spoken), shown live below the finalised transcript and cleared when it finalises.
     /// `None` when nothing is mid-utterance; omitted then so the pinned fixtures stay
@@ -1982,21 +1987,25 @@ impl PairingInvite {
 
 /// Serialize any protocol message to a JSON string for transport.
 ///
-/// **Do not display, log or store the returned error as it is.** A serialization error can carry
-/// the message of a `Serialize` implementation's own error, which may quote a value of the message
-/// being sent (a transcript, a token). Convert it with `TransportError::from` (the `server`
-/// feature), which keeps only the category and, when serde has one, the position (FR-082, 17tnw2b9aec).
-pub fn to_json<T: Serialize>(msg: &T) -> Result<String, serde_json::Error> {
-    serde_json::to_string(msg)
+/// Errors expose only a safe category and position through [`JsonFailure`], never a custom
+/// serializer's message or values from the outgoing frame (FR-082, 17tnw2b9dq0).
+pub fn to_json<T: Serialize>(msg: &T) -> Result<String, JsonFailure> {
+    serde_json::to_string(msg).map_err(JsonFailure::from)
 }
 
 /// Parse a protocol message from a JSON string received over the wire.
 ///
-/// **Do not display, log or store the returned error as it is.** serde quotes the offending
-/// value in its message (`invalid type: string "..."`, ``unknown variant `...` ``), and the frame
-/// can carry a transcript or a token. Convert it with `TransportError::from` (the `server`
-/// feature), which keeps only the category and, when serde has one, the position, or print
-/// `Error::classify`/`line`/`column` yourself (FR-082, 17tnw2b9aec).
-pub fn from_json<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T, serde_json::Error> {
-    serde_json::from_str(s)
+/// Errors expose only a safe category and position through [`JsonFailure`], never serde's
+/// quoted input or a source error that could reveal it (FR-082, 17tnw2b9dq0).
+pub fn from_json<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T, JsonFailure> {
+    serde_json::from_str(s).map_err(JsonFailure::from)
+}
+
+/// Content-free durable transcript health, independent of the app crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptStorageHealthView {
+    pub available: bool,
+    pub pending_segments: usize,
+    pub dropped_segments: u64,
+    pub truncated_segments: u64,
 }

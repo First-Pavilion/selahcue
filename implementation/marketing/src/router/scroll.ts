@@ -33,6 +33,7 @@ export type SiteScrollPosition =
 /** Route names whose in-page anchors sit below the sticky navbar and need the offset. */
 const ANCHORED_ROUTES: ReadonlySet<string> = new Set([
   'home',
+  'download',
   'blog',
   'blog-post',
   'docs',

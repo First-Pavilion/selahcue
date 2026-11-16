@@ -149,18 +149,29 @@ Requires `SELAHCUE_ENTITLEMENT_SIGNING_KEY` (see `docs/ops/DEPLOYMENT.md` §6a).
 From the repository root:
 
 ```bash
-make api-install   # once per checkout, and after pyproject.toml changes: builds the venv, needs the network
+make api-install   # once per checkout, and after lock/profile/build-input changes: builds the venv, needs the network
 make api-check     # django check + migrations committed + pytest, the same three commands as the CI `api` job
 ```
 
 `make ci` runs `make api-check`; it never installs, so on a fresh worktree it stops with an instruction to run `make api-install`. `api-install` needs Python 3.14 on PATH (CI's version) or `API_PYTHON=/path/to/python` for any 3.12 or newer.
 
-- The venv is `implementation/api/.venv-api-check`, a name only these targets use (your own `.venv` is never touched), gitignored and per checkout. `api-check` refuses it when it is a symlink, was built with another Python minor version (a patch update is fine) or from another checkout, or `pyproject.toml` changed since (content hash, so a `touch` is fine). If you built it with an interpreter other than the default `python3.14`, keep `API_PYTHON` exported for `make api-check` as well. An interrupted or failed `make api-install` can simply be run again.
-- Local database-backed tests run on SQLite in memory. Controls that require a live Postgres or Redis service (`tests/test_concurrency_postgres.py`, the deployed PostgreSQL connection control in `tests/test_deployment_guards.py`, and one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; CI runs them. Deployed-mode startup checks remain mandatory locally: the dev extra now installs exact `psycopg[binary]==3.3.6`, the driver already exercised by successful CI40945205792 and within the unchanged CI/Docker `>=3.2,<4` bound, so these checks can load a legitimate PostgreSQL configuration without a running database. This driver stays outside core runtime dependencies.
+- The venv is `implementation/api/.venv-api-check`, a name only these targets use (your own `.venv` is never touched), gitignored and per checkout. `api-check` refuses it when it is a symlink, was built with another Python minor version (a patch update is fine) or from another checkout, or project/lock/tool/installer inputs changed since (content hash, so a `touch` is fine). If you built it with an interpreter other than the default `python3.14`, keep `API_PYTHON` exported for `make api-check` as well. An interrupted or failed `make api-install` can simply be run again.
+- Local database-backed tests run on SQLite in memory. Controls that require a live Postgres or Redis service (`tests/test_concurrency_postgres.py`, the deployed PostgreSQL connection control in `tests/test_deployment_guards.py`, and one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; CI runs them. Deployed-mode startup checks remain mandatory locally: the dev extra now installs exact `psycopg[binary]==3.3.6`, the driver already exercised by successful CI40945205792 and consumed from the same lock by CI/Docker, so these checks can load a legitimate PostgreSQL configuration without a running database. This driver stays outside core runtime dependencies.
 - After this dependency change, rerun `make api-install` before `make api-check`; the venv content stamp rejects the previous install.
-- The install is not locked: declared application/dev dependencies and the build backend (`[build-system]`) are pinned exactly, including the PostgreSQL test driver. Transitive dependencies are not locked or hashed, so the venv holds whatever resolved when you ran `make api-install` while CI re-resolves each run (ClickUp 17tnw2az0kw).
+- `uv.lock` includes runtime, dev/PostgreSQL-driver, transitive and explicit `build` dependencies. Every local/CI/Docker install uses `--locked`: manifest drift fails instead of silently resolving. First sync is wheel-only (`--no-build --no-install-project`); final editable installation is offline and non-isolated with the locked setuptools backend. Unsupported platforms without a compatible wheel fail deliberately; there is no automatic source-build exception. Python >=3.12 is retained; CI/Docker use3.14.
+- Verification never runs uv, installs, resolves or rewrites the stamp. A lock-only change requires a deliberate reinstall; touching files without changing their content does not.
 
-By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run in this checkout:
+### Pinned uv bootstrap and dependency updates
+
+Use **uv0.13.4** for deliberate local/CI/Docker installation (`.uv-version`, the local helper, CI version input and Docker digest); it was released2026-10-20, outside the14-day cooldown on2026-11-04. Install deliberately using the [official versioned installer](https://docs.astral.sh/uv/getting-started/installation/#installing-a-specific-version), or download the exact platform archive from the [official release](https://github.com/astral-sh/uv/releases/tag/0.13.4), compare SHA256 with its published digest, then place its binary on PATH. This migration verified the macOS arm64 archive SHA256 `e0b1d4743ce64c55d9f0f4a444afa6b81125680070ee04e853fcd0f6c1ebf8f1`. CI pins the official setup-uv v7 annotated tag object `94527f2e458b27549849d47d273a16bec83a01e9`, which resolves to commit `37802adc94f370d6bfd71619e3f0bf239e1f3b78`, plus the exact tool version; Docker pins the official multi-platform image digest. Upgrading uv is a separate reviewed pin update across these consumers.
+
+`[tool.uv].required-version = ">=0.13.4,<0.14"` is a separate **project/lock compatibility contract**. Dependabot uses its own preinstalled uv (the actual failed run used0.13.5), rather than installing our `.uv-version`. An exact project requirement prevented its lock updates. The bounded range accepts compatible0.13 patches and rejects older versions/0.14; [uv's versioning policy](https://docs.astral.sh/uv/reference/policies/versioning/) reserves breaking changes and lock schema changes for minor releases. This does not upgrade or unpin any deliberate installer. `make api-install` still refuses0.13.5; bot0.13.5 can regenerate a compatible lock. The ordinary14-day **package** cutoff and Dependabot cooldown remain unchanged; the bot's managed tool is not a new application dependency.
+
+From `implementation/api`, use `uv lock --check --offline` to check committed lock freshness without installation. `--locked` validates that the manifest and lock agree and fails if resolution would change the lock; `--frozen` uses the existing lock without checking that agreement. All installation consumers here use `--locked`; substituting `--frozen` would weaken the stale-lock gate. Ordinary resolutions enforce `[tool.uv].exclude-newer = "14 days"`, mirrored by Dependabot's uv cooldown. A direct update edits its exact pin (and both build-system/build-group pins for setuptools), then runs `uv lock --upgrade-package PACKAGE`. A transitive-only update runs that same command without changing direct pins. Review the complete diff; do not use an unrestricted `--upgrade` for a targeted update. Run `make api-install`, all API checks and the four reviews before merging. Roll back by reverting the manifest and lock together, then deliberately reinstall. Never hand-edit hashes or bypass `--locked`, wheel-only dependency sync, or offline project build.
+
+Native [Dependabot uv support](https://docs.astral.sh/uv/guides/integration/dependency-bots/#dependabot) consumes this directory's manifest and lock, including exact transitive versions. The published graph matrix omitted uv at the initial inspection, but actual native GitHub `Dependency Graph Update` run41759977317 indexed all37 locked versions on merged main `b3ae75f8` before the custom snapshot job ran. Native graph support is therefore verified here. As an additional explicit ingestion/provenance path, the main-push/API-changes-only `api-dependency-graph` job exports every registry package, version, edge and scope using `scripts/api_dependency_snapshot.py`, submits the snapshot through GitHub's dependency submission API, and retains the exact payload as an artifact. Only that job has `contents: write`; PR checks remain read-only. After merge, wait for its actual successful submission for the merged SHA, then read `gh api repos/First-Pavilion/selahcue/dependency-graph/sbom`. Compare its PyPI name/version set to all37 registry entries in uv.lock (including platform-conditional packages and setuptools84.1.0), record submission receipt/commit/run provenance and concrete versions on the ticket. Do not move to QA on an artifact or HTTP acceptance alone if graph indexing is still pending.
+
+By hand, after `make api-install`, run:
 
 ```bash
 .venv-api-check/bin/python manage.py check
@@ -168,8 +179,77 @@ By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run
 .venv-api-check/bin/python -m pytest tests -q
 ```
 
+`tests/test_nginx_forwarded_proto.py` requires the full repository checkout: it reads
+`implementation/marketing/nginx.conf` as the deployment fixture. The compose `api` container
+mounts only `./api`, so running the suite there without the sibling marketing directory fails
+with `FileNotFoundError`. Run the host checkout commands above, or mount the full checkout
+with that relative layout preserved. The guard is required and is not skipped when its fixture
+is missing.
+
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.
 
 ### Native single-session cleanup (17tnw2b1wf2)
 
-`POST /v1/sessions:revoke` requires an account bearer, `Content-Type: application/json` and `{}`; it never reads/sets cookies, accepts a body token or exposes an all-sessions option. It reuses account logout/auth/audit with `desktop_v1` provenance; an inactive token is401. The independent fixed `SELAHCUE_THROTTLE_SESSION_REVOKE` budget is10/minute/IP (a code setting, not an environment option). Simple content types and non-POST methods do not spend it;429 includes `Retry-After`/`no-store`. Device tokens, other account sessions and live output are unchanged. Native cleanup failure does not invalidate successful device activation; the client/handoff document exposes explicit retry and local secret-store outcomes. DEC-007 TTL and ADR-0029 Proposed status remain unchanged.
+`POST /v1/sessions:revoke` requires an account bearer, `Content-Type: application/json` and `{}`; it never reads/sets cookies, accepts a body token or exposes an all-sessions option. It reuses account logout/auth/audit with `desktop_v1` provenance; an exact previously revoked bearer confirms terminal cleanup with200; unknown or other inactive tokens remain401. Authentication and browser logout still reject revoked sessions. The independent fixed `SELAHCUE_THROTTLE_SESSION_REVOKE` budget is10/minute/IP (a code setting, not an environment option). Simple content types and non-POST methods do not spend it;429 includes `Retry-After`/`no-store`. Device tokens, other account sessions and live output are unchanged. Native cleanup failure does not invalidate successful device activation; the client/handoff document exposes explicit retry and local secret-store outcomes. DEC-007 TTL and ADR-0029 Proposed status remain unchanged.
+
+
+### Plan catalogue data and price history (17tnw2az0gd)
+
+The catalogue now seeds exactly Free/Core/Pro with independent positive ranks and no configured price rows.
+Core/Pro device/screen/NDI grants are explicit restrictive placeholders (1/2/0), marked pending internally until
+owner launch configuration. Weekly cloud-transcript minutes are20/50/80 and sermon notes1/5/10; watermark is on/off/off.
+The previous monthly dimension is inactive; its signed key is never renamed or reinterpreted.
+
+`apps.catalogue.pricing.append_plan_price` is an internal audited service requiring MANAGE_PLAN_PRICING, a reason,
+request key and explicit aware non-backdated effective timestamp. Add a new version to edit a price; no update/delete
+service or staff/public endpoint ships here. No row/null amount is unpriced, distinct from zero. Currency and interval
+are per-row data; WEEK/MONTH/YEAR are technical vocabulary, not selected commercial intervals. Amounts are whole minor
+units against the pinned offline ISO4217 reference (JPY0/USD2/KWD3), never universally cents. `current_plan_price`
+selects latest effective-at-or-before time; `plan_price_history` derives prior end times and bounds returned rows.
+Price and internal audit/pending reasons are not signed entitlement fields.
+
+Migrations require a pre-migration backup and quiesced writers. Old obsolete commercial references are conservatively
+repointed to Free without changing any existing key seat counts. Unexpected custom data fails for inspection; price
+history is protected. Recovery must restore the complete backup and matching old code together; reverse constants cannot
+reconstruct former assignments. See `docs/delivery/evidence/17tnw2az0gd-plan-catalogue.md` for actual migration/recovery,
+concurrency and manifest evidence. No price/currency/interval choice or final paid-plan launch limit is invented by this build.
+
+### Gated admin catalogue API (17tnw2az0gg)
+
+This slice is disabled by default. For an isolated exact-dev test environment only,
+set `SELAHCUE_ENABLE_ADMIN_CATALOGUE=1`. Shared deployments must leave it false/unset:
+settings and services refuse enablement outside exact dev. The current dev actor-header
+bridge is an identity fixture, never production sign-in. Real staff authentication remains
+a separate release gate; merging this code does not clear it.
+
+All operations use `/graphql/admin` and require `MANAGE_PLAN_PRICING` in the service layer.
+Bootstrap the CSRF cookie with `GET /graphql/csrf`; unsafe requests must send that cookie and
+`X-CSRFToken`. `adminPlanCatalogue { revision plans { code name grants { key rawValue }
+prices { amountMinor currency interval effectiveFrom } } }` returns all plans, current
+prices per currency/interval and grant values. Previous price versions stay in history.
+
+Mutations and inputs:
+
+- `adminSetPlanPrice(input: AdminSetPlanPriceInput!)`: planCode, currency, interval,
+  amountMinor, expectedRevision, reason, idempotencyKey; optional effectiveFrom.
+  amountMinor is a nonnegative decimal string within the database range, `null` means
+  explicitly unpriced, and `"0"` is a configured zero price. Omit effectiveFrom for an
+  immediate server-timed version, or pass an aware future timestamp. Return fields:
+  revision, amountMinor, replayed.
+- `adminSetPlanGrant(input: AdminSetPlanGrantInput!)`: planCode, dimensionKey, rawValue,
+  expectedRevision, reason, idempotencyKey. Returns revision, rawValue, replayed. Dimension
+  keys and the existing typed raw-value vocabulary are data; no tier-name branch is used.
+- `adminRenamePlan(input: AdminRenamePlanInput!)`: planCode, name, expectedRevision,
+  reason, idempotencyKey. Returns revision, name, replayed. Display names are trimmed,
+  must contain visible text and cannot contain control characters. Stable codes do not change.
+
+Use the revision from the last read. CONFLICT with the reload message means another catalogue
+edit committed first; reload before a new intent. Each intent needs a fresh 12–128-character
+idempotency key; retry identical input with the original key to recover its original result
+without a second write/audit event. Reusing a key for different input conflicts. Reasons use
+the existing minimum-eight-visible-character policy. Invalid values return VALIDATION_FAILED
+with an allowlisted `extensions.field`; permissions retain standard coded refusals.
+
+Admin and management-command writers lock the shared revision before plan/grant/price rows,
+so their transactions use one lock order. Audit, data, revision and retry receipt are atomic.
+Plan values affect newly issued manifests; this is not a change to existing billing charges.

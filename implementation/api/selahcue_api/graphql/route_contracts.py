@@ -21,8 +21,8 @@ class GraphQLEndpointContract:
 # surfaces or deliberately not. Nothing else enforces this, because `authenticate_device_token`
 # checks the token and never the licence.
 #
-# COMMERCIAL — refused with POLICY_DENIED while the licence is not activatable, by calling
-#   `devices.services.require_commercial_service` (the one named enforcement point).
+# COMMERCIAL — refused with POLICY_DENIED while the licence is not activatable.
+#   STT checks the same licence window alongside its locked original device and token.
 # ALLOWED_WHILE_SUSPENDED — reachable on purpose; the reason is on the route below.
 LICENSE_GATE_COMMERCIAL = "commercial"
 LICENSE_GATE_ALLOWED_WHILE_SUSPENDED = "allowed_while_suspended"
@@ -69,6 +69,10 @@ def graphql_endpoint_contracts(*, debug: bool) -> tuple[GraphQLEndpointContract,
 def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
     return (
         CommandEndpointContract("desktop", "v1/activations", "POST", "app_key_then_device_token"),
+        CommandEndpointContract("desktop", "v1/activations:bound", "POST", "app_key_then_device_token"),
+        CommandEndpointContract(
+            "desktop", "v1/activations:bound-with-session", "POST", "account_session_bearer_no_cookie"
+        ),
         # Native account sign-in/cleanup (86ak5t1gw,17tnw2b1wf2). These are CSRF-exempt, which is sound only because
         # neither reads or sets a cookie: the session travels in `Authorization: Bearer` alone.
         CommandEndpointContract("desktop", "v1/sessions", "POST", "account_credentials_no_cookie"),
@@ -110,6 +114,16 @@ def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
             "desktop", "v1/usage-events:batch", "POST", "device_token",
             license_gate=LICENSE_GATE_COMMERCIAL,
         ),
+        # The two cloud routes authenticate only the Bearer header. A valid
+        # device can read its balances while suspended, but cannot start cloud work.
+        CommandEndpointContract(
+            "desktop", "v1/stt/session", "POST", "device_token",
+            license_gate=LICENSE_GATE_COMMERCIAL,
+        ),
+        CommandEndpointContract(
+            "desktop", "v1/quota", "GET", "device_token",
+            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
+        ),
     )
 
 
@@ -125,6 +139,26 @@ def browser_bootstrap_contract() -> CommandEndpointContract:
         path="graphql/csrf",
         method="GET",
         auth_context="none_issues_csrf_cookie",
+    )
+
+
+def pilot_registration_contracts() -> tuple[CommandEndpointContract, ...]:
+    """Server-only callbacks: neither customer cookies nor device licences authorize them.
+
+    Separate from the desktop surface to preserve the licensed download contract.
+    Both are disabled unless complete pilot policy and a dedicated n8n credential
+    are configured; no grant endpoint is implied by this inventory.
+    """
+    return (
+        CommandEndpointContract("pilot_automation", "v1/pilot/registrations:reserve", "POST", "n8n_server_bearer_no_cookie"),
+        CommandEndpointContract("pilot_automation", "v1/pilot/registrations:confirm", "POST", "n8n_server_bearer_no_cookie"),
+    )
+
+
+def pilot_download_grant_contracts() -> tuple[CommandEndpointContract, ...]:
+    """Distinct grant credential; no account/device/cookie authorization."""
+    return (
+        CommandEndpointContract("pilot_automation", "v1/pilot/downloads:grant", "POST", "n8n_grant_bearer_no_cookie"),
     )
 
 

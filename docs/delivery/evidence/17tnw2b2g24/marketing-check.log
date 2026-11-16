@@ -1,0 +1,19 @@
+$ make marketing-check
+> marketing@0.0.0 type-check
+> vue-tsc --build
+> marketing@0.0.0 lint
+> eslint . --max-warnings 0
+> marketing@0.0.0 test
+ℹ tests 1246
+ℹ suites 250
+ℹ pass 1246
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 8400.808125
+> marketing@0.0.0 build
+> marketing@0.0.0 type-check
+> vue-tsc --build
+✓ built in 959ms
+Command completed successfully; the following responsive command started via shell &&. Its first failure is recorded separately.

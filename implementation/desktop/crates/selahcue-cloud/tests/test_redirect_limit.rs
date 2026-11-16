@@ -93,7 +93,7 @@ fn assert_loopback_is_not_proxied() {
 fn the_first_hop_of_a_redirect_chain_is_the_answer_and_the_second_is_never_requested() {
     assert_loopback_is_not_proxied();
     let (port, paths) = serve_chains();
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
 
     let first = transport
         .get(&format!("http://127.0.0.1:{port}/hop/0/1"), None)
@@ -116,7 +116,7 @@ fn the_server_does_answer_the_last_hop_of_a_chain_when_asked_for_it_directly() {
     // hop was never requested" above is about the client and not a server that can only say 302.
     assert_loopback_is_not_proxied();
     let (port, paths) = serve_chains();
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
 
     let last = transport
         .get(&format!("http://127.0.0.1:{port}/hop/1/1"), None)

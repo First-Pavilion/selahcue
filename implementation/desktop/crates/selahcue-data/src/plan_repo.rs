@@ -172,7 +172,7 @@ pub fn load(db: &Database, plan_id: i64) -> Result<ServicePlan> {
         }
         let (item_id, kind_tag, title, planned, owner, content, theme, content_ref) = row?;
         let kind = ItemKind::from_tag(&kind_tag)
-            .ok_or_else(|| DataError::Corrupt(format!("unknown item kind '{kind_tag}'")))?;
+            .ok_or_else(|| DataError::Corrupt("unknown item kind".into()))?;
         // Report out-of-range stored integers as corruption rather than silently
         // truncating (consistent with the unknown-kind handling above).
         let id = u64::try_from(item_id)

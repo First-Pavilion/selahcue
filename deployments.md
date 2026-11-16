@@ -29,10 +29,29 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | **prod behind a TLS proxy: yes** | no | `false` | Trust `X-Forwarded-Proto: https` (sets Django `SECURE_PROXY_SSL_HEADER`); on = `1`/`true`/`yes`/`on`, anything else off. Without it a browser `Origin: https://...` is refused by CSRF and HSTS is never sent. **Opt-in**: only where every route to Django goes through a proxy that overwrites the header, else a client can forge `https`. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | only if `Origin` differs from the forwarded `Host` | no | `` (empty) | Space- or comma-separated exact `https://host[:port]` origins (no `*`, no path); a bad entry refuses to boot. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DEBUG` in dev; `false` elsewhere | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity, except `anonymous` (reserved for internal failed-confirm audit rows). **Startup refuses a true value whenever `ENVIRONMENT` is not exactly `dev`, including staging and explicit ingress opt-in.** False/unset is required outside dev. DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
+| `SELAHCUE_ENABLE_ADMIN_CATALOGUE` | no | no | `false` | Enables the gated admin catalogue query and price/grant/rename mutations in exact `dev` only. **Startup refuses true outside exact `dev`; the service also refuses non-dev use.** Keep false/unset in every shared deployment until the separately reviewed real staff authenticator is implemented. This flag does not authenticate staff or enable production pricing. |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | **prod behind a proxy: yes** | no | `0` | Number of **your own** proxies in front of Django, for the rate limiter's client-IP lookup (`X-Forwarded-For`). Too high is a limiter bypass, too low shares one bucket. See `docs/ops/DEPLOYMENT.md` §6b. |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **prod: yes** | **SECRET** | — (none, on purpose) | Ed25519 seed (32 bytes, base64) signing offline entitlement manifests (DEC-004). No default and no dev fallback: unset, `GET /v1/entitlements/manifest` fails rather than serving an unsigned manifest. See `docs/ops/DEPLOYMENT.md` §6a. |
 | `SENTRY_DSN` | no | **SECRET** | `` (empty) | Read into settings; nothing consumes it yet. Set in staging/prod only. |
 | `FRONTEND_BASE_URL` | prod: yes | no | `http://localhost:2000` | Base URL of the web surface that hosts `/verify` and `/reset`; the transactional emails link to it. |
+
+
+#### Provider process configuration
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PROVIDER_PROCESS_ROLE` | for provider work | no | `maintenance` | Exact case-sensitive role. Use `web` for WSGI/ASGI with public cloud requested, `usage` for the `provider_usage` worker, `provisioner` for the `provider_provisioning` worker or operator, and `maintenance` for beat or the `celery` worker. The `notes` role is reserved for Task7 integration. |
+| `SELAHCUE_CLOUD_STT_ENABLED` | for web STT admission | no | `false` | Requests Deepgram admissions. Web requires a complete local admission policy and a wrapping keyring. |
+| `SELAHCUE_CLOUD_NOTES_ENABLED` | for future public notes | no | `false` | Requests OpenAI notes admissions. Web refusing this flag and the notes worker refusing boot are expected until Task7 integrates qualified policy and its dedicated content store. Usage, provisioner and beat can continue. |
+| `SELAHCUE_PROVIDER_PROVISIONING_ENABLED` | for new allocations | no | `false` | Requests new provisioning. The provisioner must have a complete local creation scope. Task4 applies admission, capacity and action gates. A recovery-only provisioner can start with this flag off. |
+| `SELAHCUE_PROVIDER_KEYRING_FILE` | for STT web and provisioner | secret file path | empty | Absolute path of schema v1 JSON with an active key ID and up to eight canonical unpadded base64url AES-256 keys. |
+| `SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE` | for usage | secret file path | empty | Absolute path of schema v1 reader credentials matching every parent in the usage-local policy. |
+| `SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE` | for provisioner | secret file path | empty | Absolute path of schema v1 administrative credentials matching every parent in the provisioner-local policy. |
+| `SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE` | for active provider roles | no | empty | Absolute path of schema v1 role-local parent policy and observed-records accounting acceptance receipt. |
+
+The three flags default to false when unset or empty. Valid spellings are `1`, `true`, `yes`, `on`, `0`, `false`, `no` and `off`, ignoring case and surrounding whitespace. Other spellings refuse startup. Disabled web, maintenance and beat require no provider mounts. Explicit usage and provisioner workers still require their own mounts with public flags off. Use separate read-only mounts from trusted parent directories. Files must be regular, readable by the runtime UID and have no group/world permission bits. Worker queue sets must match the role exactly. Use a separate beat process.
+
+Before enabling work, compare the actual role policies, their acceptance receipt and all normalized metadata for shared parents. Each web STT parent needs a usage parent with the matching reader credential. Each web parent eligible for new allocation needs a corresponding create-capable provisioner scope and credential. When Task7 is integrated, each admitted notes parent needs a matching notes role policy and custody configuration. For example, a web STT parent absent from usage must block enablement even when every scope shared by those roles agrees. A usage-only historical parent can remain configured for reconciliation. Local startup validates only its own inputs. Restart affected processes to load changed configuration.
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
@@ -97,6 +116,45 @@ Redis db **1** is the cache/throttle store and db **2** is the Celery broker; ke
 | `DEFAULT_FROM_EMAIL` | prod: yes | no | `noreply@selahcue.com` | Sender address; use your verified sending domain. |
 | `DEFAULT_EMAIL` | no | no | `info@firstpavitech.com` | Read into `settings.DEFAULT_EMAIL`; nothing in the API uses it today. |
 
+#### Pilot registration callbacks (P13 — disabled until configured)
+
+These server-only n8n callbacks are separate from licensed-device downloads. No collection is enabled by adding these rows. Final owner/retention/notice and protected dedicated Sheet evidence are mandatory before enabling. Exact setup/recovery rules: `docs/release/pilot-registration/README.md`.
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PILOT_REGISTRATION_ENABLED` | no | no | `false` | Enables only fully configured authenticated callbacks; disabled returns 404. |
+| `SELAHCUE_PILOT_N8N_TOKEN` | when pilot enabled | **SECRET** | empty | Dedicated server callback Bearer token, 32–256 non-whitespace ASCII characters; never browser/form/source. |
+| `SELAHCUE_PILOT_RECEIPT_KEY` | when pilot enabled | **SECRET** | empty | Separate short-lived receipt signing key; never a provider key or Django key fallback. |
+| `SELAHCUE_PILOT_FINGERPRINT_KEY` | when pilot enabled | **SECRET** | empty | Separate payload/destination HMAC key; rotation requires allocation/binding reconciliation. |
+| `SELAHCUE_PILOT_SHEET_ID` | when pilot enabled | no | empty | Dedicated private Google spreadsheet identifier. |
+| `SELAHCUE_PILOT_SHEET_TAB` | when pilot enabled | no | empty | Dedicated structurally protected tab; no inserts/sorts/deletes or other writers. |
+| `SELAHCUE_PILOT_SHEET_ROW_CAPACITY` | when pilot enabled | no | empty | Actual precreated final row index, including header; application bound 2–100000. Allocations are never recycled. |
+| `SELAHCUE_PILOT_APPROVED_NOTICE_VERSIONS` | when pilot enabled | no | empty | Explicit space/comma-separated approved notice IDs; draft values rejected. |
+| `SELAHCUE_PILOT_COLLECTION_OWNER` | when pilot enabled | no | empty | Approved record owner; not invented by this implementation. |
+| `SELAHCUE_PILOT_RETENTION_DAYS` | when pilot enabled | no | empty | Approved 1–3650-day retention; expired attempts cannot issue receipts. Disposal must preserve row layout/valid allocation history. |
+| `SELAHCUE_PILOT_SHEET_LAYOUT_PROTECTED` | when pilot enabled | no | `false` | Operator attestation backed by protection/access evidence; this flag does not itself protect Google Sheets. |
+| `SELAHCUE_PILOT_RECEIPT_TTL_SECONDS` | when pilot enabled | no | empty | Explicit 30–3600-second receipt lifetime anchored once at confirmation; retry never extends expiry. |
+| `SELAHCUE_PILOT_EXPIRES_AT` | when pilot enabled | no | empty | Fixed timezone-aware pilot end; owner choice 2027-04-30T23:59:59Z, not six months from each build/retry. |
+
+
+#### Pilot private-download grant (P12 — disabled, real signer pending P10)
+
+No grant is live by adding these settings. Registration policy, exact server-declared verified P11 manifest, P10 real signer and private-read proof remain mandatory. The service has no production fake signer. See `docs/release/pilot-download-grants.md`.
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PILOT_GRANT_ENABLED` | no | no | `false` | Grant callback admission only; real signer remains required. |
+| `SELAHCUE_PILOT_GRANT_N8N_TOKEN` | when enabled | **SECRET** | empty | Dedicated 32–256-character printable ASCII token, distinct from all P13 keys. |
+| `SELAHCUE_PILOT_GRANT_STORAGE_TARGET` | when enabled | no | empty | Approved opaque private storage destination identifier; no client bucket selection. |
+| `SELAHCUE_PILOT_GRANT_DOWNLOAD_ORIGIN` | when enabled | no | empty | Exact lowercase HTTPS signing origin, no path, userinfo or port. |
+| `SELAHCUE_PILOT_GRANT_COHORT_ID` | when enabled | no | empty | Exact promoted manifest cohort identifier. |
+| `SELAHCUE_PILOT_GRANT_MANIFEST_PATH` | when enabled | no | empty | Absolute server-owned regular JSON snapshot path; final symlinks refused. |
+| `SELAHCUE_PILOT_GRANT_MANIFEST_SHA256` | when enabled | no | empty | SHA256 of exact consumed promoted manifest bytes. |
+| `SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS` | when enabled | no | empty | Explicit integer1–300 seconds, further limited by anchored receipt/artifact/cohort expiry. |
+| `SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS` | when enabled | no | empty | Space/comma-separated provider signature field allowlist; no PII/receipt/redirect fields. |
+| `SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS` | no | no | `Windows Ubuntu macOS` | Server-only space/comma-separated exact platform set: full Windows/Ubuntu/macOS or explicit Windows-only. Blank, duplicate, unknown and all other partial sets refuse. |
+| `SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS` | when enabled | no | empty | Strict JSON object with exactly the declared required platform keys and approved signing states. Windows requires explicit `authenticode_verified` or `unsigned_pilot_approved`; macOS requires Developer ID/notarized/stapled. No unsigned default. |
+
 ---
 
 ## 2. Logto — self-hosted IdP service (DROPPED — superseded by DEC-007)
@@ -138,7 +196,7 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 
 | Key | Required | Secret | Purpose |
 |---|---|---|---|
-| `SELAHCUE_CLOUD_URL` | for cloud-live | no | Base URL of the SelahCue cloud service (Providers & Privacy / AI notes; operator `--features cloud-live`). Empty ⇒ cloud shows honest "not configured". |
+| `SELAHCUE_CLOUD_URL` | for cloud-live | no | HTTPS base URL of the SelahCue-hosted cloud service (Providers & Privacy / AI notes; operator `--features cloud-live`). Absent/empty ⇒ cloud is not configured. Invalid or non-HTTPS ⇒ hosted cloud is disabled with a fixed diagnostic that never prints the configured URL. |
 | `SELAHCUE_PASSPHRASE` | no | **SECRET** | Passphrase deriving the at-rest DB encryption key (Argon2id) when no OS keychain path is used (`selahcue-desktop/src/keys.rs`). |
 | `SELAHCUE_STT_MODEL` | no | no | **Development builds only.** Path to a local Whisper model file to load instead of the pinned download; needs `SELAHCUE_STT_MODEL_SHA256`. A release build (`--release`, `make launch RELEASE=1`, the installer) ignores it, prints one line on stderr and uses the pinned, hash-checked model (17tnw2b0prh). Never set it on a production machine. |
 | `SELAHCUE_STT_MODEL_SHA256` | with `SELAHCUE_STT_MODEL` | no | **Development builds only.** SHA-256 the `SELAHCUE_STT_MODEL` file must match. It proves the file is the one you meant, not that SelahCue ships it, which is why release builds ignore the pair. |
@@ -146,6 +204,22 @@ Coolify-managed encrypted offsite backups of the Logto Postgres (identity + sign
 | `SELAHCUE_SMOKE` | no | no | Test/smoke-run flag. |
 
 > Runtime secrets the desktop *stores* (not env): the SelahCue account/session token and provider tokens live in the **OS keychain** (`KeyringSecretStore`), never in env or files.
+
+The hosted cloud boundary requires HTTPS even for a loopback address. A refused value prints
+`SELAHCUE_CLOUD_URL must be an HTTPS URL; hosted cloud is disabled`, without its userinfo or
+query. Existing presentation/offline operation continues. `LicensingClient::new` is fallible:
+callers must handle its fixed configuration error before attempting sign-in or activation.
+The normal `ReqwestTransport::new` validates HTTPS before every GET/POST and also configures
+reqwest with `https_only(true)`; it still follows no redirects, uses OS certificate roots and
+ring, and keeps the existing connect/request deadlines.
+
+Plain HTTP is available **only through the explicitly named test constructors**
+`LicensingClient::new_for_loopback_tests` and `ReqwestTransport::new_for_loopback_tests`.
+They admit HTTP only for parsed loopback IPv4/IPv6 addresses or literal `localhost`, never
+arbitrary hosts or loopback-looking domain suffixes. They are for local test fixtures, are not
+selected by an environment switch, and are never used by normal operator/cloud wiring. TLS,
+redirect, proxy and wire tests retain their existing assertions; loopback HTTP fixtures opt in
+explicitly. This is unrelated to the abandoned OIDC callback below.
 
 ### 3b. OIDC native client (DROPPED — superseded by DEC-007)
 
@@ -168,3 +242,24 @@ The desktop is a **PUBLIC OIDC client** → Authorization Code + **PKCE**, **no 
 - **Prod must-set:** `ENVIRONMENT` (`staging` or `prod`; **genuinely unset with an empty key and any non-local allowed host refuses settings import**; local-only defaults and explicit `dev` remain available, while a configured raw key is outside this narrow guard), `SECRET_KEY` (a fresh random value: when `ENVIRONMENT` is not `dev` the API refuses to start if it is empty, the dev key or the old `.env.sample` placeholder), `DEBUG` unset or `0`, `DJANGO_ALLOWED_HOSTS`, `SQL_ENGINE=django.db.backends.postgresql` with `SQL_DATABASE`, `SQL_USER`, `SQL_PASSWORD` and `SQL_HOST`, `CACHE_URL` (without it the rate-limit counters live in each web worker's own memory and reset on every restart, so the per-IP and per-address limits barely limit anything), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `MAIL_HOST`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `DEFAULT_FROM_EMAIL`, `FRONTEND_BASE_URL`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, and `SELAHCUE_TRUST_ACTOR_HEADERS` unset/false. Behind a TLS-terminating proxy also `SELAHCUE_TRUST_FORWARDED_PROTO` and `SELAHCUE_TRUSTED_PROXY_COUNT`, set exactly as their rows describe (the proxy must overwrite `X-Forwarded-Proto` and be the only route to Django; the count must be exact, because a count that is too high lets a client bypass the rate limiter). Every row above marked `prod: yes` belongs on this list; a test fails if one is missing.
 - **Desktop is a public OIDC client** — it holds no client secret; PKCE + redirect validation carry the security (see the ADR-0022 security review, task 86ajy7aqw).
 - Add new keys here in the same turn you add the `os.getenv`/`env::var` read, so this stays the single source of truth. For the API this is checked: `implementation/api/tests/test_deployment_env_docs.py` fails when a documented name is not read, when the API reads a name with no row here, and when a name in §1a–1e or `docs/ops/DEPLOYMENT.md` §6 is stale. Run it with `make api-check`; CI runs it on the weekly schedule and on commits that also change a file CI does not ignore, but a docs-only commit does not start CI.
+
+### Provisioning policy publication
+
+The provider deployment policy accepts an optional `creation_budgets` array. Each entry has
+`provider` (`deepgram` or `openai`), `create_per_hour` and `create_per_day`. Use whole nonnegative
+integers and at most one entry per provider. New creation requires positive global and parent
+hourly and daily limits. Absent or zero global limits prevent new allocations. When provisioning
+is disabled, eligible existing mappings can still be reused and the provisioner can perform
+metadata recovery and previously authorized cleanup.
+
+Install and migrate the API, then restart each role with its mounted policy files. An explicitly
+initialized operator provisioner publishes the configured policy through `publish_provider_policy`.
+Pass an empty cleanup authorization tuple unless the deployment has separately approved lifecycle
+evidence for each authorized parent. Omitted global or parent policies preserve previously
+published rows. Publish explicit zero budgets or remove the scope's create capability to revoke
+create authority. Publishing changed parent policy starts a new inventory scan.
+
+Allow the `provider_provisioning` worker to complete inventory before checking matching policy
+digests, capacity and operator authority. Set production budgets only after provider lifecycle
+and capacity qualification, and enable provisioning separately. No provider administration call
+runs during application startup or policy publication.

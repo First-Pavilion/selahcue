@@ -27,6 +27,8 @@ render/dedup/cap/wiring), not for engine-specific CSS/canvas quirks. A WebKit/WK
 driven smoke would be a stronger fidelity check; tracked as an audit follow-up. The real
 Tauri webview stays owner-run / dev-time.
 """
+import hashlib
+import subprocess
 import json
 import shutil
 import os, re, sys
@@ -257,15 +259,15 @@ if not check_jump_call_site_is_click_only():
 # check (each clause neutralised in turn) shows three clauses are mutually REDUNDANT by
 # construction (exactly five calls, all arguments distinct, each registered variable guarded once:
 # any two imply the third), so deleting any ONE of them is an equivalent mutant, not a gap; they
-# stay because each names a different slip in the failure message. Not pinned: the selector
-# literals themselves (that is 17tnw2ayete); the fail-closed predicates only catch a literal that
-# matches NO rule.
+# stay because each names a different slip in the failure message. AYETE also pins the canonical
+# literal at each definition: a different EXISTING clean rule must not hide a hazardous hover
+# rule. This remains bounded source analysis, not a JavaScript data-flow/grammar parser.
 FILTER_GUARD_SITES = {
-    "wTdHoverSel": "__cssFilterGuardOk",
-    "wPsHoverSel": "__cssFilterGuardOk",
-    "wTbGlHoverSel": "__cssFilterGuardOk",
-    "wTsHoverSel": "__cssFilterGuardOk",
-    "wPpGenHoverSel": "__cssNoBrightnessFilter",
+    "wTdHoverSel": ("__cssFilterGuardOk", ".td-save-cta:hover"),
+    "wPsHoverSel": ("__cssFilterGuardOk", ".ps-start:hover"),
+    "wTbGlHoverSel": ("__cssFilterGuardOk", ".tb-golive:hover"),
+    "wTsHoverSel": ("__cssFilterGuardOk", ".timer-start:hover"),
+    "wPpGenHoverSel": ("__cssNoBrightnessFilter", ".pp-generate:hover"),
 }
 FILTER_GUARD_CALL_RE = re.compile(
     r"\bok\(\s*(__cssFilterGuardOk|__cssNoBrightnessFilter)\(\s*([^,()\s]+)\s*\)\s*,"
@@ -305,19 +307,22 @@ def filter_guard_selector_problems(js):
                 "%s is called with %r, which is not one of the registered selector variables %s"
                 % (fn, arg, sorted(FILTER_GUARD_SITES))
             )
-        elif want != fn:
-            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want, fn))
+        elif want[0] != fn:
+            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want[0], fn))
     premise_re = re.compile(r"\b__cssRule\(\s*(" + "|".join(map(re.escape, FILTER_GUARD_SITES)) + r")\s*\)")
     premises = [(m.start(), m.group(1)) for m in premise_re.finditer(code)]
-    for var, fn in FILTER_GUARD_SITES.items():
+    for var, (fn, selector) in FILTER_GUARD_SITES.items():
         assigned = len(re.findall(r"\b" + re.escape(var) + _JS_ASSIGN_RE, code))
-        literal = len(re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])[^\"']*\1\s*;", code))
+        bindings = re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])([^\"']*)\1\s*;", code)
+        literal = len(bindings)
         looked_up = [p for p, v in premises if v == var]
         guarded = [p for p, _, a in calls if a == var]
         if assigned != 1:
             problems.append("%s is assigned %d times, want exactly 1 (a reassignment can point the guard elsewhere)" % (var, assigned))
         if literal != 1:
             problems.append("%s is bound to a string literal by `var` %d times, want exactly 1" % (var, literal))
+        elif bindings[0][1] != selector:
+            problems.append("%s selector literal is %r, expected %r" % (var, bindings[0][1], selector))
         if len(looked_up) != 1:
             problems.append("%s is looked up through __cssRule %d times, want exactly 1 (its premise)" % (var, len(looked_up)))
         if len(guarded) != 1:
@@ -340,7 +345,9 @@ def _filter_guard_negative_controls(js):
     """Deliberately broken copies of the real driver text; every one MUST be refused. Each is built
     from the real text with replacements that must apply exactly once (an inapplicable control would
     be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
+    js = _strip_js_comments(js)
     ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
+    binding_spans = {}
 
     def call(fn, var):
         return "ok(" + fn + "(" + var + "),"
@@ -349,6 +356,22 @@ def _filter_guard_negative_controls(js):
         if text.count(old) != 1:
             raise AssertionError("negative control cannot apply: %r matches %d times" % (old, text.count(old)))
         return text.replace(old, new)
+
+    def binding(text, var, selector, replacement):
+        # Every binding fixture starts from this same real source. Locate each definition
+        # once per source, then splice its exact span; rebuilding all harmless variants
+        # must not rescan the full driver for every replacement of the same definition.
+        if text is not js:
+            raise AssertionError("binding fixture must start from its original driver text")
+        key = (var, selector)
+        if key not in binding_spans:
+            pattern = re.compile(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])" + re.escape(selector) + r"\1\s*;")
+            matches = list(pattern.finditer(text))
+            if len(matches) != 1:
+                raise AssertionError("negative control cannot apply: %s canonical binding matches %d times" % (var, len(matches)))
+            binding_spans[key] = matches[0].span()
+        start, end = binding_spans[key]
+        return text[:start] + replacement + text[end:]
 
     def crossed(t):
         t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
@@ -359,7 +382,7 @@ def _filter_guard_negative_controls(js):
         ("D1 aliasing: the PSC-005 guard is fed the TD-012 variable",
          lambda t: sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "wTdHoverSel"))),
         ("D2 reassignment: wTbGlHoverSel is reassigned after its declaration",
-         lambda t: sub(t, 'var wTbGlHoverSel = ".tb-golive:hover";',
+         lambda t: binding(t, "wTbGlHoverSel", ".tb-golive:hover",
                        'var wTbGlHoverSel = ".tb-golive:hover";\n        wTbGlHoverSel = ".tb-golive";')),
         ("D3 block-comment decoy: guard fed a decoy variable whose lookup exists only in a comment",
          lambda t: sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wTbGlAlt"))
@@ -377,7 +400,7 @@ def _filter_guard_negative_controls(js):
          lambda t: sub(t, "var wTsHoverRule = __cssRule(wTsHoverSel);",
                        "var wTsHoverRule = __cssRule(wTsHoverSel); var wTsHoverRule2 = __cssRule(wTsHoverSel);")),
         ("selector variable no longer bound to a string literal",
-         lambda t: sub(t, 'var wTdHoverSel = ".td-save-cta:hover";', "var wTdHoverSel = pickSelector();")),
+         lambda t: binding(t, "wTdHoverSel", ".td-save-cta:hover", "var wTdHoverSel = pickSelector();")),
         ("failure message reads another site's variable",
          lambda t: sub(t, "__cssFilterFound(wPsHoverSel)", "__cssFilterFound(wTdHoverSel)")),
         ("a call site is deleted",
@@ -391,6 +414,33 @@ def _filter_guard_negative_controls(js):
         ("comments containing call-shaped strings are not call sites",
          lambda t: t + "\n/* ok(" + ok_fn + "(wFooSel), */\n// ok(" + nb_fn + "(wBarSel),\n"),
     ]
+    # AYETE: independent literal expectations at the real definitions. The older twelve
+    # controls pin wiring, not these values (two of their builders incidentally depend on
+    # exact TD/Go-Live text; PSC/Timer/PP bindings still evade the whole original gate).
+    literal_sites = [
+        ("wTdHoverSel", ".td-save-cta:hover", ".td-save-cta"),
+        ("wPsHoverSel", ".ps-start:hover", ".ps-start"),
+        ("wTbGlHoverSel", ".tb-golive:hover", ".tb-golive"),
+        ("wTsHoverSel", ".timer-start:hover", ".timer-start"),
+        ("wPpGenHoverSel", ".pp-generate:hover", ".pp-generate"),
+    ]
+    for var, selector, other in literal_sites:
+        controls.extend([
+            ("AYETE existing clean selector: " + var,
+             lambda t, v=var, s=selector, value=other: binding(t, v, s, 'var ' + v + ' = "' + value + '";')),
+            ("AYETE stale selector: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = "' + s + '__stale__";')),
+            ("AYETE alias binding: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var ' + v + ' = __ayeteAlias; var __ayeteAlias = "' + s + '";')),
+        ])
+        accepted.extend([
+            ("AYETE single quotes: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, "var " + v + " = '" + s + "';")),
+            ("AYETE spacing: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, 'var   ' + v + '   =   "' + s + '"  ;')),
+            ("AYETE commented decoy: " + var,
+             lambda t, v=var, s=selector: binding(t, v, s, '/* var ' + v + ' = ".decoy"; */\nvar ' + v + ' = "' + s + '";')),
+        ])
     return ([(name, build(js)) for name, build in controls],
             [(name, build(js)) for name, build in accepted])
 
@@ -408,7 +458,7 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
         return False
     print(
         "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass their own "
-        "distinct single-literal selector variable, assigned once and looked up by their own premise"
+        "distinct canonical-literal selector variable, assigned once and looked up by their own premise"
     )
     try:
         controls, accepted = _filter_guard_negative_controls(js)
@@ -429,6 +479,15 @@ def check_filter_guard_call_sites_share_one_selector(file_text=None):
             "%d harmless source(s) it must accept (a false red): %s" % (len(refused_good), refused_good)
         )
         return False
+    # An accepted harmless definition must also remain usable by the real gate's own
+    # control builders; an exact double-quoted replacement could otherwise reject a
+    # legitimate quote/spacing change only when the whole self-test runs.
+    for name, good in accepted:
+        try:
+            _filter_guard_negative_controls(good)
+        except AssertionError as exc:
+            print("FAIL: filter-guard-selector benign control construction — %s: %s" % (name, exc))
+            return False
     print(
         "PASS: filter-guard-selector negative controls (17tnw2ayetm) — all %d deliberately broken "
         "driver texts were refused and the %d harmless one(s) accepted" % (len(controls), len(accepted))
@@ -1965,6 +2024,57 @@ EXPECTED_MIN_CHECKS = 2464
 # regeneration IPC privacy channels and existing pending/data/recovery controls.
 # Measured on tests-onlycbd5e4e9 in hosted41089309707:2536 checks,24 intended FAIL.
 EXPECTED_MIN_CHECKS = 2536
+# 2536 ->2552 (17tnw2ayzvg): last confirmed Boolean Restore permission,
+# real Remote failed-open, poll demotion and held autosave lookup lifetimes.
+# Measured on tests-only40c494b9 in hosted41119095716:2552 checks,8 intended FAIL.
+EXPECTED_MIN_CHECKS = 2552
+# 2552 ->2556 (CODY-AYZVG-01): real Remove modal/false poll/Cancel,
+# no-fresh-view UI selection and deselection cannot overwrite a confirmed denial.
+# Measured on tests-only90e14dab in hosted41121235813:2556 checks,1 intended FAIL.
+EXPECTED_MIN_CHECKS = 2556
+# 2556 ->2565 (17tnw2ayetd): actual CSSOM03/05 helper-exception cleanup,
+# isolation/viewport controls and the first comment check reached by the second-swap probe.
+# Measured on tests-onlyf85996cc in hosted41134054406:2565 checks,4 intended FAIL.
+EXPECTED_MIN_CHECKS = 2565
+# 2565 ->2612 (17tnw2b0wkh): browser color/image/priority/variable cascade
+# premises, shared background read and safe/unsafe contrast plus absence controls.
+# Measured on a70d4d22 in hosted41138510265 baseline:2612 checks,18 intended FAIL.
+# The old last-rule eleven-site witness skipped19 guarded checks; it is not the new count.
+EXPECTED_MIN_CHECKS = 2612
+# 2612 ->2631 (17tnw2bbhxp): six target-existence/cancellation/custom-menu
+# triplets plus the Shift+F10 designer-vs-app-navigation assertion.
+EXPECTED_MIN_CHECKS = 2631
+# 2631 ->2633 (17tnw2bbhxp review): visible keyboard-action instructions and
+# their accessible association with the focusable selection.
+EXPECTED_MIN_CHECKS = 2633
+# F31 full tests-only41184891450 actually ran2733checks/66intendedFAIL; the complete
+# original2612 and55new records passed. Assertions unchanged by the candidacy fix.
+EXPECTED_MIN_CHECKS = 2733
+# Review S1 corrected run41189844529 measured2761/0; only this stale count guard
+# exited4. All original2733 plus28 recovery assertions are unchanged by this pin.
+EXPECTED_MIN_CHECKS = 2761
+# Review S2 corrected run41194062859 measured2810/0; only the old2761 guard
+# exited4. All existing/new DRIVER and STUB assertions remain unchanged.
+EXPECTED_MIN_CHECKS = 2810
+# Combined actual PR318/F31 integration4e kept2810 deliberately STALE.
+# Hosted41199766261 actually measured2831/0; only stale2810count exited4.
+# Both actual target and F31 assertions remain unchanged by this observed pin.
+EXPECTED_MIN_CHECKS = 2831
+# 17tnw2b13y0 corrected hosted fixture replay41210918334 actually measured
+# 2906/0: all2831 existing and75 real-host fixture/modal assertions PASS.
+# Only the stale2831 count failed. No assertions or runtime budgets change here.
+EXPECTED_MIN_CHECKS = 2912  # B1: measured six durable-storage status checks
+EXPECTED_MIN_CHECKS = 2906
+# C2 / 17tnw2bawx7: measured full browser replay 2948 checks, 0 FAIL;
+# exact Unicode edits, failed-Save retention/retry and explicit discard paths.
+EXPECTED_MIN_CHECKS = 2948
+# C3: measured full retained-notes/retry/fresh-UI replay ran 2973 checks.
+EXPECTED_MIN_CHECKS = 2973
+# C4: measured production saved-note PDF action/IPC, edit/busy/error and pending-view checks.
+EXPECTED_MIN_CHECKS = 2987
+# Reviewed native integration: actual combined run measured 2993 checks, 0 FAIL.
+# Includes the retained storage status and complete notes/PDF scenarios.
+EXPECTED_MIN_CHECKS = 2997  # Task3 actual combined run: 2997 checks, 0 FAIL (four storage+expiry premises)
 
 
 def find_chrome():
@@ -2103,6 +2213,24 @@ def check_headless_launch_contract():
         "SIGINT unwind cleanly, including one that lands mid-launch or mid-cleanup"
     )
     return True
+
+
+# P03: exercise the same safe status client and actual settings/transcript modules
+# before browser discovery. DIST is explicit so staged/mutated gate runs test their own JS.
+try:
+    pilot_ui = subprocess.run(
+        ["node", "--test", os.path.join(_REPO, "scripts", "test_pilot_access.js")],
+        env=dict(os.environ, PILOT_TEST_DIST=DIST),
+        capture_output=True, text=True, timeout=60,
+    )
+except (OSError, subprocess.TimeoutExpired):
+    print("FAIL: pilot access JavaScript tests could not run (Node required, bounded60s)")
+    sys.exit(2)
+if pilot_ui.returncode != 0:
+    print("FAIL: pilot access JavaScript behavior")
+    print((pilot_ui.stdout + pilot_ui.stderr)[-8000:])
+    sys.exit(1 if pilot_ui.returncode == 1 else 2)
+print("PASS: pilot access JavaScript behavior — status, real panels, expiry and recovery controls")
 
 
 try:
@@ -2394,6 +2522,53 @@ CSS_SRC = (
     var matches = window.__cssRules(sel, src);
     return matches.length ? matches[matches.length - 1] : null;
   };
+  // Filter candidacy is deliberately broader than the background lookup. A rule can
+  // reach the guarded compound under a list, pseudo wrapper or ancestor hover without
+  // spelling its canonical selector exactly. Keep the compound's token boundary so
+  // .button-extra is not mistaken for .button. Non-hover fixture selectors retain the
+  // existing exact lookup; this is not an arbitrary CSS selector/data-flow evaluator.
+  function _cssFilterCandidate(selector, sel) {
+    var target = _cssNormSel(sel), normalized = _cssNormSel(selector);
+    var hover = /^(\.[A-Za-z0-9_-]+):hover$/.exec(target);
+    if (!hover) return normalized === target;
+    var compound = hover[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(compound + "(?![A-Za-z0-9_\\\\-])").test(normalized) && /:hover\b/i.test(normalized);
+  }
+  function _cssResolveFilterSelector(selector, parent) {
+    if (!parent) return selector;
+    return selector.indexOf("&") >= 0
+      ? selector.replace(/&/g, function() { return ":is(" + parent + ")"; })
+      : parent + " " + selector;
+  }
+  function _cssFilterSelector(rule) {
+    var selector = rule.selectorText;
+    for (var parent = rule.parentRule; parent; parent = parent.parentRule) {
+      if (parent.selectorText) selector = _cssResolveFilterSelector(selector, parent.selectorText);
+    }
+    return selector;
+  }
+  function _cssFilterRules(sel, src) {
+    return _cssFlatten(_cssSrc(src).sheet.cssRules, [], true).filter(function(rule) {
+      return _cssFilterCandidate(_cssFilterSelector(rule), sel);
+    });
+  }
+  // Background is a family of interacting longhands. Let the browser cascade the matching
+  // declarations together: a shorthand resets longhands, !important wins per longhand, and
+  // var() shorthands can leave CSSOM longhands empty until substitution. Joining declarations
+  // in source order preserves those rules instead of choosing a whole winning CSSRule.
+  function _cssEffectiveBackground(rules) {
+    var probe = document.createElement("span");
+    probe.style.cssText = rules.map(function(rule) { return rule.style.cssText; }).join(";");
+    var hasFill = Array.from(probe.style).some(function(prop) {
+      return prop === "background" || prop === "background-color" || prop === "background-image";
+    });
+    if (!hasFill) return null;
+    probe.style.setProperty("position", "absolute", "important");
+    probe.style.setProperty("left", "-9999px", "important");
+    document.body.appendChild(probe);
+    try { return getComputedStyle(probe).background; }
+    finally { probe.remove(); }
+  }
   // The value the browser's CASCADE gives `prop` across every rule that matches `sel` (null when
   // none declares it). Rules are already in source order and already filtered to those whose
   // enclosing @media/@supports currently hold (_cssFlatten). All matching rules share one selector
@@ -2403,12 +2578,10 @@ CSS_SRC = (
   // the vendor-prefix and CSS-escape normalisation __cssFilter relies on. A declaration the
   // parser rejected is absent from the CSSOM, exactly as it is absent from the browser's cascade.
   //
-  // NOT MODELLED (deliberately — the guards are about the guarded selector's own rules, matched by
-  // exact selector text, which is also why the fixtures below cover what they cover and no more):
-  //   - a rule with HIGHER specificity than `sel` (a sibling `.parent .tb-golive:hover`), and the
-  //     selector-shape variants that behave like one: a selector LIST with the guarded selector
-  //     first (`.tb-golive:hover, .x`), `:is()` / `:not()` / `:where()` wrappers, ancestor-hover;
-  //   - CSS nesting (a nested rule keeps its relative selectorText, `& .child`);
+  // This generic property read retains exact-selector matching (including background).
+  // The filter wrapper below widens candidacy independently; it conservatively unions
+  // alternate selector spellings rather than inventing a full specificity evaluator.
+  // NOT MODELLED by this property read:
   //   - `@layer` ordering and `@container` conditions (a container query is evaluated here by
   //     `CSS.supports(conditionText)`, which is NOT what a container query means);
   //   - `all:` resets, inline styles, JS-set styles.
@@ -2422,7 +2595,12 @@ CSS_SRC = (
   // stylesheet that mentions `filter:` (it reds that overridden shape too, in the safe direction).
   // The cascade read is what catches the spellings the raw half cannot see (CSS escapes).
   window.__cssEffective = function(sel, prop, src) {
-    var rules = window.__cssRules(sel, src), val = null, important = false;
+    var rules = window.__cssRules(sel, src);
+    if (prop === "background") return _cssEffectiveBackground(rules);
+    return _cssDeclaredValue(rules, prop);
+  };
+  function _cssDeclaredValue(rules, prop) {
+    var val = null, important = false;
     for (var i = 0; i < rules.length; i++) {
       var v = rules[i].style.getPropertyValue(prop);
       if (!v) continue;
@@ -2431,7 +2609,7 @@ CSS_SRC = (
       val = v; important = imp;
     }
     return val;
-  };
+  }
   // The rule's declared background, shorthand first: CSSStyleDeclaration puts a var()-valued
   // `background` shorthand's own longhands (background-color/-image) into a "pending
   // substitution" state where they read back empty, so the shorthand is the only property
@@ -2470,8 +2648,10 @@ CSS_SRC = (
   // deliberately dumb and deliberately conservative rule is: collect EVERY matching block and
   // treat the guard as tripped if ANY has a non-none filter declaration. An earlier dangerous
   // declaration remains disqualifying even if a later rule overrides it with none. The
-  // match semantics themselves (a block whose selector text ENDS in `sel`) are unchanged; only
-  // the aggregation moved from "last" to "all".
+  // F31 widens the selector candidates while retaining that all-block union. A small
+  // balanced-block walk keeps relative selectors attached to their parent and keeps
+  // child declarations out of the parent's body. Quotes/escapes/parentheses/brackets
+  // protect braces inside values; this remains a declaration backstop, not a CSS parser.
   //
   // This half is deliberately CONDITION-BLIND (it ignores any enclosing @media/@supports), and
   // that must NOT be "fixed" (Shadow F3/F5, Cody 7): in the headless configuration this gate runs
@@ -2502,11 +2682,62 @@ CSS_SRC = (
     return String(text || "").replace(/\/\*[\s\S]*?\*\//g, "");
   }
   window.__cssRawBlocks = function(sel, src) {
-    var escaped = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    var re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "gi");
-    var text = _cssStripComments(_cssSrc(src).text), m, bodies = [];
-    while ((m = re.exec(text)) !== null) { bodies.push(m[1]); }
-    return bodies;
+    var text = _cssStripComments(_cssSrc(src).text), bodies = [], stack = [];
+    var start = 0, quote = "", escaped = false, parens = 0, brackets = 0;
+    function retain(frame) {
+      if (frame.selector && _cssFilterCandidate(frame.selector, sel)) bodies.push({ offset: frame.offset, body: frame.body });
+    }
+    for (var i = 0; i < text.length; i++) {
+      var ch = text[i];
+      if (escaped) { escaped = false; continue; }
+      if (ch === "\\") { escaped = true; continue; }
+      // CSS ends a bad string at an unescaped newline. An escaped newline was
+      // already consumed above, so valid continuations keep their quote context.
+      if (quote) { if (ch === quote || /[\n\r\f]/.test(ch)) quote = ""; continue; }
+      if (ch === '"' || ch === "'") { quote = ch; continue; }
+      if (ch === "(") { parens++; continue; }
+      if (ch === ")") { parens = Math.max(0, parens - 1); continue; }
+      if (ch === "[") { brackets++; continue; }
+      if (ch === "]") { brackets = Math.max(0, brackets - 1); continue; }
+      if (parens || brackets) continue;
+      if (ch === "{") {
+        var header = text.slice(start, i).trim();
+        var parent = stack.length ? stack[stack.length - 1].selector : "";
+        var selector = header[0] === "@" ? parent : _cssResolveFilterSelector(header, parent);
+        stack.push({ selector: selector, body: "", offset: i });
+        start = i + 1;
+      } else if (ch === ";") {
+        if (stack.length) stack[stack.length - 1].body += text.slice(start, i + 1);
+        start = i + 1;
+      } else if (ch === "}") {
+        if (stack.length) {
+          var frame = stack.pop();
+          frame.body += text.slice(start, i);
+          retain(frame);
+        }
+        start = i + 1;
+      }
+    }
+    // An unclosed source block must not erase a non-none declaration from the backstop.
+    if (stack.length) stack[stack.length - 1].body += text.slice(start);
+    stack.forEach(retain);
+    // Keep the previous independent literal backstop as a union, not an EOF-only
+    // recovery guess. Malformed unrelated values can hide a block and later regain
+    // balanced depth, or keep a quote open. None may erase a formerly guarded body.
+    // Preserve DIFFERENT bodies at one opening (nested/direct partitioning differs);
+    // only exact offset+body duplicates are redundant to the declaration OR.
+    var literalSelector = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var literalBlocks = new RegExp(literalSelector + "\\s*\\{([^}]*)\\}", "gi"), literalMatch;
+    var seenBodies = new Set(bodies.map(function(frame) { return frame.offset + ":" + frame.body; }));
+    while ((literalMatch = literalBlocks.exec(text)) !== null) {
+      var offset = literalMatch.index + literalMatch[0].indexOf("{");
+      var key = offset + ":" + literalMatch[1];
+      if (!seenBodies.has(key)) {
+        bodies.push({ offset: offset, body: literalMatch[1] });
+        seenBodies.add(key);
+      }
+    }
+    return bodies.sort(function(a, b) { return a.offset - b.offset; }).map(function(frame) { return frame.body; });
   };
   window.__cssRawHasFilter = function(sel, src) {
     return window.__cssRawBlocks(sel, src).some(function(body) {
@@ -2517,10 +2748,23 @@ CSS_SRC = (
       return false;
     });
   };
-  // The filter the browser's cascade gives `sel` — what the CSSOM half of every filter guard
-  // reads (17tnw2ayetm: previously `__cssFilter(__cssRule(sel))`, i.e. the last rule only).
+  // Preserve per-property priority/source order within one resolved selector. Across
+  // alternate selector spellings, conservatively retain any non-none value: a later
+  // lower-specificity `none` must not hide an escaped higher-specificity hazard from
+  // the CSSOM half. The raw half already conservatively unions all matching blocks.
   window.__cssEffectiveFilter = function(sel, src) {
-    return window.__cssEffective(sel, "filter", src);
+    var groups = new Map(), val = null, hazard = null;
+    _cssFilterRules(sel, src).forEach(function(rule) {
+      var key = _cssNormSel(_cssFilterSelector(rule));
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(rule);
+    });
+    groups.forEach(function(rules) {
+      var value = _cssDeclaredValue(rules, "filter");
+      if (value) val = value;
+      if (value && !/^\s*none\s*$/i.test(value)) hazard = value;
+    });
+    return hazard || val;
   };
   // What the call sites' FAIL messages print as "found ...": the effective filter, or an explicit
   // note when the selector matches no rule at all (a vacuous guard — see the fail-closed note on
@@ -2529,7 +2773,7 @@ CSS_SRC = (
   // literal (the static check at the top of this file refuses that), the message would still read
   // "found <the real effective filter>" or "found none" while the guard failed closed.
   window.__cssFilterFound = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
+    if (_cssFilterRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
     return window.__cssEffectiveFilter(sel, src);
   };
   // Sana (security review, PR #79 follow-up round 2, finding NEW-3): a check that only calls
@@ -2554,7 +2798,7 @@ CSS_SRC = (
   // one selector variable for premise, message and guard, and a static check at the top of this
   // file refuses a call site whose guard argument is not the variable its premise looked up.
   window.__cssFilterGuardOk = function(sel, src) {
-    if (window.__cssRules(sel, src).length === 0) { return false; }
+    if (_cssFilterRules(sel, src).length === 0) { return false; }
     var filterVal = window.__cssEffectiveFilter(sel, src);
     return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
@@ -2585,7 +2829,29 @@ CSS_SRC = (
 </script>"""
 )
 
-STUB = r"""
+# 17tnw2b13y0: these are exact hosted Rust get_chapter serializations, also
+# consumed by chapter_reply_contract_tests.rs. Never rebuild them from JS parsing
+# or chapter lengths. Provenance records the immutable recording source/run/hash.
+_CHAPTER_FIXTURE_DIR = os.path.join(
+    _REPO, "implementation", "desktop", "crates", "selahcue-operator", "fixtures", "get_chapter"
+)
+_CHAPTER_CASES = []
+for _fixture_name, _provenance_name in (
+    ("host-replies.json", "provenance.json"),
+    ("modal-companion.json", "modal-companion-provenance.json"),
+):
+    with open(os.path.join(_CHAPTER_FIXTURE_DIR, _fixture_name), "rb") as _fixture_file:
+        _fixture_bytes = _fixture_file.read()
+    with open(os.path.join(_CHAPTER_FIXTURE_DIR, _provenance_name), encoding="utf-8") as _provenance_file:
+        _provenance = json.load(_provenance_file)
+    if (hashlib.sha256(_fixture_bytes).hexdigest() != _provenance["fixture_sha256"]
+            or len(_fixture_bytes) != _provenance["fixture_bytes"]):
+        raise ValueError("get_chapter fixture differs from its actual hosted recording: " + _fixture_name)
+    _CHAPTER_CASES.extend(json.loads(_fixture_bytes)["cases"])
+# Escape script terminators even though the current public-domain corpus has none.
+_CHAPTER_FIXTURE_SCRIPT = "<script>window.__chapterHostFixtures = " + json.dumps(_CHAPTER_CASES).replace("</", "<\\/") + ";</script>"
+
+STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
 <script>
   window.__calls = [];
   window.__ev = {};          // event name -> [handlers] (Tauri event stub)
@@ -2697,6 +2963,7 @@ STUB = r"""
     P.notes_available = !!P.notes_provider;
     // Same invariant, transcription side.
     P.transcription_available = !!P.transcription_provider;
+    P.pilot_access = window.__task3PilotStatus || null;
     return JSON.parse(JSON.stringify(P));
   };
   window.__pp = P; // exposed so the driver can flip cloud_status / notes_provider / quota
@@ -2936,6 +3203,30 @@ STUB = r"""
     // containing "N-M" after the colon (e.g. "John 3:16-18") now gets a genuine range response,
     // so a test can actually exercise that branch instead of it being permanently dead code as
     // far as this suite can see.
+    // Recorded cases always win over the older synthetic parser below. None/KJV
+    // equivalence for the seven default cases is proved by actual Rust commands;
+    // WEB and any other explicit translation must match exactly. Ok/Err is only
+    // the fixture transport envelope: Tauri callers receive the value/rejection.
+    if (cmd === "get_chapter" && window.__gcRealistic) {
+      var hostCase = window.__chapterHostFixtures.find(function(c) {
+        return c.request.reference === (args && args.reference) &&
+          (c.request.translation === ((args && args.translation) || null) ||
+           (c.request.translation === null && args && args.translation === "KJV"));
+      });
+      if (hostCase) {
+        window.__chapterFixtureHits = window.__chapterFixtureHits || [];
+        window.__chapterFixtureHits.push({id:hostCase.id, reference:args.reference,
+          translation:args.translation || null, result:JSON.parse(JSON.stringify(hostCase.result))});
+        if (Object.prototype.hasOwnProperty.call(hostCase.result, "Err")) return Promise.reject(hostCase.result.Err);
+        var hostReply = JSON.parse(JSON.stringify(hostCase.result.Ok));
+        if (window.__getChapterDeferOnce) {
+          window.__getChapterDeferOnce = false;
+          return new Promise(function(res) { window.__getChapterDeferredResolve = function() { res(hostReply); }; });
+        }
+        return Promise.resolve(hostReply);
+      }
+      if (window.__chapterFixturesOnly) return Promise.reject("unrecorded get_chapter request in fixture replay");
+    }
     // Opt-in REALISTIC get_chapter (window.__gcRealistic), used by the Service Plan link-modal checks.
     // The default mock below hard-codes verse_start 5 and a two-verse chapter, which is fine for the
     // checks that lean on those quirks but cannot answer "what does the host say about THIS typed
@@ -3464,6 +3755,11 @@ STUB = r"""
         // mirrors the real TranscriptSummaryView (17tnw2b0ntd): drives the list row's "Notes generated" pill
         notes_generated: !!(TR.detail[t.id] && TR.detail[t.id].notes_generated)}; }));
     }
+    if (cmd === "export_sermon_notes_pdf") {
+      if (window.__pdfDeferred) return new Promise(function(resolve) { window.__pdfResolve = resolve; });
+      if (window.__pdfError) return Promise.reject(window.__pdfError);
+      return Promise.resolve({transcript_id: args.transcriptId, saved_edited_at_ms: 3000, bytes: 1234});
+    }
     if (cmd === "transcript_get") {
       if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
       var td = TR.detail[args.id];
@@ -3811,6 +4107,7 @@ STUB = r"""
       return Promise.resolve(vRm);
     }
     // --- Providers & Privacy (Settings 338:124) ---
+    if (cmd === "pilot_access_status") return Promise.resolve(window.__task3PilotStatus || null);
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
     // exercise the "host rejected a setting" path — the optimistic control must revert to the
@@ -4659,15 +4956,40 @@ DRIVER = r"""
       var tdSurf2=el("surface-theme-designer"); tdSurf2.style.display="block"; tdSurf2.classList.add("active");
       var cdisp=(id)=>getComputedStyle(el(id)).display;
 
-      // #4 context menu: right-click opens it; Copy→Paste clones; Cmd+C/V; Delete.
+      // 17tnw2bbhxp: secondary-click never opens native/custom menus, even on
+      // inputs, overlays and the designer canvas. Cancellation is observable in
+      // Blink; native OS menu rendering still needs platform smoke evidence.
+      [["document", document], ["console", el("surface-console")],
+       ["input", document.querySelector("input")],
+       ["dialog", el("notif-panel")],
+       ["designer", el("td-canvas-box")], ["selection", el("td-sel")]].forEach(([label, target]) => {
+        ok(!!target, "P16: " + label + " contextmenu target exists");
+        var event = new MouseEvent("contextmenu", {button:2,clientX:40,clientY:40,bubbles:true,cancelable:true});
+        ok(target && !target.dispatchEvent(event) && event.defaultPrevented,
+           "P16: " + label + " contextmenu default is cancelled");
+        ok(el("td-ctx").hidden, "P16: " + label + " secondary-click does not open the custom menu");
+      });
+
+      // #4 keyboard menu: Copy→Paste clones; Cmd+C/V; Delete.
       addShape();
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
-      ok(!el("td-ctx").hidden, "#4 right-click opens the context menu");
+      var tdActionsHint = document.querySelector(".td-canvas-foot .td-note");
+      ok(tdActionsHint && tdActionsHint.getBoundingClientRect().width > 0 &&
+         /Context Menu/.test(tdActionsHint.textContent) && /Shift\s*\+\s*F10/.test(tdActionsHint.textContent) &&
+         !/right.click for actions/i.test(tdActionsHint.textContent),
+         "P16: the visible canvas hint teaches keyboard element actions, not disabled right-click");
+      ok(tdActionsHint && tdActionsHint.id &&
+         (el("td-sel").getAttribute("aria-describedby") || "").split(/\s+/).includes(tdActionsHint.id),
+         "P16: the focusable selection describes its keyboard action path with the visible canvas hint");
+      el("td-sel").focus();
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
+      ok(!el("td-ctx").hidden, "#4 ContextMenu key opens the element actions menu");
       ok(cdisp("td-ctx")!=="none", "#4 open menu is actually VISIBLE (computed display, not just attr)");
       el("td-ctx").querySelector('[data-ctx="copy"]').click();
       ok(el("td-ctx").hidden && cdisp("td-ctx")==="none", "#4 menu truly HIDDEN after close (the [hidden] guard works)");
       var nb = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"F10",shiftKey:true,bubbles:true,cancelable:true}));
+      ok(!el("td-ctx").hidden && el("app-menu-btn").getAttribute("aria-expanded")!=="true",
+         "P16: Shift+F10 opens element actions without also opening app navigation");
       el("td-ctx").querySelector('[data-ctx="paste"]').click();
       ok(applied().elements.length===nb+1, "#4 Copy then Paste clones the element (+1)");
       var n2 = applied().elements.length;
@@ -4675,14 +4997,14 @@ DRIVER = r"""
       el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"v",metaKey:true,bubbles:true}));
       ok(applied().elements.length===n2+1, "#4 Cmd+C then Cmd+V pastes a clone");
       var n3 = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
       el("td-ctx").querySelector('[data-ctx="delete"]').click();
       ok(applied().elements.length===n3-1, "#4 context-menu Delete removes the element");
 
       // LOW: a left-click while the menu is open just dismisses it (no select/deselect side-effect).
       addShape();
       var nSel = applied().elements.length;
-      el("td-canvas-box").dispatchEvent(new MouseEvent("contextmenu",{clientX:40,clientY:40,bubbles:true}));
+      el("td-sel").dispatchEvent(new KeyboardEvent("keydown",{key:"ContextMenu",bubbles:true,cancelable:true}));
       ok(cdisp("td-ctx")!=="none", "#4 menu open before dismiss");
       el("td-canvas-box").dispatchEvent(new PointerEvent("pointerdown",{clientX:40,clientY:40,button:0,bubbles:true}));
       ok(cdisp("td-ctx")==="none", "#4 left-click dismisses the menu");
@@ -4996,6 +5318,32 @@ DRIVER = r"""
       ok(rows2.length === 2 && rows2[0] !== row0,
          "M1 an items delta DOES rebuild the plan (2 fresh rows)");
       render(baseView); // restore so the trailing 1s poll stays consistent
+
+      // B1: health changes must render even when the transcript tail has not changed.
+      var storageView = JSON.parse(JSON.stringify(baseView));
+      delete storageView.transcript_storage_health;
+      render(storageView);
+      ok(!!el("transcript-storage-health") && /unknown/i.test(el("transcript-storage-health").textContent),
+         "B1: older host storage is unknown, never saved");
+      storageView.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(storageView);
+      var storageWarning = el("transcript-storage-health");
+      ok(!!storageWarning && storageWarning.getAttribute("role")==="status" && storageWarning.getAttribute("aria-live")==="polite",
+         "B1: persistent storage warning is accessible");
+      ok(!!storageWarning && /not safely saved/i.test(storageWarning.textContent) && /1 lost/.test(storageWarning.textContent),
+         "B1: actual host save loss is visible");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /1 lost/.test(storageWarning.textContent) && /not safely saved/i.test(storageWarning.textContent),
+         "B1: recovered writes do not erase lost-speech warning");
+      storageView.transcript_storage_health = {available:true,pending_segments:2,dropped_segments:0,truncated_segments:0};
+      render(storageView);
+      ok(!!storageWarning && /saving/i.test(storageWarning.textContent) && !/Transcript saved/.test(storageWarning.textContent),
+         "B1: pending speech is saving, never saved");
+      storageView.transcript_storage_health.pending_segments = 0;
+      render(storageView);
+      ok(!!storageWarning && /Transcript saved/.test(storageWarning.textContent), "B1: confirmed healthy drained storage is saved");
+      render(baseView);
 
       // === audit M4: the transcript DOM is client-capped even if the host over-sends ===
       var many = [];
@@ -8396,6 +8744,43 @@ DRIVER = r"""
       ok(!!trOkLast && trOkLast.args.id === 1,
          "TR generate: Confirm sends the transcript's id, not its text — the command re-reads the store itself");
       var trOkResult = el("tr-gen-result");
+      ok(!!el("tr-export-pdf"), "C4 saved notes expose Export PDF through production JS");
+      var c4SavedBefore = JSON.stringify(window.__TR.detail[1]);
+      var c4Calls = function() { return window.__calls.filter(function(c) { return c.cmd === "export_sermon_notes_pdf"; }); };
+      var c4Before = c4Calls().length;
+      window.__pdfDeferred = true;
+      el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4Before + 1 && JSON.stringify(c4Calls()[c4Before].args) === JSON.stringify({transcriptId: 1}),
+         "C4 export IPC contains only transcript ID, never current draft text or destination");
+      ok(el("tr-export-pdf").disabled, "C4 export is disabled during one native export");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click();
+      ok(c4Calls().length === c4Before + 1, "C4 busy defense rejects a forced duplicate click");
+      window.__pdfResolve({transcript_id:1,saved_edited_at_ms:3000,bytes:1234}); window.__pdfDeferred = false;
+      await sleep(20);
+      ok(/PDF exported/.test(el("tr-export-pdf-status").textContent) && !el("tr-export-pdf").disabled,
+         "C4 successful native receipt produces recoverable ready UI");
+      for (var c4Error of ["Cancelled","Io","TooLarge","InvalidDraft","NoSavedDraft"]) {
+        window.__pdfError = c4Error; el("tr-export-pdf").click(); await sleep(20);
+        ok(!el("tr-export-pdf").disabled && !!el("tr-export-pdf-status").textContent && JSON.stringify(window.__TR.detail[1]) === c4SavedBefore,
+           "C4 " + c4Error + " leaves exact saved/source state and permits retry");
+      }
+      window.__pdfError = null;
+      el("tr-gen-edit").click(); el("tr-edit-title").value = "UNSAVED_C_MUST_NEVER_EXPORT";
+      var c4BeforeEdit = c4Calls().length;
+      // A host may stage B while this window still holds unsaved C. The actual edit/export
+      // handlers must retain C and refuse a forced click; only a saved snapshot crosses IPC.
+      var c4PriorPending = window.__TR.detail[1].pending;
+      window.__TR.detail[1].pending = {draft:{title:"PENDING_B_MUST_NEVER_EXPORT",summary:null,sections:[],scriptures:[]}};
+      var c4ConcurrentSaved = JSON.stringify(window.__TR.detail[1]);
+      ok(el("tr-export-pdf").disabled && /Save your edits to export them/.test(el("tr-export-pdf-status").textContent),
+         "C4 unsaved edit disables export with explicit save guidance");
+      el("tr-export-pdf").disabled = false; el("tr-export-pdf").click(); await sleep(10);
+      ok(c4Calls().length === c4BeforeEdit && el("tr-edit-title").value === "UNSAVED_C_MUST_NEVER_EXPORT" &&
+         JSON.stringify(window.__TR.detail[1]) === c4ConcurrentSaved,
+         "C4 A+B+C: forced export sends nothing while unsaved C and pending B coexist; accepted A, B and C stay exact");
+      el("tr-gen-edit-cancel").click();
+      window.__TR.detail[1].pending = c4PriorPending;
+
       ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
       ok(!!trOkResult.querySelector(".pp-gen-edit-btn") && !!document.getElementById("tr-gen-edit"),
          "TR generate (86akgqdxr): the from-history draft now renders WITH an Edit affordance — the id is tr-gen-edit, never pp-gen-edit, since both panels' markup coexists in one document");
@@ -8498,6 +8883,12 @@ DRIVER = r"""
          "TR REGEN-1: the banner names the STILL-SAVED prior draft's own title");
       ok(!document.getElementById("tr-gen-edit"),
          "TR REGEN-1: Edit is hidden while a regeneration is pending, on this surface too");
+      var c4PendingBefore = JSON.stringify(window.__TR.detail[1]);
+      ok(/Export saved notes as PDF/.test(el("tr-export-pdf").textContent) && /accepted saved notes/.test(el("tr-export-pdf-status").textContent),
+         "C4 pending B view explicitly labels the accepted saved A export");
+      el("tr-export-pdf").click(); await sleep(20);
+      ok(JSON.stringify(window.__TR.detail[1]) === c4PendingBefore && !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+         "C4 export from pending view preserves A/B and confirmation controls");
       var trPriorStillSaved = window.__TR.detail[1].draft;
       ok(!!trPriorStillSaved && trPriorStillSaved.title === "From-History Sermon",
          "TR REGEN-1 (AC): the prior draft is retrievable and UNCHANGED on the host immediately " +
@@ -8583,15 +8974,15 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenConsentOffResult = el("tr-gen-result");
-      ok(trRegenConsentOffResult.getAttribute("role") === "alert" &&
+      ok(!!trRegenConsentOffResult.querySelector('[role="alert"]') &&
          /Turn on cloud processing/.test(trRegenConsentOffResult.textContent),
          "TR REGEN-5: with consent OFF, regenerating a transcript that already has a saved " +
          "draft is STILL gated exactly like a first-time generate (consent_required)");
       ok(trCall("transcript_generate_notes").length === trRegenConsentGenCallsBefore + 1,
          "TR REGEN-5 (sanity): the call reached the backend and was gated there — the client " +
          "did not merely refuse locally");
-      ok(!/regenerated/.test(trRegenConsentOffResult.textContent),
-         "TR REGEN-5: no draft content of any kind leaked into view — nothing was generated");
+      ok(/From-History Sermon \(regenerated\)/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: prior accepted content remains visible after consent refusal");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-5: the saved draft from REGEN-3 is completely unaffected by the refused " +
@@ -8604,12 +8995,109 @@ DRIVER = r"""
       el("tr-gen-preview-confirm").click();
       await sleep(60);
       var trRegenTransportResult = el("tr-gen-result");
-      ok(trRegenTransportResult.getAttribute("role") === "alert",
+      ok(!!trRegenTransportResult.querySelector('[role="alert"]'),
          "TR REGEN-6: a transport failure during regenerate surfaces as an alert, same as a first-time generate");
       ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
          !window.__TR.detail[1].pending,
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
+
+      // C3: terminal refusals and rejected IPC preserve the rendered accepted/pending notes.
+      // This stub's rejected promise is a terminal IPC failure, NOT the cloud provider's
+      // real transport-error degraded-success fallback (covered separately below/native).
+      var c3AcceptedSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3Mode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3Mode;
+        trEntry().click(); await sleep(40);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent),
+           "C3 accepted notes remain visible after terminal " + c3Mode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]'),
+           "C3 terminal " + c3Mode + " has an inline alert beside prior notes");
+        ok(JSON.stringify(window.__TR.detail[1]) === c3AcceptedSnapshot,
+           "C3 terminal " + c3Mode + " preserves exact accepted/source state");
+      }
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40); el("tr-gen-preview-confirm").click(); await sleep(60);
+      var c3PendingSnapshot = JSON.stringify(window.__TR.detail[1]);
+      for (var c3PendingMode of ["quota_exceeded", "transport"]) {
+        window.__trGen = c3PendingMode;
+        var c3Calls = trCall("transcript_generate_notes").length;
+        trEntry().click(); await sleep(40);
+        ok(trCall("transcript_generate_notes").length === c3Calls,
+           "C3 retry review sends nothing before Confirm: " + c3PendingMode);
+        el("tr-gen-preview-confirm").click(); await sleep(60);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 retry Confirm sends exactly once: " + c3PendingMode);
+        ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent) &&
+           !!el("tr-gen-regen-confirm") && !!el("tr-gen-regen-discard"),
+           "C3 pending content and Confirm/Discard survive terminal " + c3PendingMode);
+        ok(!!el("tr-gen-result").querySelector('[role="alert"]') &&
+           JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+           "C3 pending/source state stays exact with visible terminal " + c3PendingMode);
+        window.dispatchEvent(new Event("offline")); window.dispatchEvent(new Event("online"));
+        await sleep(1100);
+        ok(trCall("transcript_generate_notes").length === c3Calls + 1,
+           "C3 reconnect and idle never retry terminal " + c3PendingMode);
+      }
+      var c3BeforeReopen = trCall("transcript_generate_notes").length;
+      el("tr-detail-back").click(); await sleep(40);
+      el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(80);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen &&
+         JSON.stringify(window.__TR.detail[1]) === c3PendingSnapshot,
+         "C3 navigation/reopen does not retry or change accepted/pending/source state");
+      window.__trGen = "regenerate_pending";
+      trEntry().click(); await sleep(40);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen,
+         "C3 successful retry still waits for explicit review Confirm");
+      el("tr-gen-preview-confirm").click(); await sleep(60);
+      ok(trCall("transcript_generate_notes").length === c3BeforeReopen + 1 &&
+         !!el("tr-gen-regen-confirm"), "C3 explicit successful retry stages ordinary confirmation");
+      el("tr-gen-regen-discard").click(); await sleep(60);
+
+      // C3 fresh UI lifecycle with a persisted synthetic snapshot. Native close/reopen
+      // durability is tested separately in test_sermon_note_remote.rs; this is DOM/IPC only.
+      var c3Source = "English: Love your neighbour.\nYorùbá: Ẹ fẹ́ràn aládùúgbò yín.\nIgbo: Hụ onye agbata obi gị n’anya.\nHausa: Ku ƙaunaci maƙwabcinku.\nẸ ṣeun — now serve one another.";
+      var c3Saved = {list:[{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,segment_count:1}],
+        detail:{1:{id:1,label:"Offline multilingual Sunday",provider:"manual",started_at_ms:1000,ended_at_ms:6000,
+          notes_generated:false,segments:[{id:101,start_ms:0,end_ms:5000,text:c3Source}],detections:[],corrections:[],
+          draft:null,ai_generated:null,ai_label:null,disclosure:null,notes_provider:null,scripture_verification_note:null}}};
+      async function c3BootSaved(snapshot) {
+        var frame = document.createElement("iframe");
+        frame.setAttribute("aria-hidden", "true"); frame.tabIndex = -1;
+        frame.style.cssText = "position:fixed;left:-20000px;top:0;width:1280px;height:720px;border:0";
+        var seed = "<script>window.__TR=" + JSON.stringify(snapshot) + ";window.__trGen='ok';window.__pp.cloud_notes_consent=true;<" + "/script>";
+        frame.srcdoc = window.__NOTIF_FRAME_HTML.replace("</head>", seed + "</head>");
+        document.body.appendChild(frame);
+        await waitFor(function () { return frame.contentWindow.__calls && frame.contentWindow.__calls.length > 2; }, 400);
+        var w = frame.contentWindow, d = w.document;
+        d.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function () { return !!d.querySelector('.tr-card[data-id="1"] .tr-card-open'); }, 400);
+        d.querySelector('.tr-card[data-id="1"] .tr-card-open').click(); await sleep(100);
+        return {frame:frame,w:w,d:d,count:function () {return w.__calls.filter(function(c){return c.cmd === "transcript_generate_notes";}).length;}};
+      }
+      var c3Fresh = null;
+      try {
+        c3Fresh = await c3BootSaved(c3Saved);
+        c3Fresh.w.dispatchEvent(new Event("offline")); await sleep(100);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 ended offline snapshot opens with exact multilingual source and zero generation commands");
+        var c3Snapshot = JSON.parse(JSON.stringify(c3Fresh.w.__TR));
+        c3Fresh.frame.remove(); c3Fresh = await c3BootSaved(c3Snapshot);
+        ok(c3Fresh.count() === 0 && c3Fresh.w.__TR.detail[1].segments[0].text === c3Source,
+           "C3 a fresh UI reopens exact saved multilingual source without generating");
+        c3Fresh.w.dispatchEvent(new Event("online")); await sleep(1100);
+        ok(c3Fresh.count() === 0, "C3 fresh UI reconnect and idle send zero generation commands");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(50);
+        ok(c3Fresh.count() === 0 && c3Fresh.d.querySelector('.pp-gen-preview-text').textContent === c3Source,
+           "C3 fresh UI explicit preview shows all language changes without sending");
+        c3Fresh.d.getElementById("tr-gen-preview-cancel").click(); await sleep(40);
+        ok(c3Fresh.count() === 0, "C3 fresh UI cancelling the review sends nothing");
+        c3Fresh.d.getElementById("tr-generate").click(); await sleep(40);
+        c3Fresh.d.getElementById("tr-gen-preview-confirm").click(); await sleep(80);
+        ok(c3Fresh.count() === 1 && /From-History Sermon/.test(c3Fresh.d.getElementById("tr-gen-result").textContent),
+           "C3 fresh UI exactly one confirmed action displays the synthetic English response");
+      } finally { if (c3Fresh) c3Fresh.frame.remove(); }
 
       // 17tnw2b9dq6: a generated but UNSAVED reply must never inherit openId's accepted
       // draft identity. Exercise the real Edit/Save buttons if the bug exposes them, so
@@ -8793,7 +9281,7 @@ DRIVER = r"""
               ok(!el("tr-gen-regen-confirm") && !!el("tr-gen-edit") && !window.__TR.detail[1].pending,
                  "AXPP3 success control/" + axPath[0] + "/" + axMode + ": the same real operation can be retried successfully");
             } else {
-              // Existing failed-save form clearing is bawx7, NOT fixed or claimed here.
+              // Reopen remains a supported recovery path; C2 below checks in-place retry too.
               // Reopen follows today's recovery flow, then prove editing/saving still works.
               await axReopen();
               el("tr-gen-edit").click();
@@ -8815,6 +9303,120 @@ DRIVER = r"""
         window.__rcDeferCommand = axOriginalDefer; window.__rcDeferred = axOriginalDeferred;
         window.__TR.detail[1] = JSON.parse(axOriginalDetail); window.__trGen = axOriginalMode;
         await axReopen();
+      }
+
+      // C2 / 17tnw2bawx7: fail the real Save IPC after editing every supported text shape.
+      // Keep production DOM/handlers; only the host response is controlled here.
+      var c2Original = JSON.stringify(window.__TR.detail[1]);
+      var c2Storage = V.transcript_storage_health, c2Pilot = window.__task3PilotStatus;
+      V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:0};
+      render(V);
+      window.__task3PilotStatus = {state:"expired",notes_state:"expired",transcription_state:"expired",notes_uses_pilot:true,
+        effective_expiry_unix_seconds:1809129599,replacement_required:true};
+      window.scPilotAccess.accept(window.__task3PilotStatus, window.scPilotAccess.revision());
+      var c2Defer = window.__rcDeferCommand, c2Deferred = window.__rcDeferred;
+      var c2Calls = function(){ return window.__calls.filter(function(c){ return c.cmd === "update_sermon_note_draft"; }); };
+      var c2Reopen = async function(){
+        if (!el("tr-detail-view").hidden) el("tr-detail-back").click();
+        document.querySelector('.nav-item[data-surface="transcripts"]').click();
+        await waitFor(function(){ return !!el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open'); });
+        el("tr-list").querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+        await settleMicro(function(){ return !!el("tr-gen-edit"); });
+      };
+      var c2Bytes = function(v){ return Array.from(new TextEncoder().encode(JSON.stringify(v))).join(","); };
+      var c2Selectors = ["#tr-edit-title", "#tr-edit-summary", ".pp-edit-section-heading[data-si='0']",
+        ".pp-edit-point-text", ".pp-edit-subpoint-text", ".pp-edit-section-heading[data-si='1']", ".pp-edit-item-text"];
+      // Deliberately mix precomposed diacritics with a decomposed combining sequence.
+      var c2Values = ["  Ọlámídé / Chịdị / A’isha  ", "Bọ́lá met Chịọma and Mu’azu.\nKeep every word.  ",
+        "Àkọlé — Ọdịnala — Ƙauna", "Ọlámídé teaches Chịdị", "A’isha: ƙarfi, ɗan’uwa, ẹ\u0301",
+        "Àdúrà / Ekpere / Addu’a", "Chịọma prays with Bọ́lá"];
+      try {
+        for (var c2Mode of ["reject", "refused", "too_large", "malformed"]) {
+          window.__TR.detail[1] = JSON.parse(c2Original);
+          window.__TR.detail[1].draft = {title:"Saved C2 title", summary:"Saved C2 summary", scriptures:[],
+            sections:[{heading:"Outline", items:[], points:[{text:"Saved point", sub_points:["Saved sub-point"]}]},
+              {heading:"Prayer", items:["Saved prayer"], points:[]}]};
+          await c2Reopen();
+          ok(/not safely saved/i.test(el("transcript-storage-health").textContent) &&
+             /expired/i.test(el("tr-pilot-access").textContent) && !!el("tr-gen-edit"),
+             "Integration B1+C2+pilot/" + c2Mode + ": storage loss and expired pilot remain visible beside editable accepted notes");
+          el("tr-gen-edit").click();
+          var c2Form = el("tr-gen-result").querySelector(".pp-gen-edit-form");
+          var c2Fields = c2Selectors.map(function(s){ return c2Form.querySelector(s); });
+          c2Fields.forEach(function(n,i){ n.value = c2Values[i]; n.dispatchEvent(new Event("input", {bubbles:true})); });
+          var c2Saved = JSON.stringify(window.__TR.detail[1]);
+          var c2Before = c2Calls().length;
+          window.__rcDeferCommand = "update_sermon_note_draft";
+          el("tr-gen-save").click();
+          var c2Pending = window.__rcDeferred;
+          var c2Payload = JSON.parse(JSON.stringify(c2Calls().slice(-1)[0].args));
+          var c2Expected = {transcriptId:1, title:c2Values[0], summary:c2Values[1],
+            sections:[{heading:c2Values[2], items:[], points:[{text:c2Values[3], sub_points:[c2Values[4]]}]},
+              {heading:c2Values[5], items:[c2Values[6]], points:[]}], scriptures:[], requestedEmpty:[]};
+          ok(c2Bytes(c2Payload) === c2Bytes(c2Expected),
+             "C2 payload/" + c2Mode + ": Save sends exactly the edited Unicode title, summary, headings, point, sub-point and item");
+          ok(c2Calls().length === c2Before + 1 && el("tr-gen-save").disabled && el("tr-gen-save").getAttribute("aria-busy") === "true",
+             "C2 pending/" + c2Mode + ": one actual Save request is held with its busy control");
+          window.__rcDeferCommand = null;
+          if (c2Mode === "reject") c2Pending.reject(new Error("private host detail"));
+          else c2Pending.resolve(c2Mode === "malformed" ? null : {ok:false, error:c2Mode, message:"private host detail"});
+          for (var c2Hop = 0; c2Hop < 16; c2Hop++) await Promise.resolve();
+          var c2Alert = el("tr-gen-result").querySelector('[role="alert"]');
+          var c2Retained = c2Form.isConnected && c2Selectors.every(function(s,i){ return c2Form.querySelector(s) === c2Fields[i]; });
+          ok(c2Retained && c2Bytes(c2Fields.map(function(n){ return n.value; })) === c2Bytes(c2Values),
+             "C2 retain/" + c2Mode + ": the same form retains every Unicode edit byte for byte");
+          ok(c2Retained && c2Fields.every(function(n){ return !n.disabled && !n.readOnly && n.getClientRects().length > 0 && getComputedStyle(n).visibility === "visible"; }),
+             "C2 editable/" + c2Mode + ": all retained fields remain visible and editable");
+          ok(!!c2Alert && c2Alert.getClientRects().length > 0 && /Couldn.t save edits/.test(c2Alert.textContent) && /try again/i.test(c2Alert.textContent) &&
+             !/private host detail/.test(c2Alert.textContent) && /save edits/i.test(el("tr-gen-live").textContent),
+             "C2 error/" + c2Mode + ": a visible alert and live announcement explain Save failure and retry safely");
+          ok(c2Retained && !!el("tr-gen-save") && !el("tr-gen-save").disabled && !el("tr-gen-save").hasAttribute("aria-busy") &&
+             (!el("tr-regenerate") || el("tr-regenerate").disabled) && getComputedStyle(el("tr-generate")).display === "none",
+             "C2 recovery/" + c2Mode + ": Save is usable again and generation cannot replace unsaved edits");
+          ok(JSON.stringify(window.__TR.detail[1]) === c2Saved,
+             "C2 accepted/" + c2Mode + ": failure changes neither accepted notes nor pending/provenance data");
+          if (c2Retained && el("tr-gen-save")) {
+            c2Fields[0].focus(); c2Fields[0].setSelectionRange(0,0); c2Fields[0].setRangeText("x"); c2Fields[0].setRangeText("",0,1);
+            ok(c2Fields[0].value === c2Values[0], "C2 typing/" + c2Mode + ": retained input accepts another edit");
+            el("tr-gen-save").click();
+            await settleMicro(function(){ return !!el("tr-gen-edit"); });
+            var c2Retry = c2Calls().slice(-1)[0];
+            ok(c2Calls().length === c2Before + 2 && c2Bytes(c2Retry.args) === c2Bytes(c2Payload),
+               "C2 retry/" + c2Mode + ": successful retry sends exactly the failed edited payload");
+            var c2Persisted = window.__TR.detail[1].draft;
+            ok(!c2Form.isConnected && !!el("tr-gen-edit") && c2Bytes([c2Persisted.title, c2Persisted.summary,
+               c2Persisted.sections[0].heading, c2Persisted.sections[0].points[0].text,
+               c2Persisted.sections[0].points[0].sub_points[0], c2Persisted.sections[1].heading,
+               c2Persisted.sections[1].items[0]]) === c2Bytes(c2Values) &&
+               el("tr-gen-result").textContent.indexOf(c2Values[3]) !== -1 && el("tr-gen-result").textContent.indexOf(c2Values[4]) !== -1 &&
+               !el("tr-gen-result").querySelector('[role="alert"]') && !/Couldn.t save edits/.test(el("tr-gen-live").textContent),
+               "C2 success/" + c2Mode + ": saved response replaces the form and clears its error");
+          }
+        }
+        // Existing explicit discard paths still discard only unsaved edits.
+        await c2Reopen(); el("tr-gen-edit").click();
+        var c2BeforeCancel = c2Calls().length, c2BeforeDiscard = JSON.stringify(window.__TR.detail[1]);
+        el("tr-edit-title").value = "Unsaved cancel";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2CancelHop = 0; c2CancelHop < 16; c2CancelHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        el("tr-gen-edit-cancel").click();
+        ok(!el("tr-edit-title") && !!el("tr-gen-edit") && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 cancel: explicit Cancel closes editing without saving or changing accepted notes");
+        el("tr-gen-edit").click(); el("tr-edit-title").value = "Unsaved navigation";
+        window.__snRejectTooLarge = true; el("tr-gen-save").click();
+        for (var c2NavHop = 0; c2NavHop < 16; c2NavHop++) await Promise.resolve();
+        c2BeforeCancel++;
+        await c2Reopen(); el("tr-gen-edit").click();
+        ok(el("tr-edit-title").value === window.__TR.detail[1].draft.title && c2Calls().length === c2BeforeCancel && JSON.stringify(window.__TR.detail[1]) === c2BeforeDiscard,
+           "C2 navigation: leaving and reopening retains existing discard behavior without an implicit Save");
+      } finally {
+        window.__rcDeferCommand = c2Defer; window.__rcDeferred = c2Deferred;
+        V.transcript_storage_health = c2Storage; render(V);
+        window.__task3PilotStatus = c2Pilot;
+        window.scPilotAccess.accept(c2Pilot || null, window.scPilotAccess.revision());
+        window.__TR.detail[1] = JSON.parse(c2Original);
+        await c2Reopen();
       }
 
       // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
@@ -8864,12 +9466,12 @@ DRIVER = r"""
          "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
       // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
       var trQuotaRes = await trGenOnce("quota_exceeded");
-      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent) &&
+      ok(!!trQuotaRes.querySelector('[role="alert"]') && /Generation limit reached/.test(trQuotaRes.textContent) &&
          !/month|week|daily|annual/i.test(trQuotaRes.textContent),
          "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert) and, even when the backend sends its REAL monthly text (selahcue-core providers.rs), names no allowance period (D7)");
       // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
       var trFailRes = await trGenOnce("transport");
-      ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
+      ok(!!trFailRes.querySelector('[role="alert"]') && /Couldn.t generate notes/.test(trFailRes.textContent),
          "TR: a transport failure surfaces 'Couldn’t generate notes' (role=alert)");
       var trOkRes = await trGenOnce("ok");
       var trSub = trOkRes.querySelector(".pp-gen-sublist");
@@ -8892,7 +9494,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = false;
       var trConsentRes = await trGenOnce("ok");
       var trToSettings = el("tr-open-settings");
-      ok(trConsentRes.getAttribute("role") === "alert" && !!trToSettings && trToSettings.tagName === "BUTTON",
+      ok(!!trConsentRes.querySelector('[role="alert"]') && !!trToSettings && trToSettings.tagName === "BUTTON",
          "TR: consent_required offers a one-click 'Open Settings' route, not a dead end");
       trToSettings.click();
       ok(el("surface-settings").classList.contains("active"), "TR: 'Open Settings' actually opens Settings");
@@ -10311,6 +10913,145 @@ DRIVER = r"""
         await sleep(10);
       };
       var previewOf = function (m) { return m.querySelector(".pm-verse-preview").textContent; };
+
+      // 17tnw2b13y0: drive the REAL modal with the exact same immutable replies
+      // Rust compares against. Strict mode refuses any unrecorded follow-up;
+      // none of these cases can silently fall through to the legacy JS parser.
+      window.__chapterFixturesOnly = true;
+      window.__chapterFixtureHits = [];
+      var hostCases = window.__chapterHostFixtures;
+      // The older synthetic host view deliberately advertises only KJV. Populate
+      // the real selector through the real render path using recorded installed
+      // translations, so WEB is genuinely selectable rather than assigning an
+      // unavailable option (which the DOM silently converts to an empty value).
+      var hostPriorTranslations = V.translations;
+      V.translations = hostCases.find(function(c) { return c.id === "translation-gap"; }).result.Ok.translations.slice();
+      render(V);
+      ok(Array.from(el("translation").options).some(function(o) { return o.value === "WEB"; }),
+         "Y0 host fixture: recorded installed translations offer WEB through actual host render");
+      var hostCaseById = function(id) { return hostCases.find(function(c) { return c.id === id; }); };
+      var hostLinkCalls = function() { return window.__calls.filter(function(c) { return c.cmd === "set_item_content"; }); };
+      var hostPressLink = async function(m) {
+        Array.prototype.find.call(m.querySelectorAll("button"), function(b) { return b.textContent === "Link"; }).click();
+        await sleep(40);
+      };
+      var hostOpen = async function(c, browse) {
+        openLinkModal({id:14, kind:"scripture", title:"Recorded host reply"});
+        await sleep(20);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        m.querySelector('input[aria-label="Scripture reference"]').value = c.request.reference;
+        var trans = m.querySelector('select[aria-label="Translation"]');
+        trans.value = c.request.translation || "KJV";
+        ok(trans.value === (c.request.translation || "KJV"),
+           "Y0 host fixture: actual modal selector offers requested translation " + c.id);
+        if (browse) {
+          Array.prototype.find.call(m.querySelectorAll("button"), function(b) { return b.textContent === "Browse"; }).click();
+          await sleep(40);
+        }
+        return m;
+      };
+      var hostHit = function(c, start) {
+        var hits = window.__chapterFixtureHits.slice(start);
+        return hits.length === 1 && hits[0].id === c.id && hits[0].reference === c.request.reference &&
+          hits[0].translation === (c.request.translation || "KJV") &&
+          JSON.stringify(hits[0].result) === JSON.stringify(c.result);
+      };
+      // Full real verse numbers AND text, reference/translation, selection and
+      // first/last navigation boundaries, including WEB's real missing verse36.
+      for (var hc of hostCases.filter(function(c) { return c.result.Ok && c.id !== "confirmed-past-chapter-end"; })) {
+        var hitStart = window.__chapterFixtureHits.length;
+        var hm = await hostOpen(hc, true), reply = hc.result.Ok;
+        var rows = Array.from(hm.querySelectorAll(".pm-verse"));
+        ok(hostHit(hc, hitStart), "Y0 host fixture: Browse consumes exact recorded request/reply " + hc.id);
+        ok(!hm.querySelector(".pm-verse-picker").hidden &&
+           hm.querySelector(".pm-verse-ref").textContent === reply.reference + " (" + reply.translation + ")",
+           "Y0 host fixture: real canonical chapter/translation shown " + hc.id);
+        ok(JSON.stringify(rows.map(function(r) { return [+r.dataset.vnum, r.querySelector(".pm-verse-t").textContent]; })) === JSON.stringify(reply.verses),
+           "Y0 host fixture: every real verse number/text rendered without synthetic chapter length " + hc.id);
+        ok(hm.querySelector('[aria-label="Previous chapter"]').disabled === !reply.prev,
+           "Y0 host fixture: previous navigation consumes actual nullable prev " + hc.id);
+        ok(hm.querySelector('[aria-label="Next chapter"]').disabled === !reply.next,
+           "Y0 host fixture: next navigation consumes actual nullable next " + hc.id);
+        var lo = reply.verse_start == null ? reply.verses[0][0] : reply.verse_start;
+        var hi = Math.min(reply.verse_end == null ? lo : reply.verse_end, reply.verses[reply.verses.length - 1][0]);
+        var expectedSelected = reply.verses.filter(function(v) { return v[0] >= lo && v[0] <= hi; }).map(function(v) { return v[0]; });
+        ok(JSON.stringify(rows.filter(function(r) { return r.getAttribute("aria-selected") === "true"; }).map(function(r) { return +r.dataset.vnum; })) === JSON.stringify(expectedSelected),
+           "Y0 host fixture: actual parsed selection/clamp and translation gap preserved " + hc.id);
+        var selectedRef = reply.reference + ":" + lo + (hi > lo ? "-" + hi : "");
+        ok(previewOf(hm) === "✦ " + selectedRef + " · " + reply.translation,
+           "Y0 host fixture: preview uses actual canonical selection " + hc.id);
+        if (hc.id === "past-chapter-end") {
+          ok(/^Note:/.test(hm.querySelector(".pm-link-hint").textContent) && /cut back to 2-6/.test(hm.querySelector(".pm-link-hint").textContent),
+             "Y0 host fixture: Browse visibly explains the real six-verse clamp");
+        }
+        if (hc.id === "translation-gap") {
+          var gapNumbers = rows.map(function(r) { return +r.dataset.vnum; });
+          ok(gapNumbers.includes(35) && gapNumbers.includes(37) && !gapNumbers.includes(36),
+             "Y0 host fixture: real WEB gap has neighboring35/37 and no invented36");
+        }
+        await closeModal();
+      }
+      for (var hostId of ["bare-chapter", "single-verse", "verse-range"]) {
+        var typedCase = hostCaseById(hostId), beforeHits = window.__chapterFixtureHits.length;
+        var beforeLinks = hostLinkCalls().length, typedModal = await hostOpen(typedCase, false);
+        await hostPressLink(typedModal);
+        var actualLinks = hostLinkCalls(), typedReply = typedCase.result.Ok;
+        var typedRef = typedReply.reference + (typedReply.verse_start == null ? "" : ":" + typedReply.verse_start +
+          (typedReply.verse_end > typedReply.verse_start ? "-" + typedReply.verse_end : ""));
+        ok(hostHit(typedCase, beforeHits), "Y0 host fixture: typed Link consumes exact recorded reply " + hostId);
+        ok(actualLinks.length === beforeLinks + 1 && actualLinks[actualLinks.length - 1].args.link.reference === typedRef &&
+           actualLinks[actualLinks.length - 1].args.link.translation === "KJV",
+           "Y0 host fixture: typed Link commits real canonical reference/selection " + hostId);
+      }
+      var pastCase = hostCaseById("past-chapter-end"), pastHits = window.__chapterFixtureHits.length;
+      var pastBefore = hostLinkCalls().length, pastModal = await hostOpen(pastCase, false);
+      await hostPressLink(pastModal);
+      ok(hostHit(pastCase, pastHits), "Y0 host fixture: typed past-end consumes unmodified real host2..10 reply");
+      ok(hostLinkCalls().length === pastBefore && /^Note:/.test(pastModal.querySelector(".pm-link-hint").textContent) &&
+         /has 6 verses/.test(pastModal.querySelector(".pm-link-hint").textContent) &&
+         pastModal.querySelector('input[aria-label="Scripture reference"]').value === "Psalms 1:2-6",
+         "Y0 host fixture: real past-end first press visibly clamps and waits without committing");
+      var confirmCase = hostCaseById("confirmed-past-chapter-end"), confirmHits = window.__chapterFixtureHits.length;
+      await hostPressLink(pastModal);
+      ok(hostHit(confirmCase, confirmHits), "Y0 host fixture: second press uses separately recorded canonical companion, no parser fallback");
+      ok(hostLinkCalls().length === pastBefore + 1 && hostLinkCalls().slice(-1)[0].args.link.reference === confirmCase.request.reference,
+         "Y0 host fixture: confirmed real past-end commits only2..6");
+      var missingCase = hostCaseById("nonexistent-chapter"), missingHits = window.__chapterFixtureHits.length;
+      var missingBefore = hostLinkCalls().length, missingModal = await hostOpen(missingCase, false);
+      await hostPressLink(missingModal);
+      ok(hostHit(missingCase, missingHits), "Y0 host fixture: real nonexistent chapter rejects exact recorded error");
+      ok(hostLinkCalls().length === missingBefore && /^Note:/.test(missingModal.querySelector(".pm-link-hint").textContent) &&
+         /isn't a chapter/.test(missingModal.querySelector(".pm-link-hint").textContent) && /Missing/.test(missingModal.querySelector(".pm-link-hint").textContent),
+         "Y0 host fixture: missing chapter first press explains and keeps modal open");
+      missingHits = window.__chapterFixtureHits.length;
+      await hostPressLink(missingModal);
+      ok(hostHit(missingCase, missingHits) && hostLinkCalls().length === missingBefore + 1 &&
+         hostLinkCalls().slice(-1)[0].args.link.reference === missingCase.request.reference,
+         "Y0 host fixture: real missing chapter links as typed only after explicit second press");
+      var invalidCase = hostCaseById("unparseable-reference"), invalidHits = window.__chapterFixtureHits.length;
+      var invalidBefore = hostLinkCalls().length, invalidModal = await hostOpen(invalidCase, false);
+      await hostPressLink(invalidModal);
+      ok(hostHit(invalidCase, invalidHits), "Y0 host fixture: unparseable input rejects exact real error");
+      ok(hostLinkCalls().length === invalidBefore && document.querySelector(".pm-confirm.pm-link") === invalidModal &&
+         invalidModal.querySelector(".pm-link-hint").classList.contains("pm-link-hint-err") &&
+         /Couldn.t read/.test(invalidModal.querySelector(".pm-link-hint").textContent),
+         "Y0 host fixture: unreadable real input refuses commit with actionable error");
+      await closeModal();
+      // The existing deferred host lifecycle remains effective with real replies.
+      var deferredCase = hostCaseById("single-verse"), deferredBefore = hostLinkCalls().length;
+      var deferredModal = await hostOpen(deferredCase, false);
+      window.__getChapterDeferOnce = true;
+      Array.prototype.find.call(deferredModal.querySelectorAll("button"), function(b) { return b.textContent === "Link"; }).click();
+      await sleep(10);
+      ok(typeof window.__getChapterDeferredResolve === "function" && hostLinkCalls().length === deferredBefore,
+         "Y0 host fixture: real reply can remain pending before commit");
+      await closeModal();
+      window.__getChapterDeferredResolve(); window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(hostLinkCalls().length === deferredBefore, "Y0 host fixture: closing during recorded reply refuses late commit");
+      window.__chapterFixturesOnly = false;
+      V.translations = hostPriorTranslations;
+      render(V);
 
       var lmR = await browseOnce("Psalms 119");
       var rRows = lmR.querySelectorAll(".pm-verse");
@@ -11921,6 +12662,173 @@ DRIVER = r"""
         { id: "midweek",        name: "Midweek Gathering", items: 4 }
       ];
 
+      // 17tnw2ayzvg: the first explicit Boolean viewer fixtures in this driver come BELOW
+      // this block. Thus the initial absent-viewer case exercises a genuinely never-known
+      // module, not a test-only cache reset. Use the actual render/failure/poll consumers.
+      var zvgHost = hostRemote, zvgSlots = window.__autosaveSlots;
+      var zvgDefer = window.__rcDeferCommand, zvgDeferred = window.__rcDeferred;
+      var zvgHadViewer = Object.prototype.hasOwnProperty.call(V, "viewer"), zvgViewer = V.viewer;
+      var zvgCtrlBefore = window.__calls.filter(isLiveCtrl).length;
+      var zvgBanner = function(){ return document.querySelector(".plan-restore-banner"); };
+      var zvgDrain = async function(){ for (var i = 0; i < 16; i++) await Promise.resolve(); };
+      // These fixtures represent new host views, not a UI-only replay of planLastView.
+      // Feed the existing full-view consumer as well as the Plan surface renderer.
+      var zvgFreshView = function(view){
+        var confirmed = Object.assign({}, V, view);
+        if (!Object.prototype.hasOwnProperty.call(view, "viewer")) delete confirmed.viewer;
+        render(confirmed);
+        openPlan(view);
+      };
+      var zvgFailedOpen = async function(){
+        planRenderLoading();
+        window.__viewRejectOnce = true;
+        await invoke("view").then(planRenderBuilder).catch(planRenderLoadFailed);
+        await zvgDrain();
+      };
+      var zvgHoldSlots = async function(){
+        window.__rcDeferred = null;
+        window.__rcDeferCommand = "list_autosave_slots";
+        await zvgFailedOpen();
+        var pending = window.__rcDeferred;
+        window.__rcDeferCommand = null;
+        return pending;
+      };
+      try {
+        hostRemote = true; // actual Remote UI branch, not the cheaper Local-only skip
+        window.__autosaveSlots = [{slot:19,saved_at_ms:1900,label:"AYZVG saved plan"}];
+        zvgFreshView(lifeView());
+        await zvgFailedOpen();
+        ok(hostRemote === true && !!zvgBanner(),
+           "AYZVG unknown control: a never-confirmed Remote viewer still receives the explicitly permitted Restore offer");
+        var zvgRestoreCalls = plCalls("restore_autosave").length;
+        var zvgUnknownButton = zvgBanner() && zvgBanner().querySelector("button");
+        if (zvgUnknownButton) zvgUnknownButton.click();
+        await zvgDrain();
+        ok(plCalls("restore_autosave").length === zvgRestoreCalls + 1 && !zvgBanner(),
+           "AYZVG unknown action control: the real Restore command works and successful render clears the offer");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:false}}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG false: the last confirmed false verdict suppresses Restore after a real Remote failed-open reply");
+        ok(!el("plan-viewonly") && getComputedStyle(palette()).display === "none" && !!document.querySelector(".plan-load-failed"),
+           "AYZVG failure chrome control: cache does not fabricate a current viewer badge or revive the unusable edit palette");
+
+        zvgFreshView(lifeView({viewer:null}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG absent after false: a later unreported view cannot overwrite the last confirmed Boolean");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:"true"}}));
+        await zvgFailedOpen();
+        ok(!zvgBanner(),
+           "AYZVG malformed after false: a truthy string is not a confirmed permission grant");
+
+        zvgFreshView(lifeView({viewer:{role:"viewer",can_edit:true}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(),
+           "AYZVG true control: a confirmed promotion restores the offer even when the role label says viewer");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:"false"}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(),
+           "AYZVG malformed after true control: a false-looking string cannot fabricate a restriction");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        var zvgPending = await zvgHoldSlots();
+        ok(!!zvgPending && !zvgBanner(),
+           "AYZVG held lookup premise: the actual slot request is unresolved before the confirmed demotion");
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:false}}));
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG late after demotion: a held allowed-viewer lookup cannot publish after a newer false render");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        V.viewer = {role:"viewer",can_edit:false};
+        await pollOnce(); // actual successful view -> render -> publish/viewer sync wiring
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG poll demotion: the latest successful poll verdict suppresses even a previously pending lookup");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        await zvgFailedOpen();
+        ok(!!zvgBanner(), "AYZVG visible-before-poll premise: an allowed failed-open offer really exists");
+        V.viewer = {role:"viewer",can_edit:false};
+        await pollOnce();
+        await zvgDrain();
+        ok(!zvgBanner(),
+           "AYZVG visible demotion: a newly confirmed false poll removes an already offered Restore control");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        zvgFreshView(lifeView({viewer:{role:"viewer",can_edit:true}}));
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner() && !document.querySelector(".plan-load-failed"),
+           "AYZVG superseded failure: an old lookup cannot add a recovery offer to a newer successful plan view");
+
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgPending = await zvgHoldSlots();
+        window.__autosaveSlots = []; // the newer failed open reports nothing to restore
+        await zvgFailedOpen();
+        if (zvgPending) zvgPending.resolve([{slot:19,saved_at_ms:1900,label:null}]);
+        await zvgDrain();
+        ok(!zvgBanner() && !!document.querySelector(".plan-load-failed"),
+           "AYZVG newer failure: a stale old slot list cannot override a newer empty lookup for another failed open");
+        ok(window.__calls.filter(isLiveCtrl).length === zvgCtrlBefore,
+           "AYZVG live-output control: permission/failure/recovery-offer checks send no live-control command");
+
+        // CODY-AYZVG-01: a confirmed poll can arrive while a modal intentionally keeps the
+        // old editable Plan snapshot on screen. Cancel and UI-only selection/deselection
+        // must never promote that cached snapshot into a fresh host permission verdict.
+        var zvgOriginalItems = V.items;
+        try {
+          V.items = JSON.parse(JSON.stringify(PL_ITEMS));
+          V.viewer = {role:"operator",can_edit:true};
+          var zvgHostView = await invoke("view");
+          render(zvgHostView);
+          openPlan(zvgHostView);
+          var zvgRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="301"]');
+          if (zvgRow) zvgRow.click();
+          var zvgRemove = document.querySelector(".plan-insp-danger .pm-btn-danger");
+          if (zvgRemove) zvgRemove.click();
+          ok(!!document.querySelector(".pm-confirm-back") && planSelectedId === 301,
+             "AYZVG replay modal premise: the real selected-row Remove confirmation is open");
+          V.viewer = {role:"viewer",can_edit:false};
+          await pollOnce();
+          ok(!!document.querySelector(".pm-confirm-back") && planLastView.viewer.can_edit === true,
+             "AYZVG replay stale-view premise: the actual false poll leaves the prior true UI snapshot behind the modal");
+          var zvgViewCalls = plCalls("view").length;
+          var zvgCancel = document.querySelector(".pm-confirm .pm-btn-ghost");
+          if (zvgCancel) zvgCancel.click();
+          zvgRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="302"]');
+          if (zvgRow) zvgRow.click(); // closure-captured old snapshot
+          el("plan-b-list").click(); // real blank-space deselect replays planLastView
+          await zvgDrain();
+          ok(!document.querySelector(".pm-confirm-back") && planSelectedId === null && plCalls("view").length === zvgViewCalls,
+             "AYZVG replay no-confirmation control: Cancel selection and deselection issue no new host view or promotion");
+          window.__autosaveSlots = [{slot:19,saved_at_ms:1900,label:null}];
+          await zvgFailedOpen();
+          ok(!zvgBanner() && !!document.querySelector(".plan-load-failed"),
+             "AYZVG cached UI replay: the last actual false host verdict still suppresses Restore after Cancel and deselect");
+        } finally {
+          V.items = zvgOriginalItems;
+          var zvgLeftDialog = document.querySelector(".pm-confirm .pm-btn-ghost");
+          if (zvgLeftDialog) zvgLeftDialog.click();
+        }
+      } finally {
+        window.__viewRejectOnce = false;
+        window.__rcDeferCommand = zvgDefer; window.__rcDeferred = zvgDeferred;
+        window.__autosaveSlots = zvgSlots;
+        if (zvgHadViewer) V.viewer = zvgViewer; else delete V.viewer;
+        hostRemote = zvgHost;
+        // End with a confirmed allowed hint, then an unreported normal view; permission
+        // chrome still consumes the current view and no test-only cache/reset API exists.
+        zvgFreshView(lifeView({viewer:{role:"operator",can_edit:true}}));
+        zvgFreshView(lifeView());
+      }
+
       // --- viewer: three states, and the absent one is NOT view-only --------------------------
       openPlan(lifeView());
       ok(!el("plan-viewonly"),
@@ -13333,7 +14241,7 @@ DRIVER = r"""
       // Resolve ANY colour declaration (hex, rgb(), or var(--token)) through the live CSS engine.
       function _resolve(decl){
         var pr=document.createElement("span");
-        pr.style.cssText="position:absolute;left:-9999px;top:-9999px;background-color:"+decl;
+        pr.style.cssText="position:absolute;left:-9999px;top:-9999px;background:"+decl;
         document.body.appendChild(pr);
         var c=getComputedStyle(pr).backgroundColor; pr.remove(); return _rgba(c);
       }
@@ -13364,7 +14272,7 @@ DRIVER = r"""
         var dupI1 = probeSheet.insertRule(".__cssom_dup_probe__{background:#111111;}", probeSheet.cssRules.length);
         var dupI2 = probeSheet.insertRule(".__cssom_dup_probe__{background:#333333;}", probeSheet.cssRules.length);
         var dupRule = __cssRule(".__cssom_dup_probe__");
-        var dupBg = __cssBg(dupRule);
+        var dupBg = __cssEffective(".__cssom_dup_probe__", "background");
         ok(!!dupRule && !!dupBg && _same(_resolve(dupBg), [51,51,51,1]),
            "CSSOM-PARSE-01: a selector declared TWICE (`.__cssom_dup_probe__`, #111111 then #333333) resolves to the LAST rule — " +
            "the one the cascade actually applies (got \"" + (dupBg || "none") + "\") — not the first; a lookup keyed on selector text alone could only ever find the first");
@@ -13406,11 +14314,15 @@ DRIVER = r"""
            "CSSOM-PARSE-03 (premise): Chrome's own parser drops a filter: declaration whose value it does not recognise, so __cssFilter alone reports it as carrying NO filter (\"" +
            (wRejectFilter || "none") + "\") — the exact blind spot the raw-text backstop below exists for");
         document.head.removeChild(rejectProbe);
-        var wSavedCssText = window.__CSSTEXT;
-        window.__CSSTEXT = wRejectCss;
-        ok(window.__cssRawHasFilter(wRejectSel),
-           "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
-        window.__CSSTEXT = wSavedCssText;
+        function wCheckRejectedRawSource() {
+          var wSavedCssText = window.__CSSTEXT;
+          try {
+            window.__CSSTEXT = wRejectCss;
+            ok(window.__cssRawHasFilter(wRejectSel),
+               "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
+          } finally { window.__CSSTEXT = wSavedCssText; }
+        }
+        wCheckRejectedRawSource();
 
         // Gap 4 (Sana, PR #79 follow-up, finding 2): source order alone is not the cascade's
         // tie-break — a duplicate sitting inside an @media block that does NOT currently match
@@ -13421,7 +14333,7 @@ DRIVER = r"""
         var mqI1 = probeSheet.insertRule(mqSel + "{background:#0000ff;}", probeSheet.cssRules.length);
         var mqI2 = probeSheet.insertRule("@media (max-width:1px){" + mqSel + "{background:#ff0000;}}", probeSheet.cssRules.length);
         var mqRule = __cssRule(mqSel);
-        var mqBg = __cssBg(mqRule);
+        var mqBg = __cssEffective(mqSel, "background");
         ok(!!mqRule && !!mqBg && _same(_resolve(mqBg), [0,0,255,1]),
            "CSSOM-PARSE-04: a duplicate declared inside an @media block that does NOT match the current environment (max-width:1px) is skipped — __cssRule resolves to the rule the browser actually applies (got \"" +
            (mqBg || "none") + "\"), not whichever came last in SOURCE ORDER alone");
@@ -13432,15 +14344,52 @@ DRIVER = r"""
         // on shapes this file's own comments already carry (e.g. app.css documents old rules in
         // prose that reads exactly like a selector block).
         ok(!!wRejectRule && !wRejectFilter, "CSSOM-PARSE-05 (premise, reuses Gap 3's fixture): the adversarial rule above still carries an unparseable filter: that CSSOM alone cannot see");
-        window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
-          " { background: var(--sc-primary-hover); } before the AA fix. */";
-        ok(window.__cssRawHasFilter(wRejectSel),
-           "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
-        var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
-        window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
-        ok(!window.__cssRawHasFilter(wCmtOnlySel),
-           "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
-        window.__CSSTEXT = wSavedCssText;
+        function wCheckCommentRawSource() {
+          var wSavedCssText = window.__CSSTEXT;
+          try {
+            window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
+              " { background: var(--sc-primary-hover); } before the AA fix. */";
+            ok(window.__cssRawHasFilter(wRejectSel),
+               "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
+            var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
+            window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
+            ok(!window.__cssRawHasFilter(wCmtOnlySel),
+               "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
+          } finally { window.__CSSTEXT = wSavedCssText; }
+        }
+        wCheckCommentRawSource();
+
+        // AYETD: throw through the REAL checks at each global swap state. Each case observes
+        // cleanup before this test's finally isolates later siblings; cleanup here cannot
+        // falsely satisfy the assertion about the function under test.
+        var wRealRawHasFilter = window.__cssRawHasFilter;
+        var wOriginalCssText = window.__CSSTEXT;
+        [
+          {name:"CSSOM-PARSE-03", run:wCheckRejectedRawSource, at:1},
+          {name:"CSSOM-PARSE-05 first swap", run:wCheckCommentRawSource, at:1},
+          {name:"CSSOM-PARSE-05 second swap", run:wCheckCommentRawSource, at:2}
+        ].forEach(function(test){
+          var sentinel = new Error("AYETD deliberate raw-helper exception"), caught = null, calls = 0;
+          try {
+            window.__cssRawHasFilter = function(sel, src){
+              calls++;
+              if (calls === test.at) throw sentinel;
+              return wRealRawHasFilter(sel, src);
+            };
+            try { test.run(); } catch(error) { caught = error; }
+            ok(caught === sentinel && calls === test.at,
+               "AYETD exception premise: " + test.name + " really reaches and propagates the injected helper exception");
+            ok(window.__CSSTEXT === wOriginalCssText,
+               "AYETD exception cleanup: " + test.name + " restores the exact original stylesheet before the caller recovers");
+          } finally {
+            window.__cssRawHasFilter = wRealRawHasFilter;
+            window.__CSSTEXT = wOriginalCssText;
+          }
+        });
+        ok(window.__CSSTEXT === wOriginalCssText && window.__cssRawHasFilter === wRealRawHasFilter,
+           "AYETD isolation control: exception probes leave the real stylesheet and raw guard available to every later sibling");
+        ok(window.outerWidth === 800 && window.outerHeight === 600 && window.innerWidth === 800 && matchMedia("(width:800px)").matches,
+           "AYETD viewport control: the actual browser uses the pinned800x600 outer window and800px CSS viewport (observed " + window.outerWidth + "x" + window.outerHeight + "/" + window.innerWidth + "x" + window.innerHeight + ")");
 
         // Gap 6 (Sana, PR #79 follow-up round 2, finding NEW-3): CSSOM-PARSE-03 above pins the
         // __cssRawHasFilter PRIMITIVE, not the WIRING — proven live that deleting the
@@ -13567,6 +14516,130 @@ DRIVER = r"""
                "WKG danger composed/" + c[0] + ": both real registered guard helpers preserve conservative rejection");
           });
         });
+
+        // F31: the guarded compound can occur in lists, pseudo wrappers, ancestor hover
+        // and nested relative selectors. Exercise the REAL CSSOM/raw/composed reads on
+        // literal sources. Trusted hover cannot be forced by this page script; separate
+        // hosted real-pointer controls measure computed brightness for these same forms.
+        var f31Forms = [
+          ["list_first", "@T@, .__f31_other__{@D@}"],
+          ["list_last", ".__f31_other__, @T@{@D@}"],
+          ["nested", "@B@{&:hover{@D@}}"],
+          ["is", "@B@:is(:hover){@D@}"],
+          ["not_after", "@T@:not(.__f31_absent__){@D@}"],
+          ["not_before", "@B@:not(.__f31_absent__):hover{@D@}"],
+          ["ancestor", ".__f31_parent__:hover @B@{@D@}"],
+          ["nested_twice", ".__f31_parent__{@B@{&:hover{@D@}}}"]
+        ];
+        function f31ParsedFilter(sheet) {
+          return Array.from(sheet.cssRules).some(function(rule) {
+            return !!(rule.style && rule.style.getPropertyValue("filter"))
+              || !!(rule.cssRules && f31ParsedFilter(rule));
+          });
+        }
+        f31Forms.forEach(function(c) {
+          var base = ".__cssom_f31_" + c[0] + "__", target = base + ":hover";
+          function source(declaration, conditional) {
+            var rule = c[1].replace(/@B@/g, base).replace(/@T@/g, target).replace(/@D@/g, declaration);
+            return target + "{background:#111;}" + (conditional ? "@media(max-width:1px){" + rule + "}" : rule);
+          }
+          var valid = __cssFixture(source("filter:brightness(1.06);"));
+          try {
+            ok(f31ParsedFilter(valid.sheet),
+               "F31 CSSOM premise/" + c[0] + ": the browser retains a real filter declaration");
+            ok(__cssEffectiveFilter(target, valid) === "brightness(1.06)",
+               "F31 CSSOM candidate/" + c[0] + ": the filter half sees the approved selector form");
+            ok(__cssRawHasFilter(target, valid),
+               "F31 raw candidate/" + c[0] + ": raw candidacy sees the same approved form");
+            ok(!__cssFilterGuardOk(target, valid) && !__cssNoBrightnessFilter(target, valid),
+               "F31 composed/" + c[0] + ": both registered predicates reject the candidate hazard");
+          } finally { valid.dispose(); }
+          var escaped = __cssFixture(source("f\\69lter:brightness(1.06);"));
+          try {
+            ok(f31ParsedFilter(escaped.sheet),
+               "F31 escaped premise/" + c[0] + ": CSSOM retains the escaped property the literal raw scanner cannot read");
+            ok(__cssEffectiveFilter(target, escaped) === "brightness(1.06)",
+               "F31 escaped CSSOM/" + c[0] + ": normalized declarations retain widened candidacy");
+            ok(!__cssFilterGuardOk(target, escaped) && !__cssNoBrightnessFilter(target, escaped),
+               "F31 escaped composed/" + c[0] + ": CSSOM alone protects both registered predicates");
+          } finally { escaped.dispose(); }
+          var dropped = __cssFixture(source("filter:brightness(1.06) not-a-real-css-function();"));
+          try {
+            ok(!f31ParsedFilter(dropped.sheet),
+               "F31 dropped premise/" + c[0] + ": the browser discards the malformed value");
+            ok(__cssRawHasFilter(target, dropped),
+               "F31 dropped raw/" + c[0] + ": the raw half retains parser-discarded hazards");
+            ok(!__cssFilterGuardOk(target, dropped) && !__cssNoBrightnessFilter(target, dropped),
+               "F31 dropped composed/" + c[0] + ": parser rejection cannot create a passing guard");
+          } finally { dropped.dispose(); }
+          var inactive = __cssFixture(source("filter:brightness(1.06);", true));
+          try {
+            ok(!matchMedia("(max-width:1px)").matches && __cssEffectiveFilter(target, inactive) === null,
+               "F31 condition premise/" + c[0] + ": CSSOM correctly ignores the inactive group");
+            ok(__cssRawHasFilter(target, inactive),
+               "F31 condition raw/" + c[0] + ": the raw backstop remains condition blind");
+            ok(!__cssFilterGuardOk(target, inactive) && !__cssNoBrightnessFilter(target, inactive),
+               "F31 condition composed/" + c[0] + ": inactive hazards remain conservatively refused");
+          } finally { inactive.dispose(); }
+          ["filter:none !important;", "backdrop-filter:brightness(1.06);"].forEach(function(declaration) {
+            var clean = __cssFixture(source(declaration));
+            try {
+              ok(!__cssRawHasFilter(target, clean) && __cssFilterGuardOk(target, clean) && __cssNoBrightnessFilter(target, clean),
+                 "F31 clean/" + c[0] + "/" + declaration + ": harmless declarations retain passing guards");
+            } finally { clean.dispose(); }
+          });
+        });
+        var f31Unrelated = __cssFixture(".__cssom_f31_boundary__:hover{background:#111;} .__cssom_f31_boundary__extra:hover{filter:brightness(1.06);}");
+        try {
+          ok(!__cssRawHasFilter(".__cssom_f31_boundary__:hover", f31Unrelated)
+             && __cssFilterGuardOk(".__cssom_f31_boundary__:hover", f31Unrelated)
+             && __cssNoBrightnessFilter(".__cssom_f31_boundary__:hover", f31Unrelated),
+             "F31 clean boundary: another class with the same prefix is not the guarded compound");
+        } finally { f31Unrelated.dispose(); }
+
+        // F31-RECOVERY-BEGIN
+        // A malformed unrelated declaration must not erase later raw candidates.
+        // This same committed block is also exercised by the bounded review RED.
+        function f31RecoveryChecks() {
+          var target = ".__cssom_f31_recovery__:hover";
+          var prefixes = [
+            ["stray_paren", ".__f31_unrelated__{bad:);}"],
+            ["stray_bracket", ".__f31_unrelated__{bad:];}"],
+            ["open_paren", ".__f31_unrelated__{bad:(;}"],
+            ["open_bracket", ".__f31_unrelated__{bad:[;}"],
+            ["open_paren_late_close", ".__f31_unrelated__{bad:(;}", ".__f31_late__{bad:);}"],
+            ["open_bracket_late_close", ".__f31_unrelated__{bad:[;}", ".__f31_late__{bad:];}"],
+            ["open_quote", ".__f31_unrelated__{bad:\"unterminated;}"],
+            ["balanced_nested_value", ".__f31_unrelated__{--tokens:fn(a{b});color:rgb(1,2,3);content:\"}])\";}"],
+            ["quoted_open_value", ".__f31_unrelated__{content:\"([\";--tokens:fn([v]);}"],
+            ["bad_string_newline", ".__f31_unrelated__{bad:\"unterminated\n;}"],
+            ["balanced_value", ".__f31_unrelated__{color:rgb(1,2,3);content:\"}])\";--x:\"line\\\ncontinued\";}"]
+          ];
+          prefixes.forEach(function(c) {
+            var base = target + "{background:#111;}" + c[1];
+            [
+              ["dropped", target + "{filter:brightness(1.06) not-a-real-css-function();}"],
+              ["inactive", "@media(max-width:1px){" + target + "{filter:brightness(1.06);}}"]
+            ].forEach(function(hazard) {
+              var fx = __cssFixture(base + hazard[1] + (c[2] || ""));
+              try {
+                ok(__cssRules(target, fx).length >= 1 && __cssEffectiveFilter(target, fx) === null,
+                   "F31 recovery premise/" + c[0] + "/" + hazard[0] + ": the guarded rule is nonvacuous but CSSOM cannot report the hazard");
+                ok(__cssRawHasFilter(target, fx),
+                   "F31 recovery raw/" + c[0] + "/" + hazard[0] + ": unrelated malformed text cannot hide a later declaration");
+                ok(!__cssFilterGuardOk(target, fx) && !__cssNoBrightnessFilter(target, fx),
+                   "F31 recovery composed/" + c[0] + "/" + hazard[0] + ": both registered predicates retain the raw backstop");
+              } finally { fx.dispose(); }
+            });
+            var clean = __cssFixture(base + target + "{filter:none !important;backdrop-filter:brightness(1.06);}" + (c[2] || ""));
+            try {
+              ok(!__cssRawHasFilter(target, clean) && __cssFilterGuardOk(target, clean) && __cssNoBrightnessFilter(target, clean),
+                 "F31 recovery clean/" + c[0] + ": exact none and backdrop remain harmless despite the unrelated prefix");
+            } finally { clean.dispose(); }
+          });
+        }
+        f31RecoveryChecks();
+        // F31-RECOVERY-END
 
         // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
         // only `background`. Caught by BOTH halves — this is the control that the composed
@@ -13941,10 +15014,57 @@ DRIVER = r"""
       ok(!!wTdBtn && getComputedStyle(wTdBtn).flexGrow === "1",
          "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
 
+      // WKH: literal browser premises and the actual shared per-property background read.
+      // A later unrelated rule must not erase an earlier fill; longhands, variables and
+      // !important must compose as they do on the real matching element, not by rule count.
+      [
+        ["earlier-shorthand", "background:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["earlier-longhand", "background-color:#112233", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-longhand-unsafe", "background:#112233", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["later-shorthand", "background-color:#fff", "background:#112233", "rgb(17, 34, 51)", "none", true],
+        ["important-longhand", "background-color:#112233!important", "background:#fff", "rgb(17, 34, 51)", "none", true],
+        ["important-shorthand", "background:#112233!important", "background-color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["later-important-longhand", "background:#fff", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-longhand", "background:#fff!important", "background-color:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["equal-priority-shorthand", "background-color:#fff!important", "background:#112233!important", "rgb(17, 34, 51)", "none", true],
+        ["local-var-shorthand", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["local-var-longhand", "--__wkh-tone:#112233;background-color:var(--__wkh-tone)", "color:#fff", "rgb(17, 34, 51)", "none", true],
+        ["var-later-longhand-unsafe", "--__wkh-tone:#112233;background:var(--__wkh-tone)", "background-color:#fff", "rgb(255, 255, 255)", "none", false],
+        ["gradient-later-color", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-color:#fff", "rgb(255, 255, 255)", "linear-gradient(rgb(1, 2, 3), rgb(4, 5, 6))", false],
+        ["later-image-reset", "background:linear-gradient(rgb(1,2,3),rgb(4,5,6)) #112233", "background-image:none", "rgb(17, 34, 51)", "none", true],
+        ["priority-longhand-chain", "background-color:#fff", "background-color:#112233!important} .__WKH__ {background:#fff", "rgb(17, 34, 51)", "none", true]
+      ].forEach(function(c, i){
+        var cls = "__wkh_bg_" + i, sel = "." + cls;
+        var css = sel + "{" + c[1] + "}" + sel + "{" + c[2].replace(".__WKH__", sel) + "}";
+        var fx = window.__cssFixture(css), actual = document.createElement("div"), measured = document.createElement("div");
+        actual.className = cls;
+        try {
+          document.body.appendChild(actual);
+          var actualStyle = getComputedStyle(actual);
+          ok(actualStyle.backgroundColor === c[3] && actualStyle.backgroundImage === c[4],
+             "WKH browser premise/" + c[0] + ": the real cascade paints the literal expected color and image");
+          var value = window.__cssEffective(sel, "background", fx);
+          measured.style.background = value || "";
+          document.body.appendChild(measured);
+          var measuredStyle = getComputedStyle(measured);
+          ok(!!value && measuredStyle.backgroundColor === c[3] && measuredStyle.backgroundImage === c[4],
+             "WKH background cascade/" + c[0] + ": the shared read preserves actual color and image across every matching declaration");
+          ok((_cr([255,255,255,1], _rgba(measuredStyle.backgroundColor)) >= 4.5) === c[5],
+             "WKH contrast control/" + c[0] + ": an actual unsafe light fill is rejected and a dark earlier fill is accepted");
+        } finally { actual.remove(); measured.remove(); fx.dispose(); }
+      });
+      var wkhAbsent = window.__cssFixture(".__wkh_no_fill__{color:red}.__wkh_no_fill__{font-weight:bold}");
+      try {
+        ok(window.__cssEffective(".__wkh_no_fill__", "background", wkhAbsent) === null,
+           "WKH absent control: unrelated declarations do not fabricate a declared background");
+        ok(window.__cssEffective(".__wkh_missing__", "background", wkhAbsent) === null,
+           "WKH missing control: an unmatched selector has no background");
+      } finally { wkhAbsent.dispose(); }
+
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
       var wHoverRule = __cssRule(".pm-btn-primary:hover");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
-      var wHb = __cssBg(wHoverRule);
+      var wHb = __cssEffective(".pm-btn-primary:hover", "background");
       ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
       if (wHb) {
         var wHoverBg = _resolve(wHb.trim());
@@ -13978,7 +15098,7 @@ DRIVER = r"""
         var wTdHoverSel = ".td-save-cta:hover";
         var wTdHoverRule = __cssRule(wTdHoverSel);
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
-        var wTdHb = __cssBg(wTdHoverRule);
+        var wTdHb = __cssEffective(wTdHoverSel, "background");
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
         if (wTdHb) {
           var wTdHoverBg = _resolve(wTdHb.trim());
@@ -14018,7 +15138,7 @@ DRIVER = r"""
         var wPsHoverSel = ".ps-start:hover";
         var wPsHoverRule = __cssRule(wPsHoverSel);
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
-        var wPsHb = __cssBg(wPsHoverRule);
+        var wPsHb = __cssEffective(wPsHoverSel, "background");
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
         if (wPsHb) {
           var wPsHoverBg = _resolve(wPsHb.trim());
@@ -14046,7 +15166,7 @@ DRIVER = r"""
       // disabled rule's own declared background is checked to win the cascade.
       var wPsDisabledRule = __cssRule('.ps-start:disabled, .ps-start[aria-disabled="true"]');
       ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
-      var wPsDisabledBg = __cssBg(wPsDisabledRule);
+      var wPsDisabledBg = __cssEffective('.ps-start:disabled, .ps-start[aria-disabled="true"]', "background");
       ok(!!wPsDisabledBg,
          "PSC-005: the disabled rule declares its OWN background — without one, `:hover` (equal specificity, later in a real disabled+hover) wins the fill and a disabled button visibly flips to the active colour on hover");
       // Cody + Vera (PR #62 review): presence alone doesn't prove the VALUE is right — a
@@ -14057,7 +15177,7 @@ DRIVER = r"""
       // `:focus-visible` or the `:disabled, .ps-start[...]` rule above.
       var wPsBaseRule = __cssRule(".ps-start");
       ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
-      var wPsBaseBg = __cssBg(wPsBaseRule);
+      var wPsBaseBg = __cssEffective(".ps-start", "background");
       ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPsDisabledBg && wPsBaseBg) {
         ok(wPsDisabledBg.trim() === wPsBaseBg.trim(),
@@ -14107,7 +15227,7 @@ DRIVER = r"""
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = __cssRule(".dl-btn-primary:hover");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
-      var wDlHb = __cssBg(wDlHoverRule);
+      var wDlHb = __cssEffective(".dl-btn-primary:hover", "background");
       ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
       if (wDlHb) {
         var wDlRestEl = document.querySelector(".dl-btn-primary");
@@ -14166,7 +15286,7 @@ DRIVER = r"""
         var wTbGlHoverSel = ".tb-golive:hover";
         var wTbGlHoverRule = __cssRule(wTbGlHoverSel);
         ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
-        var wTbGlHb = __cssBg(wTbGlHoverRule);
+        var wTbGlHb = __cssEffective(wTbGlHoverSel, "background");
         ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTbGlHb) {
           var wTbGlHoverBg = _resolve(wTbGlHb.trim());
@@ -14205,7 +15325,7 @@ DRIVER = r"""
         var wTsHoverSel = ".timer-start:hover";
         var wTsHoverRule = __cssRule(wTsHoverSel);
         ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
-        var wTsHb = __cssBg(wTsHoverRule);
+        var wTsHb = __cssEffective(wTsHoverSel, "background");
         ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTsHb) {
           var wTsHoverBg = _resolve(wTsHb.trim());
@@ -14257,7 +15377,7 @@ DRIVER = r"""
         // unparseable one.
         ok(__cssNoBrightnessFilter(wPpGenHoverSel),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
-        var wPpGenHb = __cssBg(wPpGenHoverRule);
+        var wPpGenHb = __cssEffective(wPpGenHoverSel, "background");
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
         if (wPpGenHb) {
           var wPpGenHoverBg = _resolve(wPpGenHb.trim());
@@ -14276,12 +15396,12 @@ DRIVER = r"""
       // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
       var wPpGenDisabledRule = __cssRule('.pp-generate[disabled], .pp-generate[aria-busy="true"]');
       ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
-      var wPpGenDisabledBg = __cssBg(wPpGenDisabledRule);
+      var wPpGenDisabledBg = __cssEffective('.pp-generate[disabled], .pp-generate[aria-busy="true"]', "background");
       ok(!!wPpGenDisabledBg,
          "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
       var wPpGenBaseRule = __cssRule(".pp-generate");
       ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
-      var wPpGenBaseBg = __cssBg(wPpGenBaseRule);
+      var wPpGenBaseBg = __cssEffective(".pp-generate", "background");
       ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPpGenDisabledBg && wPpGenBaseBg) {
         ok(wPpGenDisabledBg.trim() === wPpGenBaseBg.trim(),
@@ -16873,6 +17993,8 @@ DRIVER = r"""
       // collapse under ~1100px, far below the 1400px product minimum) so the panel starts UNDER the
       // GO LIVE controls instead — either way it never covers them.
       NT.geometry = async function(F, tag, mode, shrinkTo){
+        // B1: run the unchanged emergency hit tests with real loss warning content too.
+        F.w.V.transcript_storage_health = {available:false,pending_segments:64,dropped_segments:1,truncated_segments:2};
         var tCards = {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]};
         // The top bar fits in each of its states, widest last: all clear; two cards + the badge; plus the timer chip
         // (and the LIVE chip, which is on whenever something is live — it is on here). Then the same under a ~6% wider
@@ -17036,7 +18158,7 @@ DRIVER = r"""
 # real app.css (and app.js) load and CSS-dependent checks are meaningful.
 html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
 # The notification-panel checks (the "NOTIFICATION BELL + PANEL" block at the end of DRIVER) need a viewport
-# this gate does not have: it runs at Chrome's default ~800x600, narrower than the console's own 900px floor,
+# this gate does not have: its pinned800x600 outer window is narrower than the console's own900px floor,
 # and a dismissed session notice (the Frame G block above) never comes back. So they boot FRESH same-origin
 # srcdoc instances of the real app at 1440x900 / 1280x720 / 900x600. This is that page: the real index.html
 # plus the same mock host, WITHOUT the driver, the CSS probe or the Rust constants (the iframe must not run
@@ -17053,7 +18175,7 @@ html = html.replace("</body>", NOTIF_FRAME_SCRIPT + DRIVER + "</body>", 1)
 try:
     run = headless_chrome.run_headless_chrome(
         CHROME, html,
-        ["--headless=new", "--disable-gpu", "--no-sandbox",
+        ["--headless=new", "--disable-gpu", "--no-sandbox", "--window-size=800,600",
          # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
          # driver step that waits on the app's own 1 s view poll spends a full second of it.
          # Raised from 9000 with the window-semantics checks, which wait on two real polls, and

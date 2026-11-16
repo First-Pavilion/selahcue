@@ -4,8 +4,8 @@
 
 use selahcue_lan::protocol::{
     from_json, to_json, AuthRequest, AuthResponse, Command, DenyReason, LayerVisibility,
-    OutputConfigView, RemoteDeviceView, RemotePendingView, Request, ScaleFit, ScreenView,
-    ServerMessage, ThumbView, VerseView, VERSION,
+    OutputConfigView, PairResponse, RemoteDeviceView, RemotePendingView, Request, ScaleFit,
+    ScreenView, ServerMessage, ThumbView, VerseView, VERSION,
 };
 use selahcue_lan::rbac::Role;
 
@@ -698,6 +698,7 @@ fn transcript_and_detection_view_fields_are_additive() {
             text: "turn to John 3:16".into(),
         }],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -831,6 +832,80 @@ fn auth_frames_round_trip() {
     assert_eq!(back, rejected);
 }
 
+/// Host verdicts are literal cross-language fixtures, not only round trips:
+/// changing both serde directions must still fail these byte assertions.
+/// Keep the same bytes in mobile's protocol_test.dart verdict fixture matrix.
+#[test]
+fn auth_verdict_wire_fixtures_are_stable() {
+    let fixtures = [
+        (
+            AuthResponse::Granted {
+                role: Role::Producer,
+            },
+            r#"{"auth":"granted","role":"producer"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::Forbidden,
+            },
+            r#"{"auth":"rejected","reason":"forbidden"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::Unauthenticated,
+            },
+            r#"{"auth":"rejected","reason":"unauthenticated"}"#,
+        ),
+        (
+            AuthResponse::Rejected {
+                reason: DenyReason::BadRequest,
+            },
+            r#"{"auth":"rejected","reason":"bad_request"}"#,
+        ),
+    ];
+    for (verdict, bytes) in fixtures {
+        assert_eq!(to_json(&verdict).unwrap(), bytes, "auth fixture: {bytes}");
+        assert_eq!(from_json::<AuthResponse>(bytes).unwrap(), verdict);
+    }
+}
+
+#[test]
+fn pair_verdict_wire_fixtures_are_stable() {
+    let fixtures = [
+        (PairResponse::Parked, r#"{"pair":"parked"}"#),
+        (
+            PairResponse::Granted {
+                device_id: "dev-9".into(),
+                token: "t9".into(),
+                role: Role::Producer,
+            },
+            r#"{"pair":"granted","device_id":"dev-9","token":"t9","role":"producer"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::Forbidden,
+            },
+            r#"{"pair":"rejected","reason":"forbidden"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::Unauthenticated,
+            },
+            r#"{"pair":"rejected","reason":"unauthenticated"}"#,
+        ),
+        (
+            PairResponse::Rejected {
+                reason: DenyReason::BadRequest,
+            },
+            r#"{"pair":"rejected","reason":"bad_request"}"#,
+        ),
+    ];
+    for (verdict, bytes) in fixtures {
+        assert_eq!(to_json(&verdict).unwrap(), bytes, "pair fixture: {bytes}");
+        assert_eq!(from_json::<PairResponse>(bytes).unwrap(), verdict);
+    }
+}
+
 #[test]
 fn unknown_command_tag_is_rejected() {
     // Forward-compat/robustness: an unknown command must fail to parse, not panic.
@@ -947,6 +1022,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -992,6 +1068,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         detections: vec![],
@@ -1040,6 +1117,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         detections: vec![],
@@ -1109,6 +1187,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1163,6 +1242,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1208,6 +1288,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1259,6 +1340,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -2343,4 +2425,30 @@ fn server_message_kind_labels_are_plain_snake_case_identifiers() {
             "label {label:?} is not a plain snake_case identifier"
         );
     }
+}
+
+#[test]
+fn transcript_storage_health_is_additive_and_unknown_on_old_hosts() {
+    use selahcue_lan::protocol::{OperatorStateView, TranscriptStorageHealthView};
+    let old = r#"{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null}"#;
+    let mut view: OperatorStateView = serde_json::from_str(old).unwrap();
+    assert!(view.transcript_storage_health.is_none());
+    view.transcript_storage_health = Some(TranscriptStorageHealthView {
+        available: false,
+        pending_segments: 64,
+        dropped_segments: 1,
+        truncated_segments: 2,
+    });
+    let wire = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        wire["transcript_storage_health"],
+        serde_json::json!({
+            "available": false, "pending_segments":64, "dropped_segments":1, "truncated_segments":2
+        })
+    );
+    let roundtrip: OperatorStateView = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        roundtrip.transcript_storage_health,
+        view.transcript_storage_health
+    );
 }

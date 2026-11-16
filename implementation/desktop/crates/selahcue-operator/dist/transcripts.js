@@ -38,6 +38,16 @@
   "use strict";
   var root = document.getElementById("surface-transcripts");
   if (!root) return;
+  var pilotUI = window.scPilotAccess || null;
+  function pilotNotesBlocked() {
+    var status = pilotUI && pilotUI.current();
+    return !!status && status.notes_uses_pilot && status.notes_state !== "available";
+  }
+  function pilotErrorCode() {
+    var status = pilotUI && pilotUI.current();
+    return status && status.notes_state === "expired" ? "pilot_expired"
+      : status && status.notes_state === "rejected" ? "pilot_access_rejected" : "pilot_unavailable";
+  }
 
   // Tauri IPC (absent when opened outside the shell — every call then rejects, read by the error
   // states below; same guarded shape as preservice.js/settings.js).
@@ -944,8 +954,8 @@
   var generateAllowed = false;
   var generateHasExistingDraft = false;
   // 17tnw2b0ntd (Figma 1133:36 / 1132:2): the in-flight status card + its polite live region, and
-  // whether a saved/generated draft is currently RENDERED in #tr-gen-result (not merely held in
-  // `currentDraft`: an error replaces the region, and then the primary Generate must come back).
+  // whether a saved/generated draft is currently RENDERED in #tr-gen-result. Terminal
+  // generation errors stay alongside it so Regenerate and pending review remain reachable.
   var genProgressEl = document.getElementById("tr-gen-progress");
   var genLiveEl = document.getElementById("tr-gen-live");
   var genBoxEl = document.getElementById("tr-gen");
@@ -958,10 +968,13 @@
   // silently replaced by a Confirm — Quinn D8).
   function syncGenerateControls() {
     var previewOpen = !!(genPreviewBox && !genPreviewBox.hidden);
-    if (generateBtn) generateBtn.hidden = draftRendered || previewOpen || generating;
+    if (generateBtn) {
+      generateBtn.hidden = draftRendered || previewOpen || generating;
+      generateBtn.disabled = !generateAllowed || pilotNotesBlocked() || generating;
+    }
     var rb = document.getElementById("tr-regenerate");
     if (rb) {
-      rb.disabled = !generateAllowed || previewOpen || generating;
+      rb.disabled = !generateAllowed || previewOpen || generating || pilotNotesBlocked();
       if (generating) rb.setAttribute("aria-busy", "true"); else rb.removeAttribute("aria-busy");
     }
     // Quinn/Cody D8: "Edit draft" is unavailable while the consent preview is open or a generation
@@ -1065,8 +1078,7 @@
     return r;
   }
 
-  // Announce the outcome in the polite live region, then re-sync which generate control is shown
-  // (an error replaces the result region, so the primary Generate must come back).
+  // Announce the outcome in the polite live region, then re-sync the explicit generate control.
   // The existing fixed quota/consent/build copy is the trust boundary for note errors too.
   // IPC rejection text and backend messages may quote transcript/peer content (FR-082).
   // Select known codes or an EXACT existing safe literal; never scrub/echo arbitrary text.
@@ -1081,22 +1093,58 @@
     return fallback;
   }
   function showGenError(code, message, operationLabel) {
+    var fixedPilotMessage = pilotUI && pilotUI.errorMessage(code);
+    if (fixedPilotMessage) {
+      var status = pilotUI.current() || {state: "unavailable", notes_state: "unavailable",
+        transcription_state: "unavailable", notes_uses_pilot: true, effective_expiry_unix_seconds: null, replacement_required: true};
+      if (status.notes_uses_pilot) status.notes_state = code === "pilot_expired" ? "expired"
+        : code === "pilot_access_rejected" ? "rejected" : "unavailable";
+      if (code === "pilot_expired") status.transcription_state = "expired";
+      if (status.notes_uses_pilot || code === "pilot_expired") pilotUI.accept(status, pilotUI.revision());
+    }
     showGenErrorInner(code, message, operationLabel);
+    if (fixedPilotMessage) {
+      var requestNotice = document.getElementById("tr-pilot-access");
+      if (requestNotice) { requestNotice.hidden = false; requestNotice.textContent = fixedPilotMessage; }
+      if (genLiveEl) genLiveEl.textContent = fixedPilotMessage;
+      syncGenerateControls();
+      return;
+    }
     if (genLiveEl) genLiveEl.textContent = code === "consent_required" || code === "not_configured" ? "" : (operationLabel || "Couldn’t generate notes") + ".";
     syncGenerateControls();
   }
   function showGenErrorInner(code, message, operationLabel) {
-    var r = genResultEl();
+    var fixedPilotMessage = pilotUI && pilotUI.errorMessage(code);
+    // A pilot refusal never removes an existing draft from its editable workspace.
+    // The persistent pilot status + live region explain it beside the unchanged draft.
+    if (fixedPilotMessage && currentDraft && draftRendered) return;
+    var r;
+    if (currentDraft && draftRendered && genResultBox) {
+      // Keep the existing DOM, including pending Confirm/Discard and its disclosures.
+      // Retry uses Regenerate -> review -> Confirm; an error never queues another call.
+      var previousError = genResultBox.querySelector(".tr-generation-error");
+      if (previousError) previousError.remove();
+      r = el("div", "tr-generation-error");
+      genResultBox.appendChild(r);
+    } else {
+      r = genResultEl();
+    }
     if (!r) return;
+    if (fixedPilotMessage) {
+      r.className = "pp-gen-result pp-gen-err";
+      r.setAttribute("role", "alert");
+      r.appendChild(el("span", null, fixedPilotMessage));
+      return;
+    }
     if (code === "not_configured") {
-      r.className = "pp-gen-result pp-gen-info";
+      r.className = "pp-gen-result pp-gen-info tr-generation-error";
       r.setAttribute("role", "status");
       r.appendChild(el("span", "pp-gen-info-ico", "☁"));
       r.appendChild(el("span", null, "Sermon-note generation isn’t available in this build yet."));
       return;
     }
     if (code === "consent_required") {
-      r.className = "pp-gen-result pp-gen-err";
+      r.className = "pp-gen-result pp-gen-err tr-generation-error";
       r.setAttribute("role", "alert");
       r.appendChild(el("span", null,
         "Turn on cloud processing in Settings → Providers & Privacy to generate sermon notes."));
@@ -1114,7 +1162,7 @@
     }
     // The two local validation codes never reach here from a network response — onGenerate refuses
     // before any call is made — so their label says exactly that: nothing was sent.
-    r.className = "pp-gen-result pp-gen-err";
+    r.className = "pp-gen-result pp-gen-err tr-generation-error";
     r.setAttribute("role", "alert");
     var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"
@@ -1434,7 +1482,7 @@
         var regenBtn = el("button", "pp-gen-edit-btn tr-ready-secondary", "Regenerate");
         regenBtn.type = "button";
         regenBtn.id = "tr-regenerate";
-        regenBtn.disabled = !generateAllowed || generating;
+        regenBtn.disabled = !generateAllowed || generating || pilotNotesBlocked();
         regenBtn.addEventListener("click", onGenerate);
         actions.appendChild(regenBtn);
       }
@@ -1601,8 +1649,24 @@
     return out;
   }
 
+  // A Save error belongs to the active edit form. The generation error renderer clears
+  // the result region, which would destroy the operator's unsaved input nodes and values.
+  function showDraftSaveError(form, code, message) {
+    if (!form.isConnected) return; // Cancel/navigation already discarded this form.
+    var error = el("div", "pp-gen-result pp-gen-err pp-gen-save-error");
+    error.setAttribute("role", "alert");
+    error.appendChild(el("span", "pp-gen-err-t", "Couldn’t save edits — "));
+    error.appendChild(el("span", null, noteErrorText(code, message,
+      "Please try again. Your edits are still here.")));
+    form.insertBefore(error, form.lastChild);
+    if (genLiveEl) genLiveEl.textContent = "Couldn’t save edits. Your edits are still here. Try Save again.";
+  }
+
   function saveDraftEdit(form) {
     if (!canEditCurrentDraft()) return;
+    var previousError = form.querySelector(".pp-gen-save-error");
+    if (previousError) previousError.remove();
+    if (genLiveEl) genLiveEl.textContent = "";
     var d = currentDraft.draft || {};
     var titleEl = document.getElementById("tr-edit-title");
     var summaryEl = document.getElementById("tr-edit-summary");
@@ -1627,7 +1691,7 @@
     }).then(function (res) {
       if (!res || res.ok !== true) {
         var err = res || {};
-        showGenError(err.error || "malformed", err.message, "Couldn’t save edits");
+        showDraftSaveError(form, err.error || "malformed", err.message);
         return;
       }
       // Re-read the label/disclosure/provider FROM the backend response — the guarantee that
@@ -1650,7 +1714,7 @@
       editingDraft = false;
       renderCurrentDraft();
     }).catch(function () {
-      showGenError("transport", null, "Couldn’t save edits");
+      showDraftSaveError(form, "transport", null);
     }).then(function () {
       var b = document.getElementById("tr-gen-save");
       if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
@@ -1769,12 +1833,56 @@
 
   // Renders `currentDraft` (view or edit mode) into `#tr-gen-result` — the ONLY place either mode
   // is drawn, so view <-> edit is always a full re-render from the same state.
+  var exportingPdf = false;
+  function renderPdfExport(r) {
+    if (!currentDraft || currentDraft.notSaved || currentDraft.transcriptId == null) return;
+    var owner = currentDraft;
+    var row = el("div", "pp-gen-actions");
+    var button = el("button", "pp-gen-edit-btn", owner.pendingConfirmation ? "Export saved notes as PDF" : "Export PDF");
+    button.type = "button";
+    button.id = "tr-export-pdf";
+    button.disabled = editingDraft || exportingPdf;
+    var status = el("p", "pp-gen-note", editingDraft ? "Save your edits to export them" :
+      (owner.pendingConfirmation ? "Exports your accepted saved notes, not the pending regeneration shown above." : ""));
+    status.id = "tr-export-pdf-status";
+    status.setAttribute("role", "status");
+    button.addEventListener("click", function () {
+      if (editingDraft || exportingPdf || currentDraft !== owner || owner.notSaved) return;
+      exportingPdf = true;
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      status.textContent = "Preparing saved notes PDF...";
+      invoke("export_sermon_notes_pdf", { transcriptId: owner.transcriptId }).then(function (receipt) {
+        if (!receipt || receipt.transcript_id !== owner.transcriptId || !(receipt.bytes > 0)) throw "Io";
+        if (currentDraft === owner && status.isConnected) status.textContent = "PDF exported.";
+      }).catch(function (error) {
+        if (currentDraft !== owner || !status.isConnected) return;
+        var messages = {
+          Cancelled: "PDF export cancelled. Your saved notes are unchanged.",
+          NoSavedDraft: "No saved notes are available to export. Reopen this transcript and try again.",
+          InvalidDraft: "These saved notes could not be rendered safely. Review the text and supported characters before retrying.",
+          TooLarge: "These notes exceed the PDF export limit. Your saved notes are unchanged.",
+          Io: "The PDF could not be saved. Check the destination or try another local folder."
+        };
+        status.textContent = typeof error === "string" && messages[error] ? messages[error] : messages.Io;
+      }).then(function () {
+        exportingPdf = false;
+        var active = document.getElementById("tr-export-pdf");
+        if (active) { active.disabled = editingDraft; active.removeAttribute("aria-busy"); }
+      });
+    });
+    row.appendChild(button);
+    r.appendChild(row);
+    r.appendChild(status);
+  }
+
   function renderCurrentDraft() {
     var r = genResultEl();
     if (!r || !currentDraft) return;
     r.className = "pp-gen-result pp-gen-ok";
     r.setAttribute("role", "status");
     if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+    renderPdfExport(r);
     draftRendered = true;
     syncGenerateControls();
   }
@@ -1895,6 +2003,12 @@
   // authoritative source and avoids shipping a (potentially 400k-character) string over IPC
   // twice for no benefit.
   function confirmGenerate(id) {
+    if (pilotNotesBlocked()) {
+      closeGenPreview(false);
+      showGenError(pilotErrorCode());
+      return;
+    }
+    if (pilotUI) syncPilotAccess(pilotUI.current());
     generating = true;
     closeGenPreview(false);
     if (generateBtn) { generateBtn.setAttribute("aria-busy", "true"); generateBtn.disabled = true; }
@@ -1922,7 +2036,7 @@
         // deliberately disabled because the NOW-open transcript is still recording).
         if (openId === id && generateBtn) {
           generateBtn.removeAttribute("aria-busy");
-          generateBtn.disabled = !generateAllowed;
+          generateBtn.disabled = !generateAllowed || pilotNotesBlocked();
         }
         syncGenerateControls();
       });
@@ -1964,6 +2078,12 @@
     heading.tabIndex = -1;
     box.appendChild(heading);
 
+    var pilot = pilotUI && pilotUI.current();
+    if (pilot && pilot.notes_uses_pilot) {
+      var pilotPreview = el("p", "pp-gen-preview-desc", pilotUI.message(pilot, "notes"));
+      pilotPreview.id = "tr-gen-preview-pilot";
+      box.appendChild(pilotPreview);
+    }
     var totalChars = unicodeLength(transcript);
     var willClamp = typeof limit === "number" && totalChars > limit;
     var sentText = willClamp ? firstUnicodeChars(transcript, limit) : transcript;
@@ -2043,6 +2163,7 @@
     // one place that actually decides whether to open the review step, so it re-checks rather
     // than trusting only the button's own attribute.
     if (!generateAllowed) return;
+    if (pilotNotesBlocked()) { showGenError(pilotErrorCode()); return; }
     var transcript = fullTranscriptText();
     var trimmed = transcript.trim();
     if (trimmed.length === 0) {
@@ -2061,6 +2182,7 @@
     var forId = openId;
     loadNoteCharLimit().then(function (limit) {
       if (openId !== forId || generating || (genPreviewBox && !genPreviewBox.hidden)) return;
+      if (pilotNotesBlocked()) { showGenError(pilotErrorCode()); return; }
       openGenPreview(transcript, limit);
     });
   }
@@ -2068,7 +2190,29 @@
 
   // Exposed for app.js's showSurface() activation hook — reloads the list every time the surface
   // is opened (a fresh read from the shared store, never a stale cache from a prior visit).
+  function syncPilotAccess(status) {
+    var notice = document.getElementById("tr-pilot-access");
+    if (notice) {
+      notice.hidden = !status || !status.notes_uses_pilot;
+      notice.textContent = status && status.notes_uses_pilot ? pilotUI.message(status, "notes") : "";
+    }
+    var previewNote = document.getElementById("tr-gen-preview-pilot");
+    if (previewNote) {
+      previewNote.hidden = !status || !status.notes_uses_pilot;
+      previewNote.textContent = status && status.notes_uses_pilot ? pilotUI.message(status, "notes") : "";
+    }
+    var confirm = document.getElementById("tr-gen-preview-confirm");
+    if (confirm) {
+      confirm.disabled = pilotNotesBlocked();
+      if (confirm.disabled && document.activeElement === confirm && notice) {
+        notice.tabIndex = -1; notice.focus();
+      }
+    }
+    syncGenerateControls();
+  }
+  if (pilotUI) pilotUI.watch(function () { return root.classList.contains("active"); }, syncPilotAccess);
   window.trActivate = function () {
+    if (pilotUI) pilotUI.visibilityChanged();
     showList();
     loadList();
   };

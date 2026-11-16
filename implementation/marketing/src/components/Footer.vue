@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { freeOffer } from '@/lib/content/freeOffer.ts'
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
 
@@ -29,7 +30,7 @@ const columns = [
     links: [
       { to: '/features', label: 'Features' },
       { to: '/pricing', label: 'Pricing' },
-      { to: '/download', label: 'Download' },
+      { to: freeOffer.downloadTo, label: 'Download' },
       { to: '/changelog', label: 'Changelog' },
     ],
   },
@@ -138,7 +139,7 @@ onBeforeUnmount(() => {
         <p class="copyright">© 2026 SelahCue. All rights reserved.</p>
         <div class="legal-links">
           <router-link v-for="link in legalLinks" :key="link.to" :to="link.to" class="legal-link">{{ link.label }}</router-link>
-          <span class="platforms">Windows · macOS</span>
+          <span class="platforms">Windows · Ubuntu · macOS</span>
         </div>
       </div>
     </div>

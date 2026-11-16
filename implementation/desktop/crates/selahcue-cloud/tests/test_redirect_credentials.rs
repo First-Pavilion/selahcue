@@ -170,7 +170,7 @@ fn a_redirect_is_returned_and_its_target_is_never_contacted() {
                 status,
                 &format!("http://{target_host}:{}/landed", b.port),
             ));
-            let transport = ReqwestTransport::new().unwrap();
+            let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
 
             let post = transport.post_json(
                 &format!("http://127.0.0.1:{}/v1/sessions", a.port),
@@ -224,7 +224,7 @@ fn the_recorder_does_see_a_body_when_it_is_contacted_directly() {
     // silently records nothing (a parse bug, a wrong port) fails here rather than passing there.
     assert_loopback_is_not_proxied();
     let b = Recorder::serve(OK_REPLY.to_string());
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
 
     let response = transport
         .post_json(
@@ -273,7 +273,7 @@ fn a_redirect_through_the_hosted_notes_client_is_an_unexpected_status_that_quote
         REDIRECT_BODY_MARKER.len()
     ));
     let client = SelahCueCloudClient::new(
-        ReqwestTransport::new().unwrap(),
+        ReqwestTransport::new_for_loopback_tests().unwrap(),
         format!("http://127.0.0.1:{}", a.port),
         Token::new(BEARER),
     );

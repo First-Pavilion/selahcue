@@ -1,8 +1,8 @@
 services:
   marketing-site:
     build:
-      context: ./marketing
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: implementation/marketing/Dockerfile
     container_name: selahcue-marketing-site
     ports:
       - "8080:80"

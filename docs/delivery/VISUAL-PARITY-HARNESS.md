@@ -394,7 +394,11 @@ python3 scripts/vp_reference.py ingest --slug console-real --node 312:124 --file
 
 ## 9. CI
 
-Deliberately **not** wired into `make ci` yet:
+`make visual-audit-check` is now part of `make ci` and the always-run CI workflow-check job (17tnw2b2fum). It runs `vp_selftest.py`, `check_fidelity_audit.py --self-test`, and `check_fidelity_audit.py --require-tickets --check-report`, using existing Pillow only. CI fetches full history so cited commits are verified and measures the no-browser target against a 10-second limit. A shallow local clone still passes with unavailable history treated as unknown. The focused trigger controls ensure visual-parity audit-doc changes start this cheap gate while unrelated docs remain skipped.
+
+The existing marketing browser job separately runs the components/core/home/secondary suites with both required engines; the full capture below remains outside CI.
+
+Full visual capture is deliberately **not** wired into `make ci`:
 
 * the web capture needs Chrome (already a `make ci` dependency, loudly skipped without it) *and*
   Playwright WebKit (not a CI dependency today);
@@ -604,9 +608,7 @@ page, and `javascript:` would run); a bug with no group; an api gap with an inve
 top-crop alignment, bundle probe and freshness, the three deviation metrics, DOM contrast, style-diff pairing and detection, box
 diff, catalogue validation, server confinement, committed references, and the capture and comparator wiring driven through the real entry points with
 fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-test` (97 checks) proves the audit checker rejects each kind of
-incomplete audit. Neither is in `make ci` yet: that is a separate ticket, [CI] Run the visual-parity self-test and the audit checker's self-test in
-`make ci` and CI (ClickUp 17tnw2b2fum, linked to the CI-masking ticket 86ak5rjh7); it was kept out of this change on purpose, so that a change to
-what `make ci` runs is reviewed on its own.
+incomplete audit. Both now run through `make visual-audit-check` in `make ci` and CI (ClickUp 17tnw2b2fum), alongside the actual audit/report drift check. Browser capture remains separate; see section 9.
 
 
 ### Pipe-safe capture commands (17tnw2b1wpc)

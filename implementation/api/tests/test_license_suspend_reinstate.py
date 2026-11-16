@@ -45,6 +45,7 @@ from django.urls import get_resolver
 from django.utils import timezone
 
 from licensing_test_support import seat_plan_code
+from provider_helpers import provider_mounts  # noqa: F401
 from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
@@ -92,6 +93,8 @@ from selahcue_api.graphql.route_contracts import (
     LICENSE_GATES,
     CommandEndpointContract,
     desktop_command_contracts,
+    pilot_registration_contracts,
+    pilot_download_grant_contracts,
 )
 
 pytestmark = pytest.mark.django_db(transaction=True)
@@ -1604,8 +1607,8 @@ def test_build_manifest_service_refuses_a_suspended_licence_directly(running_dev
 # 6. The enforcement point for commercial device calls, and the sweep that keeps it honest
 # =============================================================================================
 # `authenticate_device_token` checks the token and never the licence, and a suspension no
-# longer kills tokens (D3). So nothing but a route's own call to `require_commercial_service`
-# stops a suspended licence's device using a commercial surface. These tests make that
+# longer kills tokens (D3). Commercial routes must check the licence window after
+# authenticating the device. These tests make that
 # decision impossible to forget: every bearer-token route must declare it, and each
 # declaration is checked against what the route actually does.
 BEARER_AUTH = "device_token"
@@ -1671,7 +1674,7 @@ def test_every_v1_route_in_the_urlconf_has_a_contract_entry():
     view with no gate answered 200 for a suspended licence's token in review). This ties the
     two together: the `v1/` routes the resolver serves and the contract paths must be the
     same set, in both directions. It cannot see a route registered outside `v1/`."""
-    contracts = desktop_command_contracts()
+    contracts = desktop_command_contracts() + pilot_registration_contracts() + pilot_download_grant_contracts()
 
     assert _urlconf_routes_without_a_contract(_v1_urlconf_routes(), contracts) == []
     assert {c.path for c in contracts} - _v1_urlconf_routes() == set(), (
@@ -1682,7 +1685,7 @@ def test_every_v1_route_in_the_urlconf_has_a_contract_entry():
 
 def test_the_urlconf_comparison_reports_a_route_that_has_no_contract_entry():
     routes = _v1_urlconf_routes() | {"v1/ai:models"}
-    assert _urlconf_routes_without_a_contract(routes, desktop_command_contracts()) == [
+    assert _urlconf_routes_without_a_contract(routes, desktop_command_contracts() + pilot_registration_contracts() + pilot_download_grant_contracts()) == [
         "v1/ai:models"
     ]
 
@@ -1692,13 +1695,33 @@ def _route_url(path: str) -> str:
 
 
 def test_each_declaration_matches_what_the_route_does_for_a_suspended_licence(
-    client, running_device
+    client, running_device, provider_mounts, monkeypatch, request,
 ):
     """Commercial routes refuse a suspended licence's device (or are still 501, in which case
     the moment one starts answering it must refuse); allowed routes stay reachable. A route
     declared commercial that answered 200 would fail here."""
+    from selahcue_api.apps.providers import sessions
+    from selahcue_api.apps.providers.bootstrap import initialize_provider_runtime
+    from selahcue_api.apps.providers.configuration import _reset_provider_configuration_for_tests
+    from selahcue_api.apps.throttling.cloud import CloudBudgetDecision
+    from selahcue_api.apps.throttling.services import BudgetOutcome
+    from selahcue_api.platform import cloud_views
+
     key, _full, token, _device = running_device
     _suspend(key)
+    provider_mounts("web", stt=True, capable=True)
+    request.addfinalizer(_reset_provider_configuration_for_tests)
+    initialize_provider_runtime(entrypoint="wsgi")
+
+    def allowed(**_):
+        return CloudBudgetDecision(BudgetOutcome.ALLOWED, None)
+
+    monkeypatch.setattr(sessions, "evaluate_cloud_budget", allowed)
+    monkeypatch.setattr(cloud_views, "evaluate_cloud_budget", allowed)
+    stt_body = json.dumps({
+        "idempotency_key": "12345678-1234-1234-1234-000000000001", "action": "start", "socket": "new",
+        "consent_version": "stt-direct-audio-v1", "policy_version": "stt-direct-v1",
+    })
 
     for contract in desktop_command_contracts():
         if contract.auth_context != BEARER_AUTH:
@@ -1706,6 +1729,7 @@ def test_each_declaration_matches_what_the_route_does_for_a_suspended_licence(
         response = client.generic(
             contract.method,
             _route_url(contract.path),
+            data=stt_body if contract.path == "v1/stt/session" else "",
             HTTP_AUTHORIZATION=f"Bearer {token}",
             content_type="application/json",
         )

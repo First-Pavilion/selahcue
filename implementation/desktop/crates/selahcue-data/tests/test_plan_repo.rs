@@ -124,6 +124,25 @@ fn corrupt_kind_tag_is_reported() {
 }
 
 #[test]
+fn corrupt_kind_diagnostic_never_quotes_the_stored_tag() {
+    let db = db();
+    let id = insert(&db, &ServicePlan::new("Bad")).unwrap();
+    let secret = "STORED-KIND-SENTINEL-17tnw2b9dq1";
+    db.conn()
+        .execute(
+            "INSERT INTO plan_item (plan_id, item_id, ord, kind, title) VALUES (?1, 1, 0, ?2, 'X')",
+            params![id, secret],
+        )
+        .unwrap();
+    let error = load(&db, id).unwrap_err();
+    assert!(matches!(error, DataError::Corrupt(_)));
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(rendered.contains("unknown item kind"));
+        assert!(!rendered.contains("STORED-KIND-SENTINEL"), "{rendered}");
+    }
+}
+
+#[test]
 fn out_of_range_planned_secs_is_reported_not_truncated() {
     let db = Database::open_in_memory().unwrap();
     let id = insert(&db, &ServicePlan::new("Bad")).unwrap();

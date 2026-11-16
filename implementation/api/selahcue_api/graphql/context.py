@@ -34,6 +34,8 @@ class StaffPermission(str, Enum):
     SUSPEND_LICENSE_KEY = "suspend_license_key"
     REINSTATE_LICENSE_KEY = "reinstate_license_key"
     GRANT_ENTITLEMENT = "grant_entitlement"
+    # Internal pricing service only; no endpoint or role/default grant is introduced.
+    MANAGE_PLAN_PRICING = "manage_plan_pricing"
     REVOKE_ENTITLEMENT = "revoke_entitlement"
     VIEW_DIAGNOSTICS = "view_diagnostics"
     VIEW_AUDIT = "view_audit"

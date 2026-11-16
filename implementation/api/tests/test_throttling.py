@@ -11,11 +11,13 @@ Two load-bearing tests here:
   expire and the ValueError branch never executed once.
 """
 
+import hashlib
+import hmac
 import json
 import logging
 
 import pytest
-from django.core.cache import cache
+from django.core.cache import cache, caches
 from django.test import RequestFactory
 
 from selahcue_api.apps.throttling import services
@@ -464,3 +466,161 @@ def test_the_throttle_budget_is_per_client_ip(client, settings):
     assert post("203.0.113.1") == 429  # ...and is refused
     assert post("203.0.113.2") == 404, "a second IP must have its own budget"
     assert post("203.0.113.2") == 429
+
+
+# 17tnw2b1x1p — observe actual store operations and versioned backend keys from
+# every current native/browser IP consumer, rather than testing a new helper alone.
+_PRIVACY_PURPOSE = "selahcue_api.apps.throttling.ip_bucket.v1"
+_PRIVACY_SECRET = "ip-privacy-test-root-A"
+_IP_KEY_CONSUMERS = [
+    "activation", "session_login", "session_revoke", "activation_with_session",
+    "license_refresh", "entitlement_manifest", "verify_email_ip", "resend_verify_ip",
+    "password_reset_request_ip", "password_reset_confirm_ip",
+]
+_NATIVE_PRIVACY_ROUTES = {
+    "activation": ("post", "/v1/activations"),
+    "session_login": ("post", "/v1/sessions"),
+    "session_revoke": ("post", "/v1/sessions:revoke"),
+    "activation_with_session": ("post", "/v1/activations:with-session"),
+    "license_refresh": ("post", "/v1/license:refresh"),
+    "entitlement_manifest": ("get", "/v1/entitlements/manifest"),
+}
+_BROWSER_PRIVACY_QUERIES = {
+    "verify_email_ip": 'mutation { verifyEmail(token: "not-a-live-token") { verified } }',
+    "resend_verify_ip": 'mutation { resendVerificationEmail(email: "missing@privacy.example") { accepted } }',
+    "password_reset_request_ip": 'mutation { requestPasswordReset(email: "missing@privacy.example") { accepted } }',
+    "password_reset_confirm_ip": 'mutation { confirmPasswordReset(input: {token: "not-a-live-token", newPassword: "valid-privacy-password"}) { reset } }',
+}
+
+
+def _expected_private_ip_key(scope, bucket, secret=_PRIVACY_SECRET):
+    # Independent standard-library oracle for Django salted_hmac's SHA256 key
+    # derivation, purpose-separated from account/credential/audit fingerprints.
+    derived_key = hashlib.sha256((_PRIVACY_PURPOSE + secret).encode()).digest()
+    digest = hmac.new(derived_key, bucket.encode(), hashlib.sha256).hexdigest()
+    return f"throttle:{scope}:ip:v1:{digest}"
+
+
+def _privacy_consumer_call(client, scope, address, **headers):
+    if scope in _NATIVE_PRIVACY_ROUTES:
+        method, path = _NATIVE_PRIVACY_ROUTES[scope]
+        if method == "get":
+            return client.get(path, REMOTE_ADDR=address, **headers)
+        return client.post(path, data="{}", content_type="application/json", REMOTE_ADDR=address, **headers)
+    return client.post(
+        "/graphql/account", data=json.dumps({"query": _BROWSER_PRIVACY_QUERIES[scope]}),
+        content_type="application/json", REMOTE_ADDR=address, **headers,
+    )
+
+
+@pytest.fixture
+def private_ip_cache_capture(settings, monkeypatch):
+    settings.SECRET_KEY = _PRIVACY_SECRET
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    cache.clear()
+    backend = caches["default"]
+    seen = {"keys": [], "spends": []}
+    real_key = backend.make_and_validate_key
+    real_incr = CacheStore.incr_with_expiry
+
+    def record_key(key, *args, **kwargs):
+        converted = real_key(key, *args, **kwargs)
+        seen["keys"].extend([str(key), str(converted)])
+        return converted
+
+    def record_spend(store, key, window):
+        count = real_incr(store, key, window)
+        seen["spends"].append((key, window, count))
+        return count
+
+    monkeypatch.setattr(backend, "make_and_validate_key", record_key)
+    monkeypatch.setattr(CacheStore, "incr_with_expiry", record_spend)
+    yield seen
+    cache.clear()
+
+
+def _observed_scope_spends(seen, scope):
+    return [row for row in seen["spends"] if row[0].startswith(f"throttle:{scope}:")]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("scope", _IP_KEY_CONSUMERS)
+@pytest.mark.parametrize("address,bucket", [
+    ("203.0.113.71", "203.0.113.71"),
+    ("2001:db8:abcd:12::1234", "2001:db8:abcd:12::"),
+])
+def test_ip_cache_keys_hide_addresses_at_every_real_consumer(
+    client, private_ip_cache_capture, scope, address, bucket,
+):
+    response = _privacy_consumer_call(client, scope, address)
+    assert response.status_code in {200, 400, 401}, response.content
+    seen = private_ip_cache_capture
+    spends = _observed_scope_spends(seen, scope)
+    assert len(spends) == 1, "the intended consumer did not spend its actual IP budget"
+    assert spends[0][2] == 1, "the recorder must observe the real backend increment"
+    assert seen["keys"], "the backend-key recorder must not be vacuous"
+    assert all(address not in key and bucket not in key for key in seen["keys"])
+    assert spends[0][0] == _expected_private_ip_key(scope, bucket)
+    # HMAC directly under SECRET_KEY is a different purpose and must not be
+    # linkable to this identity just by comparing other stored fingerprints.
+    raw_secret_digest = hmac.new(_PRIVACY_SECRET.encode(), bucket.encode(), hashlib.sha256).hexdigest()
+    assert raw_secret_digest not in spends[0][0]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("scope", ["license_refresh", "password_reset_request_ip"])
+def test_ip_cache_identity_is_stable_but_changes_with_source_and_secret(
+    client, settings, private_ip_cache_capture, scope,
+):
+    seen = private_ip_cache_capture
+    for address in ["203.0.113.71", "203.0.113.71", "203.0.113.72"]:
+        _privacy_consumer_call(client, scope, address)
+    rows = _observed_scope_spends(seen, scope)
+    assert len(rows) == 3
+    assert rows[0][0] == rows[1][0]
+    assert rows[0][2] == 1 and rows[1][2] == 2
+    assert rows[0][0] != rows[2][0] and rows[2][2] == 1
+    settings.SECRET_KEY = "ip-privacy-test-root-B"
+    _privacy_consumer_call(client, scope, "203.0.113.71")
+    rotated = _observed_scope_spends(seen, scope)[-1]
+    assert rotated[0] != rows[0][0]
+    assert rotated[2] == 1, "a changed root key resets this affected budget once"
+    assert rotated[0] == _expected_private_ip_key(scope, "203.0.113.71", settings.SECRET_KEY)
+    if scope == "password_reset_request_ip":
+        # Rotation does not rewrite/reset this fixed global counter. Per-address
+        # HMAC identities do rotate, already using the configured root secret.
+        global_rows = _observed_scope_spends(seen, "password_reset_request_global")
+        assert len({row[0] for row in global_rows}) == 1
+        assert [row[2] for row in global_rows] == [1, 2, 3, 4]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("first,same_bucket,different_bucket", [
+    ("2001:db8:abcd:12::1", "2001:db8:abcd:12::ffff", "2001:db8:abcd:13::1"),
+    ("203.0.113.71", "::ffff:203.0.113.71", "203.0.113.72"),
+])
+def test_private_ip_keys_preserve_existing_ipv6_and_mapped_ipv4_budget_sharing(
+    client, settings, private_ip_cache_capture, first, same_bucket, different_bucket,
+):
+    settings.SELAHCUE_THROTTLE_DEVICE_READ = (1, 60)
+    assert _privacy_consumer_call(client, "license_refresh", first).status_code == 401
+    assert _privacy_consumer_call(client, "license_refresh", same_bucket).status_code == 429
+    assert _privacy_consumer_call(client, "license_refresh", different_bucket).status_code == 401
+    rows = _observed_scope_spends(private_ip_cache_capture, "license_refresh")
+    assert len(rows) == 3 and rows[0][0] == rows[1][0] != rows[2][0]
+    assert [row[1:] for row in rows] == [(60, 1), (60, 2), (60, 1)]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("hops", [0, 1])
+def test_private_ip_keys_keep_forwarded_header_trust_opt_in(
+    client, settings, private_ip_cache_capture, hops,
+):
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = hops
+    settings.SELAHCUE_THROTTLE_DEVICE_READ = (1, 60)
+    first = _privacy_consumer_call(client, "license_refresh", "192.0.2.10", HTTP_X_FORWARDED_FOR="203.0.113.71")
+    second = _privacy_consumer_call(client, "license_refresh", "192.0.2.10", HTTP_X_FORWARDED_FOR="203.0.113.72")
+    assert first.status_code == 401
+    assert second.status_code == (429 if hops == 0 else 401)
+    rows = _observed_scope_spends(private_ip_cache_capture, "license_refresh")
+    assert (rows[0][0] == rows[1][0]) is (hops == 0)

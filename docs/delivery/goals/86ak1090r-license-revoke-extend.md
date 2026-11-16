@@ -273,3 +273,27 @@ called green. C-018 publication/readback and R-005 independent review remain pen
 owner gates still block completion. No push/merge/ClickUp write occurred. Status BLOCKED
 records unmet external/owner requirements, while authorized implementation is ready for
 independent review. No extra bounded implementation iteration is required to await owners.
+
+## 2026-11-16 review repair amendment
+
+The [binding review repair specification](../../superpowers/specs/2026-11-16-license-admin-review-repair.md)
+amends the original API-only and no-migration scope for this technical repair. It
+authorizes durable staff extension generations, capability-negotiated refresh, explicit
+same-device recovery under the bound v2 account contract, native credential custody and
+consent, the shared Free writer correction, bounded cascade and redaction corrections,
+and same-run hosted API/native evidence. Existing bound v1 receipts and the current
+catalogue and Free licensing contracts remain in force.
+
+The integration checkpoint brings current main (`256035f16c996fde6cd7e56849920f451e4bf033`)
+together with reviewed PR233 source (`37e10f6711342c4b58b8b68781cb90a820aba4db`).
+It preserves the writer's fail-closed opt-in and current main's Free/status refresh path.
+Free renewal still lacks its explicit wrapped writer opt-in, and source staff refresh and
+rotation tests can fail while negotiated rotation is pending. Neither constitutes a
+verified correction. Hosted behavioral RED, regression and joint runtime verification,
+and independent review of the resulting revision remain pending.
+
+C-014 remains BLOCKED: historical AC7 counted four production writers against the
+six-writer requirement, and the live scope excludes scheduled status writers. DEC-020
+remains PROPOSED pending explicit disposition. Production staff identity, staff
+consequence-confirmation UI, scheduled states, billing, changes to `LEGAL_TRANSITIONS`,
+and production enablement remain outside this amendment.

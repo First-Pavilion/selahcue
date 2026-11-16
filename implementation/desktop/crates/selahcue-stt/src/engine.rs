@@ -191,6 +191,17 @@ impl Default for EngineConfig {
     }
 }
 
+/// The existing operator capture settings, shared with the diagnostic file replay.
+/// Extraction only: VAD, decoding, capture polling, hand-off and saved text are unchanged.
+/// Interims wait 800 ms after the previous decode completes and use the last six seconds.
+pub fn production_engine_config() -> EngineConfig {
+    EngineConfig {
+        interim_interval: Duration::from_millis(800),
+        interim_max_samples: 6 * TARGET_SAMPLE_RATE as usize,
+        ..EngineConfig::default()
+    }
+}
+
 /// Why an utterance closed — decides whether its finals get the trailing-repeat trim
 /// (17tnw2b0nkq; see `SttEngine::close_utterance`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -690,7 +701,7 @@ mod tests {
         }
         let _ = provider.poll();
         {
-            let lens = seen.lock().unwrap();
+            let lens = seen.lock().expect("recorded recognition windows");
             assert!(!lens.is_empty(), "interims fired while speaking");
             assert!(
                 lens.iter().all(|&n| n <= window),
@@ -699,9 +710,9 @@ mod tests {
         }
         engine.process(&silence_chunk(20)); // close → the final decodes the WHOLE utterance
         let _ = provider.poll();
-        let lens = seen.lock().unwrap();
+        let lens = seen.lock().expect("recorded recognition windows");
         assert!(
-            *lens.last().unwrap() > window,
+            *lens.last().expect("a final recognition window") > window,
             "the final decodes the whole utterance (> the interim window): {lens:?}"
         );
     }
@@ -1355,5 +1366,21 @@ mod tests {
              the whisper.cpp audio-context horizon reached the recognizer — got lengths {lens:?} \
              against horizon {horizon}"
         );
+    }
+}
+
+#[cfg(test)]
+mod production_config_tests {
+    #[test]
+    fn production_capture_values_are_preserved() {
+        let config = super::production_engine_config();
+        assert_eq!(config.hangover_frames, 15);
+        assert_eq!(config.min_utterance_frames, 3);
+        assert_eq!(config.max_utterance_samples, 160_000);
+        assert_eq!(
+            config.interim_interval,
+            std::time::Duration::from_millis(800)
+        );
+        assert_eq!(config.interim_max_samples, 96_000);
     }
 }

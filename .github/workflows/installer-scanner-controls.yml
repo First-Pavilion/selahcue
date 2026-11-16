@@ -1,0 +1,29 @@
+name: installer scanner controls
+
+# No paths filter: docs-only and API-only changes exercise this control too.
+# No installer build, artifact scan, cache or dependency installation is needed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-scanner-controls-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/installer_secret_scan.py
+          sparse-checkout-cone-mode: false
+      - name: Installer scanner self-test (no installer artifacts)
+        run: python3 scripts/installer_secret_scan.py --self-test

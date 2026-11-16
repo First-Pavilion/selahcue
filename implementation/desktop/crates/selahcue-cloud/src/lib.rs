@@ -152,3 +152,9 @@ pub trait CloudNoteProvider: NoteProvider {
         req: &selahcue_core::providers::NoteRequest,
     ) -> Result<(NoteDraft, Option<Quota>), NoteError>;
 }
+
+#[cfg(feature = "openai")]
+pub mod pilot;
+
+#[cfg(feature = "http")]
+pub mod deadline_transport;

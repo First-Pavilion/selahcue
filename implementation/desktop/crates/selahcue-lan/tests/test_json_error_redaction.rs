@@ -12,14 +12,15 @@
 //! The fix keeps only what is safe to repeat: the category (syntax, data, eof, io) and the line and
 //! column, in a type that cannot hold the message. These tests pin that from two directions:
 //!
-//! - **Every inbound frame shape**, parsed with the same function the transport uses
-//!   (`protocol::from_json`) and converted the same way (`TransportError::from`), with a planted
+//! - **Every inbound frame shape**, parsed with raw serde for the leaking premise and converted
+//!   with the compatibility `TransportError::from` boundary, with a planted
 //!   secret in a mistyped field. `Display`, `Debug` and the whole `source()` chain must not
 //!   contain it, and the error must still say it is a JSON failure and where.
 //! - **The real transport**: a hostile host answering a real `ControlClient` (`connect`, `pair`,
 //!   `command`), and a hostile controller sending a real `ControlServer` a bad `Hello`, so the
 //!   claim is about what a caller of the public API receives, not only about a conversion.
 //!
+//! Public helper redaction is separately pinned without `server` in `test_public_json_failure`.
 //! Every case has a premise check: serde's OWN error for the same frame does contain the secret,
 //! in both `Display` and `Debug`. Without it a fixture that stopped being malformed in the way
 //! it claims would make every assertion below pass for nothing.
@@ -151,7 +152,7 @@ struct Case {
 }
 
 fn parse_as<T: serde::de::DeserializeOwned>(frame: &str) -> Result<(), serde_json::Error> {
-    from_json::<T>(frame).map(|_| ())
+    serde_json::from_str::<T>(frame).map(|_| ())
 }
 
 fn cases() -> Vec<Case> {
@@ -388,7 +389,7 @@ fn a_shape_error_inside_a_tagged_enum_says_it_has_no_position_instead_of_line_0(
     let frame = format!(
         r#"{{"event":"operator_state","view":{{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":"{SECRET}"}}}}"#
     );
-    let raw = from_json::<ServerMessage>(&frame).unwrap_err();
+    let raw = serde_json::from_str::<ServerMessage>(&frame).unwrap_err();
     // PREMISE: serde really has no position here. If a serde upgrade starts reporting one, this
     // test says so instead of passing on a case that no longer exercises the wording.
     assert_eq!((raw.line(), raw.column()), (0, 0), "{raw}");
@@ -475,7 +476,7 @@ async fn hostile_host(replies: Vec<String>) -> (SocketAddr, CertPin) {
 /// renderings. Checked BEFORE the transport is involved, so a fixture that stopped being
 /// malformed fails here with the reason, not later as a confusing success.
 fn hostile_frame<T: serde::de::DeserializeOwned>(frame: String) -> String {
-    let Err(raw) = from_json::<T>(&frame) else {
+    let Err(raw) = serde_json::from_str::<T>(&frame) else {
         panic!("the hostile frame should not parse");
     };
     assert!(

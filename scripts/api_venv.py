@@ -3,7 +3,7 @@
 
 Two subcommands, both called from the Makefile, both run with the system `python3` (3.9-compatible):
 
-  install   Build the venv and `pip install -e ".[dev]"` into it. The ONLY command that installs, and it
+  install   Build the venv with locked uv sync (dev + build profiles). The ONLY command that installs, and it
             is run on purpose, by name. `make ci` and `make api-check` never call it.
   verify    Refuse, with a message that names `make api-install`, unless the venv exists, is ours, is
             current and imports the API from THIS checkout. Prints the venv's Python version.
@@ -22,7 +22,7 @@ WHY EACH GUARD EXISTS (every one has a case in scripts/check_api_gate.py and a m
     different name and is never touched.
   * A symlink at the venv path is refused. A link can point at another checkout's venv, whose
     third-party packages came from another tree's pyproject.toml.
-  * The stamp is written LAST and records the interpreter version and the SHA-256 of pyproject.toml.
+  * The stamp is written LAST and records the interpreter version and the SHA-256 of pyproject.toml, uv.lock and .uv-version.
     `verify` recomputes both: a changed dependency pin or a different Python MINOR version is a refusal;
     a content-neutral `touch` and a patch update of the same minor (Homebrew 3.14.5 to 3.14.6) are not.
     An interrupted install leaves no stamp, so it is never trusted. The stamp, not the environment, governs
@@ -35,11 +35,10 @@ WHY EACH GUARD EXISTS (every one has a case in scripts/check_api_gate.py and a m
     test that checkout's code: the cwd and pytest.ini's `pythonpath = .` win on sys.path. Because its
     third-party packages were resolved from ANOTHER tree's pyproject.toml.)
 
-WHAT IT DOES NOT PROMISE: `pip install` runs with the developer's full environment (pip needs HOME, proxy
-and certificate settings), not the scrubbed one the three test commands get. Direct dependencies are pinned
-exactly and the build backend is pinned in pyproject.toml's [build-system]; transitive dependencies are
-neither locked nor hashed, so the venv holds whatever resolved on the day it was built while CI re-resolves
-on every run. Until the hash-locked requirements file of ClickUp 17tnw2az0kw lands, the two can differ.
+INSTALL INTEGRITY: uv verifies artifacts against uv.lock. The first sync permits only wheels,
+including the explicitly locked build group. The editable project is then built offline without
+build isolation using that backend. No isolated build dependency resolution is permitted.
+The installer retains proxy/certificate settings; test commands still use the scrubbed environment.
 """
 
 import argparse
@@ -71,6 +70,29 @@ def marker_path(venv):
 
 def pyproject_sha(api):
     return hashlib.sha256((api / "pyproject.toml").read_bytes()).hexdigest()
+
+
+def input_hashes(api):
+    result = {}
+    for name in ("uv.lock", ".uv-version"):
+        try:
+            result[name] = hashlib.sha256((api / name).read_bytes()).hexdigest()
+        except OSError:
+            die("implementation/api/%s missing or unreadable. Run: make api-install after restoring committed inputs" % name)
+    # Include the installer itself: changes to profile/build flags require deliberate rebuild.
+    result["installer"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return result
+
+
+def uv_executable(api):
+    exe = shutil.which("uv")
+    version = (api / ".uv-version").read_text().strip()
+    if not exe:
+        die("uv %s is required. See implementation/api/README.md, then run: make api-install" % version)
+    found = subprocess.run([exe, "--version"], capture_output=True, text=True, check=True)
+    if found.stdout.split()[:2] != ["uv", version]:
+        die("uv %s is required (found %s). See implementation/api/README.md; run: make api-install" % (version, found.stdout.strip()))
+    return exe
 
 
 def interpreter_version(exe):
@@ -107,6 +129,8 @@ def check_venv_path(venv):
 
 
 def cmd_install(api, venv):
+    hashes = input_hashes(api)
+    uv = uv_executable(api)
     exe = requested_interpreter()
     found = interpreter_version(exe)
     if found is None:
@@ -131,13 +155,15 @@ def cmd_install(api, venv):
         if venv.exists() and not (venv.is_dir() and marker.is_file()):
             die("%s exists but was not created by `make api-install` (no %s next to it) -- refusing to clear it.\n"
                 "  Move or delete it yourself if you are sure, then run: make api-install" % (venv, marker.name))
-        print("api-install: building %s with Python %s and running pip install -e \".[dev]\" "
-              "(needs the network; direct dependencies are pinned, transitive ones are not locked)" % (venv, full))
+        print("api-install: building %s with Python %s from uv.lock (dev + build)" % (venv, full))
         marker.write_text("created by make api-install\n")  # BEFORE any venv content exists
-        subprocess.run([exe, "-m", "venv", "--clear", str(venv)], check=True)
-        subprocess.run([str(venv_python(venv)), "-m", "pip", "install", "--disable-pip-version-check", "--quiet",
-                        "-e", ".[dev]"], cwd=str(api), check=True)
-        (venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api)}) + "\n")
+        subprocess.run([exe, "-m", "venv", "--clear", "--without-pip", str(venv)], check=True)
+        install_env = dict(os.environ, UV_PROJECT_ENVIRONMENT=str(venv))
+        sync = [uv, "sync", "--locked", "--python", str(venv_python(venv)),
+                "--no-python-downloads", "--no-managed-python", "--extra", "dev", "--group", "build"]
+        subprocess.run(sync + ["--no-install-project", "--no-build"], cwd=str(api), env=install_env, check=True)
+        subprocess.run(sync + ["--offline", "--no-build-isolation", "--no-cache"], cwd=str(api), env=install_env, check=True)
+        (venv / STAMP).write_text(json.dumps({"python": full, "pyproject_sha256": pyproject_sha(api), "inputs": hashes}) + "\n")
     except subprocess.CalledProcessError as e:
         die("`%s` failed (exit %d); the venv is incomplete and has no stamp, so api-check will not trust it.\n"
             "  Fix the cause (network? a missing python3-venv package?) and run: make api-install"
@@ -183,6 +209,8 @@ def cmd_verify(api, venv):
     if stamp.get("pyproject_sha256") != pyproject_sha(api):
         die("implementation/api/pyproject.toml changed since the venv was installed (dependency pins may differ).\n  %s"
             % again)
+    if stamp.get("inputs") != input_hashes(api):
+        die("API lock/profile/build inputs changed since install.\n  %s" % again)
     code = ("import pathlib, selahcue_api; p = pathlib.Path(selahcue_api.__file__).resolve(); "
             "root = pathlib.Path('.').resolve(); "
             "assert p == root / 'selahcue_api' / '__init__.py', "

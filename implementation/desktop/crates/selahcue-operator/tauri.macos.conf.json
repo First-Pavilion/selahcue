@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "mainBinaryName": "selahcue-operator",
+  "bundle": {
+    "targets": [
+      "dmg"
+    ],
+    "resources": [
+      "assets/notes-pdf/LICENSE",
+      "assets/notes-pdf/README.md"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "frameworks": [
+        "../../vendor/ndi/macos/lib/libndi.dylib"
+      ],
+      "signingIdentity": "-",
+      "hardenedRuntime": false
+    }
+  }
+}

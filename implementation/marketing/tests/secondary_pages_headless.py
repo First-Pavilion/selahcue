@@ -3,8 +3,8 @@
 
 `tests/secondaryPages.test.ts` reads the source and server-renders the views. This drives the BUILT
 site (`dist/`) in a real browser, because what it cannot see is what the Figma audit found wrong:
-computed size and colour, where a box lands, the order Tab visits things in, whether a focus ring is
-drawn, whether the whole featured card is one link, whether the page scrolls sideways. Every number
+computed size and colour, where a box lands, Tab order, focus and :focus-visible matching, link
+activation, whether the whole featured card is one link, whether the page scrolls sideways. Every number
 quoted next to a check is a Figma value from `docs/design/visual-parity/marketing/figma-style/*.json`
 or an accessibility floor (WCAG AA 4.5:1 for normal text).
 
@@ -14,8 +14,7 @@ Usage (from implementation/marketing, after `npm run build`):
 Needs Playwright and an engine, and the network for Inter. If either is missing this exits 0 with a
 LOUD skip unless SELAHCUE_HEADLESS_REQUIRE=1, which makes a missing engine a hard failure.
 
-This file is not wired into `npm test` (that globs `tests/*.test.ts`) or CI: that needs a `package.json`
-script and a workflow line, which are outside this ticket's footprint (reported to the coordinator).
+CI runs this check through `npm run test:secondary`. The `npm test` glob covers Node tests only.
 
 Exit codes: 0 pass (or loud skip), 1 a check failed, 2 infrastructure problem, 3 a required engine is unavailable.
 """
@@ -24,13 +23,16 @@ from __future__ import annotations
 
 import argparse
 import http.server
+import json
 import mimetypes
 import os
 import re
 import socketserver
 import sys
 import threading
+import time
 import urllib.parse
+from itertools import count
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -263,15 +265,259 @@ def check_contact(page, c: Checks, base: str) -> None:
     c.eq(page.locator("[aria-required='true']").count(), 3, "contact: three fields are aria-required")
 
 
-def settle_scroll(page) -> None:
-    """The site scrolls smoothly, so a Tab that moves the page is still moving it when the call returns: wait until it stops."""
-    last = None
-    for _ in range(50):
-        y = page.evaluate("scrollY")
-        if y == last:
+CONTACT_TAB_TRACE_PREFIX = "CONTACT_700_TAB "
+CONTACT_TAB_TRACE_LIMIT = 32
+CONTACT_TAB_TRACE_JS = r"""
+(settings) => {
+  'use strict';
+  const { prefix, limit } = settings;
+  const link = document.querySelector('.method-link');
+  let count = 0;
+  let focused = false;
+  let insideObservedFrame = false;
+  let observedFrameId = 0;
+  let nextFrameId = 1;
+  const start = performance.now();
+  const journal = [];
+  const pending = new Map();
+  let journalOverflow = false;
+  window.__selahcueContactJournal = () => ({ events: journal.slice(), overflow: journalOverflow });
+  function keep(kind, id, ...details) {
+    try {
+      if (journal.length === limit) {
+        journalOverflow = true;
+        return;
+      }
+      journal.push([kind, id, Math.round(performance.now() - start), ...details]);
+    } catch (_) {} // Dropped diagnostics must not interrupt native forwarding or frame cleanup.
+  }
+  function record(event) {
+    if (count > limit) return;
+    try {
+      console.debug(prefix + JSON.stringify(count === limit ? ['overflow'] : event));
+    } catch (_) {}
+    count++;
+  }
+  // Keep the property flags and the original frame ID, return value or exception.
+  function install(name, wrap) {
+    let installed = false;
+    try {
+      let owner = window;
+      while (owner && !Object.hasOwn(owner, name)) owner = Object.getPrototypeOf(owner);
+      const descriptor = owner && Object.getOwnPropertyDescriptor(owner, name);
+      if (typeof descriptor?.value === 'function') {
+        Object.defineProperty(owner, name, { ...descriptor, value: wrap(descriptor.value) });
+        installed = true;
+      }
+    } catch (_) {}
+    record(['hook', name, installed]);
+  }
+  const active = () => document.activeElement === link;
+  const bounded = (n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 100000
+    ? Math.round(n) : null;
+  record(['link', !!link]);
+  if (!link) return;
+  document.addEventListener('focus', event => {
+    const isLink = event.target === link;
+    focused = focused || isLink;
+    record(['focus', isLink, active(), isLink && link.matches(':focus-visible')]);
+  }, true);
+  install('requestAnimationFrame', original => function (...args) {
+    if (!focused || !active() || typeof args[0] !== 'function') return Reflect.apply(original, this, args);
+    if (nextFrameId > limit) {
+      journalOverflow = true;
+      return Reflect.apply(original, this, args);
+    }
+    const callback = args[0];
+    const id = nextFrameId++;
+    const fence = window.__selahcueContactFrameFence?.registering === true;
+    const frame = Reflect.apply(original, this, [function (...callbackArgs) {
+      pending.delete(frame);
+      const previous = insideObservedFrame;
+      const previousId = observedFrameId;
+      const isActive = active();
+      insideObservedFrame = true;
+      observedFrameId = id;
+      keep('frame-entry', id, isActive);
+      record(['frame-delivery', isActive]);
+      let completed = false;
+      try {
+        const result = Reflect.apply(callback, this, callbackArgs);
+        completed = true;
+        return result;
+      } finally {
+        keep('frame-exit', id, completed);
+        insideObservedFrame = previous;
+        observedFrameId = previousId;
+      }
+    }, ...args.slice(1)]);
+    if (typeof frame === 'number') pending.set(frame, id);
+    keep('frame-request', id, fence);
+    record(['frame-request', true]);
+    return frame;
+  });
+  install('cancelAnimationFrame', original => function (...args) {
+    const result = Reflect.apply(original, this, args);
+    const id = pending.get(args[0]);
+    if (id !== undefined) {
+      pending.delete(args[0]);
+      keep('frame-cancel', id);
+    }
+    return result;
+  });
+  install('scrollBy', original => function (...args) {
+    if (!focused || (!active() && !insideObservedFrame)) return Reflect.apply(original, this, args);
+    const fromFrame = insideObservedFrame;
+    // Read only an own data property. Do not invoke an options accessor before native scrollBy.
+    let relativeTop = null;
+    try { relativeTop = bounded(Object.getOwnPropertyDescriptor(args[0], 'top')?.value); } catch (_) {}
+    const before = bounded(window.scrollY);
+    keep('scroll-call', observedFrameId, before, relativeTop);
+    record(['scroll-call', fromFrame, before, relativeTop]);
+    let result;
+    try {
+      result = Reflect.apply(original, this, args);
+    } catch (error) {
+      keep('scroll-throw', observedFrameId);
+      record(['scroll-throw', fromFrame]);
+      throw error;
+    }
+    const after = bounded(window.scrollY);
+    keep('scroll-return', observedFrameId, after);
+    record(['scroll-return', fromFrame, after]);
+    return result;
+  });
+}
+"""
+
+
+class ContactTabTrace:
+    """Collect only bounded safe scalars from the real WebKit Tab scenario."""
+
+    def __init__(self, page):
+        self.page = page
+        self.events = []
+        self.overflow = False
+        self.setup = False
+        try:
+            page.on("console", self.on_console)
+            page.evaluate(CONTACT_TAB_TRACE_JS, {"prefix": CONTACT_TAB_TRACE_PREFIX, "limit": CONTACT_TAB_TRACE_LIMIT})
+            self.setup = True
+        except Exception:
+            pass  # Evidence setup cannot turn a browser acceptance check into a diagnostic failure.
+
+    def on_console(self, message):
+        if message.type != "debug" or not message.text.startswith(CONTACT_TAB_TRACE_PREFIX):
             return
-        last = y
-        page.wait_for_timeout(120)
+        payload = message.text[len(CONTACT_TAB_TRACE_PREFIX):]
+        if len(payload) > 128:
+            return
+        try:
+            event = json.loads(payload)
+        except (ValueError, RecursionError):
+            return
+        if type(event) is not list:
+            return
+
+        def numeric(value):
+            return value is None or (type(value) is int and abs(value) <= 100000)
+
+        match event:
+            case ["overflow"]:
+                self.overflow = True
+                return
+            case ["link" | "frame-request" | "frame-delivery" | "scroll-throw", flag] if type(flag) is bool:
+                pass
+            case ["hook", "requestAnimationFrame" | "cancelAnimationFrame" | "scrollBy", flag] if type(flag) is bool:
+                pass
+            case ["focus", is_link, active, visible] if all(type(flag) is bool for flag in (is_link, active, visible)):
+                pass
+            case ["scroll-call", frame, y, top] if type(frame) is bool and numeric(y) and numeric(top):
+                pass
+            case ["scroll-return", frame, y] if type(frame) is bool and numeric(y):
+                pass
+            case _:
+                return
+        if len(self.events) == CONTACT_TAB_TRACE_LIMIT:
+            self.overflow = True
+        else:
+            self.events.append(event)
+
+    def emit(self, journal=None):
+        print(CONTACT_TAB_TRACE_PREFIX + json.dumps(
+            {"setup": self.setup, "events": self.events, "overflow": self.overflow,
+             "journal": valid_contact_journal(journal)}, separators=(",", ":")), flush=True)
+        try:
+            self.page.remove_listener("console", self.on_console)
+        except Exception:
+            pass
+
+
+def valid_contact_journal(value):
+    if (type(value) is not dict or set(value) != {"events", "overflow"} or type(value["overflow"]) is not bool
+            or type(value["events"]) is not list or len(value["events"]) > CONTACT_TAB_TRACE_LIMIT):
+        return None
+    for event in value["events"]:
+        if type(event) is not list or len(event) < 3:
+            return None
+        kind, frame_id, elapsed, *data = event
+        if (type(frame_id) is not int or not 0 <= frame_id <= CONTACT_TAB_TRACE_LIMIT
+                or type(elapsed) is not int or not 0 <= elapsed <= 120000):
+            return None
+        match kind:
+            case "frame-request" | "frame-entry" | "frame-exit" if frame_id and len(data) == 1 and type(data[0]) is bool:
+                pass
+            case "frame-cancel" if frame_id and not data:
+                pass
+            case "scroll-throw" if not data:
+                pass
+            case "scroll-call" | "scroll-return" if len(data) == (2 if kind == "scroll-call" else 1):
+                if not all(n is None or (type(n) is int and abs(n) <= 100000) for n in data):
+                    return None
+            case _:
+                return None
+    return value
+
+
+SCROLL_SETTLEMENT_BUDGET_MS = 6000
+SCROLL_TRIALS = count()
+CONTACT_FRAME_FENCE_JS = """trial => {
+  const active = window.__selahcueContactFrameFence;
+  if (active?.trial === trial) return active.delivered;
+  const fence = { trial, delivered: false, registering: true };
+  window.__selahcueContactFrameFence = fence;
+  try {
+    window.requestAnimationFrame(() => { fence.delivered = true; });
+  } finally {
+    fence.registering = false;
+  }
+  return false;
+}"""
+SCROLL_STABILITY_JS = """trial => {
+  const y = window.scrollY;
+  const previous = window.__selahcueContactScrollSample;
+  window.__selahcueContactScrollSample = { trial, y };
+  return previous?.trial === trial && previous.y === y;
+}"""
+
+
+def settle_scroll(page, *, after_tab=False) -> None:
+    """Wait for actual post-Tab frame delivery, then two equal scroll samples within one deadline."""
+    deadline = time.monotonic() + SCROLL_SETTLEMENT_BUDGET_MS / 1000
+    trial = next(SCROLL_TRIALS)
+
+    def wait(expression, stage, **options):
+        remaining = int((deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            raise AssertionError(f"Contact {stage}: scroll settlement budget exhausted")
+        try:
+            page.wait_for_function(expression, arg=trial, timeout=remaining, **options)
+        except Exception as exc:
+            raise AssertionError(f"Contact {stage} did not complete within the scroll settlement budget ({type(exc).__name__})") from exc
+
+    if after_tab:
+        wait(CONTACT_FRAME_FENCE_JS, "post-Tab frame fence")
+    wait(SCROLL_STABILITY_JS, "scroll stability", polling=120)
 
 
 def press_with_mouse(page, locator, edge: str) -> None:
@@ -334,16 +580,74 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
         page.locator(".contact-form textarea").focus()
         c.eq(page.evaluate(FOCUS_JS), "How can we help?", f"contact: at {height} high the last field holds focus")
         settle_scroll(page)
-        press_tab(page, c)
-        settle_scroll(page)
-        got = page.evaluate(
-            """() => { const a = document.activeElement, r = a.getBoundingClientRect();
-              return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom, vh: innerHeight }; }"""
-        )
-        c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
-        c.ok(got["top"] >= got["nav"] - 1, f"contact: at {height} high the focused link is not under the sticky navbar (top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11)")
-        c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
+        before = page.evaluate("""() => ({
+          linkTop: document.querySelector('.method-link').getBoundingClientRect().top,
+          y: scrollY,
+        })""")
+        trace = ContactTabTrace(page) if c.engine == "webkit" and height == 700 else None
+        journal = None
+        try:
+            press_tab(page, c)
+            settle_scroll(page, after_tab=True)
+            got = page.evaluate(
+                """() => { const a = document.activeElement, r = a.getBoundingClientRect();
+                  const result = { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom,
+                    vh: innerHeight, width: document.documentElement.clientWidth, y: scrollY,
+                    margin: getComputedStyle(a).scrollMarginTop, focusVisible: a.matches(':focus-visible'), journal: null };
+                  try { result.journal = window.__selahcueContactJournal?.() ?? null; } catch (_) {}
+                  return result; }"""
+            )
+            journal = got["journal"]
+            c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
+            c.ok(
+                got["top"] >= got["nav"] - 1,
+                f"contact: at {height} high the focused link is not under the sticky navbar "
+                f"(top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11; "
+                f"before Tab: link top {before['linkTop']:.0f}, scrollY {before['y']:.0f}; "
+                f"after Tab: scrollY {got['y']:.0f}, margin {got['margin']}, "
+                f"focus-visible {got['focusVisible']}, layout width {got['width']})",
+            )
+            c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
+        finally:
+            if trace is not None:
+                trace.emit(journal)
     page.set_viewport_size(size)
+
+
+def check_contact_focus_fallback(page, c: Checks, base: str) -> None:
+    """Exercise the production focus handler independently of native scrolling."""
+    open_page(page, base, "/contact", ".contact-form-card")
+    for top, move_focus, label in (
+        (40, False, "covered link"),
+        (120, False, "already visible link"),
+        (40, True, "focus moves away before paint"),
+    ):
+        got = page.evaluate(
+            """async ([top, moveFocus]) => {
+              const link = document.querySelector('.method-link');
+              const field = document.querySelector('.contact-form textarea');
+              const nav = document.querySelector('.navbar-header');
+              field.focus({ preventScroll: true });
+              window.scrollTo({ top: scrollY + link.getBoundingClientRect().top - top, behavior: 'instant' });
+              const before = scrollY;
+              link.focus({ preventScroll: true });
+              const keyboardFocus = link.matches(':focus-visible');
+              if (moveFocus) field.focus({ preventScroll: true });
+              await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              return {
+                before, after: scrollY, top: link.getBoundingClientRect().top,
+                nav: nav.getBoundingClientRect().bottom, keyboardFocus,
+                expectedFocus: document.activeElement === (moveFocus ? field : link),
+              };
+            }""", [top, move_focus],
+        )
+        c.ok(got["keyboardFocus"] and got["expectedFocus"], f"contact fallback: {label} uses keyboard focus")
+        if top == 40 and not move_focus:
+            c.ok(got["top"] >= got["nav"] and got["after"] < got["before"],
+                 f"contact fallback: covered link clears the navbar with native scrolling suppressed "
+                 f"(link top {got['top']:.0f}, navbar ends {got['nav']:.0f})")
+        else:
+            c.eq(got["after"], got["before"], f"contact fallback: {label} leaves scroll unchanged")
 
 
 def check_support(page, c: Checks, base: str) -> None:
@@ -375,7 +679,7 @@ def check_support(page, c: Checks, base: str) -> None:
     page.wait_for_selector("#results-heading")
     c.eq(page.locator(".categories-grid").count(), 0, "support: results replace the category grid")
     c.ok(page.locator(".articles-panel .article-row").count() >= 1, "support: matching articles are listed as whole-row links")
-    c.ok("match" in page.locator("[role=status]").inner_text(), "support: the status region announces the result count")
+    c.ok("match" in page.get_by_role("search").locator("[role=status]").inner_text(), "support: the status region announces the result count")
     # a Start here row is one link: clicking its far-left edge opens the article
     page.fill(".search-input", "")
     page.wait_for_selector(".articles-band .article-row")
@@ -556,6 +860,51 @@ def check_affiliates(page, c: Checks, base: str) -> None:
     c.ok(text_contrast(page, "#signin-note") >= 4.5, "affiliates: the sign-in note passes AA")
 
 
+def check_cloud_help(page, c: Checks, base: str) -> None:
+    support = "/support/troubleshooting/transcription-will-not-start"
+    links_to_help = (
+        "/docs/getting-started/offline-and-autosave",
+        "/blog/why-offline-first-matters-for-sunday-morning",
+    )
+    consent = re.compile(r"cloud transcription.*sermon notes.*internet access.*separate consent", re.I)
+    try:
+        for width in (375, 768, 1440):
+            page.set_viewport_size({"width": width, "height": 900})
+            for path in links_to_help:
+                page.goto(base + path, wait_until="load")
+                article = page.locator("main article")
+                text = " ".join(article.inner_text().split())
+                c.ok(consent.search(text) is not None, f"{path} at {width}px distinguishes online cloud assistance and consent")
+                c.eq(article.get_by_role("link", name="Transcription will not start", exact=True).count(), 1,
+                     f"{path} at {width}px links to transcription troubleshooting")
+                c.ok(page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"),
+                     f"{path} fits at {width}px")
+            page.locator("main article h1").focus()
+            help_link = page.locator("main article").get_by_role("link", name="Transcription will not start", exact=True)
+            for _ in range(20):
+                press_tab(page, c)
+                if help_link.evaluate("(el) => el === document.activeElement"):
+                    break
+            c.ok(help_link.evaluate("(el) => el === document.activeElement && el.matches(':focus-visible')"),
+                 f"blog: Tab reaches the transcription help link and it matches :focus-visible at {width}px")
+            page.keyboard.press("Enter")
+            page.wait_for_url(base + support)
+            page.get_by_role("heading", name="Transcription will not start", exact=True).wait_for()
+            text = " ".join(page.locator("main article").inner_text().split())
+            for pattern, label in (
+                (r"local mode.*Start listening.*internet", "local model setup"),
+                (r"on macOS, grant microphone access in System Settings.*stop and start listening", "macOS microphone troubleshooting"),
+                (r"audio directly to Deepgram.*sends the transcript text to SelahCue.*separate consent", "the two processing paths"),
+                (r"activated.*weekly allowance.*temporarily unavailable.*switch to local mode", "cloud access checks and local fallback"),
+                (r"keep the source transcript and any prior draft.*Retry when", "recovery guidance for a failed note"),
+            ):
+                c.ok(re.search(pattern, text, re.I) is not None, f"support at {width}px shows {label}")
+            c.ok(page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth"),
+                 f"transcription support fits at {width}px")
+    finally:
+        page.set_viewport_size({"width": 1440, "height": 900})
+
+
 def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
     """The nine pages never scroll sideways at the three widths the ticket names."""
     for w in (375, 768, 1440):
@@ -571,10 +920,12 @@ def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
 GROUPS = {
     "contact": check_contact,
     "contact-behaviour": check_contact_behaviour,
+    "contact-focus-fallback": check_contact_focus_fallback,
     "support": check_support,
     "docs": check_docs,
     "changelog": check_changelog,
     "blog": check_blog,
+    "cloud-help": check_cloud_help,
     "careers": check_careers,
     "affiliates": check_affiliates,
 }

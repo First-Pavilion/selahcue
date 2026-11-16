@@ -1,14 +1,14 @@
 # SelahCue CI — Linux gates + GPU parity + Flutter + dependency audit; Windows on demand.
 #
-# Hosting: GitHub (user decision, 2026-07-24). The repository is PRIVATE on the Team plan, so
-# hosted runners bill minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
-# x10, and with no payment method every job is BLOCKED once the quota is gone. Measured on the 100
+# Hosting: GitHub (user decision, 2026-07-24); repository now public. Historical private
+# Team-plan runs billed minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
+# x10; with no payment method jobs were blocked once quota was gone. Measured on the 100
 # runs of 2026-10-02..05, a three-OS run cost a median 241 billable minutes, 155 of them macOS.
 # Owner decision 2026-10-05:
 #   - macOS is NOT in CI at all. The owner's local `make ci` is the only macOS gate. Do not add a
 #     macos-* runner back (.github/scripts/check_ci_minutes.py refuses it).
-#   - Pull requests and pushes to `main` run the LINUX legs only (about 21 billable minutes a run).
-#   - The WINDOWS legs (about 45 more) run on a weekly schedule, on workflow_dispatch with
+#   - Pull requests and pushes to `main` run the LINUX legs only (historically about 21 billable minutes a run).
+#   - The WINDOWS legs (historically about 45 more) run on a weekly schedule, on workflow_dispatch with
 #     `windows: true`, on a pull request carrying the `full-ci` label, and on release tags `v*`.
 #   Which of those a run is, is decided once, in the `tier` step of the `changes` job below, and
 #   handed to the matrices as `needs.changes.outputs.os`.
@@ -34,8 +34,8 @@ name: ci
 # to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
 # that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
 
-# Docs-only changes skip the whole workflow (saves runner minutes; docs carry no code to
-# verify; not even the lint job runs, which is cheaper than running it). A `changes` job
+# Ordinary docs-only changes skip this workflow. Visual audit data and the canonical
+# marketing privacy notice are executable/build inputs, so their exact paths opt in. A `changes` job
 # (below) further gates the desktop vs mobile jobs by path, so a single-side commit doesn't
 # pay for the other side.
 # NOTE: this gates DOWNSTREAM jobs with `if:`, so a skipped required check would
@@ -47,12 +47,16 @@ on:
   push:
     branches: [main]
     # Release tags run the full tier (Windows included). GitHub does not evaluate path
-    # filters for tag pushes, so `paths-ignore` below cannot swallow a tag.
+    # filters for tag pushes, so `paths` below cannot swallow a tag.
     tags: ["v[0-9]*"]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
+    # Ordered patterns retain only the known visual-audit and marketing notice inputs.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "!TODO"
+      - "docs/design/visual-parity/**"
+      - "docs/release/pilot-registration/notice.json"
   pull_request:
     # `labeled` is here so that adding `full-ci` to an OPEN pull request starts the Windows
     # legs at once, instead of waiting for the next push (which would cost a run). Every
@@ -60,10 +64,14 @@ on:
     # are all skipped by the guard on `changes` and `lint-workflows`: no runner starts, so it
     # bills nothing, and the concurrency group below keeps it from cancelling a real run.
     types: [opened, synchronize, reopened, labeled]
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "TODO"
+    # Ordered patterns retain only the known visual-audit and marketing notice inputs.
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**.md"
+      - "!TODO"
+      - "docs/design/visual-parity/**"
+      - "docs/release/pilot-registration/notice.json"
   # The Windows legs, weekly: the one scheduled run that exercises the OS a trimmed push to
   # `main` no longer tests. Sunday 03:17 UTC (off the Monday 06:00 canary and Dependabot
   # slots, and off the top of the hour). A scheduled run always runs on the default branch.
@@ -97,7 +105,7 @@ jobs:
   # the mobile side, so the other side's jobs are pure waste — and Windows runners
   # bill at 2x minutes. Each filter also matches this workflow so
   # a CI change re-runs everything. (Docs-only changes are already skipped at the
-  # trigger's paths-ignore.) This is the cheap fan-out gate for the costly jobs.
+  # trigger's paths exclusions, except visual-audit data.) This fans out costly jobs.
   #
   # It also decides the TIER of the run (17tnw2b2nxk), in the `tier` step: every area runs
   # (no path filter) on a weekly run, a manual dispatch and a release tag, and the matrices
@@ -222,6 +230,8 @@ jobs:
               # `marketing:` below is, and why it is no longer caught here.
               - 'implementation/web/**'
               - '.github/workflows/ci.yml'
+              # Installer-only changes must re-run the desktop lint configurations.
+              - '.github/workflows/windows-installer.yml'
               # A toolchain bump changes which compiler every desktop gate runs, so
               # it must re-run the whole desktop matrix.
               - 'rust-toolchain.toml'
@@ -241,15 +251,19 @@ jobs:
             # push triggered the workflow and then ran nothing.
             api:
               - 'implementation/api/**'
+              - 'scripts/api_venv.py'
+              - 'scripts/check_api_gate.py'
+              - 'scripts/api_dependency_snapshot.py'
+              - 'scripts/test_api_dependency_snapshot.py'
+              - 'Makefile'
               # tests/test_nginx_forwarded_proto.py reads this file: it is the nginx half of
               # the Django TLS-proxy chain (17tnw2b1wtr), so a change must re-run the api job.
               - 'implementation/marketing/nginx.conf'
               # tests/test_deployment_env_docs.py (17tnw2b9ab0) checks these two docs against the
               # variables settings.py reads. These lines make the api job run when these docs
               # change TOGETHER WITH a file the triggers do not ignore. They do NOT make a
-              # docs-only edit run CI: both triggers above carry `paths-ignore` for `docs/**` and
-              # `**.md`, so a docs-only commit never starts this workflow (changing that costs
-              # runner minutes and is the owner's call). A docs-only edit is covered by
+              # deployment-docs-only edit run CI: both triggers above exclude ordinary docs,
+              # with a narrow exception for visual-parity audit data. A deployment-docs-only edit is covered by
               # `make api-check` and by the weekly scheduled run, which runs every area. The
               # test's desktop half (deployments.md section 3a against the Rust env reads) is
               # deliberately not triggered by Rust changes either: that would run the Postgres and
@@ -267,6 +281,8 @@ jobs:
               - 'implementation/marketing/**'
               # apiSeam.test.ts derives the client error-code contract from this enum.
               - 'implementation/api/selahcue_api/graphql/errors.py'
+              - 'implementation/docker-compose.yml'
+              - 'docs/release/pilot-registration/notice.json'
               - '.github/workflows/ci.yml'
               # NOT a stray path. The marketing job re-derives the client's email rule
               # from the Django the API pins, and installs that Django by READING this
@@ -317,13 +333,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Fidelity audit commit citations must be checked, not unknown due to shallow history.
+          fetch-depth: 0
+      # The tiny installer-scanner-controls workflow also covers ordinary docs that
+      # this workflow excludes. Repeating the stdlib-only control here is cheap.
+      - name: Installer scanner self-test (no installer artifacts)
+        run: python3 scripts/installer_secret_scan.py --self-test
+      - name: Cargo receipt scanner tests
+        run: python3 scripts/test_dev_key_scan.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
       # Three invariants actionlint does not model. The first two shipped as real
       # defects in this branch and were caught by human review rather than any gate:
       #   - a job declaring `permissions` loses every scope it does not list, so an
-      #     `issues: write`-only job cannot check out a private repo and dies at step 1;
+      #     `issues: write`-only job lacks contents permission; keep checkout explicit;
       #   - a `success()` setup step stranded after the first `!cancelled()` gate gets
       #     skipped by an earlier failure, and the gates after it then fail for the
       #     wrong reason.
@@ -342,6 +367,16 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+          python3 .github/scripts/check_installer_scanner_ci.py
+          # Offline controls only; installer builds remain manual/main-only.
+          python3 scripts/test_linux_installer.py
+          # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
+          python3 scripts/check_rust_supply_ci.py --self-test
+          python3 scripts/check_rust_supply_ci.py
+          python3 scripts/check_rust_canary_coverage.py --self-test
+          python3 scripts/check_rust_canary_coverage.py
+      - name: Installer features match a CI-linted configuration
+        run: make installer-feature-parity
       # Three additional launchers share the file/PID lifecycle. These are real
       # caller commands with interpreter-backed fixtures, so no Chrome/Cargo is
       # required. This always-run job has a full checkout: auth-only and shared
@@ -352,6 +387,10 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'Pillow==11.3.0'
           python3 scripts/test_pipe_safe_launchers.py
           python3 docs/delivery/goals/17tnw2b1wvh-evidence/test_measure_schedule.py
+      # Existing pinned Pillow above is the only visual-harness dependency.
+      # The same target is called early in make ci; this job runs for every CI event.
+      - name: Visual-parity and fidelity audit (shared Makefile target, no browser)
+        run: python3 .github/scripts/check_visual_audit_ci.py --run
       # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
       # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
       # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`
@@ -528,15 +567,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $p = Get-Command perl -ErrorAction SilentlyContinue
-          if (-not $p) {
-            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
-              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
-              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
-              "runner image changed and perl must be installed explicitly (e.g. " + `
-              "'choco install strawberryperl')."
+          # Application lookup can return several PATH matches; select one before reading Source.
+          $p = Get-Command perl -CommandType Application -ErrorAction Stop | Select-Object -First 1
+          $perl = $p.Source.Replace('\', '/')
+          & $perl -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native Windows Perl or required OpenSSL Configure modules failed validation"
           }
-          perl -v
+          "OPENSSL_SRC_PERL=$perl" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
       # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
@@ -626,7 +664,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libx11-dev libxkbcommon-dev libwayland-dev \
-            libvulkan1 mesa-vulkan-drivers libdbus-1-dev
+            libvulkan1 mesa-vulkan-drivers libdbus-1-dev libclang-dev
       # A real serif face, so the typography tests can do real work (86ak643rc).
       #
       # `themes_differing_only_in_typography_never_share_a_measurement` (selahcue-present)
@@ -713,6 +751,16 @@ jobs:
       # selahcue-present stayed invisible in this job for two runs while the standing
       # clippy failure held the door shut. One broken gate should cost you one gate's
       # worth of information, not the whole job's. 86ak5rc9c.
+      # 17tnw2b1f2d: real NDI headers + bindgen/types, no SDK/runtime download.
+      # The helper exposes its empty library-selection placeholder only to
+      # link-free check/clippy, removes it afterwards, and proves the gated code
+      # is reached with a temporary type error. Never build/package with it.
+      - name: NDI sidecar type/lint and mutation proof (link-free, Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          python3 scripts/check_ndi.py --self-test
+          python3 scripts/check_ndi.py --mutation-proof
       - name: Clippy (server features)
         if: ${{ !cancelled() }}
         run: |
@@ -743,6 +791,18 @@ jobs:
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
         run: cargo test --workspace --no-fail-fast
+      # A2: deliberate bounded Windows scheduling evidence, even if an unrelated
+      # workspace test failed. The existing workspace/debug and licensing/release
+      # runs remain; each failed repetition exits this step immediately.
+      - name: Test (Windows licensing admission, three parallel-8 repetitions)
+        id: windows-licensing-parallel
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          for repetition in 1 2 3; do
+            echo "Windows licensing admission parallel run ${repetition}/3 (8 threads)"
+            cargo test -p selahcue-licensing --test test_https_admission -- --nocapture --test-threads=8 || exit $?
+          done
       - name: Disk space after the workspace tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
@@ -910,6 +970,28 @@ jobs:
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
+      # Keep plain SQLite isolated from encrypted workspace feature unification.
+      - name: Test (Windows plain SQLite — full data suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          cargo test -p selahcue-data --no-default-features --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"plain SQLite check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"plain SQLite checks not reached: "+str(missing); print("verified plain SQLite tests:",passed)' "$log" linked_runtime_meets_patched_sqlite_baseline
+          rm "$log"
+      # The real desktop release binary exercises the endpoint publisher's release siblings.
+      - name: Test (Windows desktop RELEASE — full output binary suite)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${OPENSSL_SRC_PERL:?validated native Windows Perl was not exported}"
+          "$OPENSSL_SRC_PERL" -MIPC::Cmd -MParams::Check -MLocale::Maketext::Simple -e 'die "expected native Windows Perl\n" unless $^O eq "MSWin32"; print "$^X ($^O) Perl $]\n";'
+          log="$(mktemp)"
+          cargo test -p selahcue-desktop --release --bin selahcue-output --features encryption --no-fail-fast -- --nocapture 2>&1 | tee "$log"
+          python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"desktop release check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"desktop release checks not reached: "+str(missing); print("verified desktop release tests:",passed)' "$log" the_production_rename_policy_retries_on_windows_only the_windows_rename_budget_is_five_attempts_and_a_few_hundred_milliseconds
+          rm "$log"
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
       # ended up. Runs before the cache's post step, which on main tars `target` up. It never
       # fails the job: below 10 GB free it emits a warning (an early notice that holds in a
@@ -1068,7 +1150,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libx11-dev libxkbcommon-dev \
-            libasound2-dev
+            libasound2-dev poppler-utils
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
         # resource dll exist at build time. This job COMPILE-checks the operator (it does not
@@ -1092,6 +1174,26 @@ jobs:
           fi
           stage "binaries/Processing.NDI.Lib.x64.dll"
           echo "staged Tauri placeholders for ${triple}"
+      - name: Set up Python for the PDF oracle (Linux)
+        id: pdf-python
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          update-environment: false
+      - name: Install PDF oracle parsers (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          PDF_ORACLE_SETUP_PYTHON: ${{ steps.pdf-python.outputs.python-path }}
+        run: |
+          venv="$RUNNER_TEMP/selahcue-pdf-oracle"
+          mkdir -- "$venv"
+          "$PDF_ORACLE_SETUP_PYTHON" -m venv "$venv"
+          "$venv/bin/python" -m pip install --only-binary=:all: pypdf==6.21.4 pdfplumber==0.11.9
+          "$venv/bin/python" -m pip freeze
       # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
       # failure aborted before `cargo test` ever ran -- so this job still had exactly
       # the masking the rest of this change removes, while appearing to be covered.
@@ -1114,6 +1216,49 @@ jobs:
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+      - name: Verify operator PDF export (Linux)
+        id: pdf-export-proof
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 5
+        shell: bash
+        env:
+          C4_PDF_FIXTURES: ${{ runner.temp }}/selahcue-pdf-fixtures
+          C4_PDF_PYTHON: ${{ runner.temp }}/selahcue-pdf-oracle/bin/python
+        run: |
+          mkdir -- "$C4_PDF_FIXTURES"
+          cargo test --locked --bin selahcue-operator notes_export_tests::author_pdf_inspection_fixtures -- --ignored --exact --nocapture
+
+          cd -- "$C4_PDF_FIXTURES" || exit 1
+          pdftoppm -r 144 -png saved-a-unicode.pdf saved-a-unicode
+          pdftoppm -r 144 -png saved-long.pdf saved-long
+          shopt -s nullglob
+          unicode_pages=(saved-a-unicode-*.png)
+          long_pages=(saved-long-*.png)
+          if (( ${#unicode_pages[@]} != 1 || ${#long_pages[@]} != 8 )); then
+            echo "Expected 1 Unicode fixture page and 8 long fixture pages" >&2
+            exit 1
+          fi
+          for page in "${unicode_pages[@]}" "${long_pages[@]}"; do
+            test -s "$page"
+          done
+
+          pdfinfo saved-a-unicode.pdf
+          pdfinfo saved-long.pdf
+          sha256sum saved-a-unicode.pdf saved-long.pdf expected.json
+          artifact_bytes=$(du --bytes --summarize . | cut -f1)
+          if (( artifact_bytes > 20 * 1024 * 1024 )); then
+            echo "PDF fixture directory exceeds 20 MiB ($artifact_bytes bytes)" >&2
+            exit 1
+          fi
+      - name: Upload operator PDF inspection fixtures (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.pdf-export-proof.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: operator-pdf-inspection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/selahcue-pdf-fixtures
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
       # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
       # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
       # at the WRITE boundary that no name outside the three-entry allowlist reaches the process
@@ -1185,7 +1330,7 @@ jobs:
         # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
         # where a plain `pip install --user` would otherwise refuse (audit #11 review).
         run: |
-          python3 -m pip install --user --break-system-packages playwright==1.60.0
+          python3 -m pip install --user --break-system-packages playwright==1.61.0
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
@@ -1353,6 +1498,47 @@ jobs:
       - name: Test (dev-keys,openai-notes, RELEASE — the release refusals only hold here)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --release --no-fail-fast
+      # P03: actual pilot-only native/status/admission paths, with synthetic keys
+      # and a cfg(test)-only monotonic fixture clock. No installer or real secret.
+      - name: Clippy (pilot-credentials,cloud-live, RELEASE — synthetic only)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809125999'
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: cargo clippy --release --features pilot-credentials,cloud-live --all-targets -- -D warnings
+      - name: Focused pilot expiry (release, synthetic only)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809125999'
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: |
+          set -euo pipefail
+          run_pilot_tests() {
+            phase="$1"; shift
+            log="$(mktemp)"
+            "$@" 2>&1 | tee "$log"
+            case "$phase" in
+              before-bin) required=(pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
+              before-sources) required=(real_notes_rejection_observer selected_source_drives_both observed_transcription_rejection release_executable_does_not_contain_the_test_clock) ;;
+              mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
+              *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;
+            esac
+            python3 -c 'import pathlib,re,sys; text=pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"); passed=sum(map(int,re.findall(r"test result: ok\. (\d+) passed",text))); assert passed>0,"pilot check ran zero tests"; missing=[name for name in sys.argv[2:] if not re.search(re.escape(name)+r"[^\n]* \.\.\. ok",text)]; assert not missing,"pilot checks not reached: "+str(missing); print("verified pilot tests:",passed)' "$log" "${required[@]}"
+            rm "$log"
+          }
+          run_pilot_tests before-bin cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_
+          run_pilot_tests before-sources cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --test test_pilot_note_rejection --test test_pilot_stt_rejection --no-fail-fast
+          # Runtime clock changes do not rebuild or change the compiled fixture.
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129599 PILOT_TEST_EXPECT_READY=0 PILOT_MIXED_EXPECT_EXPIRED=1
+          run_pilot_tests mixed-cutoff cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast pilot_mixed_tests
+          run_pilot_tests source-cutoff cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
+          export SELAHCUE_PILOT_TEST_EPOCH=1809129600
+          run_pilot_tests source-after cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
       # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
       # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
       # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
@@ -1424,6 +1610,11 @@ jobs:
       - name: Clippy (stt -- the shipped configuration, no cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo clippy --features stt --all-targets -- -D warnings
+      - name: Dev entitlement key absent from the linked release operator
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        run: sh scripts/dev_key_not_in_release.sh --operator
 
   flutter:
     name: flutter controller
@@ -1438,6 +1629,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          flutter-version: '3.47.5'
           # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
           # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
           # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
@@ -1449,9 +1641,10 @@ jobs:
           # actions/cache/restore, the real action, and a main-only actions/cache/save.
           # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
           # action in a pull-request workflow.
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      - run: flutter --version
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze --no-pub
+      - run: flutter test --no-pub
       # Compile-verify the Android host (Kotlin MulticastLock channel, 86ajp0b0t)
       # — the ubuntu runner ships the Android SDK; a debug build exercises the
       # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
@@ -1464,21 +1657,20 @@ jobs:
           java-version: "17"
       - name: Android host compile-check (apk --debug)
         if: needs.changes.outputs.android == 'true'
-        run: flutter build apk --debug
+        run: flutter build apk --debug --no-pub
 
   # The Django Platform API (implementation/api). Until this job existed the API had
   # NO automated verification at all — it matched no path filter, so an API-only push
   # ran the change-detection job and nothing else.
   api:
     name: api (django)
+    permissions:
+      contents: read
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    # Run 41038300286 attempts 1/2 passed 2147 tests in 14:14/14:17, but service,
-    # install/check and post-job work exhausted the 15-minute job cap. This change adds
-    # the licence revoke/extend and renewal suites on top of that; the realistic local
-    # Postgres/Redis gate takes 9m before runner/setup overhead. Keep every check and
-    # allow bounded headroom for the slower shared Linux runner.
+    # Run 43745074188 reached pytest's 80% progress marker before the 20-minute
+    # job cap. Allow time for the full suite, diagnostics and cleanup.
     timeout-minutes: 30
     defaults:
       run:
@@ -1512,12 +1704,27 @@ jobs:
         with:
           # Matches the local dev interpreter. Django 6.1 supports 3.12-3.14.
           python-version: "3.14"
-          cache: pip
-          cache-dependency-path: implementation/api/pyproject.toml
-      # The dev extra includes the same PostgreSQL driver for mandatory local deployed-mode
-      # startup controls. Retain the existing explicit bound and hosted service setup here.
-      - name: Install
-        run: pip install -e ".[dev]" "psycopg[binary]>=3.2,<4"
+      # Official setup-uv v7 annotated tag object 94527f2e (commit 37802adc).
+      # Exact bootstrap version enforced by .uv-version/helper; project permits compatible patches.
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          version: "0.13.4"
+          enable-cache: true
+          cache-dependency-glob: |
+            implementation/api/uv.lock
+            implementation/api/pyproject.toml
+            implementation/api/.uv-version
+            scripts/api_venv.py
+      - name: Install locked API environment
+        working-directory: .
+        run: |
+          make api-install API_PYTHON=python3.14
+          echo "$GITHUB_WORKSPACE/implementation/api/.venv-api-check/bin" >> "$GITHUB_PATH"
+      - name: Verify install-free gate logic
+        working-directory: .
+        run: |
+          python3 scripts/check_api_gate.py --self-test
+          python3 scripts/test_api_dependency_snapshot.py
       - name: Django system checks
         run: python manage.py check
       # Migrations here are hand-committed, so a model shipped without one is an easy
@@ -1537,19 +1744,55 @@ jobs:
           SQL_PORT: "5432"
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
-        run: python -m pytest tests -q
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: python -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
+
+  api-dependency-graph:
+    name: api dependency graph (main only)
+    needs: [changes, api]
+    if: github.repository == 'First-Pavilion/selahcue' && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Export exact universal API dependency snapshot
+        env:
+          SNAPSHOT_SHA: ${{ github.sha }}
+          SNAPSHOT_REF: ${{ github.ref }}
+          SNAPSHOT_RUN: ${{ github.run_id }}
+        run: >-
+          python scripts/api_dependency_snapshot.py --sha "$SNAPSHOT_SHA"
+          --ref "$SNAPSHOT_REF" --run-id "$SNAPSHOT_RUN" --output api-dependency-snapshot.json
+      - name: Submit API graph
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST "repos/$GITHUB_REPOSITORY/dependency-graph/snapshots" --input api-dependency-snapshot.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: api-dependency-snapshot
+          path: api-dependency-snapshot.json
+          retention-days: 14
 
   marketing:
     name: marketing (vue spa)
     needs: changes
     if: needs.changes.outputs.marketing == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: implementation/marketing
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -1568,6 +1811,8 @@ jobs:
           python-version: "3.14"
       - name: Install
         run: npm ci
+      - name: Reject high and critical npm advisories
+        run: npm audit --audit-level=high
       # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
       # Calls the SAME Makefile target `make ci` calls, rather than re-listing the npm
       # scripts here, so the local gate and this job cannot drift apart (the marketing
@@ -1615,7 +1860,7 @@ jobs:
       # engine a hard failure instead of a silent skip that reads as a pass.
       - name: Install Playwright (Chromium + WebKit)
         run: |
-          python3 -m pip install --quiet playwright==1.60.0
+          python3 -m pip install --quiet playwright==1.61.0
           python3 -m playwright install --with-deps chromium webkit
       - name: Responsive sweep (Chromium)
         env:
@@ -1625,15 +1870,80 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
+          DEBUG: "pw:browser"
         run: python3 scripts/responsive_sweep.py --engine webkit
+
+      - name: Responsive touch-target and geometry controls (WebKit)
+        if: ${{ !cancelled() }}
+        run: >-
+          python3 tests/responsive_diagnostic_regression.py
+          DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
+          DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
+          DiagnosticProbeInertRegression
+          DiagnosticLedgerPrivacy
+
+      # Existing page suites need the built bundle and BOTH installed engines.
+      # Keep failures visible even if an earlier browser suite fails.
+      - name: Shared components (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:components
+      - name: Core pages (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:core
+      - name: Home page (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:home
+      - name: Secondary pages (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:secondary
+
+      - name: Legal source and generated pages agree
+        if: ${{ !cancelled() }}
+        run: npm run check:legal
+      - name: Legal pages (full Chromium suite)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: python3 scripts/legal_pages_headless.py --only all
+      - name: Public acquisition and route exclusions (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/public_acquisition_fixture_regression.py
+          python3 tests/public_routes_headless.py --engine both
+      - name: Public downloads (Chromium + WebKit)
+        if: ${{ !cancelled() }}
+        run: python3 tests/public_downloads_headless.py --engine both
+
+      # Build the shipping nginx configuration, then exercise real response headers in
+      # both installed browsers. A preview server cannot verify nginx CSP inheritance.
+      - name: Build and verify production security headers
+        if: ${{ !cancelled() }}
+        run: |
+          docker build --pull -f Dockerfile -t selahcue-marketing-csp ../..
+          docker run --detach --rm --name marketing-csp -p 127.0.0.1:4188:80 selahcue-marketing-csp
+          trap 'docker stop marketing-csp' EXIT
+          python3 scripts/security_headers_headless.py --base-url http://127.0.0.1:4188
 
   audit:
     name: dependency audit (RustSec)
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       # 86akmdkdn (performance review, Vera): this is a fast, filesystem-only check with no
       # cargo/network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather
       # than after, so a coverage-drift finding fails in seconds instead of after paying for
@@ -1652,12 +1962,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      # Invoke the installed binary directly: Cargo aliases cannot replace it.
       - name: Audit desktop workspace
         working-directory: implementation/desktop
-        run: cargo audit
+        run: cargo-audit audit
       - name: Audit operator shell
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo audit
+        run: cargo-audit audit
       # selahcue-stt is a third independent Cargo root (its own `[workspace]` table, its own
       # Cargo.lock — see selahcue-stt/Cargo.toml's own comment) with a real network dependency
       # (rustls via ureq's model-download feature). It shipped invisible to this job until
@@ -1667,7 +1978,7 @@ jobs:
       # above, close that gap.
       - name: Audit STT crate
         working-directory: implementation/desktop/crates/selahcue-stt
-        run: cargo audit
+        run: cargo-audit audit
 
   supply-chain:
     # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
@@ -1677,23 +1988,38 @@ jobs:
     needs: changes
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-cyclonedx
       - name: License / source / bans policy (desktop workspace)
         working-directory: implementation/desktop
-        run: cargo deny check licenses sources bans
+        run: cargo-deny check licenses sources bans
       - name: License / source / bans policy (operator shell)
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo deny check licenses sources bans
+        run: cargo-deny check licenses sources bans
+      # Independent STT root has its own all-features policy; metadata only, no native build.
+      - name: License / source / bans policy (STT crate)
+        working-directory: implementation/desktop/crates/selahcue-stt
+        run: cargo-deny check licenses sources bans
       - name: Generate CycloneDX SBOM (desktop workspace)
         working-directory: implementation/desktop
         run: cargo cyclonedx --format json
-      - name: Generate CycloneDX SBOM (operator shell)
+      - name: Generate CycloneDX SBOM (operator shell, shipped STT)
         working-directory: implementation/desktop/crates/selahcue-operator
-        run: cargo cyclonedx --format json
+        # The installer enables stt. Include all target trees so Linux generation
+        # also inventories the Windows installer dependencies (metadata, no build).
+        run: cargo cyclonedx --format json --features stt --target all
+      - name: Refuse an operator SBOM missing shipped STT dependencies
+        run: |
+          python3 scripts/check_operator_sbom.py --self-test
+          python3 scripts/check_operator_sbom.py implementation/desktop/crates/selahcue-operator/selahcue-operator.cdx.json
       - name: Upload SBOMs
         uses: actions/upload-artifact@v7
         with:
@@ -1703,9 +2029,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The alarm. Nine days without a green run on `main` went unnoticed because a
-  # failure notifies nobody, and branch protection is unavailable for a private repo
-  # on this plan -- so a red commit lands regardless and an alarm is the ONLY control
-  # available. ClickUp 86ak5rc9c.
+  # failure notified nobody. Keep this alarm alongside the public repository checks
+  # so outstanding failures remain visible across path-filtered runs. ClickUp 86ak5rc9c.
   #
   # It tracks WHICH jobs are outstanding, not a single red/green bit, because CI
   # path-filters by area: an api-only push to `main` SKIPS the entire desktop matrix.
@@ -1742,8 +2067,8 @@ jobs:
     runs-on: ubuntu-latest
     # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
     # NOT listed to `none`, so an `issues: write`-only block leaves `contents: none` --
-    # and on a private repo that means actions/checkout cannot clone, the first step
-    # fails, and the alarm never runs at all. A dead alarm shipped next to a CLAUDE.md
+    # keep explicit read access for checkout rather than relying on public anonymous
+    # access. A dead alarm shipped next to a CLAUDE.md
     # that calls it "the only alarm" is this ticket's own worst case. 86ak5rc9c.
     permissions:
       contents: read

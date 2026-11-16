@@ -1,0 +1,1 @@
+{"schema": 1, "cohort": "field-test-2026-10", "cutoff": 1809129599, "openai": {"key": "synthetic-openai-fixture-only", "expires_at": 1, "model": "approved-fixture-model"}, "deepgram": {"key": "synthetic-deepgram-fixture-only", "expires_at": 1809129599, "model": "nova-3"}}

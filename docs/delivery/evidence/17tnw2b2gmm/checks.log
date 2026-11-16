@@ -1,0 +1,29 @@
+Final locked dependency checks.
+
+$ npm test
+  ✔ the public props are unchanged: variant, size, to, href, disabled, loading (plus block) (0.474541ms)
+✔ what did not change (3.163084ms)
+ℹ tests 1246
+ℹ suites 250
+ℹ pass 1246
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 11871.014666
+
+$ npm run lint
+
+> marketing@0.0.0 lint
+> eslint . --max-warnings 0
+
+
+Exit0 (observed execution receipt).
+
+$ npm run type-check
+
+> marketing@0.0.0 type-check
+> vue-tsc --build
+
+
+Exit0 (observed execution receipt).

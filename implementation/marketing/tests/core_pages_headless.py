@@ -3,7 +3,7 @@
 
 `tests/corePages.test.ts` reads the source and server-renders the pages. This drives the REAL production
 bundle (`dist/`) in a real browser, because what the node test cannot see is what the Figma audit found
-wrong: where a box lands and how big it is, whether the arrow keys move the billing toggle and its focus,
+wrong: where a box lands and how big it is, whether the Free offer has no billing UI,
 whether a disabled button can be tabbed to, whether text on the gradient band holds its contrast, and
 whether the page scrolls sideways. Every size below is a Figma value from
 `docs/design/visual-parity/marketing/figma-style/*.json`, quoted next to its check, with a tolerance that
@@ -13,8 +13,8 @@ Usage (from implementation/marketing):
     npm run build
     python3 tests/core_pages_headless.py [--engine chromium|webkit|both] [--shots DIR]
 
-Not wired into `npm test` or CI on purpose (it needs a browser and a build; wiring is the CI ticket
-17tnw2b2fum, as for `scripts/shared_components_headless.py`). Run it by hand, as the contract records.
+Kept separate from `npm test` because it needs a browser and a build. CI now runs `npm run test:core`
+with both required engines (17tnw2b2fum), alongside the other existing page/component suites.
 
 Needs Playwright and an engine, and the network for Inter (without it the text wraps differently and a few
 height checks may move; those are marked). If Playwright is missing this exits 0 with a LOUD skip unless
@@ -33,6 +33,7 @@ import math
 import os
 import re
 import socketserver
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -119,13 +120,32 @@ def rects(page, selector: str):
     )
 
 
-def go(page, base: str, path: str, width: int = 1440, height: int = 1000) -> None:
+def fit_figma_frame(page) -> None:
+    """Figma's 1440px frame is the layout viewport, not external scrollbar chrome.
+
+    Secondary's existing widen_for_scrollbar uses the same measured compensation.
+    Do not alter styles or compensate nominal-window overflow sweeps.
+    """
+    client = page.evaluate("document.documentElement.clientWidth")
+    gap = 1440 - client
+    if gap == 0:
+        return
+    if not 0 < gap <= 32:
+        raise RuntimeError(f"Cannot measure Figma frame: expected 1440px client width, got {client}")
+    size = page.viewport_size
+    page.set_viewport_size({"width": size["width"] + gap, "height": size["height"]})
+    page.wait_for_function("document.documentElement.clientWidth === 1440", timeout=2000)
+
+
+def go(page, base: str, path: str, width: int = 1440, height: int = 1000, *, figma_frame: bool = False) -> None:
     page.set_viewport_size({"width": width, "height": height})
     page.goto(f"{base}{path}", wait_until="load")
     page.wait_for_selector("h1")
     # Inter and the page's own transitions settle before anything is measured.
     page.evaluate("document.fonts.ready.then(() => true)")
     page.wait_for_timeout(250)
+    if figma_frame:
+        fit_figma_frame(page)
 
 
 def luminance(rgb) -> float:
@@ -180,10 +200,9 @@ def hero_lead_ok(page, name: str, figma_height: float) -> None:
 
 
 def check_pricing(page, base: str, engine: str) -> None:
-    """ClickUp 17tnw2b0x3h: the page draws no plan, price, comparison table, billing toggle or FAQ. Plan names, prices and limits are
-    the API catalogue's data, so until it serves them the page says "Plans and prices have not been published yet." and nothing else."""
+    """The Free offer uses the existing layout and links to account and desktop downloads."""
     print(f"[{engine}] pricing")
-    go(page, base, "/pricing")
+    go(page, base, "/pricing", figma_frame=True)
     headings_ok(page, "pricing")
 
     for selector, what in (
@@ -192,24 +211,30 @@ def check_pricing(page, base: str, engine: str) -> None:
         (".comparison-table", "a comparison table"),
         ("[role=radiogroup]", "a billing toggle"),
         (".faq-section", "a FAQ"),
-        ("main .ui-button", "a plan button"),
     ):
         check(f"pricing: no {what}", page.query_selector(selector) is None, selector)
 
     text = page.inner_text("main") if page.query_selector("main") else page.inner_text("body")
     check("pricing: no price figure is shown", "$" not in text, "a dollar sign is on the page")
-    check("pricing: the empty state says plans and prices are not published yet", page.query_selector(".plans-empty") is not None and "have not been published yet" in page.inner_text(".plans-empty"), "")
+    check("pricing: weekly church allowance and deferred paid subscriptions",
+          "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week." in text and "Paid subscriptions will come later." in text, text)
+    links = page.locator(".free-actions a").evaluate_all("(links) => links.map((link) => link.getAttribute('href'))")
+    check("pricing: links point to downloads and signup", links == ["/download#public-downloads", "/signup"], str(links))
     levels = page.evaluate("[...document.querySelectorAll('main h1, main h2')].map((h) => h.tagName)")
     check("pricing: the page's own headings are one h1 and one h2 (so the footer h3s do not follow an h1)", levels == ["H1", "H2"], str(levels))
 
 
 def check_features(page, base: str, engine: str) -> None:
     print(f"[{engine}] features")
-    go(page, base, "/features")
+    go(page, base, "/features", figma_frame=True)
     headings_ok(page, "features")
     hero_lead_ok(page, "features", 90)  # Figma 485:139
     rows = rects(page, ".feature-row")
     check("features: six rows", len(rows) == 6, str(len(rows)))
+    assist = " ".join(page.locator(".feature-row").last.inner_text().lower().split())
+    check("features: separates local listening and optional cloud assistance",
+          "on-device" in assist and "model download" in assist and "when available" in assist and
+          "internet access and consent" in assist and "core live controls work offline" in assist, assist)
     for i, r in enumerate(rows):
         # Figma 486:124: 336px (40 / 256 / 40). The paragraph is never taller than the panel, so wording cannot move it.
         near(f"features: row {i + 1} is 336 tall", r["h"], 336, 3)
@@ -232,8 +257,8 @@ def check_features(page, base: str, engine: str) -> None:
         near("features: the closing band is 337 tall", band["h"], 337, 3)
     btns = rects(page, ".cta-band .ui-button")
     if len(btns) == 2:
-        near("features: Download free is 49 tall (Figma 486:350)", btns[0]["h"], 49, 0.6)
-        near("features: See pricing is 47 tall, not stretched to 49 (Figma 486:352)", btns[1]["h"], 47, 0.6)
+        near("features: View downloads is 49 tall (Figma 486:350)", btns[0]["h"], 49, 0.6)
+        near("features: Create an account is 47 tall, not stretched to 49 (Figma 486:352)", btns[1]["h"], 47, 0.6)
     check_band_contrast(page, "features")
 
 
@@ -267,42 +292,29 @@ def check_band_contrast(page, name: str) -> None:
 
 def check_download(page, base: str, engine: str) -> None:
     print(f"[{engine}] download")
-    go(page, base, "/download")
+    go(page, base, "/download", figma_frame=True)
     headings_ok(page, "download")
-    hero_lead_ok(page, "download", 60)  # Figma 487:139
-    cards = rects(page, ".platform-card")
-    check("download: two platform cards", len(cards) == 2, str(len(cards)))
-    for i, c in enumerate(cards):
-        near(f"download: card {i + 1} is 610 wide (Figma 487:147)", c["w"], 610)
-        near(f"download: card {i + 1} is 316 tall", c["h"], 316, 2)
-    acts = page.evaluate(
-        """() => [...document.querySelectorAll('.platform-action')].map((b) => {
-          const r = b.getBoundingClientRect(); const cs = getComputedStyle(b);
-          return {w: r.width, h: r.height, radius: cs.borderTopLeftRadius, disabled: b.disabled, aria: b.getAttribute('aria-disabled'),
-                  text: b.innerText.trim()};
-        })"""
-    )
-    for a in acts:
-        near(f"download: '{a['text']}' is 546 wide (Figma 487:156)", a["w"], 546, 2)
-        near(f"download: '{a['text']}' is 47 tall", a["h"], 47, 0.6)
-        check(f"download: '{a['text']}' has a 12px radius", a["radius"] == "12px", a["radius"])
-        check(f"download: '{a['text']}' is still disabled (PR 134)", a["disabled"] and a["aria"] == "true", str(a))
+    hero_lead_ok(page, "download", 30)  # The public availability lead has one line.
+    panel = page.locator("#public-downloads")
+    status = panel.get_by_role("status")
+    status.wait_for()
+    page.wait_for_function('document.querySelector("#public-downloads [role=status]").textContent.includes("not available to download yet")')
+    cards = rects(page, "#public-downloads .platform-card")
+    check("download: three desktop platform cards", len(cards) == 3, str(len(cards)))
+    for card in cards:
+        near("download: the desktop card shares the 1248px grid with two 28px gaps",
+             card["w"], (1248 - 2 * 28) / 3)
+    check("download: unpublished manifests expose no installer controls",
+          panel.locator("a, button").count() == 0, "")
+    check("download: the legacy bookmark is at the installer section",
+          panel.locator("#pilot-downloads").count() == 1, "")
+    check("download: no placeholder requirements", page.locator(".requirements-section").count() == 0, "")
     page.focus("body")
-    stops = []
+    store_focused = False
     for _ in range(16):
         page.keyboard.press(TAB)
-        stops.append(page.evaluate("(document.activeElement.innerText || '').trim().slice(0, 30)"))
-    check("download: Tab never lands on a disabled download or store button", not any(("Download for" in s or "Coming soon" in s) for s in stops), str(stops))
-    req = rects(page, ".req-card")
-    check("download: two requirement cards", len(req) == 2, str(len(req)))
-    for i, c in enumerate(req):
-        near(f"download: requirement card {i + 1} is 610 wide (Figma 488:127)", c["w"], 610)
-        near(f"download: requirement card {i + 1} is 349 tall", c["h"], 349, 2)
-    rows = rects(page, ".req-row")
-    for i, r in enumerate(rows):
-        near(f"download: requirement row {i + 1} is 38 tall", r["h"], 38, 1)
-    fill = page.evaluate("getComputedStyle(document.querySelector('.requirements-section')).backgroundColor")
-    check("download: the requirements band has a fill (the token is defined)", fill == "rgb(20, 22, 29)", fill)
+        store_focused |= page.evaluate("document.activeElement.matches('.store-badge[disabled]')")
+    check("download: Tab skips the disabled mobile store badges", not store_focused, "")
     mock = rect(page, ".controller-mock")
     if mock:
         near("download: the controller mock is 280 wide (Figma 489:154)", mock["w"], 280)
@@ -318,7 +330,7 @@ def check_download(page, base: str, engine: str) -> None:
 
 def check_about(page, base: str, engine: str) -> None:
     print(f"[{engine}] about")
-    go(page, base, "/about")
+    go(page, base, "/about", figma_frame=True)
     headings_ok(page, "about")
     hero_lead_ok(page, "about", 90)  # Figma 496:139
     story = rects(page, ".story-layout > *")
@@ -345,8 +357,8 @@ def check_no_sideways_scroll(page, base: str, engine: str) -> None:
     for route in ROUTES:
         for width in WIDTHS:
             go(page, base, route, width=width)
-            over = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
-            check(f"{route} at {width}: no horizontal page scroll", over <= 0, f"{over}px wider than the window")
+            over = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+            check(f"{route} at {width}: no horizontal page scroll", over <= 0, f"{over}px wider than the layout viewport")
 
 
 def main() -> int:
@@ -420,7 +432,20 @@ def main() -> int:
     print(f"\n{CHECKS} checks, {len(FAILURES)} failed")
     for f in FAILURES:
         print(f"  - {f}")
-    return 1 if FAILURES else 0
+    if FAILURES:
+        return 1
+    if "webkit" in engines:
+        # Keep expected negative-fixture failures isolated from the 300 page checks.
+        # No rebuild: this regression uses the same dist and existing WebKit dependency.
+        print("Core frame/nominal-overflow regression (120s bound)", flush=True)
+        try:
+            result = subprocess.run([sys.executable, str(HERE / "core_frame_regression.py")], timeout=120)
+        except subprocess.TimeoutExpired:
+            print("FAIL: core frame regression exceeded 120 seconds")
+            return 1
+        if result.returncode:
+            return 1
+    return 0
 
 
 if __name__ == "__main__":

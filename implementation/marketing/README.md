@@ -31,6 +31,22 @@ From the repository root:
 - `make ci` runs `marketing-check`, and the `marketing (vue spa)` job in `.github/workflows/ci.yml` runs the same target, so the two cannot drift.
 - `test:mirrors` and `test:states` run in CI only, because they need Django and Chrome. `check:legal` and `test:legal-pages` run in the separate `legal-drift` workflow (`.github/workflows/legal-drift.yml`), not in `marketing-check`.
 
+### Home Figma layout viewport regression (17tnw2bcadw)
+
+`npm run test:home` retains all130 strict checks per engine. Only its explicit1440px
+Figma measurement uses Core's existing measured `fit_figma_frame`; nominal responsive
+requests remain exact. Horizontal overflow compares real document scrollWidth/clientWidth,
+because innerWidth may include external scrollbar chrome.
+
+The required both-engine Home gate automatically runs `tests/home_frame_regression.py` with a
+120-second bound. It verifies zero-gap behavior, eight unchanged strict width assertions,
+12px simulated external window chrome (plus any host-native scrollbar), exact nominal
+320/375/768/1024/1440 requests, five zero-overflow controls and15 genuine1px/12px/24px
+overflow rejections through the normal Home assertion path. It never changes product CSS
+or fakes document clientWidth/scrollWidth. Run it directly after a production build with
+`python3 tests/home_frame_regression.py` from `implementation/marketing` using the pinned
+Playwright Chromium and WebKit engines. Hosted Linux CI remains required evidence.
+
 ## Routes
 
 Defined in `src/router/index.ts`; every page except the home page is lazy-loaded.
@@ -38,8 +54,7 @@ Defined in `src/router/index.ts`; every page except the home page is lazy-loaded
 - Marketing: `/`, `/features`, `/pricing`, `/download`, `/about`, `/contact`, `/support`, `/docs`, `/changelog`, `/blog`, `/careers`, `/privacy`, `/terms`.
 - Auth, with no site nav or footer (`meta.bare`): `/signin`, `/signup`, `/forgot-password`, `/verify`, `/reset`. The last two are linked from emails that are already delivered, so their paths must not change.
 - Account: `/account`, behind a guard that asks the server whether the session is live. The guard is a convenience, not a security boundary; the API authorises every request.
-- Affiliates: `/affiliates` (marketing) and `/affiliates/{dashboard,referrals,payouts,resources,settings,help}` (portal).
-- Staff admin console: `/admin` and `/admin/{customers,customers/:id,users,subscriptions,licenses,affiliates,payouts,settings}`.
+- `/affiliates` describes the closed affiliate program. Former staff and affiliate portal paths resolve to the public not-found view.
 - Anything else renders `NotFoundView`.
 
 ## How it talks to the API
@@ -47,9 +62,28 @@ Defined in `src/router/index.ts`; every page except the home page is lazy-loaded
 Only the auth and session code calls the API (sign-up, sign-in, forgot-password, verify, reset, sign-out and the `/account` session check). It does so through one
 place, `src/lib/api/graphql.ts`, with typed wrappers in `src/lib/api/account.ts`.
 
-- Requests go to a relative `/graphql/account` (and `/graphql/csrf` to seed the CSRF cookie), so the site is same-origin with the API. `vite.config.ts` proxies `/graphql` to `SELAHCUE_API_ORIGIN` (default `http://localhost:8008`) in development, and `nginx.conf` proxies it to the `api` service in production.
+- Requests go to a relative `/graphql/account` (and `/graphql/csrf` to seed the CSRF cookie), so the site is same-origin with the API. `vite.config.ts` proxies `/graphql` to `SELAHCUE_API_ORIGIN` (default `http://localhost:8008`) in development. In the current production Compose topology, Traefik routes the browser domain's `/graphql/*` directly to the API. The `nginx.conf` proxy remains a standalone fallback; routing production browser requests through it requires revisiting the trusted proxy hop count.
 - Same-origin is deliberate: the API sends no CORS headers, its session cookie is `SameSite=Strict`, and Django checks the request origin. Leave `VITE_API_BASE_URL` unset unless all three are solved first. See `.env.example`.
 - The API returns errors with HTTP 200, so the seam reads the response body, not the status.
+
+### Marketing ingress privacy
+
+nginx access records contain only method, normalized path (`$uri`), status, response bytes
+and request time. They omit query strings, raw request lines, Referer, cookies, authorization
+and bodies. `/verify` and `/reset` landing paths also serve the SPA without an internal
+redirect and disable access logging, including case and trailing slash variants. Marketing request error logging goes to `/dev/null`
+because nginx errors can embed the original token-bearing URL; startup and configuration
+failures remain visible at the parent nginx level. This is a deliberate loss of per-request
+nginx error detail. Health/status counts and the content-free access records remain useful
+for diagnosis.
+
+The release manifest at `/releases/current.json` is served as JSON with cache
+revalidation and the full security-header policy. `/admin`, `/admin/*` and
+`/affiliates/*` return HTTP 404 at ingress; `/affiliates` remains the closed
+public landing page. Token URLs still pass through the outer edge before nginx, and
+production GraphQL requests go directly from that edge to the API. Verify the edge,
+API and email logging policies with synthetic tokens during release qualification;
+marketing nginx configuration alone cannot establish their behavior.
 
 ## Legal pages (`/privacy`, `/terms`)
 
@@ -68,18 +102,113 @@ templates only (no `v-html`).
 - **A draft fails closed.** A page shows the draft banner, highlights placeholders and sends `noindex`
   while ANY of these holds: a `{{PLACEHOLDER}}` remains, the document still has its DRAFT banner, or its
   version status is anything other than exactly `final` (so `final draft`, `pending review` or a typo stay drafts). Filling every placeholder is not publishing.
-- **To publish** (only once the launch-readiness conditions in `docs/legal/LEGAL-DRAFT-NOTES.md`
-  section 4 are met): in the markdown, delete the DRAFT `>` banner, make sure a
+- **To publish**, fill every placeholder, satisfy the publication gates in
+  `docs/legal/LEGAL-DRAFT-NOTES.md` section 4 and obtain qualified counsel's sign-off. In the
+  markdown, delete the DRAFT `>` banner and make sure a
   `Version X.Y (final, YYYY-MM-DD).` paragraph sits directly under the `#` title (generation fails if there
-  is no version line, so "Last updated" cannot silently disappear), and fill every placeholder; then run
-  `npm run sync:legal`. No code changes.
+  is no version line, so "Last updated" cannot silently disappear). Then run `npm run sync:legal`
+  and commit the source and generated files together.
 - Tests: `npm test` (content pipeline, drift, rendering). `npm run test:legal-pages` builds the site and
   drives `/privacy` and `/terms` in real Chrome at five widths (needs `pip install playwright`).
 
 ## Known gaps
 
-- **Downloads do not exist yet.** `/download` shows the Windows and macOS buttons and the App Store and Google Play badges as disabled, because no installer is served and the downloads backend is not built (ClickUp `86ak10afm`; both endpoints return 501). Store publishing is separate open work (`86ajxz3nj`). Wire these up when those land.
-- **Mock data.** `/account` (past the session guard), the affiliate portal and the admin console render hard-coded sample data. The affiliate portal and admin console have no route guard at all, so treat them as unfinished, not as secured.
+- **Mock data.** `/account` (past the session guard) still renders hard-coded sample data pending the account API integration.
 - **`tests/` and `scripts/email_mirror_probe.ts` are linted but not type-checked.** `tsconfig.node.json` lists only `vite.config.ts` and the two legal scripts, `scripts/legal_markdown.ts` and `scripts/sync_legal.ts`, so `npm run type-check` covers those and nothing else under `scripts/`. Checking `tests/` by hand with `tsc --strict` shows type errors in `tests/authCopy.test.ts` that no gate reports today.
 - **Lint covers error prevention only.** It uses the `essential` tier of `eslint-plugin-vue` and has no formatter. The style tiers flagged about 1,300 existing sites and were left out on purpose.
 - **Node versions differ.** The `Dockerfile` builds on `node:20-alpine`, while CI and the tests use Node 22.
+
+## Public desktop download configuration
+
+The public download section at `/download#public-downloads` revalidates the same-origin
+`/releases/current.json` manifest. It omits credentials, rejects redirects, and uses a
+five-second timeout and 64 KiB limit. The source file `public/releases/current.json`
+ships with this inventory:
+
+```json
+{"schema_version":1,"status":"unpublished","artifacts":[]}
+```
+
+For publication, the release operator sets `status` to `published`, supplies the
+`release_id`, `version` and 40-digit lowercase hex `source_commit`, and supplies exactly
+one artifact each for `windows-x64`, `macos-arm64`, `macos-x64` and `ubuntu-24.04-x64`.
+Each artifact requires `target`, verified `architectures`, `url`, `filename`, positive
+integer `size_bytes`, lowercase 64-digit `sha256`, `app_signature`, `package_signature`,
+`notarization` and `publisher`. See `src/lib/releases/downloads.ts` for allowed states.
+The selected macOS package has an ad hoc app signature, an unsigned DMG and no
+notarization. A shared macOS object must contain both verified architecture slices
+and carry matching metadata on its two records.
+
+Copy the HTTPS object URLs and safe basenames from the release receipts. The host
+is `selahcue-installers.sfo3.digitaloceanspaces.com` and the immutable object keys
+contain the recorded version and SHA-256 as complete path segments. Keep the
+manifest unpublished until the operator verifies receipt provenance and independently
+checks the uploaded bytes, checksum, signing state, and attachment disposition and
+filename on the actual objects. Serve `/releases/current.json` with cache revalidation
+separately from the immutable hashed SPA assets.
+
+Verification from this folder:
+
+```sh
+node --test tests/publicDownloads.test.ts tests/downloadView.test.ts tests/corePages.test.ts
+npm run build
+python3 tests/public_downloads_headless.py --engine both
+```
+
+The browser check uses the built site, installed Playwright Chromium and WebKit, and
+synthetic fixtures for publication and installer navigation.
+
+## Archived pilot notice and tooling
+
+`/pilot-privacy` displays the historical notice from
+`docs/release/pilot-registration/notice.json`. Keep the source and its Docker
+copy together. The public site no longer collects pilot registrations.
+Bookmarks to `/download#pilot-downloads` open the public installer section.
+
+The pilot registration component, its fixtures and
+`public/pilot-downloads.json` are retained as historical tooling. The
+committed configuration stays disabled (`{"schema_version":1,"enabled":false}`).
+The public installer cards use only `/releases/current.json`.
+
+### Production security gate (17tnw2b0x3m)
+
+Marketing CI runs with `contents: read`, disables checkout credential persistence, and
+uses `.npmrc` to disable dependency lifecycle hooks. Explicit `npm run` tasks still run;
+a fresh script-free install, type-check, lint, tests and both production builds verify
+that this lockfile does not require install hooks. `npm audit --audit-level=high` is a
+required, unsuppressed gate over development and production dependencies. Registry or
+request failures also fail CI. The current lock has a moderate minimatch glob-amplification
+advisory (GHSA-g3hv-75wg-m249) propagated through the eslint toolchain; no advisory is
+waived and no forced major downgrade is applied.
+
+The image matches CI's supported Node 22 line. Build from repository root:
+
+```sh
+docker build --pull -f implementation/marketing/Dockerfile -t selahcue-marketing .
+docker run --rm -p 127.0.0.1:4188:80 selahcue-marketing
+# In another terminal with the pinned CI Playwright browsers installed:
+python3 implementation/marketing/scripts/security_headers_headless.py --base-url http://127.0.0.1:4188
+```
+
+The repository context is needed for the existing canonical public pilot notice import.
+`Dockerfile.dockerignore` denies everything except explicit marketing source/configuration
+and that notice. Compose uses the same context. No notice contents or collection policy
+change as part of this ticket.
+
+nginx repeats the identical CSP/security directives directly in the server and asset
+location, applying them to documents, immutable assets and error responses. No server
+include hides directives from the existing forwarded-proto trust guard. Scripts and API
+connections stay same-origin; inline scripts, inline style
+attributes, eval, plugins, foreign frames and foreign form submissions are prohibited.
+Google Fonts remains an explicit exception for stylesheet/font hosts only, matching the
+existing Inter delivery and privacy disclosure. Self-hosting was considered and deferred:
+changing the font supply and its legal disclosure would require separately verified font
+artifacts/licensing. The browser gate fetches real fonts, visits every static route and
+published article, exercises auth submission/mobile menu styles, checks header inheritance,
+and proves an injected inline script cannot execute. Missing browsers or external font
+failures fail this gate; fonts are never aborted or replaced by fixtures. API responses
+use synthetic data and no live account is contacted.
+
+Actions SHA pinning is deferred to its dedicated delivery ticket `17tnw2b1wx5`, which
+covers the repository consistently. This change preserves the current action versions,
+existing visual/installer/NDI controls and the marketing job's 15-minute timeout.

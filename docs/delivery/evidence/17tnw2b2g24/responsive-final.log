@@ -1,0 +1,133 @@
+
+> marketing@0.0.0 test:responsive
+> npm run build && python3 scripts/responsive_sweep.py
+
+
+> marketing@0.0.0 build
+> npm run type-check && vite build
+
+
+> marketing@0.0.0 type-check
+> vue-tsc --build
+
+vite v8.3.4 building client environment for production...
+transforming...
+✓ 308 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                     0.98 kB │ gzip:  0.51 kB
+dist/assets/ForgotPasswordView-DW22diJg.css         0.14 kB │ gzip:  0.12 kB
+dist/assets/ResetView-CkHv4-cj.css                  0.14 kB │ gzip:  0.12 kB
+dist/assets/SignInView-CFFYIqRy.css                 0.14 kB │ gzip:  0.12 kB
+dist/assets/SignUpView-BETFgxgr.css                 0.14 kB │ gzip:  0.12 kB
+dist/assets/VerifyView-CjVUo8hr.css                 0.14 kB │ gzip:  0.12 kB
+dist/assets/AdminAffiliatesView-xxeqM796.css        0.26 kB │ gzip:  0.14 kB
+dist/assets/AdminUsersView-kgB3WIrd.css             0.37 kB │ gzip:  0.23 kB
+dist/assets/AdminCustomersView-CVDudz8v.css         0.49 kB │ gzip:  0.23 kB
+dist/assets/PricingView-7LcRULfO.css                0.57 kB │ gzip:  0.31 kB
+dist/assets/AffiliateReferralsView-B6qaroo7.css     0.62 kB │ gzip:  0.27 kB
+dist/assets/AdminLicensesView-BoQIy1BL.css          0.63 kB │ gzip:  0.32 kB
+dist/assets/NotFoundView-DtRGu4JM.css               0.65 kB │ gzip:  0.32 kB
+dist/assets/PilotPrivacyView-bEGviGND.css           0.80 kB │ gzip:  0.38 kB
+dist/assets/AdminPayoutsView-D9Slo0UL.css           0.82 kB │ gzip:  0.36 kB
+dist/assets/AdminSubscriptionsView-BmZP6xm9.css     0.87 kB │ gzip:  0.36 kB
+dist/assets/ToneChip-TfT2Rh2i.css                   0.88 kB │ gzip:  0.34 kB
+dist/assets/AffiliateSettingsView-DaurHZqz.css      0.95 kB │ gzip:  0.37 kB
+dist/assets/PageHero-Bz0VfJiS.css                   1.03 kB │ gzip:  0.38 kB
+dist/assets/AdminSettingsView-DQGvPPnO.css          1.08 kB │ gzip:  0.44 kB
+dist/assets/AffiliateHelpView-CByzaA38.css          1.13 kB │ gzip:  0.37 kB
+dist/assets/AffiliateResourcesView-Cq6Pwhp-.css     1.14 kB │ gzip:  0.46 kB
+dist/assets/CtaBand-DTgLiqRP.css                    1.17 kB │ gzip:  0.44 kB
+dist/assets/CategoryIcon-BRqzb9pl.css               1.31 kB │ gzip:  0.34 kB
+dist/assets/Toast-RgcopLKt.css                      1.31 kB │ gzip:  0.56 kB
+dist/assets/AffiliatePayoutsView-Bdg5wURH.css       1.64 kB │ gzip:  0.55 kB
+dist/assets/AdminOverviewView-D4ZLRlwY.css          1.83 kB │ gzip:  0.61 kB
+dist/assets/SupportArticleView-23ZzYXrq.css         1.90 kB │ gzip:  0.61 kB
+dist/assets/CareersView-eLXw9ouj.css                2.22 kB │ gzip:  0.68 kB
+dist/assets/AffiliateShell-D6EmhWxp.css             2.31 kB │ gzip:  0.80 kB
+dist/assets/AboutView-BbLE2d2O.css                  2.41 kB │ gzip:  0.68 kB
+dist/assets/FeaturesView-Blg5totW.css               2.73 kB │ gzip:  0.77 kB
+dist/assets/ChangelogView-C5n7e2xI.css              2.87 kB │ gzip:  0.76 kB
+dist/assets/ContactView-DwenduN6.css                3.10 kB │ gzip:  0.85 kB
+dist/assets/AffiliateDashboardView-CP6K7gJz.css     3.15 kB │ gzip:  0.88 kB
+dist/assets/DataTable-CkbZ5ybG.css                  3.45 kB │ gzip:  0.96 kB
+dist/assets/FormField-BKPzbize.css                  3.58 kB │ gzip:  1.06 kB
+dist/assets/AdminCustomerDetailView-DJDbKViQ.css    3.59 kB │ gzip:  1.00 kB
+dist/assets/AffiliatesView-DLZCwZNF.css             4.30 kB │ gzip:  0.93 kB
+dist/assets/BlogView-I2C3sAs2.css                   4.31 kB │ gzip:  1.05 kB
+dist/assets/BlogPostView-nKZG575M.css               4.52 kB │ gzip:  1.18 kB
+dist/assets/AdminShell-p01aRhne.css                 4.82 kB │ gzip:  1.23 kB
+dist/assets/ConfirmDialog-B8d9eIrx.css              5.03 kB │ gzip:  1.31 kB
+dist/assets/DocsArticleView-CMMHwVdD.css            5.10 kB │ gzip:  1.32 kB
+dist/assets/SupportView-DoELXc0p.css                5.13 kB │ gzip:  1.34 kB
+dist/assets/DocsView-D75EdfXg.css                   5.45 kB │ gzip:  1.28 kB
+dist/assets/useFocusHeading-BnoI0Sir.css            6.48 kB │ gzip:  1.49 kB
+dist/assets/LegalPage-ZjwtRmNQ.css                  9.61 kB │ gzip:  2.29 kB
+dist/assets/DownloadView-DmlMd2fi.css               9.74 kB │ gzip:  2.08 kB
+dist/assets/AccountView-o7O0-m5v.css               10.20 kB │ gzip:  2.18 kB
+dist/assets/index-CZim4Biz.css                     43.09 kB │ gzip:  8.67 kB
+dist/assets/useLandingToken-CZfkR5ve.js             0.25 kB │ gzip:  0.20 kB
+dist/assets/passwordPolicy-BJZRy56i.js              0.36 kB │ gzip:  0.25 kB
+dist/assets/ToneChip-B_G3S4bM.js                    0.51 kB │ gzip:  0.35 kB
+dist/assets/knowledge-CL6-l5_J.js                   0.57 kB │ gzip:  0.31 kB
+dist/assets/CtaBand-BpXgCFCl.js                     0.86 kB │ gzip:  0.51 kB
+dist/assets/PricingView-BpvxyUQy.js                 0.86 kB │ gzip:  0.53 kB
+dist/assets/NotFoundView-BZaf5BD9.js                0.89 kB │ gzip:  0.57 kB
+dist/assets/PageHero-DECQP_tz.js                    1.33 kB │ gzip:  0.60 kB
+dist/assets/AffiliateResourcesView-9e-6RGo7.js      1.42 kB │ gzip:  0.82 kB
+dist/assets/AffiliateShell-DwL8PpOZ.js              1.46 kB │ gzip:  0.79 kB
+dist/assets/CareersView-C7t5E3w0.js                 1.60 kB │ gzip:  0.86 kB
+dist/assets/AffiliateSettingsView-CupEBLgj.js       1.65 kB │ gzip:  0.85 kB
+dist/assets/AffiliateHelpView-BT23rLEH.js           1.67 kB │ gzip:  0.93 kB
+dist/assets/AdminUsersView-CSqoQwqb.js              1.77 kB │ gzip:  0.91 kB
+dist/assets/AdminAffiliatesView-CcS54Sx-.js         1.83 kB │ gzip:  0.90 kB
+dist/assets/Toast-BBzfHX4b.js                       1.93 kB │ gzip:  0.94 kB
+dist/assets/AdminSubscriptionsView-DE2eAa57.js      2.04 kB │ gzip:  0.92 kB
+dist/assets/AffiliateReferralsView-BbVglC-9.js      2.05 kB │ gzip:  0.92 kB
+dist/assets/AdminSettingsView-DUxDDnMt.js           2.17 kB │ gzip:  1.07 kB
+dist/assets/lookup-qXPjTIRC.js                      2.19 kB │ gzip:  1.14 kB
+dist/assets/ChangelogView-CC-Qpg2k.js               2.20 kB │ gzip:  1.06 kB
+dist/assets/AdminPayoutsView-DE_qvsiJ.js            2.21 kB │ gzip:  1.10 kB
+dist/assets/AffiliatePayoutsView-DPH4hTk2.js        2.21 kB │ gzip:  0.92 kB
+dist/assets/AdminCustomersView-1AmNWeNX.js          2.26 kB │ gzip:  1.08 kB
+dist/assets/SupportArticleView-BJYjkqRy.js          2.28 kB │ gzip:  1.18 kB
+dist/assets/AdminOverviewView-Bseu1jDW.js           2.64 kB │ gzip:  1.30 kB
+dist/assets/AdminShell-vH2PCrNV.js                  2.66 kB │ gzip:  1.29 kB
+dist/assets/BlogView-Db3onKYz.js                    2.97 kB │ gzip:  1.28 kB
+dist/assets/CategoryIcon-CtrpGW8H.js                3.07 kB │ gzip:  1.25 kB
+dist/assets/DataTable-BRmf0XXY.js                   3.28 kB │ gzip:  1.59 kB
+dist/assets/AffiliateDashboardView-BWwfIve1.js      3.32 kB │ gzip:  1.48 kB
+dist/assets/AdminLicensesView-CUMIZ0uN.js           3.35 kB │ gzip:  1.37 kB
+dist/assets/ContactView-CEABawmO.js                 3.43 kB │ gzip:  1.60 kB
+dist/assets/AffiliatesView-n9__BHdt.js              3.52 kB │ gzip:  1.61 kB
+dist/assets/DocsArticleView-DQTg-x4T.js             3.64 kB │ gzip:  1.72 kB
+dist/assets/ForgotPasswordView-C9sNCI-T.js          3.71 kB │ gzip:  1.75 kB
+dist/assets/DocsView-DQZ5dCx7.js                    3.74 kB │ gzip:  1.71 kB
+dist/assets/BlogPostView-G0G7heXg.js                4.06 kB │ gzip:  1.88 kB
+dist/assets/AboutView-DtategQ8.js                   4.16 kB │ gzip:  1.54 kB
+dist/assets/SupportView-Bs0HaHO5.js                 4.48 kB │ gzip:  1.81 kB
+dist/assets/FormField-DlONCHIB.js                   4.64 kB │ gzip:  1.83 kB
+dist/assets/PilotPrivacyView-CiHyZ_97.js            4.69 kB │ gzip:  2.13 kB
+dist/assets/account-C4a7IfrV.js                     4.78 kB │ gzip:  1.95 kB
+dist/assets/ConfirmDialog-CPXkdwSV.js               4.87 kB │ gzip:  2.25 kB
+dist/assets/messages-C2phnq-8.js                    4.92 kB │ gzip:  2.26 kB
+dist/assets/AdminCustomerDetailView-DlMXsO1_.js     5.39 kB │ gzip:  2.24 kB
+dist/assets/useFocusHeading-vbEr3a4X.js             6.52 kB │ gzip:  2.46 kB
+dist/assets/FeaturesView-VUKokiz5.js                6.82 kB │ gzip:  2.54 kB
+dist/assets/VerifyView-DvxsFnGZ.js                  7.10 kB │ gzip:  2.49 kB
+dist/assets/SignInView-B52uShY3.js                  7.85 kB │ gzip:  3.09 kB
+dist/assets/ResetView-DF4jVwkO.js                   8.99 kB │ gzip:  3.09 kB
+dist/assets/SignUpView-BokfT_Db.js                 11.52 kB │ gzip:  4.68 kB
+dist/assets/blog-DHJs7vth.js                       12.80 kB │ gzip:  5.09 kB
+dist/assets/AccountView-BFACyVCo.js                13.85 kB │ gzip:  5.04 kB
+dist/assets/LegalPage-BYxPA1lF.js                  14.33 kB │ gzip:  5.40 kB
+dist/assets/support-CeD9xyz0.js                    18.44 kB │ gzip:  7.01 kB
+dist/assets/DownloadView-CtF7Z8GO.js               18.94 kB │ gzip:  6.27 kB
+dist/assets/docs-CmbNdBQ3.js                       29.52 kB │ gzip: 10.56 kB
+dist/assets/PrivacyView-B_xG4qIw.js                42.75 kB │ gzip: 10.96 kB
+dist/assets/TermsView-CUkKqFOP.js                  49.50 kB │ gzip: 12.53 kB
+dist/assets/_plugin-vue_export-helper-B3UtJRRN.js  69.57 kB │ gzip: 27.02 kB
+dist/assets/index-DoOySS8f.js                      82.25 kB │ gzip: 29.90 kB
+
+✓ built in 814ms
+chromium: 2363 checks over 41 routes x 5 widths, 0 failed

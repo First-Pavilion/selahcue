@@ -2,26 +2,20 @@
 
 > **DRAFT — NOT LEGAL ADVICE — REQUIRES REVIEW BY A QUALIFIED LAWYER BEFORE PUBLICATION**
 >
-> Internal working notes. Not for publication. Version 0.3, 2026-10-01, prepared by an AI drafting
-> assistant (not a lawyer). Review status: **Draft — placeholders and launch-readiness conditions must
-> be cleared.**
-
-> **HARD LAUNCH GATE.** Both policies (v0.3) describe SelahCue as it will operate at launch, in the
-> plain present tense. Many of the features they describe are not built today. **Publishing either
-> policy while any row marked "Gate" in §4 is unsatisfied would make the policy false**, exposing
-> SelahCue to misrepresentation claims. Every "Gate" row must be satisfied, and every
-> `{{PLACEHOLDER}}` filled, before either document is published. Rows marked "Deferred" are accepted
-> risks under the owner's decision of 2026-10-01 (§7); they do not block publication because the
-> policies no longer claim them.
+> Internal working notes. Version 0.4 (draft, 2026-11-15). Review status: **Draft — facts to confirm.**
+>
+> **Publication gate.** The policy drafts describe the intended Free desktop release. Clear every
+> applicable Gate in §4, fill every factual placeholder and obtain qualified counsel's sign-off
+> before publication. Earlier decisions and legal research remain in the history for counsel.
 
 ## 1. Matter profile
 
 | Item | Value |
 |---|---|
 | Brand | SelahCue |
-| Contracting legal entity | **First Pavilion Technologies**, Abeokuta, on the repository owner's statement of 2026-10-02: First Pavilion Technologies owns SelahCue, which is a product its developers built and which it trades as, so licensing and the roles of licensor, data controller and seller belong to First Pavilion Technologies. That statement is the only source; no repository file or registry extract confirms it (the API settings use `info@firstpavitech.com` as a default address). Not supplied: legal form (no Ltd, Limited or Inc is used, because no non-draft source states one), registered address (only the town is known), registration number and country of establishment. An earlier version of this row said Lagos; the owner's statement says Abeokuta and replaces it. |
-| Documents | `docs/legal/PRIVACY-POLICY-PLATFORM-DRAFT.md` (v0.3), `docs/legal/TERMS-OF-SERVICE-PLATFORM-DRAFT.md` (v0.3), this file (v0.3) |
-| Requested by | Repository owner, via the coordinating agent; ClickUp delivery ticket `17tnw2b0q93`; PR #133 |
+| Contracting legal entity | First Pavilion Technologies, trading as SelahCue. The repository owner confirmed ownership on 2026-10-02. Owner commit `e7566a96f` supplied 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria, registration number 1557879, `support@selahcueapp.com` for support, privacy and legal notices, and `selahcueapp.com`. No entity suffix was supplied. These are owner-supplied draft particulars. |
+| Documents | `docs/legal/PRIVACY-POLICY-PLATFORM-DRAFT.md`, `docs/legal/TERMS-OF-SERVICE-PLATFORM-DRAFT.md` and these notes (v0.4). Both policies retain the owner-supplied effective-date entry of October 31, 2026. |
+| Requested by | Repository owner via the coordinating agent, Free public website Task 4. Prior delivery reference: ClickUp `17tnw2b0q93`, PR #133. |
 | Audience | Churches and other organisations worldwide; the staff and volunteers who create accounts; website visitors |
 | Legal posture | **Generic** (owner decision 2026-10-01): no regulator-specific citations, registrations or filings claimed; see §7 |
 | Jurisdictions analysed | Nigeria (NDPA 2023, GAID 2025); EU GDPR; UK GDPR/DPA 2018/PECR as amended by DUAA 2025; US (CCPA, COPPA). Kept in §10 for counsel. |
@@ -76,14 +70,21 @@
   already shows (§5). Every other placeholder is unchanged, and the launch gate in §4 is unchanged except
   that L-1 and L-51 now record these two fills.
 
+- **v0.4 (2026-11-15).** Factual synchronization for the approved Free public desktop release.
+  Section 4 supersedes the v0.3 publication matrix where this release changes scope. Public
+  immutable SFO3 desktop downloads replace the account-bound installer proposal. The notes route is
+  server-side option C, following an explicit request. The 2026-10-03 draft named Hetzner Cloud in
+  Falkenstein, AWS SES, and earlier retention and support values. These are historical draft
+  particulars and require operational evidence for the manual Free deployment. Paid features
+  remain deferred.
+
 ## 3. How to read the drafts
 
 - **`{{PLACEHOLDER}}`** — a fact or decision nobody has supplied. Never publish with one left in.
-- Everything else in the policies is written as true at launch. Whether it is actually true is tracked
-  in §4, not in the policy text.
+- The drafts describe intended Free release behaviour. Section 4 distinguishes approved design,
+  evidence in source and evidence from the selected release artifacts or deployment.
 - New risk allocations and commitments the owner and counsel must accept are listed in §6.
-- **The site pages are generated from these files (exists after PR #142; none of the tooling in this bullet is
-  on this branch alone).** After editing either policy, run
+- **The site pages are generated from these files.** After editing either policy, run
   `npm run sync:legal` in `implementation/marketing` and commit the generated files; CI fails if they are out
   of sync. A page stays in draft mode (banner, highlighted placeholders, `noindex`) while any placeholder
   remains, while the DRAFT banner is still in the markdown, or while the version line is not `final`.
@@ -93,166 +94,99 @@
 
 ## 4. Launch-readiness conditions
 
-Status key, from my verification of this worktree on 2026-10-01: **Built** = present in code and
-config · **Partly built** · **Not built** · **Ticketed** = a ticket exists, nothing found in the code ·
-**Undecided** = an owner or counsel decision is needed first · **Unknown** = could not be verified from
-the repository. Ticket IDs marked (M) come from the owner's project memory notes; IDs marked (O) were
-supplied by the owner through the coordinator on 2026-10-01. Every (M) and (O) id was later confirmed to exist
-in ClickUp by a read-only lookup on 2026-10-02 (§8.3); that confirms the ticket exists, not that the work it
-describes is built.
-
-**Gate** = must be satisfied before publication. **Deferred** = owner decision 2026-10-01: deferred,
-generic posture; accepted risk (§7); not a publication blocker.
+Read the source and the operational evidence separately. In this table **Gate** means evidence or
+approval is still required before publication. **Out of scope** preserves prior feature requirements
+for later work. **Deferred** carries forward the prior regulatory posture in §7 for counsel review.
+The approved release source is `docs/superpowers/specs/2026-11-14-self-service-public-release.md`.
+Desktop, backend and website integration evidence must match the actual packages and deployment.
 
 | # | Gate | Policy clause | What must be true at publication | Current status | Decision or ticket needed |
 |---|---|---|---|---|---|
-| L-1 | Gate | Privacy header & 13; Terms header & 25; site footer | Legal entity, address, registration number, privacy, support and legal-notice mailboxes are real and monitored; one email domain is used consistently; the footer names the entity | Partly decided: the owner named the entity on 2026-10-02 (First Pavilion Technologies, Abeokuta), and both policies now carry the name. Still missing: registered address, registration number, legal-notices mailbox, confirmed privacy and support mailboxes, and one email domain (site uses `selahcue.app`, API uses `selahcue.com` and `firstpavitech.com`). The site footer still reads "© 2026 SelahCue" | Owner decision |
+| L-1 | Gate | Privacy header and 13, Terms header and 25, site footer | Use the owner-supplied identity and contacts in §1. Check footer attribution against the intended launch presentation. | Owner commit e7566a96f supplied the particulars. ContactView uses the same mailto. Neither confirms receipt or staffing. | Operations verifies routing and monitoring of the support, privacy and legal-notice mailbox. |
 | L-2 | Gate | Privacy 2.3; Terms 9.4 | The desktop app includes a congregation-recording notice the church can display (PRD FR-158) | Unknown (no evidence found) | Ticket needed (FR-158) |
 | L-3 | Gate | Privacy 2.4 | Operators can delete a transcript in the operator console, and administrators can set automatic deletion after N days | Partly built (repository supports delete and `retention_days`; console UI not verified) | Engineering to confirm or build |
 | L-4 | Gate | Privacy 2.4 | Deleting a transcript deletes its sermon-note draft by default | Built in the repository; the default is flagged in `transcript_repo.rs` as awaiting owner sign-off | Owner decision |
 | L-5 | Gate | Privacy 2.4 | The desktop app keeps no audio recordings in the launch build | Built for the current build (no audio store found); PRD FR-153 contemplates raw-audio retention | Engineering to confirm for the launch build |
 | L-6 | Gate | Privacy 2.4, 9.1 | The transcript database is encrypted by default; the deck library and media files are not | Built | Re-check if encryption scope changes |
-| L-7 | Gate | Privacy 3.1, 10.1; Terms 2.1 | Sign-up asks the user to confirm the minimum age | Not built (no age field or check) | Ticket needed; owner sets `{{MINIMUM_ACCOUNT_AGE}}` |
-| L-8 | Gate | Privacy 3.1; Terms 2.3, 23.2 | Acceptance of the Terms and Privacy Policy is recorded server-side with version, timestamp and user, at sign-up and on re-acceptance of material changes | Not built (the checkbox is checked only in the browser) | Ticket needed |
+| L-7 | Gate | Privacy 10.1, Terms 2.1 | Confirm the stated minimum age and how it applies to signup. | Drafts state 18. Signup UI does not evidence a separate age confirmation. | Owner and counsel confirm the age requirement and appropriate acceptance control. |
+| L-8 | Gate | Terms 2.3 and 23.2 | Confirm acceptance and change-notice wording matches the deployed signup, public download and re-acceptance flows. | SignUpView links both routes and requires a browser checkbox. Neither the local checkbox nor an anonymous download proves a server acceptance record. | Engineering and counsel verify the actual record/version flow and assent wording, including anonymous installer use. |
 | L-9 | Deferred | (was Privacy 3.1 sensitive-data condition) | Legal condition for religious-affiliation inference | Placeholder removed; the policy states only that account data is not used to profile beliefs (true by design) | Accepted risk (§7) |
-| L-10 | Gate | Privacy 3.2 | Transactional email runs through the chosen provider, and the sender domain matches L-1 | Partly built (SMTP and Celery seam built; provider undecided; default sender `noreply@selahcue.com`) | Owner decision |
-| L-11 | Gate | Privacy 3.2; Terms 8.13 | Licence and plan emails (renewal reminders, expiry, suspension) and receipts/invoices are sent | Not built (Platform PRD FR-528) | Ticket needed |
+| L-10 | Gate | Privacy 3.2 and 6.1 | Confirm account email provider, sender, and verification and reset delivery. | Account email and SMTP plumbing exist in source. AWS SES was identified in the earlier owner-supplied draft. | Operations verifies the provider, region and sender for the actual deployment, rather than filling from the earlier draft. |
+| L-11 | Out of scope | Prior Privacy 3.2 and Terms 8.13 | Paid renewal reminders, billing receipts and invoices. | Deferred with paid service. Licence email claims were removed from this release draft. | Revisit alongside any later payment or licence-notice work. |
 | L-12 | Gate | Privacy 3.2 | Marketing email is sent only with recorded consent and every message has an unsubscribe link, or no marketing email is sent | Built in the sense that no marketing email exists | Re-check if marketing starts |
 | L-13 | Gate | Privacy 3.3; Terms 6.1–6.4 | The released desktop activates Devices by Administrator sign-in and by enrolment key, stores the device credential in the OS secure store, and verifies signed licence files | Partly built (API built; `selahcue-licensing` client crate exists but is not linked into released binaries; its sign-in activation now uses the native `/v1` routes, 17tnw2b1we2, PR #215, after 86ak5t1gw added them) | 86ak5mn11, 86ak5mn1d, 86ak5mn1t, 86ak5t1gw, 17tnw2b1we2 |
 | L-14 | Gate | Privacy 3.3 | The device-identifier method is decided and privacy-reviewed | Undecided (left to the app shell by design, `selahcue-licensing/src/device.rs`) | Engineering + counsel (`{{DEVICE_FINGERPRINT_METHOD}}`) |
 | L-15 | Gate | Privacy 3.3; Terms 6.2 | Devices refresh licence files automatically when online, and the server records each Device's last check-in time | Partly built (refresh endpoint exists; no last-check-in field on `Device` or `DeviceToken`) | 86ak5mn1h; schema change needed |
-| L-16 | Gate | Privacy 3.3, 7.1, 9.1; Terms 5.4, 5.5, 13.1 | Installers live in a private, encrypted, versioned S3-compatible bucket with the chosen provider and region; CI uploads Releases; downloads go through accounts or activated Devices by expiring link; the latest Release is always served; earlier Releases are kept and a Release can be withdrawn and rolled back; each download is recorded (what, platform, when, account or device) | Ticketed (`downloads:prepare` and `:complete` return 501; download-page buttons link nowhere) | Bucket 17tnw2b0wqj (O); downloads backend 86ak10afm (O); owner chooses `{{DOWNLOAD_HOSTING_PROVIDER}}` and `{{DOWNLOAD_HOSTING_REGION}}` |
-| L-17 | Gate | Privacy 6.2, 11.2; Terms 6.3, 8.6, 8.10, 15.1 | The customer portal shows members, plan, licence, Devices, usage and billing history; Administrators can deactivate a Device, cancel a Plan and close the Account | Not built (`accountViewer` returns only the viewer; no device-deactivation writer) | Tickets needed (FR-525, FR-511) |
+| L-16 | Gate | Privacy 3.3, 6.1 and 7.1, Terms 5.5 and 13.1 | Public anonymous installer delivery from immutable DigitalOcean Spaces SFO3 objects using the website manifest. | Task 1 manifest is unpublished. Release storage verification covers a private object only. No public artifact is asserted. | Release owner verifies all four accepted installers, public manifest and anonymous download from their final URLs. Installer evidence does not establish API or Bible hosting. |
+| L-17 | Gate | Privacy 6.2, Terms 6.3 | Portal shows the actual licence, devices and weekly allowance and provides authorized device deactivation. | Current website source has mock account data. Backend Task 8 owns the real account contract and UI integration. | Engineering and operations demonstrate the real account flow. Paid history, cancellation and self-service closure are excluded from these claims. |
 | L-18 | Gate | Terms 6.5, 8.13, 14.1 | Licence and Plan changes take effect only at the next Session; activated Devices keep running when the platform is unavailable | Not built (decided: DEC-009, Platform PRD CON-P1, FR-549, NFR-504) | 86ak5mn1t |
 | L-19 | Gate | Terms 7.2 | Free-Plan output shows the watermark | Not built (decided: DEC-008, FR-548; grant dimension exists in the catalogue) | Ticket needed |
-| L-20 | Gate | Privacy 3.4, 4.1, 6.1; Terms 8.3–8.10, 13.1 | Paystack is integrated end to end: hosted checkout so no card data touches SelahCue servers; subscription billing; webhook; automatic licence issuance; receipts and invoices issued by SelahCue as seller; refunds through Paystack; the data Paystack sends us is defined; Paystack's checkout cookies and scripts match the cookie table | Not built (billing webhook returns 501; `apps/billing` is a scaffold). Payment provider decided: Paystack (owner, 2026-10-01) | D2 86ak10g47 (Paystack decided); FR-534, FR-537; record the Paystack decision in DECISION-LOG |
-| L-21 | Gate | Terms 8.1–8.9, 8.11; pricing page | Prices, currency, Billing Periods, trial, renewal, proration, downgrade timing, refund policy, price-change notice and failed-payment period are decided; the pricing page matches the catalogue | Undecided (DEC-008/009/010 decide tiers, grace and suspension only; tier names and allowance periods conflict across DEC-008, the owner decision of 2026-09-27 and the pricing page) | Owner decision D1 (86ak10gph); catalogue 17tnw2az0gd (M) |
-| L-22 | Gate | Terms 8.5 | Renewal reminders meet the automatic-renewal laws of each market where paid Plans are sold | Undecided | Counsel review |
-| L-23 | Gate | Terms 8.11 | Allowance rules on upgrade and downgrade, and session-start Device gating after a downgrade, are implemented | Not built (allowance rules are owner-decided per project memory, not in DECISION-LOG; Device rule decided in DEC-009/FR-550) | Record the decision in DECISION-LOG; ledger 17tnw2az0gj (M) |
-| L-24 | Gate | Terms 8.12 | Soft suspension works: activated Devices keep presenting; new activations, licence renewals and Cloud Features stop; reinstatement restores the prior state | Partly built (API stores `prior_status` and has a state machine; cascade scoping and client behaviour unverified) | DEC-010; 86ak1099u; 86ak5mn1t |
-| L-25 | Gate | Terms 8.13 | The 7-day grace, renewal reminder and Free-Plan fallback at the next Session work | Not built (decided: DEC-009, FR-521, FR-549) | Lifecycle jobs (FR-503) + 86ak5mn1t |
-| L-26 | Gate | Privacy 3.5, 7.1, 8 | The hosting provider and region are chosen; the server-log retention is set and enforced | Undecided | Owner decision |
-| L-27 | Gate | Privacy 3.5, 8 | The audit-record retention is set and enforced, and audit records include allowed and refused cloud-feature requests | Not built (no retention limit on `AuditEvent`; refused-request recording is owner-decided per project memory) | Owner decision; tickets 86akby3xu, 17tnw2az0gn (M) |
-| L-28 | Gate | Privacy 8 | Every retention period in the table is set and enforced by scheduled jobs | Partly built (only the nightly session and credential-token sweep exists) | Owner decision + tickets |
-| L-29a | Gate | Privacy 11.2; Terms 15.1 | Users can delete their user account in account settings; Administrators can close the organisation's account; deletion deletes or anonymises personal data and anonymises audit actor references | Not built / ticketed (no such mutation; account models use `on_delete=PROTECT`) | Self-service deletion 17tnw2b0wqk (O); Platform PRD §16 |
-| L-29b | Gate | Privacy 11.3; Terms 15.1 | Export by request: a support runbook and admin tooling exist to verify identity, produce an account-data export and deliver it by expiring link within `{{DSAR_RESPONSE_TIME}}` | Not built / ticketed | Export-by-request 17tnw2b0wqm (O); owner sets `{{DSAR_RESPONSE_TIME}}` |
-| L-30 | Gate | Privacy 11.4–11.5 | Other privacy requests are answered within `{{DSAR_RESPONSE_TIME}}` after identity checks, and there is a procedure for helping churches with requests about cloud-feature data. (A formal complaints-handling process under UK DUAA s.103 or the GAID is Deferred, §7.) | Unknown (no procedure documented) | Operations (shares the 17tnw2b0wqm runbook) |
-| L-31 | Gate | Privacy 3.6 | The website contact form actually sends messages to a monitored mailbox, and its confirmation text makes only promises staff can keep | Not built (the form fakes success with a timer and promises a reply "within 24 hours") | Ticket needed |
+| L-20 | Out of scope | Prior Privacy 3.4, 4.1 and 6.1, Terms 8.3–8.10 and 13.1 | Paystack hosted checkout, cookies, webhook, payment data, invoices, and refund delivery. | Historical owner decision 2026-10-01. Free signup, activation and download have no payment step. | Revisit with any paid release and validate integration and provider terms. |
+| L-21 | Out of scope | Prior Terms 8.1–8.9 and 8.11 | Prices, currencies, billing periods, trial, renewal, proration, refunds, price changes and failed-payment terms. | Current scope is ongoing Free access with no trial. Weekly allowance is specified in L-38. | Revisit for paid service. |
+| L-22 | Out of scope | Prior Terms 8.5 | Paid automatic-renewal reminders. | Deferred with paid subscriptions. | Counsel reviews for the actual paid markets when in scope. |
+| L-23 | Out of scope | Prior Terms 8.11 | Paid upgrades, downgrades and proration of allowances. | One Free offering for this release. | Revisit with future plans. |
+| L-24 | Gate | Terms 6.5 and 15 | Verify how account/security suspension affects devices, activation and optional cloud features. | Earlier soft-suspension design in DEC-010; paid non-payment copy was removed. | Engineering verifies Free suspension behaviour and running-session protection. |
+| L-25 | Out of scope | Prior Terms 8.13 | Seven-day paid grace period, reminder and fallback to Free. | Deferred with paid subscriptions. | Revisit with the paid lifecycle. |
+| L-26 | Gate | Privacy 3.5, 7 and 8 | Verify deployment hosting and operational log handling. | Historical draft named Hetzner Cloud, Falkenstein. Coolify and the native API hostname establish deployment method and endpoint naming. Installer SFO3 verification is separate. | Owner records actual site/API/database/worker/ephemeral store/log providers and regions and verifies retention and configuration. |
+| L-27 | Gate | Privacy 3.5, 3.8 and 8 | Verify which security and cloud decision metadata is retained, its retention, and exclusion of sermon content. | Accepted design excludes audio and sermon content from usage records. Earlier two-year retention is unverified. | Engineering and operations verify record fields, access and lifecycle with actual deployment evidence. |
+| L-28 | Gate | Privacy 8 | Verify account, unverified signup, session, credential, audit, licence, usage and support retention and enforcement. | Account source has expiry and maintenance code. Usable lifetime is separate from deletion. Earlier draft periods and scheduled-deletion statements require operational support. | Operations supplies actual periods or meaningful criteria and verifies jobs, logs and backup behaviour. |
+| L-29a | Gate | Privacy 11.2, Terms 15.1 | Verify email intake and handling of closure or deletion requests. | Earlier self-service plan 17tnw2b0wqk is unverified and omitted from this draft. No deletion or audit-anonymisation guarantee is stated. | Operations and counsel confirm identity/authority checks, deletion scope, exceptions, workflow and timing. |
+| L-29b | Gate | Privacy 11.3 | Verify access and data-copy request handling by email. | Prior export proposal 17tnw2b0wqm and its expiring-link and timing commitments lack operational evidence. | Operations verifies identity checks, export process, secure delivery and timing. |
+| L-30 | Gate | Privacy 11.4–11.5 | Verify the general rights-request process and support for church requests about cloud data. | Contact address is supplied. Staffing, timelines and cloud/provider coordination remain unverified. | Operations and counsel confirm the process and timing before completing the placeholder. |
+| L-31 | Gate | Privacy 3.6 | Support copy matches how messages are actually received. | ContactView has a disabled, validation-only form and a support mailto. It shows no send, receipt or reply claim. | Operations verifies the email route and monitoring. Reassess if a form goes live. |
 | L-32 | Gate | Privacy 3.7 | The launch desktop build has no advertising, analytics, telemetry or crash reporting; its only internet connections are those listed. If it checks for updates automatically, that is added to 3.7 | Built for the current Windows build (verified from direct dependencies); launch build to be re-checked | Engineering re-check at release |
 | L-33 | Gate | Privacy 3.7; Terms 13.1 | The speech model still downloads from `huggingface.co` | Built | Re-check at release |
-| L-34 | Gate | Privacy 3.7, 3.9; Terms 9.3 | Bible translations download from the real host in `{{TRANSLATION_DOWNLOAD_HOST}}`; the Young's Literal Translation pin has a real URL and digest | Not built (the catalogue URL is `https://OWNER-SUPPLIED.invalid/...`) | Owner supplies host and pin (may be the 17tnw2b0wqj bucket) |
-| L-35 | Gate | Privacy 3.9, 6.1; Terms 9.3, 13.1 | Licensed translations: publisher agreements signed; translations delivered only to activated Devices on eligible Plans; export restrictions enforced (FR-146); publisher terms published; the publisher reporting data is defined | Not built (story 86ajpqfyj; API README lists licensed translations and reporting as open owner decisions) | Owner decision + 86ajpqfyj |
-| L-36 | Gate | Privacy 3.8; Terms 12 | Cloud transcription (Deepgram, audio streamed directly from the desktop with a server-minted short-lived credential) and AI notes (OpenAI, route per `{{NOTES_ROUTE}}`) ship in the released build with no developer keys; per-feature Administrator opt-in; the consent screen names Deepgram and OpenAI, says what data is sent and that it leaves the church's network and can be processed in another country (86akby5hk asks it to say sermon data leaves the country; the policy wording must match whatever the screen finally says); an active-cloud indicator (FR-133) | Partly built (consent model in `selahcue-core`; Deepgram and OpenAI paths exist only in developer builds; hosted credential path not built; consent-screen ticket text not found in the repo) | 86akby5hk (consent screen); 86ajy04hz, 86akby3xu; 17tnw2az0gn, 17tnw2az0n2 (M) |
-| L-37 | Gate (part) / Deferred (part) | Privacy 3.8, 8; Terms 12.2 | **Gate:** Deepgram's and OpenAI's current terms are reviewed so that the Privacy 3.8 statement (they say how long they keep data and whether they use it to improve their services) is accurate, and `{{PROVIDER_RETENTION}}` is filled from them. **Deferred:** a DPIA filed with the NDPC, signed DPAs with the providers, a church-facing DPA, transfer instruments and a formal COPPA assessment | Not done | Owner (gate part); accepted risk (deferred part, §7) |
-| L-38 | Gate | Privacy 3.8; Terms 12.4 | Usage records and allowances work as described, including the rule that a failed note generation does not use up the allowance, and the retry terms | Not built. The retry rule is ADR-0028 D5 (in the repository, **Proposed**, since PR #111 merged on 2026-10-02); the owner's D7 amendment is also recorded on ClickUp. **Terms 12.4 as drafted over-states the allowance rule under option A:** ADR-0028 D5 says "failures are never charged" cannot be fully kept there, because the server cannot see a generation that failed partway, and holds exactly only under option C (§8.3) | 17tnw2az0gj, 17tnw2az0gn (M); the OpenAI Realtime spike 17tnw2az0n2 decides A or C; owner and counsel reword Terms 12.4 and fill `{{RETRY_ALLOWANCE_TERMS}}` |
+| L-34 | Gate | Privacy 3.7 and 3.9, Terms 9.3 | Verify the accepted desktop build’s bundled text list and any separate remote Bible fetch in that build. | Downloadable Bible content is separate from public SFO3 installers. No Bible hosting or remote availability claim is made. | Engineering verifies actual packaged texts and applicable fetch path; confirm hosting and disclose it if a remote fetch ships. |
+| L-35 | Out of scope | Prior Privacy 3.9 and 6.1, Terms 9.3 and 13.1 | Licensed translations, publisher contracts, entitlement and usage reporting. | Earlier design at 86ajpqfyj. Current drafts cover bundled texts. | Verify distribution rights and reporting if licensed translations are added. |
+| L-36 | Gate | Privacy 3.8, Terms 12 | Verify per-feature consent, status display, direct Deepgram audio and the requested option C transcript flow with server-only OpenAI credentials. | Approved release spec: Direct Deepgram after opt-in; notes go to SelahCue’s C worker; the native app validates, saves and ACKs. Source input 5 minutes, retrieval up to 15 minutes from staging, physical expiry up to 20 minutes from staging on cleanup failure. Quality/budget qualification remains open. | Engineering demonstrates accepted integrated native/API behaviour and measures staging/cleanup bounds, key custody and exclusions from the durable database, broker, logs, traces and backups. |
+| L-37 | Gate (part) / Deferred (part) | Privacy 3.8, 7 and 8, Terms 12.2 | Verify cloud provider terms, processing locations, retention, use of content and relevant transfer safeguards. See §7 for earlier regulatory deferrals. | SelahCue’s staging bounds concern its own temporary storage. Provider retention, processing settings and safeguards remain open. | Owner and qualified counsel verify the actual Deepgram and OpenAI arrangements and fill the provider and transfer text. |
+| L-38 | Gate | Privacy 3.8, Terms 8 and 12.4 | 20 cloud transcription minutes and one note per church weekly. One note unit on successful publication, zero on failure. A single original-week credit on backend-confirmed early result loss before expiry or ACK. | Approved C design in the release spec. ACK follows native validation and durable save, and leaves quota unchanged. No credits for expiry, ACK, transient errors or client reports alone. | Engineering and operations verify end-to-end weekly accounting, durable save/ACK and content-free delivery credit/audit records under failure. |
 | L-39 | Gate | Privacy 3.10 | No sale, no behavioural advertising, no solely automated decisions with significant effects | Built (true today) | Re-check at release |
-| L-40 | Gate | Privacy 4.1, 4.4 | A cookie audit of the production site shows only the listed cookies and storage (including the `csrftoken` lifetime and Paystack's checkout cookies) and no analytics or advertising tools | Built in code (the `csrftoken` lifetime is the Django default and is unverified on a deployment) | Cookie audit at release |
+| L-40 | Gate | Privacy 4.1 and 4.4 | Verify browser cookies and local storage and reconcile the stated lifetimes and scope. | Browser account code uses the session cookie and same-origin CSRF and a local session hint. No Paystack cookie claim remains. | Operations verifies headers, storage, Google Fonts and analytics in the actual deployment. |
 | L-41 | Gate | Privacy 4.3; Terms 13.1 | Either the site still loads Google Fonts (disclosure stays), or the font is self-hosted and both Google Fonts passages are deleted | Built (the site loads Google Fonts today); self-hosting recommended | Owner decision |
 | L-42 | Deferred | (Privacy 4) | GAID Art. 7(l)-style homepage cookie notice | The policy does not claim a notice | Accepted risk (§7) |
 | L-43 | Deferred | (was Privacy 5.1 LIA reference) | Legitimate Interest Assessment | Placeholder removed; the policy no longer claims an assessment | Accepted risk (§7) |
 | L-44 | Deferred | (Privacy 6.1) | Written data processing agreements with hosting, storage and email providers beyond their standard terms | The policy now describes providers only as running parts of the service | Accepted risk (§7) |
-| L-45 | Deferred / placeholder | Privacy 7.2 | NDPA transfer bases and GAID Art. 18(1)(e) consent mechanics | Deferred; the policy states plainly that processing can be outside the user's country. `{{TRANSFER_SAFEGUARDS_SUMMARY}}` must still be filled with a true statement (or deleted) | Accepted risk (§7); owner fills the placeholder truthfully |
+| L-45 | Gate (part) / Deferred (part) | Privacy 7.2 | Complete the factual transfer-safeguards disclosure. See §7 for earlier regulatory deferrals. | The prior draft’s provider-commitments language does not establish deployed safeguards. | Operations and qualified counsel verify approach for the actual providers and processing locations. |
 | L-46 | Deferred | (was Privacy header, 11.6, 13) | NDPC registration as a data controller of major importance; DPO; EU and UK representatives | Placeholders and sections removed; nothing is claimed | Accepted risk (§7) |
-| L-47 | Gate | Privacy 9.1 | The deployment serves HTTPS only (HSTS on), Redis-backed rate limiting is configured, the lockout settings are as described, and installers are stored encrypted and delivered only by expiring link | Built in code for the API; deployment and bucket unknown | Operations check at release; 17tnw2b0wqj (O) |
+| L-47 | Gate | Privacy 9.1 | Verify deployment transport security, credential protections, lockout and rate-limiter setup. | API and same-origin proxy controls are in source. Public installer delivery in L-16 now has its own gate. | Operations verifies HTTPS and the actual deployment settings. |
 | L-48 | Gate (part) / Deferred (part) | Privacy 9.2 | **Gate:** an internal breach-response procedure exists so affected users are told without undue delay and authorities are informed where the law requires. **Deferred:** NDPC-specific 72-hour notification mechanics | Unknown | Operations; accepted risk (deferred part, §7) |
-| L-49 | Gate | Terms 5.4 | The latest Release stays downloadable after a paid Plan ends | Ticketed (owner decision 2026-10-01: always-latest downloads) | 86ak10afm (O) |
-| L-50 | Gate | Terms 6.5, 14.3, 15.2, 16.1, 17.3, 19, 22.2, 23.2; Privacy 11.2 | The owner and counsel accept each proposal listed in §6, or change or delete the clause | Undecided | Owner + counsel |
+| L-49 | Out of scope | Prior Terms 5.4 | Installer access after a paid plan ends. | Deferred with paid plans. Anonymous Free delivery and release selection are tracked in L-16. | Revisit with any paid scope. |
+| L-50 | Gate | Terms 6.5, 14.3, 15.2, 16.1, 17.3, 19, 22.2 and 23.2 | Owner and qualified counsel accept or amend the proposals in §6. | This revision removed paid refund commitments and narrowed the rights handling claims. Remaining proposed allocations need approval. | Owner and counsel. |
 | L-51 | Gate | Terms 5.6, 13.1 | Open-source licence notices and the NDI attribution are published | Not built | Engineering (`{{THIRD_PARTY_NOTICES_LOCATION}}`; the NDI attribution wording is filled in Terms 13.1, §5) |
 | L-52 | Gate | Terms 10.1 | Scripture detection requires operator approval by default; AI notes show the AI-generated label and fabrication warning | Partly built (label and warning in `selahcue-core`/`selahcue-cloud`; the detection default is specified in PRD FR-115 but not verified in code) | Engineering to confirm |
-| L-53 | Gate | Terms 14.2 | The support mailbox is staffed to the published support terms | Unknown | Operations (`{{SUPPORT_TERMS}}`) |
-| L-54 | Gate | Terms 22 | Governing law and forum are chosen | Undecided | Owner + counsel |
-| L-55 | Gate | Terms 1.2; Privacy 1.3 | The Controller app policies are published at the URLs used, with placeholder values aligned (§13) | Not built | Owner |
-| L-56 | Gate | Website pages | The pricing, download, contact and sign-up pages are consistent with both policies (no PayPal/ACH/SLA/version claims that are untrue; no "Church" plan unless it exists) | Not built (see §9.4) | Ticket needed |
-| L-57 | Gate | Terms 8.3, 8.9 | As the seller, SelahCue is set up to issue invoices and to collect and remit any value added tax or sales tax it must collect where it sells | Unknown | Owner + accountant |
+| L-53 | Gate | Terms 14.2, Privacy 3.6 and 11 | Verify the support mailbox is staffed for the intended service and rights requests. | Address is owner-supplied. The prior fixed response targets lack evidence and were removed. | Operations confirms mailbox handling and rights timing. |
+| L-54 | Gate | Terms 22 | Confirm the governing law and forum before publication | Nigerian law and the courts of Abeokuta, Ogun State, Nigeria are drafted. Owner and counsel review is pending. | Owner + counsel |
+| L-55 | Out of scope | Privacy 1.3 and 3.11, Terms 1.2 | Controller app release and store policy operation. | Separate Controller documents remain in source. These drafts make no Controller distribution claim. | Reconcile with the separate mobile release. |
+| L-56 | Gate | Website pages | Confirm home, pricing/FAQ copy, download, contact, signup and linked legal routes match the Free public release. | Website source exposes separate signup-linked /privacy and /terms. Public manifest remains unpublished. | Verify actual accepted build and manual deployment, including no paid or unverified shipping claims. |
+| L-57 | Out of scope | Prior Terms 8.3 and 8.9 | Paid service invoices and tax collection and remittance. | Historical paid-service readiness gate. No payments are collected in this release. | Owner and accountant verify requirements before paid service. |
 
-**Totals:** 58 rows (L-29 split into L-29a and L-29b; L-57 new). 50 rows are fully gated, 6 are fully
-deferred (L-9, L-42, L-43, L-44, L-45, L-46), and 2 are split between gated and deferred parts (L-37,
-L-48).
+All 58 gate IDs are retained, including prior rows now out of scope. Keep actual package/deployment
+proof and counsel sign-off with this matrix as evidence arrives.
 
-## 5. Placeholder register (50 open placeholders)
+## 5. Placeholder register
 
-**Filled on 2026-10-02 (2), so no longer in the table below** (the table lists exactly the tokens still in
-the two policies):
+At Task 4 BASE, neither policy contained a factual placeholder token. Both contained the explanatory
+`{{PLACEHOLDER}}` in the draft warning. The v0.3 50-token register predated owner commit `e7566a96f`
+and did not reflect the draft text. This revision makes the following unresolved operational fields
+visible in the Privacy draft. The Terms draft retains its warning and the applicable gates in §4.
 
-- `{{LEGAL_ENTITY_NAME}}` is now `First Pavilion Technologies` (Privacy header, 1.1 and 13; Terms header,
-  8.3 and 25), on the repository owner's statement of 2026-10-02 (§1). No legal-form suffix is added,
-  because no non-draft source states one.
-- `{{NDI_ATTRIBUTION_TEXT}}` is now "NDI® is a registered trademark of Vizrt NDI AB." (Terms 13.1). The
-  shipped operator app shows that sentence in its About page (`selahcue-operator/dist/index.html`, section
-  "NDI ATTRIBUTION"), and `implementation/desktop/vendor/ndi/README.md`, `docs/ops/DEPLOYMENT.md` and
-  `docs/ops/WINDOWS-INSTALLER.md` repeat it. `docs/research/LICENSING-REGISTER.md` §2.6 also says a link to
-  ndi.video must sit near every place NDI is used; that link is not part of this sentence.
+| Current token | What completes it | Gate |
+|---|---|---|
+| `{{TRANSACTIONAL_EMAIL_PROVIDER}}` | Confirm provider and operating setup for account email | L-10 |
+| `{{CLOUD_PROVIDER_RETENTION_AND_USE}}` | State actual Deepgram audio and OpenAI transcript/output retention and use | L-37 |
+| `{{SERVICE_HOSTING_LOCATIONS}}` | Verify actual site, account API, database, notes worker, and logging locations and providers | L-26 |
+| `{{TRANSFER_SAFEGUARDS_SUMMARY}}` | Confirm factual safeguards and suitable disclosure with counsel | L-37, L-45 |
+| `{{ACCOUNT_RETENTION}}` | Verify closure and unverified-account retention | L-28 |
+| `{{SESSION_RECORD_RETENTION}}` | Verify deletion or retention of sign-in session records | L-28 |
+| `{{CREDENTIAL_RECORD_RETENTION}}` | Verify deletion or retention of used and expired email credential records | L-28 |
+| `{{OPERATIONAL_LOG_RETENTION}}` | Verify rates/counters and access, proxy, worker and operational log classes and retention | L-26, L-28 |
+| `{{SECURITY_AND_USAGE_RETENTION}}` | Verify retention of audit, licence, device and content-free usage records | L-27, L-28 |
+| `{{SUPPORT_RETENTION}}` | Verify support-message handling and retention | L-28 |
+| `{{RIGHTS_REQUEST_PROCESS_AND_TIMING}}` | Verify request response, identity, deletion, copy and escalation procedures and timing | L-29a, L-29b, L-30 |
 
-Every other token stayed open on purpose, because no non-draft source states its value without doubt. The
-grounded-looking candidates were: the privacy and support mailboxes (`privacy@selahcue.app` on the old
-`PrivacyView.vue`, `support@selahcue.app` on `ContactView.vue`), left open because §9.3 item 12 and §9.4 record that
-nothing shows those mailboxes or that domain exist and the API uses two other domains (L-1); the website
-URL (`https://selahcue.app` appears only in a sample affiliate link, while the API's tests and plans use
-`app.selahcue.com`); and the country (`docs/research/LICENSING-REGISTER.md` says only that First Pavilion
-"appears Nigeria-based").
-
-**Removed in v0.3 (13):** `DPO_NAME_AND_CONTACT`, `EU_REPRESENTATIVE`, `UK_REPRESENTATIVE`,
-`LIA_REFERENCE`, `DPA_REFERENCE`, `SENSITIVE_DATA_CONDITION`, `MODEL_TRAINING_STATEMENT`,
-`TRANSFER_MECHANISMS` (replaced by `TRANSFER_SAFEGUARDS_SUMMARY`), `PAYMENT_PROVIDER` (now Paystack),
-`MERCHANT_OF_RECORD` (SelahCue is the seller), `STT_PROVIDER` (now Deepgram), `NOTES_PROVIDER` (now
-OpenAI), `STT_ROUTE` (the repository documents a direct desktop-to-Deepgram stream with a
-server-minted credential).
-
-**New in v0.3 (4):** `DOWNLOAD_HOSTING_PROVIDER`, `DOWNLOAD_HOSTING_REGION`, `DSAR_RESPONSE_TIME`,
-`TRANSFER_SAFEGUARDS_SUMMARY`.
-
-| Placeholder | Meaning | Used in | Who decides |
-|---|---|---|---|
-| `{{REGISTERED_ADDRESS}}` | Registered office address | Both | Owner |
-| `{{COMPANY_REGISTRATION_NUMBER}}` | CAC (or other) registration number | Both | Owner |
-| `{{EFFECTIVE_DATE}}` | Date each document takes effect | Both | Owner, at publication |
-| `{{WEBSITE_URL}}` | Production website URL | Both | Owner |
-| `{{PRIVACY_POLICY_URL}}` | Public URL of the privacy policy | Both | Owner |
-| `{{TERMS_URL}}` | Public URL of the terms | Terms | Owner |
-| `{{PRIVACY_CONTACT_EMAIL}}` | Mailbox for privacy requests, export requests and concerns | Privacy | Owner |
-| `{{SUPPORT_CONTACT_EMAIL}}` | Support mailbox | Both | Owner |
-| `{{LEGAL_NOTICES_EMAIL}}` | Address for formal legal notices | Terms | Owner |
-| `{{CONTROLLER_PRIVACY_POLICY_URL}}` | Public URL of the mobile Controller privacy policy | Privacy | Owner |
-| `{{CONTROLLER_TERMS_URL}}` | Public URL of the mobile Controller terms | Terms | Owner |
-| `{{EMAIL_DELIVERY_PROVIDER}}` | Transactional email provider | Privacy | Owner |
-| `{{HOSTING_PROVIDER}}` | Hosting provider for the API and site | Privacy | Owner |
-| `{{HOSTING_REGION}}` | Country or region of the servers | Privacy | Owner |
-| `{{DOWNLOAD_HOSTING_PROVIDER}}` **(new)** | Object-storage provider for installers (DigitalOcean Spaces or Hetzner Object Storage; undecided) | Both | Owner |
-| `{{DOWNLOAD_HOSTING_REGION}}` **(new)** | Region of the installer bucket | Privacy | Owner |
-| `{{COUNTRY_OF_ESTABLISHMENT}}` | Country where SelahCue is established (assumed Nigeria) | Privacy | Owner |
-| `{{TRANSFER_SAFEGUARDS_SUMMARY}}` **(new)** | One or two true sentences on what SelahCue does to protect data processed abroad (for example, choosing providers with published security and privacy commitments), or delete it. Must not claim instruments that do not exist | Privacy 7.2 | Owner + counsel |
-| `{{SERVER_LOG_RETENTION}}` | Server log retention | Privacy | Owner |
-| `{{AUDIT_RECORD_RETENTION}}` | Audit-record retention | Privacy | Owner |
-| `{{ACCOUNT_RETENTION_AFTER_CLOSURE}}` | Retention of account data after closure | Privacy | Owner |
-| `{{UNVERIFIED_SIGNUP_RETENTION}}` | Deletion period for never-verified sign-ups | Privacy | Owner |
-| `{{LICENCE_RECORD_RETENTION}}` | Retention of licence, device, download and usage records | Privacy | Owner |
-| `{{FINANCIAL_RECORD_RETENTION}}` | Payment, invoice and tax record retention (statutory minimums apply) | Privacy | Owner + accountant |
-| `{{SUPPORT_RETENTION}}` | Support message retention | Privacy | Owner |
-| `{{PROVIDER_RETENTION}}` | How long audio and transcripts sent to cloud features are kept (by SelahCue, and by Deepgram and OpenAI under their terms) | Privacy 3.8, 8 | Owner, from provider terms (L-37) |
-| `{{DSAR_RESPONSE_TIME}}` **(new)** | Time within which SelahCue answers privacy requests and delivers data exports | Privacy 11.3, 11.4 | Owner |
-| `{{MINIMUM_ACCOUNT_AGE}}` | Minimum age to hold an account (18 recommended) | Both | Owner |
-| `{{DEVICE_FINGERPRINT_METHOD}}` | How the desktop generates the device identifier | Privacy | Engineering |
-| `{{PAYMENT_DATA_RECEIVED}}` | Data Paystack sends SelahCue (for example, transaction reference, amount, status, card type and last four digits) | Privacy 3.4 | Owner, from the Paystack integration |
-| `{{TRANSLATION_DOWNLOAD_HOST}}` | Host for downloadable Bible translations | Privacy | Owner |
-| `{{NOTES_ROUTE}}` | Whether notes travel directly from the desktop to OpenAI, or through SelahCue's servers (`selahcue-cloud/src/openai.rs` says proxied; ADR-0028, Proposed and in the repository, chooses direct, option A, subject to the OpenAI Realtime spike 17tnw2az0n2, with server-side option C if the spike fails) | Privacy 3.8 | Owner + engineering |
-| `{{PUBLISHER_REPORTING_DATA}}` | What usage data publisher licences require SelahCue to report | Privacy 3.9 | Owner, from publisher agreements |
-| `{{THIRD_PARTY_NOTICES_LOCATION}}` | Where open-source licence notices are published | Terms | Engineering |
-| `{{ALLOWANCE_RESET_PERIOD}}` | Usage-allowance reset period (DEC-008 says monthly; the 2026-09-27 owner decision says weekly) | Terms | Owner |
-| `{{TRIAL_TERMS}}` | Trial length, features and what happens at the end (sign-up already creates a TRIAL organisation) | Terms 8.2 | Owner |
-| `{{BILLING_PERIODS}}` | Billing Periods offered | Terms 8.4 | Owner |
-| `{{CURRENCY}}` | Billing currency | Terms 8.4 | Owner |
-| `{{RENEWAL_TERMS}}` | Whether and how paid Plans renew (Paystack subscriptions or manual renewal) | Terms 8.5 | Owner + counsel |
-| `{{REFUND_POLICY}}` | Refund policy | Terms 8.7 | Owner + counsel |
-| `{{PRICE_CHANGE_NOTICE_DAYS}}` | Notice period for price changes | Terms 8.8 | Owner |
-| `{{PRORATION_TERMS}}` | How upgrades are charged part-way through a Billing Period | Terms 8.11 | Owner |
-| `{{DOWNGRADE_TIMING}}` | When a downgrade takes effect | Terms 8.11 | Owner |
-| `{{FAILED_PAYMENT_GRACE_PERIOD}}` | How long after a failed payment before suspension | Terms 8.12 | Owner |
-| `{{RETRY_ALLOWANCE_TERMS}}` | The note-retry rule (ADR-0028 D5, Proposed, records one retry within 10 minutes against the same reservation, the failed attempt and its retry together costing one unit, and the unit still being charged if the retry also fails; that is option A, and option C keeps "failures are never charged" exactly) | Terms 12.4 | Owner to confirm |
-| `{{SUPPORT_TERMS}}` | Support hours and response commitments | Terms | Owner |
-| `{{MINIMUM_LIABILITY_AMOUNT}}` | Floor of the liability cap | Terms | Owner + counsel |
-| `{{GOVERNING_LAW}}` | Governing law | Terms | Owner + counsel |
-| `{{DISPUTE_FORUM}}` | Court or arbitral forum | Terms | Owner + counsel |
-| `{{TERMS_CHANGE_NOTICE_DAYS}}` | Notice period for material changes to the Terms | Terms | Owner |
+The entity particulars, contact address and effective-date entry remain as supplied in §1.
+The existing NDI attribution remains in Terms 13.1. See L-51 for package notice evidence.
 
 ## 6. Proposed risk allocations and commitments
 
@@ -261,15 +195,15 @@ decided. Each needs owner and counsel acceptance (checklist row L-50) before pub
 
 | Clause | What it does | Why it is a proposal |
 |---|---|---|
-| Terms 17.3 | Caps SelahCue's liability at the greater of 12 months' fees and `{{MINIMUM_LIABILITY_AMOUNT}}` | A risk allocation; the floor protects free users' claims from being capped at zero |
+| Terms 17.3 | Caps SelahCue's liability at the greater of 12 months' fees and US$25,000 | A risk allocation; the floor protects free users' claims from being capped at zero |
 | Terms 19 | Customer indemnity for infringing content and unlawful recording | A risk allocation; may be resisted by churches; can be deleted |
 | Terms 6.5 | A licence or Plan change never interrupts a running Session | Decided product rule (CON-P1, FR-549); publishing it makes it a contractual promise |
-| Terms 14.3 | Refund if a material feature reduction leads to cancellation | Fairness term; commits money |
+| Terms 14.3 | Ability to change, add or remove features | Review alongside the Free service description and consumer-rights savings. Earlier paid refund language is deferred. |
 | Terms 15.2 | 14-day cure period before termination for breach | Process commitment |
 | Terms 16.1 | Warranty of reasonable care and skill | A contractual warranty for everyone |
 | Terms 22.2 | 30 days of good-faith negotiation before formal disputes | Process commitment |
-| Terms 23.2 | Administrators re-accept material changes; refund of unused fees if they reject | Needs L-8; commits money |
-| Privacy 11.2 | Deletion anonymises audit actor references | Platform PRD §16 design; needs engineering (L-29a) |
+| Terms 23.2 | Administrators re-accept material changes and the service records acceptance | Requires L-8 evidence. Earlier paid refund language is deferred. |
+| Privacy 11.2 | Account closure and deletion requests by email | Verify the actual handling under L-29a. Earlier audit anonymisation was a design proposal. |
 
 ## 7. Accepted risks (owner decision 2026-10-01)
 
@@ -303,7 +237,10 @@ or before cloud transcription reaches many churches.
 
 The owner's decision stands. These notes record it so that the trade-off is visible to any reviewer.
 
-## 8. Fact-to-source table
+## 8. Historical v0.3 fact-to-source table
+
+This section records the October draft review. The current Free release matrix in §4 supersedes its
+feature, clause-reference and status entries where they differ.
 
 Status key: **V** = verified in code or config in this worktree · **D** = documented decision or
 requirement, not necessarily built · **I** = inferred, needs confirmation · **M** = from the owner's
@@ -396,7 +333,10 @@ O, M and I flags are the ones defined at the top of §8; "Verify on X" follows �
 | **COPPA dates**: amended Rule effective 23 June 2025, compliance by 22 April 2026 | §10.4; §7 | Law-firm summary only. The COPPA Rule text was not read (§11) | I | Verify against the Federal Register notice or ftc.gov |
 | **NDPC fee tiers and thresholds**: UHL, EHL and OHL, the ₦250,000 and ₦100,000 fees, and the 200-data-subject threshold | §10.1; §7 | §10.1 attributes the tiers and fees to NDPA s.44 and GAID Schedule 7, and the §11 ledger lists Schedule 7 under the GAID PDF on ndpc.gov.ng. Whether the amounts were actually read there is not recorded, and the NDPA text itself came from a DataGuidance mirror. Treat them as attributed to GAID Schedule 7, not confirmed. Nothing in the policies depends on them | I | Verify on ndpc.gov.ng against the current fee schedule and the Act as published |
 
-## 9. Claims on the old stub pages
+## 9. Historical claims on the old stub pages
+
+This is an October review record. Current ContactView uses a disabled validation-only form and a
+support mailto. The previously described fake send/reply behaviour is absent from the Task 4 BASE.
 
 Sources: `implementation/marketing/src/views/PrivacyView.vue` and `TermsView.vue` as they were before the
 legal pages were wired to these drafts (ClickUp 17tnw2b0x3g, PR #142). Those stubs are replaced by the
@@ -538,9 +478,10 @@ generic posture leaves out. The v0.3 policies no longer map clause by clause to 
 
 ### 10.5 Governing law and forum
 
-Options for `{{GOVERNING_LAW}}` / `{{DISPUTE_FORUM}}`: Nigerian law with the courts of Lagos State;
-Nigerian law with arbitration seated in Lagos under the AMA 2023; or either with consumers keeping
-home-country rights (already in Terms 22.3).
+The October draft considered Nigerian law with the courts of Lagos State or arbitration seated in
+Lagos under the AMA 2023. Terms 22.1–22.2 now draft Nigerian law and the courts of Abeokuta, Ogun
+State, Nigeria. Terms 22.3 preserves applicable consumer rights to bring a claim where the consumer
+lives. Owner and counsel review of the drafted law and forum remains pending under L-54.
 
 ## 11. Source ledger
 
@@ -577,7 +518,9 @@ Proposed, with the OpenAI notes route pending a spike, so Terms 12.4's allowance
 (§8.3). The ClickUp ids that no other repository document mentions were looked up read-only
 in ClickUp on 2026-10-02 and exist; that shows the tickets exist, not that what they record is built or true.
 
-## 12. Top 10 open questions and risks
+## 12. Historical v0.3 open questions and risks
+
+These entries reflect the October draft. Use §4 and §5 for current release gates and open facts.
 
 1. **Entity, contacts and domains.** No repository file named a legal entity until the owner's statement of
    2026-10-02 (First Pavilion Technologies, now in both policies); its registered address, registration
@@ -632,7 +575,7 @@ targeting those markets; a tax adviser on VAT as seller of record.
 - `PRIVACY.md` still has inline drafting markers for children and store forms (written by the mobile
   engineer); align its children's posture with `{{MINIMUM_ACCOUNT_AGE}}` and the generic posture.
 
-## 14. ClickUp audit entries to record
+## 14. Historical ClickUp audit entries
 
 No ClickUp writes were made in any session, at the coordinator's direction. Record the entries in order on
 the matter task in the Legal Audit Log list (`1400430000002076`); check for an existing SelahCue
@@ -678,3 +621,22 @@ Risks/decisions: accepted regulatory risk recorded in notes §7 (NDPC registrati
 Boundary: drafted and saved locally only; not committed, published, signed, filed or sent.
 Draft: docs/legal/PRIVACY-POLICY-PLATFORM-DRAFT.md; docs/legal/TERMS-OF-SERVICE-PLATFORM-DRAFT.md; docs/legal/LEGAL-DRAFT-NOTES.md (worktree .claude/worktrees/legal-drafts, branch docs/17tnw2b0q93-legal-privacy-terms-drafts)
 ```
+
+## 15. Local audit entry
+
+[AUDIT] SelahCue — Platform Privacy Policy and Terms of Service — factual revision and handoff — 2026-11-15
+
+- Entity and jurisdiction: First Pavilion Technologies, trading as SelahCue, Abeokuta, Nigeria.
+  The wider jurisdiction analysis is retained in §10 for counsel.
+- Requested by the repository owner via the coordinating agent. Version 0.4, draft — facts to confirm.
+- Basis: approved Free release spec, owner-provided particulars in `e7566a96f`, and source verification
+  against website BASE `ec6bcc585993cb6df4b84717242bb22ca6b7adf0`. The operating and counsel gates are
+  in §4 and the live factual tokens are in §5.
+- Legal research: this revision aligns existing draft facts. Section 11 records the earlier research.
+  Current applicability, provider arrangements and approval remain for qualified counsel.
+- Evidence: the two source drafts and generated pages, with local Task 4 verification and delivery
+  evidence in the coordinator’s ledger.
+- Scope: local drafts and review evidence only. Nothing published, signed, filed or sent.
+- Pending ClickUp: daily quota exhausted. Check the designated legal-audit list for the existing SelahCue
+  platform-policy matter, then log this v0.4 revision and the draft paths with status
+  `awaiting facts / decisions` when audit access and authorization are available.

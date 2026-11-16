@@ -12,7 +12,11 @@ from selahcue_api.apps.accounts.services import (
     LoginData,
     actor_from_session_token,
     login as _login_service,
-    logout_session as _logout_session_service,
+    revoke_native_session as _logout_session_service,
+)
+from selahcue_api.apps.devices.bound_activation import (
+    BoundActivationData, BoundEnrollmentData, CompletedActivationReceipt,
+    activate_bound_with_key, activate_bound_with_session,
 )
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
@@ -55,7 +59,9 @@ def not_implemented_response(*, surface: str, operation: str) -> JsonResponse:
     return JsonResponse(not_implemented_payload(surface=surface, operation=operation), status=501)
 
 
-def _json_content_type_only(operation: str, *, allow_bearer_header: bool = False):
+def _json_content_type_only(
+    operation: str, *, allow_bearer_header: bool = False, operation_version: int | None = None,
+):
     """Refuse simple browser content types before spending a native route's budget.
 
     A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
@@ -77,7 +83,8 @@ def _json_content_type_only(operation: str, *, allow_bearer_header: bool = False
             ):
                 return _no_store(
                     command_error_response(
-                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
+                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation,
+                        operation_version=operation_version,
                     )
                 )
             return view(request, *args, **kwargs)
@@ -369,13 +376,67 @@ def _device_bearer_token(request) -> str:
     return ""
 
 
+_BOUND_FIELDS = frozenset({
+    "operation_version", "mode", "idempotency_key", "expected_device_public_id",
+    "device_fingerprint", "platform", "app_version", "display_name",
+})
+
+
+def _bound_activation(request, *, session: bool):
+    operation = "activation_bound_with_session" if session else "activation_bound"
+    raw = _json_object(request)
+    fields = _BOUND_FIELDS if session else _BOUND_FIELDS | {"license_key"}
+    try:
+        if raw is None or set(raw) != fields:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        if session:
+            actor = actor_from_session_token(_account_session_bearer(request))
+            result = activate_bound_with_session(actor, BoundActivationData(**raw))
+        else:
+            key = raw.pop("license_key")
+            result = activate_bound_with_key(BoundEnrollmentData(**raw, presented_key=key))
+    except CompletedActivationReceipt as completed:
+        payload = {
+            "error": {"code": completed.code.value, "message": SAFE_MESSAGES[completed.code]},
+            "surface": "desktop", "operation": operation, "operation_version": 1,
+            "completed_activation": completed.identity,
+        }
+        assert_no_restricted_payload_fields(payload)
+        return _no_store(JsonResponse(payload, status=409))
+    except SafeAPIError as error:
+        return _no_store(command_error_response(
+            code=error.code, surface="desktop", operation=operation, operation_version=1,
+        ))
+    payload = _activation_payload(result.activation, operation=operation)
+    payload.update(operation_version=1, idempotency_key=result.idempotency_key,
+                   operation_state=result.operation_state)
+    return _no_store(JsonResponse(payload))
+
+
+@csrf_exempt
+@require_POST
+@_json_content_type_only("activation_bound", operation_version=1)
+@throttle("activation", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
+def activate_device_bound(request):
+    return _bound_activation(request, session=False)
+
+
+@csrf_exempt
+@require_POST
+@_json_content_type_only("activation_bound_with_session", operation_version=1)
+@throttle("activation_with_session", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
+def activate_device_bound_with_session(request):
+    return _bound_activation(request, session=True)
+
+
 @csrf_exempt
 @require_POST
 @_json_content_type_only("license_refresh", allow_bearer_header=True)
 @throttle("license_refresh", "SELAHCUE_THROTTLE_DEVICE_READ", (60, 60))
 def refresh_license(request):
     """POST /v1/license:refresh — an authenticated device reads its current license/entitlement
-    status, rotating a live token after extension (FR-509); device-token auth."""
+    status to update its cached offline entitlement (DEC-004). An eligible managed Free licence
+    and the presented live device token may be renewed."""
     try:
         result = _refresh_license_service(_device_bearer_token(request))
     except SafeAPIError as error:

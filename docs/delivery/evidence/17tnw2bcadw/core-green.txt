@@ -1,0 +1,17 @@
+[chromium] pricing
+[chromium] features
+[chromium] download
+[chromium] about
+[chromium] no horizontal scroll
+[webkit] pricing
+[webkit] features
+[webkit] download
+[webkit] about
+[webkit] no horizontal scroll
+
+300 checks, 0 failed
+Core frame/nominal-overflow regression (120s bound)
+[webkit-simulated-12px-external-chrome] download
+SIMULATED_CHROME_GEOMETRY {"clientWidth": 1440, "card": 610, "action": 546, "step": 400, "failures": []}
+[webkit-simulated-12px-external-chrome] no horizontal scroll
+FRAME_REGRESSION_PASS: exact geometry, 20 nominal widths, 20 overflow negatives

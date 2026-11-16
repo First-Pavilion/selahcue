@@ -65,20 +65,24 @@ impl SpawnedOutput {
 /// spawn fails — the caller then keeps today's behaviour.
 pub fn spawn_output_window(operator_exe: &Path, endpoint: &Path) -> Option<SpawnedOutput> {
     spawn_output_window_with(operator_exe, endpoint, 66, Duration::from_millis(150))
+        .ok()
+        .flatten()
 }
 
 /// [`spawn_output_window`] with the wait for the endpoint injected (66 attempts of 150 ms, about 10 s,
 /// in production), so a test can run the real spawn path without waiting that long.
+/// Keep the actual spawn error for focused diagnostics; the public API preserves its optional
+/// fallback without logging paths or OS error text.
 fn spawn_output_window_with(
     operator_exe: &Path,
     endpoint: &Path,
     max_attempts: u32,
     pause: Duration,
-) -> Option<SpawnedOutput> {
+) -> std::io::Result<Option<SpawnedOutput>> {
     let sidecar = output_sidecar_path(operator_exe);
     if !sidecar.exists() {
         // Dev run: leave any endpoint written by a hand-started output window untouched.
-        return None;
+        return Ok(None);
     }
     // Remove any stale endpoint from a previous run so we only ever connect to THIS instance. Only
     // from a directory that is private to this user: a symlink planted where the directory should
@@ -92,7 +96,7 @@ fn spawn_output_window_with(
             endpoint.display()
         );
     }
-    let child = Command::new(&sidecar).spawn().ok()?;
+    let child = Command::new(&sidecar).spawn()?;
     let appeared = wait_for_endpoint(
         || endpoint.exists(),
         max_attempts,
@@ -104,9 +108,9 @@ fn spawn_output_window_with(
              using the demo backend until it connects."
         );
     }
-    Some(SpawnedOutput {
+    Ok(Some(SpawnedOutput {
         child: Mutex::new(Some(child)),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -172,11 +176,51 @@ mod tests {
     /// spawn path runs. `bin` must be a fresh directory.
     #[cfg(unix)]
     fn fake_sidecar(bin: &Path) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let sidecar = bin.join(format!("selahcue-output{}", std::env::consts::EXE_SUFFIX));
-        std::fs::write(&sidecar, "#!/bin/sh\nexit 0\n").expect("write sidecar");
-        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // A freshly written executable can fail exec with ETXTBSY on Linux while a
+        // writable descriptor survives in a concurrently forked process. Reference an
+        // existing immutable executable instead; Command still spawns a real child.
+        std::os::unix::fs::symlink("/usr/bin/true", &sidecar).expect("sidecar symlink");
+        assert!(
+            sidecar.is_file(),
+            "immutable stand-in executable must exist"
+        );
         bin.join(format!("selahcue-operator{}", std::env::consts::EXE_SUFFIX))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stand_in_uses_an_existing_executable_without_a_fresh_write_exec_window() {
+        let bin = private_dir();
+        let operator = fake_sidecar(bin.path());
+        let sidecar = output_sidecar_path(&operator);
+        assert!(
+            std::fs::symlink_metadata(&sidecar)
+                .expect("fixture metadata")
+                .file_type()
+                .is_symlink(),
+            "stand-in must reference an existing executable, not freshly write one"
+        );
+        assert_eq!(
+            std::fs::read_link(&sidecar).expect("fixture target"),
+            Path::new("/usr/bin/true")
+        );
+    }
+
+    #[cfg(unix)]
+    fn stand_in_spawn_failed(operator: &Path, error: std::io::Error) -> ! {
+        use std::os::unix::fs::PermissionsExt;
+        let sidecar = output_sidecar_path(operator);
+        let mode = std::fs::metadata(&sidecar)
+            .ok()
+            .map(|m| m.permissions().mode() & 0o777);
+        // Fixed phase + metadata only, never the private fixture path or raw error text.
+        panic!(
+            "stand-in phase=spawn exists={} mode={mode:?} kind={:?} errno={:?}",
+            sidecar.exists(),
+            error.kind(),
+            error.raw_os_error()
+        );
     }
 
     #[cfg(unix)]
@@ -209,13 +253,35 @@ mod tests {
             1,
             Duration::ZERO,
         )
-        .expect("the stand-in sidecar spawns");
+        .unwrap_or_else(|error| stand_in_spawn_failed(&operator, error))
+        .expect("the stand-in sidecar is present");
         spawned.kill();
 
         assert_eq!(
             std::fs::read_to_string(&victim).expect("victim"),
             "precious"
         );
+    }
+
+    /// The internal diagnostic preserves the real OS error; the public optional
+    /// fallback stays unchanged. Never fabricate a successful spawn on an error path.
+    #[cfg(unix)]
+    #[test]
+    fn nonexecutable_sidecar_preserves_spawn_error_and_public_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = private_dir();
+        let operator = bin.path().join("selahcue-operator");
+        let sidecar = output_sidecar_path(&operator);
+        std::fs::write(&sidecar, "not executable").expect("write negative fixture");
+        std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let endpoint = bin.path().join("endpoint.json");
+        let error = match spawn_output_window_with(&operator, &endpoint, 1, Duration::ZERO) {
+            Err(error) => error,
+            Ok(_) => panic!("nonexecutable sidecar unexpectedly spawned"),
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(error.raw_os_error().is_some(), "retain the actual OS errno");
+        assert!(spawn_output_window(&operator, &endpoint).is_none());
     }
 
     /// Positive control for the test above: the same spawn on a real private directory does remove
@@ -230,7 +296,8 @@ mod tests {
         std::fs::write(&stale, "stale").expect("stale");
 
         let spawned = spawn_output_window_with(&operator, &stale, 1, Duration::ZERO)
-            .expect("the stand-in sidecar spawns");
+            .unwrap_or_else(|error| stand_in_spawn_failed(&operator, error))
+            .expect("the stand-in sidecar is present");
         spawned.kill();
 
         assert!(

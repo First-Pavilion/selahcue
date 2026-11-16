@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Visual/audit CI gate (17tnw2b2fum): `make visual-audit-check` runs `scripts/vp_selftest.py`, `scripts/check_fidelity_audit.py --self-test` and the complete ticket/report drift check. It runs early in `make ci` and in the existing Pillow-enabled workflow job on every CI run, without browsers or external network. Visual-parity audit docs can trigger that cheap job; ordinary docs remain skipped. The marketing browser job separately runs the existing components/core/home/secondary suites with required Chromium and WebKit engines.
+
 ## What this is
 
 SelahCue — a cross-platform church presentation & ministry-assistance app. The repo is split:

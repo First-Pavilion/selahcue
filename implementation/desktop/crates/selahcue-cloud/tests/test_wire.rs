@@ -184,7 +184,7 @@ fn assert_native_body(wire: &Wire, path: &str, expected_body: &str) {
 #[test]
 fn a_post_with_a_bearer_carries_json_content_type_the_bearer_and_no_browser_headers() {
     let (port, rx) = serve(vec![OK.to_string()]);
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
 
     let response = transport
         .post_json(
@@ -208,7 +208,7 @@ fn a_post_without_a_bearer_sends_no_authorization_at_all() {
     // Sign-in and the enrollment-key path carry no Authorization header: the presented
     // credential is in the body, and an empty or placeholder bearer would be a bug.
     let (port, rx) = serve(vec![OK.to_string()]);
-    ReqwestTransport::new()
+    ReqwestTransport::new_for_loopback_tests()
         .unwrap()
         .post_json(
             &format!("http://127.0.0.1:{port}/v1/sessions"),
@@ -235,7 +235,7 @@ fn a_cookie_the_server_sets_is_never_sent_back() {
     let first = "HTTP/1.1 200 OK\r\nSet-Cookie: selahcue_account_session=abc; Path=/\r\n\
                  Set-Cookie: csrftoken=xyz; Path=/\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
     let (port, rx) = serve(vec![first.to_string(), OK.to_string()]);
-    let transport = ReqwestTransport::new().unwrap();
+    let transport = ReqwestTransport::new_for_loopback_tests().unwrap();
     let url = format!("http://127.0.0.1:{port}/v1/sessions");
 
     transport.post_json(&url, &body(), None).unwrap();
@@ -258,7 +258,7 @@ fn a_get_sends_no_content_type_and_the_same_absence_of_browser_headers() {
     // `get` is the other half of the trait; it must not grow a body header, and it carries the
     // same promise about cookies and the CSRF ceremony.
     let (port, rx) = serve(vec![OK.to_string()]);
-    ReqwestTransport::new()
+    ReqwestTransport::new_for_loopback_tests()
         .unwrap()
         .get(
             &format!("http://127.0.0.1:{port}/v1/entitlements/manifest"),
@@ -282,7 +282,7 @@ fn a_get_sends_no_content_type_and_the_same_absence_of_browser_headers() {
 #[test]
 fn native_session_revoke_sends_only_json_and_the_account_bearer() {
     let (port, rx) = serve(vec![OK.to_string()]);
-    let response = ReqwestTransport::new()
+    let response = ReqwestTransport::new_for_loopback_tests()
         .unwrap()
         .post_json(
             &format!("http://127.0.0.1:{port}/v1/sessions:revoke"),

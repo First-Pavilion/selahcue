@@ -156,8 +156,11 @@ INSTALLED_APPS = [
     "selahcue_api.apps.billing.apps.SelahCueBillingConfig",
     "selahcue_api.apps.license_keys.apps.SelahCueLicenseKeysConfig",
     "selahcue_api.apps.catalogue.apps.SelahCueCatalogueConfig",
+    "selahcue_api.apps.usage.apps.SelahCueUsageConfig",
+    "selahcue_api.apps.providers.apps.SelahCueProvidersConfig",
     "selahcue_api.apps.entitlements.apps.SelahCueEntitlementsConfig",
     "selahcue_api.apps.downloads.apps.SelahCueDownloadsConfig",
+    "selahcue_api.apps.pilot_downloads.apps.SelahCuePilotDownloadsConfig",
     "selahcue_api.apps.devices.apps.SelahCueDevicesConfig",
     "selahcue_api.apps.audit.apps.SelahCueAuditConfig",
     "selahcue_api.apps.throttling.apps.SelahCueThrottlingConfig",
@@ -202,6 +205,44 @@ ASGI_APPLICATION = "selahcue_api.asgi.application"
 
 DATABASES = {"default": _database_config()}
 
+# P13 is intentionally closed until the operator supplies every deployment/policy
+# prerequisite. These settings contain server credentials; never expose them to
+# Vite, the form/browser, logs, or ticket evidence. Numeric strings are validated
+# together by the pilot policy loader so incomplete configuration fails closed.
+SELAHCUE_PILOT_REGISTRATION = {
+    "enabled": env_bool("SELAHCUE_PILOT_REGISTRATION_ENABLED", False),
+    "n8n_token": os.getenv("SELAHCUE_PILOT_N8N_TOKEN", ""),
+    "signing_key": os.getenv("SELAHCUE_PILOT_RECEIPT_KEY", ""),
+    "fingerprint_key": os.getenv("SELAHCUE_PILOT_FINGERPRINT_KEY", ""),
+    "spreadsheet_id": os.getenv("SELAHCUE_PILOT_SHEET_ID", ""),
+    "sheet_tab": os.getenv("SELAHCUE_PILOT_SHEET_TAB", ""),
+    "capacity": os.getenv("SELAHCUE_PILOT_SHEET_ROW_CAPACITY", ""),
+    "notice_versions": env_list("SELAHCUE_PILOT_APPROVED_NOTICE_VERSIONS"),
+    "collection_owner": os.getenv("SELAHCUE_PILOT_COLLECTION_OWNER", ""),
+    "retention_days": os.getenv("SELAHCUE_PILOT_RETENTION_DAYS", ""),
+    "layout_protected": env_bool("SELAHCUE_PILOT_SHEET_LAYOUT_PROTECTED", False),
+    "receipt_ttl_seconds": os.getenv("SELAHCUE_PILOT_RECEIPT_TTL_SECONDS", ""),
+    "pilot_expires_at": os.getenv("SELAHCUE_PILOT_EXPIRES_AT", ""),
+}
+SELAHCUE_THROTTLE_PILOT_REGISTRATION = (60, 60)
+
+# P12 has no production storage adapter yet: even complete configuration cannot
+# enable real reads until P10 implements and validates the explicit signer port.
+SELAHCUE_PILOT_DOWNLOAD_GRANTS = {
+    "enabled": env_bool("SELAHCUE_PILOT_GRANT_ENABLED", False),
+    "n8n_token": os.getenv("SELAHCUE_PILOT_GRANT_N8N_TOKEN", ""),
+    "storage_target": os.getenv("SELAHCUE_PILOT_GRANT_STORAGE_TARGET", ""),
+    "download_origin": os.getenv("SELAHCUE_PILOT_GRANT_DOWNLOAD_ORIGIN", ""),
+    "cohort_id": os.getenv("SELAHCUE_PILOT_GRANT_COHORT_ID", ""),
+    "manifest_path": os.getenv("SELAHCUE_PILOT_GRANT_MANIFEST_PATH", ""),
+    "manifest_sha256": os.getenv("SELAHCUE_PILOT_GRANT_MANIFEST_SHA256", ""),
+    "max_ttl_seconds": os.getenv("SELAHCUE_PILOT_GRANT_MAX_TTL_SECONDS", ""),
+    "signed_query_keys": env_list("SELAHCUE_PILOT_GRANT_SIGNED_QUERY_KEYS"),
+    "signing_requirements": os.getenv("SELAHCUE_PILOT_GRANT_SIGNING_REQUIREMENTS", ""),
+    "required_platforms": env_list("SELAHCUE_PILOT_GRANT_REQUIRED_PLATFORMS", "Windows Ubuntu macOS"),
+}
+SELAHCUE_THROTTLE_PILOT_DOWNLOAD_GRANT = (30, 60)
+
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
@@ -241,18 +282,28 @@ else:
     SECURE_PROXY_SSL_HEADER = None
 
 
-def _without_credentials(entry: str) -> str:
-    """`entry` safe to print: anything before the last `@` (the userinfo of a pasted
-    `https://user:secret@host`) is replaced with `***`, keeping a leading `scheme://`. A refusal
-    message ends up in logs and terminals, so it must never echo a password."""
-    head, at, tail = entry.rpartition("@")
-    if not at:
-        return entry
-    scheme, sep, _ = head.partition("://")
-    return f"{scheme}://***@{tail}" if sep else f"***@{tail}"
+def _without_credentials(entry: str, raw: str) -> str:
+    """A diagnostic label, never the source of origin-admission decisions.
+
+    Delimiter splitting can detach a password fragment from its @. If the raw
+    variable contains @, identify no part of the failing entry except a URL
+    scheme. Query/fragment values can also hold secrets, even without userinfo.
+    """
+    if "@" in raw:
+        scheme, separator, _ = entry.partition("://")
+        valid_scheme = (
+            scheme.isascii() and scheme[:1].isalpha()
+            and all(char.isalnum() or char in "+-." for char in scheme)
+        )
+        return f"{scheme}://***" if separator and valid_scheme else "***"
+    # Keep useful ordinary malformed-origin diagnostics, but never their query
+    # or fragment payloads. These are refused below, not silently accepted.
+    without_fragment, fragment, _ = entry.partition("#")
+    without_query, query, _ = without_fragment.partition("?")
+    return without_query + ("?***" if query else "") + ("#***" if fragment else "")
 
 
-def _exact_origin(name: str, entry: str, debug: bool) -> str:
+def _exact_origin(name: str, entry: str, debug: bool, *, raw: str) -> str:
     """One `scheme://host[:port]` origin from the environment, or a refusal to boot.
 
     A trusted origin is a cross-origin trust grant on the CSRF-enforced surfaces, and the only
@@ -275,7 +326,7 @@ def _exact_origin(name: str, entry: str, debug: bool) -> str:
       a browser sends): URL parsers disagree about both;
     - credentials, path, query and fragment.
     The refusal message never echoes credentials (`_without_credentials`)."""
-    shown = _without_credentials(entry)
+    shown = _without_credentials(entry, raw)
 
     def refuse(reason: str):
         raise ImproperlyConfigured(
@@ -325,8 +376,9 @@ def _csrf_trusted_origins(name: str, debug: bool) -> list[str]:
     """Validated, de-duplicated origins from the space- or comma-separated variable `name`,
     in the order given. Empty entries (a stray comma, a trailing space) are dropped."""
     origins: list[str] = []
+    raw = os.getenv(name, "")
     for entry in env_list(name):
-        origin = _exact_origin(name, entry, debug)
+        origin = _exact_origin(name, entry, debug, raw=raw)
         if origin not in origins:
             origins.append(origin)
     return origins
@@ -410,7 +462,32 @@ from celery.schedules import crontab  # noqa: E402  (kept beside the schedule it
 # be declared with @shared_task inside some installed app's `tasks.py`, the only module
 # `autodiscover_tasks()` imports. tests/test_revocation_cascade.py asserts that in a clean
 # interpreter; without it a misplaced task fails as NotRegistered nightly, in production only.
+CELERY_TASK_ROUTES = {
+    f"providers.{name}": {"queue": "provider_provisioning"}
+    for name in ("provision", "recover", "inventory_page", "publish_outbox", "sweep")
+}
+
+CELERY_TASK_ROUTES.update({
+    f"usage.{name}": {"queue": "provider_usage"}
+    for name in ("scan", "reconcile", "attribute", "recover_mint", "publish", "sweep")
+})
+CELERY_TASK_ROUTES.update({
+    f"usage.{name}": {"queue": "celery"}
+    for name in ("retain", "retention_sweep", "publish_retention")
+})
+
 CELERY_BEAT_SCHEDULE = {
+    "sweep-provider-usage": {
+        "task": "usage.sweep", "schedule": 60.0, "options": {"queue": "provider_usage"},
+    },
+    "sweep-usage-retention": {
+        "task": "usage.retention_sweep", "schedule": 60.0, "options": {"queue": "celery"},
+    },
+    "sweep-provider-provisioning": {
+        "task": "providers.sweep",
+        "schedule": 5.0,
+        "options": {"queue": "provider_provisioning"},
+    },
     # Minute recovery tick: the bounded cascade drains batches in one cycle, and DB
     # eligibility survives broker/worker interruption (NFR-503, 65 minute maximum).
     "cascade-license-revocations": {
@@ -793,3 +870,28 @@ ACCOUNT_RESET_REQUEST_MIN_SECONDS = float(os.getenv("ACCOUNT_RESET_REQUEST_MIN_S
 # Base URL of the web surface that hosts /verify and /reset. Both routes exist as of 6d343b8;
 # the emails minted here link to live token-landing pages.
 FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
+
+# Merge-safe catalogue admin slice: no production enablement before real staff auth.
+SELAHCUE_ENABLE_ADMIN_CATALOGUE = env_bool("SELAHCUE_ENABLE_ADMIN_CATALOGUE", False)
+if SELAHCUE_ENABLE_ADMIN_CATALOGUE and ENVIRONMENT != "dev":
+    raise ImproperlyConfigured("Admin catalogue mutations require the real staff authenticator before production enablement.")
+
+
+def _provider_flag(name: str) -> bool:
+    raw = os.getenv(name, "")
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if raw == "" or normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ImproperlyConfigured(f"PCFG_SCHEMA_INVALID ({name})")
+
+
+SELAHCUE_PROVIDER_PROCESS_ROLE = os.getenv("SELAHCUE_PROVIDER_PROCESS_ROLE", "maintenance")
+SELAHCUE_CLOUD_STT_ENABLED = _provider_flag("SELAHCUE_CLOUD_STT_ENABLED")
+SELAHCUE_CLOUD_NOTES_ENABLED = _provider_flag("SELAHCUE_CLOUD_NOTES_ENABLED")
+SELAHCUE_PROVIDER_PROVISIONING_ENABLED = _provider_flag("SELAHCUE_PROVIDER_PROVISIONING_ENABLED")
+SELAHCUE_PROVIDER_KEYRING_FILE = os.getenv("SELAHCUE_PROVIDER_KEYRING_FILE", "")
+SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE = os.getenv("SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE", "")
+SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE = os.getenv("SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE", "")
+SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE = os.getenv("SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE", "")

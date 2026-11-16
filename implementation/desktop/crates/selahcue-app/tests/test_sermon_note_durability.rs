@@ -1009,3 +1009,58 @@ fn the_in_process_shell_tells_a_failed_load_from_no_draft() {
     let err = failed.expect_err("a failed read must not look like 'no draft'");
     assert_eq!(err, "the sermon-note draft could not be read");
 }
+
+#[test]
+fn starting_b_never_returns_a_notes_id_while_storage_open_waits() {
+    use selahcue_app::{BackgroundTranscriptWriter, TranscriptStoreWriter};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    struct Opening {
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl TranscriptStoreWriter for Opening {
+        fn open_transcript(&mut self, _: &str, _: &str, _: i64) -> Result<i64, String> {
+            self.entered.send(()).unwrap();
+            self.release.recv().unwrap();
+            Ok(43)
+        }
+        fn append_segment(&mut self, _: i64, _: u64, _: u64, _: &str) -> Result<i64, String> {
+            Ok(1)
+        }
+        fn end_transcript(&mut self, _: i64, _: i64) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    let prior = SpyStore::new().with_active_transcript_id(42);
+    let mut c = controller();
+    c.set_sermon_note_store(Box::new(prior));
+    let expected = |id| {
+        selahcue_app::ControllerReply::Message(ServerMessage::ActiveTranscriptId {
+            transcript_id: id,
+        })
+    };
+    assert_eq!(
+        c.apply(&Command::GetActiveTranscriptId),
+        expected(Some(42)),
+        "restart history remains available"
+    );
+    let (entered, observed) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let sink = BackgroundTranscriptWriter::new(Opening {
+        entered,
+        release: released,
+    });
+    let done = sink.completion();
+    c.set_transcript_sink(Box::new(sink));
+    c.start_transcript_session("B", "manual");
+    observed.recv_timeout(Duration::from_secs(10)).unwrap();
+    let during = c.apply(&Command::GetActiveTranscriptId);
+    release.send(()).unwrap();
+    assert_eq!(during, expected(None), "B must never select A's notes");
+    assert!(done.wait_idle(Duration::from_secs(10)));
+    assert_eq!(c.apply(&Command::GetActiveTranscriptId), expected(Some(43)));
+    c.end_transcript_session();
+    assert!(done.wait_closed(1, Duration::from_secs(10)));
+    assert_eq!(c.apply(&Command::GetActiveTranscriptId), expected(Some(43)));
+}

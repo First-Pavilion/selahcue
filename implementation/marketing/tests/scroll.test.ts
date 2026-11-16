@@ -162,3 +162,10 @@ describe('the CSS side of the same rule', () => {
     assert.match(css, /\.category-card,/)
   })
 })
+
+
+test('the public download hash and compatibility bookmark clear the sticky navbar', () => {
+  for (const hash of ['#public-downloads', '#pilot-downloads']) {
+    assert.deepEqual(scrollFor({ hash, name: 'download' }, MOTION), { el: hash, top: 84, behavior: 'smooth' })
+  }
+})

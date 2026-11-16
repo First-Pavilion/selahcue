@@ -488,12 +488,16 @@ fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
         std::thread::sleep(Duration::from_secs(8));
         drop(held);
     });
-    let t = ReqwestTransport::from_builder(ReqwestTransport::configured_builder(
-        &[],
-        Duration::from_millis(300),
-        Duration::from_millis(500),
-    ))
+    let mut t = ReqwestTransport::from_builder(
+        ReqwestTransport::configured_builder(
+            &[],
+            Duration::from_millis(300),
+            Duration::from_millis(500),
+        )
+        .https_only(false),
+    )
     .expect("transport with short timeouts");
+    t.loopback_http_for_tests = true;
     let (tx, rx) = mpsc::channel();
     let url = format!("http://127.0.0.1:{port}/stall");
     let started = std::time::Instant::now();
@@ -514,4 +518,107 @@ fn a_peer_that_accepts_and_never_answers_is_cut_off_at_the_request_timeout() {
         err.to_string().to_lowercase().contains("timed out"),
         "the failure should say it timed out: {err}"
     );
+}
+
+// Bypass our request wrapper deliberately: this pins the separate reqwest builder guard.
+#[path = "../../tests/support/credential_receiver.rs"]
+mod credential_receiver;
+
+#[test]
+fn dnu_shipped_https_only_builder_blocks_http_without_wrapper_guard() {
+    let receiver = credential_receiver::Receiver::start();
+    let transport = ReqwestTransport::new().expect("production transport");
+    let result = transport
+        .client
+        .post(&receiver.base)
+        .body(BODY)
+        .bearer_auth(BEARER)
+        .send();
+    assert!(
+        receiver.finish().is_empty(),
+        "shipped builder sent an insecure request"
+    );
+    assert!(
+        result.is_err(),
+        "HTTPS-only builder must refuse plain HTTP independently"
+    );
+}
+
+#[test]
+fn per_instance_response_limit_refuses_out_of_range_values() {
+    for cap in [0, super::MAX_TRANSPORT_RESPONSE_BYTES + 1, usize::MAX] {
+        assert!(ReqwestTransport::new_with_response_limit(cap).is_err());
+    }
+    for cap in [1, super::MAX_TRANSPORT_RESPONSE_BYTES] {
+        assert!(ReqwestTransport::new_with_response_limit(cap).is_ok());
+    }
+}
+
+#[test]
+fn a_smaller_cap_stops_get_and_post_while_the_chunked_response_is_still_open() {
+    assert_loopback_is_not_proxied();
+    const LIMIT: usize = 64 * 1024;
+    let mut limited = ReqwestTransport::new_with_response_limit(LIMIT).expect("account transport");
+    // Keep the transport's configured limit and relax only the fixture's HTTPS requirement.
+    limited.client = ReqwestTransport::shipped_builder(&[])
+        .https_only(false)
+        .build()
+        .expect("loopback client");
+    limited.loopback_http_for_tests = true;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}/manifest", listener.local_addr().expect("addr"));
+    let (release, waiting) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let marker = "PROBE-BODY".repeat(LIMIT / "PROBE-BODY".len() + 1);
+        for oversized in [true, true, false] {
+            let (mut stream, _) = listener.accept().expect("accept");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("read timeout");
+            let mut head = std::io::BufReader::new(&mut stream);
+            let mut line = String::new();
+            use std::io::BufRead as _;
+            loop {
+                line.clear();
+                assert!(head.read_line(&mut line).expect("request head") > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let size = if oversized { LIMIT + 1 } else { LIMIT };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{size:x}\r\n{}\r\n",
+                &marker[..size]
+            )
+            .expect("send chunk");
+            if oversized {
+                // There is no EOF or terminating chunk until the client shows that the read
+                // already stopped. Keep a test deadline in case the cap regresses.
+                waiting
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("client refused overage before EOF");
+            } else {
+                stream.write_all(b"0\r\n\r\n").expect("finish response");
+            }
+        }
+    });
+
+    for result in [limited.get(&url, Some(BEARER)), {
+        release.send(()).expect("release GET connection");
+        limited.post_json(&url, BODY, Some(BEARER))
+    }] {
+        let err = result.expect_err("over-cap chunked response");
+        assert!(
+            err.to_string().contains("65536-byte transport cap"),
+            "{err}"
+        );
+        must_not_have_leaked(&err);
+    }
+    release.send(()).expect("release POST connection");
+    let response = limited
+        .get(&url, None)
+        .expect("complete response at the limit");
+    assert_eq!(response.body.len(), LIMIT);
+    server.join().expect("server finished");
 }

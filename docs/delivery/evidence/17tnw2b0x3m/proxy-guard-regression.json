@@ -1,0 +1,47 @@
+{
+  "existing_api_guard_unchanged": true,
+  "before_inline_fix": {
+    "exit": 1,
+    "failed": 5,
+    "passed": 23,
+    "reason": "server includes can hide unchecked proxy/header directives"
+  },
+  "after_inline_fix": {
+    "exit": 0,
+    "passed": 28
+  },
+  "retained_bypass_cases": [
+    "quoted-hash",
+    "quoted-header",
+    "map-override",
+    "server-include",
+    "uppercase-map-override",
+    "mixed-case-map-override"
+  ],
+  "focused_header_baseline_red": {
+    "exit": 1,
+    "passed": 3,
+    "failed": 1
+  },
+  "header_policy_controls": [
+    {
+      "check": "all_five_policy_values_unchanged_from_d17d41b5",
+      "exit": 0
+    },
+    {
+      "case": "baseline",
+      "exit": 0,
+      "expected": 0
+    },
+    {
+      "case": "asset_csp_diverges",
+      "exit": 1,
+      "expected": 1
+    },
+    {
+      "case": "asset_nosniff_missing",
+      "exit": 1,
+      "expected": 1
+    }
+  ]
+}

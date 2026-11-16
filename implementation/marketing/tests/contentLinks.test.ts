@@ -82,6 +82,18 @@ describe('every internal link in the article bodies resolves', () => {
     assert.ok(n >= 15, `only ${n} links in the whole corpus`)
   })
 
+  test('the offline guide and blog link readers to the current transcription help', () => {
+    const help = '/support/troubleshooting/transcription-will-not-start'
+    assert.equal(whyUnresolvable(help), null)
+    for (const article of [
+      findDocsArticle('getting-started', 'offline-and-autosave')!,
+      blogPosts.find((post) => post.slug === 'why-offline-first-matters-for-sunday-morning')!,
+    ]) {
+      const links = bodyStrings(article.body).flatMap(parseInline)
+      assert.ok(links.some((link) => link.kind === 'link' && link.href === help), article.slug)
+    }
+  })
+
   test('internal links resolve; external ones are https', () => {
     for (const [key, a] of all) {
       for (const s of bodyStrings(a.body)) {

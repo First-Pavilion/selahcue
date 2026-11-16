@@ -23,7 +23,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a scan cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 9;
+const EXPECTED_SRC_MODULES: usize = 11;
 
 // ---------------------------------------------------------------------------
 // Structural: licensing is not on the render / go-live / live-control path
@@ -122,6 +122,10 @@ fn this_crate_exposes_no_enforcement_entry_point() {
 fn every_failure_variant() -> Vec<ActivationFailure> {
     let sample = ActivationFailure::UnknownKey;
     match sample {
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
+        | ActivationFailure::ActivationOperationConflict
+        | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}
         ActivationFailure::NoActiveLicense => {}
         ActivationFailure::UnknownKey => {}
@@ -233,13 +237,18 @@ fn an_unreachable_platform_is_a_silent_retryable_unknown() {
     let client = LicensingClient::new(
         ScriptedTransport::failing("dns error: no such host"),
         "https://api.selahcue.example",
-    );
+    )
+    .expect("valid HTTPS test base");
 
     let failure = client
         .activate_with_enrollment_key(&Token::new("SC-TRIAL-KEY"), &identity(), &idem())
         .unwrap_err();
 
     match &failure {
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
+        | ActivationFailure::ActivationOperationConflict
+        | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}
         other => panic!("an offline platform must classify as Unreachable, got {other:?}"),
     }
@@ -271,7 +280,8 @@ fn a_failed_activation_destroys_nothing_that_was_already_working() {
         ),
         ScriptedTransport::responding(500, "<html>boom</html>"),
     ] {
-        let client = LicensingClient::new(transport, "https://api.selahcue.example");
+        let client = LicensingClient::new(transport, "https://api.selahcue.example")
+            .expect("valid HTTPS test base");
         let result =
             client.activate_with_enrollment_key(&Token::new("SC-TRIAL-KEY"), &identity(), &idem());
 
@@ -300,7 +310,8 @@ fn nothing_leaves_the_device_when_the_identity_is_rejected_locally() {
     let client = LicensingClient::new(
         ScriptedTransport::failing("should never be called"),
         "https://api.selahcue.example",
-    );
+    )
+    .expect("valid HTTPS test base");
     assert_eq!(
         client.transport().request_count(),
         0,

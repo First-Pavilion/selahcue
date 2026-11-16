@@ -55,8 +55,10 @@ from selahcue_api.apps.accounts.models import (
 )
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
-from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
+from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 from selahcue_api.apps.throttling import circuit, guards
+from selahcue_api.apps.throttling.services import ip_bucket_identity
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -2024,8 +2026,8 @@ def test_while_the_limiter_store_is_down_a_process_local_ceiling_bounds_the_rows
     # the cross-source brake as well: it adds no protection once already degraded.
     assert store.calls == 3, store.calls
     assert list(touched) == [
-        f"throttle:password_reset_confirm_ip:198.51.100.{n}" for n in range(1, 11)
-    ] + ["throttle:password_reset_confirm_ip:127.0.0.1"], "a second trace budget was consulted"
+        f"throttle:password_reset_confirm_ip:{ip_bucket_identity(f'198.51.100.{n}')}" for n in range(1, 11)
+    ] + [f"throttle:password_reset_confirm_ip:{ip_bucket_identity('127.0.0.1')}"], "a second trace budget was consulted"
     assert len(failed_rows()) == 3, "the outage ceiling did not bound the rows"
     assert body(done)["data"]["confirmPasswordReset"]["reset"] is True, "the ceiling must never refuse a reset"
 
@@ -2569,11 +2571,44 @@ def test_member_is_denied_device_activation(client, sender):
 
 @override_settings(SELAHCUE_TRUST_ACTOR_HEADERS=False)
 @pytest.mark.django_db
-def test_activation_without_active_license_is_not_found(client, sender):
+def test_first_verified_self_service_activation_issues_managed_base_license(client, sender):
     email, password = signup_and_verify(client, sender)
-    token = login_token(client, email, password)  # org has NO license key
-    resp = post_account(client, ACTIVATE, activate_input("act-nolk-0001"), bearer=token)
-    assert error_code(resp) == "NOT_FOUND"
+    token = login_token(client, email, password)
+    org = CustomerOrg.objects.get()
+    assert not AppLicenseKey.objects.filter(customer=org).exists()
+    payload = activate_input("act-nolk-0001")
+
+    response = post_account(client, ACTIVATE, payload, bearer=token)
+    activated = body(response)["data"]["activateDeviceWithSession"]
+    assert activated["created"] is True
+    assert activated["fullToken"].startswith("SC-DEV-")
+    assert activated["devicePublicId"].startswith("dev_")
+
+    license_key = AppLicenseKey.objects.get(customer=org)
+    assert license_key.expires_at - license_key.starts_at == timedelta(days=365)
+    assert FreeLicenseLifecycle.objects.get(customer=org).license_key_id == license_key.pk
+    assert LicensePlanAssignment.objects.get(license_key=license_key).plan_id == (
+        Plan.objects.get(is_fallback=True).pk
+    )
+    replay = post_account(client, ACTIVATE, payload, bearer=token)
+    result = body(replay)["data"]["activateDeviceWithSession"]
+    assert result["created"] is False
+    assert result["fullToken"] is None
+    assert result["devicePublicId"] == activated["devicePublicId"]
+    assert AppLicenseKey.objects.filter(customer=org).count() == 1
+
+
+@override_settings(SELAHCUE_TRUST_ACTOR_HEADERS=False)
+@pytest.mark.django_db
+def test_activation_without_license_refuses_a_non_self_service_org(client, sender):
+    email, password = signup_and_verify(client, sender)
+    token = login_token(client, email, password)
+    org = CustomerOrg.objects.get()
+    CustomerOrg.objects.filter(pk=org.pk).update(created_by_actor_id="staff")
+    response = post_account(client, ACTIVATE, activate_input("act-nolk-0002"), bearer=token)
+    assert error_code(response) == "NOT_FOUND"
+    assert not AppLicenseKey.objects.filter(customer=org).exists()
+    assert not FreeLicenseLifecycle.objects.filter(customer=org).exists()
 
 
 @override_settings(SELAHCUE_TRUST_ACTOR_HEADERS=False)

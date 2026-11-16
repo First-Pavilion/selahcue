@@ -43,6 +43,9 @@ whisper-rs = { version = "0.16", optional = true }
 ureq = { version = "3", optional = true }
 
 [dev-dependencies]
+# Throwaway-CA real TLS fixtures only, matching the existing cloud/LAN ring stack.
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [lints.clippy]
 # Match the core: no panics on untrusted input.

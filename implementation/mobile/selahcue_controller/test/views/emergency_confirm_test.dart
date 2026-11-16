@@ -21,7 +21,7 @@ import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/widgets/mobile_widgets.dart';
 
 class _Fake implements ControllerSession {
-  _Fake({this.blackout = false});
+  _Fake({this.blackout = false, this.grantedRole = MobileRole.producer});
 
   /// Mutable: the DESKTOP operator is authoritative and can black out at any
   /// moment, including in the gap between this device's arm tap and its
@@ -43,7 +43,7 @@ class _Fake implements ControllerSession {
   Completer<void>? commandGate;
 
   @override
-  final MobileRole grantedRole = MobileRole.producer;
+  final MobileRole grantedRole;
 
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
@@ -312,54 +312,162 @@ void main() {
     live.dispose();
   });
 
-  testWidgets('emergency controls are disabled while a command is in flight',
+  testWidgets('another local arm is available while an emergency send is busy',
       (tester) async {
     final handle = tester.ensureSemantics();
     final fake = _Fake();
     final live = await _pumpPolledStrip(tester, fake);
-    expect(live.busy, isFalse, reason: 'baseline');
+    try {
+      fake.commandGate = Completer<void>();
+      await tester.tap(find.bySemanticsLabel('Blackout'));
+      await tester.pump();
+      await tester.tap(find.bySemanticsLabel('Confirm blackout'));
+      await tester.pump();
+      expect(live.busy, isTrue);
+      expect(fake.sent, ['blackout']);
 
-    // Arm and confirm — the confirming tap sends `blackout`, held in flight
-    // by the gate so the test can observe the strip while it is outstanding.
-    fake.commandGate = Completer<void>();
-    await tester.tap(find.bySemanticsLabel('Blackout'));
-    await tester.pump();
-    await tester.tap(find.bySemanticsLabel('Confirm blackout'));
-    await tester.pump();
+      // The previous send disarmed the button, so this is a new local arm,
+      // not permission to send a second command while the first is pending.
+      expect(find.bySemanticsLabel('Blackout'), findsOneWidget);
+      await tester.tap(find.text('■ BLACKOUT'));
+      await tester.pump();
+      expect(find.bySemanticsLabel('Confirm blackout, sending…'), findsOneWidget);
+      await tester.tap(find.text('■ CONFIRM BLACKOUT'), warnIfMissed: false);
+      await tester.pump();
+      expect(fake.sent, ['blackout']);
+      expect(find.bySemanticsLabel('Confirm blackout, sending…'), findsOneWidget);
 
-    expect(live.busy, isTrue,
-        reason: 'the confirming tap sent blackout, still in flight');
-    // _fire() disarms immediately, so the label reverts to BLACKOUT (the
-    // host has not acknowledged yet) — but it must render disabled, not live.
-    expect(find.bySemanticsLabel('Blackout, sending…'), findsOneWidget,
-        reason: 'a control must not look tappable while its own command is '
-            'still on the wire (17tnw2ay2pq, follow-up to 86ajxx4x8)');
+      fake.commandGate!.complete();
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(live.busy, isFalse);
+      expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget);
+      await tester.tap(find.bySemanticsLabel('Confirm blackout'));
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(fake.sent, ['blackout', 'blackout']);
+    } finally {
+      final gate = fake.commandGate;
+      if (gate != null && !gate.isCompleted) gate.complete();
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      live.dispose();
+      handle.dispose();
+    }
+  });
 
-    // A tap while busy must be a genuine no-op, not a second arm/fire.
-    final sentBefore = fake.sent.length;
-    await tester.tap(find.text('■ BLACKOUT'));
-    await tester.pump();
-    expect(fake.sent.length, sentBefore,
-        reason: 'a disabled control must not even arm');
+  for (final action in [
+    (label: 'Blackout', text: '■ BLACKOUT', confirm: 'Confirm blackout',
+      confirmText: '■ CONFIRM BLACKOUT', command: 'blackout'),
+    (label: 'Clear all', text: '✕ CLEAR ALL', confirm: 'Confirm clear all',
+      confirmText: '✕ CONFIRM CLEAR', command: 'clear'),
+  ]) {
+    testWidgets('busy ${action.label} arms locally and waits for confirmation',
+        (tester) async {
+      final handle = tester.ensureSemantics();
+      final fake = _Fake();
+      final live = await _pumpPolledStrip(tester, fake);
+      try {
+        fake.commandGate = Completer<void>();
+        unawaited(live.act(cmdNext()));
+        await tester.pump();
+        expect(live.busy, isTrue);
+        expect(fake.sent, ['next']);
 
-    fake.commandGate!.complete();
-    await tester.pump(const Duration(milliseconds: 60));
-    expect(live.busy, isFalse,
-        reason: 'busy must clear once the command settles');
-    // The fake host never actually applied the blackout (only recorded that
-    // it was sent), so the label is still BLACKOUT — what matters here is
-    // that it is enabled again, i.e. carries no disabled-reason suffix.
-    expect(find.bySemanticsLabel('Blackout'), findsOneWidget,
-        reason: 'the control re-enables once busy clears');
+        await tester.tap(find.text(action.text), warnIfMissed: false);
+        await tester.pump();
+        expect(find.bySemanticsLabel('${action.confirm}, sending…'), findsOneWidget,
+            reason: 'the first tap is local even though the host is busy');
+        expect(fake.sent, ['next'], reason: 'arming sends no emergency command');
+        await tester.tap(find.text(action.confirmText), warnIfMissed: false);
+        await tester.pump();
+        expect(fake.sent, ['next']);
+        await tester.pump(const Duration(seconds: 4));
+        expect(find.bySemanticsLabel('${action.confirm}, sending…'), findsOneWidget,
+            reason: 'an arm initiated while busy retains its paused window');
 
-    handle.dispose();
-    live.dispose();
+        fake.commandGate!.complete();
+        await tester.pump(const Duration(milliseconds: 60));
+        expect(live.busy, isFalse);
+        expect(find.bySemanticsLabel(action.confirm), findsOneWidget);
+        await tester.tap(find.bySemanticsLabel(action.confirm));
+        await tester.pump(const Duration(milliseconds: 60));
+        final commands = fake.sentCmds.where((c) => c['cmd'] == action.command);
+        expect(commands.toList(), [
+          if (action.command == 'blackout') {'cmd': 'blackout', 'on': true}
+          else {'cmd': 'clear'},
+        ], reason: 'exactly one explicit ready-state confirmation sends');
+      } finally {
+        final gate = fake.commandGate;
+        if (gate != null && !gate.isCompleted) gate.complete();
+        await tester.pump();
+        await tester.pumpWidget(const SizedBox());
+        live.dispose();
+        handle.dispose();
+      }
+    });
+  }
+
+  testWidgets('syncing blocks both an armed confirmation and a new clear arm',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    final replacement = _Fake()..gate = Completer<void>();
+    final live = LiveController(session: fake, stored: _stored, connect: ({
+      required String host, required int port, required String pinHex,
+      required Credentials creds,
+    }) async => replacement);
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ListenableBuilder(
+      listenable: live, builder: (_, _) => EmergencyStrip(live: live),
+    ))));
+    try {
+      await tester.pump(const Duration(milliseconds: 60));
+      await tester.tap(find.bySemanticsLabel('Blackout'));
+      await tester.pump();
+      expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget);
+      fake.dead = true;
+      await live.refresh();
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(live.syncing, isTrue);
+      expect(find.bySemanticsLabel('Confirm blackout, unavailable while reconnecting'),
+          findsOneWidget);
+      expect(find.bySemanticsLabel('Clear all, unavailable while reconnecting'),
+          findsOneWidget);
+      await tester.tap(find.text('■ CONFIRM BLACKOUT'), warnIfMissed: false);
+      await tester.tap(find.text('✕ CLEAR ALL'), warnIfMissed: false);
+      await tester.pump();
+      expect(fake.sent, isEmpty);
+      expect(replacement.sent, isEmpty);
+      expect(find.bySemanticsLabel('Confirm clear all'), findsNothing);
+    } finally {
+      replacement.gate!.complete();
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      live.dispose();
+      handle.dispose();
+    }
+  });
+
+  testWidgets('busy state does not grant emergency controls to an Assistant',
+      (tester) async {
+    final fake = _Fake(grantedRole: MobileRole.assistant);
+    final live = await _pumpPolledStrip(tester, fake);
+    try {
+      fake.commandGate = Completer<void>();
+      unawaited(live.act(cmdNext()));
+      await tester.pump();
+      expect(live.busy, isTrue);
+      expect(find.text('■ BLACKOUT'), findsNothing);
+      expect(find.text('✕ CLEAR ALL'), findsNothing);
+      expect(fake.sent, ['next']);
+    } finally {
+      fake.commandGate!.complete();
+      await tester.pump();
+      await tester.pumpWidget(const SizedBox());
+      live.dispose();
+    }
   });
 
   testWidgets(
-      'Un-blackout is disabled while a command is in flight, same as '
-      'Blackout (Quinn, 17tnw2ay2pq review — the recovery direction was the '
-      'one branch nobody asserted)', (tester) async {
+      'Un-blackout stays send-gated while a command is in flight', (tester) async {
     final handle = tester.ensureSemantics();
     final fake = _Fake(blackout: true);
     final live = await _pumpPolledStrip(tester, fake);

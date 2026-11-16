@@ -237,6 +237,7 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `SENTRY_DSN` | empty | Read into settings, but nothing consumes it yet (no Sentry SDK is wired), so setting it changes nothing today. Intended for staging/prod only, never locally |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Leave empty. It is read but **not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` in dev; false elsewhere | **Startup refuses true outside exact `dev`, including staging and explicit opt-in.** See below |
+| `SELAHCUE_ENABLE_ADMIN_CATALOGUE` | false | **Keep false/unset in every shared deployment. Startup and the service refuse enablement outside exact `dev`.** The admin catalogue slice is mergeable before staff sign-in, but must remain disabled in production until that authenticator passes security review. This flag is not authentication. |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
@@ -433,25 +434,67 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
   `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
+- **Degraded mail is a per-worker send-claim ceiling (17tnw2b1x1p).**
+  `SELAHCUE_RESEND_DEGRADED_SEND_CEILING` and `SELAHCUE_RESET_SEND_DEGRADED_CEILING`
+  are separate `(limit, window_seconds)` code settings in `settings.py`, both defaulting to
+  `(20, 3600)`; they are not environment variables. If the cache budget is unavailable,
+  each worker claims from its own in-process fixed window. The effective fleet ceiling is
+  **limit × number of workers**, for each endpoint's configured window: with four workers,
+  the default permits up to80 claims per hour for resend and separately80 for reset requests.
+  This is not a coordinated rolling-hour fleet cap: windows start independently, and a
+  worker restart clears its in-process state. Every valid call claims a unit, including an
+  unknown address, so actual emails may be fewer than claims. When the ceiling is spent,
+  no token is minted and no email sent; browser callers still receive the normal
+  `accepted:true`, and existing links remain usable. Raising either setting increases
+  outage-time exposure. Restore the shared store to restore shared budgets. Native bootstrap
+  `POST /v1/sessions` retains its distinct429-before-password-work outage refusal; activated
+  devices and the other native routes retain their existing fail-open policy.
+- **IP cache-key privacy and root-key rotation (17tnw2b1x1p).** Native route IP budgets and
+  the four browser IP scopes (verify email, resend verification, request reset and confirm
+  reset) store `ip:v1:` plus an HMAC-SHA256 digest of the already-resolved source bucket.
+  Django's `salted_hmac` derives dedicated key material as SHA256 of the purpose
+  `selahcue_api.apps.throttling.ip_bucket.v1` followed by the configured `SECRET_KEY`.
+  This separates IP-cache identities from credential, email and audit HMAC purposes without
+  adding a separately provisioned secret. The underlying identity still unwraps mapped IPv4,
+  shares each IPv6/64 and trusts forwarded headers only under `SELAHCUE_TRUSTED_PROXY_COUNT`.
+  Hashing does not change those groups or fix an incorrect proxy count.
+
+  Rotating `SECRET_KEY` changes all these IP keys at once, so their budgets reset once;
+  the existing secret-keyed per-address mail budgets reset too. `SECRET_KEY_FALLBACKS`
+  is not consulted for these identities. Fixed global counters, actor-digest counters and
+  fixed/account failed-confirm trace allowances keep their existing keys and counts: they
+  do not reset merely because the root key changed. Old counter entries retain their original
+  expiry and are not migrated or cleared. The initial move from raw IP keys to this versioned
+  format likewise starts fresh IP budgets once; legacy raw-IP keys expire on their existing
+  TTLs. This change does not erase historical cache logs. The credential/session invalidation
+  effects of root-key rotation described in section6 remain unchanged.
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
-  budget. Spending one budget takes one to three commands (`SET NX`, and once the counter exists
-  also `EXISTS` and `INCR`; in the rare race where a counter's window lapses between those two,
-  one `EXPIRE` and sometimes a second `SET NX` more), and opening a new connection adds three
-  more (two `CLIENT SETINFO` and a `SELECT`). Those handshake commands, and with a `rediss://`
-  URL the TLS handshake itself, run under `CACHE_SOCKET_TIMEOUT`, not the connect timeout: redis-py
-  applies the read timeout as soon as the TCP connect returns (checked against redis-py 6.4.0, with
-  a listener that accepts and never speaks TLS: it gave up at the read timeout, not the connect
-  timeout).
-  - **Stalled** (accepts, never answers): the first command of a budget times out and the rest of
-    that budget is skipped, so a request costs about one timeout per budget: about 0.5 s on a
-    one-budget route and about 1.5 s on a three-budget route. Measured on a frozen Redis.
-  - **Slow but answering** (every reply just under the timeout): nothing times out and nothing
-    fails open, and each command costs nearly the full timeout: up to about 1.5 s on a one-budget
-    route and 4.5 s on a three-budget route, plus about 1.5 s when the connection has to be
-    reopened. Measured with a proxy that answered every command 0.4 s late, so each figure sits at
-    about 0.8 of the maximum just given: 1.21 s for a steady one-budget call, 3.64 s for three
-    budgets (a reset or resend), and 1.69 s for the **first** call on a fresh connection (it also
-    paid the three handshake commands).
+  budget. The configured Redis backend now spends one positive-window budget with one bounded
+  EVAL (17tnw2b1wvf): three budgets on an accepted reset/resend request mean three budget
+  round trips, both for first hits and existing counters. The former separate `EXISTS`
+  network check is replaced by an expiry check inside the script. It accesses one validated,
+  versioned cache key, creates new counters with expiry in the same write, retains existing
+  fixed deadlines and repairs persistent counters without resetting their count. It uses no
+  loops or script-cache loading/retry. Redis ACLs must permit EVAL and its fixed PTTL,
+  SET, `EXPIRE` and `INCR` commands; a refused script follows the existing unavailable-store
+  policy and reporting. Generic/local caches keep their existing cache API path.
+
+  Connection setup is separate: the current client sends two `CLIENT SETINFO` commands and
+  a `SELECT` on a fresh connection (three additional observed control round trips). Those
+  handshake commands, and with a `rediss://` URL the TLS handshake itself, run under
+  `CACHE_SOCKET_TIMEOUT`, not the connect timeout: redis-py applies the read timeout as soon
+  as the TCP connect returns (checked against redis-py 6.4.0 with a listener that accepts and
+  never speaks TLS: it gave up at the read timeout, not the connect timeout).
+  - **Stalled** (accepts, never answers): the first network operation times out, preserving
+    the existing unavailable-store/circuit and caller policies. At the default timeout this
+    costs about 0.5 s per attempted budget before circuit suppression; a three-budget request
+    may pay about 1.5 s while that worker's circuit is still closed. It may fail during setup
+    before the budget script reaches Redis. No timed-out command is retried.
+  - **Slow but answering** (every reply just under the timeout): the command-count bound
+    implies up to about 0.5 s per budget or 1.5 s for three budgets, plus about 1.5 s if a new
+    connection pays all three handshake replies. These are bounds from command counts and
+    the configured timeout, not new latency measurements. The earlier pre-optimization
+    multi-command latency samples do not describe this single-script path.
 
   A shared `/v1` throttle **denial** also reads the existing counter's PTTL on the primary
   to provide `Retry-After` (17tnw2b1wqc). That is one extra command under the same socket timeout:
@@ -492,12 +535,10 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   timeout times the commands a route spends (up to 9, rarely a few more, on a three-budget route;
   12 on a fresh connection) below any request timeout your host or proxy enforces. Size threads or
   workers for arrival rate times the added latency.
-- **No server timeout is configured here.** This repository ships only Django's development server
-  (`manage.py runserver`, in the `Dockerfile` and the compose file), which has no request timeout
-  and starts a thread per connection with no cap. No production application server (gunicorn,
-  uvicorn and the like) is configured in this repo, so there is no "worker timeout" to stay under
-  until one is chosen; until then a stall shows up as extra in-flight requests (arrival rate times
-  the added latency), not as refused ones.
+- **API worker limits.** The API image starts two synchronous Gunicorn workers with 30-second
+  worker and graceful shutdown timeouts. Each worker serves one request at a time. Keep downstream
+  timeouts within the web and ingress budgets and size workers against measured latency and
+  concurrency. Development Compose uses Django's `manage.py runserver`.
 - **Alert on it.** Failing open is now quiet inside the app: the only in-app signal is one WARNING
   per worker per minute (`rate-limit store unavailable (TimeoutError)`, plus `limiter unavailable`
   when a mail send is skipped). This repo configures no `LOGGING` and has no Sentry integration
@@ -669,7 +710,10 @@ leave it off and are unchanged.
    does not preserve it, Django sees `http` and the flag cannot fix the 403. Check the hop after
    Cloudflare first: Cloudflare sends the header, but the next hop (for example a Traefik that
    trusts no inbound forwarded headers) may replace it with the scheme of its own plain-HTTP
-   connection. Cloudflare in "Flexible" mode (plain HTTP to the origin) can have the same effect.
+   connection. Configure Traefik `forwardedHeaders.trustedIPs` with Cloudflare's published
+   address ranges. Never use `forwardedHeaders.insecure=true`: it accepts client-supplied
+   forwarded headers whenever the origin can be reached without Cloudflare. Cloudflare in
+   "Flexible" mode (plain HTTP to the origin) can have the same effect.
    That fails closed (you keep the 403), never open. Native clients (`/v1/...`) do not go through
    nginx; their route to Django is the edge directly, and the same two rules hold.
 
@@ -691,8 +735,11 @@ refuse plain HTTP to the host and every subdomain for that long, so roll it out 
    enforcing it until its `max-age` runs out. The in-app way to shorten what browsers hold is to
    deploy `SECURE_HSTS_SECONDS=1` together with `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and
    `SECURE_HSTS_PRELOAD=0`: every returning browser replaces its stored policy with a one-second,
-   host-only one on its next HTTPS response. Leave that in place for as long as the old `max-age`
-   (so returning visitors pick it up), and only then turn the flag off. A true
+   host-only one on its next API response over HTTPS. Django sends this header on API responses;
+   the SPA requests `/graphql/csrf` lazily, so visitors who only browse pages may retain the old
+   policy. Serve the shorter policy at the TLS edge for coverage of those page responses too.
+   Leave it in place for as long as the old `max-age` (so returning visitors pick it up), and
+   only then turn the flag off. A true
    `Strict-Transport-Security: max-age=0` must be served by the edge. Starting small (step 2) is
    what keeps this recoverable; a policy already on the preload list cannot be rolled back this way.
 
@@ -730,11 +777,9 @@ The native `/v1` routes (`POST /v1/sessions`, `POST /v1/activations:with-session
 
 ## 6d. Database migrations — deploy order (Platform API)
 
-**Nothing in this repository runs `migrate` for you.** The API image ends in `manage.py
-runserver`, the compose file does the same, and no workflow, Makefile target or script applies
-migrations to a deployed database. **How your deploys sequence `migrate` is not known to the
-engineering team; confirm it before the first release that contains a column drop.** (Owner
-question, ClickUp 86ak5mn0m.)
+The Gunicorn API image and development Compose both require a separate migration step.
+Run the one-off migration from the release image using the order in the
+[Coolify runbook](../../DEPLOYMENT.md#deploy-and-verify-the-platform).
 
 Most migrations only add things and can run beside the running release. A **column drop cannot**.
 The first one is `selahcue_accounts` 0004, which removes `CustomerOrg.device_limit`
@@ -781,3 +826,14 @@ does not work, because of the `NOT NULL` point above.
 If a signing credential leaks, revoke the certificate at
 [developer.apple.com](https://developer.apple.com/account/resources/certificates/list) immediately —
 anything signed with it is attributed to you.
+
+
+### API dependency installation (17tnw2az0kw)
+
+The API Docker image installs the committed `implementation/api/uv.lock` with pinned uv0.13.4.
+The dependency layer is wheel-only and includes the explicit locked setuptools build group; after
+copying source, the final editable application build runs offline without build isolation.
+`/opt/venv/bin` is on PATH, outside the compose source bind mount, so API and Celery imports work
+from another working directory. Startup performs no dependency download. Do not add a pip install,
+floating psycopg range or isolated build command to deployment/startup scripts. See the API README
+for deliberate bootstrap, targeted updates, rollback and post-merge dependency graph verification.

@@ -88,7 +88,7 @@ def test_a_STALE_cached_known_set_still_cannot_apply_an_INACTIVE_dimensions_over
 
     first, plan_pk, revision = _warm(key, SCREEN_KEY)
     plan_value = first.values[SCREEN_KEY]
-    assert plan_value == 5, f"premise: PRO grants 5 screen outputs, got {plan_value!r}"
+    assert plan_value == 2, f"premise: seeded plan grants 2 screen outputs, got {plan_value!r}"
 
     GrantDimension.objects.filter(pk=dimension.pk).update(is_active=False)
     assert current_revision() == revision, (
@@ -129,7 +129,7 @@ def test_the_stale_window_is_real_positive_control():
     key, _ = _seed_license_key(tag="qa-stale-control")
     _assign(key, "PRO")
     first, plan_pk, revision = _warm(key, SCREEN_KEY)
-    assert first.values[SCREEN_KEY] == 5
+    assert first.values[SCREEN_KEY] == 2
 
     PlanGrant.objects.filter(
         plan=Plan.objects.get(code="PRO"), dimension__key=SCREEN_KEY
@@ -137,7 +137,7 @@ def test_the_stale_window_is_real_positive_control():
     assert current_revision() == revision, "the update bumped the revision"
 
     second = resolve_entitlement(key)
-    assert second.values[SCREEN_KEY] == 5, (
+    assert second.values[SCREEN_KEY] == 2, (
         "the cache did NOT serve a stale map, so the two tests above are not exercising a "
         "stale `published`/`known` set either"
     )

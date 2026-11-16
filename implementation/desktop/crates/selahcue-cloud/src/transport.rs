@@ -40,6 +40,42 @@ impl core::fmt::Display for TransportError {
 
 impl std::error::Error for TransportError {}
 
+/// Refuse an invalid or non-HTTPS hosted endpoint without retaining or quoting its input.
+/// Used at both the operator configuration and licensing construction boundaries.
+pub fn require_https_base_url(base_url: &str) -> Result<(), TransportError> {
+    let valid =
+        url::Url::parse(base_url).is_ok_and(|url| url.scheme() == "https" && url.host().is_some());
+    if valid {
+        Ok(())
+    } else {
+        Err(TransportError(
+            "hosted base URL must be an HTTPS URL".into(),
+        ))
+    }
+}
+
+/// The explicit test seam: HTTPS, or HTTP whose parsed host is loopback only.
+/// This never resolves DNS or treats a loopback-looking domain suffix as an IP address.
+pub fn require_loopback_test_url(base_url: &str) -> Result<(), TransportError> {
+    let valid = url::Url::parse(base_url).is_ok_and(|url| {
+        url.scheme() == "https" && url.host().is_some()
+            || url.scheme() == "http"
+                && match url.host() {
+                    Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                    Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                    Some(url::Host::Domain(host)) => host == "localhost",
+                    None => false,
+                }
+    });
+    if valid {
+        Ok(())
+    } else {
+        Err(TransportError(
+            "test URL must use HTTPS or HTTP on a loopback host".into(),
+        ))
+    }
+}
+
 /// A blocking HTTP transport. Blocking (not async) keeps the seam simple and the core
 /// deterministic; callers run it off any UI/render thread (the operator command is
 /// `async` and offloads it). Implementations must not log request bodies or the bearer.
@@ -56,7 +92,7 @@ pub trait HttpTransport {
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError>;
 }
 
-/// The most response body the production transport will read off the socket.
+/// The default and maximum allowed response body size for the production transport.
 ///
 /// **This is the bound that actually holds.** A cap applied after the body is in hand
 /// bounds *parsing*, not memory: by then an unbounded read has already allocated
@@ -110,6 +146,13 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 ///   certificate are each refused before a single request byte is written. Pinned in
 ///   `transport/tls_tests.rs`.
 ///
+/// # First-hop HTTPS (ClickUp 17tnw2b9dnu)
+///
+/// Ordinary requests must use HTTPS before any body or bearer is attached, with a fixed
+/// data-free configuration error. The builder also sets `https_only(true)`. Only the explicit
+/// [`ReqwestTransport::new_for_loopback_tests`] seam admits HTTP, and only to parsed loopback
+/// hosts; normal application wiring never selects it. TLS trust and redirects are unchanged.
+///
 /// # Redirect posture (ClickUp 17tnw2b9aaz)
 ///
 /// **Redirects are never followed.** A 3xx is returned to the caller as an ordinary
@@ -152,6 +195,8 @@ pub const MAX_TRANSPORT_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(feature = "http")]
 pub struct ReqwestTransport {
     client: reqwest::blocking::Client,
+    loopback_http_for_tests: bool,
+    max_response_bytes: usize,
 }
 
 /// Ceiling on the TCP/TLS connect phase alone.
@@ -271,7 +316,36 @@ impl ReqwestTransport {
     /// stalling peer always fails rather than hanging the caller. Trusts the operating
     /// system's certificate store and nothing else (see the type documentation).
     pub fn new() -> Result<Self, TransportError> {
-        Self::build(&[])
+        Self::new_with_response_limit(MAX_TRANSPORT_RESPONSE_BYTES)
+    }
+
+    /// Apply a tighter byte limit to this client's response reads for both GET and POST.
+    pub fn new_with_response_limit(max_bytes: usize) -> Result<Self, TransportError> {
+        if !(1..=MAX_TRANSPORT_RESPONSE_BYTES).contains(&max_bytes) {
+            return Err(TransportError(format!(
+                "response limit must be between 1 and {MAX_TRANSPORT_RESPONSE_BYTES} bytes"
+            )));
+        }
+        let mut transport = Self::build(&[])?;
+        transport.max_response_bytes = max_bytes;
+        Ok(transport)
+    }
+
+    /// Explicit test transport for local HTTP fixture servers. Every request still validates
+    /// its parsed host: non-loopback HTTP is refused, HTTPS keeps ordinary TLS verification,
+    /// and redirects are never followed. Normal application wiring must use [`Self::new`].
+    pub fn new_for_loopback_tests() -> Result<Self, TransportError> {
+        let mut transport = Self::from_builder(Self::shipped_builder(&[]).https_only(false))?;
+        transport.loopback_http_for_tests = true;
+        Ok(transport)
+    }
+
+    fn require_request_url(&self, url: &str) -> Result<(), TransportError> {
+        if self.loopback_http_for_tests {
+            require_loopback_test_url(url)
+        } else {
+            require_https_base_url(url)
+        }
     }
 
     /// The one place a production client is built. `extra_roots` is always empty in production;
@@ -302,6 +376,7 @@ impl ReqwestTransport {
         timeout: std::time::Duration,
     ) -> reqwest::blocking::ClientBuilder {
         let mut builder = reqwest::blocking::Client::builder()
+            .https_only(true)
             .connect_timeout(connect_timeout)
             .timeout(timeout)
             // NEVER follow a redirect: see "Redirect posture" on the type. The default policy
@@ -321,7 +396,11 @@ impl ReqwestTransport {
         let client = builder
             .build()
             .map_err(|e| TransportError(describe_build_error(&e)))?;
-        Ok(ReqwestTransport { client })
+        Ok(ReqwestTransport {
+            client,
+            loopback_http_for_tests: false,
+            max_response_bytes: MAX_TRANSPORT_RESPONSE_BYTES,
+        })
     }
 }
 
@@ -419,14 +498,17 @@ pub fn read_capped(
 
 /// Read a response body with a hard ceiling, instead of `text()`'s read-to-end.
 #[cfg(feature = "http")]
-fn read_bounded(resp: reqwest::blocking::Response) -> Result<HttpResponse, TransportError> {
+fn read_bounded(
+    resp: reqwest::blocking::Response,
+    max_bytes: usize,
+) -> Result<HttpResponse, TransportError> {
     let status = resp.status().as_u16();
     // The body read gets its own deadline because the client timeout does not bound it (PERF-2).
     // Worst case is therefore the head phase plus this budget rather than a single
     // REQUEST_TIMEOUT_SECS — stated plainly rather than hidden, since the alternative is a bound
     // that only holds for peers that stay silent.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
-    let buf = read_capped(resp, MAX_TRANSPORT_RESPONSE_BYTES, Some(deadline))?;
+    let buf = read_capped(resp, max_bytes, Some(deadline))?;
     // Bodies are untrusted bytes; decode lossily rather than failing on bad UTF-8, so a
     // mangled response becomes a parse error the caller can map, not a transport error
     // that would trigger the degraded-fallback path for the wrong reason.
@@ -444,6 +526,7 @@ impl HttpTransport for ReqwestTransport {
         body: &str,
         bearer: Option<&str>,
     ) -> Result<HttpResponse, TransportError> {
+        self.require_request_url(url)?;
         let mut req = self
             .client
             .post(url)
@@ -455,10 +538,11 @@ impl HttpTransport for ReqwestTransport {
         let resp = req
             .send()
             .map_err(|e| TransportError(describe_send_error(&e)))?;
-        read_bounded(resp)
+        read_bounded(resp, self.max_response_bytes)
     }
 
     fn get(&self, url: &str, bearer: Option<&str>) -> Result<HttpResponse, TransportError> {
+        self.require_request_url(url)?;
         let mut req = self.client.get(url);
         if let Some(t) = bearer {
             req = req.bearer_auth(t);
@@ -466,6 +550,6 @@ impl HttpTransport for ReqwestTransport {
         let resp = req
             .send()
             .map_err(|e| TransportError(describe_send_error(&e)))?;
-        read_bounded(resp)
+        read_bounded(resp, self.max_response_bytes)
     }
 }

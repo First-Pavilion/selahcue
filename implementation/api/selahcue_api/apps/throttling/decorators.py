@@ -9,7 +9,9 @@ from django.conf import settings
 from django.core.cache import cache
 
 from selahcue_api.apps.throttling.guards import report_native_denial
-from selahcue_api.apps.throttling.services import BudgetOutcome, CacheStore, client_ip, evaluate_budget
+from selahcue_api.apps.throttling.services import (
+    BudgetOutcome, CacheStore, client_ip, evaluate_budget, ip_bucket_identity,
+)
 from selahcue_api.graphql.errors import ErrorCode
 from selahcue_api.platform.responses import command_error_response
 
@@ -28,7 +30,7 @@ def throttle(
         @wraps(view)
         def wrapper(request, *args, **kwargs):
             limit, window = getattr(settings, setting_name, default)
-            key = f"throttle:{scope}:{client_ip(request)}"
+            key = f"throttle:{scope}:{ip_bucket_identity(client_ip(request))}"
             store = CacheStore(cache)
             outcome = evaluate_budget(store, key, limit, window)
             unavailable = outcome is BudgetOutcome.STORE_UNAVAILABLE

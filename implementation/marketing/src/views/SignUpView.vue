@@ -75,6 +75,7 @@ type SignUpState =
 
 const state = ref<SignUpState>('form')
 const heading = ref<HTMLElement | null>(null)
+const form = ref<HTMLFormElement | null>(null)
 
 const orgName = ref('')
 const displayName = ref('')
@@ -135,6 +136,13 @@ async function focusHeading(): Promise<void> {
   heading.value?.focus()
 }
 
+/** Wait for error associations to render, then read fields in their visual/DOM order. */
+async function focusFirstInvalid(): Promise<void> {
+  await nextTick()
+  if (unmounted) return
+  form.value?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus()
+}
+
 async function submit(): Promise<void> {
   if (state.value === 'submitting') return
   bannerTitle.value = ''
@@ -153,6 +161,7 @@ async function submit(): Promise<void> {
     // Stay on the form; the field-level messages carry the correction. No request is
     // sent, so the server's single collapsed VALIDATION_FAILED never has to be guessed at.
     state.value = 'form'
+    void focusFirstInvalid()
     return
   }
 
@@ -259,6 +268,7 @@ onBeforeUnmount(() => {
       </p>
 
       <form
+        ref="form"
         novalidate
         aria-label="Create account"
         :aria-busy="state === 'submitting'"
@@ -266,6 +276,7 @@ onBeforeUnmount(() => {
         @submit.prevent="submit"
       >
         <FormField
+          error-style="glyph"
           v-model="orgName"
           label="Church or organisation"
           placeholder="Grace Community Church"
@@ -275,6 +286,7 @@ onBeforeUnmount(() => {
           :disabled="state === 'submitting'"
         />
         <FormField
+          error-style="glyph"
           v-model="displayName"
           label="Your name"
           placeholder="Alex Morgan"
@@ -283,6 +295,7 @@ onBeforeUnmount(() => {
           :disabled="state === 'submitting'"
         />
         <FormField
+          error-style="glyph"
           v-model="email"
           type="email"
           label="Email"
@@ -320,29 +333,33 @@ onBeforeUnmount(() => {
             </option>
           </select>
           <p v-if="errors.country" id="signup-country-error" class="au-field-error" role="alert">
-            {{ errors.country }}
+            <span aria-hidden="true">✕ </span>{{ errors.country }}
           </p>
         </div>
 
-        <FormField
-          v-model="password"
-          type="password"
-          label="Password"
-          autocomplete="new-password"
-          required
-          :hint="passwordHint"
-          :error="errors.password"
-          :disabled="state === 'submitting'"
-        />
-        <FormField
-          v-model="confirmPassword"
-          type="password"
-          label="Confirm password"
-          autocomplete="new-password"
-          required
-          :error="errors.confirmPassword"
-          :disabled="state === 'submitting'"
-        />
+        <fieldset class="au-fieldset" role="none" :disabled="state === 'submitting'">
+          <FormField
+            error-style="glyph"
+            v-model="password"
+            type="password"
+            label="Password"
+            autocomplete="new-password"
+            required
+            :hint="passwordHint"
+            :error="errors.password"
+            :disabled="state === 'submitting'"
+          />
+          <FormField
+            error-style="glyph"
+            v-model="confirmPassword"
+            type="password"
+            label="Confirm password"
+            autocomplete="new-password"
+            required
+            :error="errors.confirmPassword"
+            :disabled="state === 'submitting'"
+          />
+        </fieldset>
 
         <!-- Validated on submit rather than by disabling the button. A disabled primary
              action gives a keyboard user a dead control and no reason for it; A12
@@ -362,7 +379,7 @@ onBeforeUnmount(() => {
           </span>
         </label>
         <p v-if="errors.terms" id="signup-terms-error" class="au-field-error" role="alert">
-          {{ errors.terms }}
+          <span aria-hidden="true">✕ </span>{{ errors.terms }}
         </p>
 
         <div class="au-actions">
@@ -462,9 +479,5 @@ onBeforeUnmount(() => {
 .au-title:focus-visible {
   outline: 2px solid var(--sc-primary);
   outline-offset: 4px;
-}
-
-.is-submitting :deep(.form-field) {
-  opacity: 0.5;
 }
 </style>

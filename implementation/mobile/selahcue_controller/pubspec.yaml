@@ -31,9 +31,9 @@ dependencies:
   flutter:
     sdk: flutter
   # SHA-256 of the operator certificate (TLS pinning).
-  crypto: ^3.0.3
+  crypto: ^3.0.8
   # Camera QR scanning of the pairing invite.
-  mobile_scanner: ^7.4.2
+  mobile_scanner: ^7.5.0
   # Keychain/Keystore storage for the issued bearer token.
   flutter_secure_storage: ^11.2.0
 
@@ -117,12 +117,8 @@ flutter_launcher_icons:
   adaptive_icon_background: "#0E1116"
   adaptive_icon_foreground: "assets/selahcue-logo.png"
 
-# Native (cold-start) splash so there's no flash before Flutter boots — matches
-# the in-app SplashView, which is Design 2.0 `d2Base` (#0B0D12). The emitted
-# bitmaps/styles are GENERATED from this block and are still on the Design 1.0
-# base until someone runs `dart run flutter_native_splash:create`; the delta is
-# 3/255 per channel, so the config is corrected here rather than regenerating
-# binary assets as a side-effect of a code fix.
+# Native cold-start splash uses the same Design 2.0 base as the in-app SplashView.
+# Regenerate native bitmaps/styles with `dart run flutter_native_splash:create`.
 flutter_native_splash:
   color: "#0B0D12"
   image: assets/selahcue-logo.png

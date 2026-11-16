@@ -29,6 +29,11 @@ check_workflows.py looks at. Run from the repository root; it reads .github/work
 5. SUPERSEDED PULL-REQUEST RUNS ARE CANCELLED. ci.yml has a workflow-level `concurrency` whose
    `cancel-in-progress` is exactly `${{ github.event_name == 'pull_request' }}` (never a main
    run: every main commit keeps its verdict).
+6. WINDOWS LICENSING REPEAT IS BOUNDED (A2). The existing rust job runs the full
+   admission file exactly three times with eight harness threads on Windows,
+   including after an earlier failure. Execute its actual bash loop with a stub
+   cargo: check the exact arguments, all-success count and failure positions 1/2/3.
+   No additional job, runner, matrix leg, or schedule is needed for this evidence.
 
 What it does not do: it does not read the bill. The numbers are in the pull request that
 introduced it and in CLAUDE.md. It does not stop a workflow file from being added with a
@@ -44,7 +49,9 @@ import copy
 import glob
 import json
 import os
+from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -235,6 +242,67 @@ def tier_violations(workflow: dict, filename: str) -> list[str]:
     return out
 
 
+def licensing_repeat_violations(workflow: dict, filename: str) -> list[str]:
+    """Bounded A2 Windows evidence; execute the actual loop with a synthetic cargo.
+
+    Stub calls pin the target, thread count, repeat count and failure propagation.
+    The condition has one accepted spelling so GitHub cannot imply success() and
+    skip this evidence after a separate workspace-test failure.
+    """
+    job = (workflow.get("jobs") or {}).get("rust") or {}
+    matches = [step for step in job.get("steps", [])
+               if step.get("id") == "windows-licensing-parallel"]
+    label = f"{filename}: Windows licensing parallel repeat"
+    if len(matches) != 1:
+        return [f"{label}: expected exactly one windows-licensing-parallel step in rust"]
+    step = matches[0]
+    out = []
+    if step.get("if") != "${{ !cancelled() && runner.os == 'Windows' }}":
+        out.append(f"{label}: must run on Windows even after an earlier failure, unless cancelled")
+    if step.get("shell") != "bash":
+        out.append(f"{label}: requires the checked bash shell")
+    if step.get("continue-on-error", False) is not False or job.get("continue-on-error", False) is not False:
+        out.append(f"{label}: failures must not be marked continue-on-error")
+    defaults = (job.get("defaults") or {}).get("run") or {}
+    if step.get("working-directory", defaults.get("working-directory")) != "implementation/desktop":
+        out.append(f"{label}: must target the desktop workspace")
+    expected = ["test", "-p", "selahcue-licensing", "--test", "test_https_admission",
+                "--", "--nocapture", "--test-threads=8"]
+    with tempfile.TemporaryDirectory(prefix="licensing-repeat-") as directory:
+        root = Path(directory)
+        log = root / "calls.jsonl"
+        stub = root / "cargo.py"
+        stub.write_text(
+            "import json, os, pathlib, sys\n"
+            "log = pathlib.Path(os.environ['LICENSING_CALLS'])\n"
+            "with log.open('a') as stream: stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "count = len(log.read_text().splitlines())\n"
+            "sys.exit(7 if count == int(os.environ['LICENSING_FAIL_AT']) else 0)\n"
+        )
+        cargo = root / "cargo"
+        cargo.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(stub))} \"$@\"\n")
+        cargo.chmod(0o755)
+        for fail_at in (0, 1, 2, 3):
+            log.write_text("")
+            env = {"PATH": str(root) + os.pathsep + os.defpath,
+                   "LICENSING_CALLS": str(log), "LICENSING_FAIL_AT": str(fail_at)}
+            try:
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step.get("run", "")],
+                    cwd=root, env=env, capture_output=True, text=True, timeout=5,
+                )
+                calls = [json.loads(line) for line in log.read_text().splitlines()]
+            except (subprocess.TimeoutExpired, ValueError) as error:
+                out.append(f"{label}: repeat did not finish with valid calls ({type(error).__name__})")
+                continue
+            wanted_calls = 3 if fail_at == 0 else fail_at
+            wanted_status = 0 if fail_at == 0 else 7
+            if calls != [expected] * wanted_calls or result.returncode != wanted_status:
+                out.append(f"{label}: failure-at-{fail_at} expected {wanted_calls} focused parallel-8 calls "
+                           f"and exit {wanted_status}, got {len(calls)} calls and exit {result.returncode}")
+    return out
+
+
 def all_violations(workflows: dict[str, dict]) -> list[str]:
     out = []
     for path, wf in workflows.items():
@@ -244,6 +312,7 @@ def all_violations(workflows: dict[str, dict]) -> list[str]:
         out.append(f"{CI_WORKFLOW}: not found (run from the repository root).")
     else:
         out += tier_violations(ci, CI_WORKFLOW) + alarm_violations(ci, CI_WORKFLOW) + concurrency_violations(ci, CI_WORKFLOW)
+        out += licensing_repeat_violations(ci, CI_WORKFLOW)
     return out
 
 
@@ -357,6 +426,37 @@ def self_test() -> int:
     check("no concurrency block is rejected", len(concurrency_violations({"jobs": {}}, "x")), 1)
     check("a spelling with other whitespace is rejected (one spelling)", len(concurrency_violations(synthetic(cancel="${{github.event_name=='pull_request'}}"), "x")), 1)
 
+    # Rule 6: mutate the actual workflow command; never copy its loop into a test.
+    repeat_workflow = load_workflows()[CI_WORKFLOW]
+    check("real Windows licensing repeat executes three parallel-8 calls and propagates each failure",
+          licensing_repeat_violations(repeat_workflow, CI_WORKFLOW), [])
+    repeat_steps = repeat_workflow["jobs"]["rust"]["steps"]
+    repeat = next((step for step in repeat_steps if step.get("id") == "windows-licensing-parallel"), None)
+    if repeat is not None:
+        mutations = [
+            ("implicit success after an earlier failure", "if", "${{ runner.os == 'Windows' }}"),
+            ("Linux execution", "if", "${{ !cancelled() }}"),
+            ("wrong shell", "shell", "pwsh"),
+            ("continue-on-error", "continue-on-error", True),
+            ("wrong workspace", "working-directory", "."),
+            ("two repeats", "run", repeat["run"].replace("in 1 2 3;", "in 1 2;")),
+            ("four repeats", "run", repeat["run"].replace("in 1 2 3;", "in 1 2 3 4;")),
+            ("wrong thread count", "run", repeat["run"].replace("--test-threads=8", "--test-threads=1")),
+            ("single filtered test", "run", repeat["run"].replace("--nocapture", "one_test --nocapture")),
+            ("failure swallowed by a later pass", "run", repeat["run"].replace("|| exit $?", "|| true")),
+        ]
+        for label, key, value in mutations:
+            mutant = copy.deepcopy(repeat_workflow)
+            target = next(step for step in mutant["jobs"]["rust"]["steps"]
+                          if step.get("id") == "windows-licensing-parallel")
+            check(f"{label} mutation is effective", target.get(key) != value, True)
+            target[key] = value
+            check(f"{label} is rejected", bool(licensing_repeat_violations(mutant, CI_WORKFLOW)), True)
+        missing = copy.deepcopy(repeat_workflow)
+        missing["jobs"]["rust"]["steps"] = [step for step in repeat_steps
+                                                 if step.get("id") != "windows-licensing-parallel"]
+        check("missing repeat is rejected", bool(licensing_repeat_violations(missing, CI_WORKFLOW)), True)
+
     # The real workflow files, loaded the way main() does, must be accepted: the positive control
     # that proves the rules are not simply rejecting everything.
     real = load_workflows()
@@ -371,6 +471,7 @@ def self_test() -> int:
             print(f"  - {f}", file=sys.stderr)
         return 1
     print("check_ci_minutes self-test: all cases passed")
+    print("Windows licensing repeat: 3 focused parallel-8 calls, failure positions 1/2/3, 11 rejected wiring/command mutations")
     return 0
 
 

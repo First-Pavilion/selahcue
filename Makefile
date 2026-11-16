@@ -187,7 +187,7 @@ endif
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 COMMA := ,
-OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts $(STT_FEATURES) $(AI_FEATURES)))
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts native-account $(STT_FEATURES) $(AI_FEATURES)))
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
 # OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard
@@ -690,11 +690,11 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # desktop developer never gets packages installed by surprise. The venv comes from a deliberate
 # `make api-install` (needs the network; Python 3.14 on PATH, or API_PYTHON=/path/to/python >=3.12), and
 # `api-check` REFUSES, naming `make api-install`, when the venv is missing, was not made by api-install,
-# is a symlink, was built with another Python minor version, or pyproject.toml changed since it was
+# is a symlink, was built with another Python minor version, or a lock/profile/build input changed since it was
 # installed (SHA-256 of the file, so a content-neutral `touch` does not refuse, and neither does a patch
 # update such as 3.14.5 to 3.14.6). If the venv was built with an interpreter other than the default
 # python3.14, keep API_PYTHON exported for api-check too, or it will see the mismatch. A fresh worktree therefore needs
-# `make api-install` once, then again after a pyproject.toml change. The logic lives in
+# `make api-install` once, then again after a lock/profile/build input change. The logic lives in
 # scripts/api_venv.py; its header explains every guard.
 #
 # WHAT IT DOES NOT COVER, stated here, in the target's help text and in CLAUDE.md so the absence is a
@@ -708,7 +708,7 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # The three commands run in a scrubbed environment (`env -i`, plus SQL_DATABASE=:memory:) so a shell that
 # sourced a docker-style .env (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn
 # this into a different, confusing failure, and a developer's own implementation/api/db.sqlite3 cannot
-# leak in. `pip install` in api-install is NOT scrubbed: pip needs HOME, proxy and certificate settings,
+# leak in. `uv sync` in api-install is NOT scrubbed: uv needs HOME, proxy and certificate settings,
 # so the install sees the developer's full environment.
 #
 # THE VENV is `implementation/api/.venv-api-check`: a name only this target uses (a developer's own
@@ -719,11 +719,10 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # test the other checkout's code (the cwd and pytest.ini's `pythonpath = .` win on sys.path); it is
 # because the venv's third-party packages would have been resolved from ANOTHER tree's pyproject.toml.
 #
-# WHAT THE INSTALL IS: direct dependencies are pinned exactly and the build backend is pinned in
-# pyproject.toml's [build-system]; TRANSITIVE dependencies are neither locked nor hashed. The venv holds
-# whatever resolved on the day it was built, while CI re-resolves on every run, so the two can differ.
-# The owner accepted that interim on 2026-10-24 until the hash-locked requirements file of ClickUp
-# 17tnw2az0kw lands.
+# WHAT THE INSTALL IS: uv.lock hash-locks runtime/dev/driver transitives and the explicit
+# build group. Wheel-only dependencies are installed first; the editable API builds offline
+# with that backend and no isolation. Verification never calls uv or changes the environment.
+# The content stamp includes the lock, project, tool pin and installer profile/build flags.
 #
 # Every variable that decides what runs is `override`, so `make api-check API_VPY=/usr/bin/true`,
 # `API_ENV=` or `API=<elsewhere>` cannot weaken the gate. Only API_PYTHON is yours to set; it is passed
@@ -744,7 +743,7 @@ override API_VPY    := $(CURDIR)/$(API_VENV)/bin/python
 override API_HELPER := python3 scripts/api_venv.py
 override API_ENV    := env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:
 
-api-install: ## Build the Django API venv (implementation/api/.venv-api-check) and pip install -e ".[dev]": the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
+api-install: ## Build the Django API venv (implementation/api/.venv-api-check) from uv.lock (dev + build): the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
 	$(API_HELPER) install --api $(API) --venv $(API_VENV)
 
 api-check: ## Django API gate: check + migrations committed + pytest on SQLite; never installs (run `make api-install` first); the Postgres/Redis-only tests SKIP here, CI runs them
@@ -752,7 +751,7 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 	@echo "api-check: SQLite in memory + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py check
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput
-	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -q -rfEs
+	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
 
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
@@ -799,8 +798,23 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 # marketing or API gate below stops the run before any cargo gate. Nor is the target
 # path-aware: it runs every area every time. Both -- run every gate, collect, exit
 # non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
+# Browser-free harness/audit checks; Pillow is already part of the local/CI
+# visual-test environment. Keep one target for both make ci and hosted CI.
+.PHONY: visual-audit-check
+visual-audit-check: ## Visual-parity controls and complete fidelity-audit/report validation (no browser)
+	python3 scripts/vp_selftest.py
+	python3 scripts/check_fidelity_audit.py --self-test
+	python3 scripts/check_fidelity_audit.py --require-tickets --check-report
+
+.PHONY: installer-feature-parity
+installer-feature-parity: ## Verify installer operator features match a CI-linted set (requires pyyaml==6.0.3)
+	python3 scripts/check_installer_features.py --self-test
+	python3 scripts/check_installer_features.py
+
 ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the RustSec audit (needs `make api-install` once, and the network for the audit; AUDIT=skip skips it offline, loudly). NOT covered: deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
+	$(MAKE_RECURSE) --no-print-directory visual-audit-check
+	$(MAKE_RECURSE) --no-print-directory installer-feature-parity
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
 	# `ci` -- a prerequisite would resolve before this recipe body starts, putting a plain
@@ -830,6 +844,9 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite, then the R
 	# no matching audit step in .github/workflows/ci.yml.
 	python3 scripts/check_dependency_audit_coverage.py --self-test
 	python3 scripts/check_dependency_audit_coverage.py
+	# Actual Cargo aliases cannot replace the CI Rust security tools (17tnw2b9dbf).
+	python3 scripts/check_rust_supply_ci.py --self-test
+	python3 scripts/check_rust_supply_ci.py
 	# 17tnw2b2jfy: the translation-mirror converter turns eBible USFM into the pinned assets users
 	# download. Its self-test needs no network (synthetic USFM fixtures) and takes about a second; it
 	# also validates the COMMITTED allowlist (scripts/translation_allowlist.json) against every licence
@@ -1063,8 +1080,8 @@ clippy: stage-operator-binaries ## Lint the workspace + the operator shell
 	$(CARGO) clippy $(WS) --all-targets
 	$(CARGO) clippy $(OP)
 
-# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). It runs the same plain `cargo audit`
-# that the `dependency audit (RustSec)` job in .github/workflows/ci.yml runs in each root, so the
+# RustSec advisory gate across EVERY Cargo root (17tnw2b9ax3). CI invokes cargo-audit directly;
+# this local wrapper instead refuses Cargo alias identity/shadow warnings before auditing, so the
 # check no longer lives only in a CI job that goes dark when CI is billing-blocked -- that is how
 # 12, 12 and 6 RustSec vulnerabilities sat on `main` unseen. The roots are derived from the
 # Cargo.lock files git lists (scripts/cargo_audit_all.sh), not listed here, so a further root is

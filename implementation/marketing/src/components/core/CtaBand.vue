@@ -1,18 +1,9 @@
 <script setup lang="ts">
 import UiButton from '@/components/UiButton.vue'
 
-/*
- * The closing band shared by Features (Figma 486:345) and About (496:181): one gradient card, a
- * heading, a line, and two actions. One component for these two pages, so their wording and
- * destinations live in one place. "Download free" is also in the nav, the Home page and the Pricing
- * card: the owner decided (2026-10-04) to keep that label everywhere, since it links to /download,
- * which says plainly that nothing downloads yet.
- *
- * The line is Figma's with two changes the repo forces (audit features-06, about-04): "Cancel
- * anytime" is gone (no billing exists to cancel) and "go live this Sunday" is gone (nothing downloads
- * yet). It is white, not Figma's #dbe0fa: on the lighter end of the band a phone-width card puts the
- * text where #dbe0fa is 3.3:1; white holds 4.7:1 at the lightest stop.
- */
+import { freeOffer } from '@/lib/content/freeOffer.ts'
+
+// Features and About share this closing band and its acquisition links.
 defineProps({
   title: { type: String, default: 'Ready to run your best service yet?' },
   lead: {
@@ -29,8 +20,8 @@ defineProps({
         <h2>{{ title }}</h2>
         <p>{{ lead }}</p>
         <div class="cta-actions">
-          <UiButton variant="inverse" size="lg" to="/download">Download free</UiButton>
-          <UiButton variant="inverse-outline" size="lg" to="/pricing">See pricing</UiButton>
+          <UiButton variant="inverse" size="lg" :to="freeOffer.downloadTo">View downloads</UiButton>
+          <UiButton variant="inverse-outline" size="lg" :to="freeOffer.signupTo">Create an account</UiButton>
         </div>
       </div>
     </div>
