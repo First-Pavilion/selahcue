@@ -133,7 +133,8 @@ ELF_HEADER_LIMIT = 128
 IDENTITY_CHILD = (
     "import json,runpy,sys; from pathlib import Path; "
     "read=runpy.run_path(sys.argv[1])['read_elf_identity']; "
-    "print(json.dumps(read(Path(sys.argv[2]), expected_root=Path(sys.argv[3]))))"
+    "print(json.dumps(read(Path(sys.argv[2]), expected_root=Path(sys.argv[3]), "
+    "include_resolved_basename=sys.argv[4] == 'webkit')))"
 )
 
 
@@ -507,6 +508,7 @@ def module_identities(package_json, message, parity_exe, slots, reasons):
 
 
 def collect(result, data, cut, since, until, *, profile="webkit"):
+    result["_profile"] = profile
     reasons = set(result["omission_reasons"])
     complete = result["candidate_scan_complete"]
     record_population_complete = complete
@@ -592,42 +594,146 @@ def collect(result, data, cut, since, until, *, profile="webkit"):
 
 
 
-def _parse_kernel_message(message, parity_names=()):
+def _kernel_message_details(message, parity_names=()):
     if (not isinstance(message, str) or len(message) > KERNEL_LINE_LIMIT
             or not message.isascii()):
-        return None, "text_bounds"
+        return None, "text_bounds", None
     match = KERNEL_PREFIX.fullmatch(message.removesuffix("\n"))
     if not match:
-        return None, "prefix_shape"
+        return None, "prefix_shape", None
     tid, pc, ending = int(match["tid"]), int(match["pc"], 16), match["ending"]
     if not 1 <= tid <= MAX_TID:
-        return None, "numeric_range"
+        return None, "numeric_range", None
     module = None
     if ending:
         suffix = KERNEL_ENDING.fullmatch(ending)
         if not suffix:
-            return None, "suffix_shape"
+            return None, "suffix_shape", None
         module = suffix["module"]
-        if module is not None and module not in MODULE_SYMBOLS and module not in parity_names:
-            return None, "module_policy"
+        refused = module is not None and module not in MODULE_SYMBOLS and module not in parity_names
+        # Keep module-policy priority while observing the same later checks.
+        non_module_stage = None
         cpu = suffix["cpu"]
         if cpu is None:
-            # Only the older two-number module formatter can stand alone.
             if module is None or suffix["third"] is not None:
-                return None, "producer_ending"
+                non_module_stage = "producer_ending"
         elif not (int(cpu) <= MAX_TID
                   and all(-2_147_483_648 <= int(suffix[name]) <= MAX_TID for name in ("core", "socket"))):
-            return None, "numeric_range"
-    return (tid, pc, module), None
+            non_module_stage = "numeric_range"
+        if refused:
+            return None, "module_policy", {
+                "tid": tid, "pc": pc, "module_token": module,
+                "non_module_valid": non_module_stage is None,
+            }
+        if non_module_stage is not None:
+            return None, non_module_stage, None
+    return (tid, pc, module), None, None
+
+
+def _parse_kernel_message(message, parity_names=()):
+    return _kernel_message_details(message, parity_names)[:2]
 
 
 def parse_kernel_message(message, parity_names=()):
     return _parse_kernel_message(message, parity_names)[0]
 
 
-def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnostics=None):
+def _kernel_candidate_check(event, boot_id, timestamp, record, thread, *, compare_module):
+    tid, pc, module = event
+    if record["signal"] != "SIGSEGV" or thread["tid"] != tid:
+        return "excluded"
+    if not 0 <= timestamp - record["timestamp_us"] < 2_000_000:
+        return "excluded"
+    if record["_boot_id"] is None:
+        return "missing_boot"
+    if record["_boot_id"] != boot_id:
+        return "excluded"
+    zero = thread["_frame_zero"]
+    if zero is None:
+        return "missing_zero"
+    if pc != zero["pc"] or compare_module and module is not None and module != zero["module"]:
+        return "excluded"
+    return "match"
+
+
+MODULE_RELATIONS = (
+    "structurally_invalid", "no_retained_candidate", "one_retained_candidate",
+    "multiple_retained_candidates", "indeterminate",
+)
+MODULE_BUCKETS = ("resolved_wpe_alias", "other_rejected", "unknown_alias")
+MODULE_OBSERVATION_LIMIT = 1024
+
+
+def _wpe_basename(value):
+    if not isinstance(value, str) or not value.isascii() or len(value) > 64:
+        return False
+    versioned = VERSIONED_MODULE.fullmatch(value)
+    return value == WPE_MODULE or bool(versioned and versioned[1] == WPE_MODULE)
+
+
+def _observe_module_rejection(state, detail, relation):
+    state["seen"] = True
+    token = detail["module_token"]
+    if not _wpe_basename(token):
+        counts = state["buckets"]["other_rejected"]
+    elif token in state["aliases"]:
+        counts = state["aliases"][token]
+    elif len(state["aliases"]) < 8:
+        counts = state["aliases"][token] = dict.fromkeys(MODULE_RELATIONS, 0)
+    else:
+        counts = state["buckets"]["unknown_alias"]
+        state["limit_hit"] = state["partial"] = True
+    counts[relation] = min(2, counts[relation] + 1)
+
+
+def _finalize_module_rejections(state, resolved_wpe_basename):
+    available = _wpe_basename(resolved_wpe_basename)
+    buckets = {name: dict(counts) for name, counts in state["buckets"].items()}
+    for token, counts in state["aliases"].items():
+        bucket = ("unknown_alias" if not available else
+                  "resolved_wpe_alias" if token == resolved_wpe_basename else "other_rejected")
+        for relation in MODULE_RELATIONS:
+            buckets[bucket][relation] = min(2, buckets[bucket][relation] + counts[relation])
+    return {
+        "version": 1, "coverage": "partial" if state["partial"] else "complete",
+        "alias_resolution": "available" if available else "unavailable",
+        "pending_alias_limit_hit": state["limit_hit"], "buckets": buckets,
+    }
+
+
+def safe_module_observation(value):
+    if (type(value) is not dict or set(value) != {
+            "version", "coverage", "alias_resolution", "pending_alias_limit_hit", "buckets"}
+            or type(value["version"]) is not int or value["version"] != 1
+            or value["coverage"] not in ("complete", "partial")
+            or value["alias_resolution"] not in ("available", "unavailable")
+            or type(value["pending_alias_limit_hit"]) is not bool):
+        return None
+    buckets = value["buckets"]
+    if type(buckets) is not dict or set(buckets) != set(MODULE_BUCKETS):
+        return None
+    copied = {}
+    for name in MODULE_BUCKETS:
+        counts = buckets[name]
+        if (type(counts) is not dict or set(counts) != set(MODULE_RELATIONS)
+                or any(type(counts[key]) is not int or not 0 <= counts[key] <= 2
+                       for key in MODULE_RELATIONS)):
+            return None
+        copied[name] = {key: counts[key] for key in MODULE_RELATIONS}
+    safe = {key: value[key] for key in ("version", "coverage", "alias_resolution", "pending_alias_limit_hit")}
+    safe["buckets"] = copied
+    if len(json.dumps(safe, separators=(",", ":"), ensure_ascii=True)) > MODULE_OBSERVATION_LIMIT:
+        return None
+    return safe
+
+
+def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnostics=None,
+                     profile="webkit", observation_complete=True):
     reasons = set()
     rejection_stage = None
+    observation = ({"buckets": {name: dict.fromkeys(MODULE_RELATIONS, 0) for name in MODULE_BUCKETS},
+                    "aliases": {}, "seen": False, "partial": not observation_complete,
+                    "limit_hit": False} if profile == "webkit" else None)
     indexed_threads = {}
     parity_names = set()
     for record in records:
@@ -646,6 +752,8 @@ def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnost
     else:
         if len(kernel_bytes) > KERNEL_LIMIT:
             reasons.add("kernel_limit")
+            if observation is not None:
+                observation["partial"] = True
             kernel_bytes = kernel_bytes[:KERNEL_LIMIT]
             kernel_bytes = kernel_bytes[:kernel_bytes.rfind(b"\n") + 1]
 
@@ -666,34 +774,55 @@ def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnost
                     raise ValueError
             except (ValueError, RecursionError):
                 reasons.add("malformed")
+                if observation is not None:
+                    observation["partial"] = True
                 continue
             if "segfault" not in message:
                 continue
-            event, stage = _parse_kernel_message(message, parity_names)
+            event, stage, detail = _kernel_message_details(message, parity_names)
             if event is None:
                 rejection_stage = stage if rejection_stage is None else (
                     rejection_stage if rejection_stage == stage else "mixed"
                 )
                 reasons.add("kernel_unsupported_format")
+                if observation is not None:
+                    if detail is None:
+                        observation["partial"] = True
+                    else:
+                        relation = "structurally_invalid"
+                        if detail["non_module_valid"]:
+                            matches, unresolved = 0, False
+                            private_event = (detail["tid"], detail["pc"], None)
+                            try:
+                                for record, thread in indexed_threads.get(detail["tid"], ()):
+                                    check = _kernel_candidate_check(
+                                        private_event, boot_id, timestamp, record, thread, compare_module=False,
+                                    )
+                                    matches = min(2, matches + (check == "match"))
+                                    unresolved |= check in ("missing_boot", "missing_zero")
+                                relation = ("indeterminate" if unresolved else
+                                            ("no_retained_candidate", "one_retained_candidate",
+                                             "multiple_retained_candidates")[matches])
+                            except (KeyError, TypeError, ValueError):
+                                relation = "indeterminate"
+                                observation["partial"] = True
+                        observation["seen"] = True
+                        try:
+                            _observe_module_rejection(observation, detail, relation)
+                        except (KeyError, TypeError, ValueError):
+                            observation["partial"] = True
                 continue
-            tid, pc, module = event
+            tid = event[0]
             for record, thread in indexed_threads.get(tid, ()):
-                delta = timestamp - record["timestamp_us"]
-                if not 0 <= delta < 2_000_000:
-                    continue
-                if record["_boot_id"] is None:
+                check = _kernel_candidate_check(event, boot_id, timestamp, record, thread, compare_module=True)
+                if check == "missing_boot":
                     reasons.add("malformed")
-                    continue
-                if record["_boot_id"] != boot_id:
-                    continue
-                zero = thread["_frame_zero"]
-                if zero is None:
+                elif check == "missing_zero":
                     reasons.add("ordinal_missing")
-                    continue
-                if pc == zero["pc"] and (module is None or module == zero["module"]):
+                elif check == "match":
                     pairs += 1
                     if pairs == 1:
-                        candidate_pair = (record, tid, delta, zero["frame"])
+                        candidate_pair = (record, tid, timestamp - record["timestamp_us"], thread["_frame_zero"]["frame"])
 
     complete = candidate_scan_complete and not reasons
     if not complete:
@@ -707,6 +836,9 @@ def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnost
         record["fault_attribution"]["fault_thread"] = {
             "tid": tid, "basis": FAULT_BASIS, "delta_us": delta, "frame_zero": frame,
         }
+    if diagnostics is not None and observation is not None and observation["seen"]:
+        diagnostics["_module_rejections"] = observation
+        diagnostics["kernel_module_policy_observation"] = _finalize_module_rejections(observation, None)
     if diagnostics is not None and rejection_stage is not None:
         diagnostics["kernel_rejection_stage"] = rejection_stage
     return records, complete, reasons
@@ -799,7 +931,7 @@ def elf_build_id(source, size):
     return build_id
 
 
-def read_elf_identity(path, *, expected_root):
+def read_elf_identity(path, *, expected_root, include_resolved_basename=False):
     try:
         resolved = resolved_identity_path(path, expected_root)
         before = resolved.stat()
@@ -829,12 +961,17 @@ def read_elf_identity(path, *, expected_root):
             if (not unchanged(os.fstat(fd)) or resolved_identity_path(path, expected_root) != resolved
                     or not unchanged(resolved.stat())):
                 return None
-            return {"sha256": digest.hexdigest(), "build_id": build_id}
+            identity = {"sha256": digest.hexdigest(), "build_id": build_id}
+            if include_resolved_basename:
+                identity["_resolved_basename"] = resolved.name
+            return identity
     except (OSError, RuntimeError, ValueError, struct.error):
         return None
 
 
-def installed_identity(profile, eligible_records, *, deadline=None):
+def installed_identity(profile, eligible_records, *, deadline=None, private_observation=None):
+    if private_observation is not None:
+        private_observation.pop("_resolved_basename", None)
     if profile == "webkit":
         path, module, root = WPE_LIBRARY, WPE_MODULE, WPE_LIBRARY.parent
     elif profile == "gpu-parity" and len(eligible_records) == 1:
@@ -850,20 +987,24 @@ def installed_identity(profile, eligible_records, *, deadline=None):
     # Fixed owned Python child, isolated from caller imports/site config. It
     # receives only the path selected above and returns a tiny safe receipt.
     args = [sys.executable, "-I", "-B", "-c", IDENTITY_CHILD,
-            __file__, str(path), str(root)]
+            __file__, str(path), str(root), profile]
     status, data, cut, reaped = read_child(args, 1024, end - CLEANUP_SECONDS, end)
     reasons = set()
     if not reaped:
         reasons.add("reap_unconfirmed")
     if status == "timeout":
         reasons.add("deadline")
-    if status == "available" and not cut and reaped:
+    if status == "available" and not cut and reaped and len(data) <= 1024:
         try:
             receipt = json.loads(data, object_pairs_hook=unique_fields)
-            if isinstance(receipt, dict) and set(receipt) == {"sha256", "build_id"}:
+            keys = {"sha256", "build_id", "_resolved_basename"} if profile == "webkit" else {"sha256", "build_id"}
+            if (isinstance(receipt, dict) and set(receipt) == keys
+                    and (profile != "webkit" or _wpe_basename(receipt["_resolved_basename"]))):
                 sha, build_id = receipt["sha256"], receipt["build_id"]
                 if (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)
                         and (build_id is None or isinstance(build_id, str) and BUILD_ID.fullmatch(build_id))):
+                    if profile == "webkit" and private_observation is not None:
+                        private_observation["_resolved_basename"] = receipt["_resolved_basename"]
                     return {"module": module, "sha256": sha, "build_id": build_id}, reasons
         except (ValueError, RecursionError):
             pass
@@ -996,6 +1137,12 @@ def encode_export(result):
         receipt = safe_source_receipt(result["source_receipt"])
         if receipt is not None:
             payload["source_receipt"] = receipt
+    if result.get("_profile", "webkit") == "webkit" and "kernel_module_policy_observation" in result:
+        observation = safe_module_observation(result["kernel_module_policy_observation"])
+        if observation is None:
+            payload["partial"] = True
+        else:
+            payload["kernel_module_policy_observation"] = observation
     records = payload["records"] = []
 
     def mark_export_limit():
@@ -1117,7 +1264,7 @@ def mark_incomplete(result, *reasons):
     result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons, "join_incomplete"})
 
 
-def attach_kernel(result, availability, kernel_data, cut, reaped):
+def attach_kernel(result, availability, kernel_data, cut, reaped, *, profile=None):
     reasons = set()
     if cut:
         reasons.add("deadline" if availability == "timeout" else "kernel_limit")
@@ -1132,7 +1279,8 @@ def attach_kernel(result, availability, kernel_data, cut, reaped):
         reasons.add("reap_unconfirmed")
     records, complete, join_reasons = correlate_kernel(
         result["records"], kernel_data, result["candidate_scan_complete"] and not reasons,
-        diagnostics=result,
+        diagnostics=result, profile=result.get("_profile", "webkit") if profile is None else profile,
+        observation_complete=not reasons and not bool(set(result["omission_reasons"]) & {"raw_limit", "deadline"}),
     )
     reasons |= join_reasons
     result["records"] = records
@@ -1181,6 +1329,7 @@ def main():
                 handler = core_handler()
             availability, data, cut, reaped = query(since, until, deadline)
         result = summary(availability, handler)
+        result["_profile"] = options.profile
         with time_bound(deadline):
             if availability in ("available", "timeout"):
                 collect(result, data, cut, since, until, profile=options.profile)
@@ -1209,7 +1358,7 @@ def main():
             else:
                 kernel_status = ("unavailable", b"", False, True)
             with time_bound(deadline):
-                attach_kernel(result, *kernel_status)
+                attach_kernel(result, *kernel_status, profile=options.profile)
                 fallback = encode_timeout(result)
         with time_bound(deadline):
             if not offline:
@@ -1238,16 +1387,22 @@ def main():
         ):
             identities = []
         identity_start = time.monotonic()
+        private_identity = {}
         identity, reasons = installed_identity(
             options.profile, identities,
             deadline=output_deadline + IDENTITY_SECONDS - OUTPUT_RESERVE_SECONDS,
+            private_observation=private_identity,
         )
         # Only time spent in the separate identity phase extends the hard
         # deadline. Metadata and final output share the original budget.
         output_deadline += min(IDENTITY_SECONDS, time.monotonic() - identity_start)
-        if identity is not None or reasons:
+        if identity is not None or reasons or "_module_rejections" in result:
             try:
                 with time_bound(output_deadline - OUTPUT_RESERVE_SECONDS):
+                    if options.profile == "webkit" and "_module_rejections" in result:
+                        result["kernel_module_policy_observation"] = _finalize_module_rejections(
+                            result["_module_rejections"], private_identity.get("_resolved_basename"),
+                        )
                     if identity is not None:
                         result["installed_identity"] = identity
                     if reasons:

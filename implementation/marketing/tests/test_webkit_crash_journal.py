@@ -1,5 +1,6 @@
 """Offline CLI and subprocess boundary controls; no tests read a real journal."""
 from contextlib import redirect_stdout
+import copy
 import hashlib
 import io
 import json
@@ -780,6 +781,313 @@ class KernelCorrelation(unittest.TestCase):
         self.assertNotIn("00007f0000001234", raw)
         return json.loads(raw)
 
+    def test_refused_alias_observation_preserves_refusal_and_listed_order(self):
+        alias = "libWPEWebKit-2.0.so.1.10.2"
+        message = POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", alias)
+        self.assertEqual(self.collector["_parse_kernel_message"](message), (None, "module_policy"))
+        result = self.rejected_stage([message])
+        self.assert_unknown(result, "kernel_unsupported_format")
+        self.assertEqual(result["kernel_rejection_stage"], "module_policy")
+        self.assertEqual([t["tid"] for t in result["records"][0]["threads"]], [4201, 4202, 4203])
+        expected_counts = dict(structurally_invalid=0, no_retained_candidate=0,
+                               one_retained_candidate=1, multiple_retained_candidates=0,
+                               indeterminate=0)
+        observation = result.get("kernel_module_policy_observation")
+        self.assertIsNotNone(observation, "module-policy refusal lost its finite observation")
+        self.assertEqual(observation["buckets"]["unknown_alias"], expected_counts)
+        self.assertEqual(observation["coverage"], "complete")
+        self.assertEqual(observation["alias_resolution"], "unavailable")
+        self.assertNotIn(alias, json.dumps(result))
+
+    def test_module_policy_masks_invalid_ending_and_range_without_private_match(self):
+        alias = "libWPEWebKit-2.0.so.1.10.2"
+        for message in (NEGATIVE_KERNEL[0], NEGATIVE_KERNEL[5].replace(
+                "error 4", "error 4 in libWPEWebKit-2.0.so.1[7f0000000000+200000]")):
+            message = message.replace("libWPEWebKit-2.0.so.1", alias)
+            with self.subTest(message=message):
+                self.assertEqual(self.collector["_parse_kernel_message"](message), (None, "module_policy"))
+                result = self.rejected_stage([message])
+                self.assert_unknown(result, "kernel_unsupported_format")
+                observation = result.get("kernel_module_policy_observation")
+                self.assertIsNotNone(observation, "masked invalid refusal lost its observation")
+                self.assertEqual(observation["buckets"]["unknown_alias"], dict(
+                    structurally_invalid=1, no_retained_candidate=0, one_retained_candidate=0,
+                    multiple_retained_candidates=0, indeterminate=0))
+
+    def observation_result(self, crashes, rows, *, cut=False, kernel_cut=False,
+                           availability="available", reaped=True, profile="webkit"):
+        result = self.collector["summary"]("available")
+        self.collector["collect"](result, crashes, cut, int(SINCE), int(UNTIL), profile=profile)
+        self.collector["attach_kernel"](result, availability, rows, kernel_cut, reaped)
+        return result, json.loads(self.collector["encode_export"](result))
+
+    def test_private_relation_preserves_candidate_boundaries(self):
+        alias = "libWPEWebKit-2.0.so.1.10.2"
+        message = POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", alias)
+        zero = "#0  0x00007f0000001234 n/a (libWPEWebKit-2.0.so.1 + 0x1234)\n"
+        cases = [
+            (jsonl(joining_record(4)), kernel_row(message), "one_retained_candidate"),
+            (jsonl(joining_record(64)), kernel_row(message), "one_retained_candidate"),
+            (jsonl(joining_record(65)), kernel_row(message), "no_retained_candidate"),
+            (jsonl(joining_record()), kernel_row(message.replace("[4204]", "[4205]")), "no_retained_candidate"),
+            (jsonl(joining_record()), kernel_row(message.replace("00007f0000001234", "00007f0000001235")), "no_retained_candidate"),
+            (jsonl(joining_record()), kernel_row(message, _BOOT_ID="f" * 32), "no_retained_candidate"),
+            (jsonl(joining_record(COREDUMP_SIGNAL_NAME="SIGABRT")), kernel_row(message), "no_retained_candidate"),
+            (jsonl(joining_record(_BOOT_ID=None)), kernel_row(message), "indeterminate"),
+            (jsonl(joining_record(), joining_record(_BOOT_ID=None)), kernel_row(message), "indeterminate"),
+            (jsonl(joining_record(), joining_record()), kernel_row(message), "multiple_retained_candidates"),
+            (jsonl(joining_record(), joining_record(MESSAGE=zero)), kernel_row(message), "one_retained_candidate"),
+            (jsonl(record(), record(), record(), joining_record()), kernel_row(message), "no_retained_candidate"),
+        ]
+        for offset, relation in ((-1, "no_retained_candidate"), (0, "one_retained_candidate"),
+                                 (1999999, "one_retained_candidate"), (2000000, "no_retained_candidate")):
+            cases.append((jsonl(joining_record()), kernel_row(message, __REALTIME_TIMESTAMP=str(int(CRASH)+offset)), relation))
+        for bad_zero in (zero.replace("#0", "#4"), zero.replace("libWPEWebKit-2.0.so.1", SECRET),
+                         zero+zero, zero+zero.replace("1234", "1235")):
+            cases.append((jsonl(joining_record(zero=bad_zero)), kernel_row(message), "indeterminate"))
+            # Time and boot exclusions precede checking unavailable original #0.
+            cases.append((jsonl(joining_record(zero=bad_zero)), kernel_row(message, __REALTIME_TIMESTAMP=str(int(CRASH)-1)), "no_retained_candidate"))
+            cases.append((jsonl(joining_record(zero=bad_zero)), kernel_row(message, _BOOT_ID="f"*32), "no_retained_candidate"))
+        for crashes, row, relation in cases:
+            with self.subTest(relation=relation, row=row):
+                _, result = self.observation_result(crashes, jsonl(row))
+                self.assert_unknown(result, "kernel_unsupported_format")
+                observation = result.get("kernel_module_policy_observation")
+                self.assertIsNotNone(observation)
+                self.assertEqual(observation["buckets"]["unknown_alias"][relation], 1)
+                self.assertEqual(sum(observation["buckets"]["unknown_alias"].values()), 1)
+                self.assertEqual(observation["coverage"], "complete")
+                for record_ in result["records"]:
+                    self.assertTrue(all(t["basis"] == "listed_only" for t in record_["threads"]))
+
+    def test_observation_coverage_is_independent_of_candidate_completeness(self):
+        message = POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET)
+        k = jsonl(kernel_row(message))
+        for crashes, rows, options, coverage, matches in (
+            (jsonl(joining_record()), k, {}, "complete", 1),
+            (jsonl(joining_record(65)), k, {}, "complete", 0),
+            (jsonl(record(), record(), record(), joining_record()), k, {}, "complete", 0),
+            (jsonl(joining_record()), k, {"cut": True}, "partial", 1),
+            (jsonl(joining_record()), k, {"kernel_cut": True}, "partial", 1),
+            (jsonl(joining_record()), k, {"availability": "timeout"}, "partial", 1),
+            (jsonl(joining_record()), k, {"reaped": False}, "partial", 1),
+            (jsonl(joining_record()), k+b'{broken\n', {}, "partial", 1),
+            (jsonl(joining_record()), k+jsonl(kernel_row(MESSAGE=None)), {}, "partial", 1),
+            (jsonl(joining_record()), k+b"\n"*(64*1024), {}, "partial", 1),
+        ):
+            with self.subTest(options=options, coverage=coverage):
+                _, result = self.observation_result(crashes, rows, **options)
+                self.assert_unknown(result, "kernel_unsupported_format")
+                observation = result.get("kernel_module_policy_observation")
+                self.assertIsNotNone(observation)
+                self.assertEqual(observation["coverage"], coverage)
+                self.assertEqual(observation["buckets"]["other_rejected"]["one_retained_candidate"],
+                                 matches)
+
+    def test_alias_slots_saturation_and_exact_installed_spelling(self):
+        aliases = [f"libWPEWebKit-2.0.so.1.{i}" for i in range(1, 10)]
+        def rows(tokens):
+            return jsonl(*(kernel_row(POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", token))
+                           for token in tokens))
+        for count in (8, 9):
+            state, result = self.observation_result(jsonl(joining_record()), rows(aliases[:count] + aliases[:1]*4))
+            pending = state["_module_rejections"]
+            self.assertEqual(len(pending["aliases"]), 8)
+            self.assertTrue(all(len(token.encode("ascii")) <= 64 for token in pending["aliases"]))
+            for resolved, bucket, amount in ((None, "unknown_alias", 2),
+                                            (aliases[0], "resolved_wpe_alias", 2),
+                                            (aliases[-1], "resolved_wpe_alias", 0),
+                                            ("libWPEWebKit-2.0.so.1", "resolved_wpe_alias", 0)):
+                with self.subTest(count=count, resolved=resolved):
+                    summary = self.collector["_finalize_module_rejections"](pending, resolved)
+                    self.assertEqual(summary["buckets"][bucket]["one_retained_candidate"], amount)
+                    self.assertEqual(summary["pending_alias_limit_hit"], count == 9)
+                    self.assertEqual(summary["coverage"], "partial" if count == 9 else "complete")
+                    if resolved is not None:
+                        self.assertEqual(summary["buckets"]["other_rejected"]["one_retained_candidate"], 2)
+                        self.assertEqual(summary["buckets"]["unknown_alias"]["one_retained_candidate"], int(count == 9))
+                    state["kernel_module_policy_observation"] = summary
+                    raw = self.collector["encode_export"](state)
+                    for token in (*aliases, SECRET, BOOT, "00007f0000001234", "_module_rejections"):
+                        self.assertNotIn(token, json.dumps(json.loads(raw)["kernel_module_policy_observation"]))
+                    self.assertLessEqual(len(json.dumps(summary, separators=(",", ":"))), 1024)
+            # No finalization may relabel/evict the retained slots.
+            self.assertEqual(list(pending["aliases"]), aliases[:8])
+        for token in (SECRET, "libc.so.6.1", "libWPEWebKit-2.0.so.1." + "1"*43,
+                      "libWPEWebKit-2.0.so.1." + "1"*44):
+            state, result = self.observation_result(jsonl(joining_record()), rows([token]*3))
+            self.assertEqual(state["_module_rejections"]["aliases"], {})
+            self.assertEqual(result["kernel_module_policy_observation"]["buckets"]["other_rejected"]["one_retained_candidate"], 2)
+
+    def test_profile_exclusion_is_explicit_even_with_no_parity_records(self):
+        rejected = jsonl(kernel_row(POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET)))
+        state, result = self.observation_result(b"", rejected, profile="gpu-parity")
+        self.assertNotIn("kernel_module_policy_observation", result)
+        self.assertNotIn("_module_rejections", state)
+        diagnostics = {}
+        self.collector["correlate_kernel"]([], rejected, True, diagnostics=diagnostics, profile="gpu-parity")
+        self.assertEqual(diagnostics, {"kernel_rejection_stage": "module_policy"})
+        # The profile remains authoritative at export, including hostile optional input.
+        state["kernel_module_policy_observation"] = {"raw": SECRET}
+        self.assertEqual(json.loads(self.collector["encode_export"](state)), result)
+
+    def test_private_comparison_error_is_partial_without_changing_refusal(self):
+        compare = self.collector["_kernel_candidate_check"]
+        def broken(*args, **kwargs):
+            if not kwargs["compare_module"]:
+                raise ValueError(SECRET)
+            return compare(*args, **kwargs)
+        with patch.dict(self.collector["correlate_kernel"].__globals__, _kernel_candidate_check=broken):
+            result = self.rejected_stage([POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET)])
+        self.assert_unknown(result, "kernel_unsupported_format")
+        observation = result["kernel_module_policy_observation"]
+        self.assertEqual(observation["coverage"], "partial")
+        self.assertEqual(observation["buckets"]["other_rejected"]["indeterminate"], 1)
+
+    def test_observation_export_rejects_wrong_types_extra_keys_and_caps(self):
+        state, _ = self.observation_result(jsonl(joining_record()), jsonl(kernel_row(
+            POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET))))
+        valid = state["kernel_module_policy_observation"]
+        encode = self.collector["encode_export"]
+        baseline = json.loads(encode(state))
+        invalids = [None, [], {**valid, "private": SECRET}, {**valid, "version": True},
+                    {**valid, "version": 2}, {**valid, "coverage": SECRET},
+                    {**valid, "coverage": []}, {**valid, "alias_resolution": SECRET},
+                    {**valid, "pending_alias_limit_hit": 1},
+                    {**valid, "buckets": {**valid["buckets"], SECRET: {}}}]
+        for bad in (True, -1, 3, 1.0, "1", None):
+            mutant = copy.deepcopy(valid)
+            mutant["buckets"]["other_rejected"]["one_retained_candidate"] = bad
+            invalids.append(mutant)
+        for bad in invalids:
+            state["kernel_module_policy_observation"] = bad
+            result = json.loads(encode(state))
+            expected = {k: v for k, v in baseline.items() if k != "kernel_module_policy_observation"}
+            expected["partial"] = True
+            self.assertEqual(result, expected)
+            self.assertNotIn(SECRET, encode(state))
+        state["kernel_module_policy_observation"] = valid
+        size = len(json.dumps(valid, separators=(",", ":"), ensure_ascii=True))
+        for limit, retained in ((size, True), (size-1, False)):
+            with patch.dict(encode.__globals__, MODULE_OBSERVATION_LIMIT=limit):
+                result = json.loads(encode(state))
+                self.assertEqual("kernel_module_policy_observation" in result, retained)
+        timeout = json.loads(self.collector["encode_timeout"](state))
+        self.assertNotIn("kernel_module_policy_observation", timeout)
+        self.assert_unknown(timeout, "deadline")
+
+    def test_observation_consumes_existing_budget_without_displacing_proven_zero(self):
+        # Add the independently valid optional object to an accepted-attribution
+        # result to exercise export priority without treating a refusal as proof.
+        _, rejected = self.observation_result(jsonl(joining_record()), jsonl(kernel_row(
+            POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET))))
+        additions = {"kernel_module_policy_observation": rejected["kernel_module_policy_observation"]}
+        baseline = self.correlated(jsonl(record(), joining_record()), jsonl(kernel_row()), additions=additions)
+        size = len(json.dumps(baseline, separators=(",", ":")))+1
+        result = self.correlated(jsonl(record(), joining_record()), jsonl(kernel_row()), budget=size-190,
+                                 additions=additions)
+        selected = next(r for r in result["records"] if r["pid"] == 4201)
+        self.assertEqual(selected["fault_attribution"]["fault_thread"]["tid"], 4204)
+        self.assertEqual(selected["threads"][0]["frames"][0]["ordinal"], 0)
+        self.assertEqual(result["kernel_module_policy_observation"], additions["kernel_module_policy_observation"])
+        self.assertTrue(result["export_truncated"])
+        self.assertTrue(result["candidate_scan_complete"])
+
+    def test_observation_failure_does_not_interrupt_original_refusal(self):
+        def broken(*args):
+            raise ValueError(SECRET)
+        with patch.dict(self.collector["correlate_kernel"].__globals__, _observe_module_rejection=broken):
+            try:
+                result = self.rejected_stage([POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", SECRET)])
+            except ValueError:
+                self.fail("optional observation error escaped into accepted collector behavior")
+        self.assert_unknown(result, "kernel_unsupported_format")
+        observation = result.get("kernel_module_policy_observation")
+        self.assertIsNotNone(observation)
+        self.assertEqual(observation["coverage"], "partial")
+
+    def test_single_parse_and_masked_invalid_rows_never_compare_candidates(self):
+        parse = self.collector["_kernel_message_details"]
+        compare = self.collector["_kernel_candidate_check"]
+        parsed, comparisons = [], []
+        def observed_parse(message, parity_names=()):
+            parsed.append(message)
+            return parse(message, parity_names)
+        def observed_compare(*args, **kwargs):
+            comparisons.append(kwargs["compare_module"])
+            return compare(*args, **kwargs)
+        messages = [NEGATIVE_KERNEL[0], POSITIVE_KERNEL[0].replace("core 1", "core -2147483649"),
+                    POSITIVE_KERNEL[0].replace("socket 0", "socket 2147483648")]
+        messages = [m.replace("libWPEWebKit-2.0.so.1", SECRET) for m in messages]
+        with patch.dict(self.collector["correlate_kernel"].__globals__,
+                        _kernel_message_details=observed_parse, _kernel_candidate_check=observed_compare):
+            result = self.rejected_stage(messages)
+        self.assertEqual(parsed, messages)
+        self.assertEqual(comparisons, [])
+        self.assertEqual(result["kernel_rejection_stage"], "module_policy")
+        self.assertEqual(result["kernel_module_policy_observation"]["buckets"]["other_rejected"]["structurally_invalid"], 2)
+
+    def test_main_finalizes_once_after_existing_identity_and_offline_never_probes(self):
+        main = self.collector["main"]
+        globals_ = main.__globals__
+        alias = "libWPEWebKit-2.0.so.1.10.2"
+        crashes = jsonl(joining_record())
+        rows = jsonl(kernel_row(POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", alias)))
+        outputs, children = [], []
+        def child(args, limit, read_deadline, cleanup_deadline):
+            children.append((limit, read_deadline, cleanup_deadline))
+            return "available", json.dumps({"sha256": "a"*64, "build_id": None,
+                                             "_resolved_basename": alias}).encode(), False, True
+        overrides = dict(write_export=lambda encoded, deadline: outputs.append(json.loads(encoded)),
+                         core_handler=lambda: "not_checked", query=lambda *args: ("available", crashes, False, True),
+                         query_kernel=lambda *args: ("available", rows, False, True),
+                         source_receipt=lambda *args, **kwargs: {}, read_child=child)
+        args = [str(COLLECTOR), "--since", SINCE, "--until", UNTIL]
+        with patch.dict(globals_, overrides), patch.object(sys, "argv", args):
+            self.assertEqual(main(), 0)
+        self.assertEqual(len(children), 1)
+        self.assertEqual(children[0][0], 1024)
+        self.assertAlmostEqual(children[0][2]-children[0][1], 0.65)
+        self.assert_unknown(outputs[-1], "kernel_unsupported_format")
+        self.assertEqual(outputs[-1]["kernel_module_policy_observation"]["buckets"]["resolved_wpe_alias"]["one_retained_candidate"], 1)
+        self.assertNotIn(alias, json.dumps(outputs[-1]))
+        crash_path, kernel_path = self.tmp / "observation-crash", self.tmp / "observation-kernel"
+        crash_path.write_bytes(crashes)
+        kernel_path.write_bytes(rows)
+        def forbidden(*args, **kwargs):
+            self.fail("offline rejected-row observation consulted the host")
+        overrides.update({key: forbidden for key in ("core_handler", "query", "query_kernel", "source_receipt", "read_child", "installed_identity")})
+        with patch.dict(globals_, overrides), patch.object(sys, "argv", args + [
+                "--journal-jsonl", str(crash_path), "--kernel-jsonl", str(kernel_path)]):
+            self.assertEqual(main(), 0)
+        self.assertEqual(outputs[-1]["kernel_module_policy_observation"]["alias_resolution"], "unavailable")
+        self.assertEqual(outputs[-1]["kernel_module_policy_observation"]["buckets"]["unknown_alias"]["one_retained_candidate"], 1)
+        self.assertEqual(len(children), 1)
+
+    def test_finalization_deadline_uses_existing_safe_fallback_without_retry(self):
+        main = self.collector["main"]
+        globals_ = main.__globals__
+        finalize = globals_["_finalize_module_rejections"]
+        calls, outputs = [], []
+        def expired(state, basename):
+            calls.append(basename)
+            if len(calls) == 2:
+                raise globals_["DiagnosticDeadline"]
+            return finalize(state, basename)
+        overrides = dict(write_export=lambda encoded, deadline: outputs.append(json.loads(encoded)),
+                         core_handler=lambda: "not_checked",
+                         query=lambda *args: ("available", jsonl(joining_record()), False, True),
+                         query_kernel=lambda *args: ("available", jsonl(kernel_row(POSITIVE_KERNEL[0].replace(
+                             "libWPEWebKit-2.0.so.1", SECRET))), False, True),
+                         source_receipt=lambda *args, **kwargs: {},
+                         installed_identity=lambda *args, **kwargs: (None, {"identity_missing"}),
+                         _finalize_module_rejections=expired)
+        with patch.dict(globals_, overrides), patch.object(sys, "argv", [str(COLLECTOR), "--since", SINCE, "--until", UNTIL]):
+            self.assertEqual(main(), 0)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("kernel_module_policy_observation", outputs[-1])
+        self.assert_unknown(outputs[-1], "deadline")
+
     def test_kernel_rejection_stage_classifies_existing_branches(self):
         # A missing/wrong branch code must fail independently of the refusal itself.
         cases = (
@@ -1103,6 +1411,81 @@ class InstalledIdentity(unittest.TestCase):
         self.path = self.root / "libWPEWebKit-2.0.so.1"
         self.collector = runpy.run_path(str(COLLECTOR))
 
+    def test_existing_child_envelope_accepts_private_alias_without_public_leak(self):
+        identity = self.collector["installed_identity"]
+        alias = "libWPEWebKit-2.0.so.1.10.2"
+        envelope = {"sha256": "a"*64, "build_id": "12345678", "_resolved_basename": alias}
+        calls = []
+        def child(args, limit, read_deadline, cleanup_deadline):
+            calls.append((args, limit, read_deadline, cleanup_deadline))
+            return "available", json.dumps(envelope).encode(), False, True
+        with patch.dict(identity.__globals__, read_child=child):
+            receipt, reasons = identity("webkit", [])
+        self.assertEqual(receipt, {"module": "libWPEWebKit-2.0.so.1", "sha256": "a"*64,
+                                   "build_id": "12345678"})
+        self.assertEqual(reasons, set())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], 1024)
+        self.assertNotIn(alias, json.dumps(receipt))
+
+    def test_private_identity_strict_envelope_and_shared_child_deadline(self):
+        identity = self.collector["installed_identity"]
+        valid = {"sha256": "a"*64, "build_id": None,
+                 "_resolved_basename": "libWPEWebKit-2.0.so.1.10.2"}
+        invalids = [dict(valid, _resolved_basename=value) for value in (
+            None, True, SECRET, "/tmp/libWPEWebKit-2.0.so.1", "libWPEWebKit-2.0.so.1\n",
+            "libWPEWebKit-2.0.so.1.10.2\x00", "libc.so.6.1", "libWPEWebKit-2.0.so.1.9999",
+        )]
+        invalids.extend(({k: v for k, v in valid.items() if k != "_resolved_basename"},
+                         dict(valid, private=SECRET), dict(valid, sha256="bad"), dict(valid, build_id=True)))
+        responses = [("available", json.dumps(item).encode(), False, True, False) for item in invalids]
+        exact = json.dumps(valid).encode()
+        responses += [("available", exact+b" "*(1024-len(exact)), False, True, True),
+                      ("available", json.dumps(valid).encode()+b" "*1024, False, True, False),
+                      ("available", json.dumps(valid).encode(), True, True, False),
+                      ("available", json.dumps(valid).encode(), False, False, False),
+                      ("denied", json.dumps(valid).encode(), False, True, False),
+                      ("timeout", json.dumps(valid).encode(), False, True, False),
+                      ("available", json.dumps(valid).encode(), False, True, True),
+                      ("available", json.dumps(dict(valid, _resolved_basename="libWPEWebKit-2.0.so.1")).encode(), False, True, True)]
+        for status, data, cut, reaped, accepted in responses:
+            calls = []
+            def child(args, limit, read_deadline, cleanup_deadline):
+                calls.append((limit, read_deadline, cleanup_deadline))
+                return status, data, cut, reaped
+            private = {"_resolved_basename": "stale"}
+            with self.subTest(status=status, accepted=accepted, data=data[:160]), patch.dict(
+                    identity.__globals__, read_child=child), patch.object(time, "monotonic", return_value=100):
+                receipt, reasons = identity("webkit", [], deadline=101, private_observation=private)
+            self.assertEqual(calls, [(1024, 100.35, 101)])
+            if accepted:
+                self.assertEqual(receipt, {"module": "libWPEWebKit-2.0.so.1", "sha256": "a"*64, "build_id": None})
+                self.assertEqual(private, {"_resolved_basename": json.loads(data)["_resolved_basename"]})
+            else:
+                self.assertIsNone(receipt)
+                self.assertEqual(private, {})
+                self.assertIn("identity_missing", reasons)
+                if status == "timeout":
+                    self.assertIn("deadline", reasons)
+                if not reaped:
+                    self.assertIn("reap_unconfirmed", reasons)
+
+    def test_resolved_basename_comes_from_existing_validated_elf_read(self):
+        read = self.collector["read_elf_identity"]
+        data = elf_fixture()
+        versioned = self.root / (self.path.name + ".10.2")
+        versioned.write_bytes(data)
+        self.path.symlink_to(versioned.name)
+        with_private = read(self.path, expected_root=self.root, include_resolved_basename=True)
+        self.assertEqual(with_private, {"sha256": hashlib.sha256(data).hexdigest(), "build_id": "12345678",
+                                        "_resolved_basename": versioned.name})
+        self.assertEqual(read(self.path, expected_root=self.root),
+                         {"sha256": hashlib.sha256(data).hexdigest(), "build_id": "12345678"})
+        versioned.write_bytes(b"invalid")
+        self.assertIsNone(read(self.path, expected_root=self.root, include_resolved_basename=True))
+        versioned.unlink()
+        self.assertIsNone(read(self.path, expected_root=self.root, include_resolved_basename=True))
+
     def test_build_id_and_hash_with_optional_notes(self):
         for data, expected in (
             (elf_fixture(), "12345678"),
@@ -1182,7 +1565,7 @@ class InstalledIdentity(unittest.TestCase):
                     return test_self.real.hexdigest()
 
             with self.subTest(change=change), patch.object(hashlib, "sha256", MutatingHash):
-                self.assertIsNone(read(self.path, expected_root=self.root))
+                self.assertIsNone(read(self.path, expected_root=self.root, include_resolved_basename=True))
 
     def test_installed_child_stays_separate_from_crash_identity(self):
         self.path.write_bytes(elf_fixture())
@@ -1194,7 +1577,9 @@ class InstalledIdentity(unittest.TestCase):
             self.path.name: {"buildId": "12345678"},
         })), record(COREDUMP_PACKAGE_JSON=json.dumps({self.path.name: {"buildId": "deadbeef"}}))),
                 False, int(SINCE), int(UNTIL))
-        receipt, reasons = identity("webkit", indexed["records"])
+        private = {}
+        receipt, reasons = identity("webkit", indexed["records"], private_observation=private)
+        self.assertEqual(private, {"_resolved_basename": self.path.name})
         self.assertEqual(receipt, {"sha256": hashlib.sha256(elf_fixture()).hexdigest(),
                                    "build_id": "12345678", "module": self.path.name})
         self.assertEqual(reasons, set())
