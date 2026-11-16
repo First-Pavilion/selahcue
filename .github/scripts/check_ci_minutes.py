@@ -5,11 +5,14 @@ This repository is private on the GitHub Team plan: 3,000 included minutes a mon
 Windows x2, macOS x10, and with no payment method every job is BLOCKED once the quota is gone.
 Measured on 100 runs, macOS was 64% of the bill and Windows 19%. The owner decided on
 2026-10-05 that macOS leaves CI entirely and that Windows runs weekly or on demand. Each rule
-below is one careless edit away from undoing that, and none of them is a thing actionlint or
-check_workflows.py looks at. Run from the repository root; it reads .github/workflows.
+below is one careless edit away from undoing that. The native-proof exception now shares
+its closed schema with check_workflows.py; the remaining minute rules live here.
+Run from the repository root; it reads .github/workflows.
 
-1. NO MACOS RUNNER, ANYWHERE. Any `macos` in a job's `runs-on` or `strategy.matrix`, in any
-   workflow, is refused. A matrix copied from an older example is the likely way back.
+1. NO GENERAL MACOS RUNNER. Only the exact closed macos-native-proof.yml shape is
+   exempt: one manual/main-only macos-26 job, attempt 1, 20 minutes, pinned actions,
+   fixed commands and bounded receipts. Every other `macos` in runs-on or a matrix
+   is refused. A matrix copied from an older example is the likely way back.
 2. WINDOWS ONLY THROUGH THE TIER. In a workflow that runs on pull_request, push or schedule, a
    job may not name a Windows runner literally. The matrices of ci.yml get Windows only from
    `needs.changes.outputs.os`, which the `tier` step computes. (A dispatch-only workflow such
@@ -59,6 +62,8 @@ import tempfile
 import yaml
 
 from ci_alarm import MATRIX_JOBS
+from check_workflows import (NATIVE_PROOF_WORKFLOW, native_proof_policy_self_test,
+                             native_proof_workflow_violations)
 
 CI_WORKFLOW = ".github/workflows/ci.yml"
 COST_TRIGGERS = {"pull_request", "pull_request_target", "push", "schedule"}
@@ -102,17 +107,27 @@ def runner_strings(job: dict) -> list[str]:
     return strings(job.get("runs-on")) + strings(matrix)
 
 
+def native_proof_violations(workflow: dict, filename: str) -> list[str]:
+    """Shared closed-shape policy; no filename-only or runner-only exemption."""
+    return native_proof_workflow_violations(workflow, filename)
+
+
 def runner_violations(workflow: dict, filename: str) -> list[str]:
     """Rules 1 and 2."""
     out = []
+    native = native_proof_violations(workflow, filename)
+    # Exact-file validation is mandatory even after deleting/replacing its runner.
+    if filename == NATIVE_PROOF_WORKFLOW and native:
+        return native
+    native_allowed = not native
     costly = bool(triggers(workflow) & COST_TRIGGERS)
     for name, job in (workflow.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
         for s in runner_strings(job):
-            if MACOS.search(s):
+            if MACOS.search(s) and not native_allowed:
                 out.append(
-                    f"{filename}: job `{name}` names a macOS runner (`{s}`). macOS is not in CI "
+                    f"{filename}: job `{name}` names a macOS runner (`{s}`) outside the fixed native-proof exception. General macOS is local "
                     f"(17tnw2b2nxk): it bills 10 minutes per minute, and the owner's local `make ci` "
                     f"is the macOS gate."
                 )
@@ -364,6 +379,7 @@ def self_test() -> int:
     def count(wf):
         return len(runner_violations(wf, "x")) + len(tier_violations(wf, "x")) + len(alarm_violations(wf, "x")) + len(concurrency_violations(wf, "x"))
 
+    failures += native_proof_policy_self_test(runner_violations)
     check("a conforming workflow is accepted", count(synthetic()), 0)
 
     # Rule 1
@@ -500,7 +516,7 @@ def main() -> int:
         for v in found:
             print(f"  - {v}", file=sys.stderr)
         return 1
-    print(f"minute rules: {len(workflows)} workflow(s) OK (no macOS; Windows only via the tier; "
+    print(f"minute rules: {len(workflows)} workflow(s) OK (one guarded native-proof exception; Windows only via the tier; "
           f"matrix jobs {sorted(MATRIX_JOBS)} known to the alarm)")
     return 0
 

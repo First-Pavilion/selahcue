@@ -607,7 +607,110 @@ jobs:
     return cases
 
 
+
+# One reviewed, bounded manual macOS exception. Keep this closed schema shared by
+# both policy entry points: a partial validator must never grant paid-runner access.
+NATIVE_PROOF_WORKFLOW = ".github/workflows/macos-native-proof.yml"
+
+
+def native_proof_workflow_violations(workflow: dict, filename: str) -> list[str]:
+    """Validate the entire exception before any runner exemption is possible.
+
+    All execution-bearing keys are closed, including action inputs and step
+    defaults/conditions. Type-sensitive comparisons keep YAML booleans from
+    masquerading as numeric limits. Only the parser's on/True spelling differs.
+    Unrelated workflows are filtered by all_violations, never exempted here.
+    """
+    if filename != NATIVE_PROOF_WORKFLOW:
+        return [f"{filename}: native proof requires exact path {NATIVE_PROOF_WORKFLOW}"]
+    if not isinstance(workflow, dict):
+        return [f"{filename}: native proof requires a workflow mapping"]
+    normalized = dict(workflow)
+    boolean_on = next((key for key in normalized if type(key) is bool and key is True), None)
+    if boolean_on is not None:
+        if "on" in normalized:
+            return [f"{filename}: native proof has ambiguous on/True trigger keys"]
+        normalized["on"] = normalized.pop(boolean_on)
+
+    expected = {
+        "name": "macOS native proof",
+        "on": {"workflow_dispatch": {}},
+        "permissions": {"contents": "read"},
+        "concurrency": {"group": "macos-native-proof", "cancel-in-progress": False},
+        "jobs": {"native-proof": {
+            "if": "${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}",
+            "runs-on": "macos-26",
+            "timeout-minutes": 20,
+            "steps": [
+                {"name": "Refuse non-main, non-manual and repeated attempts", "shell": "bash",
+                 "run": 'test "$GITHUB_EVENT_NAME" = workflow_dispatch\n'
+                        'test "$GITHUB_REF" = refs/heads/main\n'
+                        'test "$GITHUB_RUN_ATTEMPT" = 1\n'},
+                {"name": "Checkout dispatch SHA",
+                 "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                 "with": {"ref": "${{ github.sha }}", "fetch-depth": 0, "persist-credentials": False}},
+                {"name": "Verify pinned inputs and prepare finite fixtures", "shell": "bash",
+                 "run": "python3 scripts/macos_native_fixtures.py --prepare-check"},
+                {"name": "Admit disposable host", "shell": "bash",
+                 "run": "python3 scripts/macos_native_proof.py admit"},
+                {"name": "Provision pinned toolchain and locked public crates", "shell": "bash",
+                 "run": "python3 scripts/macos_native_proof.py setup"},
+                {"name": "Run frozen native proof once", "shell": "bash",
+                 "run": "python3 scripts/macos_native_proof.py prove"},
+                {"name": "Finalize bounded receipts", "if": "${{ always() }}", "shell": "bash",
+                 "run": "python3 scripts/macos_native_proof.py finalize"},
+                {"name": "Upload bounded receipts", "if": "${{ always() }}",
+                 "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+                 "with": {
+                     "name": "macos-native-proof-${{ github.run_id }}-${{ github.run_attempt }}",
+                     "path": ".macos-native-proof-receipts/run.json\n"
+                             ".macos-native-proof-receipts/inputs.json\n"
+                             ".macos-native-proof-receipts/admission.json\n"
+                             ".macos-native-proof-receipts/setup.json\n"
+                             ".macos-native-proof-receipts/build.json\n"
+                             ".macos-native-proof-receipts/feature-tree.txt\n"
+                             ".macos-native-proof-receipts/proof.json\n"
+                             ".macos-native-proof-receipts/result.json\n"
+                             ".macos-native-proof-receipts/artifact-manifest.json\n",
+                     "if-no-files-found": "error", "retention-days": 7,
+                     "overwrite": False, "include-hidden-files": True}},
+                {"name": "Clean recorded owned paths after upload", "if": "${{ always() }}", "shell": "bash",
+                 "run": "python3 scripts/macos_native_proof.py cleanup"},
+            ],
+        }},
+    }
+    out = []
+
+    def compare(actual, required, location):
+        if type(actual) is not type(required):
+            out.append(f"{filename}: native proof {location} requires {type(required).__name__}")
+        elif isinstance(required, dict):
+            if set(actual) != set(required):
+                out.append(f"{filename}: native proof {location} has missing or unapproved keys")
+            for key in required.keys() & actual.keys():
+                compare(actual[key], required[key], f"{location}.{key}")
+        elif isinstance(required, list):
+            if len(actual) != len(required):
+                out.append(f"{filename}: native proof {location} requires exactly {len(required)} ordered steps")
+            for index, (got, want) in enumerate(zip(actual, required)):
+                compare(got, want, f"{location}[{index}]")
+        elif actual != required:
+            out.append(f"{filename}: native proof {location} differs from the reviewed fixed value")
+
+    compare(normalized, expected, "workflow")
+    return out
+
+
 def all_violations(workflow: dict, filename: str = "<workflow>", repo_root: Path | None = None) -> list[str]:
+    # Validate the exact file even when its runner/job was removed. Also refuse
+    # renamed copies carrying the reserved job/name; the minute checker rejects
+    # every other macOS workflow unconditionally.
+    if (filename == NATIVE_PROOF_WORKFLOW
+            or Path(filename).name in ("macos-native-proof.yml", "macos-native-proof.yaml")
+            or "native-proof" in (workflow.get("jobs") or {})):
+        native = native_proof_workflow_violations(workflow, filename)
+        if native:
+            return native
     return (
         permission_violations(workflow, filename)
         + gate_ordering_violations(workflow, filename)
@@ -820,6 +923,206 @@ jobs:
 """), "no `environment:`"),
     ]
     return cases
+
+
+NATIVE_PROOF_TEST_YAML = r"""
+name: macOS native proof
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: macos-native-proof
+  cancel-in-progress: false
+jobs:
+  native-proof:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Refuse non-main, non-manual and repeated attempts
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Checkout dispatch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify pinned inputs and prepare finite fixtures
+        shell: bash
+        run: python3 scripts/macos_native_fixtures.py --prepare-check
+      - name: Admit disposable host
+        shell: bash
+        run: python3 scripts/macos_native_proof.py admit
+      - name: Provision pinned toolchain and locked public crates
+        shell: bash
+        run: python3 scripts/macos_native_proof.py setup
+      - name: Run frozen native proof once
+        shell: bash
+        run: python3 scripts/macos_native_proof.py prove
+      - name: Finalize bounded receipts
+        if: ${{ always() }}
+        shell: bash
+        run: python3 scripts/macos_native_proof.py finalize
+      - name: Upload bounded receipts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: macos-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .macos-native-proof-receipts/run.json
+            .macos-native-proof-receipts/inputs.json
+            .macos-native-proof-receipts/admission.json
+            .macos-native-proof-receipts/setup.json
+            .macos-native-proof-receipts/build.json
+            .macos-native-proof-receipts/feature-tree.txt
+            .macos-native-proof-receipts/proof.json
+            .macos-native-proof-receipts/result.json
+            .macos-native-proof-receipts/artifact-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false
+          include-hidden-files: true
+      - name: Clean recorded owned paths after upload
+        if: ${{ always() }}
+        shell: bash
+        run: python3 scripts/macos_native_proof.py cleanup
+"""
+
+
+def native_proof_policy_cases():
+    """Independent literal fixture; mutate one authorization/cost boundary at a time.
+
+    These cases exercise validator results, never derive the expected workflow
+    from the policy implementation or read the workflow being validated.
+    """
+    import copy
+
+    good = yaml.safe_load(NATIVE_PROOF_TEST_YAML)
+    path = ".github/workflows/macos-native-proof.yml"
+    cases = [("exact native proof accepted (YAML on/True)", good, path, False)]
+    string_on = copy.deepcopy(good)
+    string_on["on"] = string_on.pop(True)
+    cases.append(("exact native proof accepted (string on)", string_on, path, False))
+    for alias in (".github/workflows/renamed.yml", ".github/workflows/macos-native-proof.yaml",
+                  "macos-native-proof.yml", ".github/workflows/Macos-native-proof.yml"):
+        cases.append(("filename alias rejected: " + alias, copy.deepcopy(good), alias, True))
+
+    def mutate(label, keys, value=None, delete=False):
+        candidate = copy.deepcopy(good)
+        target = candidate
+        for key in keys[:-1]:
+            target = target[key]
+        if delete:
+            del target[keys[-1]]
+        else:
+            old = target.get(keys[-1]) if isinstance(target, dict) else target[keys[-1]]
+            assert type(old) is not type(value) or old != value, label
+            target[keys[-1]] = value
+        cases.append((label, candidate, path, True))
+
+    j = ("jobs", "native-proof")
+    s = j + ("steps",)
+    for event in ("push", "pull_request", "pull_request_target", "schedule", "workflow_call", "workflow_run"):
+        mutate("additional trigger " + event, (True, event), {})
+    mutate("missing triggers", (True,), delete=True)
+    for value in ("workflow_dispatch", ["workflow_dispatch"], {}, {"workflow_dispatch": None},
+                  {"workflow_dispatch": []}, {"workflow_dispatch": {"inputs": {}}}):
+        mutate("trigger shape " + repr(value), (True,), value)
+    mutate("two on keys", ("on",), {"push": {}})
+    mutate("job renamed", ("jobs",), {"renamed": good["jobs"]["native-proof"]})
+    mutate("extra job", ("jobs", "extra"), {"runs-on": "ubuntu-latest", "steps": [{"run": "true"}]})
+    mutate("missing job", j, delete=True)
+    for value in (None, "${{ github.ref == 'refs/heads/main' }}", "${{ github.event_name == 'workflow_dispatch' }}",
+                  "${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}"):
+        mutate("weakened main/manual guard " + repr(value), j + ("if",), value)
+    mutate("missing main guard", j + ("if",), delete=True)
+    mutate("missing runner", j + ("runs-on",), delete=True)
+    for value in ("${{ matrix.os }}", "${{ inputs.runner }}", ["macos-26"], "macOS-26", " macos-26", "macos-latest", "ubuntu-latest"):
+        mutate("runner variant " + repr(value), j + ("runs-on",), value)
+    mutate("runner matrix", j + ("strategy",), {"matrix": {"os": ["macos-26"]}})
+    mutate("missing timeout", j + ("timeout-minutes",), delete=True)
+    for value in (21, True, 20.0, "20", "${{ 20 }}"):
+        mutate("timeout variant " + repr(value), j + ("timeout-minutes",), value)
+    mutate("missing permissions", ("permissions",), delete=True)
+    for value in ({"contents": "write"}, "read-all", "write-all", {}, {"contents": "read", "actions": "write"}):
+        mutate("workflow permissions " + repr(value), ("permissions",), value)
+    mutate("job permission override", j + ("permissions",), {"contents": "read"})
+    mutate("wrong concurrency group", ("concurrency", "group"), "other")
+    for value in (True, "false", "${{ false }}", 0):
+        mutate("cancel variant " + repr(value), ("concurrency", "cancel-in-progress"), value)
+    mutate("missing concurrency", ("concurrency",), delete=True)
+    for key, value in (("concurrency", {"group": "other", "cancel-in-progress": False}),
+                       ("uses", "./.github/workflows/other.yml"), ("services", {}), ("container", "alpine"),
+                       ("environment", "production"), ("secrets", "inherit"), ("continue-on-error", True),
+                       ("env", {"BASH_ENV": "/tmp/other"}), ("defaults", {"run": {"working-directory": "other"}}),
+                       ("needs", ["other"]), ("outputs", {"value": "x"})):
+        mutate("forbidden job key " + key, j + (key,), value)
+    for key, value in (("env", {"PYTHONPATH": "other"}), ("defaults", {"run": {"shell": "sh"}}), ("run-name", "extra")):
+        mutate("unknown workflow key " + key, (key,), value)
+    mutate("attempt guard removed", s + (0, "run"), 'test "$GITHUB_REF" = refs/heads/main\n')
+    mutate("attempt greater than one admitted", s + (0, "run"), good["jobs"]["native-proof"]["steps"][0]["run"].replace('= 1', '-ge 1'))
+    mutate("second checkout", s, good["jobs"]["native-proof"]["steps"] + [good["jobs"]["native-proof"]["steps"][1]])
+    mutate("branch checkout", s + (1, "with", "ref"), "main")
+    mutate("shallow checkout", s + (1, "with", "fetch-depth"), 1)
+    mutate("missing credentials false", s + (1, "with", "persist-credentials"), delete=True)
+    mutate("credentials persisted", s + (1, "with", "persist-credentials"), True)
+    mutate("checkout token override", s + (1, "with", "token"), "${{ secrets.GITHUB_TOKEN }}")
+    mutate("checkout repository override", s + (1, "with", "repository"), "other/repo")
+    for index, action in ((1, "actions/checkout@v7"), (1, "unofficial/checkout@" + "a" * 40),
+                          (1, "actions/checkout@" + "a" * 40), (7, "actions/upload-artifact@v7"),
+                          (7, "unofficial/upload-artifact@" + "a" * 40)):
+        mutate("unreviewed action " + action, s + (index, "uses"), action)
+    for index in range(9):
+        mutate("continue-on-error step " + str(index), s + (index, "continue-on-error"), True)
+        mutate("step env override " + str(index), s + (index, "env"), {"PYTHONPATH": "other"})
+        mutate("step working directory " + str(index), s + (index, "working-directory"), "other")
+        if index not in (1, 7):
+            mutate("changed command " + str(index), s + (index, "run"), "true")
+            mutate("changed shell " + str(index), s + (index, "shell"), "sh")
+    for index in range(1, 9):
+        reordered = copy.deepcopy(good["jobs"]["native-proof"]["steps"])
+        reordered[index - 1], reordered[index] = reordered[index], reordered[index - 1]
+        mutate("reordered adjacent steps " + str(index), s, reordered)
+    for index in range(6):
+        mutate("normal stage always execution " + str(index), s + (index, "if"), "${{ always() }}")
+    for index in (6, 7, 8):
+        mutate("missing always " + str(index), s + (index, "if"), delete=True)
+        mutate("weakened always " + str(index), s + (index, "if"), "${{ !cancelled() }}")
+    mutate("artifact wildcard", s + (7, "with", "path"), ".macos-native-proof-receipts/*")
+    mutate("artifact missing member", s + (7, "with", "path"), good["jobs"]["native-proof"]["steps"][7]["with"]["path"].replace(".macos-native-proof-receipts/build.json\n", ""))
+    for key, value in (("retention-days", 8), ("overwrite", True), ("include-hidden-files", False),
+                       ("if-no-files-found", "warn"), ("name", "proof"), ("archive", False)):
+        mutate("artifact option " + key, s + (7, "with", key), value)
+    mutate("cache action", s, good["jobs"]["native-proof"]["steps"] + [{"uses": "actions/cache@" + "a" * 40}])
+    mutate("missing cleanup", s, good["jobs"]["native-proof"]["steps"][:-1])
+    mutate("missing cleanup command", s + (8, "run"), delete=True)
+    # A blanket macOS exemption must not accidentally permit unrelated dispatch jobs.
+    for filename in (".github/workflows/arbitrary.yml", ".github/workflows/macos-native-proof.yml"):
+        cases.append(("arbitrary dispatch macOS " + filename,
+                      {"on": {"workflow_dispatch": {}}, "jobs": {"other": {"runs-on": "macos-26", "steps": [{"run": "true"}]}}}, filename, True))
+    return cases
+
+
+def native_proof_policy_self_test(validate):
+    failures = []
+    cases = native_proof_policy_cases()
+    for label, workflow, filename, rejected in cases:
+        try:
+            found = validate(workflow, filename)
+            passed = bool(found) == rejected
+            detail = "rejected" if found else "accepted"
+        except Exception as error:
+            passed = False
+            detail = "validator crashed: " + type(error).__name__
+        print(f"native policy {'PASS' if passed else 'FAIL'}: {label}: {detail}")
+        if not passed:
+            failures.append(f"{label}: expected {'rejection' if rejected else 'acceptance'}, got {detail}")
+    return failures
 
 
 def self_test() -> int:
@@ -1121,6 +1424,10 @@ jobs:
             failures.append(f"{label}: expected no violation, got {found}")
         elif needle is not None and not any(needle in v for v in found):
             failures.append(f"{label}: expected a violation mentioning {needle!r}, got {found}")
+    failures += native_proof_policy_self_test(native_proof_workflow_violations)
+    for label, workflow, filename, rejected in native_proof_policy_cases():
+        if filename == NATIVE_PROOF_WORKFLOW and bool(all_violations(workflow, filename)) != rejected:
+            failures.append(f"native all-workflow dispatch: {label}")
     packaging_cases = installer_cases()
     for label, workflow, needle in packaging_cases:
         found = installer_violations(workflow, "windows-installer.yml")
