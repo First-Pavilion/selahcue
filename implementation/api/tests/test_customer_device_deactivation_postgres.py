@@ -114,13 +114,22 @@ def test_audit_failure_rolls_back_every_token_status_and_timestamp(monkeypatch):
     token(install, expired=True)
     before_device = Device.objects.get(pk=install.pk).__dict__.copy()
     before_tokens = list(DeviceToken.objects.filter(device=install).order_by('pk').values())
+    before_audits = list(AuditEvent.objects.order_by('pk').values())
+    real_audit = deactivation.record_audit_event
+    inserted_audits = []
     def fail(*args, **kwargs):
-        raise DatabaseError('synthetic audit failure')
+        event = real_audit(*args, **kwargs)
+        assert AuditEvent.objects.filter(pk=event.pk, action='device.deactivated').exists()
+        inserted_audits.append(event.pk)
+        raise DatabaseError('synthetic failure after real audit insert')
     monkeypatch.setattr(deactivation, 'record_audit_event', fail)
     assert_code(lambda: deactivate(actor, install.device_public_id), ErrorCode.INTERNAL)
     current = Device.objects.get(pk=install.pk)
     assert current.status == before_device['status'] and current.updated_at == before_device['updated_at']
     assert list(DeviceToken.objects.filter(device=install).order_by('pk').values()) == before_tokens
+    assert len(inserted_audits) == 1
+    assert not AuditEvent.objects.filter(pk=inserted_audits[0]).exists()
+    assert list(AuditEvent.objects.order_by('pk').values()) == before_audits
     assert not AuditEvent.objects.filter(action='device.deactivated').exists()
 
 

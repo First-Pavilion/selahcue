@@ -4,6 +4,7 @@ import importlib
 import json
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -173,14 +174,46 @@ def test_persisted_member_and_exact_org_are_authoritative():
     assert_code(lambda: service(actor, NOW, None), ErrorCode.UNAUTHENTICATED)
 
 
-def test_selected_license_tie_breaker_and_managed_recovery():
+def test_selected_license_tie_breaker_and_managed_recovery(settings, monkeypatch):
+    from selahcue_api.apps.catalogue.org_plans import effective_plan
+    monkeypatch.setattr(timezone, 'now', lambda: NOW)
     user, actor = principal()
     first = licence(user.customer, 'CORE')
     second = licence(user.customer, 'PRO')
+    # Equal expiry must not let an overview-only lower-PK selection go unnoticed.
+    first.status = 'ISSUED'
+    first.save(update_fields=['status'])
+    second.status, second.device_limit = 'EXPIRING', 5
+    second.starts_at = NOW - timedelta(days=2)
+    second.save(update_fields=['status', 'device_limit', 'starts_at'])
+    device(first)
+    device(second)
+    device(second)
+    assert first.pk < second.pk and first.expires_at == second.expires_at
     service = overview_module().account_overview
     result = service(actor, NOW, None)
-    assert result.allowance.plan_display_name == Plan.objects.get(code='PRO').display_name
+    pro = Plan.objects.get(code='PRO')
+    assert effective_plan(user.customer, NOW).plan_id == pro.pk
+    assert result.allowance.plan_display_name == pro.display_name
+    assert (result.license.status, result.license.starts_at, result.license.expires_at,
+            result.license.device_limit, result.license.active_device_count) == (
+        'EXPIRING', NOW - timedelta(days=2), second.expires_at, 5, 2,
+    )
     assert result.license.renewal == 'NOT_MANAGED'
+    # Enter the actual cookie/CSRF account-session activation path at the same instant.
+    client, csrf = browser(user, settings)
+    activated = post(client, csrf, '''mutation($input: ActivateDeviceInput!) {
+      activateDeviceWithSession(input: $input) { created devicePublicId }
+    }''', {'input': {
+        'idempotencyKey': 'equal-expiry-activation-001', 'deviceFingerprint': 'equal-expiry-install',
+        'platform': 'macos',
+    }})
+    assert 'errors' not in activated.json(), activated.content
+    activation = activated.json()['data']['activateDeviceWithSession']
+    assert activation['created'] is True
+    created = Device.objects.get(device_public_id=activation['devicePublicId'])
+    assert created.license_key_id == second.pk
+    assert Device.objects.filter(license_key=first).count() == 1
     AppLicenseKey.objects.filter(pk__in=[first.pk, second.pk]).update(status='EXPIRED', expires_at=NOW)
     marker = FreeLicenseLifecycle.objects.create(customer=user.customer, license_key=first, policy_version=1)
     LicensePlanAssignment.objects.filter(license_key=first).update(plan=Plan.objects.get(code='FREE'))
@@ -385,7 +418,7 @@ def test_invalid_ledger_counter_fails_closed(value, monkeypatch):
     assert_code(lambda: mod.account_overview(actor, NOW, None), ErrorCode.INTERNAL)
 
 
-def test_one_snapshot_call_lossless_max_counter_and_no_writes(monkeypatch):
+def test_lossless_max_counter_projection(monkeypatch):
     user, actor = principal()
     mod = overview_module()
     snapshots = mod.remaining(user.customer, NOW)
@@ -394,11 +427,8 @@ def test_one_snapshot_call_lossless_max_counter_and_no_writes(monkeypatch):
         calls.append(args)
         return replace(snapshots[0], settled=2**63-1), snapshots[1]
     monkeypatch.setattr(mod, 'remaining', snapshot)
-    with CaptureQueriesContext(connection) as queries:
-        result = mod.account_overview(actor, NOW, None)
+    result = mod.account_overview(actor, NOW, None)
     assert len(calls) == 1 and result.allowance.stt.settled == 2**63-1
-    assert not any(q['sql'].lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')) for q in queries)
-    assert not UsageWeek.objects.exists()
 
 
 @pytest.mark.parametrize('change,value', [
@@ -504,19 +534,62 @@ def test_real_reader_without_publication_and_absent_mapping_with_week(usage_runt
 
 
 def test_wire_schema_names_nullability_and_default():
+    from graphql import Undefined
     from selahcue_api.graphql.account_schema import schema
-    fields = schema._schema.query_type.fields
-    overview = fields['accountOverview']
-    assert str(overview.type) == 'AccountOverview!'
-    assert str(overview.args['first'].type) == 'Int!' and overview.args['first'].default_value == 20
-    expected = {
-        'orgName': 'String!', 'displayName': 'String!', 'email': 'String!', 'role': 'AccountRole!',
-        'canDeactivateDevices': 'Boolean!', 'license': 'AccountLicense',
-        'allowance': 'AccountAllowance', 'devices': 'AccountDevicePage!',
+    # Literal expectations from the accepted v4 contract, independent of wire fixtures.
+    expected_objects = {
+        'AccountOverview': {
+            'orgName': 'String!', 'displayName': 'String!', 'email': 'String!',
+            'role': 'AccountRole!', 'canDeactivateDevices': 'Boolean!',
+            'license': 'AccountLicense', 'allowance': 'AccountAllowance',
+            'devices': 'AccountDevicePage!',
+        },
+        'AccountLicense': {
+            'status': 'AccountLicenseStatus!', 'startsAt': 'String!', 'expiresAt': 'String!',
+            'validNow': 'Boolean!', 'renewal': 'AccountRenewal!', 'deviceLimit': 'Int!',
+            'activeDeviceCount': 'String!',
+        },
+        'AccountAllowance': {
+            'planDisplayName': 'String!', 'stt': 'AccountQuota!', 'notes': 'AccountQuota!',
+        },
+        'AccountQuota': {
+            'limit': 'String!', 'settled': 'String!', 'held': 'String!',
+            'carriedDebt': 'String!', 'remaining': 'String!', 'asOf': 'String!',
+            'resetsAt': 'String!', 'status': 'AccountQuotaStatus!',
+        },
+        'AccountDevicePage': {'nodes': '[AccountDevice!]!', 'nextCursor': 'String'},
+        'AccountDevice': {
+            'publicId': 'String!', 'displayName': 'String!', 'platform': 'String!',
+            'appVersion': 'String!', 'createdAt': 'String!', 'status': 'AccountDeviceStatus!',
+        },
+        'DeactivationResult': {'alreadyInactive': 'Boolean!'},
     }
-    assert {k: str(v.type) for k, v in overview.type.of_type.fields.items()} == expected
-    assert str(schema._schema.get_type('AccountDevicePage').fields['nodes'].type) == '[AccountDevice!]!'
-    assert str(schema._schema.mutation_type.fields['deactivateOwnDevice'].type) == 'DeactivationResult!'
+    for name, expected in expected_objects.items():
+        fields = schema._schema.get_type(name).fields
+        assert {key: str(field.type) for key, field in fields.items()} == expected, name
+        assert all(not field.args for field in fields.values()), name
+    expected_enums = {
+        'AccountRole': {'ADMIN', 'MEMBER'},
+        'AccountLicenseStatus': {
+            'ISSUED', 'ACTIVATED', 'EXPIRING', 'EXPIRED', 'SUSPENDED', 'REVOKED',
+            'CONVERTED', 'ARCHIVED',
+        },
+        'AccountRenewal': {'AUTOMATIC', 'UNAVAILABLE', 'NOT_MANAGED'},
+        'AccountQuotaStatus': {'CURRENT_OBSERVED', 'STALE', 'NOT_INITIALIZED'},
+        'AccountDeviceStatus': {'ACTIVE', 'REVOKED'},
+    }
+    for name, expected in expected_enums.items():
+        assert set(schema._schema.get_type(name).values) == expected, name
+    overview = schema._schema.query_type.fields['accountOverview']
+    assert str(overview.type) == 'AccountOverview!'
+    assert {name: (str(arg.type), arg.default_value) for name, arg in overview.args.items()} == {
+        'first': ('Int!', 20), 'after': ('String', None),
+    }
+    deactivation = schema._schema.mutation_type.fields['deactivateOwnDevice']
+    assert str(deactivation.type) == 'DeactivationResult!'
+    assert {name: (str(arg.type), arg.default_value) for name, arg in deactivation.args.items()} == {
+        'devicePublicId': ('String!', Undefined), 'requestId': ('String!', Undefined),
+    }
 
 
 FIXTURE_PATH = Path(__file__).resolve().parents[3] / 'docs/contracts/account-overview-v1.json'
@@ -640,3 +713,88 @@ def test_request_flags_do_not_survive_to_a_retry_http_request(settings):
     assert first.json()['data']['deactivateOwnDevice']['alreadyInactive'] is False
     assert second.json()['data']['deactivateOwnDevice']['alreadyInactive'] is True
     assert AuditEvent.objects.filter(action='device.deactivated').count() == 1
+
+
+@pytest.mark.parametrize('variables', [
+    {'first': 0}, {'first': 101}, {'after': ''}, {'after': 'AWE='}, {'after': 'A'*344},
+])
+def test_http_invalid_pagination_precedes_actor_and_session_queries(settings, monkeypatch, variables):
+    from selahcue_api.graphql import account_schema
+    user, _ = principal()
+    client, csrf = browser(user, settings)
+    actor_calls, session_calls = [], []
+    real_actor, real_session = account_schema.actor_from_info, accounts.actor_from_session_token
+    def actor_spy(info):
+        actor_calls.append(1)
+        return real_actor(info)
+    def session_spy(*args, **kwargs):
+        session_calls.append(1)
+        return real_session(*args, **kwargs)
+    monkeypatch.setattr(account_schema, 'actor_from_info', actor_spy)
+    monkeypatch.setattr(accounts, 'actor_from_session_token', session_spy)
+    with CaptureQueriesContext(connection) as queries:
+        response = post(client, csrf, variables=variables)
+    assert response.json() == {'data': None, 'errors': [{
+        'message': 'The request is invalid.', 'extensions': {'code': 'VALIDATION_FAILED'},
+    }]}
+    assert 'no-store' in response['Cache-Control']
+    assert actor_calls == session_calls == []
+    assert len(queries) == 0
+    # A later valid request on the same cookie still performs real authentication.
+    valid = post(client, csrf, variables={'first': 1})
+    assert 'errors' not in valid.json(), valid.content
+    assert valid.json()['data']['accountOverview']['email'] == user.email
+    assert actor_calls == session_calls == [1]
+
+
+@pytest.mark.parametrize('state', [
+    'uninitialized', 'ledger_week',
+    pytest.param('published_current', marks=pytest.mark.skipif(
+        connection.vendor != 'postgresql', reason='published read-only CTE uses the reviewed PostgreSQL SQL pin',
+    )),
+    pytest.param('published_stale', marks=pytest.mark.skipif(
+        connection.vendor != 'postgresql', reason='published read-only CTE uses the reviewed PostgreSQL SQL pin',
+    )),
+])
+def test_real_overview_snapshot_is_once_and_read_only(monkeypatch, request, state):
+    from django.db import transaction
+    from selahcue_api.apps.catalogue.org_plans import effective_plan
+    from selahcue_api.apps.usage.services import _open_week
+    from test_quota_read_only_sql import quota_read_only_query
+    user, actor = principal()
+    at = OBSERVED_AT
+    if state == 'ledger_week':
+        with transaction.atomic():
+            _open_week(user.customer, effective_plan(user.customer, at), at)
+    elif state.startswith('published_'):
+        # Real Task6 publication writes are setup, outside the guarded account read.
+        publish_current(user.customer, request.getfixturevalue('usage_runtime'), request.getfixturevalue('clock'))
+        if state == 'published_stale':
+            at += timedelta(seconds=300)
+    weeks_before = list(UsageWeek.objects.filter(org=user.customer).values())
+    assert bool(weeks_before) is (state != 'uninitialized')
+    mod = overview_module()
+    real_remaining = mod.remaining
+    calls, rejection = [], []
+    def counted_remaining(org, instant):
+        calls.append((org.pk, instant))
+        return real_remaining(org, instant)
+    monkeypatch.setattr(mod, 'remaining', counted_remaining)
+    # Reuse the reviewed SELECT / exact PostgreSQL readiness-CTE classifier;
+    # no generic WITH allowance or implementation-generated SQL fingerprint.
+    guard = partial(quota_read_only_query, rejection=rejection)
+    with CaptureQueriesContext(connection) as queries, connection.execute_wrapper(guard):
+        result = mod.account_overview(actor, at, None)
+    assert not rejection, rejection[0]
+    assert calls == [(user.customer_id, at)]
+    assert len(queries) > 0
+    assert any('selahcue_usage_usageweek' in query['sql'] for query in queries)
+    assert not any(clause in query['sql'].upper() for query in queries for clause in (
+        'FOR UPDATE', 'FOR NO KEY UPDATE', 'FOR SHARE', 'FOR KEY SHARE',
+    ))
+    assert list(UsageWeek.objects.filter(org=user.customer).values()) == weeks_before
+    assert result.allowance.notes.status == ('not_initialized' if state == 'uninitialized' else 'stale')
+    assert result.allowance.stt.status == {
+        'uninitialized': 'not_initialized', 'ledger_week': 'not_initialized',
+        'published_current': 'current_observed', 'published_stale': 'stale',
+    }[state]

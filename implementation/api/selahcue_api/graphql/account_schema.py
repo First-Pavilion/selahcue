@@ -8,7 +8,7 @@ from graphql import GraphQLError
 from strawberry.extensions import DisableIntrospection
 from strawberry.types import ExecutionContext
 
-from selahcue_api.apps.accounts.account_overview import account_overview
+from selahcue_api.apps.accounts.account_overview import account_overview, validate_account_pagination
 from selahcue_api.apps.accounts.services import (
     ACCOUNT_SESSION_TTL,
     ConfirmPasswordResetResult,
@@ -342,6 +342,7 @@ class AccountQuery:
     ) -> AccountOverview:
         try:
             _claim_account_field(info, "accountOverview")
+            validate_account_pagination(first, after)
             return _account_projection(account_overview(actor_from_info(info), timezone.now(), after, first))
         except SafeAPIError as error:
             raise _AccountFieldError(error.code, "accountOverview") from None

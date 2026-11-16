@@ -136,6 +136,13 @@ def decode_cursor(cursor: str | None) -> str | None:
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED) from None
 
 
+def validate_account_pagination(first: int, after: str | None) -> str | None:
+    """Pure bounded validation shared by HTTP pre-auth and direct service callers."""
+    if type(first) is not int or not 1 <= first <= 100:
+        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+    return decode_cursor(after)
+
+
 def counter(value: int) -> int:
     if type(value) is not int or not 0 <= value <= MAX_COUNTER:
         raise SafeAPIError(ErrorCode.INTERNAL)
@@ -208,9 +215,7 @@ def _license(org: CustomerOrg, at: datetime) -> AccountLicense | None:
 def account_overview(
     actor: ActorContext | None, at: datetime, after: str | None, first: int = 20,
 ) -> AccountOverview:
-    if type(first) is not int or not 1 <= first <= 100:
-        raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
-    anchor = decode_cursor(after)
+    anchor = validate_account_pagination(first, after)
     user_id, org_id = customer_identity(actor)
     try:
         at = aware_utc(at)
