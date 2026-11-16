@@ -6,7 +6,9 @@ import re
 import threading
 from http.cookies import CookieError, SimpleCookie
 from urllib.parse import urlsplit
+from uuid import uuid4
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect, sync_playwright
 
 from core_pages_headless import DIST, Server, SpaHandler
@@ -22,6 +24,12 @@ VERIFY_CASES = (
 )
 BOOTSTRAP_RECEIPT = ('bootstrap', 200)
 EXPECTED_POST_RECEIPTS = [(label, 200, True, True) for label, _, _ in VERIFY_CASES]
+PENDING_AUTH_CASES = (
+    ('/verify', 'VerifyView'), ('/reset', 'ResetView'),
+    ('/VeRiFy/', 'VerifyView'), ('/ReSeT/', 'ResetView'),
+)
+PENDING_AUTH_TIMEOUT_MS = 10_000
+DEPARTURE_PATH = '/__public_routes_auth_departure__'
 EXCLUDED = (
     '/admin', '/admin/', '/admin/customers', '/admin/customers/example/',
     '/admin/users', '/admin/subscriptions', '/admin/licenses', '/admin/affiliates',
@@ -323,6 +331,116 @@ class AcquisitionServer(Server):
         self.csrf_trace = None
 
 
+def check_pending_auth_departure(browser, base, path, chunk):
+    canary = 'synthetic-pending-auth-' + uuid4().hex
+    chunk_url = re.compile(re.escape(base) + rf'/assets/{chunk}-[^/?]+\.js$')
+    context = browser.new_context(service_workers='block')
+    chunk_held = False
+    api_requested = False
+    unexpected_request = False
+    diagnostic_retained = False
+
+    def is_chunk(request):
+        return request.method == 'GET' and chunk_url.fullmatch(request.url) is not None
+
+    def fixture(route):
+        nonlocal chunk_held, api_requested, unexpected_request
+        request = route.request
+        url_path = urlsplit(request.url).path
+        if is_chunk(request):
+            # Keep the matching import pending until the document leaves.
+            chunk_held = True
+        elif url_path.startswith('/graphql/'):
+            api_requested = True
+            route.abort()
+        elif request.method == 'GET' and request.url == base + DEPARTURE_PATH and request.is_navigation_request():
+            route.fulfill(
+                content_type='text/html; charset=utf-8',
+                body='<!doctype html><html><title>Departure fixture</title><p id="auth-departure">Arrived</p></html>',
+            )
+        elif (request.method == 'GET' and request.url.startswith(base + '/')
+              and (request.is_navigation_request() or url_path in ('/favicon.ico', '/selahcue-logo.png')
+                   or url_path.startswith(('/assets/', '/fonts/', '/icons/')))):
+            route.continue_()
+        else:
+            unexpected_request = True
+            route.abort()
+
+    def observe_diagnostic(text):
+        nonlocal diagnostic_retained
+        diagnostic_retained |= canary in text
+
+    stage = 'setting up the pending landing fixture'
+    try:
+        context.route('**/*', fixture)
+        page = context.new_page()
+        page.on('console', lambda message: observe_diagnostic(message.text))
+        page.on('pageerror', lambda error: observe_diagnostic(str(error)))
+
+        stage = 'waiting for the pending landing'
+        with page.expect_request(is_chunk, timeout=PENDING_AUTH_TIMEOUT_MS):
+            response = page.goto(
+                f'{base}{path}?token={canary}&extra=remove#pending',
+                wait_until='commit', timeout=PENDING_AUTH_TIMEOUT_MS,
+            )
+        assert response and response.ok, f'{path}: landing fixture failed'
+        expect(page.locator('#app .loading[role=status]')).to_be_visible(timeout=PENDING_AUTH_TIMEOUT_MS)
+        assert chunk_held, f'{path}: lazy bundle was not held'
+        assert page.locator('#app main h1').count() == 0, f'{path}: auth view mounted before departure'
+        assert not api_requested, f'{path}: account API requested before auth view mount'
+
+        stage = 'observing the pending landing'
+        before = page.evaluate("""([path, canary]) => {
+            document.documentElement.dataset.pendingAuthOriginal = 'yes';
+            sessionStorage.setItem('public-routes-auth-continuity', 'same-tab');
+            return {
+                cleanAddress: location.pathname === path && !location.search && !location.hash,
+                cleanHistory: !JSON.stringify(history.state).includes(canary),
+                cleanDom: !document.documentElement.outerHTML.includes(canary),
+            };
+        }""", [path, canary])
+
+        stage = 'navigating to the inert same-origin document'
+        response = page.goto(base + DEPARTURE_PATH, wait_until='domcontentloaded', timeout=PENDING_AUTH_TIMEOUT_MS)
+        assert response and response.ok, f'{path}: departure fixture failed'
+        after = page.evaluate("""([path, canary]) => {
+            function storageHasCanary(storage) {
+                for (let index = 0; index < storage.length; index++) {
+                    const key = storage.key(index);
+                    if (key.includes(canary) || storage.getItem(key).includes(canary)) return true;
+                }
+                return false;
+            }
+            return {
+                departed: location.pathname === path && document.querySelector('#auth-departure') !== null
+                    && !document.documentElement.hasAttribute('data-pending-auth-original'),
+                sameTab: sessionStorage.getItem('public-routes-auth-continuity') === 'same-tab',
+                cleanScroll: !(sessionStorage.getItem('vue-router:scroll') || '').includes(canary),
+                cleanSession: !storageHasCanary(sessionStorage),
+                cleanLocal: !storageHasCanary(localStorage),
+                cleanCookies: !document.cookie.includes(canary),
+                cleanDom: !document.documentElement.outerHTML.includes(canary),
+            };
+        }""", [DEPARTURE_PATH, canary])
+        assert after['departed'] and after['sameTab'], f'{path}: expected a new document in the original tab'
+
+        assert after['cleanScroll'], f'{path}: token retained in sessionStorage[vue-router:scroll] after departure'
+        assert after['cleanSession'], f'{path}: token retained in sessionStorage after departure'
+        assert after['cleanLocal'], f'{path}: token retained in localStorage after departure'
+        assert after['cleanCookies'], f'{path}: token retained in readable cookies after departure'
+        assert before['cleanAddress'], f'{path}: pending landing did not scrub its query and hash'
+        assert before['cleanHistory'], f'{path}: token retained in pending landing history state'
+        assert before['cleanDom'] and after['cleanDom'], f'{path}: token retained in document content or attributes'
+        assert not diagnostic_retained, f'{path}: token retained in console or page-error diagnostics'
+        assert not api_requested, f'{path}: account API requested during pending departure'
+        assert not unexpected_request, f'{path}: unexpected request during pending departure'
+    except PlaywrightError as error:
+        # Playwright's error text can include the original navigation URL.
+        raise AssertionError(f'{path}: browser operation failed while {stage} ({type(error).__name__})') from None
+    finally:
+        context.close()
+
+
 def run(engine, server):
     base = f'http://127.0.0.1:{server.server_address[1]}'
     browser = engine.launch()
@@ -459,6 +577,16 @@ def run(engine, server):
         assert not unexpected, unexpected
         assert not errors, errors
         print('  Signup reached. Invalid/expired and missing verification preserve recovery. Only the synthetic account fixture and the public manifest received API requests.')
+        pending_errors = []
+        for path, chunk in PENDING_AUTH_CASES:
+            try:
+                check_pending_auth_departure(browser, base, path, chunk)
+            except AssertionError as error:
+                pending_errors.append(str(error))
+                print(f'  FAIL {error}', flush=True)
+            else:
+                print(f'  {path}: same-tab departure from the pending landing left no token in checked surfaces.')
+        return pending_errors
     finally:
         try:
             # Emit before closing so a browser assertion or close failure cannot hide the trace.
@@ -479,16 +607,18 @@ def main():
     mock_chunks = [asset.name for asset in assets if re.match(r'Admin|Affiliate(?!sView-)|PilotDownloads', asset.name)]
     assert not mock_chunks, f'Public build contains mock portal chunks: {mock_chunks}'
 
+    pending_errors = []
     with sync_playwright() as playwright:
         for name in ('chromium', 'webkit') if args.engine == 'both' else (args.engine,):
             with AcquisitionServer() as server:
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 try:
                     print(f'[{name}] public acquisition and direct routes', flush=True)
-                    run(getattr(playwright, name), server)
+                    pending_errors.extend(f'{name} {error}' for error in run(getattr(playwright, name), server))
                 finally:
                     server.shutdown()
-    print('PASS: public acquisition, archived download URL, verification and route exclusions')
+    assert not pending_errors, '\n'.join(pending_errors)
+    print('PASS: public acquisition, archived download URL, verification, route exclusions and pending auth departures')
 
 
 if __name__ == '__main__':
