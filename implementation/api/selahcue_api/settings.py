@@ -467,7 +467,22 @@ CELERY_TASK_ROUTES = {
     for name in ("provision", "recover", "inventory_page", "publish_outbox", "sweep")
 }
 
+CELERY_TASK_ROUTES.update({
+    f"usage.{name}": {"queue": "provider_usage"}
+    for name in ("scan", "reconcile", "attribute", "recover_mint", "publish", "sweep")
+})
+CELERY_TASK_ROUTES.update({
+    f"usage.{name}": {"queue": "celery"}
+    for name in ("retain", "retention_sweep", "publish_retention")
+})
+
 CELERY_BEAT_SCHEDULE = {
+    "sweep-provider-usage": {
+        "task": "usage.sweep", "schedule": 60.0, "options": {"queue": "provider_usage"},
+    },
+    "sweep-usage-retention": {
+        "task": "usage.retention_sweep", "schedule": 60.0, "options": {"queue": "celery"},
+    },
     "sweep-provider-provisioning": {
         "task": "providers.sweep",
         "schedule": 5.0,
