@@ -21,7 +21,7 @@ def test_default_readiness_has_no_fabricated_coverage():
     assert (result.org_id, result.mapping_id, result.status, result.checked_at) == (
         1, mapping_id, "not_initialized", at,
     )
-    assert result.blocked_reason == "reader_missing"
+    assert result.blocked_reason == "coverage_missing"
     assert (result.observed_through, result.valid_until, result.publication_revision) == (None, None, None)
 
 

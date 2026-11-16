@@ -324,6 +324,114 @@ describe('CSRF bootstrap', () => {
     assert.equal(calls[1].init.method, 'POST')
   })
 
+  const token32 = 'SyntheticCsrfToken0123456789AbCd'
+  const token64 = token32.repeat(2)
+
+  function logoutTransport(bootstrap: () => Response | Promise<Response>) {
+    const { calls, impl } = recorder(() => ({ data: { logout: { revoked: true } } }))
+    const send: typeof fetch = (input, init = {}) => {
+      if (init.method !== 'GET') return impl(input, init)
+      calls.push({ url: String(input), init })
+      return Promise.resolve(bootstrap())
+    }
+    return { calls, send }
+  }
+
+  function bootstrapResponse(token: string | undefined, status = 200): Response {
+    return new Response('unparsed bootstrap body', {
+      status,
+      headers: token === undefined ? {} : { 'X-CSRFToken': token },
+    })
+  }
+
+  for (const token of [token32, token64]) {
+    test(`sends a ${token.length}-character bootstrap token even when the cookie stays unreadable`, async () => {
+      withDocument('')
+      const response = bootstrapResponse(token)
+      const { calls, send } = logoutTransport(() => response)
+
+      assert.equal(await logout(false, { fetchImpl: send }), true)
+      assert.deepEqual(calls.map(({ init }) => init.method), ['GET', 'POST'])
+      assert.equal(document.cookie, '')
+      assert.equal(new Headers(calls[1].init.headers).get('X-CSRFToken'), token)
+      assert.equal(response.bodyUsed, false)
+      for (const { init } of calls) {
+        assert.equal(init.credentials, 'same-origin')
+        assert.equal(init.referrerPolicy, 'no-referrer')
+      }
+    })
+  }
+
+  test('prefers the bootstrap token over a different freshly readable cookie', async () => {
+    withDocument('')
+    const { calls, send } = logoutTransport(() => {
+      withDocument('csrftoken=legacy-readable-token')
+      return bootstrapResponse(token64)
+    })
+
+    assert.equal(await logout(false, { fetchImpl: send }), true)
+    assert.equal(new Headers(posts(calls)[0].init.headers).get('X-CSRFToken'), token64)
+  })
+
+  for (const [label, token, status] of [
+    ['missing header', undefined, 200],
+    ['wrong length', 'short', 200],
+    ['malformed header', '_' + token32.slice(1), 200],
+    ['non-ASCII header', 'é' + token32.slice(1), 200],
+    ['oversized header', token32.repeat(100), 200],
+    ['non-2xx response', token64, 403],
+  ] as const) {
+    test(`reads the fresh cookie after a bootstrap with a ${label}`, async () => {
+      withDocument('')
+      const { calls, send } = logoutTransport(() => {
+        withDocument('csrftoken=legacy-readable-token')
+        return bootstrapResponse(token, status)
+      })
+
+      assert.equal(await logout(false, { fetchImpl: send }), true)
+      assert.deepEqual(calls.map(({ init }) => init.method), ['GET', 'POST'])
+      assert.equal(new Headers(calls[1].init.headers).get('X-CSRFToken'), 'legacy-readable-token')
+    })
+  }
+
+  test('one of two waiters can abort while the other receives the shared bootstrap token', async () => {
+    withDocument('')
+    let finishBootstrap!: (response: Response) => void
+    const seed = new Promise<Response>((resolve) => { finishBootstrap = resolve })
+    const { calls, send } = logoutTransport(() => seed)
+    const controller = new AbortController()
+    const abandoned = logout(true, { fetchImpl: send, signal: controller.signal })
+    const active = new AbortController()
+    const surviving = logout(false, { fetchImpl: send, signal: active.signal })
+
+    try {
+      controller.abort()
+      await assert.rejects(abandoned, { name: 'AbortError' })
+      assert.deepEqual(calls.map(({ init }) => init.method), ['GET'])
+      assert.equal(calls[0].init.signal?.aborted, false)
+    } finally {
+      finishBootstrap(bootstrapResponse(token64))
+      await Promise.allSettled([abandoned, surviving])
+    }
+    assert.equal(await surviving, true)
+    assert.equal(document.cookie, '')
+    assert.deepEqual(calls.map(({ init }) => init.method), ['GET', 'POST'])
+    assert.deepEqual(variablesOf(calls[1]), { allSessions: false })
+    assert.equal(new Headers(calls[1].init.headers).get('X-CSRFToken'), token64)
+  })
+
+  test('a later request bootstraps again and cannot reuse the settled response token', async () => {
+    withDocument('')
+    const first = logoutTransport(() => bootstrapResponse(token32))
+    const next = logoutTransport(() => bootstrapResponse(undefined))
+
+    assert.equal(await logout(false, { fetchImpl: first.send }), true)
+    assert.equal(await logout(false, { fetchImpl: next.send }), true)
+    assert.equal(new Headers(posts(first.calls)[0].init.headers).get('X-CSRFToken'), token32)
+    assert.deepEqual(next.calls.map(({ init }) => init.method), ['GET', 'POST'])
+    assert.equal(new Headers(next.calls[1].init.headers).has('X-CSRFToken'), false)
+  })
+
   test('skips the bootstrap and sends the header when the cookie is already there', async () => {
     // The positive control. Without it, "the bootstrap fired" above is indistinguishable
     // from "this code always fires a GET", and the header path could be dead.
@@ -341,18 +449,14 @@ describe('CSRF bootstrap', () => {
     // or a deployment may not enforce CSRF; turning one transient GET failure into a
     // total authentication outage would be far worse than letting the mutation try.
     withDocument('')
-    const calls: string[] = []
-    const impl = (async (input: unknown, init: RequestInit = {}) => {
-      calls.push(String(init.method))
-      if (init.method === 'GET') throw new TypeError('Failed to fetch')
-      return new Response(JSON.stringify({ data: { logout: { revoked: true } } }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    }) as unknown as typeof fetch
+    const { calls, send } = logoutTransport(() => {
+      withDocument('csrftoken=legacy-readable-token')
+      throw new TypeError('Failed to fetch')
+    })
 
-    assert.equal(await logout(false, { fetchImpl: impl }), true)
-    assert.deepEqual(calls, ['GET', 'POST'])
+    assert.equal(await logout(false, { fetchImpl: send }), true)
+    assert.deepEqual(calls.map(({ init }) => init.method), ['GET', 'POST'])
+    assert.equal(new Headers(calls[1].init.headers).get('X-CSRFToken'), 'legacy-readable-token')
   })
 
   test('a hung bootstrap is bounded and the mutation still gets its answer', async (t) => {
@@ -451,6 +555,11 @@ describe('CSRF bootstrap', () => {
 
     // And the mutation was never issued, which is the part that must not regress.
     assert.deepEqual(seen, ['GET'], 'an abandoned caller must issue no mutation')
+
+    // The abandoned caller left the shared work alive. Drain its deadline before later tests.
+    t.mock.timers.tick(CSRF_BOOTSTRAP_TIMEOUT_MS)
+    await flushMicrotasks()
+    assert.deepEqual(seen, ['GET'])
   })
 
   test('a caller who already aborted gets no requests at all, bootstrap included', async () => {
