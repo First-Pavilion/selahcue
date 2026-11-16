@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from functools import partial
 from threading import Barrier, Event
 from time import monotonic_ns
 from uuid import uuid4
@@ -32,6 +33,7 @@ from selahcue_api.platform.cloud_views import render_session_reply
 from test_effective_org_plan import NOW, church, device, licence
 from test_provider_provisioning import admitted_pool  # noqa: F401
 from test_provider_reservation_binding import active_mapping, retire
+from test_quota_read_only_sql import quota_read_only_query
 
 pytestmark = pytest.mark.django_db(transaction=True)
 ONGRANT = b"synthetic-not-a-provider-credential"
@@ -519,10 +521,13 @@ def test_seventy_minute_pro_chain_uses_distinct_real_renewal_budget(live_org, re
 def test_quota_is_read_only_for_authenticated_commercially_ineligible_token(client, live_org, real_budget):
     org, key, token, raw, _ = live_org()
     type(key).objects.filter(pk=key.pk).update(status="SUSPENDED", prior_status="ACTIVATED")
-    with CaptureQueriesContext(connection) as queries:
+    # Inspect parameterized statements before debug capture interpolates values.
+    rejection = []
+    guard = partial(quota_read_only_query, rejection=rejection)
+    with connection.execute_wrapper(guard), CaptureQueriesContext(connection) as queries:
         response = client.get("/v1/quota", headers={"Authorization": f"Bearer {raw}"})
+    assert not rejection, rejection[0]
     assert response.status_code == 200 and response["Cache-Control"] == "no-store"
-    assert all(query["sql"].lstrip().upper().startswith("SELECT") for query in queries)
     assert not any("FOR UPDATE" in query["sql"].upper() for query in queries)
     assert response.json()["stt"]["remaining"] == 1200
     assert response.json()["stt"]["status"] == "not_initialized"
