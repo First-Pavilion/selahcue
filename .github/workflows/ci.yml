@@ -1866,6 +1866,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
+          DEBUG: "pw:browser"
         run: python3 scripts/responsive_sweep.py --engine webkit
 
       - name: Responsive touch-target and geometry controls (WebKit)
