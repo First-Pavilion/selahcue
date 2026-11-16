@@ -29,10 +29,29 @@ Grounding: [DEC-004](docs/decisions/DECISION-LOG.md) (licensing/offline entitlem
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | **prod behind a TLS proxy: yes** | no | `false` | Trust `X-Forwarded-Proto: https` (sets Django `SECURE_PROXY_SSL_HEADER`); on = `1`/`true`/`yes`/`on`, anything else off. Without it a browser `Origin: https://...` is refused by CSRF and HSTS is never sent. **Opt-in**: only where every route to Django goes through a proxy that overwrites the header, else a client can forge `https`. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | only if `Origin` differs from the forwarded `Host` | no | `` (empty) | Space- or comma-separated exact `https://host[:port]` origins (no `*`, no path); a bad entry refuses to boot. See `docs/ops/DEPLOYMENT.md` §6c. |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | no | no | = `DEBUG` in dev; `false` elsewhere | **Dev/test bridge only** — trusts `X-SelahCue-Actor-*` headers as the caller identity, except `anonymous` (reserved for internal failed-confirm audit rows). **Startup refuses a true value whenever `ENVIRONMENT` is not exactly `dev`, including staging and explicit ingress opt-in.** False/unset is required outside dev. DEC-007/ADR-0023 replace this for customers with the opaque **account session token** (`Authorization: Bearer` / the `selahcue_account_session` cookie); staff IdP is still pending. |
+| `SELAHCUE_ENABLE_ADMIN_CATALOGUE` | no | no | `false` | Enables the gated admin catalogue query and price/grant/rename mutations in exact `dev` only. **Startup refuses true outside exact `dev`; the service also refuses non-dev use.** Keep false/unset in every shared deployment until the separately reviewed real staff authenticator is implemented. This flag does not authenticate staff or enable production pricing. |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | **prod behind a proxy: yes** | no | `0` | Number of **your own** proxies in front of Django, for the rate limiter's client-IP lookup (`X-Forwarded-For`). Too high is a limiter bypass, too low shares one bucket. See `docs/ops/DEPLOYMENT.md` §6b. |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **prod: yes** | **SECRET** | — (none, on purpose) | Ed25519 seed (32 bytes, base64) signing offline entitlement manifests (DEC-004). No default and no dev fallback: unset, `GET /v1/entitlements/manifest` fails rather than serving an unsigned manifest. See `docs/ops/DEPLOYMENT.md` §6a. |
 | `SENTRY_DSN` | no | **SECRET** | `` (empty) | Read into settings; nothing consumes it yet. Set in staging/prod only. |
 | `FRONTEND_BASE_URL` | prod: yes | no | `http://localhost:2000` | Base URL of the web surface that hosts `/verify` and `/reset`; the transactional emails link to it. |
+
+
+#### Provider process configuration
+
+| Key | Required | Secret | Default | Purpose |
+|---|---|---|---|---|
+| `SELAHCUE_PROVIDER_PROCESS_ROLE` | for provider work | no | `maintenance` | Exact case-sensitive role. Use `web` for WSGI/ASGI with public cloud requested, `usage` for the `provider_usage` worker, `provisioner` for the `provider_provisioning` worker or operator, and `maintenance` for beat or the `celery` worker. The `notes` role is reserved for Task7 integration. |
+| `SELAHCUE_CLOUD_STT_ENABLED` | for web STT admission | no | `false` | Requests Deepgram admissions. Web requires a complete local admission policy and a wrapping keyring. |
+| `SELAHCUE_CLOUD_NOTES_ENABLED` | for future public notes | no | `false` | Requests OpenAI notes admissions. Web refusing this flag and the notes worker refusing boot are expected until Task7 integrates qualified policy and its dedicated content store. Usage, provisioner and beat can continue. |
+| `SELAHCUE_PROVIDER_PROVISIONING_ENABLED` | for new allocations | no | `false` | Requests new provisioning. The provisioner must have a complete local creation scope. Task4 applies admission, capacity and action gates. A recovery-only provisioner can start with this flag off. |
+| `SELAHCUE_PROVIDER_KEYRING_FILE` | for STT web and provisioner | secret file path | empty | Absolute path of schema v1 JSON with an active key ID and up to eight canonical unpadded base64url AES-256 keys. |
+| `SELAHCUE_PROVIDER_USAGE_CREDENTIALS_FILE` | for usage | secret file path | empty | Absolute path of schema v1 reader credentials matching every parent in the usage-local policy. |
+| `SELAHCUE_PROVIDER_PROVISIONING_CREDENTIALS_FILE` | for provisioner | secret file path | empty | Absolute path of schema v1 administrative credentials matching every parent in the provisioner-local policy. |
+| `SELAHCUE_PROVIDER_DEPLOYMENT_POLICY_FILE` | for active provider roles | no | empty | Absolute path of schema v1 role-local parent policy and observed-records accounting acceptance receipt. |
+
+The three flags default to false when unset or empty. Valid spellings are `1`, `true`, `yes`, `on`, `0`, `false`, `no` and `off`, ignoring case and surrounding whitespace. Other spellings refuse startup. Disabled web, maintenance and beat require no provider mounts. Explicit usage and provisioner workers still require their own mounts with public flags off. Use separate read-only mounts from trusted parent directories. Files must be regular, readable by the runtime UID and have no group/world permission bits. Worker queue sets must match the role exactly. Use a separate beat process.
+
+Before enabling work, compare the actual role policies, their acceptance receipt and all normalized metadata for shared parents. Each web STT parent needs a usage parent with the matching reader credential. Each web parent eligible for new allocation needs a corresponding create-capable provisioner scope and credential. When Task7 is integrated, each admitted notes parent needs a matching notes role policy and custody configuration. For example, a web STT parent absent from usage must block enablement even when every scope shared by those roles agrees. A usage-only historical parent can remain configured for reconciliation. Local startup validates only its own inputs. Restart affected processes to load changed configuration.
 
 ### 1b. Database (WIRED — `settings.py::_database_config`)
 
@@ -223,3 +242,24 @@ The desktop is a **PUBLIC OIDC client** → Authorization Code + **PKCE**, **no 
 - **Prod must-set:** `ENVIRONMENT` (`staging` or `prod`; **genuinely unset with an empty key and any non-local allowed host refuses settings import**; local-only defaults and explicit `dev` remain available, while a configured raw key is outside this narrow guard), `SECRET_KEY` (a fresh random value: when `ENVIRONMENT` is not `dev` the API refuses to start if it is empty, the dev key or the old `.env.sample` placeholder), `DEBUG` unset or `0`, `DJANGO_ALLOWED_HOSTS`, `SQL_ENGINE=django.db.backends.postgresql` with `SQL_DATABASE`, `SQL_USER`, `SQL_PASSWORD` and `SQL_HOST`, `CACHE_URL` (without it the rate-limit counters live in each web worker's own memory and reset on every restart, so the per-IP and per-address limits barely limit anything), `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `MAIL_HOST`, `MAIL_USERNAME`, `MAIL_PASSWORD`, `DEFAULT_FROM_EMAIL`, `FRONTEND_BASE_URL`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, and `SELAHCUE_TRUST_ACTOR_HEADERS` unset/false. Behind a TLS-terminating proxy also `SELAHCUE_TRUST_FORWARDED_PROTO` and `SELAHCUE_TRUSTED_PROXY_COUNT`, set exactly as their rows describe (the proxy must overwrite `X-Forwarded-Proto` and be the only route to Django; the count must be exact, because a count that is too high lets a client bypass the rate limiter). Every row above marked `prod: yes` belongs on this list; a test fails if one is missing.
 - **Desktop is a public OIDC client** — it holds no client secret; PKCE + redirect validation carry the security (see the ADR-0022 security review, task 86ajy7aqw).
 - Add new keys here in the same turn you add the `os.getenv`/`env::var` read, so this stays the single source of truth. For the API this is checked: `implementation/api/tests/test_deployment_env_docs.py` fails when a documented name is not read, when the API reads a name with no row here, and when a name in §1a–1e or `docs/ops/DEPLOYMENT.md` §6 is stale. Run it with `make api-check`; CI runs it on the weekly schedule and on commits that also change a file CI does not ignore, but a docs-only commit does not start CI.
+
+### Provisioning policy publication
+
+The provider deployment policy accepts an optional `creation_budgets` array. Each entry has
+`provider` (`deepgram` or `openai`), `create_per_hour` and `create_per_day`. Use whole nonnegative
+integers and at most one entry per provider. New creation requires positive global and parent
+hourly and daily limits. Absent or zero global limits prevent new allocations. When provisioning
+is disabled, eligible existing mappings can still be reused and the provisioner can perform
+metadata recovery and previously authorized cleanup.
+
+Install and migrate the API, then restart each role with its mounted policy files. An explicitly
+initialized operator provisioner publishes the configured policy through `publish_provider_policy`.
+Pass an empty cleanup authorization tuple unless the deployment has separately approved lifecycle
+evidence for each authorized parent. Omitted global or parent policies preserve previously
+published rows. Publish explicit zero budgets or remove the scope's create capability to revoke
+create authority. Publishing changed parent policy starts a new inventory scan.
+
+Allow the `provider_provisioning` worker to complete inventory before checking matching policy
+digests, capacity and operator authority. Set production budgets only after provider lifecycle
+and capacity qualification, and enable provisioning separately. No provider administration call
+runs during application startup or policy publication.

@@ -276,6 +276,7 @@ PAGE_JS = r"""
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
   out.title = (document.querySelector('h1') || {}).innerText || '';
+  try { out.settleState = window.__selahcueSettleState?.() ?? null; } catch (_) {}
   return out;
 }
 """
@@ -293,6 +294,21 @@ NAV_STATE_JS = r"""
 
 TOUCH_JS = r"""
 (selectors) => {
+  // A generated section reference can sit directly inside a legal table cell.
+  function isLegalTableProseRef(el) {
+    if (!el.matches('a.li-link') || el.matches('.btn, [role="button"]')) return false;
+    const fragment = el.getAttribute('href') || '';
+    if (!/^#s-\d+(?:-\d+)*$/.test(fragment) || el.textContent.trim() !== fragment.slice(3).replaceAll('-', '.')) return false;
+    if (!el.parentElement?.matches('table.lt-table > tbody > tr > td')) return false;
+    return ['previousSibling', 'nextSibling'].some(direction => {
+      let sibling = el[direction];
+      while (sibling?.nodeType === Node.COMMENT_NODE ||
+             (sibling?.nodeType === Node.TEXT_NODE && !sibling.textContent.trim())) {
+        sibling = sibling[direction];
+      }
+      return sibling?.nodeType === Node.TEXT_NODE && /[\p{L}\p{N}]/u.test(sibling.textContent);
+    });
+  }
   const bad = [];
   const seen = new Set();
   for (const sel of selectors) {
@@ -307,7 +323,8 @@ TOUCH_JS = r"""
       // Visually hidden until focused (a clipped 1x1 skip link) is not a touch target.
       if (r.width <= 1 && r.height <= 1) continue;
       // Inline links inside running prose are exempt (WCAG 2.5.8 inline exception).
-      if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote, label')) continue;
+      if (el.tagName === 'A' && cs.display === 'inline' &&
+          (el.closest('p, li, dd, blockquote, label') || isLegalTableProseRef(el))) continue;
       if (Math.min(r.width, r.height) < 43.5) {
         const cls = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/).slice(0, 2).join('.');
         bad.push(`${el.tagName.toLowerCase()}${cls ? '.' + cls : ''} "${(el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 24)}" ${Math.round(r.width)}x${Math.round(r.height)}`);
@@ -475,29 +492,77 @@ def sheet_state(page):
 # are decoration and never settle). Waiting on THIS, not on a sleep, is what makes a
 # measurement taken straight after a load/open/close independent of machine load: a card
 # measured mid `slideUp` is 0.97-scaled, so a 44px control reads 43px and fails for no reason.
-SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
-  (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
-)"""
+SETTLE_JS = """(observeBlocker) => document.getAnimations({ subtree: true }).every((animation) => {
+  if (animation.playState !== 'running') return true;
+  const effect = animation.effect;
+  if (effect && effect.getComputedTiming().iterations === Infinity) return true;
+  if (typeof observeBlocker === 'function') observeBlocker(animation, effect);
+  return false;
+})"""
+
+# The WebKit wait still uses Playwright's default frame polling and the same predicate.
+# Record the first invocation and the first frame-driven poll. An independent
+# timer probes renderer progress when the first invocation returns false.
+OBSERVED_SETTLE_JS = """() => {
+  let blocker;
+  const settled = (__SETTLE_PREDICATE__)((animation, effect) => { blocker = [animation, effect]; });
+  try { window.__selahcueObserveSettlePoll?.(settled, blocker); } catch (_) {}
+  return settled;
+}""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+
+# Closed labels shared by the observer and the untrusted-console validator.
+ANIMATION_LABELS = {
+    "type": ("Animation", "CSSAnimation", "CSSTransition"),
+    "animationName": ("au-progress-travel", "au-spin", "fade-in", "pulse", "shimmer", "slideUp", "spin"),
+    "transitionProperty": (
+        "-webkit-backdrop-filter", "backdrop-filter", "background-color", "border-color",
+        "box-shadow", "color", "grid-template-rows", "opacity", "transform", "visibility",
+    ),
+    "target": ("navbar-header", "mobile-sheet", "dialog-card", "loading"),
+    "pseudoElement": ("::before", "::after"),
+    "targetTag": ("a", "article", "body", "button", "div", "footer", "form", "h1", "h2",
+                  "header", "main", "nav", "p", "section", "span"),
+}
 
 # Diagnostic only: the original settlement predicate above remains the gate. The init
 # script observes the top-level target document and sends snapshots before a timeout;
-# reporting never evaluates a possibly stalled renderer.
+# the timeout path can ask for scalar state only through one separately capped probe.
 SETTLE_DIAGNOSTIC_JS = r"""(() => {
   if (window !== window.top) return;
+  let documentNonce = null;
+  try {
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+      byte => byte.toString(16).padStart(2, '0')).join('');
+    Object.defineProperty(window, '__selahcueSettleDocument', {value: nonce});
+    documentNonce = nonce;
+  } catch (_) {}
   const predicate = (__SETTLE_PREDICATE__);
-  const text = (v) => String(v == null ? '' : v).slice(0, 96);
+  const labels = __ANIMATION_LABELS__;
+  const label = (field, value) => {
+    if (value == null || value === '') return '';
+    return labels[field].includes(value) ? value : 'other';
+  };
   const number = (v) => typeof v === 'number' && !Number.isFinite(v) ? String(v) : v;
-  const ids = new WeakMap();
-  let nextId = 1, sampleCount = 0, frames = 0, raf = null, timer = null, stopped = false;
+  const ids = new WeakMap(), targetIds = new WeakMap();
+  let nextId = 1, nextTargetId = 1, sampleCount = 0, frames = 0;
+  let raf = null, timer = null, earlyTimer = null, lateTimer = null, stopped = false;
+  let pollCount = 0, lastPollResult = null, reportedPeriodicStart = false, blockerReported = false;
   const start = performance.now();
+  let earlyTimerEntries = 0, periodicTimerEntries = 0, lateTimerEntries = 0;
+  window.__selahcueSettleState = () => ({
+    elapsedMs: Math.round(performance.now() - start),
+    totalPolls: Math.min(pollCount, 65535), lastResult: lastPollResult, stopped,
+    earlyTimerEntries, periodicTimerEntries, lateTimerEntries,
+  });
   const stop = () => {
     stopped = true;
     clearTimeout(timer);
+    clearTimeout(earlyTimer);
+    clearTimeout(lateTimer);
     if (raf !== null) cancelAnimationFrame(raf);
     raf = null;
   };
   const deadline = setTimeout(stop, 12000);
-  addEventListener('pagehide', () => { clearTimeout(deadline); stop(); }, { once: true });
   const sample = () => {
     if (stopped || sampleCount >= 13 || performance.now() - start > 12000) return;
     sampleCount++;
@@ -505,7 +570,8 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       const animations = document.getAnimations({ subtree: true });
       const snapshot = {
         sample: sampleCount, elapsedMs: number(performance.now() - start),
-        readyState: text(document.readyState), visibilityState: text(document.visibilityState),
+        pollCount, lastPollResult,
+        readyState: document.readyState, visibilityState: document.visibilityState,
         contentPresent: !!document.querySelector('main > :not(.loading)'),
         loadingPresent: !!document.querySelector('.loading'),
         adminShellPresent: !!document.querySelector('.admin-shell'),
@@ -516,6 +582,8 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
         animations: animations.slice(0, 12).map((a) => {
           if (!ids.has(a)) ids.set(a, nextId++);
           const effect = a.effect, target = effect && effect.target;
+          if (target && !targetIds.has(target)) targetIds.set(target, nextTargetId++);
+          const targetLabel = target?.classList && labels.target.find((name) => target.classList.contains(name));
           const timing = effect ? effect.getComputedTiming() : null;
           const computed = {};
           if (timing) for (const key of ['duration', 'delay', 'endDelay', 'iterations', 'iterationStart',
@@ -523,12 +591,13 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
             computed[key] = number(timing[key]);
           }
           return {
-            id: ids.get(a), type: text(a.constructor && a.constructor.name),
-            animationName: text(a.animationName), transitionProperty: text(a.transitionProperty),
-            target: { tag: text(target && target.tagName), id: text(target && target.id),
-                      classes: text(target && target.getAttribute && target.getAttribute('class')),
-                      pseudoElement: text(effect && effect.pseudoElement) },
-            playState: text(a.playState), pending: !!a.pending,
+            id: ids.get(a), type: label('type', a.constructor?.name),
+            animationName: label('animationName', a.animationName),
+            transitionProperty: label('transitionProperty', a.transitionProperty),
+            target: { id: target ? targetIds.get(target) : null,
+                      label: target ? targetLabel || 'other' : '',
+                      pseudoElement: label('pseudoElement', effect?.pseudoElement) },
+            playState: a.playState, pending: !!a.pending,
             currentTime: number(a.currentTime), startTime: number(a.startTime),
             playbackRate: number(a.playbackRate), timelineTime: number(a.timeline && a.timeline.currentTime),
             timing: computed,
@@ -537,12 +606,314 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
       };
       console.debug('WEBKIT_SETTLE_SAMPLE ' + JSON.stringify(snapshot));
     } catch (_) { console.debug('WEBKIT_SETTLE_SAMPLE {"observerError":true}'); }
+  };
+  const marker = (event) => {
+    const elapsedMs = performance.now() - start;
+    if (stopped || elapsedMs > 12000) return;
+    try {
+      console.debug('WEBKIT_SETTLE_MARKER ' + JSON.stringify({
+        event, elapsedMs, pollCount, lastPollResult,
+        rafCompleted: frames, rafPending: raf !== null, visibilityState: document.visibilityState,
+      }));
+    } catch (_) {}
+  };
+  addEventListener('pagehide', () => {
+    marker('pageHide');
+    clearTimeout(deadline);
+    stop();
+  }, { once: true });
+  window.__selahcueObserveSettlePoll = (result, blocker) => {
+    if (typeof result !== 'boolean') return;
+    lastPollResult = result;
+    pollCount++;
+    if (pollCount === 1 && documentNonce !== null) {
+      try {
+        console.debug('WEBKIT_SETTLE_PROBE {"version":1,"kind":"document","document":"' + documentNonce + '"}');
+      } catch (_) {}
+    }
+    if (stopped) return;
+    if (pollCount === 1) {
+      marker('firstPoll');
+      if (!result) {
+        earlyTimer = setTimeout(() => {
+          earlyTimerEntries++;
+          marker('earlyTimer');
+        }, 100);
+        // One scalar heartbeat independent of the 1s rich snapshot. It never reads layout or animations.
+        lateTimer = setTimeout(() => {
+          lateTimerEntries++;
+          if (lastPollResult === false) marker('lateTimer');
+        }, 1250);
+      }
+    } else if (pollCount === 2) {
+      marker('firstFramePoll');
+    }
+    if (!result && blocker && !blockerReported) {
+      blockerReported = true;
+      const [animation, effect] = blocker;
+      const target = effect?.target;
+      const targetLabel = target?.classList && labels.target.find(name => target.classList.contains(name));
+      console.debug('WEBKIT_SETTLE_BLOCKER ' + JSON.stringify({
+        type: label('type', animation.constructor?.name), state: 'running',
+        tag: label('targetTag', target?.localName), target: target ? targetLabel || 'other' : '',
+      }));
+    }
+  };
+  const tick = () => {
+    if (stopped || sampleCount >= 13) return;
+    if (lastPollResult === false && !reportedPeriodicStart) {
+      reportedPeriodicStart = true;
+      marker('periodicSampleStart');
+    }
+    sample();
     // One heartbeat per sample, with no second request while the previous is pending.
     if (raf === null) raf = requestAnimationFrame(() => { raf = null; frames++; });
-    if (sampleCount < 13) timer = setTimeout(sample, 1000);
+    if (sampleCount < 13) timer = setTimeout(() => {
+      periodicTimerEntries++;
+      tick();
+    }, 1000);
   };
-  sample();
-})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS)
+  tick();
+})();""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace("__ANIMATION_LABELS__", json.dumps(ANIMATION_LABELS))
+
+
+SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleStart", "lateTimer", "pageHide")
+
+
+SETTLE_STATE_PREFIX = "WEBKIT_SETTLE_STATE "
+SETTLE_STATE_LIMITS = {"elapsedMs": 120000, "totalPolls": 65535,
+                       "earlyTimerEntries": 1, "periodicTimerEntries": 12, "lateTimerEntries": 1}
+SETTLE_PROBE_PREFIX = "WEBKIT_SETTLE_PROBE "
+SETTLE_PROBE_BODY_LIMIT = 768
+SETTLE_PROBE_COUNT_LIMIT = 65535
+
+SETTLE_STATE_PROBE_JS = r"""prefix => {
+  const limits = __SETTLE_STATE_LIMITS__;
+  let documentNonce = null;
+  try {
+    const nonce = window.__selahcueSettleDocument;
+    if (typeof nonce === 'string' && nonce.length === 32 && /^[0-9a-f]{32}$/.test(nonce)) documentNonce = nonce;
+  } catch (_) {}
+
+  let outcome = 'getter-threw', encodedState = 'null', legacyBody, legacyFailure;
+  try {
+    const getter = window.__selahcueSettleState;
+    let value;
+    if (typeof getter === 'function') {
+      value = Reflect.apply(getter, window, []);
+      outcome = value == null ? 'nullish' : 'encoding-failed';
+    } else {
+      outcome = '__selahcueSettleState' in window ? 'non-callable' : 'absent';
+      // Optional call previously raised for a non-nullish, non-callable value.
+      if (getter != null) Reflect.apply(getter, window, []);
+    }
+    legacyBody = JSON.stringify(value ?? null);
+  } catch (error) { legacyFailure = {error}; }
+
+  // Observation must not alter the result of the legacy read and encoding.
+  // Admit only the scalar shape before writing it to the independent channel.
+  try {
+    if (outcome === 'encoding-failed' && typeof legacyBody === 'string' && legacyBody.length <= 256) {
+      const candidate = JSON.parse(legacyBody);
+      if (candidate && Object.keys(candidate).length === Object.keys(limits).length + 2
+          && Object.hasOwn(candidate, 'lastResult') && Object.hasOwn(candidate, 'stopped')
+          && (candidate.lastResult === null || typeof candidate.lastResult === 'boolean')
+          && typeof candidate.stopped === 'boolean'
+          && Object.entries(limits).every(([key, max]) => Object.hasOwn(candidate, key)
+              && Number.isInteger(candidate[key]) && candidate[key] >= 0 && candidate[key] <= max)) {
+        encodedState = legacyBody;
+        outcome = 'snapshot';
+      }
+    }
+  } catch (_) {}
+
+  let gateResult = 'read-error';
+  try {
+    const result = (__SETTLE_PREDICATE__)();
+    if (typeof result === 'boolean') gateResult = result;
+  } catch (_) {}
+  try {
+    // The closed-label record remains writable even if state encoding throws.
+    const nonce = documentNonce === null ? 'null' : '"' + documentNonce + '"';
+    const gate = gateResult === 'read-error' ? '"read-error"' : gateResult;
+    const body = '{"version":1,"kind":"probe","document":' + nonce + ',"outcome":"' + outcome +
+      '","state":' + encodedState + ',"gateResult":' + gate + '}';
+    if (body.length <= __SETTLE_PROBE_BODY_LIMIT__ && /^[\x00-\x7f]*$/.test(body)) {
+      console.debug('WEBKIT_SETTLE_PROBE ' + body);
+    }
+  } catch (_) {}
+  if (legacyFailure) throw legacyFailure.error;
+  throw new Error(prefix + legacyBody);
+}""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace(
+    "__SETTLE_STATE_LIMITS__", json.dumps(SETTLE_STATE_LIMITS)).replace(
+    "__SETTLE_PROBE_BODY_LIMIT__", str(SETTLE_PROBE_BODY_LIMIT))
+
+
+def valid_settle_state(value):
+    if (type(value) is not dict or set(value) != {*SETTLE_STATE_LIMITS, "lastResult", "stopped"}
+            or type(value["stopped"]) is not bool
+            or (value["lastResult"] is not None and type(value["lastResult"]) is not bool)):
+        return None
+    if any(type(value[key]) is not int or not 0 <= value[key] <= limit for key, limit in SETTLE_STATE_LIMITS.items()):
+        return None
+    return value
+
+
+def reject_json_constant(_value):
+    raise ValueError("nonstandard JSON constant")
+
+
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def valid_settle_document(value):
+    return (type(value) is str and len(value) == 32
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def parse_settle_probe_record(body):
+    if len(body) > SETTLE_PROBE_BODY_LIMIT or not body.isascii():
+        return None
+    try:
+        record = json.loads(body, parse_constant=reject_json_constant, object_pairs_hook=unique_json_object)
+    except (ValueError, RecursionError):
+        return None
+
+    fields = {"version", "kind", "document"}
+    if type(record) is not dict or type(record.get("version")) is not int or record["version"] != 1:
+        return None
+    kind = record.get("kind")
+    if kind == "document":
+        return record if set(record) == fields and valid_settle_document(record["document"]) else None
+    if kind != "probe" or set(record) != fields | {"outcome", "state", "gateResult"}:
+        return None
+    nonce, outcome, state, gate = (record[key] for key in ("document", "outcome", "state", "gateResult"))
+    if (nonce is not None and not valid_settle_document(nonce)) or (type(gate) is not bool and gate != "read-error"):
+        return None
+    if outcome == "snapshot":
+        return record if valid_settle_state(state) is not None else None
+    if outcome in ("absent", "non-callable", "getter-threw", "encoding-failed", "nullish") and state is None:
+        return record
+    return None
+
+
+def probe_settle_state(page):
+    """Observe one error-channel result; the configured timeout is not a wall-clock cap."""
+    from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
+    result = {"outcome": "unexpected-return", "errorFamily": None, "state": None, "elapsedMs": None}
+    started = None
+    try:
+        started = time.monotonic()
+    except Exception:
+        pass
+    try:
+        handle = page.wait_for_function(SETTLE_STATE_PROBE_JS, arg=SETTLE_STATE_PREFIX, timeout=1000, polling=100)
+    except PlaywrightTimeoutError:
+        result.update(outcome="timeout", errorFamily="playwright-timeout")
+    except PlaywrightError as exc:
+        result["errorFamily"] = "playwright-error"
+        try:
+            first = str(exc)[:384].split("\n", 1)[0].removeprefix("Page.wait_for_function: ").removeprefix("Error: ")
+            if not first.startswith(SETTLE_STATE_PREFIX):
+                result["outcome"] = "missing-marker"
+            else:
+                payload = first[len(SETTLE_STATE_PREFIX):]
+                if len(payload) > 256:
+                    result["outcome"] = "oversized-payload"
+                else:
+                    try:
+                        value = json.loads(payload, parse_constant=reject_json_constant)
+                    except (ValueError, RecursionError):
+                        result["outcome"] = "invalid-json"
+                    else:
+                        state = valid_settle_state(value)
+                        result.update(state=state, outcome=("unavailable" if value is None else
+                                                          "snapshot" if state is not None else "invalid-state"))
+        except Exception:
+            # Error formatting/inspection is diagnostic work too; never print it.
+            result.update(outcome="other-exception", errorFamily="diagnostic-exception", state=None)
+    except Exception:
+        result.update(outcome="other-exception", errorFamily="other-exception")
+    else:
+        try:
+            handle.dispose()
+        except Exception:
+            pass
+    finally:
+        try:
+            if started is not None:
+                result["elapsedMs"] = max(0, round((time.monotonic() - started) * 1000))
+        except Exception:
+            pass
+    return result
+
+
+def emit_diagnostic_line(line):
+    """Keep optional output out of buffers that CPython flushes again at shutdown."""
+    try:
+        try:
+            descriptor = sys.stdout.fileno()
+        except (AttributeError, OSError, ValueError):
+            # In-memory captures have no descriptor or interpreter shutdown buffer.
+            print(line, flush=True)
+        else:
+            # Preserve earlier ordinary output, then write without buffering this line.
+            sys.stdout.flush()
+            os.write(descriptor, (line + "\n").encode("utf-8"))
+    except Exception:
+        pass
+
+
+def emit_settle_probe(page, capture, diagnostic=None):
+    """A refused observation, formatting failure or closed output cannot change the gate."""
+    try:
+        if diagnostic is not None:
+            diagnostic.probe_phase = "during"
+        try:
+            result = probe_settle_state(page)
+        finally:
+            if diagnostic is not None:
+                diagnostic.end_probe_observation(page)
+        if diagnostic is not None:
+            try:
+                result["observation"] = diagnostic.probe_observation()
+            except Exception:
+                pass
+        emit_diagnostic_line(SETTLE_STATE_PREFIX + json.dumps(
+            {"capture": capture, **result}, separators=(",", ":"), allow_nan=False))
+    except Exception:
+        pass
+
+
+def valid_settle_blocker(value):
+    labels = {"type": "type", "tag": "targetTag", "target": "target"}
+    return (type(value) is dict and set(value) == {*labels, "state"} and value["state"] == "running"
+            and all(value[key] in ("", "other", *ANIMATION_LABELS[label]) for key, label in labels.items()))
+
+
+def valid_settle_marker(value):
+    if not (
+        type(value) is dict
+        and set(value) == {"event", "elapsedMs", "pollCount", "lastPollResult",
+                           "rafCompleted", "rafPending", "visibilityState"}
+        and value["event"] in SETTLE_MARKERS
+        and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and type(value["pollCount"]) is int and 0 <= value["pollCount"] <= 2**53 - 1
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
+        and (value["pollCount"] > 0 or value["event"] == "pageHide")
+        and value["visibilityState"] in ("hidden", "visible", "prerender")
+        and type(value["rafCompleted"]) is int and 0 <= value["rafCompleted"] <= 13
+        and type(value["rafPending"]) is bool
+    ):
+        return False
+    return value["pollCount"] == {"firstPoll": 1, "firstFramePoll": 2}.get(value["event"], value["pollCount"])
 
 
 def valid_settle_sample(value):
@@ -560,13 +931,14 @@ def valid_settle_sample(value):
             or (type(value) is str and value in ("Infinity", "-Infinity", "NaN"))
         )
 
-    def text(value):
-        return type(value) is str and len(value) <= 96
+    def label(field, value):
+        return value in ("", "other") or value in ANIMATION_LABELS[field]
 
     if type(value) is dict and set(value) == {"observerError"}:
         return value["observerError"] is True
     if not fields(value, (
-        "sample", "elapsedMs", "readyState", "visibilityState", "contentPresent", "loadingPresent",
+        "sample", "elapsedMs", "pollCount", "lastPollResult",
+        "readyState", "visibilityState", "contentPresent", "loadingPresent",
         "adminShellPresent", "detailPresent", "headingPresent", "predicate", "rafCompleted", "rafPending",
         "animationCount", "animationsDropped", "animations",
     )):
@@ -574,6 +946,8 @@ def valid_settle_sample(value):
     if not (
         integer(value["sample"], 1, 13)
         and type(value["elapsedMs"]) in (int, float) and 0 <= value["elapsedMs"] <= 12000
+        and integer(value["pollCount"])
+        and (type(value["lastPollResult"]) is bool if value["pollCount"] else value["lastPollResult"] is None)
         and value["readyState"] in ("loading", "interactive", "complete")
         and value["visibilityState"] in ("hidden", "visible", "prerender")
         and integer(value["rafCompleted"], 0, 13)
@@ -596,12 +970,15 @@ def valid_settle_sample(value):
             return False
         if not (integer(animation["id"], 1) and type(animation["pending"]) is bool
                 and animation["playState"] in ("idle", "running", "paused", "finished")
-                and all(text(animation[key]) for key in ("type", "animationName", "transitionProperty"))
+                and all(label(key, animation[key]) for key in ("type", "animationName", "transitionProperty"))
                 and all(number(animation[key], nullable=True) for key in ("currentTime", "startTime", "timelineTime"))
                 and number(animation["playbackRate"])):
             return False
         target = animation["target"]
-        if not fields(target, ("tag", "id", "classes", "pseudoElement")) or not all(text(item) for item in target.values()):
+        if not (fields(target, ("id", "label", "pseudoElement"))
+                and (target["id"] is None or integer(target["id"], 1))
+                and label("target", target["label"])
+                and label("pseudoElement", target["pseudoElement"])):
             return False
         timing = animation["timing"]
         # Undefined computed-timing properties are omitted by JSON.stringify; a null
@@ -626,10 +1003,22 @@ class SettleDiagnostic:
         self.started = time.monotonic()
         self.closed = False
         self.events: list[dict] = []
+        self.markers: dict[str, dict] = {}
+        self.first_blocker: dict | None = None
+        self.settle_state: dict | None = None
         self.samples: list[dict] = []
         self.stages: list[dict] = []
         self.current_stage = "created"
         self.dropped = {"events": 0, "samples": 0, "observerErrors": 0}
+        self.probe_phase = "before"
+        self.first_document = None
+        self.probe_record = None
+        self.probe_rejected = 0
+        self.probe_lifecycle = {
+            phase: {"close": 0, "crash": 0, "mainDocumentNavigation": 0}
+            for phase in ("before", "during")
+        }
+        self.navigation_listener = lambda frame: self.observe_navigation(page, frame)
         try:
             for category in ("request", "requestfinished", "requestfailed"):
                 page.on(category, lambda req, category=category: self.observe(category, req))
@@ -641,11 +1030,55 @@ class SettleDiagnostic:
             page.on("load", lambda: self.observe("load"))
             page.on("console", self.console)
             page.add_init_script(SETTLE_DIAGNOSTIC_JS)
+            page.on("framenavigated", self.navigation_listener)
         except Exception:  # observation setup must not replace the original result
             self.dropped["observerErrors"] += 1
 
+    def observe_navigation(self, page, frame):
+        try:
+            if frame == page.main_frame:
+                self.observe_probe_lifecycle("mainDocumentNavigation")
+        except Exception:
+            pass
+
+    def observe_probe_lifecycle(self, category):
+        if self.probe_phase is not None:
+            counts = self.probe_lifecycle[self.probe_phase]
+            counts[category] = min(counts[category] + 1, SETTLE_PROBE_COUNT_LIMIT)
+
+    def end_probe_observation(self, page):
+        self.probe_phase = None
+        try:
+            page.remove_listener("framenavigated", self.navigation_listener)
+        except Exception:
+            pass
+
+    def receive_probe_record(self, body):
+        record = parse_settle_probe_record(body)
+        if record is not None:
+            if record["kind"] == "document" and self.probe_phase == "before" and self.first_document is None:
+                self.first_document = record["document"]
+                return
+            if record["kind"] == "probe" and self.probe_phase == "during" and self.probe_record is None:
+                self.probe_record = record
+                return
+        self.probe_rejected = min(self.probe_rejected + 1, SETTLE_PROBE_COUNT_LIMIT)
+
+    def probe_observation(self):
+        console = None
+        document_match = "unknown"
+        if self.probe_record is not None:
+            nonce = self.probe_record["document"]
+            if nonce is not None and self.first_document is not None:
+                document_match = "same" if self.first_document == nonce else "different"
+            console = {key: self.probe_record[key] for key in ("outcome", "state", "gateResult")}
+        return {"console": console, "documentMatch": document_match,
+                "lifecycle": self.probe_lifecycle, "rejected": self.probe_rejected}
+
     def observe(self, category, request=None, response=None):
         try:
+            if category in ("close", "crash"):
+                self.observe_probe_lifecycle(category)
             if self.closed or time.monotonic() - self.started > 12:
                 return
             event = {"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)}
@@ -665,23 +1098,45 @@ class SettleDiagnostic:
 
     def console(self, message):
         try:
-            if self.closed or time.monotonic() - self.started > 12:
+            # Only the receipt channel remains open during the failure probe.
+            receiving = self.probe_phase == "during" or (
+                self.probe_phase == "before" and self.current_stage == "settle-start"
+            )
+            if receiving and message.type == "debug":
+                text = message.text
+                if text.startswith(SETTLE_PROBE_PREFIX):
+                    offset = len(SETTLE_PROBE_PREFIX)
+                    self.receive_probe_record(text[offset:offset + SETTLE_PROBE_BODY_LIMIT + 1])
+                    return
+            if self.probe_phase == "during" or self.closed or time.monotonic() - self.started > 12:
                 return
-            prefix = "WEBKIT_SETTLE_SAMPLE "
-            if message.type == "debug" and message.text.startswith(prefix):
-                # The observer's payload is fixed-schema, but reject oversized/extra records.
-                if len(message.text) > 24576 or len(self.samples) == 13:
+            if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
+                prefix, _, body = message.text.partition(" ")
+                if prefix not in ("WEBKIT_SETTLE_MARKER", "WEBKIT_SETTLE_SAMPLE", "WEBKIT_SETTLE_BLOCKER"):
+                    return
+                is_sample = prefix == "WEBKIT_SETTLE_SAMPLE"
+                if len(body) > (24576 if is_sample else 512) or (is_sample and len(self.samples) == 13):
                     self.dropped["samples"] += 1
                     return
                 try:
-                    sample = json.loads(message.text[len(prefix):])
+                    sample = json.loads(body)
                 except ValueError:
                     self.dropped["samples"] += 1
                     return
-                if not valid_settle_sample(sample):
+                if prefix == "WEBKIT_SETTLE_BLOCKER":
+                    if self.first_blocker is None and valid_settle_blocker(sample):
+                        self.first_blocker = sample
+                    else:
+                        self.dropped["samples"] += 1
+                elif prefix == "WEBKIT_SETTLE_MARKER":
+                    if not valid_settle_marker(sample) or sample["event"] in self.markers:
+                        self.dropped["samples"] += 1
+                        return
+                    self.markers[sample.pop("event")] = sample
+                elif valid_settle_sample(sample):
+                    self.samples.append(sample)
+                else:
                     self.dropped["samples"] += 1
-                    return
-                self.samples.append(sample)
             elif message.type in ("warning", "error"):
                 self.observe("console-" + message.type)  # no arbitrary console text
         except Exception:
@@ -690,7 +1145,7 @@ class SettleDiagnostic:
     def stage(self, category):
         try:
             self.current_stage = category
-            if len(self.stages) < 6:
+            if len(self.stages) < 8:
                 self.stages.append({"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)})
         except Exception:
             self.dropped["observerErrors"] += 1
@@ -699,14 +1154,16 @@ class SettleDiagnostic:
         payload = {"route": self.path, "viewport": self.viewport,
                    "stage": self.current_stage,
                    "outcome": outcome, "pageErrorCount": page_error_count,
-                   "events": self.events[:], "samples": self.samples[:], "stages": self.stages[:],
+                   "events": self.events[:], **{event: self.markers.get(event) for event in SETTLE_MARKERS},
+                   "firstBlocker": self.first_blocker, "settleState": self.settle_state,
+                   "samples": self.samples[:], "stages": self.stages[:],
                    "dropped": self.dropped.copy(), "truncated": any(self.dropped.values())}
         while True:
             encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
             if len(encoded) <= 32768:  # ASCII encoding makes this a byte limit too
                 return encoded
             payload["truncated"] = True
-            # Preserve the newest animation state and all bounded stage/event observations.
+            # Keep the newest timer state. The separate markers survive trimming.
             if payload["samples"]:
                 payload["samples"].pop(0)
                 payload["dropped"]["samples"] += 1
@@ -715,15 +1172,15 @@ class SettleDiagnostic:
 
     def emit(self, outcome, page_error_count):
         try:
-            print("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
+            emit_diagnostic_line("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
         except Exception:
-            print('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
+            emit_diagnostic_line('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
 
     def finish(self, page_error_count, failed=False):
         # Successful cells are quiet except the original detail control and the actual
-        # hosted failing list cell. Every failed WebKit cell retains its own evidence.
+        # hosted failing cells. Every failed WebKit cell retains its own evidence.
         if failed or (self.path, self.viewport["width"]) in (
-            ("/admin/customers/cus_001", 320), ("/admin/customers", 768),
+            ("/admin/customers/cus_001", 320), ("/admin/customers", 768), ("/blog", 375),
         ):
             self.emit("assertion-failed" if failed else "settled", page_error_count)
 
@@ -1256,7 +1713,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        from playwright.sync_api import sync_playwright
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
     except ImportError:
         return skip_or_fail("Playwright not installed (pip install playwright && playwright install chromium webkit)")
 
@@ -1285,6 +1742,7 @@ def main() -> int:
 
     failures: list[str] = []
     checks = 0
+    healthy_probe_attempted = False
 
     def bump() -> None:
         nonlocal checks
@@ -1335,13 +1793,23 @@ def main() -> int:
                         if diagnostic:
                             diagnostic.stage("visible-content-end")
                             diagnostic.stage("settle-start")
-                        page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
+                        page.wait_for_function(
+                            OBSERVED_SETTLE_JS if diagnostic else SETTLE_JS, timeout=10000,
+                        )  # lazy chunk painted, nothing mid-transition
                         if diagnostic:
                             diagnostic.stage("settle-end")
                     except Exception as exc:  # noqa: BLE001
+                        print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}", flush=True)
                         if diagnostic:
-                            diagnostic.emit("infra", len(errors))
-                        print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")
+                            try:
+                                diagnostic.emit("infra", len(errors))
+                            except Exception:
+                                pass
+                        if diagnostic:
+                            if diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
+                                emit_settle_probe(page, "after-timeout", diagnostic)
+                            else:
+                                diagnostic.end_probe_observation(page)
                         return 2
 
                     if diagnostic:
@@ -1349,6 +1817,8 @@ def main() -> int:
                     try:
                         failures_before = len(failures)
                         info = page.evaluate(PAGE_JS)
+                        if diagnostic:
+                            diagnostic.settle_state = valid_settle_state(info.get("settleState"))
                         tag = f"{args.engine} {width:>4}px {path}"
 
                         checks += 1
@@ -1460,7 +1930,11 @@ def main() -> int:
                         raise
                     if diagnostic:
                         diagnostic.stage("geometry-end")
+                        diagnostic.end_probe_observation(page)
                         diagnostic.finish(len(errors), len(failures) > failures_before)
+                        if not healthy_probe_attempted and len(failures) == failures_before:
+                            healthy_probe_attempted = True
+                            emit_settle_probe(page, "healthy-control")
                     page.close()
                 context.close()
 

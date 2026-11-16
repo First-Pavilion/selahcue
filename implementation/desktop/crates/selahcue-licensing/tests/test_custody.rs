@@ -26,7 +26,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a sweep cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 9;
+const EXPECTED_SRC_MODULES: usize = 11;
 
 /// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
 /// quietly disappear from it.
@@ -34,16 +34,18 @@ const SWEPT_RENDERINGS: usize = 10;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
-/// Each one hands out a raw credential. All three are "attach this to an outbound request",
+/// Each one hands out a raw credential. All five are "attach this to an outbound request",
 /// and none may be a formatter:
 ///
 /// - `client.rs` — the password into the sign-in request body
-/// - `client.rs` — the enrollment key into the activation request body
+/// - `client.rs` — the enrollment key into the legacy and bound activation bodies
 /// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
+/// - `client.rs` — the device token into the Authorization header for manifest GET
+///   and status POST via their shared device bearer helper.
 ///
 /// Pinned so adding one is a decision made here, in the open.
-const SANCTIONED_EXPOSE_SITES: usize = 3;
+const SANCTIONED_EXPOSE_SITES: usize = 5;
 
 /// A realistic device token: the server's format is `SC-DEV-` + 8 groups of 4.
 const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
@@ -437,8 +439,20 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "must be String to serialize; hand-redacted Debug on ActivationRequest",
         ),
         (
+            "license_key: Option<&'a str>",
+            "borrowed only for bound wire serialization on a non-Debug request",
+        ),
+        (
+            "idempotency_key: &'a str",
+            "a non-secret frozen operation nonce",
+        ),
+        (
             "idempotency_key: String",
             "a client-chosen correlation id, deliberately visible in logs",
+        ),
+        (
+            "token_expires_at: String",
+            "validated RFC3339 expiry metadata for an online status response",
         ),
         ("key_id: String", "names a PUBLIC key; not secret"),
         (
@@ -617,64 +631,21 @@ fn crate_src_dir() -> PathBuf {
 }
 
 #[test]
-fn no_filesystem_primitive_is_reachable_from_this_crate() {
-    // A lexical scan of THIS crate's own `src/` for an enumerated set of spellings, in the
-    // spirit of `scripts/import_guards.sh` §14. Worth having: it catches the plain forms,
-    // and inspecting a running install would only ever prove the token was absent on the day
-    // the test ran.
-    //
-    // What it does NOT do — stated here because an earlier version of this comment claimed
-    // it "proves the code has no way to put it there", and the same false claim in
-    // `trust.rs` was a review finding. Security review demonstrated three compiling loaders
-    // that pass this guard green: `use std::{env as source};` (the brace breaks the
-    // substring), `std :: env :: var(..)` (whitespace does the same), and a helper placed in
-    // the path dependency `selahcue-cloud` and called from here, which names no forbidden
-    // token in this crate's `src/` at all. No name-scan can close that: reachability is
-    // transitive through the dependency graph and the spellings are unbounded. Widening the
-    // list moves the boundary; it never closes it.
-    //
-    // The test's NAME overstates for the same reason — "reachable" implies transitivity this
-    // cannot see. It is kept as-is deliberately, so the review trail that cites it stays
-    // legible; renaming it to something like `..._is_named_in_this_crates_own_source` is
-    // worth doing in the ticket that next touches this file.
-    //
-    // The effect-level control is the byte scan of the shipped release artefact —
-    // `scripts/dev_key_not_in_release.sh`, which ships and RUNS TODAY in `make ci` and CI.
-    // An earlier version of this comment called it an obligation deferred onto 86ak5mn1d /
-    // 86ak5mn1t; it has not been one for some time, and `TrustedKeys::bundled` says so.
-    //
-    // It is NOT a superset of this guard and must not be cited as one. It searches the
-    // release rlib for the LITERAL key bytes, so it closes "the dev key is COMPILED INTO
-    // release" and is blind to "a release binary OBTAINS the key at runtime" — which is
-    // precisely the threat this guard names above and also cannot catch. Handing that threat
-    // on to the byte scan as "the real guarantee" is what turned two honest admissions into
-    // a false claim: QA built the loader that BOTH of them miss (key derived from the seed
-    // file's own decimal form, env read placed in `selahcue-cloud`, behind a runtime trigger)
-    // and every control in the repository passed it green. The three env-spelling
-    // counterexamples named above are security review's — two separate demonstrations, kept
-    // apart so the review trail stays traceable.
-    //
-    // What actually holds this line is the review rule in `TrustedKeys::insert`: no config
-    // loader in this crate. That is enforced by a reviewer, deliberately — writing one is a
-    // considered act, not a slip, and no name-scan or byte-scan is going to catch it.
-    //
-    // Comment lines are filtered out because the module docs deliberately NAME these
-    // primitives to explain why they are absent, and a guard silenced by deleting a comment
-    // would be measuring the wrong thing.
-    let forbidden = [
+fn filesystem_primitives_are_confined_to_the_entitlement_cache() {
+    // Only cache.rs can persist the typed, verified entitlement envelope. Keep filesystem
+    // primitives out of credential and trust modules. Process and environment access
+    // remain checked throughout the crate, including cache.rs. This lexical guard covers
+    // direct spellings, while review covers indirect dependencies and runtime key loaders.
+    let filesystem = [
         "std::fs",
         "File::open",
         "OpenOptions",
         "fs::write",
         "fs::read",
+    ];
+    let forbidden = [
         "std::process",
         "Command::new",
-        // Environment access, added after review found `trust.rs` CLAIMING this guard
-        // covered it when it did not. The claim was not idle: an env-var trusted-key loader
-        // would defeat the release exclusion **at runtime, inside a release binary, with no
-        // `cfg` involved at all** — the `#[cfg(debug_assertions)]` gates would be perfectly
-        // intact and perfectly irrelevant. A no-op today because `src/` is otherwise
-        // env-free, which is exactly when it is cheapest to close.
         "std::env",
         "env::var",
         "env!(",
@@ -699,23 +670,29 @@ fn no_filesystem_primitive_is_reachable_from_this_crate() {
         sources.len()
     );
 
+    let mut saw_cache = false;
     for (path, body) in &sources {
+        let cache_module = path.file_name().is_some_and(|name| name == "cache.rs");
+        saw_cache |= cache_module;
         for (lineno, line) in body.lines().enumerate() {
             let code = line.trim_start();
             if code.starts_with("//") || code.starts_with("*") {
                 continue;
             }
-            for pattern in forbidden {
+            for pattern in forbidden
+                .iter()
+                .chain(filesystem.iter().filter(|_| !cache_module))
+            {
                 assert!(
                     !code.contains(pattern),
-                    "{}:{} names a filesystem/process primitive ({pattern}); the device \
-                     token must never be writable to a plaintext file from this crate\n  {code}",
+                    "{}:{} names forbidden primitive ({pattern})\n  {code}",
                     path.display(),
                     lineno + 1
                 );
             }
         }
     }
+    assert!(saw_cache, "expected to scan the entitlement cache module");
 }
 
 #[test]

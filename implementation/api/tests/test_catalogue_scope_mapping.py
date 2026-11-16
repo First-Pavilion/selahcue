@@ -67,20 +67,21 @@ def _seed_pre_catalogue_estate():
     """Licences as they existed before this catalogue, with no catalogue rows of their own."""
     from selahcue_api.apps.accounts.models import CustomerOrg
 
-    org = CustomerOrg.objects.create(
-        name="Mapping Church",
-        slug="mapping-church",
-        primary_contact_email="ops@mapping.example",
-        country="NG",
-        timezone="Africa/Lagos",
-        plan="TRIAL",
-        seat_limit=30,
-        created_by_actor_id="staff_ops_1",
-        idempotency_key="mapping-org",
-    )
     now = timezone.now().replace(microsecond=0)
     keys = {}
     for index, (feature_scope, device_limit) in enumerate(PRE_CATALOGUE_LICENSES):
+        # Current manifests resolve the selected eligible key for each church.
+        org = CustomerOrg.objects.create(
+            name=f"Mapping Church {index}",
+            slug=f"mapping-church-{index}",
+            primary_contact_email="ops@mapping.example",
+            country="NG",
+            timezone="Africa/Lagos",
+            plan="TRIAL",
+            seat_limit=30,
+            created_by_actor_id="staff_ops_1",
+            idempotency_key=f"mapping-org-{index}",
+        )
         keys[feature_scope] = AppLicenseKey.objects.create(
             customer=org,
             key_type=LicenseKeyType.PAID,

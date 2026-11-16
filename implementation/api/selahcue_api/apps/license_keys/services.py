@@ -293,10 +293,7 @@ def generate_license_key(
         # a racing original, or is refused by a check below, has spent one hash for nothing;
         # that is a rare staff action and a cheaper trade than holding the lock. A plain replay
         # (the look above) returns before any of this runs.
-        full_key = _generate_full_key(key_type)
-        prefix, suffix, masked_key = _mask(full_key)
-        secret_hash = make_password(full_key)
-        secret_fingerprint = _fingerprint(full_key)
+        credential = _prepare_license_credential(key_type)
 
         # Locks the org row for the rest of this transaction (one key per org, below). The
         # idempotent replay above deliberately runs BEFORE the overlap check: a retry of an
@@ -317,135 +314,167 @@ def generate_license_key(
         if customer.status == CustomerStatus.ARCHIVED:
             raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
-        # A control character cannot name a plan, so this takes the SAME refusal an ordinary
-        # unknown code takes rather than inventing a third outcome. Skipping the query is the
-        # whole fix: on Postgres `filter(code="PRO\x00")` raises an unmapped `DataError` that
-        # escapes as a masked generic failure, while on SQLite the identical call already
-        # returns None and lands exactly here. This makes Postgres agree with SQLite, which is
-        # the behaviour that was already correct.
-        if has_control_characters(plan_code):
-            logger.warning(
-                "refused to issue a licence for customer %s: plan_code contains a control "
-                "character, so it cannot name a catalogue plan. Refused as an unknown plan. "
-                "Requested by actor %s.",
-                data.customer_id,
-                staff.actor_id,
-            )
-            plan = None
-        else:
-            plan = Plan.objects.filter(code=plan_code).first()
-        if plan is None:
-            raise SafeAPIError(
-                ErrorCode.NOT_FOUND,
-                f"No catalogue plan has the code {plan_code!r}. Issue the licence on a plan "
-                "that exists, or add the plan to the catalogue first.",
-            )
-
-        # The migrated fallback has the lowest rank; an explicit selection is valid.
-
-        # 86ak5mn0m: the key's device limit is the PLAN's seat count, copied here once and from
-        # then on the key's own field (the number activation enforces, the manifest publishes
-        # and the refresh endpoint reports). A plan that cannot express "this many seats" is
-        # refused rather than defaulted: a made-up number is a limit nobody chose.
-        device_limit = plan_device_instances_for_issuance(plan)
-        if device_limit is None:
-            logger.warning(
-                "refused to issue a licence for customer %s on plan %r (%s): the plan has no "
-                "usable `device_instances` value (absent, unlimited, below 1, or the dimension "
-                "is switched off), so the licence would have no seat limit. Set the plan's "
-                "seat count in the catalogue first. Requested by actor %s.",
-                data.customer_id,
-                plan.code,
-                plan.display_name,
-                staff.actor_id,
-            )
-            raise SafeAPIError(
-                ErrorCode.POLICY_DENIED,
-                f"Plan {plan.code!r} ({plan.display_name}) has no usable device-instance "
-                "count: its `device_instances` grant is missing, unlimited or below 1. A "
-                "licence takes its device limit from its plan, so set a seat count on the "
-                "plan in the catalogue and issue again.",
-            )
-
-        # At most one valid key per org (86ak5mn0m). The org row is locked above, so two
-        # simultaneous issuances to one org queue here and the second sees the first's key.
-        require_no_overlapping_license_key(
-            customer, starts_at=starts_at, expires_at=expires_at, requested_by=staff.actor_id
+        return _issue_license_key(
+            customer, staff, data, key_type=key_type, plan_code=plan_code, starts_at=starts_at,
+            expires_at=expires_at, idempotency_key=idempotency_key, reason=reason,
+            credential=credential,
         )
 
-        license_key = AppLicenseKey(
-            customer=customer,
-            key_type=key_type,
-            status=LicenseKeyStatus.ISSUED,
-            key_prefix=prefix,
-            key_suffix=suffix,
-            masked_key=masked_key,
-            secret_hash=secret_hash,
-            secret_fingerprint=secret_fingerprint,
-            starts_at=starts_at,
-            expires_at=expires_at,
-            timezone=data.timezone.strip() or "UTC",
-            feature_scope=data.feature_scope.strip().upper(),
-            seat_limit=data.seat_limit,
-            device_limit=device_limit,
-            territory=data.territory.strip().upper(),
-            generated_by_actor_id=staff.actor_id,
-            generated_reason=reason,
-            idempotency_key=idempotency_key,
-        )
-        _clean_license_key(license_key)
-        # Concurrency-safe idempotency: a racing call with the same (actor, idempotency_key) can
-        # pass the check above; the unique constraint rejects the loser's INSERT. Catch it in a
-        # savepoint and return the winner's key as an idempotent replay (full_key=None) rather than
-        # a spurious internal error. (Mirrors `activate_device`.)
-        try:
-            with transaction.atomic():
-                license_key.save()
-        except IntegrityError:
-            existing = _issued_by(staff.actor_id, idempotency_key)
-            if existing is not None:
-                return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
-            raise _validation_error()
 
-        # Bind the licence to the plan in the SAME transaction as the licence itself, so a
-        # licence can never exist without one. An assignment is what `resolve_plan_for_license`
-        # consults first, so this — not `feature_scope` — is what the licence now grants.
-        # The accountability columns are the issuing staff's own: whoever issued the licence
-        # is who chose the plan, and the database refuses the row without them.
-        LicensePlanAssignment.objects.create(
-            license_key=license_key,
-            plan=plan,
-            assigned_by_actor_id=staff.actor_id,
-            reason=reason,
-            idempotency_key=idempotency_key,
+def _prepare_license_credential(key_type: LicenseKeyType) -> tuple[str, str]:
+    full_key = _generate_full_key(key_type)
+    return full_key, make_password(full_key)
+
+
+def _issue_license_key(
+    customer: CustomerOrg,
+    actor: ActorContext,
+    data: GenerateLicenseKeyData,
+    *,
+    key_type: LicenseKeyType,
+    plan_code: str,
+    starts_at: datetime,
+    expires_at: datetime,
+    idempotency_key: str,
+    reason: str,
+    credential: tuple[str, str],
+    source_surface: str = "admin_graphql",
+) -> GenerateLicenseKeyResult:
+    """Issue under the caller's org lock and authorization."""
+    full_key, secret_hash = credential
+    prefix, suffix, masked_key = _mask(full_key)
+    secret_fingerprint = _fingerprint(full_key)
+
+    # A control character cannot name a plan, so this takes the SAME refusal an ordinary
+    # unknown code takes rather than inventing a third outcome. Skipping the query is the
+    # whole fix: on Postgres `filter(code="PRO\x00")` raises an unmapped `DataError` that
+    # escapes as a masked generic failure, while on SQLite the identical call already
+    # returns None and lands exactly here. This makes Postgres agree with SQLite, which is
+    # the behaviour that was already correct.
+    if has_control_characters(plan_code):
+        logger.warning(
+            "refused to issue a licence for customer %s: plan_code contains a control "
+            "character, so it cannot name a catalogue plan. Refused as an unknown plan. "
+            "Requested by actor %s.",
+            data.customer_id,
+            actor.actor_id,
+        )
+        plan = None
+    else:
+        plan = Plan.objects.filter(code=plan_code).first()
+    if plan is None:
+        raise SafeAPIError(
+            ErrorCode.NOT_FOUND,
+            f"No catalogue plan has the code {plan_code!r}. Issue the licence on a plan "
+            "that exists, or add the plan to the catalogue first.",
         )
 
-        record_audit_event(
-            staff,
-            action="license_key.generated",
-            target_type="app_license_key",
-            target_id=str(license_key.id),
-            request_id=idempotency_key,
-            reason=reason,
-            after={
-                "customer_id": str(customer.id),
-                "key_type": license_key.key_type,
-                "status": license_key.status,
-                "key_prefix": license_key.key_prefix,
-                "key_suffix": license_key.key_suffix,
-                "masked_key": license_key.masked_key,
-                "feature_scope": license_key.feature_scope,
-                # What the licence actually grants, beside the label that no longer decides
-                # it — so the audit row says which plan was chosen at issuance.
-                "plan_code": plan.code,
-                "starts_at": license_key.starts_at.isoformat(),
-                "expires_at": license_key.expires_at.isoformat(),
-                "seat_limit": license_key.seat_limit,
-                "device_limit": license_key.device_limit,
-                "territory": license_key.territory,
-            },
+    # The migrated fallback has the lowest rank; an explicit selection is valid.
+
+    # 86ak5mn0m: the key's device limit is the PLAN's seat count, copied here once and from
+    # then on the key's own field (the number activation enforces, the manifest publishes
+    # and the refresh endpoint reports). A plan that cannot express "this many seats" is
+    # refused rather than defaulted: a made-up number is a limit nobody chose.
+    device_limit = plan_device_instances_for_issuance(plan)
+    if device_limit is None:
+        logger.warning(
+            "refused to issue a licence for customer %s on plan %r (%s): the plan has no "
+            "usable `device_instances` value (absent, unlimited, below 1, or the dimension "
+            "is switched off), so the licence would have no seat limit. Set the plan's "
+            "seat count in the catalogue first. Requested by actor %s.",
+            data.customer_id,
+            plan.code,
+            plan.display_name,
+            actor.actor_id,
         )
-        return GenerateLicenseKeyResult(license_key=license_key, full_key=full_key, created=True)
+        raise SafeAPIError(
+            ErrorCode.POLICY_DENIED,
+            f"Plan {plan.code!r} ({plan.display_name}) has no usable device-instance "
+            "count: its `device_instances` grant is missing, unlimited or below 1. A "
+            "licence takes its device limit from its plan, so set a seat count on the "
+            "plan in the catalogue and issue again.",
+        )
+
+    # At most one valid key per org (86ak5mn0m). The org row is locked above, so two
+    # simultaneous issuances to one org queue here and the second sees the first's key.
+    require_no_overlapping_license_key(
+        customer, starts_at=starts_at, expires_at=expires_at, requested_by=actor.actor_id
+    )
+
+    license_key = AppLicenseKey(
+        customer=customer,
+        key_type=key_type,
+        status=LicenseKeyStatus.ISSUED,
+        key_prefix=prefix,
+        key_suffix=suffix,
+        masked_key=masked_key,
+        secret_hash=secret_hash,
+        secret_fingerprint=secret_fingerprint,
+        starts_at=starts_at,
+        expires_at=expires_at,
+        timezone=data.timezone.strip() or "UTC",
+        feature_scope=data.feature_scope.strip().upper(),
+        seat_limit=data.seat_limit,
+        device_limit=device_limit,
+        territory=data.territory.strip().upper(),
+        generated_by_actor_id=actor.actor_id,
+        generated_reason=reason,
+        idempotency_key=idempotency_key,
+    )
+    _clean_license_key(license_key)
+    # Concurrency-safe idempotency: a racing call with the same (actor, idempotency_key) can
+    # pass the check above; the unique constraint rejects the loser's INSERT. Catch it in a
+    # savepoint and return the winner's key as an idempotent replay (full_key=None) rather than
+    # a spurious internal error. (Mirrors `activate_device`.)
+    try:
+        with transaction.atomic():
+            license_key.save()
+    except IntegrityError:
+        existing = _issued_by(actor.actor_id, idempotency_key)
+        if existing is not None:
+            return GenerateLicenseKeyResult(license_key=existing, full_key=None, created=False)
+        raise _validation_error()
+
+    # Bind the licence to the plan in the SAME transaction as the licence itself, so a
+    # licence can never exist without one. An assignment is what `resolve_plan_for_license`
+    # consults first, so this — not `feature_scope` — is what the licence now grants.
+    # The accountability columns are the issuing staff's own: whoever issued the licence
+    # is who chose the plan, and the database refuses the row without them.
+    LicensePlanAssignment.objects.create(
+        license_key=license_key,
+        plan=plan,
+        assigned_by_actor_id=actor.actor_id,
+        reason=reason,
+        idempotency_key=idempotency_key,
+    )
+
+    record_audit_event(
+        actor,
+        action="license_key.generated",
+        target_type="app_license_key",
+        target_id=str(license_key.id),
+        request_id=idempotency_key,
+        source_surface=source_surface,
+        reason=reason,
+        after={
+            "customer_id": str(customer.id),
+            "key_type": license_key.key_type,
+            "status": license_key.status,
+            "key_prefix": license_key.key_prefix,
+            "key_suffix": license_key.key_suffix,
+            "masked_key": license_key.masked_key,
+            "feature_scope": license_key.feature_scope,
+            # What the licence actually grants, beside the label that no longer decides
+            # it — so the audit row says which plan was chosen at issuance.
+            "plan_code": plan.code,
+            "starts_at": license_key.starts_at.isoformat(),
+            "expires_at": license_key.expires_at.isoformat(),
+            "seat_limit": license_key.seat_limit,
+            "device_limit": license_key.device_limit,
+            "territory": license_key.territory,
+        },
+    )
+    return GenerateLicenseKeyResult(license_key=license_key, full_key=full_key, created=True)
 
 
 # --- Suspend / reinstate (86ak5mn0c: FR-504, FR-510, FLOW-506; D3 / DEC-010) -----------------

@@ -30,4 +30,4 @@ COPY . .
 RUN uv sync --locked --extra dev --group build --offline --no-build-isolation --no-cache --no-python-downloads
 
 EXPOSE 8000
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+CMD ["gunicorn", "--config", "gunicorn.conf.py", "selahcue_api.wsgi:application"]

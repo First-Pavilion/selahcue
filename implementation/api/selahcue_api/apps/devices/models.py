@@ -100,3 +100,28 @@ class DeviceToken(models.Model):
 
     def __str__(self) -> str:
         return self.masked_token
+
+
+class DeviceActivationOperation(models.Model):
+    """Completed native activation. The key never becomes executable again."""
+
+    class Outcome(models.TextChoices):
+        CREATED = "CREATED", "Created"
+        REMINTED = "REMINTED", "Reminted"
+        EXISTING = "EXISTING", "Existing"
+
+    operation_key = models.CharField(max_length=32, unique=True)
+    organization = models.ForeignKey("selahcue_accounts.CustomerOrg", on_delete=models.PROTECT)
+    license_key = models.ForeignKey("selahcue_license_keys.AppLicenseKey", on_delete=models.PROTECT)
+    device = models.ForeignKey(Device, on_delete=models.PROTECT)
+    # Migration 0004 installs ON DELETE SET NULL in the database. DO_NOTHING
+    # keeps Django's collector out of this relation; identity FKs retain PROTECT.
+    result_token = models.ForeignKey(DeviceToken, null=True, on_delete=models.DO_NOTHING)
+    issued_token_pk = models.PositiveBigIntegerField()
+    auth_path = models.CharField(max_length=16)
+    mode = models.CharField(max_length=7)
+    expected_device_public_id = models.CharField(max_length=36, null=True)
+    request_digest = models.CharField(max_length=64)
+    outcome = models.CharField(max_length=8, choices=Outcome.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField()

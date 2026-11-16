@@ -4,6 +4,8 @@ import strawberry
 from django.conf import settings
 from strawberry.extensions import DisableIntrospection
 
+from selahcue_api.apps.catalogue.admin import read_admin_catalogue, set_admin_price, set_admin_grant, rename_admin_plan, require_admin_catalogue_permission
+from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.accounts.services import (
     CreateCustomerData,
@@ -244,8 +246,95 @@ def _is_replay(result) -> bool:
     return (not result.changed) and result.audit_event is not None
 
 
+
+@strawberry.type
+class AdminPlanGrant:
+    key: str
+    raw_value: str
+
+
+@strawberry.type
+class AdminPlanPrice:
+    amount_minor: str | None
+    currency: str
+    interval: str
+    effective_from: str
+
+
+@strawberry.type
+class AdminPlan:
+    code: str
+    name: str
+    grants: list[AdminPlanGrant]
+    prices: list[AdminPlanPrice]
+
+
+@strawberry.type
+class AdminPlanCatalogue:
+    revision: int
+    plans: list[AdminPlan]
+
+
+@strawberry.input
+class AdminSetPlanGrantInput:
+    plan_code: str
+    dimension_key: str
+    raw_value: str
+    expected_revision: int
+    reason: str
+    idempotency_key: str
+
+
+@strawberry.input
+class AdminRenamePlanInput:
+    plan_code: str
+    name: str
+    expected_revision: int
+    reason: str
+    idempotency_key: str
+
+
+@strawberry.type
+class AdminRenamePlanPayload:
+    revision: int
+    name: str
+    replayed: bool
+
+
+@strawberry.input
+class AdminSetPlanPriceInput:
+    plan_code: str
+    currency: str
+    interval: str
+    # Decimal string preserves the full database minor-unit integer range.
+    amount_minor: str | None
+    expected_revision: int
+    reason: str
+    idempotency_key: str
+    effective_from: datetime | None = None
+
+
+@strawberry.type
+class AdminSetPlanGrantPayload:
+    revision: int
+    raw_value: str
+    replayed: bool
+
+
+@strawberry.type
+class AdminSetPlanPricePayload:
+    revision: int
+    amount_minor: str | None
+    replayed: bool
+
+
 @strawberry.type
 class AdminQuery:
+    @strawberry.field
+    def admin_plan_catalogue(self, info: strawberry.Info) -> AdminPlanCatalogue:
+        result = read_admin_catalogue(actor_from_info(info))
+        return AdminPlanCatalogue(revision=result['revision'], plans=[AdminPlan(code=p['code'],name=p['name'],grants=[AdminPlanGrant(**g) for g in p['grants']],prices=[AdminPlanPrice(**v) for v in p['prices']]) for p in result['plans']])
+
     @strawberry.field
     def admin_health(self, info: strawberry.Info) -> AdminHealth:
         require_staff_permission(actor_from_info(info), StaffPermission.VIEW_PLATFORM_HEALTH)
@@ -270,6 +359,30 @@ class AdminQuery:
 
 @strawberry.type
 class AdminMutation:
+    @strawberry.mutation
+    def admin_rename_plan(self, info: strawberry.Info, input: AdminRenamePlanInput) -> AdminRenamePlanPayload:
+        result=rename_admin_plan(actor_from_info(info), **vars(input))
+        return AdminRenamePlanPayload(revision=result['revision'],name=result['name'],replayed=result['replayed'])
+
+    @strawberry.mutation
+    def admin_set_plan_grant(self, info: strawberry.Info, input: AdminSetPlanGrantInput) -> AdminSetPlanGrantPayload:
+        result = set_admin_grant(actor_from_info(info), **vars(input))
+        return AdminSetPlanGrantPayload(revision=result['revision'],raw_value=result['raw_value'],replayed=result['replayed'])
+
+    @strawberry.mutation
+    def admin_set_plan_price(self, info: strawberry.Info, input: AdminSetPlanPriceInput) -> AdminSetPlanPricePayload:
+        require_admin_catalogue_permission(actor_from_info(info))
+        data=vars(input).copy()
+        value=data['amount_minor']
+        if value is not None:
+            if not value.isascii() or not value.isdecimal() or len(value)>19:
+                error=SafeAPIError(ErrorCode.VALIDATION_FAILED)
+                error.extensions['field']='amountMinor'
+                raise error
+            data['amount_minor']=int(value)
+        result=set_admin_price(actor_from_info(info), **data)
+        return AdminSetPlanPricePayload(revision=result['revision'],amount_minor=result['amount_minor'],replayed=result['replayed'])
+
     @strawberry.mutation
     def admin_create_customer(
         self,

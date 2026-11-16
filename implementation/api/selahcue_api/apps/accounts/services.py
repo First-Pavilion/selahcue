@@ -739,6 +739,41 @@ def _customer_actor(user: CustomerUser) -> ActorContext:
     )
 
 
+def require_verified_activation_admin(actor: ActorContext, customer: CustomerOrg) -> None:
+    """Recheck the persisted authority for a managed Free lifecycle change."""
+    if (
+        actor.org_id != str(customer.pk)
+        or not actor.actor_id.isascii()
+        or not actor.actor_id.isdecimal()
+        or len(actor.actor_id) > 19
+        or not CustomerUser.objects.select_for_update().filter(
+            pk=int(actor.actor_id), customer=customer, role=CustomerRole.ADMIN,
+            status=CustomerUserStatus.ACTIVE, email_verified_at__isnull=False,
+        ).exists()
+    ):
+        raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+
+
+def is_self_service_org(customer: CustomerOrg) -> bool:
+    return customer.created_by_actor_id.startswith(f"{SELF_SIGNUP_ACTOR}:")
+
+
+def promote_trial_for_self_service_activation(
+    customer: CustomerOrg, *, actor: ActorContext, request_id: str, reason: str,
+) -> None:
+    """Promote an eligible org while its verified activation holds the org lock."""
+    if customer.status != CustomerStatus.TRIAL:
+        return
+    customer.status = CustomerStatus.ACTIVE
+    customer.save(update_fields=["status", "updated_at"])
+    record_audit_event(
+        actor, action="customer_org.free_activated", target_type="customer_org",
+        target_id=str(customer.pk), request_id=request_id, reason=reason,
+        source_surface="free_lifecycle", before={"status": CustomerStatus.TRIAL},
+        after={"status": CustomerStatus.ACTIVE},
+    )
+
+
 # --- result dataclasses ----------------------------------------------------
 @dataclass(frozen=True)
 class RegisterCustomerUserData:
@@ -1293,6 +1328,25 @@ def refresh_session(presented_token: str) -> RefreshResult:
             after={"expires_at": new_session.expires_at.isoformat()},
         )
     return RefreshResult(session_token=raw, expires_at=new_session.expires_at.isoformat())
+
+
+def revoke_native_session(presented_token: str, *, source_surface: str) -> LogoutResult:
+    """Confirm terminal revocation only for this exact possession proof.
+
+    This cleanup endpoint alone accepts a recorded revoked session. It grants no
+    authentication authority, reveals no account data, and never revokes siblings.
+    Unknown/deleted and other inactive tokens retain 401.
+    """
+    fingerprint = _fingerprint((presented_token or "").strip())
+    with transaction.atomic():
+        session = CustomerSession.objects.select_for_update().filter(
+            token_fingerprint=fingerprint,
+        ).first()
+        if (session is not None
+                and hmac.compare_digest(session.token_fingerprint, fingerprint)
+                and session.status == CustomerSessionStatus.REVOKED):
+            return LogoutResult(revoked=True)
+        return logout_session(presented_token, source_surface=source_surface)
 
 
 def logout_session(

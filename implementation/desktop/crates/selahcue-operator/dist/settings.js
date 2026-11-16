@@ -103,6 +103,12 @@
 
   // Latest known view (source of truth for re-render). Never accumulates — replaced, never appended.
   var view = defaultView();
+  var accountLink = document.getElementById("pp-open-account");
+  if (accountLink) accountLink.onclick = function () {
+    setSettingsPage("account");
+    document.getElementById("account-settings-title").focus();
+  };
+
   var pilotUI = window.scPilotAccess || null;
   var viewRequest = 0;
   function pilotStatus() { return pilotUI ? pilotUI.current() : null; }

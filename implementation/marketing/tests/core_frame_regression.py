@@ -52,8 +52,8 @@ def main():
                 geometry_failures = list(core.FAILURES)
                 print('SIMULATED_CHROME_GEOMETRY', json.dumps({
                     'clientWidth': page.evaluate('document.documentElement.clientWidth'),
-                    'card': core.rect(page, '.platform-card')['w'],
-                    'action': core.rect(page, '.platform-action')['w'],
+                    'cards': [card['w'] for card in core.rects(page, '#public-downloads .platform-card')],
+                    'installerControls': page.locator('#public-downloads a, #public-downloads button').count(),
                     'step': core.rect(page, '.step-card')['w'],
                     'failures': geometry_failures,
                 }), flush=True)

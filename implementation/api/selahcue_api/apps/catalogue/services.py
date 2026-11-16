@@ -24,7 +24,9 @@ from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from selahcue_api.apps.audit.services import record_audit_event
+from selahcue_api.apps.catalogue.base_plan import _base_plan_for_license
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
+from selahcue_api.apps.catalogue.write_lock import lock_catalogue_revision
 from selahcue_api.apps.catalogue.models import (
     UNLIMITED,
     CatalogueRevision,
@@ -35,10 +37,10 @@ from selahcue_api.apps.catalogue.models import (
     MAX_GRANT_DIMENSIONS,
     Plan,
     PlanGrant,
-    PlanScopeAlias,
     is_reserved_grant_key,
     validate_grant_key,
 )
+from selahcue_api.apps.catalogue.org_plans import _MAX_LEDGER_UNITS, _NOTES, _STT_MINUTES, _select_org_plan
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
@@ -236,20 +238,7 @@ def _plan_grant_map(plan: Plan, revision: int) -> CachedGrants:
 
 
 def resolve_plan_for_license(license_key) -> Plan | None:
-    """Assignment → legacy scope alias → designated fallback. None when none exist."""
-    assignment = (
-        LicensePlanAssignment.objects.select_related("plan").filter(license_key=license_key).first()
-    )
-    if assignment is not None:
-        return assignment.plan
-
-    scope = (getattr(license_key, "feature_scope", "") or "").strip().upper()
-    if scope:
-        alias = PlanScopeAlias.objects.select_related("plan").filter(feature_scope=scope).first()
-        if alias is not None:
-            return alias.plan
-
-    return Plan.objects.filter(is_fallback=True).first()
+    return _base_plan_for_license(license_key)
 
 
 # The dimension a plan's seat count lives in. A dimension KEY is a wire contract and a stable
@@ -292,8 +281,8 @@ def plan_device_instances_for_issuance(plan: Plan) -> int | None:
     return value
 
 
-def resolve_entitlement(license_key) -> ResolvedEntitlement:
-    """The typed grants a licence carries right now.
+def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedEntitlement:
+    """The typed grants a licence carries at the supplied instant or the current time.
 
     Degrades rather than raises: an empty catalogue yields an empty `values` map and the
     caller keeps whatever it already had (which is how "no loss of current entitlement"
@@ -325,7 +314,8 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
     unconfigured = ResolvedEntitlement(plan=None, values={}, plan_display_label="")
     failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
     try:
-        plan = resolve_plan_for_license(license_key)
+        evaluated_at = at if at is not None else timezone.now()
+        plan, _ = _select_org_plan(license_key.customer_id, evaluated_at)
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
         logger.exception("catalogue plan resolution failed; issuing a degraded entitlement")
         return failed
@@ -376,9 +366,7 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
                 dimension__is_active=True,
                 dimension__key__in=grants.known,
             )
-            .filter(
-                models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=timezone.now())
-            )
+            .filter(models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=evaluated_at))
             .select_related("dimension")
         )
         # No `order_by` and no slice: `known` holds at most `MAX_GRANT_DIMENSIONS` keys and
@@ -444,6 +432,14 @@ def resolve_entitlement(license_key) -> ResolvedEntitlement:
 
 # --- Writes -----------------------------------------------------------------------------
 
+# The weekly ledger stores notes as counts and transcription as seconds. New licence
+# issuance copies the device grant into a positive integer field.
+_PLAN_GRANT_BOUNDS = {
+    _NOTES: (0, _MAX_LEDGER_UNITS),
+    _STT_MINUTES: (0, _MAX_LEDGER_UNITS // 60),
+    DEVICE_INSTANCES_DIMENSION: (1, MAX_DEVICE_INSTANCES),
+}
+
 # Overrides are priced exceptions, and an exception nobody revisits is an unpriced
 # entitlement. Time-boxed unless a caller deliberately says otherwise.
 DEFAULT_OVERRIDE_DAYS = 90
@@ -495,7 +491,10 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
     This is a DATA edit — no migration, no deploy. `plan_code` and `dimension_key` arrive
     from the caller and are looked up; they are never matched against a literal.
     """
-    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    permission = (StaffPermission.MANAGE_PLAN_PRICING
+                  if actor is not None and StaffPermission.MANAGE_PLAN_PRICING in actor.staff_permissions
+                  else StaffPermission.GRANT_ENTITLEMENT)
+    staff = require_staff_permission(actor, permission)
     idempotency_key = validate_idempotency_key(data.idempotency_key)
     reason = require_reason(data.reason)
 
@@ -524,15 +523,25 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
         raise SafeAPIError(ErrorCode.NOT_FOUND)
 
     with transaction.atomic():
+        # Shared management/admin writers must lock the revision before grant rows;
+        # the post-save revision bump otherwise inverts the admin CAS lock order.
+        lock_catalogue_revision()
         plan = Plan.objects.filter(code=plan_code).first()
         dimension = GrantDimension.objects.filter(key=dimension_key).first()
         if plan is None or dimension is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
 
-        # Reject a value the dimension cannot express, rather than storing something that
-        # will silently vanish from every manifest at resolution time.
-        if coerce_grant_value(dimension.value_type, raw_value) is _UNSET:
+        if len(raw_value) > PlanGrant._meta.get_field("raw_value").max_length:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+        value = coerce_grant_value(dimension.value_type, raw_value)
+        if value is _UNSET:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        bounds = _PLAN_GRANT_BOUNDS.get(dimension.key)
+        if bounds is not None:
+            minimum, maximum = bounds
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
         existing = PlanGrant.objects.filter(plan=plan, dimension=dimension).first()
         previous = existing.raw_value if existing is not None else None

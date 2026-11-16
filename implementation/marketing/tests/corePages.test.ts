@@ -22,9 +22,7 @@
  *   - the unbacked claims the audit named stay out of the rendered text (honest content wins over
  *     Figma: owner decision). There is NO allow-listed region any more: the Pricing FAQ and its unbacked
  *     answers were removed by ClickUp 17tnw2b0x3h;
- *   - Pricing: no plan, price, comparison table, billing toggle or FAQ (plan names and prices come from the API once
- *     it serves them), no `text="Save 20%"`, no `variant="gradient"`, the billing toggle
- *     is a named radio group;
+ *   - Pricing: show the ongoing Free offer without a paid price, comparison table, billing toggle or FAQ;
  *   - the views use the shared container and carry no container rule of their own.
  */
 import assert from 'node:assert/strict'
@@ -66,13 +64,6 @@ type Page = keyof typeof VIEWS
 
 const pages = {} as Record<Page, HtmlNode>
 
-/** P14 adds a separately configured pilot unit; legacy release copy bans still apply
- * to the standard Download content. Pilot behavior/copy is covered by pilot runtime tests,
- * including absence of direct artifact URLs, cloud consent copy and approved policy gating. */
-function standardContent(root: HtmlNode): HtmlNode {
-  return { ...root, children: root.children.filter(child => child.attrs.id !== 'pilot-downloads').map(standardContent) }
-}
-
 let server: ViteDevServer
 const loaded = new Map<string, Component>()
 
@@ -87,11 +78,7 @@ before(async () => {
     server: { middlewareMode: true, hmr: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
   })
-  for (const page of Object.keys(VIEWS) as Page[]) {
-    const rendered = await render(VIEWS[page])
-    if (page === 'download') assert.equal(all(rendered, node => node.attrs.id === 'pilot-downloads').length, 1, 'pilot component missing; see dedicated runtime tests')
-    pages[page] = page === 'download' ? standardContent(rendered) : rendered
-  }
+  for (const page of Object.keys(VIEWS) as Page[]) pages[page] = await render(VIEWS[page])
 })
 
 after(async () => {
@@ -185,7 +172,7 @@ const BANNED: readonly Banned[] = [
   { id: 'never blanks (stronger than NFR-024)', pattern: /never[- ]blank|never blanks/, because: 'say it is designed so a fault cannot black out live output (Cody N19)' },
   { id: 'forever or lifetime', pattern: /\bforever\b|lifetime/, because: 'pricing-15: "free forever" is not decided' },
   { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline|stays offline|offline by default|offline when it matters|keeps working offline|doesn.t either/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1, Cody N20, Quinn N6)' },
-  { id: 'cloud transcription', pattern: /\bcloud\b/, because: 'cloud-stt is RELEASE: UNSAFE and stripped from release builds (Cody N4)' },
+  { id: 'unqualified cloud availability', pattern: /cloud (?:transcription|assistance) (?:works offline|is available now|is enabled by default)/, because: 'cloud paths require connectivity, consent and release acceptance' },
   { id: 'jargon the owner did not choose', pattern: /compositor|desktop-authoritative/, because: 'plain English (Cody N19)' },
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
@@ -202,7 +189,7 @@ const BANNED: readonly Banned[] = [
   { id: 'nothing leaves the machine', pattern: /nothing leaves|never leaves|entirely on the machine|zero cloud|stays on your (machine|computer|device)/, because: 'features-11: stated as absolute, and not backed' },
   { id: 'an installer version, format or size', pattern: /\bv\d+\.\d|\.msi\b|\.dmg\b|\bnsis\b|~\s?\d+\s?mb|universal/, pages: ['download'], because: 'download-04: no release exists' },
   { id: 'an OS floor', pattern: /windows 1[01]|macos\s+1\d|monterey|or later/, pages: ['download'], because: 'download-04: no documented minimum' },
-  { id: 'a hardware requirement', pattern: /\d+\s?(gb|mb|ghz)\b|dual-core|quad-core|intel|apple silicon|directx|integrated gpu|discrete gpu|\bssd\b/, pages: ['download'], because: 'download-05: no single backed figure' },
+  { id: 'a hardware requirement', pattern: /\d+\s?(gb|mb|ghz)\b|dual-core|quad-core|directx|integrated gpu|discrete gpu|\bssd\b/, pages: ['download'], because: 'download-05: no single backed figure' },
   { id: 'no account required', pattern: /no account|no internet or account|without an account/, pages: ['download', 'about'], because: 'download-01, about-08: not evidenced' },
   { id: 'store availability', pattern: /available for ios|download on\b|app store badge/, pages: ['download'], because: 'download-09: the apps are not in the stores' },
   { id: 'a placeholder phone', pattern: /mobile app mockup/, pages: ['download'], because: 'download-07: a visible placeholder' },
@@ -267,7 +254,7 @@ describe('no claim the repo does not back is on the page', () => {
       'never blanks (stronger than NFR-024)': { text: 'The screen never blanks.', page: 'about' },
       'forever or lifetime': { text: 'Start free forever', page: 'pricing' },
       'fully offline': { text: 'SelahCue runs fully offline', page: 'download' },
-      'cloud transcription': { text: 'Cloud transcription only if you turn it on', page: 'features' },
+      'unqualified cloud availability': { text: 'Cloud transcription works offline', page: 'features' },
       'jargon the owner did not choose': { text: 'where the compositor never blanks', page: 'about' },
       'an installer version, format or size': { text: 'v1.0 · .msi installer · ~84 MB', page: 'download' },
       'an OS floor': { text: 'macOS 12 Monterey+', page: 'download' },
@@ -374,13 +361,16 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   pricing: [
     "PRICING",
     "Pricing that grows with your church",
-    "Plans and pricing",
-    "Plans and prices have not been published yet.",
+    "SelahCue Free",
+    "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.",
+    "Paid subscriptions will come later.",
+    "View downloads",
+    "Create an account",
   ],
   features: [
     "FEATURES",
     "Everything you need to run a confident service",
-    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.",
+    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output together in one offline-first desktop console.",
     "OUTPUTS",
     "Live presentation & outputs",
     "Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up.",
@@ -422,59 +412,35 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "STREAMING",
     "NDI",
     "ASSIST",
-    "On-device transcript & detection",
-    "An optional live transcript runs on your machine. It assists the operator but never gates your core controls.",
-    "Live transcript, on-device",
+    "Transcription & sermon notes",
+    "Listen on-device after a one-time model download. When available, optional cloud assistance needs internet access and consent.",
+    "Cloud transcription and requested sermon notes",
     "Scripture detection that assists the operator",
-    "Assists — never gates — core controls",
+    "Core live controls work offline",
     "ASSIST",
     "ON-DEVICE",
     "Ready to run your best service yet?",
     "Start with the Free plan. Core live controls keep working with no network.",
-    "Download free",
-    "See pricing",
+    "View downloads",
+    "Create an account",
   ],
   download: [
     "DOWNLOAD",
     "Get SelahCue for your platform",
-    "See pilot registration availability below. Standard desktop installers are not available to download yet. Core live controls work with no network.",
+    "Choose the desktop installer for your platform when downloads are available.",
     "Free plan · Core live controls work offline",
+    "Desktop installers",
+    "Checking installer availability…",
     "Windows",
-    "Windows desktop app · 64-bit",
-    "Download for Windows",
-    "Not available to download yet",
+    "Windows x64",
     "macOS",
-    "macOS desktop app",
-    "Download for macOS",
-    "Not available to download yet",
-    "System requirements",
-    "MINIMUM",
-    "requirements",
-    "Processor",
-    "To be confirmed",
-    "Memory",
-    "To be confirmed",
-    "Graphics",
-    "To be confirmed",
-    "Storage",
-    "To be confirmed",
-    "Display",
-    "To be confirmed",
-    "RECOMMENDED",
-    "requirements",
-    "Processor",
-    "To be confirmed",
-    "Memory",
-    "To be confirmed",
-    "Graphics",
-    "To be confirmed",
-    "Storage",
-    "To be confirmed",
-    "Display",
-    "To be confirmed",
+    "macOS Apple silicon (arm64)",
+    "macOS Intel (x64)",
+    "Ubuntu",
+    "Ubuntu 24.04 x64",
     "MOBILE CONTROL",
     "Control from your phone",
-    "The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
+    "If you already have the SelahCue Controller, you can pair it over your local network. Scan the QR code and approve the phone on the desktop. You can keep running the service from the desktop if the phone disconnects.",
     "Pairs over your LAN — no internet needed",
     "iOS and Android apps are not available yet",
     "Desktop stays authoritative if the phone drops",
@@ -493,13 +459,13 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Up and running in three steps",
     "01",
     "Download & install",
-    "Run the installer for your platform once it is available.",
+    "Choose the installer for your computer and open it after it downloads.",
     "02",
-    "Build your first plan",
-    "Add scripture and presentations to a service plan and pick your outputs.",
+    "Set up your account",
+    "Create an account and verify your email, then open SelahCue and sign in.",
     "03",
-    "Go live & pair your phone",
-    "Go live, and pair your phone from Network & Mobile in Settings.",
+    "Build a service plan & go live",
+    "Add scripture and presentations, choose your outputs, and go live.",
   ],
   about: [
     "ABOUT",
@@ -520,8 +486,8 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Memory use is designed to stay within fixed limits, so SelahCue stays light.",
     "Ready to run your best service yet?",
     "Start with the Free plan. Core live controls keep working with no network.",
-    "Download free",
-    "See pricing",
+    "View downloads",
+    "Create an account",
   ],
 }
 
@@ -608,35 +574,28 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
 // ------------------------------------------------------------------------------------ Pricing
 
 describe('Pricing', () => {
-  test('hero: the PRICING eyebrow and the Figma headline, then an h2 over the empty state that says plans and prices are not published', () => {
-    const h1 = byTag(pages.pricing, 'h1')[0] as HtmlNode
-    assert.equal(textOf(h1), 'Pricing that grows with your church')
-    assert.ok(textOf(pages.pricing).includes('PRICING'), 'no PRICING eyebrow')
-    assert.deepEqual(byClass(pages.pricing, 'hero-lead'), [], 'the subline went with the plans it introduced')
-    assert.deepEqual(byTag(pages.pricing, 'h2').map((h) => textOf(h)), ['Plans and pricing'], 'the h2 keeps the outline from skipping to the footer h3s')
-    const empty = byClass(pages.pricing, 'plans-empty')[0]
-    assert.ok(empty, 'no empty state')
-    assert.equal(textOf(empty as HtmlNode), 'Plans and prices have not been published yet.')
+  test('the existing pricing layout shows the Free offer and both acquisition paths', () => {
+    assert.equal(textOf(byTag(pages.pricing, 'h1')[0] as HtmlNode), 'Pricing that grows with your church')
+    assert.deepEqual(byTag(pages.pricing, 'h2').map(textOf), ['SelahCue Free'])
+    const plan = byClass(pages.pricing, 'free-plan')[0] as HtmlNode
+    assert.deepEqual(byTag(plan, 'p').map(textOf), [
+      'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.',
+      'Paid subscriptions will come later.',
+    ])
+    assert.deepEqual(byTag(plan, 'a').map((link) => [textOf(link), link.attrs.href]), [
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
+    ])
   })
 
-  // ClickUp 17tnw2b0x3h: plan names, prices and limits are the API catalogue's data, so until it serves them the page shows none.
-  test('the page draws no plan, price, limit, comparison table, billing toggle or FAQ: it says plans and prices are not published yet', () => {
-    assert.deepEqual(byClass(pages.pricing, 'pricing-card'), [], 'a plan card is back')
+  test('pricing shows no paid tier, price, comparison table, billing toggle or checkout', () => {
+    assert.deepEqual(byClass(pages.pricing, 'pricing-card'), [])
     assert.deepEqual(byClass(pages.pricing, 'pricing-grid'), [])
-    assert.deepEqual(byTag(pages.pricing, 'table'), [], 'a comparison table is back')
-    assert.deepEqual(all(pages.pricing, (n) => n.attrs['role'] === 'radiogroup'), [], 'a billing toggle is back')
-    assert.deepEqual(byClass(pages.pricing, 'faq-section'), [], 'a FAQ is back')
-    assert.deepEqual(byTag(pages.pricing, 'h3'), [], 'a plan name is back')
-    assert.deepEqual(byClass(pages.pricing, 'ui-button'), [], 'a plan button is back')
-    const text = textOf(pages.pricing)
-    assert.doesNotMatch(text, /\$|\bPro\b|\bPlatinum\b|\bCore\b|\bChurch plan\b|devices?\b|NDI|watermark|prorat|PayPal|ACH|non-profit|MOST POPULAR|Monthly|Annual/i)
-  })
-
-  test('the view types no plan name and no limit: they will come from the API, not from this file', () => {
-    const { descriptor } = parse(readFileSync(path.join(SRC, 'views/PricingView.vue'), 'utf8'), { filename: 'PricingView.vue' })
-    const code = (descriptor.scriptSetup?.content ?? '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    assert.doesNotMatch(code, /name:|price:|LIMITS|plans\b|rows\b|pricingFaqItems|PricingCard|SegmentedToggle/, 'PricingView holds plan data again')
-    assert.doesNotMatch(descriptor.template?.content ?? '', /PricingCard|SegmentedToggle|FaqAccordion|<table/)
+    assert.deepEqual(byTag(pages.pricing, 'table'), [])
+    assert.deepEqual(all(pages.pricing, (n) => n.attrs.role === 'radiogroup'), [])
+    assert.deepEqual(byClass(pages.pricing, 'faq-section'), [])
+    assert.deepEqual(byTag(pages.pricing, 'form'), [])
+    assert.doesNotMatch(textOf(pages.pricing), /\$|\bPro\b|\bPlatinum\b|\bCore\b|checkout|prorat|PayPal|ACH|MOST POPULAR|Monthly|Annual/i)
   })
 })
 
@@ -728,7 +687,7 @@ describe('Features', () => {
         'Service plans & timers',
         'Stage & confidence monitor',
         'NDI & multi-output',
-        'On-device transcript & detection',
+        'Transcription & sermon notes',
       ],
     )
   })
@@ -761,22 +720,35 @@ describe('Features', () => {
     assert.deepEqual(rows().map((r) => hasClass(r, 'reverse')), [false, true, false, true, false, true])
   })
 
-  test('features-06: the closing band has Figma wording and two links, Download free and See pricing', () => {
+  test('features-06: the closing band has Figma wording and two links, View downloads and Create an account', () => {
     const band = byClass(pages.features, 'cta-band')[0] as HtmlNode
     assert.equal(textOf(byTag(band, 'h2')[0] as HtmlNode), 'Ready to run your best service yet?')
     const links = byTag(band, 'a')
     assert.deepEqual(links.map((l) => [textOf(l), l.attrs['href']]), [
-      ['Download free', '/download'],
-      ['See pricing', '/pricing'],
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
     ])
   })
 
-  test('features-11 and review round 1, Cody N4: the transcript row says the transcript runs on the machine and mentions no cloud path (cloud-stt is stripped from release builds)', () => {
+  test('the assist row separates on-device listening from optional, connected cloud assistance', () => {
     const last = textOf(rows()[5] as HtmlNode).toLowerCase()
     assert.match(last, /on-device|on your machine/)
-    assert.match(last, /never gates/)
-    assert.doesNotMatch(last, /cloud/)
+    assert.match(last, /model download/)
+    assert.match(last, /when available,.*cloud.*needs.*internet.*consent/)
+    assert.match(last, /core live controls.*offline/)
   })
+})
+
+test('Home platform FAQ names the supported targets without advertising a mobile download', async () => {
+  const home = await render('views/HomeView.vue')
+  const platforms = byClass(home, 'faq-item').find((item) => textOf(item).includes('Which platforms are supported?'))
+  assert.ok(platforms)
+  const answer = textOf(platforms)
+  assert.match(answer, /Windows x64/)
+  assert.match(answer, /macOS.*arm64.*x64/)
+  assert.match(answer, /Ubuntu 24\.04 x64/)
+  assert.match(answer, /controller app is not in the App Store or Google Play/i)
+  assert.doesNotMatch(answer, /available for Windows, macOS and Linux/i)
 })
 
 // ------------------------------------------------------------------------------------ Download
@@ -789,32 +761,14 @@ describe('Download', () => {
     assert.ok(byClass(pages.download, 'trust-line').length === 1)
   })
 
-  test('download-02: two platform cards, Windows and macOS, no Linux card is added', () => {
+  test('desktop cards name the supported targets while availability is being checked', () => {
     const cards = byClass(pages.download, 'platform-card')
-    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h2')[0] as HtmlNode)), ['Windows', 'macOS'])
-    assert.ok(!/linux/i.test(textOf(pages.download)), 'Linux is not drawn in Figma and no page may claim a Linux installer')
-  })
-
-  test('PR 134 stays: both download buttons are disabled, say so, and name the status that explains them', () => {
-    for (const c of byClass(pages.download, 'platform-card')) {
-      const btn = byClass(c, 'ui-button')[0] as HtmlNode
-      assert.equal(btn.tag, 'button')
-      assert.ok('disabled' in btn.attrs)
-      assert.equal(btn.attrs['aria-disabled'], 'true')
-      const status = all(c, (n) => n.attrs['id'] === btn.attrs['aria-describedby'])[0] as HtmlNode
-      assert.equal(textOf(status), 'Not available to download yet')
-    }
-  })
-
-  test('download-06: two requirement cards, MINIMUM and RECOMMENDED, with five rows each and no invented figure', () => {
-    const cards = byClass(pages.download, 'req-card')
-    // The chip is the visible label; the heading reads "MINIMUM requirements" (review round 1, Cody N15).
-    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['MINIMUM requirements', 'RECOMMENDED requirements'])
-    for (const c of cards) {
-      const rows = byTag(c, 'dt').map((t) => textOf(t))
-      assert.deepEqual(rows, ['Processor', 'Memory', 'Graphics', 'Storage', 'Display'])
-      assert.deepEqual(byTag(c, 'dd').map((d) => textOf(d)), Array(5).fill('To be confirmed'))
-    }
+    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['Windows', 'macOS', 'Ubuntu'])
+    assert.deepEqual(cards.flatMap((c) => byClass(c, 'platform-sub').map(textOf)), [
+      'Windows x64', 'macOS Apple silicon (arm64)', 'macOS Intel (x64)', 'Ubuntu 24.04 x64',
+    ])
+    const panel = all(pages.download, (node) => node.attrs.id === 'public-downloads')[0] as HtmlNode
+    assert.deepEqual(byTag(panel, 'button', 'a'), [])
   })
 
   test('download-07: the mobile section has the pill, the heading, three bullets and the controller mock, and no placeholder phone', () => {
@@ -838,7 +792,7 @@ describe('Download', () => {
 
   test('download-10: three steps, with Figma titles, numbered 01 to 03', () => {
     const steps = byClass(pages.download, 'step-card')
-    assert.deepEqual(steps.map((s) => textOf(byTag(s, 'h3')[0] as HtmlNode)), ['Download & install', 'Build your first plan', 'Go live & pair your phone'])
+    assert.deepEqual(steps.map((s) => textOf(byTag(s, 'h3')[0] as HtmlNode)), ['Download & install', 'Set up your account', 'Build a service plan & go live'])
     assert.deepEqual(steps.map((s) => textOf(byClass(s, 'step-num')[0] as HtmlNode)), ['01', '02', '03'])
   })
 })
@@ -874,8 +828,8 @@ describe('About', () => {
     const band = byClass(pages.about, 'cta-band')[0] as HtmlNode
     assert.equal(textOf(byTag(band, 'h2')[0] as HtmlNode), 'Ready to run your best service yet?')
     assert.deepEqual(byTag(band, 'a').map((l) => [textOf(l), l.attrs['href']]), [
-      ['Download free', '/download'],
-      ['See pricing', '/pricing'],
+      ['View downloads', '/download#public-downloads'],
+      ['Create an account', '/signup'],
     ])
   })
 })

@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import secrets
 from dataclasses import dataclass
+from datetime import datetime
+from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password
@@ -20,6 +22,18 @@ from selahcue_api.apps.devices.models import (
     DeviceTokenStatus,
 )
 from selahcue_api.apps.accounts.models import CustomerRole
+from selahcue_api.apps.license_keys.free_lifecycle import (
+    FreeRenewalDenied,
+    ensure_free_license_under_org_lock,
+    renew_free_license_for_device,
+)
+from selahcue_api.apps.license_keys.selection import (
+    ACTIVATABLE_KEY_STATUSES as ACTIVATABLE_KEY_STATUSES,
+    aware_utc,
+    license_window_allows_service,
+    find_eligible_org_license,
+)
+from selahcue_api.apps.license_keys.services import lock_customer_for_key_changes
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
 from selahcue_api.graphql.context import (
@@ -40,11 +54,6 @@ TOKEN_GROUP_SIZE = 4
 # Native activation is the desktop licensing surface. These match DeviceIdentity's
 # documented OS identifiers; mobile controllers authenticate to the paired LAN host.
 ACTIVATION_PLATFORMS = frozenset({"macos", "windows", "linux"})
-
-# License-key statuses under which a device may (re-)activate. Terminal/blocked states deny.
-ACTIVATABLE_KEY_STATUSES = frozenset(
-    {LicenseKeyStatus.ISSUED, LicenseKeyStatus.ACTIVATED, LicenseKeyStatus.EXPIRING}
-)
 
 # The mandatory `reason` (>= 8 characters) the licence audit row carries for the automated
 # ISSUED -> ACTIVATED move; there is no operator to supply one. Worded to be true on both
@@ -192,19 +201,12 @@ def _assert_device_activatable(device: Device) -> None:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
-def license_allows_commercial_service(license_key: AppLicenseKey) -> bool:
-    """Whether the licence is in an activatable status and inside its window RIGHT NOW.
-
-    The one predicate behind `require_commercial_service` (which refuses) and
-    `refresh_license` (which reports it as `valid_now`), so the two cannot drift. Allow-list,
-    not deny-list: a status added later is not activatable until it is added here.
-    """
-    now = timezone.now()
-    return (
-        license_key.status in ACTIVATABLE_KEY_STATUSES
-        and license_key.starts_at <= now < license_key.expires_at
+def license_allows_commercial_service(license_key: AppLicenseKey, *, at: datetime | None = None) -> bool:
+    """Whether the licence is in an activatable status and inside its validity window."""
+    return license_window_allows_service(
+        status=license_key.status, starts_at=license_key.starts_at, expires_at=license_key.expires_at,
+        at=timezone.now() if at is None else aware_utc(at),
     )
-
 
 def require_commercial_service(license_key: AppLicenseKey) -> None:
     """THE enforcement point for commercial device calls: POLICY_DENIED unless
@@ -261,15 +263,16 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
     return token, full_token
 
 
-def _live_token(device: Device) -> DeviceToken | None:
+def _live_token(device: Device, *, lock: bool = False) -> DeviceToken | None:
     """The device's currently USABLE token, or None.
 
     "Usable" is the same predicate `authenticate_device_token` enforces — ACTIVE and not
     past `expires_at` — so this can never disagree with what the device would actually be
     able to authenticate with.
     """
+    tokens = device.tokens.select_for_update() if lock else device.tokens
     return (
-        device.tokens.filter(
+        tokens.filter(
             status=DeviceTokenStatus.ACTIVE, expires_at__gt=timezone.now()
         )
         .order_by("-issued_at", "-id")
@@ -394,6 +397,7 @@ def _existing_device_result(
     idempotency_key: str,
     audit_actor: ActorContext | None,
     source_surface: str,
+    lock_result_token: bool = False,
 ) -> ActivateDeviceResult:
     """Shared outcome for a device that ALREADY exists — an idempotent retry (same
     idempotency key) or a known install re-enrolling (same fingerprint).
@@ -408,7 +412,7 @@ def _existing_device_result(
     — reviving a device is where a downgraded licence would otherwise leak extra seats.
     """
     _assert_device_activatable(device)
-    live = _live_token(device)
+    live = _live_token(device, lock=lock_result_token)
     if live is not None:
         # Untouched by the allowance check on purpose: this device is already running, so
         # refusing its replay would revoke nothing and would break retry-idempotency for a
@@ -454,6 +458,7 @@ def _activate_device_for_key(
     activated_by_actor_id: str | None = None,
     audit_actor: ActorContext | None = None,
     source_surface: str = "desktop_v1",
+    lock_result_token: bool = False,
 ) -> ActivateDeviceResult:
     """Core activation for an ALREADY-RESOLVED license key. Shared by the enrollment-key path
     (activate_device) and the account-session path (activate_device_with_session) so both converge
@@ -466,7 +471,7 @@ def _activate_device_for_key(
         # replay instead of an IntegrityError/500. Re-read + re-check status under the lock, since it
         # could have changed between resolve and lock.
         license_key = (
-            AppLicenseKey.objects.select_for_update()
+            AppLicenseKey.objects.select_for_update(of=("self",))
             .select_related("customer")
             .get(pk=license_key.pk)
         )
@@ -484,6 +489,7 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                lock_result_token=lock_result_token,
             )
 
         # Natural identity: a known install (same fingerprint) re-enrolling with a different
@@ -504,6 +510,7 @@ def _activate_device_for_key(
                 idempotency_key=idempotency_key,
                 audit_actor=audit_actor,
                 source_surface=source_surface,
+                lock_result_token=lock_result_token,
             )
 
         # Instance limit (DEC-004): active devices under this key may not exceed the plan limit.
@@ -620,18 +627,7 @@ def _resolve_org_active_license_key(org_id: str) -> AppLicenseKey:
     """Resolve the org's currently-activatable license key (DEC-005 account path). NOT_FOUND if the
     org has no active key — no oracle on which orgs/keys exist. Picks the furthest-out expiry when
     several are active (best entitlement window)."""
-    now = timezone.now()
-    key = (
-        AppLicenseKey.objects.select_related("customer")
-        .filter(
-            customer_id=org_id,
-            status__in=ACTIVATABLE_KEY_STATUSES,
-            starts_at__lte=now,
-            expires_at__gt=now,
-        )
-        .order_by("-expires_at")
-        .first()
-    )
+    key = find_eligible_org_license(org_id, timezone.now())
     if key is None:
         raise SafeAPIError(ErrorCode.NOT_FOUND)
     return key
@@ -652,18 +648,26 @@ def activate_device_with_session(
     checked = require_customer_role(actor, CustomerRole.ADMIN)
     idempotency_key, fingerprint, platform, app_version, display_name = _activation_metadata(data)
 
-    license_key = _resolve_org_active_license_key(checked.org_id)
-    return _activate_device_for_key(
-        license_key,
-        idempotency_key=idempotency_key,
-        device_fingerprint=fingerprint,
-        platform=platform,
-        app_version=app_version,
-        display_name=display_name,
-        activated_by_actor_id=checked.actor_id,
-        audit_actor=checked,
-        source_surface=source_surface,
-    )
+    try:
+        with transaction.atomic():
+            customer = lock_customer_for_key_changes(checked.org_id)
+            license_key = ensure_free_license_under_org_lock(
+                customer, checked, timezone.now(), idempotency_key,
+            )
+            return _activate_device_for_key(
+                license_key,
+                idempotency_key=idempotency_key,
+                device_fingerprint=fingerprint,
+                platform=platform,
+                app_version=app_version,
+                display_name=display_name,
+                activated_by_actor_id=checked.actor_id,
+                audit_actor=checked,
+                source_surface=source_surface,
+            )
+    except FreeRenewalDenied as error:
+        error.audit()
+        raise
 
 
 def authenticate_device_token(presented_token: str) -> DeviceToken:
@@ -700,10 +704,11 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
 
 def refresh_license(presented_token: str) -> LicenseRefreshResult:
     """Return the current license/entitlement status for an authenticated device token, so the
-    desktop can refresh its cached offline entitlement (DEC-004). Pure read — no mutation. The
-    *license* status is reported truthfully (incl. expired/revoked) so the client can act; only an
-    invalid *token* denies (via `authenticate_device_token`)."""
+    desktop can refresh its cached offline entitlement (DEC-004). An eligible managed Free
+    licence and the presented live token can be extended. Blocked licences still report
+    their current status through the existing refresh contract."""
     token = authenticate_device_token(presented_token)
+    renewal = renew_free_license_for_device(token, None, uuid4().hex)
     device = token.device
     license_key = device.license_key
 
@@ -717,11 +722,11 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
         device_status=device.status,
         license_status=license_key.status,
         license_starts_at=license_key.starts_at.isoformat(),
-        license_expires_at=license_key.expires_at.isoformat(),
+        license_expires_at=renewal.license_expires_at.isoformat(),
         license_valid_now=valid_now,
         instances_used=instances_used,
         instances_limit=license_key.device_limit,
-        token_expires_at=token.expires_at.isoformat(),
+        token_expires_at=renewal.token_expires_at.isoformat(),
         feature_scope=license_key.feature_scope,
         territory=license_key.territory,
     )

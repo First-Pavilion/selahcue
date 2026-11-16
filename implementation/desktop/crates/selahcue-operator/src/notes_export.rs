@@ -357,7 +357,7 @@ impl Layout<'_> {
         let mut buffer = harfrust::UnicodeBuffer::new();
         buffer.push_str(text);
         buffer.guess_segment_properties();
-        let shaped = self.face.shape(buffer, &[]);
+        let shaped = self.face.shape(buffer, harfrust::ShapeOptions::default());
         let scale = size / self.face.units_per_em() as f32;
         let mut x = 0.0;
         let mut glyphs = Vec::new();

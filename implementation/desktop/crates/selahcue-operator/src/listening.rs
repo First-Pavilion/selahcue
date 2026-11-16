@@ -4032,35 +4032,23 @@ mod tests {
         );
     }
 
-    /// 86akcfp8w / Vera's PR #124 performance review (F2, non-blocking but real): none of this
-    /// file's other tests pin the ACTUAL numeric on-device hand-off capacity end to end through
-    /// `run_on_device_with_recognizer` — they only prove SOME capacity gets computed (the
-    /// refusal test) or that eviction fires under a flood far bigger than any real cap either
-    /// way (the test just above this one). Vera proved the gap empirically: mutating the
-    /// on-device call site back to `HANDOFF_MAX_SAMPLES.max(handoff_capacity(...))` — silently
-    /// re-widening a mono device's cap toward the historical stereo-doubled value — left every
-    /// operator test green.
-    ///
-    /// This test brackets the real 48 kHz capacity instead of a synthetic one. `CAPTURE_WINDOW`
-    /// (5 s) gives a mono capacity of exactly 48,000 × 1 × 5 = 240,000 samples — HALF of what a
-    /// stereo-style `× 2` would give (480,000). The two checks below use DIFFERENT, generously
-    /// one-sided flood sizes rather than one flood bracketing both thresholds: with a real
-    /// worker thread draining the mic ring on its own schedule (`CAPTURE_INTERVAL`) concurrent
-    /// with a real recognition thread draining the hand-off on ITS own schedule
-    /// (`RECOG_INTERVAL`), delivery can legitimately fragment across several capture-loop
-    /// iterations — a flood sized to just barely clear one cap while staying just under the
-    /// other (a thin bracket) turned out to be genuinely flaky against that fragmentation, not
-    /// just theoretically risky (caught empirically while writing this test — a 5,001-sample
-    /// flood against a 5,000-sample mono cap intermittently missed). A flood many times a cap
-    /// only needs ONE fragment to individually clear it; a flood well under a cap can never
-    /// clear it regardless of how delivery fragments, since fragmentation only ever REDUCES
-    /// what accumulates before a drain, never inflates it.
+    /// The same 350,000-sample burst must overflow the 48 kHz mono hand-off (240,000 samples)
+    /// and fit in the stereo hand-off (480,000 samples). Park recognition during the burst so
+    /// each outcome depends on the device capacity rather than the scheduling of consumer drains.
     #[test]
     fn on_device_hand_off_capacity_is_mono_correct_not_stereo_doubled() {
+        use std::sync::mpsc;
+
         let _guard = state_locked();
 
+        #[derive(Default)]
+        struct QueuedAudio {
+            chunks: selahcue_stt::FakeAudioSource,
+            flood_consumed: Option<mpsc::Sender<()>>,
+        }
+
         struct RateChannelsSource {
-            inner: Arc<Mutex<selahcue_stt::audio::FakeAudioSource>>,
+            queue: Arc<Mutex<QueuedAudio>>,
             sample_rate: u32,
             channels: u16,
         }
@@ -4069,10 +4057,15 @@ mod tests {
                 "rate-channels"
             }
             fn next_chunk(&mut self) -> Option<AudioChunk> {
-                self.inner
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .next_chunk()
+                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                let chunk = queue.chunks.next_chunk();
+                // Capture has pushed the last chunk into the hand-off before this empty read.
+                if chunk.is_none() {
+                    if let Some(consumed) = queue.flood_consumed.take() {
+                        let _ = consumed.send(());
+                    }
+                }
+                chunk
             }
         }
         impl CaptureSource for RateChannelsSource {
@@ -4089,16 +4082,47 @@ mod tests {
             }
         }
 
-        /// Runs a real on-device session against a device reporting `(sample_rate, channels)`,
-        /// floods it with `flood_samples` samples (in 1,000-sample chunks) AFTER readiness, and
-        /// reports whether the drop notice fired — i.e. whether eviction actually happened.
+        struct ParkedRecognizer {
+            entered: Option<mpsc::Sender<()>>,
+            release: mpsc::Receiver<()>,
+        }
+        impl Recognizer for ParkedRecognizer {
+            fn label(&self) -> &str {
+                "parked-test-recognizer"
+            }
+            fn transcribe(
+                &mut self,
+                _samples: &[f32],
+                _start_ms: u64,
+                _end_ms: u64,
+            ) -> Vec<selahcue_stt::RecognizedSegment> {
+                if let Some(entered) = self.entered.take() {
+                    let _ = entered.send(());
+                    let _ = self.release.recv();
+                }
+                Vec::new()
+            }
+        }
+
+        // Drop inside the thread scope so the stop signal and channel disconnect happen
+        // before the scope joins capture, which in turn joins recognition.
+        struct StopCapture {
+            stop: Arc<AtomicBool>,
+            _release: mpsc::Sender<()>,
+        }
+        impl Drop for StopCapture {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Relaxed);
+            }
+        }
+
         fn drop_notice_fires_for(sample_rate: u32, channels: u16, flood_samples: usize) -> bool {
             *status_lock(&ENGINE_NOTE) = None;
             clear_failure();
 
-            let queue = Arc::new(Mutex::new(selahcue_stt::audio::FakeAudioSource::new()));
+            let queue = Arc::new(Mutex::new(QueuedAudio::default()));
             let source = RateChannelsSource {
-                inner: Arc::clone(&queue),
+                queue: Arc::clone(&queue),
                 sample_rate,
                 channels,
             };
@@ -4118,69 +4142,96 @@ mod tests {
                 media_store: None,
             });
 
-            let stop_worker = Arc::new(AtomicBool::new(false));
+            let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
             let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(64);
             let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let (consumed_tx, consumed_rx) = mpsc::channel();
 
-            let sw = Arc::clone(&stop_worker);
-            let app_worker = handle.clone();
-            let worker = std::thread::spawn(move || {
-                run_on_device_with_recognizer(
-                    app_worker,
-                    source,
-                    sw,
-                    seg_tx,
-                    Some(ready_tx),
-                    None,
-                    Box::new(selahcue_stt::FakeRecognizer::new()),
-                );
-            });
+            const FIXTURE_DEADLINE: Duration = Duration::from_secs(10);
+            let fixture = std::thread::scope(|scope| -> Result<(), String> {
+                let cleanup = StopCapture {
+                    stop: Arc::new(AtomicBool::new(false)),
+                    _release: release_tx,
+                };
+                let stop_worker = Arc::clone(&cleanup.stop);
+                scope.spawn(move || {
+                    run_on_device_with_recognizer(
+                        handle,
+                        source,
+                        stop_worker,
+                        seg_tx,
+                        Some(ready_tx),
+                        None,
+                        Box::new(ParkedRecognizer {
+                            entered: Some(entered_tx),
+                            release: release_rx,
+                        }),
+                    );
+                });
 
-            let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
-            let ready = runtime
-                .block_on(async { tokio::time::timeout(Duration::from_secs(10), ready_rx).await });
-            assert!(
-                matches!(ready, Ok(Ok(Ok(())))),
-                "on-device must become ready against the fake recognizer: {ready:?}"
-            );
-
-            // Flood AFTER ready, in modest 1,000-sample chunks (never a single oversized chunk —
-            // capture_handoff.rs's own doc: that would be retained WHOLE, never evicted, which
-            // would make this test measure the wrong thing) so eviction proceeds chunk-by-chunk.
-            const FLOOD_CHUNK_SAMPLES: usize = 1_000;
-            {
-                let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
-                let mut remaining = flood_samples;
-                while remaining > 0 {
-                    let this_chunk = remaining.min(FLOOD_CHUNK_SAMPLES);
-                    q.push_chunk(AudioChunk::new(
-                        vec![0.0; this_chunk],
-                        sample_rate,
-                        channels,
+                let ready = runtime
+                    .block_on(async { tokio::time::timeout(FIXTURE_DEADLINE, ready_rx).await });
+                if !matches!(ready, Ok(Ok(Ok(())))) {
+                    return Err(format!(
+                        "fake on-device session did not become ready: {ready:?}"
                     ));
-                    remaining -= this_chunk;
                 }
-            }
-            std::thread::sleep(Duration::from_millis(2_000));
-            stop_worker.store(true, Ordering::Relaxed);
-            worker.join().expect("run_on_device must not panic");
+
+                // 200 ms of voiced frames and 500 ms of silence reach an ordinary VAD final.
+                // Identical channel values preserve the tone through stereo downmix; the
+                // six-frame cycle retains its zero crossings after 48-to-16 kHz resampling.
+                let channels_per_frame = usize::from(channels);
+                let voiced_cycles = sample_rate as usize / (5 * 6);
+                let mut primer: Vec<f32> = [0.2, 0.2, 0.2, -0.2, -0.2, -0.2]
+                    .repeat(voiced_cycles)
+                    .into_iter()
+                    .flat_map(|sample| std::iter::repeat_n(sample, channels_per_frame))
+                    .collect();
+                primer.resize(
+                    primer.len() + sample_rate as usize / 2 * channels_per_frame,
+                    0.0,
+                );
+                queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .chunks
+                    .push_chunk(AudioChunk::new(primer, sample_rate, channels));
+                entered_rx
+                    .recv_timeout(FIXTURE_DEADLINE)
+                    .map_err(|err| format!("recognizer did not enter transcribe: {err}"))?;
+
+                // The burst starts with an empty hand-off. Use small chunks to exercise normal
+                // eviction, since the hand-off retains a single oversized chunk whole.
+                const FLOOD_CHUNK_SAMPLES: usize = 1_000;
+                {
+                    let mut queue = queue.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut remaining = flood_samples;
+                    while remaining > 0 {
+                        let chunk_samples = remaining.min(FLOOD_CHUNK_SAMPLES);
+                        queue.chunks.push_chunk(AudioChunk::new(
+                            vec![0.0; chunk_samples],
+                            sample_rate,
+                            channels,
+                        ));
+                        remaining -= chunk_samples;
+                    }
+                    queue.flood_consumed = Some(consumed_tx);
+                }
+                consumed_rx
+                    .recv_timeout(FIXTURE_DEADLINE)
+                    .map_err(|err| format!("capture did not consume the flood: {err}"))
+            });
 
             let fired = engine_note().as_deref() == Some(ON_DEVICE_AUDIO_DROPPED_NOTICE);
             *status_lock(&ENGINE_NOTE) = None;
             *status_lock(&PROVIDER_LABEL) = None;
             clear_failure();
+            fixture.unwrap_or_else(|err| panic!("{sample_rate} Hz, {channels} channel(s): {err}"));
             fired
         }
 
-        // Mono cap = 48_000 × 1 × 5 = 240,000. The flood (350,000) is chosen to sit BETWEEN the
-        // real mono cap and `HANDOFF_MAX_SAMPLES` (480,000, the exact historical stereo-style
-        // literal this ticket replaced) — not just "well over the real cap" — so this assertion
-        // is actually sensitive to the specific regression Vera's PR #124 review reproduced
-        // (widening the derived cap back toward the old constant, e.g. via
-        // `HANDOFF_MAX_SAMPLES.max(handoff_capacity)`), not only to a cap collapsing to ~zero.
-        // Still generous relative to the real cap (46% margin) and delivered in 1,000-sample
-        // chunks over a 2s settle window — verified stable across repeated runs, unlike the
-        // earlier razor-thin (5,001-vs-5,000, single-sample-chunk) version of this test.
         assert!(
             drop_notice_fires_for(48_000, 1, 350_000),
             "a mono device's hand-off capacity must be exactly rate × 1 × CAPTURE_WINDOW \
@@ -4188,13 +4239,6 @@ mod tests {
              stereo-style widening at the on-device call site, e.g. \
              HANDOFF_MAX_SAMPLES.max(handoff_capacity)) must fail this test"
         );
-        // Stereo cap = 48_000 × 2 × 5 = 480,000. Vera's PR #124 review round 2 (N1): the SAME
-        // 350,000-sample flood used for the mono assertion above — not a separately-chosen,
-        // smaller value — is what makes this a genuine positive control. The claim being
-        // checked is "identical input, different device config → different outcome, because the
-        // mono cap is genuinely smaller" — a differently-sized flood would only prove "a small
-        // enough flood never evicts", which is true regardless of whether mono/stereo sizing is
-        // correct at all. 350,000 stays comfortably under 480,000 (27% margin) either way.
         assert!(
             !drop_notice_fires_for(48_000, 2, 350_000),
             "a stereo device's capacity (480,000 samples here) must not be crossed by the SAME \

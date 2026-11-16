@@ -95,12 +95,9 @@ impl<S: SecretStore> DeviceCredentials<S> {
         self.store.remove(ACCOUNT_SESSION_NAME)
     }
 
-    /// Used only by the serialized licensing completion flow. Do not erase another
-    /// account session that the caller stored while an earlier request was in flight.
-    pub(crate) fn clear_account_session_if_matches(
-        &self,
-        expected: &Token,
-    ) -> Result<bool, SecretError> {
+    /// Clear the session only if it still matches the acknowledged remote revocation.
+    /// The caller serializes access to native account custody.
+    pub fn clear_account_session_if_matches(&self, expected: &Token) -> Result<bool, SecretError> {
         if self.account_session()?.as_ref() != Some(expected) {
             return Ok(false);
         }
