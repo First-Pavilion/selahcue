@@ -50,10 +50,14 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import seat_plan_code
+from test_bound_activation import KEY, body, post
+from test_free_license_lifecycle import MANIFEST, REFRESH, activate_free
 from selahcue_api.apps.throttling import guards as throttle_guards
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
-from selahcue_api.apps.devices.models import DeviceToken, DeviceTokenStatus
+from selahcue_api.apps.devices.models import (
+    Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus,
+)
 from selahcue_api.apps.devices import services as device_services
 from selahcue_api.apps.devices.services import license_allows_commercial_service, refresh_license
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
@@ -854,6 +858,19 @@ def _extend_input(key, idem, new_expires_at, reason=EXTEND_REASON):
             "reason": reason,
         }
     }
+
+
+def _extend_over_http(client, key, idempotency_key, expires_at):
+    response = _gql(
+        client, EXTEND_MUTATION, _extend_input(key, idempotency_key, expires_at),
+        permissions="extend_license_key",
+    )
+    assert response.status_code == 200
+    result = response.json()
+    assert not result.get("errors"), result.get("errors")
+    payload = result["data"]["adminExtendLicenseKey"]
+    assert payload["changed"] is True and payload["replayed"] is False
+    assert datetime.fromisoformat(payload["licenseKey"]["expiresAt"]) == expires_at
 
 
 def _error_code(response):
@@ -2835,6 +2852,84 @@ def test_extension_expiring_while_waiting_for_lock_is_refused(monkeypatch):
     assert _fresh(key).status == S.EXPIRED
     assert _fresh(key).expires_at == key.expires_at
     assert not _rows(key, action=EXTEND_ACTION).exists()
+
+
+def test_legacy_refresh_does_not_consume_staff_extension(client):
+    key, full_key = _seed_key("legacy-staff-extension")
+    activated = post(client, KEY, body(license_key=full_key))
+    assert activated.status_code == 200
+    initial = activated.json()
+    bearer = initial["activation_token"]
+    original = DeviceToken.objects.values().get(device__license_key=key)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=key)
+    expiry = key.expires_at + timedelta(days=30)
+    _extend_over_http(client, key, "legacy-staff-extension", expiry)
+
+    response = post(client, REFRESH, {}, bearer)
+    assert response.status_code == 200
+    refreshed = response.json()
+    assert refreshed.get("activation_token") is None
+    assert refreshed["device"]["device_public_id"] == initial["device"]["device_public_id"]
+    assert refreshed["license"]["expires_at"] == expiry.isoformat()
+    assert refreshed["token"]["expires_at"] == original["expires_at"].isoformat()
+    assert _fresh(key).expires_at == expiry
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert DeviceToken.objects.values().get(device__license_key=key) == original
+    assert DeviceActivationOperation.objects.values().get(license_key=key) == receipt
+    assert _rows(key, action=EXTEND_ACTION, result=AuditResult.SUCCESS).count() == 1
+    assert not AuditEvent.objects.filter(action="device_token.reminted").exists()
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
+
+
+def test_negotiated_staff_extension_rotates_ordinary_and_managed_free(client):
+    ordinary, full_key = _seed_key("negotiated-staff-extension")
+    enrollment = post(client, KEY, body(license_key=full_key))
+    assert enrollment.status_code == 200
+    _org, _session, free_activation, managed = activate_free(client)
+    refreshes = []
+    capability = {"token_rotation": "staff-extension-v1"}
+    for lane, key, initial in (
+        ("ordinary", ordinary, enrollment.json()),
+        ("managed", managed, free_activation),
+    ):
+        bearer = initial["activation_token"]
+        original = DeviceToken.objects.get(device__license_key=key)
+        receipt = DeviceActivationOperation.objects.values().get(license_key=key)
+        expiry = key.expires_at + timedelta(days=30)
+        _extend_over_http(client, key, f"negotiated-staff-{lane}", expiry)
+        response = post(client, REFRESH, capability, bearer)
+        refreshes.append((key, bearer, original, receipt, expiry, response))
+
+    assert [response.status_code for *_, response in refreshes] == [200, 200]
+    replacements = [bool(response.json().get("activation_token")) for *_, response in refreshes]
+    assert replacements == [True, True]
+    for key, bearer, original, receipt, expiry, response in refreshes:
+        refreshed = response.json()
+        replacement = refreshed["activation_token"]
+        replaced = replacement != bearer
+        assert replaced
+        assert response["Cache-Control"] == "no-store"
+        assert refreshed["device"]["device_public_id"] == original.device.device_public_id
+        assert refreshed["license"]["expires_at"] == expiry.isoformat()
+        assert refreshed["token"]["expires_at"] == expiry.isoformat()
+        assert post(client, REFRESH, capability, bearer).status_code == 401
+        assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 401
+        assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {replacement}").status_code == 200
+        again = post(client, REFRESH, capability, replacement)
+        assert again.status_code == 200
+        assert again.json().get("activation_token") is None
+        original.refresh_from_db()
+        assert original.status == DeviceTokenStatus.REVOKED
+        assert Device.objects.filter(license_key=key).count() == 1
+        tokens = DeviceToken.objects.filter(device=original.device)
+        assert tokens.count() == 2
+        assert tokens.get(status=DeviceTokenStatus.ACTIVE).expires_at == expiry
+        assert DeviceActivationOperation.objects.values().get(license_key=key) == receipt
+        assert _rows(key, action=EXTEND_ACTION, result=AuditResult.SUCCESS).count() == 1
+        assert AuditEvent.objects.filter(
+            action="device_token.reminted", result=AuditResult.SUCCESS,
+            after__device_public_id=original.device.device_public_id,
+        ).count() == 1
 
 
 def test_next_refresh_rotates_a_live_token_and_the_http_caller_adopts_it(client, monkeypatch):

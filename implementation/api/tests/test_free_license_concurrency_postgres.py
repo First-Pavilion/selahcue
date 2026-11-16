@@ -16,10 +16,17 @@ from django.utils import timezone
 from test_bound_activation import SESSION, admin_session, body, post
 from test_bound_activation_postgres import parallel
 from test_concurrency_postgres import _licence_row_waiters
-from test_free_license_lifecycle import NOW, REFRESH, activate_free, self_service_org
+from test_entitlement_manifest_slice import TEST_SEED_B64
+from test_free_license_lifecycle import (
+    MANIFEST, NOW, REFRESH, RENEWED_TO, activate_free, self_service_org,
+)
+from test_license_revoke_extend import _extend_over_http
 from test_native_account_surface import seed_license, seed_org
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
-from selahcue_api.apps.devices.models import Device, DeviceActivationOperation, DeviceToken
+from selahcue_api.apps.devices.models import (
+    Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus,
+)
+from selahcue_api.apps.license_keys import state_machine
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
 from selahcue_api.graphql.context import ActorContext, ActorKind
@@ -153,6 +160,100 @@ def test_overlap_refusal_audit_survives_recovery_rollback(client):
     licence.refresh_from_db()
     assert licence.expires_at == expires
     assert Device.objects.count() == DeviceToken.objects.count() == DeviceActivationOperation.objects.count() == 1
+
+
+def test_free_writer_refusal_rolls_back_and_leaves_one_denial(client, monkeypatch, settings):
+    settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    org, _session, initial, licence = activate_free(client)
+    bearer = initial["activation_token"]
+    old_expiry = NOW + timedelta(days=2)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(
+        status=LicenseKeyStatus.EXPIRING, expires_at=old_expiry,
+    )
+    DeviceToken.objects.filter(device__license_key=licence).update(expires_at=old_expiry)
+    before_licence = AppLicenseKey.objects.values().get(pk=licence.pk)
+    before_token = DeviceToken.objects.values().get(device__license_key=licence)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=licence)
+    audit_before = set(AuditEvent.objects.values_list("pk", flat=True))
+
+    # Exercise the actual writer refusal after the Free expiry save, including its inner audit.
+    expiring = LicenseKeyStatus.EXPIRING
+    monkeypatch.setitem(
+        state_machine.LEGAL_TRANSITIONS, expiring,
+        state_machine.LEGAL_TRANSITIONS[expiring] - {LicenseKeyStatus.ACTIVATED},
+    )
+    response = post(client, REFRESH, {}, bearer)
+
+    assert AppLicenseKey.objects.values().get(pk=licence.pk) == before_licence
+    assert DeviceToken.objects.values().get(device__license_key=licence) == before_token
+    assert DeviceActivationOperation.objects.values().get(license_key=licence) == receipt
+    assert Device.objects.filter(customer=org).count() == 1
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CONFLICT"
+    denial = AuditEvent.objects.exclude(pk__in=audit_before).get()
+    assert (denial.action, denial.result) == ("license_key.free_renewed", AuditResult.DENIED)
+    assert denial.target_id == str(licence.pk)
+    assert denial.after["code"] == "CONFLICT"
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
+
+
+def test_frozen_clock_two_extensions_then_free_catchup_requires_replacement(
+    client, monkeypatch, settings,
+):
+    settings.SELAHCUE_TRUST_ACTOR_HEADERS = True
+    settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    org, _session, initial, licence = activate_free(client)
+    bearer = initial["activation_token"]
+    original = DeviceToken.objects.get(device__license_key=licence)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=licence)
+    old_expiry = NOW + timedelta(days=2)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(expires_at=old_expiry)
+    DeviceToken.objects.filter(pk=original.pk).update(expires_at=old_expiry)
+    _extend_over_http(client, licence, "frozen-extension-one", NOW + timedelta(days=3))
+    _extend_over_http(client, licence, "frozen-extension-two", NOW + timedelta(days=4))
+    extensions = AuditEvent.objects.filter(action="license_key.extended", target_id=str(licence.pk))
+    assert list(extensions.values_list("created_at", flat=True)) == [original.issued_at] * 2
+
+    legacy = post(client, REFRESH, {}, bearer)
+    assert legacy.status_code == 200
+    assert legacy.json().get("activation_token") is None
+    assert legacy.json()["license"]["expires_at"] == RENEWED_TO.isoformat()
+    assert legacy.json()["token"]["expires_at"] == old_expiry.isoformat()
+    original.refresh_from_db()
+    assert original.expires_at == old_expiry
+    assert original.status == DeviceTokenStatus.ACTIVE
+    assert DeviceToken.objects.filter(device=original.device).count() == 1
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
+
+    capable = {"token_rotation": "staff-extension-v1"}
+    refreshed = post(client, REFRESH, capable, bearer)
+    assert refreshed.status_code == 200
+    payload = refreshed.json()
+    replacement = payload.get("activation_token")
+    replaced = bool(replacement) and replacement != bearer
+    assert replaced
+    assert refreshed["Cache-Control"] == "no-store"
+    assert payload["device"]["device_public_id"] == initial["device"]["device_public_id"]
+    assert payload["token"]["expires_at"] == RENEWED_TO.isoformat()
+    assert post(client, REFRESH, capable, bearer).status_code == 401
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 401
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {replacement}").status_code == 200
+    again = post(client, REFRESH, capable, replacement)
+    assert again.status_code == 200
+    assert again.json().get("activation_token") is None
+    original.refresh_from_db()
+    assert original.status == DeviceTokenStatus.REVOKED
+    assert original.expires_at == old_expiry
+    assert Device.objects.filter(customer=org).count() == 1
+    tokens = DeviceToken.objects.filter(device=original.device)
+    assert tokens.count() == 2
+    assert tokens.get(status=DeviceTokenStatus.ACTIVE).expires_at == RENEWED_TO
+    assert DeviceActivationOperation.objects.values().get(license_key=licence) == receipt
+    assert AuditEvent.objects.filter(action="license_key.free_renewed", result=AuditResult.SUCCESS).count() == 1
+    assert AuditEvent.objects.filter(action="device_token.reminted", result=AuditResult.SUCCESS).count() == 1
+    assert not AuditEvent.objects.filter(action="device_token.free_validity_extended").exists()
 
 
 def _backend_pid():

@@ -8,15 +8,20 @@ they would pass there for the wrong reason and hide the very races they exist to
 import random
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
 import pytest
 from django.core.cache import cache
 from django.db import OperationalError, connection, connections, transaction
+from django.test import Client
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import issue_key, seat_plan_code, seed_org
+from test_bound_activation import KEY, body, post
+from test_entitlement_manifest_slice import TEST_SEED_B64
+from test_free_license_lifecycle import MANIFEST, REFRESH
 from selahcue_api.apps.accounts import services as account_services
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
@@ -30,6 +35,7 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import (
     Device,
+    DeviceActivationOperation,
     DeviceStatus,
     DeviceToken,
     DeviceTokenStatus,
@@ -1547,6 +1553,51 @@ def test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins():
     for sql in joined:
         assert f'FOR UPDATE OF "{AppLicenseKey._meta.db_table}"' in sql, sql
         assert org_table not in sql.split("FOR UPDATE", 1)[1], sql
+
+
+def test_ordinary_refresh_does_not_wait_on_licence_write_lock(client, settings):
+    settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
+    key, full_key = _seed_license_key(tag="ordinary-refresh-lock")
+    activated = post(client, KEY, body(license_key=full_key))
+    assert activated.status_code == 200
+    initial = activated.json()
+    bearer = initial["activation_token"]
+    token = DeviceToken.objects.values().get(device__license_key=key)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=key)
+    audit_count = AuditEvent.objects.count()
+
+    def refresh():
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET statement_timeout = '5s'")
+            with CaptureQueriesContext(connection) as queries:
+                response = post(Client(), REFRESH, {"token_rotation": "staff-extension-v1"}, bearer)
+            return response, queries.captured_queries
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with transaction.atomic():
+            AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+            worker = pool.submit(refresh)
+            # Leaving this scope releases the write lock even if the future times out.
+            response, queries = worker.result(timeout=3)
+
+    assert response.status_code == 200
+    refreshed = response.json()
+    assert refreshed.get("activation_token") is None
+    assert refreshed["device"]["device_public_id"] == initial["device"]["device_public_id"]
+    assert refreshed["license"]["valid_now"] is True
+    assert refreshed["token"]["expires_at"] == token["expires_at"].isoformat()
+    assert not any(
+        " FOR UPDATE" in query["sql"].upper() or " FOR NO KEY UPDATE" in query["sql"].upper()
+        for query in queries
+    )
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert DeviceToken.objects.values().get(device__license_key=key) == token
+    assert DeviceActivationOperation.objects.values().get(license_key=key) == receipt
+    assert AuditEvent.objects.count() == audit_count
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
 
 
 # FR-509 refresh renewal: genuine queued row-lock interleavings, not start barriers.
