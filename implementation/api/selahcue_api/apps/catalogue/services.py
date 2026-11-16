@@ -26,6 +26,7 @@ from django.utils import timezone
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.base_plan import _base_plan_for_license
 from selahcue_api.apps.catalogue.cache import GRANT_CACHE
+from selahcue_api.apps.catalogue.write_lock import lock_catalogue_revision
 from selahcue_api.apps.catalogue.models import (
     UNLIMITED,
     CatalogueRevision,
@@ -39,7 +40,7 @@ from selahcue_api.apps.catalogue.models import (
     is_reserved_grant_key,
     validate_grant_key,
 )
-from selahcue_api.apps.catalogue.org_plans import _select_org_plan
+from selahcue_api.apps.catalogue.org_plans import _MAX_LEDGER_UNITS, _NOTES, _STT_MINUTES, _select_org_plan
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
@@ -431,6 +432,14 @@ def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedE
 
 # --- Writes -----------------------------------------------------------------------------
 
+# The weekly ledger stores notes as counts and transcription as seconds. New licence
+# issuance copies the device grant into a positive integer field.
+_PLAN_GRANT_BOUNDS = {
+    _NOTES: (0, _MAX_LEDGER_UNITS),
+    _STT_MINUTES: (0, _MAX_LEDGER_UNITS // 60),
+    DEVICE_INSTANCES_DIMENSION: (1, MAX_DEVICE_INSTANCES),
+}
+
 # Overrides are priced exceptions, and an exception nobody revisits is an unpriced
 # entitlement. Time-boxed unless a caller deliberately says otherwise.
 DEFAULT_OVERRIDE_DAYS = 90
@@ -482,7 +491,10 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
     This is a DATA edit — no migration, no deploy. `plan_code` and `dimension_key` arrive
     from the caller and are looked up; they are never matched against a literal.
     """
-    staff = require_staff_permission(actor, StaffPermission.GRANT_ENTITLEMENT)
+    permission = (StaffPermission.MANAGE_PLAN_PRICING
+                  if actor is not None and StaffPermission.MANAGE_PLAN_PRICING in actor.staff_permissions
+                  else StaffPermission.GRANT_ENTITLEMENT)
+    staff = require_staff_permission(actor, permission)
     idempotency_key = validate_idempotency_key(data.idempotency_key)
     reason = require_reason(data.reason)
 
@@ -511,15 +523,25 @@ def set_plan_grant(actor: ActorContext | None, data: SetPlanGrantData) -> SetPla
         raise SafeAPIError(ErrorCode.NOT_FOUND)
 
     with transaction.atomic():
+        # Shared management/admin writers must lock the revision before grant rows;
+        # the post-save revision bump otherwise inverts the admin CAS lock order.
+        lock_catalogue_revision()
         plan = Plan.objects.filter(code=plan_code).first()
         dimension = GrantDimension.objects.filter(key=dimension_key).first()
         if plan is None or dimension is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
 
-        # Reject a value the dimension cannot express, rather than storing something that
-        # will silently vanish from every manifest at resolution time.
-        if coerce_grant_value(dimension.value_type, raw_value) is _UNSET:
+        if len(raw_value) > PlanGrant._meta.get_field("raw_value").max_length:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+
+        value = coerce_grant_value(dimension.value_type, raw_value)
+        if value is _UNSET:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        bounds = _PLAN_GRANT_BOUNDS.get(dimension.key)
+        if bounds is not None:
+            minimum, maximum = bounds
+            if type(value) is not int or not minimum <= value <= maximum:
+                raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
 
         existing = PlanGrant.objects.filter(plan=plan, dimension=dimension).first()
         previous = existing.raw_value if existing is not None else None
