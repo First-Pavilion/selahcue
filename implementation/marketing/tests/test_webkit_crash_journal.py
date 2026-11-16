@@ -207,15 +207,26 @@ class CrashJournalCLI(unittest.TestCase):
 
     def test_live_query_uses_fixed_read_only_argv_and_real_output_boundary(self):
         receipt = self.tmp / "argv"
+        long_message = (SECRET * 300 + "\\n" + record()["MESSAGE"]).replace(
+            "libWPEWebKit-2.0.so.1 +",
+            f"{BUNDLE_BIN.removesuffix('/bin')}/lib/libWPEWebKit-2.0.so.1.10.2 +",
+        )
+        self.assertGreater(len(long_message.encode()), 4096)
         self.fixture(f"""
             import json, os, sys
             from pathlib import Path
             Path({str(receipt)!r}).write_text(json.dumps([sys.argv[1:], os.getpid(), os.getpgrp()]))
             sys.stderr.write({SECRET!r})
-            sys.stdout.buffer.write({jsonl(record())!r})
+            # Model journalctl's null encoding above the default JSON field limit.
+            sys.stdout.buffer.write({jsonl(record(MESSAGE=long_message))!r} if "--all" in sys.argv
+                                    else {jsonl(record(MESSAGE=None))!r})
         """)
         result = self.invoke()
         self.assertEqual([r["pid"] for r in result["records"]], [27625])
+        self.assertEqual(result["records"][0]["frames"], [
+            {"module": "libc.so.6", "offset": "0x97259", "symbol": "malloc_printerr"},
+            {"module": "libWPEWebKit-2.0.so.1", "offset": "0x40ab"},
+        ])
         self.assertIn(result["handler"], ("systemd_coredump", "other_pipe", "file", "unavailable"))
         args, pid, group = json.loads(receipt.read_text())
         self.assertEqual(pid, group)
@@ -273,7 +284,7 @@ class CrashJournalCLI(unittest.TestCase):
             if os.fork() == 0:
                 # Keep stdout open and ignore graceful termination, like a stuck child.
                 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-                time.sleep(4.75)
+                time.sleep(4.55)
                 Path({str(survivor)!r}).touch()
                 os._exit(0)
             Path({str(marker)!r}).write_text(f'{{os.getpid()}} {{os.getpgrp()}}')

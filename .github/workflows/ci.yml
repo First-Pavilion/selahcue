@@ -338,6 +338,8 @@ jobs:
       # this workflow excludes. Repeating the stdlib-only control here is cheap.
       - name: Installer scanner self-test (no installer artifacts)
         run: python3 scripts/installer_secret_scan.py --self-test
+      - name: WebKit crash journal collector (offline controls)
+        run: python3 implementation/marketing/tests/test_webkit_crash_journal.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -1800,11 +1802,23 @@ jobs:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine chromium
       - name: Responsive sweep (WebKit)
+        id: responsive_webkit
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
           DEBUG: "pw:browser"
-        run: python3 scripts/responsive_sweep.py --engine webkit
+        run: |
+          if started_at="$(date +%s)"; then
+            printf 'started_at=%s\n' "$started_at" >> "$GITHUB_OUTPUT" || true
+          fi
+          python3 scripts/responsive_sweep.py --engine webkit
+
+      - name: Collect existing WebKit crash summaries
+        if: ${{ !cancelled() && (steps.responsive_webkit.outcome == 'success' || steps.responsive_webkit.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          WEBKIT_SWEEP_STARTED_AT: ${{ steps.responsive_webkit.outputs.started_at }}
+        run: python3 scripts/webkit_crash_journal.py --since "$WEBKIT_SWEEP_STARTED_AT" --until "$(date +%s)"
 
       - name: Responsive touch-target and geometry controls (WebKit)
         if: ${{ !cancelled() }}
