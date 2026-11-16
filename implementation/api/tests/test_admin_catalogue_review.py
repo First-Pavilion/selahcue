@@ -365,7 +365,11 @@ def test_http_receipt_replay_is_scoped_to_original_staff_actor(browser, plan):
     after = catalogue_state(plan)
 
     other = mutate(browser, "grant", data, actor_id="other-admin-review")
-    assert error_extensions(other) == {"code": "CONFLICT", "catalogueChanged": True}
+    assert other.status_code == 200, other.content
+    assert other.json()["errors"] == [{
+        "message": "The catalogue changed since you loaded it. Reload before editing.",
+        "extensions": {"code": "CONFLICT"},
+    }]
     assert catalogue_state(plan) == after
 
 
