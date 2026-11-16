@@ -2,9 +2,9 @@
 //! The actual async I/O future and its private runtime are shut down at expiry;
 //! an outer timeout around spawn_blocking is deliberately not the mechanism.
 use crate::transport::{
-    ensure_crypto_provider, require_https_base_url, require_loopback_test_url, HttpResponse,
-    HttpTransport, TransportError, CONNECT_TIMEOUT_SECS, MAX_TRANSPORT_RESPONSE_BYTES,
-    REQUEST_TIMEOUT_SECS,
+    ensure_crypto_provider, require_https_base_url, require_loopback_test_url,
+    reqwest_transport_error, HttpFailurePhase, HttpResponse, HttpTransport, TransportError,
+    CONNECT_TIMEOUT_SECS, MAX_TRANSPORT_RESPONSE_BYTES, REQUEST_TIMEOUT_SECS,
 };
 use selahcue_core::deadline::AccessDeadline;
 use std::sync::{
@@ -47,7 +47,7 @@ impl DeadlineTransport {
         }
         let client = builder
             .build()
-            .map_err(|_| TransportError("could not initialize deadline-bound HTTP".into()))?;
+            .map_err(|e| reqwest_transport_error(&e, HttpFailurePhase::Build))?;
         Ok(Self {
             client,
             deadline,
@@ -75,7 +75,10 @@ impl DeadlineTransport {
         if let Some(token) = bearer {
             request = request.bearer_auth(token);
         }
-        let mut response = request.send().await.map_err(|_| failed())?;
+        let mut response = request
+            .send()
+            .await
+            .map_err(|e| reqwest_transport_error(&e, HttpFailurePhase::Send))?;
         let status = response.status().as_u16();
         if matches!(status, 401 | 403) {
             self.rejected.store(true, Ordering::SeqCst);

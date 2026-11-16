@@ -5,9 +5,13 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_cloud::{
-    generate_sermon_notes, LocalNoteProvider, MockTransport, SelahCueCloudClient,
+    generate_sermon_notes, generate_sermon_notes_with_factory, CloudNoteProvider,
+    DegradedNoteReason, LocalNoteProvider, MockTransport, SelahCueCloudClient,
 };
-use selahcue_core::providers::ProvidersConfig;
+use selahcue_core::providers::{
+    NoteDraft, NoteError, NoteProvider, NoteRequest, ProvidersConfig, Quota,
+};
+use std::cell::{Cell, RefCell};
 
 /// 86akcffy0 (Cody review, High): `generate_sermon_notes` clamps the transcript at its own
 /// egress choke point, BEFORE calling any `CloudNoteProvider` — so a hosted `SelahCueCloudClient`
@@ -119,4 +123,227 @@ fn quota_exceeded_is_not_masked_by_fallback() {
 
 fn token() -> selahcue_cloud::Token {
     selahcue_cloud::Token::new("acct-session-token")
+}
+
+#[derive(Default)]
+struct RecordingLocal(RefCell<Vec<NoteRequest>>);
+
+impl NoteProvider for RecordingLocal {
+    fn label(&self) -> &str {
+        "Local (offline)"
+    }
+
+    fn generate(&self, req: &NoteRequest) -> Result<NoteDraft, NoteError> {
+        self.0.borrow_mut().push(req.clone());
+        LocalNoteProvider::new().generate(req)
+    }
+
+    fn is_generative(&self) -> bool {
+        false
+    }
+}
+
+struct RecordingCloud<'a> {
+    requests: &'a RefCell<Vec<NoteRequest>>,
+    error: Option<NoteError>,
+}
+
+impl NoteProvider for RecordingCloud<'_> {
+    fn label(&self) -> &str {
+        "Cloud fixture"
+    }
+
+    fn generate(&self, req: &NoteRequest) -> Result<NoteDraft, NoteError> {
+        self.generate_with_quota(req).map(|(draft, _)| draft)
+    }
+}
+
+impl CloudNoteProvider for RecordingCloud<'_> {
+    fn generate_with_quota(
+        &self,
+        req: &NoteRequest,
+    ) -> Result<(NoteDraft, Option<Quota>), NoteError> {
+        self.requests.borrow_mut().push(req.clone());
+        match &self.error {
+            Some(error) => Err(error.clone()),
+            None => Ok((
+                LocalNoteProvider::new().generate(req)?,
+                Some(Quota::default()),
+            )),
+        }
+    }
+}
+
+fn consented() -> ProvidersConfig {
+    let mut cfg = ProvidersConfig::default();
+    cfg.consent.cloud_notes = true;
+    cfg
+}
+
+#[test]
+fn factory_transport_failure_degrades() {
+    let calls = Cell::new(0);
+    let transport = MockTransport::failing();
+    let requests = transport.requests_handle();
+    let local = RecordingLocal::default();
+
+    let outcome = generate_sermon_notes_with_factory(
+        &consented(),
+        "Opening point. Closing point.",
+        true,
+        || {
+            calls.set(calls.get() + 1);
+            drop(transport);
+            Err::<SelahCueCloudClient<MockTransport>, _>(NoteError::Transport(
+                "cloud HTTP client setup failed".into(),
+            ))
+        },
+        &local,
+    )
+    .unwrap();
+
+    assert_eq!(calls.get(), 1);
+    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(local.0.borrow().len(), 1);
+    assert!(outcome.degraded);
+    assert_eq!(
+        outcome.degraded_reason,
+        Some(DegradedNoteReason::ClientSetupFailed)
+    );
+    assert_eq!(outcome.draft.title, "Opening point");
+    assert_eq!(outcome.provider_label, "Local (offline)");
+    assert_eq!(outcome.quota, None);
+    assert!(!outcome.ai_generated);
+    assert_eq!(outcome.disclosure, None);
+}
+
+#[test]
+fn factory_terminal_errors_propagate() {
+    for error in [
+        NoteError::ConsentRequired,
+        NoteError::NotConfigured,
+        NoteError::QuotaExceeded,
+        NoteError::Malformed("fixture returned an invalid draft".into()),
+    ] {
+        let calls = Cell::new(0);
+        let requests = RefCell::new(Vec::new());
+        let local = RecordingLocal::default();
+        let cfg = consented();
+
+        let construction = generate_sermon_notes_with_factory(
+            &cfg,
+            "Transcript.",
+            true,
+            || {
+                calls.set(calls.get() + 1);
+                Err::<RecordingCloud<'_>, _>(error.clone())
+            },
+            &local,
+        );
+        assert_eq!(construction.unwrap_err(), error);
+        assert_eq!(calls.get(), 1);
+        assert!(requests.borrow().is_empty());
+
+        let cloud = || RecordingCloud {
+            requests: &requests,
+            error: Some(error.clone()),
+        };
+        let request =
+            generate_sermon_notes_with_factory(&cfg, "Transcript.", true, || Ok(cloud()), &local);
+        let borrowed = generate_sermon_notes(&cfg, "Transcript.", true, &cloud(), &local);
+        assert_eq!(request.unwrap_err(), error);
+        assert_eq!(borrowed.unwrap_err(), error);
+        assert_eq!(requests.borrow().len(), 2);
+        assert!(local.0.borrow().is_empty());
+    }
+}
+
+fn assert_unadmitted(cfg: &ProvidersConfig, pressed: bool) {
+    let local = RecordingLocal::default();
+    let result = generate_sermon_notes_with_factory::<RecordingCloud<'_>, _, _>(
+        cfg,
+        "Transcript.",
+        pressed,
+        || panic!("unadmitted generation must not construct the cloud provider"),
+        &local,
+    );
+    assert_eq!(result.unwrap_err(), NoteError::ConsentRequired);
+    assert!(local.0.borrow().is_empty());
+}
+
+#[test]
+fn denied_consent_never_calls_factory() {
+    assert_unadmitted(&ProvidersConfig::default(), true);
+}
+
+#[test]
+fn generate_not_pressed_never_calls_factory() {
+    assert_unadmitted(&consented(), false);
+}
+
+#[test]
+fn factory_and_borrowed_paths_share_request_bound() {
+    let cap = selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS;
+    let kept = format!("HEAD. {}", "é".repeat(cap - 6));
+    let transcript = format!("{kept}TAIL");
+    let cfg = consented();
+    let requests = RefCell::new(Vec::new());
+    let local = RecordingLocal::default();
+    let cloud = || RecordingCloud {
+        requests: &requests,
+        error: Some(NoteError::Transport(
+            "cloud TLS certificate rejected".into(),
+        )),
+    };
+    let borrowed = generate_sermon_notes(&cfg, &transcript, true, &cloud(), &local).unwrap();
+    let request =
+        generate_sermon_notes_with_factory(&cfg, &transcript, true, || Ok(cloud()), &local)
+            .unwrap();
+    let construction = generate_sermon_notes_with_factory::<RecordingCloud<'_>, _, _>(
+        &cfg,
+        &transcript,
+        true,
+        || {
+            Err(NoteError::Transport(
+                "cloud TLS certificate rejected".into(),
+            ))
+        },
+        &local,
+    )
+    .unwrap();
+    assert_eq!(request, borrowed);
+    assert_eq!(construction, request);
+    assert_eq!(
+        request.degraded_reason,
+        Some(DegradedNoteReason::CertificateRejected)
+    );
+    assert_eq!(requests.borrow().len(), 2);
+    assert_eq!(local.0.borrow().len(), 3);
+    for req in requests.borrow().iter().chain(local.0.borrow().iter()) {
+        assert_eq!(req.transcript, kept);
+    }
+
+    let cloud_success = generate_sermon_notes_with_factory(
+        &cfg,
+        "Transcript.",
+        true,
+        || {
+            Ok(RecordingCloud {
+                requests: &requests,
+                error: None,
+            })
+        },
+        &local,
+    )
+    .unwrap();
+    assert!(!cloud_success.degraded);
+    assert_eq!(cloud_success.degraded_reason, None);
+    assert_eq!(cloud_success.provider_label, "Cloud fixture");
+    assert_eq!(cloud_success.quota, Some(Quota::default()));
+    assert!(cloud_success.ai_generated);
+    assert_eq!(
+        cloud_success.disclosure,
+        Some(selahcue_core::providers::FABRICATION_DISCLOSURE),
+    );
+    assert_eq!(local.0.borrow().len(), 3);
 }
