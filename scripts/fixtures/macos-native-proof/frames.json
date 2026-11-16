@@ -145,7 +145,7 @@
   },
   "comparator": {
     "path": "scripts/macos_native_fixtures.py",
-    "bytes": 30822,
-    "sha256": "a9e1065291906d6de00bd82d6804e58cbb050bd85e92e33d634088e62ade55f4"
+    "bytes": 31563,
+    "sha256": "8a5ff4f27da232f0d1dee6dc74f1d741f2eb58f8c24d77f5d4e6709d37c4d0eb"
   }
 }

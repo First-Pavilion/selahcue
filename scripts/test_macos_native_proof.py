@@ -1,4 +1,5 @@
 """Pure fixture gates. These tests never launch a native executable."""
+import builtins
 import copy
 import hashlib
 import importlib
@@ -133,6 +134,60 @@ class FixtureTests(unittest.TestCase):
             return batch
         with patch.object(self.f,'_batch',side_effect=changed),self.assertRaises(self.f.ProofError):
             self.f.prepare_batches()
+
+    def test_manifest_outer_comparator_relocation_rejected_in_memory(self):
+        original=self.f._regular
+        path=self.f.BUNDLE/'frames.json'
+        raw=original(path);manifest=json.loads(raw)
+        moved={'comparator':manifest['comparator'],**{k:v for k,v in manifest.items() if k!='comparator'}}
+        changed=(json.dumps(moved,ensure_ascii=False,indent=2)+'\n').encode()
+        self.assertNotEqual(changed,raw)
+        self.assertEqual(self.f.verify_inputs()['frames_sha256'],hashlib.sha256(raw).hexdigest())
+        with patch.object(self.f,'_regular',side_effect=lambda p: changed if p==path else original(p)),self.assertRaises(self.f.ProofError):
+            self.f.verify_inputs()
+
+    def test_manifest_inner_comparator_key_reorder_rejected_in_memory(self):
+        original=self.f._regular
+        path=self.f.BUNDLE/'frames.json'
+        raw=original(path);manifest=json.loads(raw)
+        manifest['comparator']=dict(reversed(list(manifest['comparator'].items())))
+        changed=(json.dumps(manifest,ensure_ascii=False,indent=2)+'\n').encode()
+        self.assertNotEqual(changed,raw)
+        self.assertEqual(self.f.verify_inputs()['frames_sha256'],hashlib.sha256(raw).hexdigest())
+        with patch.object(self.f,'_regular',side_effect=lambda p: changed if p==path else original(p)),self.assertRaises(self.f.ProofError):
+            self.f.verify_inputs()
+
+    def test_loader_rejects_each_producer_divergent_read_before_compile(self):
+        original=self.f._regular
+        for name in self.f.MODULES:
+            with self.subTest(module=name):
+                path=self.f.BUNDLE/'payloads'/(name+'.py')
+                valid=original(path);reads=[]
+                def divergent(p):
+                    if p!=path:return original(p)
+                    reads.append(p)
+                    return valid if len(reads)==1 else valid+b'\n_UNVERIFIED_PRODUCER = True\n'
+                with patch.object(self.f,'_regular',side_effect=divergent),patch.object(self.f,'compile',wraps=builtins.compile,create=True) as compiled:
+                    with self.assertRaises(self.f.ProofError):self.f._modules()
+                self.assertEqual(len(reads),2)
+                approved={hashlib.sha256(original(self.f.BUNDLE/'payloads'/(module+'.py'))).hexdigest() for module in self.f.MODULES}
+                self.assertTrue(all(hashlib.sha256(call.args[0]).hexdigest() in approved for call in compiled.call_args_list))
+
+    def test_fixture_rejects_divergent_read_before_parsing(self):
+        original=self.f._regular
+        path=self.f.BUNDLE/'payloads/fixtures/native/content.json'
+        valid=original(path);data=json.loads(valid);data['title']='unverified oracle'
+        changed=json.dumps(data,ensure_ascii=False).encode();reads=[]
+        def divergent(p):
+            if p!=path:return original(p)
+            reads.append(p)
+            return valid if len(reads)==1 else changed
+        with patch.object(self.f,'_regular',side_effect=divergent):
+            self.f.verify_inputs()
+            with patch.object(self.f,'_json',wraps=self.f._json) as parsed:
+                with self.assertRaises(self.f.ProofError):self.f._fixture('native/content.json')
+            self.assertNotIn(changed,[call.args[0] for call in parsed.call_args_list])
+        self.assertEqual(len(reads),2)
 
     def _default_row(self, frame):
         """Hand-written expected default observation, never captured from native."""

@@ -118,20 +118,44 @@ def _frame_manifest():
     require(sha256(wire(contract)).hexdigest() == FRAMES_CONTRACT_SHA256,
             'frozen frame contract identity')
     source = _regular(Path(__file__).absolute())
-    _same(manifest['comparator'], {
+    source_identity = {
         'path': 'scripts/macos_native_fixtures.py',
         'bytes': len(source), 'sha256': sha256(source).hexdigest(),
-    }, 'comparator source identity')
-    canonical = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
+    }
+    _same(manifest['comparator'], source_identity, 'comparator source identity')
+    # The authenticated contract fixes its own order. Append the fixed-order
+    # identity last rather than accepting the untrusted manifest's key order.
+    expected = contract | {'comparator': source_identity}
+    canonical = (json.dumps(expected, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
     require(raw == canonical, 'frame manifest raw serialization')
     return manifest, sha256(raw).hexdigest()
 
 
-def verify_inputs() -> dict:
-    """Verify the compiled-in bundle; no configurable roots or golden inputs."""
+def _input_manifest():
     raw = _regular(BUNDLE / 'inputs.json')
     require(sha256(raw).hexdigest() == INPUTS_SHA256, 'input manifest identity')
-    manifest = _json(raw)
+    return _json(raw)
+
+
+def _verified_member(row):
+    body = _regular(BUNDLE / row['path'])
+    require(len(body) == row['bytes'] and sha256(body).hexdigest() == row['sha256'],
+            'input bytes/hash mismatch: ' + row['path'])
+    return body
+
+
+def _payload_bytes(relative):
+    # Authenticate this exact read, not an earlier read discarded by the closure
+    # check. Both compile() and fixture parsing consume these returned bytes.
+    rows = [row for row in _input_manifest()['payloads']
+            if row['path'] == 'payloads/' + relative]
+    require(len(rows) == 1, 'unapproved payload')
+    return _verified_member(rows[0])
+
+
+def verify_inputs() -> dict:
+    """Verify the compiled-in bundle; no configurable roots or golden inputs."""
+    manifest = _input_manifest()
     require(len(manifest['payloads']) == 29, 'payload count')
     require(manifest['historical'] == {'matrix_input': MATRIX_INPUT, 'matrix_output': MATRIX_OUTPUT,
                                     'wrapper_raw': WRAPPER_RAW}, 'historical oracle identity')
@@ -143,9 +167,7 @@ def verify_inputs() -> dict:
                     'unsafe input path')
             require(str(rel) not in expected, 'duplicate input destination')
             expected.add(str(rel))
-            body = _regular(BUNDLE / str(rel))
-            require(len(body) == row['bytes'] and sha256(body).hexdigest() == row['sha256'],
-                    'input bytes/hash mismatch: ' + str(rel))
+            _verified_member(row)
         require(_closure(BUNDLE / kind, expected) == expected, 'input closure mismatch: ' + kind)
     require({p.name for p in BUNDLE.iterdir()} == {'inputs.json','frames.json','payloads','provenance'},
             'unexpected bundle root member')
@@ -170,7 +192,7 @@ def _modules():
         module.__file__ = str(BUNDLE / 'payloads' / (name + '.py'))
         module.__dict__['__builtins__'] = dict(vars(builtins), __import__=local_import)
         sys.modules[unique] = module  # dataclass resolves its own module here.
-        exec(compile(_regular(Path(module.__file__)), module.__file__, 'exec'), module.__dict__)
+        exec(compile(_payload_bytes(name + '.py'), module.__file__, 'exec'), module.__dict__)
         loaded[name] = module
     return loaded
 
@@ -237,7 +259,7 @@ def linked_sections(private):
 
 
 def _fixture(path):
-    return _json(_regular(BUNDLE / 'payloads/fixtures' / path))
+    return _json(_payload_bytes('fixtures/' + path))
 
 
 def _frame(draft, value, **extra):
