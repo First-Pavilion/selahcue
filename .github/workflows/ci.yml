@@ -1606,10 +1606,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    # Run 41038300286 attempts 1/2 passed 2147 tests in 14:14/14:17, but service,
-    # install/check and post-job work exhausted the 15-minute job cap. Keep a bounded
-    # 20-minute cap so the unchanged full suite and cleanup can report their result.
-    timeout-minutes: 20
+    # Run 43745074188 reached pytest's 80% progress marker before the 20-minute
+    # job cap. Allow time for the full suite, diagnostics and cleanup.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: implementation/api
@@ -1682,7 +1681,8 @@ jobs:
           SQL_PORT: "5432"
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
-        run: python -m pytest tests -q
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: python -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
 
   api-dependency-graph:
     name: api dependency graph (main only)
@@ -1818,6 +1818,8 @@ jobs:
           python3 tests/responsive_diagnostic_regression.py
           DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
           DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
+          DiagnosticProbeInertRegression
+          DiagnosticLedgerPrivacy
 
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.
@@ -1852,7 +1854,9 @@ jobs:
         run: python3 scripts/legal_pages_headless.py --only all
       - name: Public acquisition and route exclusions (Chromium + WebKit)
         if: ${{ !cancelled() }}
-        run: python3 tests/public_routes_headless.py --engine both
+        run: |
+          python3 tests/public_acquisition_fixture_regression.py
+          python3 tests/public_routes_headless.py --engine both
       - name: Public downloads (Chromium + WebKit)
         if: ${{ !cancelled() }}
         run: python3 tests/public_downloads_headless.py --engine both
