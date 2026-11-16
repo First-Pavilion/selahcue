@@ -269,68 +269,72 @@ def test_graphql_endpoints_keep_browser_csrf_and_reject_get_queries():
 
 @pytest.mark.django_db
 def test_a_browser_can_obtain_a_csrf_token_and_post_an_account_mutation(settings):
-    """THE browser-shaped test. The suite above pins that a token-less POST is refused; on its
-    own that is only half a contract, and the missing half is why every account mutation 403'd
-    for every real browser while the whole suite stayed green.
-
-    Django's test client bypasses CSRF unless `enforce_csrf_checks=True`, so the default
-    `client` fixture cannot see this class of break at all. The surface declares
-    `customer_session_with_csrf` (`route_contracts.py`) and `CsrfViewMiddleware` enforces it,
-    but nothing issued a `csrftoken` cookie to the SPA origin — no `get_token`, no
-    `@ensure_csrf_cookie` — and the SPA is served as static files, so Django never rendered a
-    page that could set one. The token could therefore never exist, and `graphql.ts` (which
-    sends the header "whenever the cookie is readable") had nothing to read.
-
-    This walks the real sequence: refused without a token, seed the cookie with the same-origin
-    bootstrap GET, then the identical POST succeeds.
-    """
+    """Run the protected account resolver through actual CSRF middleware."""
     from django.core.cache import cache
 
-    # The resend budget lives in the process-wide LocMemCache; budget spent by an earlier test
-    # would 429 this one and hide what it is actually asserting.
     cache.clear()
-    # The constant-time floor is not this test's subject — do not pay 0.25s for it.
     settings.ACCOUNT_RESEND_MIN_SECONDS = 0.0
+    settings.CSRF_COOKIE_SECURE = True
 
     client = Client(enforce_csrf_checks=True)
+    other_client = Client(enforce_csrf_checks=True)
     mutation = {
         "query": 'mutation { resendVerificationEmail(email: "nobody@browser.example") { accepted } }'
     }
 
-    def post_mutation(**extra):
-        return client.post(
+    def post_mutation(browser, origin="https://testserver", **extra):
+        return browser.post(
             "/graphql/account",
             data=json.dumps(mutation),
             content_type="application/json",
+            secure=True,
+            HTTP_ORIGIN=origin,
             **extra,
         )
 
-    # 1. What every browser got: 403, with an HTML body `graphqlRequest` cannot parse — which
-    #    surfaces to the user as a permanent "we couldn't verify your email just now".
-    blocked = post_mutation()
-    assert blocked.status_code == 403
-
-    # 2. The SPA seeds the cookie on load with a same-origin GET. This is an XHR from the
-    #    already-loaded page, so the top-level browsing context is the app's own site and the
-    #    SameSite=Strict cookie is both settable here and sent on step 3 — the cross-site
-    #    top-level navigation FROM the email link never has to carry it.
-    bootstrap = client.get("/graphql/csrf")
+    assert post_mutation(client).status_code == 403
+    bootstrap = client.get("/graphql/csrf", secure=True, HTTP_ORIGIN="https://evil.example")
     assert bootstrap.status_code == 200
     assert bootstrap.json() == {"ready": True}
-    token = bootstrap.cookies[settings.CSRF_COOKIE_NAME].value
-    assert token
-    # A shared cache must never hand one visitor another visitor's token.
-    assert "no-store" in bootstrap["Cache-Control"]
+    assert bootstrap["Cache-Control"] == "no-store"
+    assert "cookie" in {name.strip().lower() for name in bootstrap["Vary"].split(",")}
+    assert not any(name.lower().startswith("access-control-") for name in bootstrap.headers)
 
-    # 3. The same POST, with the header `graphql.ts` already sends. The cookie rides along
-    #    because the test client keeps the jar, exactly as a browser does.
-    accepted = post_mutation(HTTP_X_CSRFTOKEN=token)
-    assert accepted.status_code == 200
-    assert accepted.json()["data"]["resendVerificationEmail"]["accepted"] is True
+    cookie = bootstrap.cookies[settings.CSRF_COOKIE_NAME]
+    assert len(cookie.value) == 32 and cookie.value.isascii() and cookie.value.isalnum()
+    assert cookie["path"] == "/"
+    assert cookie["samesite"] == "Strict"
+    assert cookie["secure"]
+    assert not cookie["httponly"]
+    assert not cookie["domain"]
 
-    # 4. The control is still real: a forged cross-origin POST stays refused.
-    forged = post_mutation(HTTP_X_CSRFTOKEN=token, HTTP_ORIGIN="https://evil.example")
-    assert forged.status_code == 403
+    assert "X-CSRFToken" in bootstrap.headers
+    masked_token = bootstrap["X-CSRFToken"]
+    assert len(masked_token) == 64 and masked_token.isascii() and masked_token.isalnum()
+
+    head = client.head("/graphql/csrf", secure=True)
+    assert head.status_code == 405
+    assert head["Allow"] == "GET"
+    assert client.post(
+        "/graphql/csrf",
+        secure=True,
+        HTTP_ORIGIN="https://testserver",
+        HTTP_X_CSRFTOKEN=masked_token,
+    ).status_code == 405
+
+    # Try the header before giving the second client any cookie, then with its own.
+    assert post_mutation(other_client, HTTP_X_CSRFTOKEN=masked_token).status_code == 403
+    assert other_client.get("/graphql/csrf", secure=True).status_code == 200
+    assert post_mutation(other_client, HTTP_X_CSRFTOKEN=masked_token).status_code == 403
+    assert post_mutation(client).status_code == 403
+    assert post_mutation(
+        client, origin="https://evil.example", HTTP_X_CSRFTOKEN=masked_token
+    ).status_code == 403
+
+    for token in (masked_token, cookie.value):
+        accepted = post_mutation(client, HTTP_X_CSRFTOKEN=token)
+        assert accepted.status_code == 200
+        assert accepted.json()["data"]["resendVerificationEmail"]["accepted"] is True
 
 
 def test_the_csrf_bootstrap_route_is_declared_like_every_other_route():
