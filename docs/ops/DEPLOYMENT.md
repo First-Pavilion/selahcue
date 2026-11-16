@@ -237,6 +237,7 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `SENTRY_DSN` | empty | Read into settings, but nothing consumes it yet (no Sentry SDK is wired), so setting it changes nothing today. Intended for staging/prod only, never locally |
 | `SELAHCUE_CORS_ALLOWED_ORIGINS` | empty | Leave empty. It is read but **not enforced**: no CORS middleware is installed (the SPA is served same-origin), and `selahcue_accounts.W001` warns if it is set |
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` in dev; false elsewhere | **Startup refuses true outside exact `dev`, including staging and explicit opt-in.** See below |
+| `SELAHCUE_ENABLE_ADMIN_CATALOGUE` | false | **Keep false/unset in every shared deployment. Startup and the service refuse enablement outside exact `dev`.** The admin catalogue slice is mergeable before staff sign-in, but must remain disabled in production until that authenticator passes security review. This flag is not authentication. |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
 | `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |

@@ -37,6 +37,214 @@ def inert_playwright_api():
 PROBE_STATE = dict(elapsedMs=10078, totalPolls=2, lastResult=False, stopped=False,
                    earlyTimerEntries=0, periodicTimerEntries=0, lateTimerEntries=0)
 
+PROBE_PREFIX = 'WEBKIT_SETTLE_PROBE '
+FIRST_DOCUMENT = '0123456789abcdef0123456789abcdef'
+OTHER_DOCUMENT = 'fedcba9876543210fedcba9876543210'
+
+
+def protocol_record(kind, document=FIRST_DOCUMENT, **fields):
+    return dict(version=1, kind=kind, document=document, **fields)
+
+
+def probe_record(document=FIRST_DOCUMENT):
+    return protocol_record('probe', document, outcome='snapshot', state=PROBE_STATE, gateResult=False)
+
+
+def protocol_text(record):
+    return PROBE_PREFIX + json.dumps(record, separators=(',', ':'))
+
+
+# The VM supplies only host/browser primitives. The init script, actual poll and
+# failure probe are the production expressions shipped to Playwright.
+NODE_PROBE_DRIVER = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { webcrypto } = require('node:crypto');
+const { init, poll, probe, scenarios } = JSON.parse(fs.readFileSync(0, 'utf8'));
+const output = scenarios.map((scenario) => {
+  const lines = [];
+  const context = vm.createContext({
+    crypto: webcrypto,
+    performance: { now: () => 0 },
+    console: { debug(line) { lines.push(line); } },
+    document: {
+      readyState: 'complete', visibilityState: 'visible',
+      getAnimations: () => [], querySelector: () => null,
+    },
+    addEventListener() {}, setTimeout: () => 1, clearTimeout() {},
+    requestAnimationFrame: () => 1, cancelAnimationFrame() {},
+  });
+  vm.runInContext('window = self = globalThis; top = window;', context);
+  vm.runInContext(init, context);
+  if (scenario.poll) {
+    vm.runInContext('(' + poll + ')()', context);
+    vm.runInContext('(' + poll + ')()', context);
+  }
+  vm.runInContext(scenario.setup, context);
+  let error = null;
+  try { vm.runInContext('(' + probe + ')("WEBKIT_SETTLE_STATE ")', context); }
+  catch (exception) { error = exception.message; }
+  const stateAfterProbe = scenario.readStateAfterProbe
+    ? vm.runInContext('window.__selahcueSettleState()', context)
+    : undefined;
+  return { records: lines.filter(line => line.startsWith('WEBKIT_SETTLE_PROBE ')),
+           error, gateReads: context.gateReads, stateAfterProbe };
+});
+process.stdout.write(JSON.stringify(output));
+"""
+
+
+def run_protocol_js(scenarios):
+    inputs = json.dumps(dict(init=sweep.SETTLE_DIAGNOSTIC_JS, poll=sweep.OBSERVED_SETTLE_JS,
+                             probe=sweep.SETTLE_STATE_PROBE_JS, scenarios=scenarios)).encode()
+    # Set the output cap in the child before exec. One combined bounded file avoids
+    # pipe backpressure and prevents an erroneous producer exhausting capture memory.
+    limit = 256 * 1024
+    launcher = (
+        "import os, resource, sys; "
+        "limit = int(sys.argv[1]); resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit)); "
+        "os.execvp('node', ['node', '-e', sys.argv[2]])"
+    )
+    with tempfile.TemporaryFile() as output:
+        result = subprocess.run(
+            [sys.executable, '-I', '-B', '-c', launcher, str(limit), NODE_PROBE_DRIVER],
+            input=inputs, stdout=output, stderr=subprocess.STDOUT, timeout=5,
+        )
+        output.seek(0)
+        captured = output.read(limit)
+    if result.returncode != 0:
+        raise AssertionError(f'Node diagnostic control exited {result.returncode}: {captured[:512]!r}')
+    return json.loads(captured)
+
+
+class InertTimeoutPage:
+    """Playwright boundary adapter for a single timed-out cell."""
+
+    def __init__(self, first_document, before, during, faults):
+        self.first_document, self.before, self.during = first_document, before, during
+        self.faults = faults
+        self.listeners = {}
+        self.main_frame = types.SimpleNamespace(parent_frame=None)
+        self.child_frame = types.SimpleNamespace(parent_frame=self.main_frame)
+        self.clock = 0
+        self.waits = []
+
+    def on(self, event, callback):
+        if 'registration' in self.faults and event == 'framenavigated':
+            raise RuntimeError('private-listener-registration')
+        self.listeners.setdefault(event, []).append(callback)
+
+    def remove_listener(self, event, callback):
+        self.listeners[event].remove(callback)
+        if 'removal' in self.faults:
+            raise RuntimeError('private-listener-removal')
+
+    def dispatch(self, event, *args):
+        for callback in tuple(self.listeners.get(event, ())):
+            callback(*args)
+
+    def emit(self, events):
+        for event in events:
+            if event == 'main-navigation':
+                self.dispatch('framenavigated', self.main_frame)
+            elif event == 'subframe-navigation':
+                self.dispatch('framenavigated', self.child_frame)
+            elif event in ('close', 'crash'):
+                self.dispatch(event)
+            elif event is None:
+                self.dispatch('console', UnreadableConsoleMessage())
+            else:
+                self.dispatch('console', types.SimpleNamespace(type='debug', text=event))
+
+    def add_init_script(self, *args):
+        pass
+
+    def goto(self, *args, **kwargs):
+        self.emit(('main-navigation', 'subframe-navigation'))
+
+    def wait_for_selector(self, *args, **kwargs):
+        pass
+
+    def wait_for_function(self, expression, **kwargs):
+        self.waits.append((expression, kwargs))
+        if expression == sweep.OBSERVED_SETTLE_JS:
+            if self.first_document:
+                self.emit((protocol_text(protocol_record('document', self.first_document)),))
+            self.emit(self.before)
+            # Simulate delivery after the existing generic observer cutoff without waiting.
+            self.clock = 13
+            raise InertPlaywrightTimeout('ORIGINAL 10000ms failure')
+        self.emit(self.during)
+        raise InertPlaywrightError('private-error-channel-without-marker')
+
+
+class UnreadableConsoleMessage:
+    type = 'debug'
+
+    @property
+    def text(self):
+        raise RuntimeError('private-console-read')
+
+
+def run_receipt_main(first_document=FIRST_DOCUMENT, before=(), during=(), faults=()):
+    page = InertTimeoutPage(first_document, before, during, faults)
+    api = inert_playwright_api()
+    context = types.SimpleNamespace(new_page=lambda: page)
+    browser = types.SimpleNamespace(new_context=lambda **kwargs: context)
+    api.sync_playwright = lambda: contextlib.nullcontext(types.SimpleNamespace(
+        webkit=types.SimpleNamespace(launch=lambda: browser)))
+    server = types.SimpleNamespace(server_address=('127.0.0.1', 1234),
+                                   serve_forever=lambda: None, shutdown=lambda: None)
+    bindings = dict(Server=lambda *args: server,
+                    threading=types.SimpleNamespace(Thread=lambda **kwargs:
+                                                    types.SimpleNamespace(start=lambda: None)),
+                    time=types.SimpleNamespace(monotonic=lambda: page.clock),
+                    emit_browser_identity=lambda *args: None, install_stubs=lambda *args: None)
+    if 'output' in faults:
+        def refuse_line(_line):
+            raise OSError('private-diagnostic-output')
+        bindings['emit_diagnostic_line'] = refuse_line
+    output = io.StringIO()
+    with patch.dict(sys.modules, {'playwright': types.ModuleType('playwright'),
+                                  'playwright.sync_api': api}), \
+            patch.dict(sweep.__dict__, bindings), \
+            patch.object(Path, 'exists', return_value=True), \
+            patch.object(sys, 'argv', ['sweep', '--engine', 'webkit', '--routes', '/signin',
+                                       '--widths', '1024']), \
+            contextlib.redirect_stdout(output):
+        code = sweep.main()
+    return code, output.getvalue(), page.waits
+
+
+class ReceiptMainAssertions:
+    def assert_timeout_receipt(self, **kwargs):
+        code, output, waits = run_receipt_main(**kwargs)
+        self.assertEqual(code, 2)
+        self.assertEqual(waits, [
+            (sweep.OBSERVED_SETTLE_JS, {'timeout': 10000}),
+            (sweep.SETTLE_STATE_PROBE_JS, {'arg': 'WEBKIT_SETTLE_STATE ', 'timeout': 1000, 'polling': 100}),
+        ])
+        lines = output.splitlines()
+        self.assertEqual(lines[0], 'INFRA webkit 1024px /signin: ORIGINAL 10000ms failure')
+        self.assertNotIn('private-', output)
+        self.assertNotIn(FIRST_DOCUMENT, output)
+        self.assertNotIn(OTHER_DOCUMENT, output)
+        if 'output' in kwargs.get('faults', ()):
+            self.assertEqual(len(lines), 1)
+            return None
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[1].startswith('WEBKIT_SETTLE_TRACE '))
+        self.assertTrue(lines[2].startswith('WEBKIT_SETTLE_STATE '))
+        receipt = json.loads(lines[2].split(' ', 1)[1])
+        self.assertEqual(receipt['capture'], 'after-timeout')
+        self.assertEqual(receipt['outcome'], 'missing-marker')
+        self.assertEqual(receipt['errorFamily'], 'playwright-error')
+        self.assertIsNone(receipt['state'])
+        self.assertIs(type(receipt['elapsedMs']), int)
+        self.assertIn('observation', receipt, 'the timeout probe has no independent observation')
+        self.assertEqual(set(receipt['observation']), {'console', 'documentMatch', 'lifecycle', 'rejected'})
+        return receipt['observation']
+
 
 class InertProbePage:
     def __init__(self, payload):
@@ -102,7 +310,122 @@ def run_timeout_pipe_child(mode):
         return sweep.main()
 
 
-class DiagnosticProbeInertRegression(unittest.TestCase):
+class DiagnosticProbeInertRegression(ReceiptMainAssertions, unittest.TestCase):
+    def test_probe_reports_each_getter_and_encoding_outcome(self):
+        state = json.dumps(PROBE_STATE)
+        cases = [
+            ('delete window.__selahcueSettleState;', 'absent', None),
+            ('window.__selahcueSettleState = 42;', 'non-callable', None),
+            ("Object.defineProperty(window, '__selahcueSettleState', {get() {"
+             " throw new Error('private-read'); }});", 'getter-threw', None),
+            ("window.__selahcueSettleState = () => { throw new Error('private-call'); };",
+             'getter-threw', None),
+            (f"window.__selahcueSettleState = () => ({{...{state}, "
+             "get totalPolls() { throw new Error('private-encoding'); }});",
+             'encoding-failed', None),
+            ('window.__selahcueSettleState = () => null;', 'nullish', None),
+            ('window.__selahcueSettleState = () => undefined;', 'nullish', None),
+            (f'window.__selahcueSettleState = () => ({state});', 'snapshot', PROBE_STATE),
+        ]
+        results = run_protocol_js([dict(poll=False, setup=setup) for setup, _, _ in cases])
+        for (setup, outcome, expected_state), result in zip(cases, results):
+            with self.subTest(setup=setup):
+                self.assertEqual(len(result['records']), 1, 'missing or duplicate console probe record')
+                self.assertIsNotNone(result['error'], 'the probe stopped using the error delivery channel')
+                line = result['records'][0]
+                self.assertNotIn('private-', line)
+                body = line.removeprefix(PROBE_PREFIX)
+                self.assertLessEqual(len(body.encode('ascii')), 768)
+                probe = json.loads(body)
+                self.assertRegex(probe['document'], r'^[0-9a-f]{32}$')
+                self.assertEqual(probe, protocol_record('probe', probe['document'], outcome=outcome,
+                                                        state=expected_state, gateResult=True))
+
+    def test_first_actual_poll_identifies_each_document_once(self):
+        # Removing the getter in document one must not remove that document's identity.
+        results = run_protocol_js([
+            dict(poll=True, setup='delete window.__selahcueSettleState;'),
+            dict(poll=True, setup=''),
+            dict(poll=False, setup=''),
+        ])
+        documents = []
+        for result in results[:2]:
+            self.assertEqual(len(result['records']), 2, 'expected one first-poll record followed by one probe')
+            document, probe = [json.loads(line.removeprefix(PROBE_PREFIX)) for line in result['records']]
+            nonce = document['document']
+            self.assertRegex(nonce, r'^[0-9a-f]{32}$')
+            self.assertEqual(document, protocol_record('document', nonce))
+            self.assertEqual(probe['document'], nonce)
+            documents.append(nonce)
+        self.assertNotEqual(*documents)
+        self.assertEqual(len(results[2]['records']), 1)
+        self.assertEqual(json.loads(results[2]['records'][0].removeprefix(PROBE_PREFIX))['kind'], 'probe')
+
+    def test_probe_rechecks_gate_once_without_mutating_poll_state(self):
+        results = run_protocol_js([dict(poll=True, setup=setup, readStateAfterProbe=True) for setup in (
+            "window.gateReads = 0; document.getAnimations = () => {"
+            " ++window.gateReads;"
+            " return [{playState:'running', effect:{getComputedTiming:() => ({iterations:1})}}]; };",
+            "window.gateReads = 0; document.getAnimations = () => {"
+            " ++window.gateReads; throw new Error('private-gate-read'); };",
+        )])
+        for result, label in zip(results, (False, 'read-error')):
+            with self.subTest(label=label):
+                self.assertEqual(len(result['records']), 2, 'no fresh gate result was delivered')
+                probe = json.loads(result['records'][1].removeprefix(PROBE_PREFIX))
+                self.assertEqual(probe['gateResult'], label)
+                self.assertIs(type(probe['gateResult']), type(label))
+                self.assertEqual(result['gateReads'], 1)
+                self.assertEqual(probe['outcome'], 'snapshot')
+                self.assertEqual(probe['state']['totalPolls'], 2)
+                self.assertIs(probe['state']['lastResult'], True)
+                live_state = result['stateAfterProbe']
+                self.assertEqual(live_state['totalPolls'], 2)
+                self.assertIs(live_state['lastResult'], True)
+                self.assertNotIn('private-', result['records'][1])
+                self.assertTrue(result['error'].startswith('WEBKIT_SETTLE_STATE '))
+
+    def test_console_write_failure_preserves_legacy_error_delivery(self):
+        # Lose the console channel only at probe time. The original error
+        # channel must still deliver the snapshot from the observed polls.
+        result, = run_protocol_js([dict(
+            poll=True, setup="console.debug = () => { throw new Error('private-console-write'); };",
+        )])
+        self.assertEqual(len(result['records']), 1)
+        self.assertTrue(result['error'].startswith('WEBKIT_SETTLE_STATE '))
+        state = json.loads(result['error'].removeprefix('WEBKIT_SETTLE_STATE '))
+        self.assertEqual(state['totalPolls'], 2)
+
+    def test_timeout_receipt_survives_missing_marker_with_document_match(self):
+        for first, probe, match in (
+            (FIRST_DOCUMENT, FIRST_DOCUMENT, 'same'),
+            (FIRST_DOCUMENT, OTHER_DOCUMENT, 'different'),
+            (FIRST_DOCUMENT, None, 'unknown'),
+            (None, FIRST_DOCUMENT, 'unknown'),
+        ):
+            with self.subTest(match=match, first_present=bool(first), probe_present=bool(probe)):
+                observed = self.assert_timeout_receipt(first_document=first, during=(protocol_text(probe_record(probe)),))
+                self.assertEqual(observed['documentMatch'], match)
+                self.assertEqual(observed['console'], dict(outcome='snapshot', state=PROBE_STATE, gateResult=False))
+                self.assertEqual(observed['rejected'], 0)
+
+    def test_post_probe_receipt_records_lifecycle_after_generic_cutoff(self):
+        observed = self.assert_timeout_receipt(
+            before=('crash', 'subframe-navigation'),
+            during=('close', 'main-navigation', 'crash', 'crash', 'subframe-navigation',
+                    protocol_text(probe_record())),
+        )
+        self.assertEqual(observed['lifecycle'], {
+            'before': {'close': 0, 'crash': 1, 'mainDocumentNavigation': 1},
+            'during': {'close': 1, 'crash': 2, 'mainDocumentNavigation': 1},
+        })
+        self.assertEqual(observed['documentMatch'], 'same')
+
+    def test_observer_faults_preserve_original_timeout_and_single_probe(self):
+        for fault in ('registration', 'removal', 'output'):
+            with self.subTest(fault=fault):
+                self.assert_timeout_receipt(faults=(fault,), during=(None, protocol_text(probe_record())))
+
     def test_nonstandard_json_constants_are_syntax_refusals(self):
         # Default Python JSON parsing accepts these tokens, including nested ones.
         payloads = ('NaN', 'Infinity', '-Infinity', '{"elapsedMs":NaN}',
@@ -185,7 +508,64 @@ class DiagnosticProbeInertRegression(unittest.TestCase):
                         stream.close()
 
 
-class DiagnosticLedgerPrivacy(unittest.TestCase):
+class DiagnosticLedgerPrivacy(ReceiptMainAssertions, unittest.TestCase):
+    def test_untrusted_probe_protocol_refuses_invalid_records(self):
+        good = probe_record()
+        record = protocol_text(good)
+        rejected = {
+            'array': PROBE_PREFIX + '[]',
+            'incomplete JSON': PROBE_PREFIX + '{',
+            'repeated version': record.replace('"version":1', '"version":1,"version":1'),
+            'repeated state field': record.replace('"totalPolls":2', '"totalPolls":2,"totalPolls":2'),
+            'nonstandard NaN': record.replace('"totalPolls":2', '"totalPolls":NaN'),
+            'nonstandard Infinity': record.replace('"elapsedMs":10078', '"elapsedMs":Infinity'),
+            'non-ASCII suffix': record + '\u00a0',
+            '769-byte body': record.ljust(len(PROBE_PREFIX) + 769),
+            'boolean version': protocol_text({**good, 'version': True}),
+            'unknown version': protocol_text({**good, 'version': 2}),
+            'extra field': protocol_text({**good, 'note': 'private-raw-url-cookie-credential'}),
+            'invalid nonce': protocol_text({**good, 'document': FIRST_DOCUMENT.upper()}),
+            'unknown outcome': protocol_text({**good, 'outcome': 'private-error-secret'}),
+            'integer gate result': protocol_text({**good, 'gateResult': 0}),
+            'poll count overflow': protocol_text({**good, 'state': {**PROBE_STATE, 'totalPolls': 65536}}),
+            'timer count overflow': protocol_text({**good, 'state': {**PROBE_STATE, 'lateTimerEntries': 2}}),
+            'extra state field': protocol_text({**good, 'state': {**PROBE_STATE, 'extra': 'private-dom-content'}}),
+            'snapshot without state': protocol_text({**good, 'state': None}),
+            'state for a nullish outcome': protocol_text({**good, 'outcome': 'nullish'}),
+            'late document record': protocol_text(protocol_record('document', OTHER_DOCUMENT)),
+        }
+        for label, invalid in rejected.items():
+            with self.subTest(label=label):
+                observed = self.assert_timeout_receipt(during=(invalid,))
+                self.assertEqual(observed['rejected'], 1)
+                self.assertIsNone(observed['console'])
+                self.assertEqual(observed['documentMatch'], 'unknown')
+
+    def test_probe_protocol_accepts_a_768_byte_body(self):
+        padded = protocol_text(probe_record()).ljust(len(PROBE_PREFIX) + 768)
+        observed = self.assert_timeout_receipt(during=(padded,))
+        self.assertEqual(observed['rejected'], 0)
+        self.assertEqual(observed['documentMatch'], 'same')
+        self.assertEqual(observed['console'], dict(outcome='snapshot', gateResult=False, state=PROBE_STATE))
+
+    def test_probe_protocol_retains_the_first_valid_probe_record(self):
+        good = probe_record()
+        observed = self.assert_timeout_receipt(during=(protocol_text(good), protocol_text({
+            **good, 'document': OTHER_DOCUMENT, 'gateResult': True,
+        })))
+        self.assertEqual(observed['rejected'], 1)
+        self.assertEqual(observed['documentMatch'], 'same')
+        self.assertEqual(observed['console'], dict(outcome='snapshot', gateResult=False, state=PROBE_STATE))
+
+    def test_post_probe_counters_saturate(self):
+        observed = self.assert_timeout_receipt(
+            during=['crash', PROBE_PREFIX + 'null'] * 65537,
+        )
+        self.assertEqual(observed['rejected'], 65535)
+        self.assertEqual(observed['lifecycle']['during']['crash'], 65535)
+        self.assertIsNone(observed['console'])
+        self.assertEqual(observed['documentMatch'], 'unknown')
+
     def test_planned_route_metadata_omits_query_and_fragment_secrets(self):
         # Observation can be unavailable; safe metadata must still render without secrets.
         diagnostic = sweep.SettleDiagnostic(None, '/verify?token=private-control-secret#private-fragment', 375)

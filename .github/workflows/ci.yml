@@ -342,6 +342,8 @@ jobs:
       # this workflow excludes. Repeating the stdlib-only control here is cheap.
       - name: Installer scanner self-test (no installer artifacts)
         run: python3 scripts/installer_secret_scan.py --self-test
+      - name: Cargo receipt scanner tests
+        run: python3 scripts/test_dev_key_scan.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -1150,7 +1152,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libx11-dev libxkbcommon-dev \
-            libasound2-dev
+            libasound2-dev poppler-utils
       - name: Stage Tauri sidecar/resource placeholders (compile-check only)
         # tauri-build validates that the externalBin sidecar (`selahcue-output`) and the NDI
         # resource dll exist at build time. This job COMPILE-checks the operator (it does not
@@ -1174,6 +1176,26 @@ jobs:
           fi
           stage "binaries/Processing.NDI.Lib.x64.dll"
           echo "staged Tauri placeholders for ${triple}"
+      - name: Set up Python for the PDF oracle (Linux)
+        id: pdf-python
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          update-environment: false
+      - name: Install PDF oracle parsers (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          PDF_ORACLE_SETUP_PYTHON: ${{ steps.pdf-python.outputs.python-path }}
+        run: |
+          venv="$RUNNER_TEMP/selahcue-pdf-oracle"
+          mkdir -- "$venv"
+          "$PDF_ORACLE_SETUP_PYTHON" -m venv "$venv"
+          "$venv/bin/python" -m pip install --only-binary=:all: pypdf==6.21.4 pdfplumber==0.11.9
+          "$venv/bin/python" -m pip freeze
       # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
       # failure aborted before `cargo test` ever ran -- so this job still had exactly
       # the masking the rest of this change removes, while appearing to be covered.
@@ -1196,6 +1218,49 @@ jobs:
       - name: Test
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+      - name: Verify operator PDF export (Linux)
+        id: pdf-export-proof
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        timeout-minutes: 5
+        shell: bash
+        env:
+          C4_PDF_FIXTURES: ${{ runner.temp }}/selahcue-pdf-fixtures
+          C4_PDF_PYTHON: ${{ runner.temp }}/selahcue-pdf-oracle/bin/python
+        run: |
+          mkdir -- "$C4_PDF_FIXTURES"
+          cargo test --locked --bin selahcue-operator notes_export_tests::author_pdf_inspection_fixtures -- --ignored --exact --nocapture
+
+          cd -- "$C4_PDF_FIXTURES" || exit 1
+          pdftoppm -r 144 -png saved-a-unicode.pdf saved-a-unicode
+          pdftoppm -r 144 -png saved-long.pdf saved-long
+          shopt -s nullglob
+          unicode_pages=(saved-a-unicode-*.png)
+          long_pages=(saved-long-*.png)
+          if (( ${#unicode_pages[@]} != 1 || ${#long_pages[@]} != 8 )); then
+            echo "Expected 1 Unicode fixture page and 8 long fixture pages" >&2
+            exit 1
+          fi
+          for page in "${unicode_pages[@]}" "${long_pages[@]}"; do
+            test -s "$page"
+          done
+
+          pdfinfo saved-a-unicode.pdf
+          pdfinfo saved-long.pdf
+          sha256sum saved-a-unicode.pdf saved-long.pdf expected.json
+          artifact_bytes=$(du --bytes --summarize . | cut -f1)
+          if (( artifact_bytes > 20 * 1024 * 1024 )); then
+            echo "PDF fixture directory exceeds 20 MiB ($artifact_bytes bytes)" >&2
+            exit 1
+          fi
+      - name: Upload operator PDF inspection fixtures (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.pdf-export-proof.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: operator-pdf-inspection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/selahcue-pdf-fixtures
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: false
       # `dev-keys` (86akby6yy) is OFF by default, so the four steps above compile none of the
       # `.env` loader and none of its tests. One of those tests is a SECURITY control: it asserts
       # at the WRITE boundary that no name outside the three-entry allowlist reaches the process
@@ -1643,7 +1708,7 @@ jobs:
           python-version: "3.14"
       # Official setup-uv v7 annotated tag object 94527f2e (commit 37802adc).
       # Exact bootstrap version enforced by .uv-version/helper; project permits compatible patches.
-      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           version: "0.13.4"
           enable-cache: true
@@ -1810,6 +1875,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
+          DEBUG: "pw:browser"
         run: python3 scripts/responsive_sweep.py --engine webkit
 
       - name: Responsive touch-target and geometry controls (WebKit)

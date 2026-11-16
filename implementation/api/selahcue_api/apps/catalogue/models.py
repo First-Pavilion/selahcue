@@ -517,6 +517,18 @@ class CatalogueRevision(models.Model):
         return f"catalogue revision {self.revision}"
 
 
+class CatalogueAdminMutation(models.Model):
+    """Durable retry receipt scoped to the authenticated staff actor, never a credential."""
+    actor_id = models.CharField(max_length=128)
+    idempotency_key = models.CharField(max_length=128)
+    fingerprint = models.CharField(max_length=64)
+    result = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['actor_id', 'idempotency_key'], name='uniq_catalogue_admin_retry')]
+
+
 class OrgPlanGrant(models.Model):
     """An effective-dated staff grant. Resolution does not mutate grant history."""
 
