@@ -1,5 +1,7 @@
 """Bounded representative Task 6 qualification on the existing hosted PostgreSQL runner."""
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -14,7 +16,7 @@ import time
 from uuid import UUID
 
 import pytest
-from django.db import close_old_connections, connection, connections
+from django.db import close_old_connections, connection, connections, transaction
 from django.test.utils import CaptureQueriesContext
 
 from provider_helpers import DEEPGRAM, cold_provider_cache, identity, policy_rows, provider_mounts, write_mount
@@ -215,11 +217,23 @@ LOCAL_PARTICIPANTS = (
 )
 
 
+@contextmanager
+def _capture_operation_queries():
+    """Capture one nonoverlapping operation on this participant's connection."""
+    queries_log = connection.queries_log
+    queries_log.clear()
+    with CaptureQueriesContext(connection) as statements:
+        yield statements
+    # At capacity we cannot distinguish an exact count from overwritten entries.
+    if len(queries_log) == queries_log.maxlen:
+        raise AssertionError(f"SQL measurement reached the query log capacity ({queries_log.maxlen})")
+
+
 def _sample_admissions(submit_once, until, *, monotonic=time.monotonic, sleep=time.sleep, granted=None):
     samples, outcomes, query_count = [], {}, 0
     while monotonic() < until and len(samples) < 500:
         start = monotonic()
-        with CaptureQueriesContext(connection) as statements:
+        with _capture_operation_queries() as statements:
             result = submit_once()
         query_count += len(statements)
         name = result if isinstance(result, str) else "GRANTED"
@@ -330,7 +344,7 @@ def _mixed_round(orgs, mapping_rows, tokens, at, duration, tmp_path, settings, c
                     time.sleep(0.01)
             while time.monotonic() < deadline:
                 started = time.monotonic()
-                with CaptureQueriesContext(connection) as statements:
+                with _capture_operation_queries() as statements:
                     if kind == "reader" or kind == "ingest" and writes >= 5:
                         result = read_stt_readiness(org_id=org.pk, mapping_id=mapping.mapping_id, at=at)
                         outcome = result.status
@@ -547,3 +561,61 @@ def test_admission_measurement_counts_a_real_query_in_one_sample():
 
     result = _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
     assert (result["count"], result["queries"], result["outcomes"]) == (1, 1, {"GRANTED": 1})
+
+
+def test_admission_measurement_counts_transactions_past_the_cumulative_log_limit():
+    ticks = iter((0,) * 300 + (1,))
+    attempts = 0
+
+    def submit_once():
+        nonlocal attempts
+        attempts += 1
+        with transaction.atomic():
+            with connection.cursor() as cursor:
+                for _ in range(90):
+                    cursor.execute("SELECT 1")
+            if attempts % 2 == 0:
+                transaction.set_rollback(True)
+        return object()
+
+    result = _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
+    # Each of 100 attempts logs BEGIN, 90 selects, and either COMMIT or ROLLBACK.
+    assert (result["count"], result["queries"], result["outcomes"]) == (100, 9200, {"GRANTED": 100}), result
+
+
+@pytest.mark.parametrize("statement_count", [4, 5])
+def test_admission_measurement_rejects_a_full_operation_log(monkeypatch, statement_count):
+    connection.ensure_connection()
+    monkeypatch.setattr(connection, "queries_log", deque(maxlen=4))
+    monkeypatch.setattr(connection, "force_debug_cursor", False)
+    ticks = iter((0, 0, .01, 1))
+
+    def submit_once():
+        with connection.cursor() as cursor:
+            for _ in range(statement_count):
+                cursor.execute("SELECT 1")
+
+    with pytest.raises(AssertionError, match="SQL measurement reached the query log capacity"):
+        _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
+    assert connection.force_debug_cursor is False
+
+
+def test_admission_measurement_preserves_operation_error_and_restores_debug_cursor(monkeypatch):
+    connection.ensure_connection()
+    monkeypatch.setattr(connection, "queries_log", deque(maxlen=4))
+    monkeypatch.setattr(connection, "force_debug_cursor", False)
+    failure = RuntimeError("original measured operation error")
+
+    def submit_once():
+        with connection.cursor() as cursor:
+            for _ in range(5):
+                cursor.execute("SELECT 1")
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        _sample_admissions(submit_once, .5, monotonic=lambda: 0, sleep=lambda _: None)
+    assert caught.value is failure
+    assert connection.force_debug_cursor is False
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone() == (1,)
