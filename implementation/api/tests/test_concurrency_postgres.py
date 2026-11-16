@@ -8,7 +8,7 @@ they would pass there for the wrong reason and hide the very races they exist to
 import random
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import timedelta
 
 import pytest
@@ -1444,15 +1444,9 @@ def test_an_extension_racing_an_issuance_never_leaves_two_overlapping_valid_keys
         assert left.expires_at <= right.starts_at, "the org's keys overlap"
 
 
-# --- 86ak1090r round 2: extend against first activation on ONE licence ---------------------
-# Extend takes the org row lock and then the licence row lock. Activation locks the licence row
-# with `select_for_update().select_related("customer")`, and Django's documented behaviour is
-# that without `of=` the lock covers the rows pulled in by `select_related()` too: licence AND
-# org, in one statement. Locks are taken licence first, then org, so the two orders cross: extend
-# holds the org and waits for the licence while activation holds the licence and waits for the
-# org, and Postgres aborts one of them with "deadlock detected". The tests below pin the
-# interleaving that produces it, and a repeated unaligned race, so the claim in `extend_license_key`
-# that nothing takes the two locks in the opposite order is proven rather than argued.
+# Staff extension and session activation acquire the org before the licence.
+# Enrollment starts at the shared licence lock. In activation-first order, an
+# unscoped joined lock there would wait for the org already held by extension.
 def _session_activation_call(key, admin, n):
     return lambda: activate_device_with_session(
         admin,
@@ -1468,32 +1462,145 @@ def _deadlocks(errors):
     return [exc for exc in errors if isinstance(exc, OperationalError) and "deadlock" in str(exc).lower()]
 
 
-@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
-def test_an_extension_and_a_first_activation_on_one_licence_never_deadlock(activation_first):
-    """The activation joins the licence queue first (it is parked on the licence row before the
-    extension has even started), then the extension takes the org lock and parks on the licence
-    row behind it. Released, the activation is served the licence and wants the org, which the
-    extension holds, while the extension wants the licence: a cycle, unless the activation's
-    lock does not reach the org row. Both orders must complete, one device, one extension."""
-    key, _ = _seed_license_key(tag=f"ext-act-{int(activation_first)}")
-    admin = _session_admin(key, tag=f"ext-act-{int(activation_first)}")
-    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
-    activate = _session_activation_call(key, admin, 0)
-    extend = _extend_call(key, f"ext-act-{int(activation_first)}-0001", target)
+def _worker_error(error):
+    if isinstance(error, SafeAPIError):
+        return f"{type(error).__name__}/{error.code.value}"
+    return type(error).__name__
 
-    results, errors, waiting = _race_in_arrival_order(
-        key, [activate, extend] if activation_first else [extend, activate]
-    )
 
-    assert waiting == 2, f"both callers should be parked on the licence-row lock: {waiting}"
-    assert _deadlocks([exc for _, exc in errors]) == [], f"deadlock detected: {errors}"
-    assert errors == [], errors
+def _run_activation_lock_arrangement(key, calls, *, session, extension_index):
+    """Park identified backends behind the licence holder before releasing that row."""
+    pool = ThreadPoolExecutor(max_workers=2 if session else 3)
+    workers = []
+    deadline = time.monotonic() + 8
+
+    def run(registered, call):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '12s'")
+                cursor.execute("SET statement_timeout = '15s'")
+                cursor.execute("SELECT pg_backend_pid()")
+                registered.set_result(cursor.fetchone()[0])
+            return call()
+        except Exception as error:
+            if not registered.done():
+                registered.set_exception(error)
+            raise
+        finally:
+            connections.close_all()
+
+    def park(call, table, blockers):
+        index = len(workers)
+        registered = Future()
+        worker = pool.submit(run, registered, call)
+        workers.append(worker)
+        try:
+            pid = registered.result(timeout=max(0, deadline - time.monotonic()))
+        except Exception as error:
+            pytest.fail(f"worker {index} backend registration failed: {_worker_error(error)}", pytrace=False)
+
+        while time.monotonic() < deadline:
+            if worker.done():
+                error = worker.exception()
+                outcome = _worker_error(error) if error is not None else "finished without waiting"
+                pytest.fail(f"worker {index} did not queue at {table}: {outcome}", pytrace=False)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_stat_clear_snapshot()")
+                    cursor.execute(
+                        """SELECT pg_blocking_pids(pid) FROM pg_stat_activity
+                           WHERE datname = current_database() AND pid = %s
+                             AND wait_event_type = 'Lock' AND query ILIKE %s""",
+                        [pid, f"SELECT%{table}%"],
+                    )
+                    activity = cursor.fetchone()
+            except Exception as error:
+                pytest.fail(f"worker {index} activity check failed: {_worker_error(error)}", pytrace=False)
+            if activity and blockers.intersection(activity[0]):
+                return pid
+            time.sleep(0.02)
+        pytest.fail(f"worker {index} did not reach the expected {table} blocker chain", pytrace=False)
+
+    def probe_org():
+        # PostgreSQL may not expose an uncontended row lock in pg_locks. This
+        # harmless reader proves which worker holds the org via a real wait.
+        with transaction.atomic():
+            CustomerOrg.objects.select_for_update(no_key=True).get(pk=key.customer_id)
+
+    licence_table = AppLicenseKey._meta.db_table
+    org_table = CustomerOrg._meta.db_table
+    try:
+        with transaction.atomic():
+            AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                holder = cursor.fetchone()[0]
+            first = park(calls[0], licence_table, {holder})
+            if session:
+                park(calls[1], org_table, {first})
+            else:
+                # A queued request can be a soft blocker in the same licence queue.
+                second = park(calls[1], licence_table, {holder, first})
+                park(probe_org, org_table, {(first, second)[extension_index]})
+    finally:
+        # Exiting the atomic block releases the held row before joining workers.
+        _, pending = wait(workers, timeout=17)
+        pool.shutdown(wait=False)
+        if pending:
+            indices = [index for index, worker in enumerate(workers) if worker in pending]
+            pytest.fail(f"workers did not finish after licence release: {indices}", pytrace=False)
+
+    errors = [
+        (index, _worker_error(worker.exception()))
+        for index, worker in enumerate(workers) if worker.exception() is not None
+    ]
+    assert errors == [], f"activation/extension worker failures: {errors}"
+    return [worker.result() for worker in workers[:2]]
+
+
+def _assert_activation_and_extension(key, target, results, activation_first):
+    activation, extension = results if activation_first else reversed(results)
+    assert activation.created
+    assert bool(activation.full_token)
+    assert extension.changed
     key.refresh_from_db()
     assert key.status == LicenseKeyStatus.ACTIVATED
     assert key.expires_at == target
+    assert key.staff_extension_generation == 1
     assert Device.objects.filter(license_key=key).count() == 1
     assert _lifecycle_rows(key, action="license_key.extended").count() == 1
     assert _licence_transitions(key) == 1
+
+
+@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
+def test_an_extension_and_a_first_activation_on_one_licence_never_deadlock(activation_first):
+    """Exercise the joined-lock cycle with the enrollment path's licence-first entry."""
+    key, full_key = _seed_license_key(tag=f"ext-act-{int(activation_first)}")
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    activate = _enroll(
+        full_key, idem=f"ext-act-enroll-{int(activation_first)}", fingerprint="ext-act-enrollment",
+    )
+    extend = _extend_call(key, f"ext-act-{int(activation_first)}-0001", target)
+    results = _run_activation_lock_arrangement(
+        key, (activate, extend) if activation_first else (extend, activate),
+        session=False, extension_index=int(activation_first),
+    )
+    _assert_activation_and_extension(key, target, results, activation_first)
+
+
+@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
+def test_session_activation_and_extension_follow_the_org_then_licence_lock_order(activation_first):
+    tag = f"ext-act-session-{int(activation_first)}"
+    key, _ = _seed_license_key(tag=tag)
+    admin = _session_admin(key, tag=tag)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    activate = _session_activation_call(key, admin, 0)
+    extend = _extend_call(key, f"{tag}-0001", target)
+    results = _run_activation_lock_arrangement(
+        key, (activate, extend) if activation_first else (extend, activate),
+        session=True, extension_index=int(activation_first),
+    )
+    _assert_activation_and_extension(key, target, results, activation_first)
 
 
 def test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent():
@@ -1536,11 +1643,10 @@ def test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins():
     makes the lock query a join; without `of=("self",)` Postgres is told `FOR UPDATE` on BOTH
     tables. Cheap and deterministic, so it also guards the fix against someone re-ordering the
     ORM call without re-running the 50-iteration race."""
-    key, _ = _seed_license_key(tag="act-lock-sql")
-    admin = _session_admin(key, tag="act-lock-sql")
+    key, full_key = _seed_license_key(tag="act-lock-sql")
 
     with CaptureQueriesContext(connection) as queries:
-        _session_activation_call(key, admin, 0)()
+        _enroll(full_key, idem="act-lock-sql-enroll", fingerprint="act-lock-sql")()
 
     org_table = CustomerOrg._meta.db_table
     joined = [

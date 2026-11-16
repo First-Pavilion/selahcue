@@ -1089,13 +1089,11 @@ def extend_license_key(
 
     Lock order is organisation then licence (`FOR NO KEY UPDATE` on the org, `FOR UPDATE` on the
     licence). The writer, and therefore revoke, suspend and reinstate, lock only the licence row.
-    Device activation locks only the licence row too, but only since it said so: its lock query
-    joins the org through `select_related`, and without `of=("self",)` Django also locks the
-    joined org row (`FOR UPDATE`, which conflicts with this function's `FOR NO KEY UPDATE`), so it
-    took the two locks in the opposite order and deadlocked against this function. Measured, then
-    fixed in `devices/services.py`; `tests/test_concurrency_postgres.py` pins both the race and
-    the statement text. Any other code that locks a licence row through a join must name `of=` for
-    the same reason.
+    Session activation acquires the org first, before selecting and locking its licence.
+    Enrollment enters the shared activation core at the licence row. Its `select_related` join
+    reads the org and uses `of=("self",)` to lock only the licence. An unscoped joined
+    `FOR UPDATE` can ask for the org after locking the licence and deadlock against this
+    function's org-first order. The PostgreSQL tests exercise both paths and inspect the joined SQL.
     """
     staff = _authorise(
         actor,
