@@ -687,19 +687,65 @@ def valid_settle_state(value):
 
 
 def probe_settle_state(page):
-    """Use Playwright's bounded error channel without retrying the original predicate."""
+    """Observe one error-channel result; the configured timeout is not a wall-clock cap."""
+    from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+
+    result = {"outcome": "unexpected-return", "errorFamily": None, "state": None, "elapsedMs": None}
+    started = None
     try:
-        page.wait_for_function(SETTLE_STATE_PROBE_JS, arg=SETTLE_STATE_PREFIX, timeout=1000, polling=100)
-    except Exception as exc:
-        first = str(exc)[:384].split("\n", 1)[0].removeprefix("Page.wait_for_function: ").removeprefix("Error: ")
-        if first.startswith(SETTLE_STATE_PREFIX):
-            payload = first[len(SETTLE_STATE_PREFIX):]
-            if len(payload) <= 256:
-                try:
-                    return valid_settle_state(json.loads(payload))
-                except (ValueError, RecursionError):
-                    pass
-    return None
+        started = time.monotonic()
+    except Exception:
+        pass
+    try:
+        handle = page.wait_for_function(SETTLE_STATE_PROBE_JS, arg=SETTLE_STATE_PREFIX, timeout=1000, polling=100)
+    except PlaywrightTimeoutError:
+        result.update(outcome="timeout", errorFamily="playwright-timeout")
+    except PlaywrightError as exc:
+        result["errorFamily"] = "playwright-error"
+        try:
+            first = str(exc)[:384].split("\n", 1)[0].removeprefix("Page.wait_for_function: ").removeprefix("Error: ")
+            if not first.startswith(SETTLE_STATE_PREFIX):
+                result["outcome"] = "missing-marker"
+            else:
+                payload = first[len(SETTLE_STATE_PREFIX):]
+                if len(payload) > 256:
+                    result["outcome"] = "oversized-payload"
+                else:
+                    try:
+                        value = json.loads(payload)
+                    except (ValueError, RecursionError):
+                        result["outcome"] = "invalid-json"
+                    else:
+                        state = valid_settle_state(value)
+                        result.update(state=state, outcome=("unavailable" if value is None else
+                                                          "snapshot" if state is not None else "invalid-state"))
+        except Exception:
+            # Error formatting/inspection is diagnostic work too; never print it.
+            result.update(outcome="other-exception", errorFamily="diagnostic-exception", state=None)
+    except Exception:
+        result.update(outcome="other-exception", errorFamily="other-exception")
+    else:
+        try:
+            handle.dispose()
+        except Exception:
+            pass
+    finally:
+        try:
+            if started is not None:
+                result["elapsedMs"] = max(0, round((time.monotonic() - started) * 1000))
+        except Exception:
+            pass
+    return result
+
+
+def emit_settle_probe(page, capture):
+    """A refused observation, formatting failure or closed output cannot change the gate."""
+    try:
+        result = probe_settle_state(page)
+        print(SETTLE_STATE_PREFIX + json.dumps(
+            {"capture": capture, **result}, separators=(",", ":"), allow_nan=False), flush=True)
+    except Exception:
+        pass
 
 
 def valid_settle_blocker(value):
@@ -1489,6 +1535,7 @@ def main() -> int:
 
     failures: list[str] = []
     checks = 0
+    healthy_probe_attempted = False
 
     def bump() -> None:
         nonlocal checks
@@ -1545,13 +1592,14 @@ def main() -> int:
                         if diagnostic:
                             diagnostic.stage("settle-end")
                     except Exception as exc:  # noqa: BLE001
-                        if diagnostic:
-                            diagnostic.emit("infra", len(errors))
                         print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}", flush=True)
+                        if diagnostic:
+                            try:
+                                diagnostic.emit("infra", len(errors))
+                            except Exception:
+                                pass
                         if diagnostic and diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
-                            print(SETTLE_STATE_PREFIX + json.dumps(
-                                {"capture": "after-timeout", "state": probe_settle_state(page)}, separators=(",", ":")),
-                                flush=True)
+                            emit_settle_probe(page, "after-timeout")
                         return 2
 
                     if diagnostic:
@@ -1673,6 +1721,9 @@ def main() -> int:
                     if diagnostic:
                         diagnostic.stage("geometry-end")
                         diagnostic.finish(len(errors), len(failures) > failures_before)
+                        if not healthy_probe_attempted and len(failures) == failures_before:
+                            healthy_probe_attempted = True
+                            emit_settle_probe(page, "healthy-control")
                     page.close()
                 context.close()
 
