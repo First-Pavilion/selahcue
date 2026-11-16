@@ -234,6 +234,57 @@ impl Drop for CloseFixture {
     }
 }
 #[test]
+fn delayed_response_fixture_accepts_abortive_peer_close() {
+    const RESPONSE_PREFIX: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nx";
+    let trace = Trace::new();
+    let mut fixture = CloseFixture::start(true, None, trace.clone());
+    let addr: std::net::SocketAddr = fixture
+        .url
+        .strip_prefix("http://")
+        .unwrap()
+        .strip_suffix("/fixture")
+        .unwrap()
+        .parse()
+        .unwrap();
+    {
+        let timeout = Duration::from_secs(2);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .enable_time()
+            .build()
+            .unwrap();
+        let mut peer = runtime.block_on(async {
+            let peer = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
+                .await
+                .expect("abortive peer connect timeout")
+                .expect("abortive peer connect failed");
+            peer.set_zero_linger().unwrap();
+            peer.into_std().unwrap()
+        });
+        peer.set_nonblocking(false).unwrap();
+        peer.set_write_timeout(Some(timeout)).unwrap();
+        peer.set_read_timeout(Some(timeout)).unwrap();
+        peer.write_all(
+            b"POST /fixture HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer synthetic-native-fixture\r\nContent-Length: 2\r\n\r\n{}",
+        )
+        .unwrap();
+        let mut prefix = [0; RESPONSE_PREFIX.len()];
+        peer.read_exact(&mut prefix).unwrap();
+        assert!(prefix.as_slice() == RESPONSE_PREFIX, "partial response");
+        trace.mark("abortive-peer-prefix-read");
+        drop(peer);
+    }
+    let receipt = fixture.observe();
+    fixture.join();
+    trace.report("abortive-peer-close");
+    assert!(trace.has("authenticated-request-complete"));
+    assert!(trace.has("head-body-written"));
+    receipt
+        .expect("abortive peer close watchdog")
+        .expect("abortive peer close must yield a terminal receipt");
+}
+#[test]
 fn delayed_head_and_slow_body_really_close_the_client_at_one_deadline() {
     for head in [false, true] {
         let trace = Trace::new();
