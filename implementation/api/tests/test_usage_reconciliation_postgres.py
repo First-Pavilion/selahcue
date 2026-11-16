@@ -610,7 +610,7 @@ import os, sys, django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'selahcue_api.settings')
 django.setup()
 from selahcue_api.celery import app
-app.conf.broker_transport_options = {
+app.conf.CELERY_BROKER_TRANSPORT_OPTIONS = {
     **app.conf.broker_transport_options, 'global_keyprefix': os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
 }
 diagnostic = _UsageDeliveryDiagnostic(
@@ -632,7 +632,7 @@ with diagnostic.worker_hooks():
     env = _worker_environment(prefix)
     delivery = UsageOutbox.objects.get(work=work)
     env.update({"SELAHCUE_TEST_USAGE_TASK_ID": str(delivery.pk), "SELAHCUE_TEST_USAGE_WORK_ID": str(work.pk)})
-    diagnostic = _UsageDeliveryDiagnostic(broker, prefix, str(delivery.pk), str(work.pk))
+    diagnostic = _UsageDeliveryDiagnostic(broker, prefix, str(delivery.pk), str(work.pk), stream=sys.stdout)
     with (tmp_path / "worker.log").open("w+") as output:
         process = subprocess.Popen(
             [sys.executable, "-c", code], stdout=output, stderr=subprocess.STDOUT, env=env,
@@ -861,7 +861,7 @@ from selahcue_api.apps.usage import scans, tasks
 from selahcue_api.apps.providers.adapters import deepgram_usage
 from django.utils import timezone
 app.loader.import_default_modules()
-app.conf.broker_transport_options = {
+app.conf.CELERY_BROKER_TRANSPORT_OPTIONS = {
     **app.conf.broker_transport_options, 'global_keyprefix': os.environ['SELAHCUE_TEST_USAGE_PREFIX'],
 }
 behavior = os.environ['SELAHCUE_TEST_USAGE_FAILURE']
