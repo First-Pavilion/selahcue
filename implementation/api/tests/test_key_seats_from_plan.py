@@ -128,8 +128,8 @@ def test_a_plan_with_no_seat_value_is_refused_and_nothing_is_written(caplog):
 
 @pytest.mark.parametrize("raw_value", ["unlimited", "0"])
 def test_a_plan_with_no_ceiling_or_no_seats_is_refused(raw_value):
-    plan = seat_plan(f"OWN-BAD-{raw_value}".upper(), 4)
-    _set_seats(plan.code, raw_value, tag=f"bad-{raw_value}")
+    # Seed a legacy value that the shared writer now refuses.
+    plan = seat_plan(f"OWN-BAD-{raw_value}".upper(), raw_value)
     org = seed_org(f"bad-{raw_value}")
     before = _counts()
 
@@ -143,8 +143,8 @@ def test_a_plan_with_no_ceiling_or_no_seats_is_refused(raw_value):
 def test_a_plan_value_too_large_for_the_column_is_refused_not_a_database_error():
     """`device_limit` is a 32-bit positive integer. A plan value past it must be a refusal at
     issuance, not an unmapped database error from the INSERT."""
-    plan = seat_plan("OWN-HUGE", 4)
-    _set_seats(plan.code, str(2**31), tag="huge")
+    # Seed a legacy value that the shared writer now refuses.
+    plan = seat_plan("OWN-HUGE", 2**31)
     org = seed_org("huge")
     before = _counts()
 

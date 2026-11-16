@@ -38,6 +38,9 @@ def require_admin_catalogue_permission(actor):
 
 def read_admin_catalogue(actor):
     require_admin_catalogue_permission(actor)
+    # Read the optimistic token before sampling the price cutoff or loading data.
+    # A newer token must include every price already effective when it was read.
+    revision = current_revision()
     latest_prices = (
         PlanPrice.objects.filter(effective_from__lte=timezone.now())
         .annotate(_position=Window(
@@ -50,9 +53,6 @@ def read_admin_catalogue(actor):
         Prefetch('prices', queryset=latest_prices),
         Prefetch('grants', queryset=PlanGrant.objects.select_related('dimension').order_by('dimension__key')),
     )
-    # Read the optimistic token BEFORE the data. A concurrent edit can conservatively
-    # make it stale, but must never pair old values with a newer token that permits overwrite.
-    revision = current_revision()
     result = []
     for plan in plans:
         result.append(dict(
@@ -82,7 +82,7 @@ def _replay(receipt, fingerprint):
 def _apply(actor, operation, data, writer):
     staff = require_admin_catalogue_permission(actor)
     try:
-        key = validate_idempotency_key(data['idempotency_key'])
+        idempotency_key = validate_idempotency_key(data['idempotency_key'])
     except (SafeAPIError, AttributeError):
         raise _invalid('idempotencyKey') from None
     try:
@@ -95,11 +95,12 @@ def _apply(actor, operation, data, writer):
     canonical = {key: (value.isoformat() if isinstance(value, datetime) else value)
                  for key, value in data.items()}
     canonical['reason'] = reason
+    canonical['idempotency_key'] = idempotency_key
     fingerprint = hashlib.sha256(json.dumps(
         dict(operation=operation, data=canonical), sort_keys=True, separators=(',', ':'),
     ).encode()).hexdigest()
     with transaction.atomic():
-        previous = _receipt(staff, key)
+        previous = _receipt(staff, idempotency_key)
         if previous:
             return _replay(previous, fingerprint)
         # CAS serializes admin writes and refuses same-revision lost updates. Unlike
@@ -109,31 +110,31 @@ def _apply(actor, operation, data, writer):
         ).update(revision=F('revision') + 1)
         if not updated:
             # A simultaneous retry may have committed while the CAS waited for its lock.
-            previous = _receipt(staff, key)
+            previous = _receipt(staff, idempotency_key)
             if previous:
                 return _replay(previous, fingerprint)
             error = SafeAPIError(ErrorCode.CONFLICT)
             error.extensions['catalogueChanged'] = True
             raise error
-        previous = _receipt(staff, key)
+        previous = _receipt(staff, idempotency_key)
         if previous:
             result = _replay(previous, fingerprint)
             transaction.set_rollback(True)
             return result
-        result = writer(staff, reason)
+        result = writer(staff, reason, idempotency_key)
         result['revision'] = current_revision()
         CatalogueAdminMutation.objects.create(
-            actor_id=staff.actor_id, idempotency_key=key, fingerprint=fingerprint, result=result,
+            actor_id=staff.actor_id, idempotency_key=idempotency_key, fingerprint=fingerprint, result=result,
         )
         return {**result, 'replayed': False}
 
 
 def set_admin_price(actor, **data):
-    def writer(staff, reason):
+    def writer(staff, reason, idempotency_key):
         price = append_plan_price(staff, AppendPlanPriceData(
             plan_code=data['plan_code'], currency=data['currency'], interval=data['interval'],
             amount_minor=data['amount_minor'], effective_from=data['effective_from'],
-            reason=reason, idempotency_key=data['idempotency_key'],
+            reason=reason, idempotency_key=idempotency_key,
         ))
         return dict(price_id=str(price.pk), amount_minor=None if price.amount_minor is None else str(price.amount_minor))
     try:
@@ -150,11 +151,11 @@ def set_admin_price(actor, **data):
 
 
 def set_admin_grant(actor, **data):
-    def writer(staff, reason):
+    def writer(staff, reason, idempotency_key):
         # Reuse the single grant writer's validation, audit and cache invalidation.
         result = set_plan_grant(staff, SetPlanGrantData(
             plan_code=data['plan_code'], dimension_key=data['dimension_key'],
-            raw_value=data['raw_value'], reason=reason, idempotency_key=data['idempotency_key'],
+            raw_value=data['raw_value'], reason=reason, idempotency_key=idempotency_key,
         ))
         return dict(grant_id=str(result.grant.pk), raw_value=result.grant.raw_value)
     try:
@@ -166,8 +167,11 @@ def set_admin_grant(actor, **data):
 
 
 def rename_admin_plan(actor, **data):
-    def writer(staff, reason):
-        plan = Plan.objects.select_for_update().filter(code=data['plan_code']).first()
+    def writer(staff, reason, idempotency_key):
+        plan_code = data['plan_code']
+        if not isinstance(plan_code, str) or not plan_code.strip() or has_control_characters(plan_code):
+            raise SafeAPIError(ErrorCode.NOT_FOUND)
+        plan = Plan.objects.select_for_update().filter(code=plan_code).first()
         if plan is None:
             raise SafeAPIError(ErrorCode.NOT_FOUND)
         previous = plan.display_name
@@ -185,7 +189,7 @@ def rename_admin_plan(actor, **data):
         plan.save(update_fields=['display_name', 'changed_by_actor_id', 'reason', 'updated_at'])
         record_audit_event(
             staff, action='catalogue.plan_renamed', target_type='catalogue_plan',
-            target_id=str(plan.pk), request_id=data['idempotency_key'], reason=reason,
+            target_id=str(plan.pk), request_id=idempotency_key, reason=reason,
             before={'display_name': previous},
             after={'plan_code': plan.code, 'display_name': plan.display_name},
         )
