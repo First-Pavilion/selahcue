@@ -1,16 +1,19 @@
 """Offline CLI and subprocess boundary controls; no tests read a real journal."""
 from contextlib import redirect_stdout
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import runpy
+import struct
 import subprocess
 import sys
 import tempfile
 import textwrap
 import time
 import unittest
+from unittest.mock import patch
 
 
 COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "webkit_crash_journal.py"
@@ -20,6 +23,25 @@ UNTIL = "1794837060"
 CRASH = "1794837031000000"
 SECRET = "SyntheticPrivateToken"
 ABSOLUTE_PC = "0x00007fbe01234567"
+
+
+BOOT = "0123456789abcdef0123456789abcdef"
+KERNEL_TIME = "1794837031500000"
+POSITIVE_KERNEL = (
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[1234,7f0000000000+200000] likely on CPU 2 (core 1, socket 0)',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[7f0000000000+200000] likely on CPU 2 (core -1, socket -1)',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[7f0000000000+200000]',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2 (core 1, socket 0)',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4',
+)
+NEGATIVE_KERNEL = (
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[1234,7f0000000000+200000]',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2 (core 1, socket 0) SyntheticPrivateToken',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in /tmp/SyntheticPrivateToken.so[7f0000000000+200000]',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f00000012zz sp 00007fff00001000 error 4',
+    'WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2147483648 (core 1, socket 0)',
+)
 
 
 def record(**fields):
@@ -52,9 +74,12 @@ class CrashJournalCLI(unittest.TestCase):
         self.env = {"PATH": str(self.tmp)}
         self.fixture("raise SystemExit('unexpected fixture call')")
 
-    def fixture(self, body):
+    def fixture(self, body, *, kernel=False):
         sudo = self.tmp / "sudo"
-        sudo.write_text(f"#!{sys.executable}\n" + textwrap.dedent(body).lstrip())
+        guard = "" if kernel else (
+            "import sys\nif '_TRANSPORT=kernel' in sys.argv: raise SystemExit(0)\n"
+        )
+        sudo.write_text(f"#!{sys.executable}\n" + guard + textwrap.dedent(body).lstrip())
         sudo.chmod(0o700)
         return sudo
 
@@ -75,7 +100,9 @@ class CrashJournalCLI(unittest.TestCase):
 
                 builtins.open = fixture_open
                 sys.argv.pop(0)
-                runpy.run_path(sys.argv[0], run_name="__main__")
+                main = runpy.run_path(sys.argv[0])["main"]
+                main.__globals__["installed_identity"] = lambda *args, **kwargs: (None, set())
+                raise SystemExit(main())
             """)
         if bootstrap is not None:
             runner.extend(("-c", bootstrap))
@@ -95,10 +122,11 @@ class CrashJournalCLI(unittest.TestCase):
         self.assertNotIn(b'"_boot_id"', result.stdout)
         return payload
 
-    def offline(self, data, **kwargs):
+    def offline(self, data, *, kernel=None, **kwargs):
         source = self.tmp / f"{SECRET}.jsonl"
         source.write_bytes(data)
-        return self.invoke("--journal-jsonl", str(source), **kwargs)
+        extra = () if kernel is None else ("--kernel-jsonl", str(kernel))
+        return self.invoke("--journal-jsonl", str(source), *extra, **kwargs)
 
     def test_sigabrt_metadata_and_only_safe_stack_evidence(self):
         result = self.offline(jsonl(record()))
@@ -289,7 +317,9 @@ class CrashJournalCLI(unittest.TestCase):
             os.open = observe_open
             sys.argv.pop(0)
             try:
-                runpy.run_path(sys.argv[0], run_name="__main__")
+                main = runpy.run_path(sys.argv[0])["main"]
+                main.__globals__["installed_identity"] = lambda *args, **kwargs: (None, set())
+                raise SystemExit(main())
             finally:
                 if observer is not None:
                     Path({str(receipt)!r}).write_text(str(os.lseek(observer, 0, os.SEEK_CUR)))
@@ -638,6 +668,400 @@ class CrashJournalCLI(unittest.TestCase):
         self.assert_stopped(marker)
         time.sleep(max(0, 4.95 - (time.monotonic() - started)))
         self.assertFalse(survivor.exists())
+
+
+def kernel_row(message=POSITIVE_KERNEL[0], **fields):
+    return {"MESSAGE": message, "__REALTIME_TIMESTAMP": KERNEL_TIME, "_BOOT_ID": BOOT,
+            "_TRANSPORT": "kernel", **fields}
+
+
+def joining_record(listing=4, *, zero=None, total=None, **fields):
+    tids = [tid for tid in range(4300, 4300 + (total or listing) - 1)]
+    tids.insert(listing - 1, 4204)
+    for index in range(min(3, listing - 1)):
+        tids[index] = 4201 + index
+    zero = zero if zero is not None else (
+        "#0  0x00007f0000001234 n/a (libWPEWebKit-2.0.so.1 + 0x1234)\n"
+    )
+    msg = "".join(
+        f"Stack trace of thread {tid}:\n"
+        + (zero if tid == 4204 else f"#0  0x{0x7f0000003000 + tid:016x} abort (libc.so.6 + 0x10)\n")
+        for tid in tids
+    )
+    return record(**{"COREDUMP_PID": "4201", "COREDUMP_SIGNAL_NAME": "SIGSEGV",
+                     "MESSAGE": msg, "_BOOT_ID": BOOT, **fields})
+
+
+def elf_fixture(ids=(b"\x12\x34\x56\x78",), *, klass=2, machine=62,
+                note_offset=120, note_size=None, phnum=1):
+    notes = b"".join(
+        struct.pack("<III", 4, len(value), 3) + b"GNU\0" + value + bytes(-len(value) % 4)
+        for value in ids
+    )
+    header = struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF" + bytes((klass, 1, 1)) + bytes(9),
+                         3, machine, 1, 0, 64, 0, 0, 64, 56, phnum, 0, 0, 0)
+    segment = struct.pack("<IIQQQQQQ", 4, 4, note_offset, 0, 0,
+                          len(notes) if note_size is None else note_size, len(notes), 4)
+    return header + (segment + notes if phnum else b"")
+
+
+class KernelCorrelation(unittest.TestCase):
+    fixture = CrashJournalCLI.fixture
+    invoke = CrashJournalCLI.invoke
+    offline = CrashJournalCLI.offline
+    assert_stopped = CrashJournalCLI.assert_stopped
+
+    def setUp(self):
+        CrashJournalCLI.setUp(self)
+        self.collector = runpy.run_path(str(COLLECTOR))
+
+    def correlated(self, crashes, kernel, *, cut=False, budget=None):
+        result = self.collector["summary"]("available")
+        self.collector["collect"](result, crashes, cut, int(SINCE), int(UNTIL))
+        records, complete, reasons = self.collector["correlate_kernel"](
+            result["records"], kernel, result["candidate_scan_complete"],
+        )
+        result.update(records=records, candidate_scan_complete=complete,
+                      omission_reasons=sorted({*result["omission_reasons"], *reasons}))
+        output = io.StringIO()
+        export = self.collector["export"]
+        limit = export.__globals__["EXPORT_LIMIT"]
+        try:
+            if budget is not None:
+                export.__globals__["EXPORT_LIMIT"] = budget
+            with redirect_stdout(output):
+                export(result)
+        finally:
+            export.__globals__["EXPORT_LIMIT"] = limit
+        raw = output.getvalue().encode("ascii")
+        self.assertLessEqual(len(raw), budget or 24 * 1024)
+        for private in (b"00007f0000001234", BOOT.encode(), b"segfault at", SECRET.encode(),
+                        b"/home/runner", b"_listing_index", b"_frame_zero", b"_parity_exe"):
+            self.assertNotIn(private, raw)
+        return json.loads(raw)
+
+    def assert_unknown(self, result, reason, *, complete=False):
+        self.assertEqual(result["candidate_scan_complete"], complete)
+        self.assertIn(reason, result["omission_reasons"])
+        for crash in result["records"]:
+            self.assertIsNone(crash["fault_attribution"]["fault_thread"])
+        if not complete:
+            self.assertIn("join_incomplete", result["omission_reasons"])
+
+    def test_literal_kernel_grammar(self):
+        parse = self.collector["parse_kernel_message"]
+        for i, fixture in enumerate(POSITIVE_KERNEL):
+            with self.subTest(positive=i):
+                expected = (4204, 0x00007f0000001234, "libWPEWebKit-2.0.so.1" if i < 3 else None)
+                self.assertEqual(parse(fixture), expected)
+                self.assertEqual(parse(fixture + "\n"), expected)
+        for fixture in (
+            *NEGATIVE_KERNEL, POSITIVE_KERNEL[0] + "\n\n", POSITIVE_KERNEL[0] + "\r\n",
+            POSITIVE_KERNEL[0].replace("WPEWebProcess", "x" * 65),
+            POSITIVE_KERNEL[0].replace("WPEWebProcess", "xé"),
+            POSITIVE_KERNEL[0].replace("4204", "2147483648"),
+            POSITIVE_KERNEL[0].replace("4204", "0"),
+            POSITIVE_KERNEL[0].replace("core 1", "core -2147483649"),
+            POSITIVE_KERNEL[0].replace("socket 0", "socket +0"),
+            POSITIVE_KERNEL[0].replace("error 4", "error " + "1" * 17),
+            POSITIVE_KERNEL[0].replace("sp 00007fff00001000", "sp 7fff00001000"),
+            POSITIVE_KERNEL[0].replace("at 10", "at 0x10"),
+            POSITIVE_KERNEL[0].replace("1234,7f", "ABCD,7f"),
+        ):
+            with self.subTest(fixture=fixture):
+                self.assertIsNone(parse(fixture))
+
+    def test_fault_stack_selected_after_all_thread_headers(self):
+        for listing in (4, 64):
+            with self.subTest(listing=listing):
+                result = self.correlated(jsonl(joining_record(listing)), jsonl(kernel_row()))
+                self.assertTrue(result["candidate_scan_complete"])
+                self.assertTrue(result["export_truncated"])
+                crash = result["records"][0]
+                self.assertEqual([t["tid"] for t in crash["threads"]], [4204, 4201, 4202])
+                self.assertEqual(crash["fault_attribution"]["fault_thread"], {
+                    "tid": 4204, "basis": "kernel_tid_and_frame0_pc", "delta_us": 500_000,
+                    "frame_zero": {"ordinal": 0, "module": "libWPEWebKit-2.0.so.1", "offset": "0x1234"},
+                })
+                self.assertEqual(crash["threads"][0]["basis"], "kernel_tid_and_frame0_pc")
+
+    def test_wrong_join_keys_remain_unknown(self):
+        for row in (
+            kernel_row(POSITIVE_KERNEL[0].replace("00007f0000001234", "00007f0000001235")),
+            kernel_row(POSITIVE_KERNEL[0].replace("[4204]", "[4205]")),
+            kernel_row(POSITIVE_KERNEL[0].replace("libWPEWebKit-2.0.so.1", "libc.so.6")),
+            kernel_row(__REALTIME_TIMESTAMP="1794837030999999"),
+            kernel_row(__REALTIME_TIMESTAMP="1794837033000000"),
+            kernel_row(_BOOT_ID="1123456789abcdef0123456789abcdef"),
+        ):
+            with self.subTest(row=row):
+                self.assert_unknown(self.correlated(jsonl(joining_record()), jsonl(row)),
+                                    "kernel_no_match", complete=True)
+        self.assert_unknown(
+            self.correlated(jsonl(joining_record(COREDUMP_SIGNAL_NAME="SIGABRT")), jsonl(kernel_row())),
+            "kernel_no_match", complete=True,
+        )
+
+    def test_incomplete_inputs_cannot_prove_unique_fault(self):
+        crash = jsonl(joining_record())
+        k = jsonl(kernel_row())
+        past = (jsonl(record(COREDUMP_TIMESTAMP="1794836999000000")) * 3)
+        next_crash = jsonl(joining_record(COREDUMP_PID="4250"))
+        pad_dump = 256 * 1024 - len(crash) - len(past) - len(next_crash) // 2
+        clipped_crash = crash + past + b"\n" * pad_dump + next_crash
+        pad_kernel = 64 * 1024 - len(k) - len(k) // 2
+        clipped_kernel = k + b"\n" * pad_kernel + k
+        for crashes, kernel, reason in (
+            (crash + past + jsonl(record(), record(), joining_record(COREDUMP_PID="4250")), k, "record_limit"),
+            (clipped_crash, k, "raw_limit"),
+            (crash, clipped_kernel, "kernel_limit"),
+            (jsonl(joining_record(total=65)), k, "thread_limit"),
+            (jsonl(joining_record(zero=joining_record()["MESSAGE"].splitlines()[-1].replace("#0", "#4") + "\n")),
+             k, "ordinal_missing"),
+            (jsonl(joining_record(zero=f"#0 {ABSOLUTE_PC} n/a (lib{SECRET}.so + 0x12)\n")), k, "ordinal_missing"),
+            (jsonl(joining_record(zero=joining_record()["MESSAGE"].splitlines()[-1] + "\n#0 malformed\n")),
+             k, "ordinal_missing"),
+            (jsonl(joining_record(_BOOT_ID=None)), k, "malformed"),
+            (crash + b'{broken\n', k, "malformed"),
+            (crash + jsonl(joining_record(MESSAGE=None)), k, "malformed"),
+            (crash, k + b'{broken\n', "malformed"),
+            (crash, k + jsonl(kernel_row(None)), "malformed"),
+            (crash, k + jsonl(kernel_row(_TRANSPORT=None)), "malformed"),
+            *((crash, k + jsonl(kernel_row(line)), "kernel_unsupported_format") for line in NEGATIVE_KERNEL),
+        ):
+            with self.subTest(reason=reason):
+                self.assert_unknown(self.correlated(crashes, kernel), reason)
+
+    def test_global_ambiguity_including_duplicate_kernel_rows(self):
+        first = joining_record()
+        second = joining_record(
+            COREDUMP_PID="4211", MESSAGE=first["MESSAGE"].replace("4204:", "4214:").replace("1234", "1235"),
+        )
+        other = kernel_row(POSITIVE_KERNEL[0].replace("[4204]", "[4214]").replace("00007f0000001234",
+                                                                                  "00007f0000001235"))
+        for crashes, kernel in ((jsonl(first, second), jsonl(kernel_row(), other)),
+                                (jsonl(first), jsonl(kernel_row(), kernel_row()))):
+            with self.subTest(kernel=kernel):
+                self.assert_unknown(self.correlated(crashes, kernel), "kernel_ambiguous", complete=True)
+
+    def test_export_budget_keeps_proven_frame_zero_before_peers(self):
+        crash = jsonl(record(), joining_record())
+        k = jsonl(kernel_row(), kernel_row("irrelevant event"))
+        expected = self.correlated(crash, k)
+        compact = len(json.dumps(expected, separators=(",", ":")).encode("ascii")) + 1
+        constrained = self.correlated(crash, k, budget=compact - 190)
+        self.assertTrue(constrained["candidate_scan_complete"])
+        self.assertIn("export_limit", constrained["omission_reasons"])
+        selected = next(row for row in constrained["records"] if row["pid"] == 4201)
+        self.assertIsNotNone(selected["fault_attribution"]["fault_thread"])
+        self.assertEqual(selected["fault_attribution"]["fault_thread"]["tid"], 4204)
+        self.assertEqual(selected["threads"][0]["frames"][0]["ordinal"], 0)
+        self.assertEqual(selected["threads"][0]["frames"][0]["offset"], "0x1234")
+
+    def test_explicit_kernel_replay_in_cli_and_never_live_fallback(self):
+        path = self.tmp / "kernel-fixture"
+        path.write_bytes(jsonl(kernel_row()))
+        bootstrap = textwrap.dedent("""
+            import runpy, sys
+            sys.argv.pop(0)
+            main = runpy.run_path(sys.argv[0])["main"]
+            def forbid_live(*args, **kwargs):
+                raise AssertionError("replay touched live metadata")
+            main.__globals__["core_handler"] = forbid_live
+            main.__globals__["query"] = forbid_live
+            main.__globals__["query_kernel"] = forbid_live
+            main.__globals__["installed_identity"] = forbid_live
+            raise SystemExit(main())
+        """)
+        result = self.offline(jsonl(joining_record()), bootstrap=bootstrap, kernel=path)
+        self.assertIsNotNone(result["records"][0]["fault_attribution"]["fault_thread"])
+        self.assertEqual(result["records"][0]["fault_attribution"]["fault_thread"]["tid"], 4204)
+        path.unlink()
+        self.assert_unknown(self.offline(jsonl(joining_record()), bootstrap=bootstrap, kernel=path),
+                            "kernel_unavailable")
+        self.invoke("--kernel-jsonl", str(path), bootstrap=bootstrap, code=2)
+
+    def test_live_kernel_projected_query_results_and_boundary(self):
+        coredump = jsonl(joining_record())
+        args_file = self.tmp / "args"
+        for outcome in ("available", "denied", "missing", "malformed", "overflow"):
+            marker = self.tmp / "kernel-process"
+            self.fixture(f"""
+                import json, os, sys, time
+                from pathlib import Path
+                if "_TRANSPORT=kernel" not in sys.argv:
+                    os.write(1, {coredump!r})
+                    if {outcome!r} == "missing":
+                        Path(sys.argv[0]).unlink()
+                    raise SystemExit(0)
+                Path({str(args_file)!r}).write_text(json.dumps(sys.argv[1:]))
+                Path({str(marker)!r}).write_text(f'{{os.getpid()}} {{os.getpgrp()}}')
+                sys.stderr.write({SECRET!r})
+                if {outcome!r} == "denied":
+                    raise SystemExit(1)
+                if {outcome!r} == "malformed":
+                    os.write(1, b"{{broken\\n")
+                else:
+                    os.write(1, {jsonl(kernel_row())!r})
+                if {outcome!r} == "overflow":
+                    for _ in range(9):
+                        os.write(1, b"X" * 8192)
+                    time.sleep(4)
+            """, kernel=True)
+            with self.subTest(outcome=outcome):
+                result = self.invoke()
+                self.assertEqual([r["pid"] for r in result["records"]], [4201])
+                if outcome == "available":
+                    self.assertEqual(result["records"][0]["fault_attribution"]["fault_thread"], {
+                        "tid": 4204, "basis": "kernel_tid_and_frame0_pc", "delta_us": 500_000,
+                        "frame_zero": {"ordinal": 0, "module": "libWPEWebKit-2.0.so.1", "offset": "0x1234"},
+                    })
+                    self.assertEqual(json.loads(args_file.read_text()), [
+                        "-n", "journalctl", "-b", "--no-pager", "--quiet", "--all",
+                        "--since", "@1794837000", "--until", "@1794837062.999999", "_TRANSPORT=kernel",
+                        "-o", "json", "--output-fields=MESSAGE,__REALTIME_TIMESTAMP,_BOOT_ID,_TRANSPORT",
+                    ])
+                else:
+                    self.assert_unknown(result, {"overflow": "kernel_limit", "malformed": "malformed"}
+                                        .get(outcome, "kernel_unavailable"))
+                if outcome != "missing":
+                    self.assert_stopped(marker)
+
+    def test_kernel_timeout_reaps_child_and_kills_pipe_holder(self):
+        marker = self.tmp / "kernel-timeout"
+        survivor = self.tmp / "kernel-descendant-survived"
+        self.fixture(f"""
+            import os, signal, sys, time
+            from pathlib import Path
+            if "_TRANSPORT=kernel" not in sys.argv:
+                os.write(1, {jsonl(joining_record())!r})
+                raise SystemExit(0)
+            if os.fork() == 0:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                time.sleep(2.65)
+                Path({str(survivor)!r}).touch()
+                os._exit(0)
+            Path({str(marker)!r}).write_text(f'{{os.getpid()}} {{os.getpgrp()}}')
+            os.write(1, {jsonl(kernel_row())!r})
+            time.sleep(4)
+        """, kernel=True)
+        started = time.monotonic()
+        result = self.invoke()
+        self.assertLess(time.monotonic() - started, 3.25)
+        self.assertEqual([r["pid"] for r in result["records"]], [4201])
+        self.assert_unknown(result, "deadline")
+        self.assert_stopped(marker)
+        time.sleep(max(0, 2.9 - (time.monotonic() - started)))
+        self.assertFalse(survivor.exists())
+
+
+class InstalledIdentity(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name).resolve()
+        self.root = self.tmp / "lib"
+        self.root.mkdir()
+        self.path = self.root / "libWPEWebKit-2.0.so.1"
+        self.collector = runpy.run_path(str(COLLECTOR))
+
+    def test_build_id_and_hash_with_optional_notes(self):
+        for data, expected in (
+            (elf_fixture(), "12345678"),
+            (elf_fixture((b"\x12\x34\x56\x78",) * 2), "12345678"),
+            (elf_fixture(phnum=0), None),
+        ):
+            self.path.write_bytes(data)
+            with self.subTest(expected=expected):
+                self.assertEqual(self.collector["read_elf_identity"](self.path, expected_root=self.root),
+                                 {"sha256": hashlib.sha256(data).hexdigest(), "build_id": expected})
+        versioned = self.root / (self.path.name + ".10.2")
+        self.path.rename(versioned)
+        self.path.symlink_to(versioned.name)
+        self.assertEqual(self.collector["read_elf_identity"](self.path, expected_root=self.root),
+                         {"sha256": hashlib.sha256(versioned.read_bytes()).hexdigest(), "build_id": None})
+
+    def test_malformed_or_out_of_policy_elf_and_symlink_escape(self):
+        read = self.collector["read_elf_identity"]
+        for data in (
+            elf_fixture(klass=1), elf_fixture(machine=183),
+            elf_fixture(note_offset=4 * 1024 * 1024), elf_fixture(note_offset=63),
+            elf_fixture(note_size=1024 * 1024 + 1), elf_fixture(phnum=129),
+            elf_fixture(ids=(bytes.fromhex("12345678"), bytes.fromhex("87654321"))),
+            elf_fixture()[:-1],
+        ):
+            with self.subTest(data=data[:24]):
+                self.path.write_bytes(data)
+                self.assertIsNone(read(self.path, expected_root=self.root))
+        with self.path.open("wb") as f:
+            f.write(elf_fixture())
+            f.truncate(256 * 1024 * 1024 + 1)
+        self.assertIsNone(read(self.path, expected_root=self.root))
+        outside = self.tmp / self.path.name
+        outside.write_bytes(elf_fixture())
+        self.path.unlink()
+        self.path.symlink_to(outside)
+        self.assertIsNone(read(self.path, expected_root=self.root))
+
+    def test_installed_file_changed_during_streaming_is_rejected(self):
+        read = self.collector["read_elf_identity"]
+        for change in ("inode", "size", "mtime"):
+            self.path.write_bytes(elf_fixture())
+            original = self.path.stat()
+            real_hash = hashlib.sha256
+
+            class MutatingHash:
+                def __init__(test_self):
+                    test_self.real = real_hash()
+
+                def update(test_self, chunk):
+                    test_self.real.update(chunk)
+                    if change == "inode":
+                        new = self.path.with_suffix(".replacement")
+                        new.write_bytes(elf_fixture())
+                        os.replace(new, self.path)
+                    elif change == "size":
+                        with self.path.open("ab") as file:
+                            file.write(b"more")
+                    else:
+                        os.utime(self.path, ns=(original.st_atime_ns, original.st_mtime_ns + 20_000_000))
+
+                def hexdigest(test_self):
+                    return test_self.real.hexdigest()
+
+            with self.subTest(change=change), patch.object(hashlib, "sha256", MutatingHash):
+                self.assertIsNone(read(self.path, expected_root=self.root))
+
+    def test_installed_child_stays_separate_from_crash_identity(self):
+        self.path.write_bytes(elf_fixture())
+        collect = self.collector["collect"]
+        identity = self.collector["installed_identity"]
+        identity.__globals__["WPE_LIBRARY"] = self.path
+        indexed = self.collector["summary"]("available")
+        collect(indexed, jsonl(record(), record(COREDUMP_PACKAGE_JSON=json.dumps({
+            self.path.name: {"buildId": "12345678"},
+        })), record(COREDUMP_PACKAGE_JSON=json.dumps({self.path.name: {"buildId": "deadbeef"}}))),
+                False, int(SINCE), int(UNTIL))
+        receipt, reasons = identity("webkit", indexed["records"])
+        self.assertEqual(receipt, {"sha256": hashlib.sha256(elf_fixture()).hexdigest(),
+                                   "build_id": "12345678", "module": self.path.name})
+        self.assertEqual(reasons, set())
+        self.assertEqual([r["module_identity"] for r in indexed["records"]],
+                         [{}, {self.path.name: "12345678"}, {self.path.name: "deadbeef"}])
+
+    def test_gpu_installed_child_requires_exactly_one_eligible_crash(self):
+        identity = self.collector["installed_identity"]
+        first = self.root / "test_parity-0123456789abcdef"
+        second = self.root / "test_parity-0123456789abcdee"
+        for path in (first, second):
+            path.write_bytes(elf_fixture())
+        identity.__globals__["PARITY_DEPS"] = self.root
+        row = {"_parity_exe": first}
+        self.assertEqual(identity("gpu-parity", [row])[0], {
+            "sha256": hashlib.sha256(elf_fixture()).hexdigest(), "build_id": "12345678", "module": first.name,
+        })
+        for rows in ([], [row, row], [row, {"_parity_exe": second}]):
+            self.assertIsNone(identity("gpu-parity", rows)[0])
 
 
 def _token():

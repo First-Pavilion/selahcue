@@ -1,11 +1,14 @@
 """Read existing systemd crash summaries for the pinned hosted WebKit sweep.
 
 --since and --until are inclusive UTC epoch seconds. --journal-jsonl replays a
-regular file without consulting the host journal or core handler. A diagnostic
+regular file without consulting the host journal or core handler. Use --kernel-jsonl only
+with that offline replay. A diagnostic
 result (including unavailable, timeout, or malformed) exits 0; an invalid
 window or invocation emits the same safe schema and exits 2.
 """
 import argparse
+from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,11 +16,15 @@ import re
 import selectors
 import signal
 import stat
+import struct
 import subprocess
+import sys
 import time
 
 
 RAW_LIMIT = 256 * 1024
+KERNEL_LIMIT = 64 * 1024
+KERNEL_LINE_LIMIT = 4096
 EXPORT_LIMIT = 24 * 1024
 RECORD_LIMIT = 3
 THREAD_LIMIT = 64
@@ -26,10 +33,18 @@ FRAME_LIMIT = 12
 MODULE_ID_LIMIT = 16
 WINDOW_SECONDS = 3600
 MAX_TID = 2_147_483_647
+MAX_EPOCH_SECONDS = 253402300799
+FAULT_BASIS = "kernel_tid_and_frame0_pc"
+METADATA_SECONDS = 8
+IDENTITY_SECONDS = 2
+OUTPUT_RESERVE_SECONDS = 0.05
 # Reserve time within five seconds for signaling the sudo supervisor and reaping.
 QUERY_SECONDS = 4
+KERNEL_QUERY_SECONDS = 2
 TERMINATION_GRACE = 0.15
 REAP_SECONDS = 0.5
+CLEANUP_SECONDS = TERMINATION_GRACE + REAP_SECONDS
+KERNEL_FIELDS = "MESSAGE,__REALTIME_TIMESTAMP,_BOOT_ID,_TRANSPORT"
 MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
 FIELDS = (
     "COREDUMP_TIMESTAMP,COREDUMP_PID,COREDUMP_SIGNAL_NAME,COREDUMP_EXE,COREDUMP_COMM,MESSAGE,"
@@ -40,6 +55,8 @@ FIELDS = (
 # registry identifies the WPE bin directory; the WebKit WPE build names its
 # helpers. pw_run.sh and the MiniBrowser shell wrapper are not ELF crash roles.
 BUNDLE = "/home/runner/.cache/ms-playwright/webkit-2311/minibrowser-wpe"
+WPE_MODULE = "libWPEWebKit-2.0.so.1"
+WPE_LIBRARY = Path(BUNDLE) / "lib" / WPE_MODULE
 ROLES = {
     f"{BUNDLE}/bin/MiniBrowser": "browser",
     f"{BUNDLE}/bin/WPEWebProcess": "web_process",
@@ -94,6 +111,31 @@ MODULE_ID_LINE = re.compile(r"Module ([!-~]+), build-id=([0-9a-f]{8,128})")
 BUILD_ID = re.compile(r"(?:[0-9a-f]{2}){4,64}")
 BOOT_ID = re.compile(r"[0-9a-f]{32}")
 
+
+KERNEL_HEX = r"[0-9a-f]{1,16}"
+KERNEL_PREFIX = re.compile(
+    rf"(?:(?![\[\]])[ -~]){{1,64}}\[(?P<tid>[0-9]{{1,10}})\]: segfault at {KERNEL_HEX} "
+    rf"ip (?P<pc>[0-9a-f]{{16}}) sp [0-9a-f]{{16}} error {KERNEL_HEX}(?P<ending>[ -~]*)"
+)
+KERNEL_ENDING = re.compile(
+    rf"(?: in (?P<module>[A-Za-z0-9_.-]+)\[(?:(?P<third>{KERNEL_HEX}),)?"
+    rf"{KERNEL_HEX}\+{KERNEL_HEX}\])?"
+    r"(?: likely on CPU (?P<cpu>[0-9]{1,10}) \(core (?P<core>-?[0-9]{1,10}), "
+    r"socket (?P<socket>-?[0-9]{1,10})\))?"
+)
+ELF_HEADER = struct.Struct("<16sHHIQQQIHHHHHH")
+ELF_PROGRAM = struct.Struct("<IIQQQQQQ")
+ELF_NOTE = struct.Struct("<III")
+ELF_FILE_LIMIT = 256 * 1024 * 1024
+ELF_CHUNK = ELF_NOTE_LIMIT = 1024 * 1024
+ELF_HEADER_LIMIT = 128
+IDENTITY_CHILD = (
+    "import json,runpy,sys; from pathlib import Path; "
+    "read=runpy.run_path(sys.argv[1])['read_elf_identity']; "
+    "print(json.dumps(read(Path(sys.argv[2]), expected_root=Path(sys.argv[3]))))"
+)
+
+
 class PrivateParser(argparse.ArgumentParser):
     def error(self, _message):
         raise ValueError
@@ -131,7 +173,7 @@ def core_handler():
     return "other_pipe"
 
 
-def replay(path):
+def replay(path, limit=RAW_LIMIT):
     # Opening a FIFO with ordinary read flags would block before fstat.
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     # Keep the one-byte overflow probe from filling a read-ahead buffer.
@@ -139,80 +181,148 @@ def replay(path):
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             return "unavailable", b"", False
         data = bytearray()
-        while len(data) < RAW_LIMIT:
-            chunk = source.read(RAW_LIMIT - len(data))
+        while len(data) < limit:
+            chunk = source.read(limit - len(data))
             if not chunk:
                 return "available", data, False
             data.extend(chunk)
         return "available", data, bool(source.read(1))
 
 
-def stop_owned_group(child):
-    # Signal before waiting, so the PID remains reserved until its group has
-    # been signaled. TERM lets sudo forward termination to its elevated child.
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        try:
-            os.killpg(child.pid, sig)
-        except ProcessLookupError:
-            break
-        except PermissionError:
-            break
-        if sig == signal.SIGTERM:
-            time.sleep(TERMINATION_GRACE)
+def signal_group(child, sig):
     try:
-        child.wait(timeout=REAP_SECONDS)
+        os.killpg(child.pid, sig)
+        return True
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+
+
+def stop_owned_group(child, deadline, *, exited=False):
+    # The leader is intentionally unreaped while signaling its group, so
+    # neither an inherited pipe nor a reused PID can redirect the cleanup.
+    confirmed = True
+    if not exited:
+        confirmed = signal_group(child, signal.SIGTERM)
+        time.sleep(max(0, min(TERMINATION_GRACE, deadline - time.monotonic() - REAP_SECONDS)))
+    confirmed &= signal_group(child, signal.SIGKILL)
+    try:
+        child.wait(timeout=max(0, min(REAP_SECONDS, deadline - time.monotonic())))
     except subprocess.TimeoutExpired:
-        # Keep export bounded even if the OS cannot reap a stuck process yet.
-        pass
+        return False
+    if not confirmed and exited and sys.platform == "darwin":
+        # Darwin can report EPERM for an unreaped zombie. With the
+        # leader reaped, require an independent absence check; never
+        # signal a potentially reused group ID.
+        try:
+            os.killpg(child.pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+    return confirmed
 
 
-def query(since, until):
-    # --all retains MESSAGE fields larger than journalctl's default JSON
-    # threshold (4096 bytes). The fixed field projection and our own read cap
-    # still apply. Journalctl also adds its unavoidable JSON bookkeeping.
-    args = [
-        "sudo", "-n", "journalctl", "-b", "--no-pager", "--quiet", "--all",
-        "--since", f"@{since}", "--until", f"@{until}.999999",
-        f"MESSAGE_ID={MESSAGE_ID}", "-o", "json", f"--output-fields={FIELDS}",
-    ]
-    deadline = time.monotonic() + QUERY_SECONDS
-    child = subprocess.Popen(
-        args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, start_new_session=True,
-    )
+def read_child(args, limit, read_deadline, cleanup_deadline):
     data = bytearray()
-    finished = False
+    if time.monotonic() >= read_deadline:
+        return "timeout", data, False, True
+    try:
+        child = subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unavailable", data, False, True
+
+    outcome, cut, exited = "unavailable", False, False
     try:
         fd = child.stdout.fileno()
         os.set_blocking(fd, False)
         with selectors.DefaultSelector() as watcher:
             watcher.register(fd, selectors.EVENT_READ)
             while True:
-                remaining = deadline - time.monotonic()
+                remaining = read_deadline - time.monotonic()
                 if remaining <= 0 or not watcher.select(remaining):
-                    return "timeout", data, True
-                # The final one-byte probe detects overflow; it is never
-                # retained or parsed as part of the capped capture.
-                room = RAW_LIMIT - len(data)
+                    outcome, cut = "timeout", True
+                    break
+                room = limit - len(data)
                 try:
                     chunk = os.read(fd, min(8192, room) if room else 1)
                 except BlockingIOError:
                     continue
                 if not chunk:
+                    while time.monotonic() < read_deadline:
+                        # Observe without reaping: a descendant may have
+                        # closed stdout and still need to be terminated.
+                        status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if status and status.si_pid:
+                            exited = True
+                            if status.si_code == os.CLD_EXITED and status.si_status == 0:
+                                outcome = "available"
+                            break
+                        time.sleep(max(0, min(0.005, read_deadline - time.monotonic())))
+                    else:
+                        outcome, cut = "timeout", True
                     break
                 if not room:
-                    return "available", data, True
+                    outcome, cut = "available", True
+                    break
                 data.extend(chunk)
-        try:
-            status = child.wait(timeout=max(0, deadline - time.monotonic()))
-        except subprocess.TimeoutExpired:
-            return "timeout", data, True
-        finished = True
-        return ("available", data, False) if status == 0 else ("unavailable", b"", False)
+    except OSError:
+        outcome, cut = "unavailable", False
     finally:
         child.stdout.close()
-        if not finished:
-            stop_owned_group(child)
+        reaped = stop_owned_group(child, cleanup_deadline, exited=exited)
+    return outcome, data if outcome != "unavailable" else b"", cut, reaped
+
+
+def journal_args(since, until, selector, projection):
+    # --all retains MESSAGE fields over journalctl's default 4096 bytes.
+    return [
+        "sudo", "-n", "journalctl", "-b", "--no-pager", "--quiet", "--all",
+        "--since", f"@{since}", "--until", f"@{until}.999999",
+        selector, "-o", "json", f"--output-fields={projection}",
+    ]
+
+
+def query(since, until, deadline):
+    read_until = time.monotonic() + QUERY_SECONDS
+    cleanup_until = min(deadline, read_until + CLEANUP_SECONDS)
+    return read_child(journal_args(since, until, f"MESSAGE_ID={MESSAGE_ID}", FIELDS),
+                      RAW_LIMIT, min(read_until, cleanup_until - CLEANUP_SECONDS), cleanup_until)
+
+
+def query_kernel(since, until, deadline):
+    # Preserve the crash window; only kernel acquisition gets the two-second
+    # correlation tail. The isolated process still has a two-second read cap.
+    read_until = time.monotonic() + KERNEL_QUERY_SECONDS
+    cleanup_until = min(deadline, read_until + CLEANUP_SECONDS)
+    args = journal_args(since, min(until + 2, MAX_EPOCH_SECONDS), "_TRANSPORT=kernel", KERNEL_FIELDS)
+    return read_child(args, KERNEL_LIMIT, min(read_until, cleanup_until - CLEANUP_SECONDS), cleanup_until)
+
+
+class DiagnosticDeadline(Exception):
+    pass
+
+
+@contextmanager
+def time_bound(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise DiagnosticDeadline
+
+    def expired(_signum, _frame):
+        raise DiagnosticDeadline
+
+    previous = signal.signal(signal.SIGALRM, expired)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def unique_fields(pairs):
@@ -398,13 +508,14 @@ def module_identities(package_json, message, parity_exe, slots, reasons):
 def collect(result, data, cut, since, until, *, profile="webkit"):
     reasons = set(result["omission_reasons"])
     complete = result["candidate_scan_complete"]
+    record_population_complete = complete
     if len(data) > RAW_LIMIT:
         data, cut = data[:RAW_LIMIT], True
     if cut:
         # A partial trailing line could be an incomplete valid record.
         data = data[:data.rfind(b"\n") + 1]
         reasons.add("deadline" if result["availability"] == "timeout" else "raw_limit")
-        complete = False
+        complete = record_population_complete = False
 
     malformed = 0
     identity_slots = MODULE_ID_LIMIT
@@ -427,7 +538,7 @@ def collect(result, data, cut, since, until, *, profile="webkit"):
         except (ValueError, RecursionError):
             malformed += 1
             result["rejected_records"] += 1
-            complete = False
+            complete = record_population_complete = False
             reasons.add("malformed")
             continue
         if not first_us <= timestamp < last_us:
@@ -439,7 +550,7 @@ def collect(result, data, cut, since, until, *, profile="webkit"):
             result["rejected_records"] += 1
             continue
         if len(result["records"]) == RECORD_LIMIT:
-            complete = False
+            complete = record_population_complete = False
             reasons.add("record_limit")
             continue
 
@@ -472,19 +583,295 @@ def collect(result, data, cut, since, until, *, profile="webkit"):
     if not complete:
         reasons.add("join_incomplete")
     result["candidate_scan_complete"] = complete
+    result["_record_population_complete"] = record_population_complete
     result["export_truncated"] = "frame_limit" in reasons
     result["truncated"] = bool(reasons & {"raw_limit", "deadline", "record_limit", "thread_limit", "frame_limit"})
     result["partial"] = bool(reasons)
     result["omission_reasons"] = sorted(reasons)
 
 
-def export(result):
+
+def parse_kernel_message(message, parity_names=()):
+    if (not isinstance(message, str) or len(message) > KERNEL_LINE_LIMIT
+            or not message.isascii()):
+        return None
+    match = KERNEL_PREFIX.fullmatch(message.removesuffix("\n"))
+    if not match:
+        return None
+    tid, pc, ending = int(match["tid"]), int(match["pc"], 16), match["ending"]
+    if not 1 <= tid <= MAX_TID:
+        return None
+    module = None
+    if ending:
+        suffix = KERNEL_ENDING.fullmatch(ending)
+        if not suffix:
+            return None
+        module = suffix["module"]
+        if module is not None and module not in MODULE_SYMBOLS and module not in parity_names:
+            return None
+        cpu = suffix["cpu"]
+        if cpu is None:
+            # Only the older two-number module formatter can stand alone.
+            if module is None or suffix["third"] is not None:
+                return None
+        elif not (int(cpu) <= MAX_TID
+                  and all(-2_147_483_648 <= int(suffix[name]) <= MAX_TID for name in ("core", "socket"))):
+            return None
+    return tid, pc, module
+
+
+def correlate_kernel(records, kernel_bytes, candidate_scan_complete):
+    reasons = set()
+    indexed_threads = {}
+    parity_names = set()
+    for record in records:
+        record["fault_attribution"] = {"fault_thread": None}
+        if "_parity_exe" in record:
+            parity_names.update(GPU_MODULES)
+            parity_names.add(record["_parity_exe"].name)
+        if record["signal"] == "SIGSEGV":
+            for thread in record["threads"]:
+                indexed_threads.setdefault(thread["tid"], []).append((record, thread))
+
+    pairs = 0
+    candidate_pair = None
+    if kernel_bytes is None:
+        reasons.add("kernel_unavailable")
+    else:
+        if len(kernel_bytes) > KERNEL_LIMIT:
+            reasons.add("kernel_limit")
+            kernel_bytes = kernel_bytes[:KERNEL_LIMIT]
+            kernel_bytes = kernel_bytes[:kernel_bytes.rfind(b"\n") + 1]
+
+        for line in kernel_bytes.split(b"\n"):
+            if not line:
+                continue
+            try:
+                row = json.loads(line.decode("utf-8"), object_pairs_hook=unique_fields,
+                                 parse_constant=invalid_constant)
+                if not isinstance(row, dict):
+                    raise ValueError
+                message, boot_id = row.get("MESSAGE"), row.get("_BOOT_ID")
+                if (row.get("_TRANSPORT") != "kernel" or not isinstance(message, str)
+                        or not isinstance(boot_id, str) or not BOOT_ID.fullmatch(boot_id)):
+                    raise ValueError
+                timestamp = number(row.get("__REALTIME_TIMESTAMP"), 18)
+                if timestamp < 1_000_000:
+                    raise ValueError
+            except (ValueError, RecursionError):
+                reasons.add("malformed")
+                continue
+            if "segfault" not in message:
+                continue
+            event = parse_kernel_message(message, parity_names)
+            if event is None:
+                reasons.add("kernel_unsupported_format")
+                continue
+            tid, pc, module = event
+            for record, thread in indexed_threads.get(tid, ()):
+                delta = timestamp - record["timestamp_us"]
+                if not 0 <= delta < 2_000_000:
+                    continue
+                if record["_boot_id"] is None:
+                    reasons.add("malformed")
+                    continue
+                if record["_boot_id"] != boot_id:
+                    continue
+                zero = thread["_frame_zero"]
+                if zero is None:
+                    reasons.add("ordinal_missing")
+                    continue
+                if pc == zero["pc"] and (module is None or module == zero["module"]):
+                    pairs += 1
+                    if pairs == 1:
+                        candidate_pair = (record, tid, delta, zero["frame"])
+
+    complete = candidate_scan_complete and not reasons
+    if not complete:
+        reasons.add("join_incomplete")
+    elif not pairs:
+        reasons.add("kernel_no_match")
+    elif pairs > 1:
+        reasons.add("kernel_ambiguous")
+    else:
+        record, tid, delta, frame = candidate_pair
+        record["fault_attribution"]["fault_thread"] = {
+            "tid": tid, "basis": FAULT_BASIS, "delta_us": delta, "frame_zero": frame,
+        }
+    return records, complete, reasons
+
+
+def resolved_identity_path(path, expected_root):
+    resolved = path.resolve(strict=True)
+    if resolved.parent != expected_root:
+        raise ValueError
+    # WebKit permits only the pinned SONAME resolving to itself or its exact
+    # versioned family; the parity executable must already be canonical.
+    if resolved != path:
+        versioned = VERSIONED_MODULE.fullmatch(resolved.name)
+        if path.name != WPE_MODULE or not versioned or versioned[1] != WPE_MODULE:
+            raise ValueError
+    return resolved
+
+
+def open_fixed_directory(path):
+    # Open each canonical component without following symlinks, so replacing
+    # an ancestor between resolve and open cannot redirect the file read.
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(path.anchor, flags)
+    try:
+        for name in path.parts[1:]:
+            successor = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = successor
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_exact(source, length):
+    data = source.read(length)
+    if len(data) != length:
+        raise ValueError
+    return data
+
+
+def elf_build_id(source, size):
+    header = ELF_HEADER.unpack(read_exact(source, ELF_HEADER.size))
+    ident, _, machine, version, _, offset, _, _, hsize, entsize, count, *_ = header
+    if (ident[:7] != b"\x7fELF\x02\x01\x01" or machine != 62 or version != 1
+            or hsize != ELF_HEADER.size or count > ELF_HEADER_LIMIT):
+        raise ValueError
+    if offset > size:
+        raise ValueError
+    if count == 0:
+        return None
+    if (entsize != ELF_PROGRAM.size or offset < ELF_HEADER.size
+            or offset + count * entsize > size):
+        raise ValueError
+    source.seek(offset)
+    programs = [ELF_PROGRAM.unpack(read_exact(source, entsize)) for _ in range(count)]
+    note_total, build_id = 0, None
+    for kind, _, offset, _, _, length, _, alignment in programs:
+        if offset + length > size:
+            raise ValueError
+        if kind != 4 or not length:  # PT_NOTE
+            continue
+        note_total += length
+        if (offset < ELF_HEADER.size or note_total > ELF_NOTE_LIMIT
+                or alignment not in (0, 1, 2, 4, 8)):
+            raise ValueError
+        source.seek(offset)
+        notes = read_exact(source, length)
+        align = max(4, alignment)
+        cursor = 0
+        while cursor < length:
+            if cursor + ELF_NOTE.size > length:
+                raise ValueError
+            name_size, desc_size, note_type = ELF_NOTE.unpack_from(notes, cursor)
+            name = cursor + ELF_NOTE.size
+            desc = (name + name_size + align - 1) & -align
+            end = desc + desc_size
+            cursor = (end + align - 1) & -align
+            if cursor > length:
+                raise ValueError
+            if note_type == 3 and name_size == 4 and notes[name:name + name_size] == b"GNU\0":
+                if not 4 <= desc_size <= 64:
+                    raise ValueError
+                value = notes[desc:end].hex()
+                if build_id is not None and build_id != value:
+                    raise ValueError
+                build_id = value
+    return build_id
+
+
+def read_elf_identity(path, *, expected_root):
+    try:
+        resolved = resolved_identity_path(path, expected_root)
+        before = resolved.stat()
+        directory = open_fixed_directory(expected_root)
+        try:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            fd = os.open(resolved.name, flags, dir_fd=directory)
+        finally:
+            os.close(directory)
+
+        def unchanged(current):
+            return (stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+                    == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns))
+
+        with os.fdopen(fd, "rb", buffering=0) as source:
+            if not unchanged(os.fstat(fd)) or not ELF_HEADER.size <= before.st_size <= ELF_FILE_LIMIT:
+                return None
+            build_id = elf_build_id(source, before.st_size)
+            source.seek(0)
+            digest = hashlib.sha256()
+            remaining = before.st_size
+            while remaining:
+                chunk = read_exact(source, min(ELF_CHUNK, remaining))
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if (not unchanged(os.fstat(fd)) or resolved_identity_path(path, expected_root) != resolved
+                    or not unchanged(resolved.stat())):
+                return None
+            return {"sha256": digest.hexdigest(), "build_id": build_id}
+    except (OSError, RuntimeError, ValueError, struct.error):
+        return None
+
+
+def installed_identity(profile, eligible_records, *, deadline=None):
+    if profile == "webkit":
+        path, module, root = WPE_LIBRARY, WPE_MODULE, WPE_LIBRARY.parent
+    elif profile == "gpu-parity" and len(eligible_records) == 1:
+        path = eligible_records[0].get("_parity_exe")
+        if path is None or path.parent != PARITY_DEPS or not PARITY_NAME.fullmatch(path.name):
+            return None, {"identity_missing"}
+        module, root = path.name, PARITY_DEPS
+    else:
+        return None, {"identity_missing"}
+    end = time.monotonic() + IDENTITY_SECONDS
+    if deadline is not None:
+        end = min(end, deadline)
+    # Fixed owned Python child, isolated from caller imports/site config. It
+    # receives only the path selected above and returns a tiny safe receipt.
+    args = [sys.executable, "-I", "-B", "-c", IDENTITY_CHILD,
+            __file__, str(path), str(root)]
+    status, data, cut, reaped = read_child(args, 1024, end - CLEANUP_SECONDS, end)
+    reasons = set()
+    if not reaped:
+        reasons.add("reap_unconfirmed")
+    if status == "timeout":
+        reasons.add("deadline")
+    if status == "available" and not cut and reaped:
+        try:
+            receipt = json.loads(data, object_pairs_hook=unique_fields)
+            if isinstance(receipt, dict) and set(receipt) == {"sha256", "build_id"}:
+                sha, build_id = receipt["sha256"], receipt["build_id"]
+                if (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)
+                        and (build_id is None or isinstance(build_id, str) and BUILD_ID.fullmatch(build_id))):
+                    return {"module": module, "sha256": sha, "build_id": build_id}, reasons
+        except (ValueError, RecursionError):
+            pass
+    return None, reasons | {"identity_missing"}
+
+
+def safe_frame(frame):
+    return {key: frame[key] for key in ("ordinal", "module", "offset", "symbol") if key in frame}
+
+
+def encode_export(result):
     # Only these fields cross the public boundary. Absolute PCs, boot IDs and
     # canonical installed paths are private even when the stack was selected.
     payload = {key: result[key] for key in (
         "schema_version", "availability", "handler", "partial", "truncated",
         "rejected_records", "candidate_scan_complete", "export_truncated", "omission_reasons",
     )}
+    if "installed_identity" in result:
+        payload["installed_identity"] = result["installed_identity"]
     records = payload["records"] = []
 
     def mark_export_limit():
@@ -496,17 +883,27 @@ def export(result):
             "pid", "timestamp_us", "signal", "role", "partial", "core_truncated",
             "core_storage", "module_identity",
         )}
+        fault = record["fault_attribution"]["fault_thread"]
         safe["fault_attribution"] = {"fault_thread": None}
+        if fault is not None:
+            safe["fault_attribution"]["fault_thread"] = {
+                "tid": fault["tid"], "basis": FAULT_BASIS, "delta_us": fault["delta_us"],
+                "frame_zero": safe_frame(fault["frame_zero"]),
+            }
         if "executable" in record:
             safe["executable"] = record["executable"]
         threads = safe["threads"] = []
-        for thread in record["threads"][:STACK_EXPORT_LIMIT]:
+        ordered = record["threads"]
+        if fault is not None:
+            ordered = sorted(ordered, key=lambda t: (t["tid"] != fault["tid"], t["_listing_index"]))
+        for thread in ordered[:STACK_EXPORT_LIMIT]:
+            selected = fault is not None and thread["tid"] == fault["tid"]
+            frames = thread["frames"]
+            if selected:
+                frames = sorted(frames, key=lambda f: f["ordinal"] != 0)
             threads.append({
-                "tid": thread["tid"], "basis": "listed_only",
-                "frames": [
-                    {key: frame[key] for key in ("ordinal", "module", "offset", "symbol") if key in frame}
-                    for frame in thread["frames"]
-                ],
+                "tid": thread["tid"], "basis": FAULT_BASIS if selected else "listed_only",
+                "frames": [safe_frame(f) for f in frames],
             })
         if len(record["threads"]) > STACK_EXPORT_LIMIT:
             safe["partial"] = True
@@ -521,17 +918,65 @@ def export(result):
         mark_export_limit()
         for record in reversed(records):
             while record["threads"] and len(encoded) + 1 > EXPORT_LIMIT:
-                frames = record["threads"][-1]["frames"]
-                if frames:
-                    frames.pop()
+                stack = record["threads"][-1]
+                if stack["basis"] == FAULT_BASIS:
+                    break
+                if stack["frames"]:
+                    stack["frames"].pop()
                 else:
                     record["threads"].pop()
                 record["partial"] = True
                 encoded = encode()
+        # Fault context outranks listed peers. Always retain original #0.
+        for record in records:
+            if record["fault_attribution"]["fault_thread"] is not None:
+                frames = record["threads"][0]["frames"]
+                while len(frames) > 1 and len(encoded) + 1 > EXPORT_LIMIT:
+                    frames.pop()
+                    record["partial"] = True
+                    encoded = encode()
         while records and len(encoded) + 1 > EXPORT_LIMIT:
-            records.pop()
+            index = next((i for i in reversed(range(len(records)))
+                          if records[i]["fault_attribution"]["fault_thread"] is None), -1)
+            records.pop(index)
             encoded = encode()
-    print(encoded)
+    return encoded
+
+
+def export(result):
+    print(encode_export(result))
+
+
+def mark_incomplete(result, *reasons):
+    for record in result["records"]:
+        record["fault_attribution"] = {"fault_thread": None}
+    result["candidate_scan_complete"] = False
+    result["partial"] = True
+    result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons, "join_incomplete"})
+
+
+def attach_kernel(result, availability, kernel_data, cut, reaped):
+    reasons = set()
+    if cut:
+        reasons.add("deadline" if availability == "timeout" else "kernel_limit")
+        # The final complete line may already be exactly on the byte cap.
+        kernel_data = kernel_data[:kernel_data.rfind(b"\n") + 1]
+    if availability == "timeout":
+        reasons.add("deadline")
+    elif availability != "available":
+        reasons.add("kernel_unavailable")
+        kernel_data = None
+    if not reaped:
+        reasons.add("reap_unconfirmed")
+    records, complete, join_reasons = correlate_kernel(
+        result["records"], kernel_data, result["candidate_scan_complete"] and not reasons,
+    )
+    reasons |= join_reasons
+    result["records"] = records
+    result["candidate_scan_complete"] = complete
+    result["partial"] |= bool(reasons - {"kernel_no_match"})
+    result["truncated"] |= bool(reasons & {"kernel_limit", "deadline"})
+    result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons})
 
 
 def main():
@@ -539,29 +984,97 @@ def main():
     parser.add_argument("--since", required=True)
     parser.add_argument("--until", required=True)
     parser.add_argument("--journal-jsonl", metavar="FILE")
+    parser.add_argument("--kernel-jsonl", metavar="FILE")
     parser.add_argument("--profile", choices=("webkit", "gpu-parity"), default="webkit")
     try:
         options = parser.parse_args()
+        if options.kernel_jsonl is not None and options.journal_jsonl is None:
+            raise ValueError
         since, until = number(options.since, 12), number(options.until, 12)
         # journalctl must be able to represent both times in ordinary UTC.
-        if since > until or until - since >= WINDOW_SECONDS or until > 253402300799:
+        if since > until or until - since >= WINDOW_SECONDS or until > MAX_EPOCH_SECONDS:
             raise ValueError
     except ValueError:
         export(summary("invalid_window"))
         return 2
 
-    handler = "not_checked" if options.journal_jsonl is not None else core_handler()
-    result = summary(handler=handler)
+    start = time.monotonic()
+    deadline = start + METADATA_SECONDS
+    offline = options.journal_jsonl is not None
+    handler = "not_checked"
+    result = summary()
+    availability, reaped, crash_population_complete = "unavailable", True, False
     try:
-        availability, data, cut = (
-            replay(options.journal_jsonl) if options.journal_jsonl is not None else query(since, until)
-        )
+        if offline:
+            with time_bound(deadline):
+                availability, data, cut = replay(options.journal_jsonl)
+            reaped = True
+        else:
+            with time_bound(deadline):
+                handler = core_handler()
+            availability, data, cut, reaped = query(since, until, deadline)
         result = summary(availability, handler)
-        if availability in ("available", "timeout"):
-            collect(result, data, cut, since, until, profile=options.profile)
+        with time_bound(deadline):
+            if availability in ("available", "timeout"):
+                collect(result, data, cut, since, until, profile=options.profile)
+            crash_population_complete = result.get("_record_population_complete", False)
+            if availability == "timeout":
+                mark_incomplete(result, "deadline")
+            if not reaped:
+                mark_incomplete(result, "reap_unconfirmed")
+        # Coredump-only replay remains useful for legacy non-segfault inputs.
+        # A SIGSEGV without a companion never counts as a completed join.
+        need_kernel = (
+            options.kernel_jsonl is not None
+            or not offline and availability == "available"
+            or any(record["signal"] == "SIGSEGV" for record in result["records"])
+        )
+        if need_kernel:
+            if options.kernel_jsonl is not None:
+                try:
+                    with time_bound(deadline):
+                        kernel_status = (*replay(options.kernel_jsonl, KERNEL_LIMIT), True)
+                except (OSError, ValueError):
+                    kernel_status = ("unavailable", b"", False, True)
+            elif not offline and availability == "available":
+                kernel_status = query_kernel(since, until, deadline)
+            else:
+                kernel_status = ("unavailable", b"", False, True)
+            with time_bound(deadline):
+                attach_kernel(result, *kernel_status)
+        with time_bound(deadline):
+            encoded = encode_export(result)
+    except DiagnosticDeadline:
+        mark_incomplete(result, "deadline")
+        result["truncated"] = True
+        encoded = encode_export(result)
     except (OSError, subprocess.SubprocessError, ValueError):
         result = summary(handler=handler)
-    export(result)
+        encoded = encode_export(result)
+
+    if not offline:
+        # If coredump inspection may have missed another parity executable,
+        # the admitted records do not establish a unique crash.
+        identities = result["records"]
+        if options.profile == "gpu-parity" and (
+            availability != "available" or not reaped or not crash_population_complete
+        ):
+            identities = []
+        total_deadline = start + METADATA_SECONDS + IDENTITY_SECONDS
+        try:
+            identity, reasons = installed_identity(
+                options.profile, identities, deadline=total_deadline - OUTPUT_RESERVE_SECONDS,
+            )
+            with time_bound(total_deadline):
+                if identity is not None:
+                    result["installed_identity"] = identity
+                if reasons:
+                    result["partial"] = True
+                    result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons})
+                encoded = encode_export(result)
+        except DiagnosticDeadline:
+            pass
+    print(encoded)
     return 0
 
 
