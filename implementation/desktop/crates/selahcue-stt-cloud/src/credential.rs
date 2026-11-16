@@ -73,12 +73,22 @@ impl Credential {
     /// A raw Deepgram API key (Phase 1, developer path — see the crate documentation for why
     /// this is temporary).
     pub fn developer_key(secret: impl Into<String>) -> Result<Self, DeepgramError> {
-        Credential::new(CredentialScheme::Token, secret)
+        Credential::new(
+            CredentialScheme::Token,
+            secret,
+            DeepgramError::MissingCredential {
+                variable: DEEPGRAM_API_KEY_VAR,
+            },
+        )
     }
 
     /// An explicitly injected, restricted pilot package key. Does not read the environment.
     pub fn pilot_key(secret: impl Into<String>) -> Result<Self, DeepgramError> {
-        Credential::new(CredentialScheme::Token, secret)
+        Credential::new(
+            CredentialScheme::Token,
+            secret,
+            DeepgramError::MissingInjectedCredential,
+        )
     }
 
     /// A short-lived, server-minted grant token (Phase 2, `POST /v1/stt/session`).
@@ -87,15 +97,23 @@ impl Credential {
     /// established stream when the credential behind it expires, so callers must not treat
     /// this token's expiry as a session lifetime.
     pub fn grant_token(secret: impl Into<String>) -> Result<Self, DeepgramError> {
-        Credential::new(CredentialScheme::Bearer, secret)
+        Credential::new(
+            CredentialScheme::Bearer,
+            secret,
+            DeepgramError::MissingCredential {
+                variable: DEEPGRAM_API_KEY_VAR,
+            },
+        )
     }
 
-    fn new(scheme: CredentialScheme, secret: impl Into<String>) -> Result<Self, DeepgramError> {
+    fn new(
+        scheme: CredentialScheme,
+        secret: impl Into<String>,
+        missing: DeepgramError,
+    ) -> Result<Self, DeepgramError> {
         let secret = secret.into();
         if secret.trim().is_empty() {
-            return Err(DeepgramError::MissingCredential {
-                variable: DEEPGRAM_API_KEY_VAR,
-            });
+            return Err(missing);
         }
         // A credential goes straight into an HTTP header value. A CR, LF or NUL in it would
         // be header injection on the upgrade request, so it is refused rather than escaped.

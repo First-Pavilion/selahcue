@@ -1,32 +1,20 @@
 import { useRoute, useRouter } from 'vue-router'
+import { landingTokenHandoff } from './landingTokenHandoff.ts'
 import { readTokenParam } from './tokenParam.ts'
 
 /**
- * Read the landing token out of the URL and immediately take it back out of the URL.
+ * Transfer the initial landing token after the router has committed its exact destination.
+ * The initial URL was scrubbed before web history was created. The mounted view owns
+ * the returned plain string for the duration of its existing auth flow.
  *
- * "Take", not "read": the token is captured into a plain (NON-reactive) local and the
- * address bar is rewritten in the same tick. That matters for four separate leaks, and
- * one call closes all of them:
- *
- *   - BROWSER HISTORY — `router.replace` overwrites the current entry rather than
- *     pushing a new one, so the token-bearing URL does not survive in history, in the
- *     back button, or in the browser's synced-history/autocomplete store.
- *   - REFERER — any later outbound click ("Contact support", "Back to Sign in") would
- *     otherwise carry the whole token-bearing URL to the destination. `nginx.conf` also
- *     sets `strict-origin-when-cross-origin`, but scrubbing means there is nothing to
- *     leak even if a future deployment loosens that header.
- *   - ANALYTICS — the SPA has none today, but a page-view tag added later reads
- *     `location.href` at load. After this runs there is no token in it.
- *   - SHOULDER/SCREEN-SHARE — these pages are opened on a projector-attached machine in
- *     a church office more often than anywhere else.
- *
- * The return value is deliberately a plain string, not a ref: the caller owns the only
- * copy, and it must never be written back into route state or into a log line.
+ * A later client-side token landing still reads its own query and replaces that entry.
  */
 export function takeLandingToken(): string {
-  const route = useRoute()
   const router = useRouter()
+  const initialToken = landingTokenHandoff.take(router.currentRoute.value)
+  if (initialToken) return initialToken
 
+  const route = useRoute()
   // Captured BEFORE the replace, and by value — `route.query` is reactive and is about
   // to be emptied.
   const token = readTokenParam(route.query.token)

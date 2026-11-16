@@ -23,7 +23,7 @@ use selahcue_licensing::{
 use std::path::PathBuf;
 
 /// Number of `.rs` modules in `src/`. Pinned so a scan cannot silently cover less.
-const EXPECTED_SRC_MODULES: usize = 9;
+const EXPECTED_SRC_MODULES: usize = 11;
 
 // ---------------------------------------------------------------------------
 // Structural: licensing is not on the render / go-live / live-control path
@@ -122,6 +122,10 @@ fn this_crate_exposes_no_enforcement_entry_point() {
 fn every_failure_variant() -> Vec<ActivationFailure> {
     let sample = ActivationFailure::UnknownKey;
     match sample {
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
+        | ActivationFailure::ActivationOperationConflict
+        | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}
         ActivationFailure::NoActiveLicense => {}
         ActivationFailure::UnknownKey => {}
@@ -241,6 +245,10 @@ fn an_unreachable_platform_is_a_silent_retryable_unknown() {
         .unwrap_err();
 
     match &failure {
+        ActivationFailure::BoundActivationRefused { .. }
+        | ActivationFailure::BoundActivationUnsupported
+        | ActivationFailure::ActivationOperationConflict
+        | ActivationFailure::ActivationOperationCompleted { .. } => {}
         ActivationFailure::Unreachable(_) => {}
         other => panic!("an offline platform must classify as Unreachable, got {other:?}"),
     }

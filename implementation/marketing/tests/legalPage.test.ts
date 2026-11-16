@@ -251,11 +251,11 @@ describe('rendered headings equal the typed content (nothing dropped between dat
 })
 
 describe("the document's own banner text is rendered while it is a draft", () => {
-  test('real drafts: status line, launch caveat and the Controller-policy pointer are all on the page', async () => {
+  test('real Privacy draft renders the draft status, Free-release scope and separate Controller-policy pointer', async () => {
     const html = await render(privacyPolicy)
     assert.ok(html.includes('Status: Draft'))
-    assert.ok(html.includes('describes SelahCue as it operates at launch'))
-    assert.ok(html.includes('also has its own policy'))
+    assert.ok(html.includes('describes the planned Free desktop release'))
+    assert.ok(html.includes('has a separate privacy policy'))
     assert.equal(count(html, 'data-placeholder'), legalPageStateCount(privacyPolicy), 'the banner mention is code, not a highlighted chip')
   })
 

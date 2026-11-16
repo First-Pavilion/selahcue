@@ -51,3 +51,19 @@ Normal parity work is local metadata parsing of three workflows, with finite ste
 Revert this isolated workflow/guard change to restore the prior canary. No production state/data/schema was changed. Native ClickUp continuation/handoff remains pending root-owned access recovery; the earlier In Progress start was actually saved/read back. Source review/current CI and QA are not claimed complete.
 
 Normal parsing intentionally covers literal Cargo commands and explicit operator directories. Dynamic shell helpers, matrix-derived feature expressions and arbitrary remote actions remain human review boundaries; unsupported detected command/option shapes fail for review. This is not a general shell or GitHub expression interpreter.
+
+## 2026-11-11 reviewed pilot integration reconciliation
+
+The imported P03 CI adds the exact default-on release tuple
+`pilot-credentials,cloud-live`. Its lint now has a separate literal `!cancelled()`
+step with the same synthetic fixture environment; the expiry test block and its
+nonzero/required-name controls remain intact. The canary retains its eight prior
+configurations and adds this ninth synthetic-CI tuple. This supersedes the earlier
+no-CI-pilot disposition, not the historical compiler results recorded above.
+
+The strict checker derives opt-in admission from exact actual-CI tuples and still
+refuses wrappers, missing/profile-drifted gates, non-CI opt-ins and all no-default
+configurations. Focused mutation controls and sentinel shell execution verify
+aggregate failure and continuation through shipped release STT. These are policy
+checks, not actual floating-stable compiler, provider, installer or shipping-profile
+evidence. Current compiler/runtime verification remains a separate integration gate.

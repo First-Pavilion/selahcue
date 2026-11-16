@@ -74,9 +74,9 @@ function json(body: unknown, status = 200): Response {
  * round-trips` while it happened. Adding a tenth name by hand would have rebuilt the same
  * mechanism one code later.
  *
- * So the list is READ. The shipped bundle still cannot see Python — the client keeps its
- * own copy, as it must — but the copy is now checked against the original by a test that
- * fails the moment the two disagree, in either direction.
+ * Read the shared enum to catch drift. The website handles account GraphQL, while the
+ * native STT session command shares the backend enum for its HTTP error payloads. Pin
+ * the confirmed native-only exceptions and require every other server code to round-trip.
  *
  * RESIDUAL, stated because it bounds what this control proves: `npm test` runs when
  * something in `implementation/marketing` changes, and CI's `marketing` job is
@@ -86,6 +86,22 @@ function json(body: unknown, status = 200): Response {
  * separately (86ak5rjh7).
  */
 const ERRORS_PY = new URL('../../api/selahcue_api/graphql/errors.py', import.meta.url)
+
+// SessionFailureCode in apps/providers/contracts.py reaches POST /v1/stt/session
+// through platform/cloud_views.py. The browser account GraphQL client never calls it.
+const NATIVE_STT_ONLY_CODES = new Set([
+  'PROVIDER_PROVISIONING',
+  'PROVISIONING_CAPACITY_EXHAUSTED',
+  'CLOUD_NOT_ENABLED',
+  'PROVIDER_UNAVAILABLE',
+  'RECONCILIATION_PENDING',
+  'POLICY_CHANGED',
+  'QUOTA_EXHAUSTED',
+  'SESSION_PENDING',
+  'ALREADY_ISSUED',
+  'RESERVATION_RELEASED',
+  'REQUEST_MISMATCH',
+])
 
 function errorCodesFromTheServer(): string[] {
   const source = readFileSync(ERRORS_PY, 'utf8')
@@ -119,7 +135,7 @@ describe('classifyErrors', () => {
     assert.equal(classifyErrors(envelope), 'VALIDATION_FAILED')
   })
 
-  test('every code errors.py defines round-trips — the list is read, not transcribed', () => {
+  test('account codes round-trip and native-only STT codes use the existing UNKNOWN fallback', () => {
     const codes = errorCodesFromTheServer()
 
     // THE PREMISE, so a parser that silently matched nothing could not turn the loop below
@@ -138,12 +154,15 @@ describe('classifyErrors', () => {
         'be reached, and ResetView needs revisiting before this assertion is relaxed',
     )
 
-    for (const code of codes) {
+    for (const code of NATIVE_STT_ONLY_CODES) {
+      assert.ok(codes.includes(code), `native-only exception ${code} is stale`)
+      assert.equal(classifyErrors([{ extensions: { code } }]), 'UNKNOWN', code)
+    }
+    for (const code of codes.filter((code) => !NATIVE_STT_ONLY_CODES.has(code))) {
       assert.equal(
         classifyErrors([{ extensions: { code } }]),
         code,
-        `errors.py can send ${code} and this client collapses it to UNKNOWN — add it to ` +
-          'SERVER_ERROR_CODES and to ApiErrorCode, and decide what every view does with it',
+        `unclassified server code ${code}: check which surface emits it before changing the browser contract`,
       )
     }
   })

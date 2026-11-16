@@ -342,7 +342,8 @@ impl Database {
     /// rejects an unkeyed backup destination). For an encrypted source use
     /// [`backup_to_encrypted`](Self::backup_to_encrypted).
     pub fn backup_to(&self, dst: impl AsRef<Path>) -> Result<()> {
-        self.conn.backup(MAIN_DB, dst, None)?;
+        self.conn
+            .backup(MAIN_DB, dst, None::<fn(rusqlite::backup::Progress)>)?;
         Ok(())
     }
 
@@ -407,8 +408,8 @@ mod checkpoint_tests {
 
     #[test]
     fn wal_checkpoint_disables_busy_handler_under_reader_contention() {
-        let (_directory, db, reader) = pinned_wal();
-        db.conn().busy_handler(Some(record_busy_attempt)).unwrap();
+        let (_directory, mut db, reader) = pinned_wal();
+        db.conn.busy_handler(Some(record_busy_attempt)).unwrap();
         BUSY_ATTEMPTS.with(|attempts| attempts.set(0));
 
         // Positive control: this exact pinned reader makes an unguarded

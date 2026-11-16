@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 OPERATOR = PurePosixPath('implementation/desktop/crates/selahcue-operator')
 # These are additional opt-in configurations, not substitutes for actual CI or
 # the installer. No-default-features is deliberately not shipped: encryption is
-# default-on. cloud-live is opt-in pending its desktop/server delivery slice.
+# default-on. Synthetic CI may require an exact opt-in tuple without shipping it.
 NON_SHIPPED = {'cloud-live': 'Opt-in desktop cloud integration; not requested by the installer.',
-               'pilot-credentials': 'Opt-in gated pilot package, absent from this installer/CI.',
+               'pilot-credentials': 'Opt-in gated pilot package; synthetic CI coverage is not installer shipping.',
                '--no-default-features': 'Not shipped; installer retains encryption defaults.'}
 
 
@@ -125,7 +125,8 @@ def shipping_configuration(installer):
 
 
 def problems(ci, canary, installer):
-    required = ci_configurations(ci) | {shipping_configuration(installer)}
+    ci_required = ci_configurations(ci)
+    required = ci_required | {shipping_configuration(installer)}
     covered = canary_configurations(canary)
     result = [f'canary missing operator configuration: {item}' for item in sorted(required - covered)]
     job = canary['jobs']['canary']
@@ -136,7 +137,9 @@ def problems(ci, canary, installer):
     events = canary.get('on', canary.get(True))
     if set(events) != {'schedule', 'workflow_dispatch'}:
         result.append('canary must remain scheduled/manual only')
-    if any(not item[1] or set(item[2]) & set(NON_SHIPPED) for item in covered):
+    if any(not item[1] or
+           (set(item[2]) & set(NON_SHIPPED) and item not in ci_required)
+           for item in covered):
         result.append('new opt-in canary configuration needs an explicit disposition')
     return result
 
@@ -194,6 +197,42 @@ def self_test(ci, canary, installer):
         count += 1
     else:
         raise AssertionError('arbitrary shell command reached fixture execution')
+    # The pilot tuple is admitted only when actual CI requests that exact tuple.
+    pilot = 'cargo clippy --release --features pilot-credentials,cloud-live --all-targets -- -D warnings'
+    mutant_ci = copy.deepcopy(ci)
+    pilot_step = next(step for step in mutant_ci['jobs']['operator-native']['steps']
+                      if step.get('run', '').strip() == pilot)
+    pilot_step['run'] = 'set -e\n' + pilot
+    try:
+        problems(mutant_ci, canary, installer)
+    except ValueError:
+        count += 1
+    else:
+        raise AssertionError('wrapped pilot Clippy passed strict parsing')
+    for replacement in (pilot.replace('--release ', ''),):
+        mutant = copy.deepcopy(canary)
+        target = next(step for step in mutant['jobs']['canary']['steps'] if step.get('id') == 'gates')
+        assert pilot + ' || fail=1' in target['run']
+        target['run'] = target['run'].replace(pilot, replacement)
+        assert problems(ci, mutant, installer), 'wrong pilot profile passed'
+        count += 1
+    for options in ('--features pilot-credentials,cloud-live',
+                    '--release --features pilot-credentials',
+                    '--release --features cloud-live',
+                    '--no-default-features',
+                    '--release --no-default-features --features pilot-credentials,cloud-live'):
+        mutant = copy.deepcopy(canary)
+        target = next(step for step in mutant['jobs']['canary']['steps'] if step.get('id') == 'gates')
+        target['run'] = target['run'].replace('exit $fail',
+            f'cargo clippy {options} --all-targets -- -D warnings || fail=1\nexit $fail')
+        assert 'new opt-in canary configuration needs an explicit disposition' in problems(ci, mutant, installer), options
+        count += 1
+    # Removing the literal pilot requirement cannot leave an exempt opt-in gate.
+    mutant_ci = copy.deepcopy(ci)
+    mutant_ci['jobs']['operator-native']['steps'] = [step for step in mutant_ci['jobs']['operator-native']['steps']
+        if step.get('run', '').strip() != pilot]
+    assert 'new opt-in canary configuration needs an explicit disposition' in problems(mutant_ci, canary, installer)
+    count += 1
     mutant_ci = copy.deepcopy(ci)
     mutant_ci['jobs']['new-operator-profile'] = {
         'steps': [{'working-directory': str(OPERATOR),
@@ -206,18 +245,24 @@ def self_test(ci, canary, installer):
         root = Path(directory)
         (root / OPERATOR).mkdir(parents=True)
         binary = root / 'cargo'
-        binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CANARY_CALLS"\ncase "$*" in *"--features stt,cloud-stt"*) exit "$CANARY_FAIL";; esac\nexit 0\n')
+        binary.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CANARY_CALLS"\ncase "$*" in *"$CANARY_FAIL_MATCH"*) exit "$CANARY_FAIL";; esac\nexit 0\n')
         binary.chmod(0o755)
-        for expected in (0, 23):
+        for fail_match, expected in (('--features stt,cloud-stt', 0),
+                                     ('--features stt,cloud-stt', 23),
+                                     ('--release --features pilot-credentials,cloud-live', 23)):
             calls = root / 'calls'
             calls.unlink(missing_ok=True)
-            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'], CANARY_CALLS=str(calls), CANARY_FAIL=str(expected))
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'], CANARY_CALLS=str(calls), CANARY_FAIL=str(expected), CANARY_FAIL_MATCH=fail_match)
             result = subprocess.run(['sh', '-c', gates['run']], cwd=root, env=env, capture_output=True, text=True, timeout=30)
             assert result.returncode == (1 if expected else 0), result.stderr
             invoked = calls.read_text().splitlines()
             assert 'clippy --features stt --release --all-targets -- -D warnings' in invoked, 'a failed earlier gate hid shipped release STT'
             assert sum(line.startswith('clippy ') for line in invoked) == len(lines)
-    print(f'canary coverage self-test: {count} actual configuration drift controls and 2 real shell outcome probes pass')
+            if expected:
+                failed = next(i for i, line in enumerate(invoked) if fail_match in line)
+                shipped = invoked.index('clippy --features stt --release --all-targets -- -D warnings')
+                assert failed < shipped, 'shipped release STT must execute after the injected failure'
+    print(f'canary coverage self-test: {count} actual configuration drift controls and 3 real shell outcome probes pass')
 
 
 def main():

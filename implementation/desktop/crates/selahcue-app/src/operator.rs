@@ -114,6 +114,7 @@ pub struct OperatorView {
     /// The recent live-transcript segments (bounded tail, oldest first) — the transcript
     /// panel (R3).
     pub transcript: Vec<TranscriptSegmentView>,
+    pub transcript_storage_health: Option<selahcue_lan::protocol::TranscriptStorageHealthView>,
     /// The current streaming interim line (words for the utterance still being spoken), shown
     /// live below the finalised transcript; `None` when nothing is mid-utterance.
     pub partial_transcript: Option<String>,
@@ -708,7 +709,19 @@ impl OperatorShell {
         transcript_id: i64,
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
+        self.save_sermon_note_draft_admitted(transcript_id, draft, || true)
+    }
+    /// Generated mutation admission is checked after the controller lock, before apply.
+    pub fn save_sermon_note_draft_admitted(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool,
+    ) -> Option<selahcue_lan::protocol::SermonNoteDraftView> {
         self.with(|c| {
+            if !admit() {
+                return None;
+            }
             match c.apply(&Command::SaveSermonNoteDraft {
                 transcript_id,
                 draft,
@@ -749,7 +762,19 @@ impl OperatorShell {
         transcript_id: i64,
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Option<crate::sermon_note_store::RegenerationSlot> {
+        self.stage_sermon_note_regeneration_admitted(transcript_id, draft, || true)
+    }
+    /// Generated mutation admission is checked after the controller lock, before apply.
+    pub fn stage_sermon_note_regeneration_admitted(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool,
+    ) -> Option<crate::sermon_note_store::RegenerationSlot> {
         self.with(|c| {
+            if !admit() {
+                return None;
+            }
             match c.apply(&Command::StageSermonNoteRegeneration {
                 transcript_id,
                 draft,
@@ -894,6 +919,7 @@ impl From<OperatorView> for OperatorStateView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            transcript_storage_health: v.transcript_storage_health,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
             stage_template: v.stage_template,
@@ -932,6 +958,7 @@ impl From<OperatorStateView> for OperatorView {
             screen_themes: v.screen_themes,
             screens: v.screens,
             transcript: v.transcript,
+            transcript_storage_health: v.transcript_storage_health,
             partial_transcript: v.partial_transcript,
             detections: v.detections,
             stage_template: v.stage_template,
@@ -1680,6 +1707,27 @@ impl RemoteOperator {
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
+        self.save_sermon_note_draft_with_admission(transcript_id, draft, None)
+            .await
+    }
+    /// Keep the admitted exchange intact, checking after sink readiness before dispatch.
+    pub async fn save_sermon_note_draft_admitted(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool + Send + Sync,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
+    {
+        self.save_sermon_note_draft_with_admission(transcript_id, draft, Some(&admit))
+            .await
+    }
+    async fn save_sermon_note_draft_with_admission(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
+    {
         let command = Command::SaveSermonNoteDraft {
             transcript_id,
             draft,
@@ -1687,7 +1735,12 @@ impl RemoteOperator {
         if Self::would_exceed_wire_cap(&command)? {
             return Ok(None);
         }
-        reply::expect_sermon_note_draft_or_denied(self.client.command(command).await?)
+        match admit {
+            Some(admit) => reply::expect_sermon_note_draft_or_denied(
+                self.client.command_if_admitted(command, admit).await?,
+            ),
+            None => reply::expect_sermon_note_draft_or_denied(self.client.command(command).await?),
+        }
     }
 
     /// Apply an operator edit to the persisted draft's text for `transcript_id` on the host
@@ -1722,6 +1775,27 @@ impl RemoteOperator {
         draft: selahcue_lan::protocol::SermonNoteDraftInput,
     ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
     {
+        self.stage_sermon_note_regeneration_with_admission(transcript_id, draft, None)
+            .await
+    }
+    /// Keep the admitted exchange intact, checking after sink readiness before dispatch.
+    pub async fn stage_sermon_note_regeneration_admitted(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: impl Fn() -> bool + Send + Sync,
+    ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
+    {
+        self.stage_sermon_note_regeneration_with_admission(transcript_id, draft, Some(&admit))
+            .await
+    }
+    async fn stage_sermon_note_regeneration_with_admission(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+        admit: Option<&(dyn Fn() -> bool + Send + Sync)>,
+    ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
+    {
         let command = Command::StageSermonNoteRegeneration {
             transcript_id,
             draft,
@@ -1729,7 +1803,12 @@ impl RemoteOperator {
         if Self::would_exceed_wire_cap(&command)? {
             return Ok(None);
         }
-        reply::expect_regeneration_state(self.client.command(command).await?)
+        match admit {
+            Some(admit) => reply::expect_regeneration_state(
+                self.client.command_if_admitted(command, admit).await?,
+            ),
+            None => reply::expect_regeneration_state(self.client.command(command).await?),
+        }
     }
 
     /// Accept the pending regeneration for `transcript_id` on the host (FR-129), replacing

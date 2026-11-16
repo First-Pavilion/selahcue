@@ -21,6 +21,18 @@ where
     Ok(())
 }
 
+/// Generated-only admission, rechecked after sink readiness and before enqueue.
+pub(crate) async fn send_json_admitted<S>(
+    ws: &mut WebSocketStream<S>,
+    msg: &impl Serialize,
+    admit: impl Fn() -> bool + Send + Sync,
+) -> Result<(), TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    crate::admission::send_when_admitted(ws, Message::text(protocol::to_json(msg)?), admit).await
+}
+
 /// Receive the next text frame and deserialize it, skipping ping/pong/binary
 /// frames. Errors `Closed` if the peer closes first.
 pub(crate) async fn recv_json<S, T>(ws: &mut WebSocketStream<S>) -> Result<T, TransportError>

@@ -15,12 +15,7 @@
 //! The cost is the one DEC-011 names — "an array instead of a constant, plus one field" —
 //! and it is what makes deferring KMS custody a safe deferral rather than a trap.
 //!
-//! # What this module does and does not do
-//!
-//! It holds keys and selects one by `key_id`. It does **not** verify signatures: that,
-//! with manifest caching, is 86ak5mn1d. Keeping the trust store here means that ticket
-//! implements `verify()` against a store that is already a set, so single-key thinking
-//! never gets a chance to be baked in.
+//! [`crate::verify_entitlement`] uses this store to select the exact signing key.
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -60,6 +55,12 @@ const _: () = assert!(
     "FR-518/DEC-011: the entitlement trust store must be a SET (>= 2 keys), never a single key"
 );
 
+/// Authorized pilot entitlement signing public key (e506b735).
+const PILOT_PUBLIC_KEY: [u8; PUBLIC_KEY_BYTES] = [
+    0x8e, 0x7c, 0x2c, 0xae, 0x2b, 0x6b, 0x16, 0x58, 0x60, 0x4b, 0x52, 0xac, 0x4a, 0x75, 0x35, 0x33,
+    0x80, 0xfb, 0x57, 0x47, 0xfc, 0x76, 0x8d, 0xbc, 0xd8, 0xf6, 0xb6, 0xec, 0x71, 0xb3, 0x28, 0xef,
+];
+
 /// The development entitlement signing key's PUBLIC half — **debug builds only**.
 ///
 /// Derived from the deliberately-public seed in `dev-signing-key.NOT-A-SECRET`. Compiled
@@ -83,7 +84,7 @@ impl TrustedKey {
         &self.key_id
     }
 
-    /// The raw 32-byte public key, for the verifier in 86ak5mn1d.
+    /// The raw 32-byte public key, for the entitlement verifier.
     pub fn public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
         &self.public_key
     }
@@ -157,16 +158,13 @@ impl TrustedKeys {
 
     /// The keys compiled into this build.
     ///
-    /// **Currently empty, and honestly so.** The production entitlement signing key is an
-    /// env-var seed on the server (`SELAHCUE_ENTITLEMENT_SIGNING_KEY`, DEC-011 pt 1) and
-    /// no public key has been issued for bundling yet. Populating this — and the
-    /// fail-closed rule that an envelope naming an unknown `key_id` is refused while the
-    /// previous valid cache is kept (FR-518) — belongs to 86ak5mn1d, which is where the
-    /// verifier lands. Refusal keeps the prior cache and never degrades the running app;
-    /// an empty store therefore fails closed on *verification* without ever failing
-    /// closed on *presentation*.
+    /// All builds trust the authorized pilot key. Debug builds additionally trust the
+    /// deliberately public development key below.
     pub fn bundled() -> Self {
-        let store = Self::new();
+        let mut store = Self::new();
+        store
+            .insert(PILOT_PUBLIC_KEY)
+            .expect("first bundled key fits the trust set");
 
         // --- development entitlement key (debug builds ONLY) -----------------------------
         // `make launch` must not demand activation, and the owner will opt into QAing
@@ -202,19 +200,12 @@ impl TrustedKeys {
         // The `cfg` is the control. A release build must not trust this key: its seed is
         // committed in `dev-signing-key.NOT-A-SECRET`, so anyone at all can sign with it.
         // `the_development_key_is_gated_on_debug_assertions` fails if this gate is removed.
-        // Shadowed rather than declared `mut` up front: in a release build the block below
-        // is compiled out, so a `let mut` there is an unused-mut warning on every release
-        // build. Silencing that with `#[allow(unused_mut)]` would have hidden a real signal —
-        // the warning is the compiler saying "nothing mutates this here", which is exactly
-        // the property the release profile is supposed to have.
         #[cfg(debug_assertions)]
-        let store = {
-            let mut store = store;
+        {
             if let Ok(id) = store.insert(DEV_PUBLIC_KEY) {
                 debug_assert_eq!(id, Self::DEV_KEY_ID, "dev key_id drifted from its bytes");
             }
-            store
-        };
+        }
 
         store
     }

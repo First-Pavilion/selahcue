@@ -720,7 +720,6 @@ def test_the_grant_cache_is_bounded_by_entry_count():
     # Premise pinned inside the test as well as beside the constant: a cap raised past the
     # number of plans built below would make the eviction assertion unreachable.
     assert MAX_CACHE_ENTRIES >= 2
-    org = _org("bound")
     dimension = _dimension(SCREEN_KEY)
 
     licenses = []
@@ -732,7 +731,7 @@ def test_the_grant_cache_is_bounded_by_entry_count():
         PlanGrant.objects.create(
             plan=plan, dimension=dimension, raw_value=str(index + 1), **ACCOUNTABLE
         )
-        key = _license_key(tag=f"bound{index}", org=org)
+        key = _license_key(tag=f"bound{index}")
         _assign(key, plan)
         plans.append(plan)
         licenses.append(key)

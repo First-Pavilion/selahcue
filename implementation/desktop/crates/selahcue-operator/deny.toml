@@ -36,6 +36,14 @@ allow = [
   "Unlicense",
 ]
 
+# Reviewed sqlcipher-src 420.0.0 source declares MIT AND BSD-3-Clause AND
+# blessing AND WTFPL. Permit the latter two only for this exact package/release;
+# the global allowlist and MIT/BSD copyright/redistribution notices still apply.
+# Any other version requires a fresh review (17tnw2bey9x).
+[[licenses.exceptions]]
+crate = "sqlcipher-src@420.0.0"
+allow = ["blessing", "WTFPL"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"

@@ -585,7 +585,7 @@ impl selahcue_app::TranscriptStoreWriter for RealTranscriptStore {
                 started_at_ms,
             },
         )
-        .map_err(|e| e.to_string())
+        .map_err(|_| "transcript storage unavailable".to_owned())
     }
 
     fn append_segment(
@@ -596,11 +596,12 @@ impl selahcue_app::TranscriptStoreWriter for RealTranscriptStore {
         text: &str,
     ) -> Result<i64, String> {
         transcript_repo::append_segment(&self.db, transcript_id, start_ms, end_ms, text)
-            .map_err(|e| e.to_string())
+            .map_err(|_| "transcript storage unavailable".to_owned())
     }
 
     fn end_transcript(&mut self, transcript_id: i64, ended_at_ms: i64) -> Result<(), String> {
-        transcript_repo::end(&self.db, transcript_id, ended_at_ms).map_err(|e| e.to_string())
+        transcript_repo::end(&self.db, transcript_id, ended_at_ms)
+            .map_err(|_| "transcript storage unavailable".to_owned())
     }
 }
 
@@ -1065,27 +1066,23 @@ impl SessionStore {
         Database::open(path)
     }
 
-    /// Best-effort: open the durable transcript side-channel (86akcfftu), sweeping any
-    /// crash-orphaned transcript first. A SECOND, independent connection to the SAME on-disk
-    /// store this `SessionStore` uses — opened via the identical [`Self::open_db`] decision
-    /// (plaintext vs SQLCipher, same key resolution), so it reads/writes the same file. Two
-    /// connections need no shared Rust-level lock between them: `selahcue-data`'s persistence
-    /// is WAL throughout (`ARCHITECTURE.md`), which is precisely the mode built for multiple
-    /// connections to one file, and the RETURNED sink lives inside `LiveController`, so every
-    /// call to it is already serialized by that controller's own `Arc<Mutex<_>>` — the same
-    /// reasoning that makes `self.db` need no lock either (single owner per connection).
-    ///
-    /// Returns `None` on any failure (no data dir, can't open a second connection) — a
-    /// side-channel failure must never block the service starting; the caller keeps the
-    /// default no-op `NullTranscriptSink`, exactly like any other storage degradation here.
+    /// Install one persistent transcript worker with its own connection to the same store.
+    /// Connection open, orphan sweep and every live write run on that worker, outside the
+    /// controller/render lock. The existing plaintext/SQLCipher/key decision is unchanged.
+    /// No data directory leaves the unavailable null sink; factory/spawn failures surface
+    /// through content-free worker health. End/Drop request closure without a blocking join;
+    /// process exit is not a guarantee that queued speech reached disk.
     fn open_transcript_sink() -> Option<Box<dyn selahcue_app::TranscriptSink>> {
         let dir = data_dir()?;
         let path = dir.join("selahcue.db3");
-        let db = Self::open_db(&path, &dir).ok()?;
-        sweep_orphaned_transcripts(&db);
-        Some(Box::new(selahcue_app::BatchingTranscriptWriter::new(
-            RealTranscriptStore { db },
-        )))
+        Some(Box::new(
+            selahcue_app::BackgroundTranscriptWriter::from_factory(move || {
+                let db = Self::open_db(&path, &dir)
+                    .map_err(|_| "transcript storage unavailable".to_owned())?;
+                sweep_orphaned_transcripts(&db);
+                Ok(RealTranscriptStore { db })
+            }),
+        ))
     }
 
     /// Best-effort: open the durable sermon-note-draft store (86akgqdv0; PR #33 review, Sana F1

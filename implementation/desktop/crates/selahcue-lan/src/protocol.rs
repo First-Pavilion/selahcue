@@ -325,7 +325,8 @@ pub enum Command {
     /// Requires the `Transcribe` permission (the same one `IngestTranscript` requires).
     StartTranscript { label: String, provider: String },
     /// Close the current durable transcript session, if one is open (a no-op otherwise):
-    /// sets `ended_at` so a Transcripts list can show a real duration. Sent once when
+    /// queues closure; ACK does not mean durable completion. The worker sets `ended_at`
+    /// only after final flush/discard accounting so history can show a real duration. Sent once when
     /// listening stops normally; a crash that skips this is handled separately, by a
     /// startup sweep over any transcript left with no `ended_at` — not by this command.
     /// Requires the `Transcribe` permission.
@@ -1210,6 +1211,9 @@ pub struct OperatorStateView {
     /// stay byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transcript: Vec<TranscriptSegmentView>,
+    /// Durable transcript status; absent on an older host means unknown, never saved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_storage_health: Option<TranscriptStorageHealthView>,
     /// The current streaming INTERIM line (recognised words for the utterance still being
     /// spoken), shown live below the finalised transcript and cleared when it finalises.
     /// `None` when nothing is mid-utterance; omitted then so the pinned fixtures stay
@@ -1995,4 +1999,13 @@ pub fn to_json<T: Serialize>(msg: &T) -> Result<String, JsonFailure> {
 /// quoted input or a source error that could reveal it (FR-082, 17tnw2b9dq0).
 pub fn from_json<'a, T: Deserialize<'a>>(s: &'a str) -> Result<T, JsonFailure> {
     serde_json::from_str(s).map_err(JsonFailure::from)
+}
+
+/// Content-free durable transcript health, independent of the app crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptStorageHealthView {
+    pub available: bool,
+    pub pending_segments: usize,
+    pub dropped_segments: u64,
+    pub truncated_segments: u64,
 }

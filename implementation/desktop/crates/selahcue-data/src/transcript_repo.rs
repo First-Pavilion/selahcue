@@ -312,6 +312,38 @@ pub fn most_recent_id(db: &Database) -> Result<Option<i64>> {
         })
 }
 
+fn decode_segment(row: &rusqlite::Row<'_>) -> Result<TranscriptSegment> {
+    let id: i64 = row.get(0)?;
+    let start_ms: i64 = row.get(1)?;
+    let end_ms: i64 = row.get(2)?;
+    let text: String = row.get(3)?;
+    let id = u64::try_from(id)
+        .map_err(|_| DataError::Corrupt(format!("negative transcript_segment id {id}")))?;
+    Ok(TranscriptSegment {
+        id,
+        start_ms: start_ms as u64,
+        end_ms: end_ms as u64,
+        text,
+    })
+}
+
+/// Read up to `limit` raw segments in original order without loading transcript
+/// metadata, corrections or detections. A zero limit or missing transcript returns no segments.
+pub fn load_segments_prefix(
+    db: &Database,
+    transcript_id: i64,
+    limit: usize,
+) -> Result<Vec<TranscriptSegment>> {
+    // SQLite treats negative LIMIT values as unlimited.
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let mut stmt = db.conn().prepare(
+        "SELECT id, start_ms, end_ms, text FROM transcript_segment
+         WHERE transcript_id = ?1 ORDER BY ord LIMIT ?2",
+    )?;
+    let rows = stmt.query_and_then(params![transcript_id, limit], decode_segment)?;
+    rows.collect()
+}
+
 /// Read one transcript back in full: identity, raw segments in original order,
 /// corrections, and detections. `NotFound` if no such transcript.
 pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
@@ -338,25 +370,9 @@ pub fn load(db: &Database, transcript_id: i64) -> Result<TranscriptDetail> {
         "SELECT id, start_ms, end_ms, text FROM transcript_segment
          WHERE transcript_id = ?1 ORDER BY ord",
     )?;
-    let seg_rows = seg_stmt.query_map(params![transcript_id], |r| {
-        let id: i64 = r.get(0)?;
-        let start_ms: i64 = r.get(1)?;
-        let end_ms: i64 = r.get(2)?;
-        let text: String = r.get(3)?;
-        Ok((id, start_ms, end_ms, text))
-    })?;
-    let mut segments = Vec::new();
-    for row in seg_rows {
-        let (id, start_ms, end_ms, text) = row?;
-        let id = u64::try_from(id)
-            .map_err(|_| DataError::Corrupt(format!("negative transcript_segment id {id}")))?;
-        segments.push(TranscriptSegment {
-            id,
-            start_ms: start_ms as u64,
-            end_ms: end_ms as u64,
-            text,
-        });
-    }
+    let segments = seg_stmt
+        .query_and_then(params![transcript_id], decode_segment)?
+        .collect::<Result<Vec<_>>>()?;
     drop(seg_stmt);
 
     let mut corr_stmt = conn.prepare(

@@ -119,7 +119,11 @@ fn command_calls_outside_the_redacting_parsers(src: &str) -> Vec<String> {
     let code = strip_line_comments(src);
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(rel) = code[from..].find(".command(") {
+    while let Some(rel) = [".command(", ".command_if_admitted("]
+        .iter()
+        .filter_map(|call| code[from..].find(call))
+        .min()
+    {
         let at = from + rel;
         from = at + 1;
         let stmt_start = code[..at].rfind([';', '{', '}']).map_or(0, |i| i + 1);
@@ -382,6 +386,26 @@ fn the_round_trip_scanner_flags_a_hand_written_match_and_accepts_the_parsers() {
     "#;
     assert_eq!(
         command_calls_outside_the_redacting_parsers(bound_wrong_name).len(),
+        1
+    );
+    // The generated-only route is still a real host roundtrip and must pass the
+    // same redacting parser, including bound replies and hostile match arms.
+    assert_eq!(
+        command_calls_outside_the_redacting_parsers(
+            &hand_written.replace(".command(", ".command_if_admitted(")
+        )
+        .len(),
+        1
+    );
+    assert!(command_calls_outside_the_redacting_parsers(
+        &chained.replace(".command(", ".command_if_admitted(")
+    )
+    .is_empty());
+    assert_eq!(
+        command_calls_outside_the_redacting_parsers(
+            &bound_then_matched.replace(".command(", ".command_if_admitted(")
+        )
+        .len(),
         1
     );
     // Comments that mention `.command(` are not calls.

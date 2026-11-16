@@ -1,3 +1,7 @@
+#[allow(dead_code)] // The decoder is consumed by the operator, not build generation.
+#[path = "src/provider_source/payload.rs"]
+mod payload;
+
 fn main() {
     // macOS microphone access (TCC): the on-device STT worker opens the mic via cpal. A
     // *bundled* .app gets its usage description from the bundle's Info.plist, but the dev
@@ -31,8 +35,11 @@ fn pilot_config() {
             // Track rotation without printing the secret-bearing file contents.
             println!("cargo:rerun-if-changed={}", PathBuf::from(&path).display());
             if let Ok(file) = fs::File::open(path) {
-                if file.take(16_385).read_to_end(&mut bytes).is_err()
-                    || bytes.len() > 16_384
+                if file
+                    .take((payload::MAX_PAYLOAD + 1) as u64)
+                    .read_to_end(&mut bytes)
+                    .is_err()
+                    || bytes.len() > payload::MAX_PAYLOAD
                     || std::str::from_utf8(&bytes).is_err()
                 {
                     bytes.clear();
@@ -41,5 +48,9 @@ fn pilot_config() {
         }
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
-    fs::write(out.join("pilot-config.json"), bytes).expect("write native pilot configuration");
+    fs::write(
+        out.join("pilot-config.bin"),
+        payload::frame_json(&bytes).unwrap_or_default(),
+    )
+    .expect("write native pilot configuration");
 }

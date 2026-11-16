@@ -144,3 +144,41 @@ fn dnu_licensing_explicit_loopback_test_constructor_is_scoped_and_functional() {
     assert!(seen[0].contains(SECRET));
     assert!(seen[0].starts_with("POST /v1/sessions HTTP/1.1"));
 }
+
+// A complete response must imply a complete recorded body, even when the client
+// deliberately separates its headers and body into different socket writes.
+#[test]
+fn dnu_receiver_normalizes_nonblocking_sockets_and_waits_for_the_complete_body() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let receiver = Receiver::start_with_nonblocking_accepted_sockets();
+    let mut socket = TcpStream::connect(receiver.base.strip_prefix("http://").unwrap()).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let head = format!(
+        "POST /fragmented HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {SECRET}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        SECRET.len()
+    );
+    socket.write_all(head.as_bytes()).unwrap();
+    // The receiver acknowledges its actual incomplete-body branch. No sleep or
+    // assumption about whether a packet or worker has run is needed.
+    receiver.wait_for_pending_body();
+    socket.set_nonblocking(true).unwrap();
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        socket.read(&mut byte).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "a pending body must not receive a premature response"
+    );
+    socket.set_nonblocking(false).unwrap();
+    socket.write_all(SECRET.as_bytes()).unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+    assert!(response.ends_with("\r\n\r\n{}"));
+    let seen = receiver.finish();
+    assert_eq!(seen, [format!("{head}{SECRET}")]);
+}

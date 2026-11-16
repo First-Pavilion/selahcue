@@ -490,19 +490,28 @@ function sweepRoutePaths(): string[] {
   return [...sweep.matchAll(/^\s*\("([^"]+)",\s*(?:True|False)\),/gm)].map((m) => m[1].split('?')[0])
 }
 
+const CATCH_ALL_SAMPLE = '/this-route-does-not-exist'
+// Former portal URLs are intentional not-found probes in the public build.
+const EXCLUDED_PORTAL_PROBES = [
+  '/affiliates/dashboard', '/affiliates/referrals', '/affiliates/payouts',
+  '/affiliates/resources', '/affiliates/settings', '/affiliates/help',
+  '/admin', '/admin/customers', '/admin/customers/cus_001', '/admin/users',
+  '/admin/subscriptions', '/admin/licenses', '/admin/affiliates', '/admin/payouts', '/admin/settings',
+]
+
 describe('every route is covered by the responsive sweep', () => {
   test('router paths and the sweep ROUTES list agree', () => {
-    const router = read('router/index.ts')
-    const routerPaths = [...router.matchAll(/\{\s*path:\s*'([^']+)'/g)].map((m) => m[1])
-    assert.ok(routerPaths.length > 30, 'router parse found suspiciously few routes')
+    const routeList = /^ {2}routes: \[([\s\S]*?)^ {2}\]/m.exec(read('router/index.ts'))?.[1]
+    assert.ok(routeList, 'could not find the router routes array')
+    const routerPaths = [...routeList.matchAll(/\{\s*path:\s*'([^']+)'/g)].map((m) => m[1])
+    const publicPaths = routerPaths.map((path) => path === '/:pathMatch(.*)*' ? CATCH_ALL_SAMPLE : path)
+    const independentSamples = [...Object.values(ARRAY_ROUTES).flat(), ...EXCLUDED_PORTAL_PROBES]
 
-    const sweepPaths = sweepRoutePaths()
-    const missing = routerPaths.filter((path) => {
-      if (path === '/:pathMatch(.*)*') return !sweepPaths.some((p) => p.includes('does-not-exist'))
-      if (path.includes(':id')) return !sweepPaths.some((p) => p.startsWith(path.split(':')[0]))
-      return !sweepPaths.includes(path)
-    })
-    assert.deepEqual(missing, [], 'a route exists that the responsive sweep never renders')
+    assert.deepEqual(
+      sweepRoutePaths().sort(),
+      [...publicPaths, ...independentSamples].sort(),
+      'the sweep must cover each literal route, route-array sample and excluded portal probe exactly once',
+    )
   })
 
   test('a spread or imported route array the parse cannot enumerate fails unless the sweep has sample paths for it', () => {

@@ -187,7 +187,7 @@ endif
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 COMMA := ,
-OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts $(STT_FEATURES) $(AI_FEATURES)))
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts native-account $(STT_FEATURES) $(AI_FEATURES)))
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
 # OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard
@@ -751,7 +751,7 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 	@echo "api-check: SQLite in memory + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py check
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput
-	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -q -rfEs
+	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
 
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.

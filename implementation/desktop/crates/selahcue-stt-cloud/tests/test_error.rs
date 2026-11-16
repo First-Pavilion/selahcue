@@ -179,3 +179,20 @@ fn the_error_type_is_a_std_error() {
     fn takes_error(_: &dyn std::error::Error) {}
     takes_error(&DeepgramError::ConsentRequired);
 }
+
+#[test]
+fn missing_injected_credential_requires_supply_without_developer_instructions_or_retry() {
+    let error = DeepgramError::MissingInjectedCredential;
+    assert_eq!(error.operator_action(), OperatorAction::SupplyCredential);
+    assert!(!error.is_retryable());
+    assert_eq!(
+        error.to_string(),
+        "no injected Deepgram credential is available"
+    );
+    assert_eq!(format!("{error:?}"), "MissingInjectedCredential");
+    for rendered in [error.to_string(), format!("{error:?}")] {
+        assert!(!rendered.contains(DEEPGRAM_API_KEY_VAR));
+        assert!(!rendered.contains(".env"));
+        assert!(!rendered.contains(TEST_SECRET));
+    }
+}

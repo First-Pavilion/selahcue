@@ -1,17 +1,7 @@
 //! Entitlement **policy** — the two client-side rules the server cannot enforce for us.
 //!
-//! This module deliberately contains no fetching, no signature verification and no cache.
-//! Those are 86ak5mn1d. What lives here is the pair of decisions that ticket must not be
-//! free to get wrong, landed in the same spirit as the trusted-key *set*: cheap now,
-//! expensive to retrofit, and dangerous if guessed.
-//!
-//! # Bound the payload BEFORE decoding it
-//!
-//! [`Grants`] is an unbounded map read straight from the payload, and it is only safe once
-//! the signature has been checked — a trusted signature is what makes its size the server's
-//! problem rather than an attacker's. Whoever fetches the manifest (86ak5mn1d) must cap the
-//! accepted response size **before** decode, not after. This pairs with the same gap on the
-//! shared transport, which reads whole bodies with no byte cap.
+//! [`crate::verify_entitlement`] authenticates the bounded payload before decoding it.
+//! [`crate::EntitlementCache`] applies these replacement rules to verified manifests.
 //!
 //! # (a) An absent grant fails restrictive, never permissive
 //!
@@ -186,9 +176,8 @@ pub struct Grants(BTreeMap<String, Option<GrantScalar>>);
 /// [`crate::trust::TrustedKeys`] has carried a compile-pinned cap since it was written; this
 /// map is the same class of unbounded, wire-fed collection and had none.
 ///
-/// It matters most in the window this crate does not own yet: 86ak5mn1d decodes the payload
-/// **before** the signature is checked, so for that moment the map's size is an attacker's
-/// choice rather than the server's.
+/// The verifier checks the signature and byte cap before decoding the map. The entry cap
+/// also limits grants from a trusted signer.
 pub const MAX_GRANT_DIMENSIONS: usize = 64;
 
 // Pinned at compile time so the cap cannot drift below the dimensions the product actually
@@ -293,20 +282,18 @@ impl Grants {
 /// attaches a forged "not degraded" marker outside the signature would otherwise collapse a
 /// customer's offline window on demand.
 ///
-/// The fields are private and there is one constructor, named for the contract, so every
-/// construction site reads `from_verified_payload` and a reviewer can grep for all of them.
-/// The verifier that produces these values is 86ak5mn1d.
+/// The entitlement verifier constructs these facts after checking the signature and binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignedFacts {
-    expires_at_unix: i64,
-    license_expires_at_unix: i64,
-    issued_at_unix: i64,
+    expires_at: (i64, u32),
+    license_expires_at: (i64, u32),
+    issued_at: (i64, u32),
     degraded: Option<bool>,
     grant_count: usize,
 }
 
 impl SignedFacts {
-    /// Build from values read out of a payload whose signature has been verified.
+    /// Build from whole Unix seconds read out of a payload whose signature has been verified.
     ///
     /// `degraded` is `None` when the payload does not carry the field — which is every
     /// payload today, since the server publishes it only to the audit record.
@@ -317,10 +304,26 @@ impl SignedFacts {
         degraded: Option<bool>,
         grant_count: usize,
     ) -> Self {
-        SignedFacts {
-            expires_at_unix,
-            license_expires_at_unix,
-            issued_at_unix,
+        Self::with_precision(
+            (expires_at_unix, 0),
+            (license_expires_at_unix, 0),
+            (issued_at_unix, 0),
+            degraded,
+            grant_count,
+        )
+    }
+
+    pub(crate) fn with_precision(
+        expires_at: (i64, u32),
+        license_expires_at: (i64, u32),
+        issued_at: (i64, u32),
+        degraded: Option<bool>,
+        grant_count: usize,
+    ) -> Self {
+        Self {
+            expires_at,
+            license_expires_at,
+            issued_at,
             degraded,
             grant_count,
         }
@@ -340,9 +343,14 @@ impl SignedFacts {
         self.grant_count > 0
     }
 
-    /// The **licence** expiry — never clamped, whatever happened server-side.
+    /// Signed licence expiry as (Unix seconds, nanoseconds within the second).
+    pub fn license_expires_at(&self) -> (i64, u32) {
+        self.license_expires_at
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::license_expires_at`] for time comparisons.
     pub fn license_expires_at_unix(&self) -> i64 {
-        self.license_expires_at_unix
+        self.license_expires_at().0
     }
 
     /// Whether this issuance was degraded.
@@ -353,21 +361,28 @@ impl SignedFacts {
     /// why this is sound, and for what the previous guess-nothing rule cost.
     pub fn is_degraded(&self) -> bool {
         self.degraded
-            .unwrap_or(self.expires_at_unix < self.license_expires_at_unix)
+            .unwrap_or(self.expires_at < self.license_expires_at)
     }
 
-    /// The **artefact** expiry — the clamped `expires_at`, not `license_expires_at`.
-    ///
-    /// The payload carries both and only this one reflects the degraded clamp. Feeding the
-    /// licence expiry here would defeat the whole rule: a degraded manifest would look
-    /// multi-year and replace a good cache.
+    /// Signed upper validity bound (`expires_at`), as (Unix seconds, nanoseconds within the second).
+    /// The issuer may clamp this below the licence expiry for a degraded issuance.
+    pub fn expires_at(&self) -> (i64, u32) {
+        self.expires_at
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::expires_at`] for time comparisons.
     pub fn expires_at_unix(&self) -> i64 {
-        self.expires_at_unix
+        self.expires_at().0
     }
 
-    /// When the server issued this artefact.
+    /// Signed issuance time as (Unix seconds, nanoseconds within the second).
+    pub fn issued_at(&self) -> (i64, u32) {
+        self.issued_at
+    }
+
+    /// Whole Unix seconds for display. Use [`Self::issued_at`] for time comparisons.
     pub fn issued_at_unix(&self) -> i64 {
-        self.issued_at_unix
+        self.issued_at().0
     }
 
     /// The server's own word on whether this issuance was degraded, when it says.
@@ -508,10 +523,10 @@ pub fn decide_cache_replacement(
     };
 
     // Rule 1 — replay defence, checked before anything the incoming manifest asserts.
-    if incoming.issued_at_unix < cached.issued_at_unix {
+    if incoming.issued_at < cached.issued_at {
         return CacheDecision::KeepCached(KeepReason::StaleIssuance {
-            cached_issued_at_unix: cached.issued_at_unix,
-            incoming_issued_at_unix: incoming.issued_at_unix,
+            cached_issued_at_unix: cached.issued_at_unix(),
+            incoming_issued_at_unix: incoming.issued_at_unix(),
         });
     }
 
@@ -546,7 +561,7 @@ pub fn decide_cache_replacement(
     }
 
     // Rule 3 — never shorten without the server saying so.
-    if incoming.expires_at_unix >= cached.expires_at_unix {
+    if incoming.expires_at >= cached.expires_at {
         return CacheDecision::Replace;
     }
     // It shortens. Only a DEGRADED issuance is refused; a genuine licence change must land,
@@ -556,7 +571,7 @@ pub fn decide_cache_replacement(
     }
 
     CacheDecision::KeepCached(KeepReason::WouldShortenEntitlement {
-        cached_expires_at_unix: cached.expires_at_unix,
-        incoming_expires_at_unix: incoming.expires_at_unix,
+        cached_expires_at_unix: cached.expires_at_unix(),
+        incoming_expires_at_unix: incoming.expires_at_unix(),
     })
 }

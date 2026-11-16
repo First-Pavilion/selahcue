@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('selahcue_catalogue', '0008_enforce_plan_rank'),
+        ('selahcue_catalogue', '0009_org_plan_grant'),
     ]
 
     operations = [

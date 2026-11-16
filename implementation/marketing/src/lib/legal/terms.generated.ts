@@ -24,20 +24,20 @@ export const termsOfService: LegalDocument = {
       {
         "kind": "paragraph",
         "inline": [
-          { "kind": "text", "text": "Version 0.3 (draft, 2026-10-01). Status: Draft — every " },
+          { "kind": "text", "text": "Version 0.4 (draft, 2026-11-15). Status: Draft — every " },
           { "kind": "placeholder", "name": "PLACEHOLDER" },
           { "kind": "text", "text": " must be filled and every launch-readiness condition in " },
           { "kind": "code", "text": "docs/legal/LEGAL-DRAFT-NOTES.md" },
-          { "kind": "text", "text": " §4 must be satisfied before publication. These Terms describe SelahCue as it operates at launch. Publishing them while any launch-readiness condition is unmet would make them inaccurate. Clauses the owner and counsel must accept as new risk allocations are listed in the notes file §6." }
+          { "kind": "text", "text": " §4 must be satisfied before publication. This draft describes the planned Free desktop release. Clauses the owner and counsel must accept as new risk allocations are listed in the notes file §6." }
         ]
       }
     ]
   },
-  "version": { "number": "0.3", "status": "draft", "date": "2026-10-01", "line": "Version 0.3 (draft, 2026-10-01)", "source": "banner" },
+  "version": { "number": "0.4", "status": "draft", "date": "2026-11-15", "line": "Version 0.4 (draft, 2026-11-15)", "source": "banner" },
   "facts": [
     {
       "inline": [
-        { "kind": "strong", "children": [{ "kind": "text", "text": "Provider and seller:" }] },
+        { "kind": "strong", "children": [{ "kind": "text", "text": "Provider:" }] },
         { "kind": "text", "text": " First Pavilion Technologies, trading as SelahCue" }
       ],
       "children": []
@@ -101,14 +101,14 @@ export const termsOfService: LegalDocument = {
           {
             "inline": [
               { "kind": "strong", "children": [{ "kind": "text", "text": "What you get." }] },
-              { "kind": "text", "text": " A licence to install and use the SelahCue desktop app on computers your organisation controls, within the device limit of your plan. Core presentation features work offline. Each computer is activated once, then runs offline until your licence period ends. Downloads always give you the latest release." }
+              { "kind": "text", "text": " A licence to install and use the SelahCue desktop app on computers your organisation controls. Core presentation features work offline. When installers are published, you can get them without an account. Activate a device to use account-linked features." }
             ],
             "children": []
           },
           {
             "inline": [
-              { "kind": "strong", "children": [{ "kind": "text", "text": "Plans and payment." }] },
-              { "kind": "text", "text": " We offer a free plan and paid plans. You buy paid plans from us; payments are processed by Paystack. Paid plans are billed in advance. You can cancel at any time and keep paid features until the end of the period you paid for. If a paid plan ends, you keep its features for 7 more days, then move to the free plan." }
+              { "kind": "strong", "children": [{ "kind": "text", "text": "Ongoing Free access." }] },
+              { "kind": "text", "text": " Free includes 20 cloud transcription minutes and one sermon note per church per week. This release has no paid checkout." }
             ],
             "children": []
           },
@@ -118,7 +118,7 @@ export const termsOfService: LegalDocument = {
                 "kind": "strong",
                 "children": [{ "kind": "text", "text": "Your content is yours." }]
               },
-              { "kind": "text", "text": " Slides, songs, media, transcripts and notes belong to you or the people you licensed them from. They stay on your computers unless you use a cloud feature. You are responsible for having the rights to show them and for telling people when services are transcribed." }
+              { "kind": "text", "text": " Slides, songs, media, transcripts and notes belong to you or the people you licensed them from. You are responsible for having the rights to show them and for telling people when services are transcribed." }
             ],
             "children": []
           },
@@ -126,9 +126,9 @@ export const termsOfService: LegalDocument = {
             "inline": [
               {
                 "kind": "strong",
-                "children": [{ "kind": "text", "text": "Cloud features send data to other companies." }]
+                "children": [{ "kind": "text", "text": "Optional cloud features." }]
               },
-              { "kind": "text", "text": " If an administrator turns them on, cloud transcription sends live audio to Deepgram and AI sermon notes send transcript text to OpenAI, which can process it in another country." }
+              { "kind": "text", "text": " After administrator opt-in, cloud transcription streams audio directly to Deepgram. When you request a sermon note, SelahCue uses the selected transcript text to process the request with OpenAI. Processing can take place abroad." }
             ],
             "children": []
           },
@@ -159,7 +159,7 @@ export const termsOfService: LegalDocument = {
           {
             "inline": [
               { "kind": "strong", "children": [{ "kind": "text", "text": "Leaving." }] },
-              { "kind": "text", "text": " You can stop using SelahCue and delete or close your account at any time. We can suspend or end access for serious misuse, with notice where we reasonably can." }
+              { "kind": "text", "text": " You can stop using SelahCue at any time and contact us to request account closure. We can suspend or end access for serious misuse, with notice where we reasonably can." }
             ],
             "children": []
           }
@@ -207,13 +207,13 @@ export const termsOfService: LegalDocument = {
                   "inline": [
                     { "kind": "text", "text": "the SelahCue website at " },
                     { "kind": "code", "text": "https://selahcueapp.com" },
-                    { "kind": "text", "text": ", including sign-up, sign-in, checkout and the customer portal;" }
+                    { "kind": "text", "text": ", including sign-up, sign-in and the customer portal;" }
                   ],
                   "children": []
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "SelahCue accounts and platform services, including plans, billing, licences, device activation and downloads (the \"" },
+                    { "kind": "text", "text": "SelahCue accounts and platform services, including licences, device activation and downloads (the \"" },
                     {
                       "kind": "strong",
                       "children": [{ "kind": "text", "text": "Platform Services" }]
@@ -245,7 +245,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "The SelahCue Controller mobile app is part of the Services and is governed by these Terms. If you got the app from an app store, that store's terms also apply to your download." }
+                { "kind": "text", "text": "These Terms cover the desktop and website release. The separately documented SelahCue Controller has its own terms." }
               ],
               "clause": "1.2",
               "anchor": "s-1-2"
@@ -262,24 +262,16 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "our Privacy Policy at " },
-                    { "kind": "code", "text": "https://selahcueapp.com/privacy-policy" },
-                    { "kind": "text", "text": ";" }
+                    { "kind": "code", "text": "https://selahcueapp.com/privacy" },
+                    { "kind": "text", "text": "; and" }
                   ],
                   "children": []
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "the plan details on our pricing page or in your order (the \"" },
+                    { "kind": "text", "text": "the Free plan details on our pricing page (the \"" },
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Plan Terms" }] },
-                    { "kind": "text", "text": "\"); and" }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "the publisher terms for any licensed Bible translation your plan includes (section " },
-                    { "kind": "ref", "anchor": "s-9-3", "text": "9.3" },
-                    { "kind": "text", "text": ")." }
+                    { "kind": "text", "text": "\")." }
                   ],
                   "children": []
                 }
@@ -346,7 +338,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "You accept these Terms by ticking the box when you create an account, or by installing or using the Desktop Software. We keep a record of the version you accepted and when. If you do not agree, do not use the Services." }
+                { "kind": "text", "text": "You accept these Terms by ticking the box when you create an account, or by installing or using the Desktop Software. If you do not agree, do not use the Services." }
               ],
               "clause": "2.3",
               "anchor": "s-2-3"
@@ -391,14 +383,6 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "\"" },
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Billing Period" }] },
-                    { "kind": "text", "text": "\" means the period for which a paid Plan is billed in advance." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "\"" },
                     {
                       "kind": "strong",
                       "children": [{ "kind": "text", "text": "Customer Content" }]
@@ -427,7 +411,7 @@ export const termsOfService: LegalDocument = {
                   "inline": [
                     { "kind": "text", "text": "\"" },
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Plan" }] },
-                    { "kind": "text", "text": "\" means the free or paid package of features, device allowance and usage allowances that applies to your Account." }
+                    { "kind": "text", "text": "\" means the Free package of features, device allowance and usage allowances that applies to your Account." }
                   ],
                   "children": []
                 },
@@ -478,7 +462,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "Core presentation features of the Desktop Software work offline. You need an Account to buy and manage a Plan, activate Devices, manage your Devices, and use the Cloud Features." }
+                { "kind": "text", "text": "Core presentation features of the Desktop Software work offline. You need an Account to activate and manage Devices and to use the Cloud Features. Free sign-up is self-service." }
               ],
               "clause": "4.1",
               "anchor": "s-4-1"
@@ -639,7 +623,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Updates." }] },
-                { "kind": "text", "text": " We release updates that fix problems, improve security or change features. Some updates are needed to keep using the Platform Services or Cloud Features. You can download the latest Release even after a paid Plan has ended; your Plan decides which features it enables." }
+                { "kind": "text", "text": " We release updates that fix problems, improve security or change features. Some updates are needed to keep using the Platform Services or Cloud Features." }
               ],
               "clause": "5.4",
               "anchor": "s-5-4"
@@ -651,7 +635,7 @@ export const termsOfService: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Downloads and Releases." }]
                 },
-                { "kind": "text", "text": " You download the Desktop Software through your Account or an activated Device, using a download link that expires after a short time. A download always gives you the latest Release. We keep earlier Releases so that, if a Release has a serious problem, we can withdraw it and make an earlier Release the one you download until the problem is fixed." }
+                { "kind": "text", "text": " When a Release is available for your platform, you can download it from our website without an Account or activated Device. We publish installers at fixed release paths. The website identifies the release currently offered for each supported platform." }
               ],
               "clause": "5.5",
               "anchor": "s-5-5"
@@ -761,19 +745,20 @@ export const termsOfService: LegalDocument = {
     },
     {
       "label": "Part C",
-      "title": "Plans, fees and billing",
+      "title": "Free access and allowances",
       "sections": [
         {
           "id": "s-8",
           "number": "8",
-          "title": "Paid Plans and billing",
+          "title": "Ongoing Free access",
           "level": 3,
           "blocks": [
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Plans." }] },
-                { "kind": "text", "text": " The features, device allowance, usage allowances and price of each Plan are shown on our pricing page or in your order. Usage allowances for Cloud Features reset every week, in your Account's time zone." }
+                { "kind": "text", "text": "Free includes 20 cloud transcription minutes and one sermon note per church per week. The allowances reset weekly. Section " },
+                { "kind": "ref", "anchor": "s-12-4", "text": "12.4" },
+                { "kind": "text", "text": " explains how use of the notes feature counts towards the weekly allowance." }
               ],
               "clause": "8.1",
               "anchor": "s-8-1"
@@ -781,174 +766,10 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Trials." }] },
-                { "kind": "text", "text": " New Accounts can try the full features, including Cloud Features, free for 14 days. At the end of the trial, your Account moves to the free Plan unless you buy a paid Plan." }
+                { "kind": "text", "text": "Account sign-up, activation and public installer downloads have no payment step." }
               ],
               "clause": "8.2",
               "anchor": "s-8-2"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                {
-                  "kind": "strong",
-                  "children": [{ "kind": "text", "text": "Who you buy from and how you pay." }]
-                },
-                { "kind": "text", "text": " You buy paid Plans from First Pavilion Technologies, which is the seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its own terms. By buying a paid Plan, you authorise us to charge your chosen payment method, through Paystack, for the fees, taxes and any renewals described in this Part C. We are responsible for your invoices, for the taxes we must collect, for refunds and for handling failed payments." }
-              ],
-              "clause": "8.3",
-              "anchor": "s-8-3"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Billing Periods." }] },
-                { "kind": "text", "text": " Paid Plans are billed in advance for each Billing Period. The Billing Periods available are monthly, quarterly and annual. Prices are in US dollars (USD) and Nigerian naira (NGN)." }
-              ],
-              "clause": "8.4",
-              "anchor": "s-8-4"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Renewal." }] },
-                { "kind": "text", "text": " Paid Plans renew through a Paystack subscription or by manual renewal. Before a renewal, we send any reminder the law requires. You can cancel at any time in the customer portal, which stops all future renewals." }
-              ],
-              "clause": "8.5",
-              "anchor": "s-8-5"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Cancellation." }] },
-                { "kind": "text", "text": " You can cancel a paid Plan at any time in the customer portal or by emailing " },
-                { "kind": "code", "text": "support@selahcueapp.com" },
-                { "kind": "text", "text": ". Cancellation takes effect at the end of the current Billing Period. Your paid features stay available until then. After that, section " },
-                { "kind": "ref", "anchor": "s-8-13", "text": "8.13" },
-                { "kind": "text", "text": " applies." }
-              ],
-              "clause": "8.6",
-              "anchor": "s-8-6"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Refunds." }] },
-                { "kind": "text", "text": " No refunds are given. Unused time in a Billing Period is not refunded if you cancel before the renewal date. If we ever refund you, for example after a billing error, we pay it to the payment method you used, through Paystack. This does not affect any right to a refund you have under law." }
-              ],
-              "clause": "8.7",
-              "anchor": "s-8-7"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Price changes." }] },
-                { "kind": "text", "text": " We may change prices for future Billing Periods. We will give you at least 7 days' notice by email. A new price applies from your next renewal. If you do not agree, you can cancel before it takes effect." }
-              ],
-              "clause": "8.8",
-              "anchor": "s-8-8"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Taxes." }] },
-                { "kind": "text", "text": " Prices exclude taxes unless the pricing page or your order says otherwise. Where we must collect value added tax, sales tax or similar taxes, we add them to your invoice. You are responsible for any other taxes that apply to your purchase, except taxes on our income." }
-              ],
-              "clause": "8.9",
-              "anchor": "s-8-9"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "strong", "children": [{ "kind": "text", "text": "Invoices." }] },
-                { "kind": "text", "text": " We send receipts and invoices to your Account's billing contact email or, if there is none, to your Administrators. You can see your billing history in the customer portal." }
-              ],
-              "clause": "8.10",
-              "anchor": "s-8-10"
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                {
-                  "kind": "strong",
-                  "children": [{ "kind": "text", "text": "Upgrades and downgrades." }]
-                }
-              ],
-              "clause": "8.11",
-              "anchor": "s-8-11"
-            },
-            {
-              "kind": "list",
-              "items": [
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Upgrade." }] },
-                    { "kind": "text", "text": " An upgrade takes effect immediately. The upgrade is charged immediately for the rest of the current Billing Period, and the base rate applies from the next renewal. The new Plan's full usage allowance applies from the time of the upgrade for the rest of the current allowance period." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Downgrade." }] },
-                    { "kind": "text", "text": " A downgrade takes effect at the end of the current Billing Period. Your remaining usage allowance for the current allowance period becomes the new Plan's allowance less what you have already used, and not less than zero." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Devices." }] },
-                    { "kind": "text", "text": " A downgrade never deactivates or deletes your Devices. If you have more activated Devices than the new Plan allows, the limit applies when each Session starts: the Devices that start Sessions first may present, and the others are told why and shown how to upgrade. Upgrading again restores all of them without re-activation." }
-                  ],
-                  "children": []
-                }
-              ]
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                {
-                  "kind": "strong",
-                  "children": [{ "kind": "text", "text": "Failed payments and suspension." }]
-                },
-                { "kind": "text", "text": " If a payment fails, we tell you by email and ask you to update your payment method or pay again. If it is still unpaid after 14 days, we may suspend your paid Plan. During a suspension:" }
-              ],
-              "clause": "8.12",
-              "anchor": "s-8-12"
-            },
-            {
-              "kind": "list",
-              "items": [
-                {
-                  "inline": [
-                    { "kind": "text", "text": "Devices that are already activated keep presenting;" }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "new activations, licence-file renewals and Cloud Features stop; and" }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "once you pay, your Plan returns to the state it was in before the suspension, without re-activating any Device." }
-                  ],
-                  "children": []
-                }
-              ]
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                {
-                  "kind": "strong",
-                  "children": [{ "kind": "text", "text": "When a paid Plan ends." }]
-                },
-                { "kind": "text", "text": " If a paid Plan ends because it was cancelled, not renewed or not paid, you keep the paid Plan's features for a grace period of 7 days, and we remind you to renew. After that, your Account moves to the free Plan, starting from the next Session. A Session that is already running is not interrupted. Renewing at any time restores the paid Plan from the next Session." }
-              ],
-              "clause": "8.13",
-              "anchor": "s-8-13"
             }
           ],
           "children": []
@@ -1007,12 +828,6 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "In the United Kingdom, printing of the King James Version is subject to rights held under Crown letters patent. If you are in the United Kingdom and intend to print or distribute King James Version text, check whether you need permission." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "Some Plans include copyrighted translations licensed from their publishers, as shown on our pricing page. Each publisher's terms apply to its translation as well as these Terms. You must not extract, copy, export or redistribute a licensed translation except as the publisher's terms allow. If our licence from a publisher ends, we may have to remove that translation, and we will tell you in advance where we can." }
                   ],
                   "children": []
                 }
@@ -1203,7 +1018,7 @@ export const termsOfService: LegalDocument = {
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "share Accounts, enrolment keys, access credentials, download links or licence files outside your organisation; or" }
+                    { "kind": "text", "text": "share Accounts, enrolment keys, access credentials or licence files outside your organisation; or" }
                   ],
                   "children": []
                 },
@@ -1218,7 +1033,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "You must run the Desktop Software and the mobile controller only on networks and computers you are authorised to use, and you must keep pairing approvals and device access under control." }
+                { "kind": "text", "text": "You must run the Desktop Software only on networks and computers you are authorised to use, and keep device access under control." }
               ],
               "clause": "11.2",
               "anchor": "s-11-2"
@@ -1234,7 +1049,9 @@ export const termsOfService: LegalDocument = {
           "blocks": [
             {
               "kind": "paragraph",
-              "inline": [{ "kind": "text", "text": "SelahCue offers two optional Cloud Features:" }],
+              "inline": [
+                { "kind": "text", "text": "The planned Free release includes two optional Cloud Features:" }
+              ],
               "clause": "12.1",
               "anchor": "s-12-1"
             },
@@ -1247,7 +1064,7 @@ export const termsOfService: LegalDocument = {
                       "kind": "strong",
                       "children": [{ "kind": "text", "text": "Cloud transcription" }]
                     },
-                    { "kind": "text", "text": ", which streams live audio from your Device directly to Deepgram; and" }
+                    { "kind": "text", "text": " streams live audio from your Device directly to Deepgram. SelahCue does not receive the audio." }
                   ],
                   "children": []
                 },
@@ -1257,7 +1074,7 @@ export const termsOfService: LegalDocument = {
                       "kind": "strong",
                       "children": [{ "kind": "text", "text": "AI sermon notes" }]
                     },
-                    { "kind": "text", "text": ", which sends completed transcript text to OpenAI." }
+                    { "kind": "text", "text": " uses the transcript text selected for your request. Your Device sends it to SelahCue for temporary server processing with OpenAI. Your Device retrieves, validates and saves the draft before acknowledging receipt." }
                   ],
                   "children": []
                 }
@@ -1266,13 +1083,13 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "They are off by default. An Administrator must turn on each one. Before you turn one on, the Desktop Software tells you what data it sends, to which provider, and that the data can be processed in another country." }
+                { "kind": "text", "text": "Each feature is off by default and requires Administrator opt-in. The Desktop Software explains who receives the data and that processing can happen in another country." }
               ]
             },
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "When you use a Cloud Feature, your audio or transcript leaves your church's network and is processed by Deepgram or OpenAI under their own terms, on servers that can be in a different country from yours. Our Privacy Policy explains this in more detail." }
+                { "kind": "text", "text": "Our Privacy Policy explains the separate data flows, temporary SelahCue storage and provider handling." }
               ],
               "clause": "12.2",
               "anchor": "s-12-2"
@@ -1288,10 +1105,29 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature stops until the allowance resets or you upgrade. Presentation features continue. A note generation that fails because of an error on our side or our provider's side does not use up more than one unit of your allowance: you can retry a failed note generation within 10 minutes, and the failed attempt and its retry together use one unit of your allowance." }
+                { "kind": "text", "text": "Cloud Features use the allowances in section " },
+                { "kind": "ref", "anchor": "s-8", "text": "8" },
+                { "kind": "text", "text": ". When you use up an allowance, that feature is unavailable until the allowance resets. Presentation features continue." }
               ],
               "clause": "12.4",
               "anchor": "s-12-4"
+            },
+            {
+              "kind": "list",
+              "items": [
+                {
+                  "inline": [
+                    { "kind": "text", "text": "The service uses one note unit on successful publication of a draft for your Device to retrieve. A failed generation uses no note unit. Acknowledging a saved draft does not use another unit." }
+                  ],
+                  "children": []
+                },
+                {
+                  "inline": [
+                    { "kind": "text", "text": "If SelahCue's server confirms early loss of a published draft before its retrieval deadline and before acknowledgement, it provides one delivery credit for that note in the original allowance week. Normal expiry, acknowledgement and device reports alone do not qualify." }
+                  ],
+                  "children": []
+                }
+              ]
             }
           ],
           "children": []
@@ -1342,13 +1178,6 @@ export const termsOfService: LegalDocument = {
                 },
                 {
                   "inline": [
-                    { "kind": "strong", "children": [{ "kind": "text", "text": "Paystack" }] },
-                    { "kind": "text", "text": ", which processes payments." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Deepgram" }] },
                     { "kind": "text", "text": " and " },
                     { "kind": "strong", "children": [{ "kind": "text", "text": "OpenAI" }] },
@@ -1363,16 +1192,6 @@ export const termsOfService: LegalDocument = {
                       "children": [{ "kind": "text", "text": "DigitalOcean Spaces" }]
                     },
                     { "kind": "text", "text": ", which stores and delivers our installers." }
-                  ],
-                  "children": []
-                },
-                {
-                  "inline": [{ "kind": "text", "text": "Bible publishers, for licensed translations." }],
-                  "children": []
-                },
-                {
-                  "inline": [
-                    { "kind": "text", "text": "App stores, if you download the SelahCue Controller app." }
                   ],
                   "children": []
                 }
@@ -1406,18 +1225,16 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "Support is available by email at " },
+                { "kind": "text", "text": "For support, email " },
                 { "kind": "code", "text": "support@selahcueapp.com" },
-                { "kind": "text", "text": ". We aim to reply within 48 business hours, and we reply on a best-effort basis outside those hours." }
+                { "kind": "text", "text": "." }
               ],
               "clause": "14.2",
               "anchor": "s-14-2"
             },
             {
               "kind": "paragraph",
-              "inline": [
-                { "kind": "text", "text": "We may change, add or remove features. If a change materially reduces the features of a paid Plan you have already paid for, we will tell you in advance and, if you cancel because of it, refund the unused part of your fees." }
-              ],
+              "inline": [{ "kind": "text", "text": "We may change, add or remove features." }],
               "clause": "14.3",
               "anchor": "s-14-3"
             }
@@ -1440,11 +1257,9 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "By you." }] },
-                { "kind": "text", "text": " You can stop using the Services at any time. You can delete your user account in your account settings, and an Administrator can close your organisation's Account in the customer portal or by emailing " },
+                { "kind": "text", "text": " You can stop using the Services at any time. An Administrator can email " },
                 { "kind": "code", "text": "support@selahcueapp.com" },
-                { "kind": "text", "text": ". Closing the Account cancels any paid Plan under section " },
-                { "kind": "ref", "anchor": "s-8-6", "text": "8.6" },
-                { "kind": "text", "text": ". To get a copy of your data first, follow the steps in our Privacy Policy." }
+                { "kind": "text", "text": " to request closure of your organisation's Account. For requests about your personal data, see the Privacy Policy." }
               ],
               "clause": "15.1",
               "anchor": "s-15-1"
@@ -1479,14 +1294,6 @@ export const termsOfService: LegalDocument = {
                   ],
                   "children": []
                 }
-              ]
-            },
-            {
-              "kind": "paragraph",
-              "inline": [
-                { "kind": "text", "text": "Suspension for non-payment is covered by section " },
-                { "kind": "ref", "anchor": "s-8-12", "text": "8.12" },
-                { "kind": "text", "text": "." }
               ]
             },
             {
@@ -1641,7 +1448,7 @@ export const termsOfService: LegalDocument = {
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Indirect losses." }] },
                 { "kind": "text", "text": " Subject to section " },
                 { "kind": "ref", "anchor": "s-17-1", "text": "17.1" },
-                { "kind": "text", "text": ", neither party is liable for indirect or consequential loss, or for loss of profits, revenue, donations, goodwill or data, arising from these Terms or the Services. This does not limit your obligation to pay fees." }
+                { "kind": "text", "text": ", neither party is liable for indirect or consequential loss, or for loss of profits, revenue, donations, goodwill or data, arising from these Terms or the Services." }
               ],
               "clause": "17.2",
               "anchor": "s-17-2"
@@ -1841,7 +1648,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "For material changes, we give account holders at least 7 days' notice by email or in the product, unless the change is required by law sooner or is needed for security. We ask Administrators to accept material changes before they continue to use the Platform Services, and we record that acceptance. If you do not agree, you can stop using the Services and, if you have prepaid, receive a refund of unused fees." }
+                { "kind": "text", "text": "For material changes, we give account holders at least 7 days' notice by email or in the product, unless the change is required by law sooner or is needed for security. We ask Administrators to accept material changes before they continue to use the Platform Services, and we record that acceptance. If you do not agree, you can stop using the Services." }
               ],
               "clause": "23.2",
               "anchor": "s-23-2"
@@ -1882,7 +1689,7 @@ export const termsOfService: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Events outside our control." }]
                 },
-                { "kind": "text", "text": " Neither party is responsible for delay or failure caused by events outside its reasonable control. This does not excuse payment obligations." }
+                { "kind": "text", "text": " Neither party is responsible for delay or failure caused by events outside its reasonable control." }
               ],
               "clause": "24.3",
               "anchor": "s-24-3"

@@ -5,16 +5,15 @@ import notice from '../../../../docs/release/pilot-registration/notice.json'
 
 <template>
   <article class="pilot-privacy container" aria-labelledby="pilot-privacy-heading">
-    <UiBadge variant="featured">FIELD TEST PILOT</UiBadge>
+    <UiBadge variant="featured">ARCHIVED PILOT NOTICE</UiBadge>
     <h1 id="pilot-privacy-heading">{{ notice.title }}</h1>
     <p class="notice-version">Notice {{ notice.version }}</p>
-    <p class="availability">Pilot registration is not open yet. This notice explains the handling policy for the planned pilot form.</p>
+    <p class="availability">Pilot registration is closed. This archived notice records the handling policy for the planned pilot form.</p>
     <section v-for="(section, index) in notice.sections" :key="section.title" :aria-labelledby="`pilot-notice-${index}`">
       <h2 :id="`pilot-notice-${index}`">{{ section.title }}</h2>
       <p v-for="paragraph in section.paragraphs" :key="paragraph">{{ paragraph }}</p>
     </section>
     <p class="notice-contacts">Contact <a :href="`mailto:${notice.primary_contact}`">{{ notice.primary_contact }}</a> or <a :href="`mailto:${notice.alternate_contact}`">{{ notice.alternate_contact }}</a>.</p>
-    <router-link class="pilot-back" to="/download#pilot-downloads">Back to pilot download availability</router-link>
   </article>
 </template>
 
@@ -28,5 +27,5 @@ p { color: var(--sc-text-secondary); line-height: 1.7; margin-block: 12px; }
 a { color: var(--sc-text); text-decoration: underline; }
 a:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 4px; }
 .notice-contacts { margin-top: 28px; }
-.notice-contacts a, .pilot-back { display: inline-flex; align-items: center; min-height: 44px; }
+.notice-contacts a { display: inline-flex; align-items: center; min-height: 44px; }
 </style>

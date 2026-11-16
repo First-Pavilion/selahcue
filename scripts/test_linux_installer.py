@@ -16,6 +16,7 @@ from build_linux_installer import (effective_config, build_environment, build_co
                                    stage_sidecar, select_deb, validate_config, PackagingError,
                                    require_fresh_bundle_directory, scan_package, check_elf_closure)
 from installer_secret_scan import ScanError
+from test_whisper_cpu_policy import PolicyTests
 from smoke_linux_install import request, main as smoke_main
 
 

@@ -208,6 +208,38 @@ describe('the typed content holds every word of the draft, in order', { skip: !D
 // Real-document invariants
 // ---------------------------------------------------------------------------------------
 
+describe('Free public release disclosures in the generated policies', () => {
+  const privacy = documentText(privacyPolicy).join(' ')
+  const terms = documentText(termsOfService).join(' ')
+
+  test('separates direct Deepgram audio from server-processed notes and bounded staging', () => {
+    assert.ok(/directly to Deepgram[^.]*\. [^.]*\. SelahCue does not receive the audio/i.test(privacy), 'audio route must be disclosed')
+    assert.ok(/sends the selected transcript text to SelahCue/i.test(privacy), 'the notes request must disclose SelahCue receipt')
+    assert.ok(/server-held OpenAI credential/i.test(privacy), 'the OpenAI credential must stay server-side')
+    assert.ok(/source text[^.]*5 minutes/i.test(privacy), 'source staging bound')
+    assert.ok(/retriev[^.]*15 minutes from staging/i.test(privacy), 'logical result retrieval deadline')
+    assert.ok(/20 minutes from staging if cleanup fails/i.test(privacy), 'physical result expiry bound')
+    assert.ok(/acknowledges[^.]*after[^.]*durably sav/i.test(privacy), 'native ACK must follow durable save')
+    assert.ok(/provider retention/i.test(privacy), 'staging and provider retention must stay distinct')
+  })
+
+  test('describes ongoing Free allowances and no active billing', () => {
+    assert.ok(/20 cloud transcription minutes and one sermon note per church per week/i.test(terms), 'publish the approved weekly Free allowances')
+    assert.ok(/one note unit[^.]*successful publication/i.test(terms), 'settlement occurs at successful publication')
+    assert.ok(/failed generation uses no note unit/i.test(terms), 'generation failures do not consume allowance')
+    assert.ok(/confirms early loss[^.]*delivery credit/i.test(terms), 'only backend-confirmed early loss earns delivery credit')
+    for (const policy of [privacy, terms]) {
+      assert.doesNotMatch(policy, /Paystack|billing history|paid Plan|Billing Period|14 days? trial/i)
+    }
+  })
+
+  test('describes public installer delivery without tying downloads to an account', () => {
+    assert.ok(/public[^.]*DigitalOcean Spaces[^.]*SFO3/i.test(privacy), 'public installer storage and region')
+    assert.ok(/download[^.]*without an account/i.test(privacy), 'anonymous installer download')
+    assert.ok(/download[^.]*without an Account/i.test(terms), 'anonymous installer download in Terms')
+  })
+})
+
 describe('the real documents are internally consistent', () => {
   for (const [name, doc] of [
     ['privacy', privacyPolicy],
@@ -1035,17 +1067,36 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     assert.deepEqual(placeholderOccurrences(doc), ['WHO', 'SUMMARY_FACT'])
   })
 
-  test('the real drafts stay drafts until the banner and version status are cleared', () => {
+  test('the release drafts stay noindex with draft banners and versions', () => {
     for (const doc of [privacyPolicy, termsOfService]) {
-      const s = legalPageState(doc)
-      assert.equal(s.draft, true)
-      assert.equal(s.noindex, true)
-      // Every placeholder is filled, so what keeps the real page a draft now is the DRAFT banner
-      // and the non-final version status. Both go when the owner publishes.
-      assert.equal(s.placeholderCount, 0, `no placeholder is open in ${doc.title}`)
-      assert.equal(s.reasons.banner, true)
-      assert.ok(s.bannerHeadline?.startsWith('DRAFT'))
+      const state = legalPageState(doc)
+      assert.equal(state.draft, true)
+      assert.equal(state.noindex, true)
+      assert.equal(state.reasons.banner, true)
+      assert.ok(state.bannerHeadline?.startsWith('DRAFT'))
+      assert.equal(doc.version.status, 'draft', doc.title)
     }
+  })
+
+  test('unconfirmed operating facts block indexing even if the Privacy draft is marked final too early', () => {
+    const premature: LegalDocument = {
+      ...privacyPolicy,
+      banner: null,
+      version: { ...privacyPolicy.version, status: 'final' },
+    }
+    const state = legalPageState(premature)
+    assert.ok(state.placeholders.includes('SERVICE_HOSTING_LOCATIONS'))
+    assert.ok(state.placeholders.includes('CLOUD_PROVIDER_RETENTION_AND_USE'))
+    assert.ok(state.placeholders.includes('RIGHTS_REQUEST_PROCESS_AND_TIMING'))
+    assert.equal(state.noindex, true)
+  })
+
+  test('every current factual placeholder is tracked in the publication notes', { skip: !DOCS_PRESENT }, () => {
+    const notes = readFileSync(`${REPO_ROOT}/docs/legal/LEGAL-DRAFT-NOTES.md`, 'utf8')
+    const register = notes.split('\n## 5. ')[1].split('\n## 6. ')[0]
+    const registered = [...register.matchAll(/^\| `\{\{([A-Z_]+)\}\}` \|/gm)].map((match) => match[1])
+    const placeholders = new Set([...placeholderOccurrences(privacyPolicy), ...placeholderOccurrences(termsOfService)])
+    assert.deepEqual(registered.sort(), [...placeholders].sort())
   })
 
   test('the page title never doubles the brand', () => {

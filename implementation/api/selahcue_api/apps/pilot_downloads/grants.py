@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, urlsplit
 from django.conf import settings
 from django.utils import timezone
 
-from selahcue_api.apps.pilot_downloads.grant_manifest import COHORT_CUTOFF, SIGNING_STATES, identifier, load_manifest
+from selahcue_api.apps.pilot_downloads.grant_manifest import COHORT_CUTOFF, DEFAULT_REQUIRED_PLATFORMS, identifier, load_manifest, manifest_policy_platforms
 from selahcue_api.apps.pilot_downloads.policy import PilotPolicy, PilotRegistrationError, load_policy
 from selahcue_api.apps.pilot_downloads.services import verify_registration_receipt
 
@@ -32,6 +32,7 @@ class GrantPolicy:
     signed_query_keys: tuple[str, ...]
     signing_requirements: dict[str, str]
     cohort_id: str
+    required_platforms: tuple[str, ...] = DEFAULT_REQUIRED_PLATFORMS
 
 
 @dataclass(frozen=True, repr=False)
@@ -103,12 +104,10 @@ def load_grant_policy(registration_policy: PilotPolicy | None = None) -> GrantPo
         signing = raw["signing_requirements"]
         if isinstance(signing, str):
             signing = json.loads(signing)
-        if (not isinstance(signing, dict) or set(signing) != set(SIGNING_STATES) or
-                any(not isinstance(signing[k], str) or signing[k] not in allowed for k, allowed in SIGNING_STATES.items())):
-            raise ValueError
+        required_platforms = manifest_policy_platforms(raw.get("required_platforms", DEFAULT_REQUIRED_PLATFORMS), signing)
     except (ValueError, KeyError, TypeError, OverflowError, RecursionError):
         raise PilotRegistrationError("download_configuration_required", 503) from None
-    return GrantPolicy(token, target, origin, path, digest, ttl, tuple(query_keys), signing, cohort)
+    return GrantPolicy(token, target, origin, path, digest, ttl, tuple(query_keys), signing, cohort, required_platforms)
 
 
 def _seconds(value: datetime) -> int:

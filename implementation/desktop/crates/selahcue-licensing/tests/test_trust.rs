@@ -335,31 +335,23 @@ fn key_ids_are_reported_deterministically() {
 }
 
 #[test]
-fn no_production_key_is_bundled_yet_and_the_store_says_so_honestly() {
-    // This test used to assert the bundled store was simply EMPTY. That stopped being true
-    // when debug builds began trusting the development key, so it is restated rather than
-    // deleted: what it actually protects is that **no production key is bundled**, because
-    // none has been issued — the production signing key is a server env-var seed (DEC-011
-    // pt 1). An empty store fails closed on VERIFICATION (every key_id is unknown, so every
-    // manifest is refused, which FR-518 says must keep the previous valid cache) and never
-    // fails closed on PRESENTATION, which is why nothing consults it to decide whether the
-    // app may run.
+fn the_pilot_public_key_is_bundled_under_the_server_key_id() {
     let bundled = TrustedKeys::bundled();
-
-    let production_keys = bundled
-        .key_ids()
-        .into_iter()
-        .filter(|id| *id != TrustedKeys::DEV_KEY_ID)
-        .count();
+    let pilot = bundled
+        .get("e506b735")
+        .expect("authorized pilot signing key");
+    let bytes = pilot.public_key();
     assert_eq!(
-        production_keys, 0,
-        "a production entitlement key appeared in the bundled set; if one has genuinely \
-         been issued, this test should be updated deliberately rather than by surprise"
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(""),
+        "8e7c2cae2b6b1658604b52ac4a75353380fb5747fc768dbcd8f6b6ec71b328ef"
     );
-
-    // A key_id nobody has issued is unknown in every profile.
+    assert_eq!(derive_key_id(bytes), "e506b735");
+    assert!(ed25519_dalek::VerifyingKey::from_bytes(bytes).is_ok());
     assert!(bundled.get("630dcd29").is_none());
-    assert_eq!(TrustedKeys::capacity(), MAX_TRUSTED_KEYS);
 }
 
 #[test]
@@ -405,17 +397,14 @@ fn the_development_key_is_trusted_in_this_build_iff_it_is_a_debug_build() {
             ]),
             "the trusted dev entry must be the committed key, not some other key"
         );
-        assert_eq!(bundled.len(), 1, "debug trusts exactly the dev key today");
+        assert_eq!(bundled.key_ids(), ["e506b735", TrustedKeys::DEV_KEY_ID]);
     } else {
         assert!(
             !trusted,
             "a RELEASE build must not trust the development key: its seed is committed in \
              dev-signing-key.NOT-A-SECRET, so anyone at all can sign with it"
         );
-        assert!(
-            bundled.is_empty(),
-            "release trusts no key until one is issued"
-        );
+        assert_eq!(bundled.key_ids(), ["e506b735"]);
     }
 }
 

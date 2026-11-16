@@ -57,6 +57,9 @@ export type ApiErrorCode =
   | 'VALIDATION_FAILED'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  /** Native bound-activation codes: browser forms use their existing generic failure state. */
+  | 'ACTIVATION_OPERATION_CONFLICT'
+  | 'ACTIVATION_OPERATION_COMPLETED'
   | 'POLICY_DENIED'
   | 'RATE_LIMITED'
   | 'NOT_IMPLEMENTED'
@@ -98,6 +101,8 @@ const SERVER_ERROR_CODES: ReadonlySet<string> = new Set([
   'VALIDATION_FAILED',
   'NOT_FOUND',
   'CONFLICT',
+  'ACTIVATION_OPERATION_CONFLICT',
+  'ACTIVATION_OPERATION_COMPLETED',
   'POLICY_DENIED',
   'RATE_LIMITED',
   'NOT_IMPLEMENTED',
@@ -140,7 +145,7 @@ export const CSRF_BOOTSTRAP_PATH = '/graphql/csrf'
  * rather than a stampede. Cleared when it settles: a bootstrap that failed must be
  * retryable, and once the cookie exists `needsCsrfBootstrap` stops asking anyway.
  */
-let csrfBootstrap: Promise<void> | null = null
+let csrfBootstrap: Promise<string | undefined> | null = null
 
 /**
  * The bootstrap's own deadline, separate from and shorter than the mutation's.
@@ -204,7 +209,7 @@ function needsCsrfBootstrap(): boolean {
  *
  * Never throws, and — like the rest of this module — never logs.
  */
-function ensureCsrfCookie(send: typeof fetch): Promise<void> {
+function ensureCsrfCookie(send: typeof fetch): Promise<string | undefined> {
   if (csrfBootstrap) return csrfBootstrap
 
   const attempt = (async () => {
@@ -216,20 +221,26 @@ function ensureCsrfCookie(send: typeof fetch): Promise<void> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), CSRF_BOOTSTRAP_TIMEOUT_MS)
     try {
-      await send(`${apiBaseUrl()}${CSRF_BOOTSTRAP_PATH}`, {
+      const response = await send(`${apiBaseUrl()}${CSRF_BOOTSTRAP_PATH}`, {
         method: 'GET',
-        // The whole point: accept the Set-Cookie this response carries.
         credentials: 'same-origin',
         referrerPolicy: 'no-referrer',
         headers: { Accept: 'application/json' },
         signal: controller.signal,
       })
+      if (!response.ok) return
+
+      const token = response.headers.get(CSRF_HEADER_NAME)
+      // Django accepts an unmasked secret (32) or a masked token (64).
+      if (token && (token.length === 32 || token.length === 64) && !/[^A-Za-z0-9]/.test(token)) {
+        return token
+      }
     } catch {
       // Swallowed on purpose — a timeout included. See above.
     } finally {
       clearTimeout(timeout)
     }
-  })().then(() => {
+  })().finally(() => {
     csrfBootstrap = null
   })
 
@@ -248,17 +259,20 @@ function ensureCsrfCookie(send: typeof fetch): Promise<void> {
  * The listener is removed either way, so a long-lived signal does not accumulate one per
  * request.
  */
-async function raceAgainstAbort(work: Promise<void>, signal?: AbortSignal): Promise<void> {
+async function raceAgainstAbort(
+  work: Promise<string | undefined>,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
   if (!signal) return work
   if (signal.aborted) return
 
   let onAbort = (): void => {}
-  const abandoned = new Promise<void>((resolve) => {
-    onAbort = () => resolve()
+  const abandoned = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined)
     signal.addEventListener('abort', onAbort, { once: true })
   })
   try {
-    await Promise.race([work, abandoned])
+    return await Promise.race([work, abandoned])
   } finally {
     signal.removeEventListener('abort', onAbort)
   }
@@ -370,7 +384,9 @@ export async function graphqlRequest<TData>(
   // the caller's own AbortError. Nothing user-visible depends on it today — the views
   // abort only on unmount — but any future cancel or retry affordance would inherit a
   // wait of up to 4.5 seconds on a promise the user already walked away from.
-  if (needsCsrfBootstrap()) await raceAgainstAbort(ensureCsrfCookie(send), options.signal)
+  const bootstrapToken = needsCsrfBootstrap()
+    ? await raceAgainstAbort(ensureCsrfCookie(send), options.signal)
+    : undefined
 
   // The bootstrap is awaited, so re-check: the user may have navigated away during it.
   if (options.signal?.aborted) {
@@ -387,11 +403,9 @@ export async function graphqlRequest<TData>(
     'Content-Type': 'application/json',
     Accept: 'application/json',
   }
-  // The account surface's declared auth context is `customer_session_with_csrf`
-  // (`graphql/route_contracts.py`) and Django's CsrfViewMiddleware is active, so send
-  // the token whenever the cookie is readable. Read AFTER the bootstrap above, which is
-  // the thing that brings the cookie into existence in the first place.
-  const csrfToken = readCookie(CSRF_COOKIE_NAME)
+  // Each waiter uses the token bound to its bootstrap response. A missing response
+  // token falls back to the cookie as it is now, including on older deployments.
+  const csrfToken = bootstrapToken ?? readCookie(CSRF_COOKIE_NAME)
   if (csrfToken) headers[CSRF_HEADER_NAME] = csrfToken
   // Built OUTSIDE the try on purpose: only genuine transport failures may be classified
   // as NETWORK, so nothing that could throw for another reason belongs inside it.

@@ -698,6 +698,7 @@ fn transcript_and_detection_view_fields_are_additive() {
             text: "turn to John 3:16".into(),
         }],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1021,6 +1022,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1066,6 +1068,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         detections: vec![],
@@ -1114,6 +1117,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         detections: vec![],
@@ -1183,6 +1187,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1237,6 +1242,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1282,6 +1288,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -1333,6 +1340,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         screens: vec![],
         transcript: vec![],
         partial_transcript: None,
+        transcript_storage_health: None,
         stage_template: String::new(),
         stage_message: None,
         output_health: None,
@@ -2417,4 +2425,30 @@ fn server_message_kind_labels_are_plain_snake_case_identifiers() {
             "label {label:?} is not a plain snake_case identifier"
         );
     }
+}
+
+#[test]
+fn transcript_storage_health_is_additive_and_unknown_on_old_hosts() {
+    use selahcue_lan::protocol::{OperatorStateView, TranscriptStorageHealthView};
+    let old = r#"{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null}"#;
+    let mut view: OperatorStateView = serde_json::from_str(old).unwrap();
+    assert!(view.transcript_storage_health.is_none());
+    view.transcript_storage_health = Some(TranscriptStorageHealthView {
+        available: false,
+        pending_segments: 64,
+        dropped_segments: 1,
+        truncated_segments: 2,
+    });
+    let wire = serde_json::to_value(&view).unwrap();
+    assert_eq!(
+        wire["transcript_storage_health"],
+        serde_json::json!({
+            "available": false, "pending_segments":64, "dropped_segments":1, "truncated_segments":2
+        })
+    );
+    let roundtrip: OperatorStateView = serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        roundtrip.transcript_storage_health,
+        view.transcript_storage_health
+    );
 }

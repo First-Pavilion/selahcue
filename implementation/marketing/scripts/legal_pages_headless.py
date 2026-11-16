@@ -88,7 +88,7 @@ DRAFT_NOTICE = "Draft, pending legal review. This page is not our final policy."
 EXPECTATIONS_JS = r"""
 import { privacyPolicy } from './src/lib/legal/privacy.generated.ts'
 import { termsOfService } from './src/lib/legal/terms.generated.ts'
-import { legalPageState, tableOfContents, legalTitle, allAnchorIds } from './src/lib/legal/document.ts'
+import { legalPageState, tableOfContents, legalTitle, allAnchorIds, inlineToText } from './src/lib/legal/document.ts'
 const headingsOf = (doc) => {
   const out = [doc.title]
   if (doc.summary) out.push(doc.summary.title)
@@ -110,6 +110,7 @@ for (const [key, doc] of [['privacy', privacyPolicy], ['terms', termsOfService]]
     draft: s.draft,
     noindex: s.noindex,
     placeholderCount: s.placeholderCount,
+    bannerNotes: doc.banner?.notes.filter((note) => note.kind === 'paragraph').map((note) => inlineToText(note.inline)) ?? [],
     tocIds: tableOfContents(doc).flatMap((g) => g.entries.map((e) => e.id)),
     anchorIds: allAnchorIds(doc),
     hasTables: key === 'privacy',
@@ -176,6 +177,12 @@ def launch(pw):
         return pw.chromium.launch(headless=True)
 
 
+def emit_browser_identity(browser) -> None:
+    """Selected process identity only; no launch paths, environment or page data."""
+    identity = {"engine": browser.browser_type.name[:16], "version": browser.version[:64]}
+    print("BROWSER_IDENTITY " + json.dumps(identity, separators=(",", ":"), ensure_ascii=True), flush=True)
+
+
 OBSERVER_TRACKER = """
 (() => {
   const track = (name) => {
@@ -240,6 +247,88 @@ def rect(page, selector: str) -> dict | None:
                       return {top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width, height: r.height}; }""",
         selector,
     )
+
+
+# Test-only, passive evidence for the original desktop sticky checkpoint. Replace its
+# existing TOC rectangle reads rather than adding waits, input or scheduling probes.
+# Fixed labels and limits exclude page text/attributes and keep even failure logs small.
+STICKY_CHECKPOINT = r"""
+(begin) => {
+  const limit = (value) => String(value).slice(0, 32);
+  const rectOf = (e) => {
+    if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return {top:r.top, bottom:r.bottom, left:r.left, right:r.right, width:r.width, height:r.height};
+  };
+  const label = (e) => {
+    if (!(e instanceof Element)) return 'non-element';
+    for (const selector of ['.navbar-header', '.toc', '.toc-col', '#legal-text', '.legal-layout', '.legal-shell', '.legal-page', 'main.main-content']) {
+      if (e.matches(selector)) return selector;
+    }
+    return limit(e.tagName.toLowerCase());
+  };
+  const region = (e) => {
+    if (!(e instanceof Element)) return 'non-element';
+    return ['.navbar-header', '.toc', '#legal-text', 'main.main-content'].find(s => e.closest(s)) ?? 'other';
+  };
+  if (begin) {
+    const state = {events:[], dropped:0};
+    state.listen = (e) => {
+      if (state.events.length >= 4) { state.dropped = Math.min(state.dropped + 1, 1000000); return; }
+      state.events.push({event:e, x:e.clientX, y:e.clientY, deltaX:e.deltaX, deltaY:e.deltaY,
+        deltaMode:e.deltaMode, target:label(e.target), targetRegion:region(e.target),
+        hit:label(document.elementFromPoint(e.clientX, e.clientY)), hitRegion:region(document.elementFromPoint(e.clientX, e.clientY))});
+    };
+    window.__legalStickyTrace = state;
+    window.addEventListener('wheel', state.listen, {capture:true, passive:true});
+  }
+  const toc = document.querySelector('.toc');
+  const root = document.scrollingElement;
+  const ancestors = [];
+  for (let e = toc; e && ancestors.length < 10; e = e.parentElement) {
+    const css = getComputedStyle(e);
+    ancestors.push({node:label(e), rect:rectOf(e), position:limit(css.position), top:limit(css.top),
+      overflowX:limit(css.overflowX), overflowY:limit(css.overflowY), transform:limit(css.transform), contain:limit(css.contain)});
+  }
+  const css = toc && getComputedStyle(toc);
+  const snapshot = {atMs:performance.now(), root:{x:scrollX, y:scrollY,
+      maxY:root ? Math.max(0, root.scrollHeight-root.clientHeight) : null,
+      scrollHeight:root?.scrollHeight ?? null, clientHeight:root?.clientHeight ?? null},
+    toc:rectOf(toc), navbar:rectOf(document.querySelector('.navbar-header')),
+    tocScroll:toc ? {top:toc.scrollTop, height:toc.scrollHeight, clientHeight:toc.clientHeight,
+      position:limit(css.position), stickyTop:limit(css.top), maxHeight:limit(css.maxHeight)} : null, ancestors};
+  if (!begin) {
+    const state = window.__legalStickyTrace;
+    if (state) {
+      window.removeEventListener('wheel', state.listen, {capture:true});
+      // Read the retained event after dispatch: no timer/microtask is added merely
+      // to observe whether another listener eventually canceled the native wheel.
+      snapshot.wheel = state.events.map(({event, ...row}) => ({...row, defaultPrevented:event.defaultPrevented}));
+      snapshot.wheelDropped = state.dropped;
+      delete window.__legalStickyTrace;
+    } else { snapshot.wheel = []; snapshot.wheelDropped = 0; }
+  }
+  return snapshot;
+}
+"""
+
+
+def sticky_checkpoint(page, begin: bool) -> dict:
+    return page.evaluate(STICKY_CHECKPOINT, begin)
+
+
+def emit_sticky_trace(tag: str, before: dict, after: dict) -> None:
+    """One bounded JSON line per existing desktop checkpoint, including failures."""
+    payload = {"checkpoint": tag[:32], "before": before, "after": after}
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    if len(encoded) > 12000:
+        # The fixed schema normally fits comfortably. Keep valid, useful JSON if
+        # unexpected numeric/string serialization growth reaches the hard log cap.
+        payload = {"checkpoint": tag[:32], "truncated": True,
+                   "before": {"root": before["root"], "toc": before["toc"]},
+                   "after": {"root": after["root"], "toc": after["toc"]}}
+        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    print("STICKY_TRACE " + encoded, flush=True)
 
 
 def target_top(page, anchor_id: str) -> float | None:
@@ -346,15 +435,18 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         missing = [s for s in sections if page.locator(f'[id="{s}"]').count() != 1]
         check(f"{tag}: every Contents target exists once", not missing, str(missing))
 
-        toc = rect(page, ".toc")
+        sticky_before = sticky_checkpoint(page, True) if desktop else None
+        toc = sticky_before["toc"] if sticky_before is not None else rect(page, ".toc")
         text = rect(page, "#legal-text")
         if desktop:
             check(f"{tag}: sidebar is left of the text", toc is not None and text is not None and toc["right"] <= text["left"] + 1, f"{toc} {text}")
             check(f"{tag}: Contents toggle hidden on desktop", not page.locator(".toc-toggle").is_visible())
             page.mouse.wheel(0, 1600)
             wait_settled(page, 400)
-            toc2 = rect(page, ".toc")
+            sticky_after = sticky_checkpoint(page, False)
+            toc2 = sticky_after["toc"]
             check(f"{tag}: sidebar is sticky below the navbar", toc2 is not None and navbar_bottom(width) <= toc2["top"] <= navbar_bottom(width) + 41, f"{toc2}")
+            emit_sticky_trace(tag, sticky_before, sticky_after)
             page.evaluate("window.scrollTo(0, 0)")
         else:
             check(f"{tag}: sidebar is stacked above the text", toc is not None and text is not None and toc["bottom"] <= text["top"] + 1, f"{toc} {text}")
@@ -397,8 +489,13 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
             check(f"{tag}: Part headings keep the dash", any(h.lower().startswith("part a — ") for h in headings), str(headings[:3]))
         clause = page.evaluate("(() => { const p = document.querySelector('.lb-clause'); return p ? p.innerText : '' })()")
         check(f"{tag}: a clause number is followed by a real space in the text", bool(__import__('re').match(r"^\d+\.\d+ \S", clause)), repr(clause[:30]))
-        banner_text = page.locator("[data-draft-banner]").inner_text()
-        check(f"{tag}: the document's own banner notes are on the page", "Status: Draft" in banner_text and "operates at launch" in banner_text, banner_text[:80])
+        banner_notes = page.locator("[data-draft-banner] .draft-note").all_inner_texts()
+        check(
+            f"{tag}: the document's own banner notes are on the page",
+            bool(banner_notes) and [" ".join(note.split()) for note in banner_notes]
+            == [" ".join(note.split()) for note in exp["bannerNotes"]],
+            f"{len(banner_notes)} rendered, {len(exp['bannerNotes'])} expected",
+        )
         check(f"{tag}: no aside, one Contents nav, few named regions", page.locator("aside").count() == 0 and page.locator("nav[aria-label=Contents]").count() == 1 and page.locator("[aria-labelledby]").count() <= 3,
               f"aside={page.locator('aside').count()} labelled={page.locator('[aria-labelledby]').count()}")
 
@@ -628,6 +725,7 @@ def main() -> int:
                     return 1
                 print(f"SKIP: could not launch Chrome: {e}")
                 return 0
+            emit_browser_identity(browser)
             for key in ("privacy", "terms"):
                 run_page(browser, base, key, exp, args.shots, args.only, [int(w) for w in args.widths.split(',')] if args.widths else None)
                 if args.only in ('all', 'anchors'):

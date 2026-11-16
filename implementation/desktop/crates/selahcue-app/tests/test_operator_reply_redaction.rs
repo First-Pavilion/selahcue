@@ -58,6 +58,19 @@ const METHODS: &[Method] = &[
         accepts: &[("sermon_note_draft", "some"), ("denied", "none")],
     },
     Method {
+        name: "save_sermon_note_draft_admitted",
+        expected: "sermon_note_draft",
+        accepts: &[("sermon_note_draft", "some"), ("denied", "none")],
+    },
+    Method {
+        name: "stage_sermon_note_regeneration_admitted",
+        expected: "sermon_note_regeneration_state",
+        accepts: &[
+            ("sermon_note_regeneration_state", "some"),
+            ("denied", "none"),
+        ],
+    },
+    Method {
         name: "update_sermon_note_draft",
         expected: "sermon_note_draft",
         accepts: &[("sermon_note_draft", "some"), ("denied", "none")],
@@ -157,6 +170,14 @@ async fn call(op: &mut RemoteOperator, method: &str) -> Result<&'static str, Tra
         "load_sermon_note_draft" => op.load_sermon_note_draft(1).await.map(|d| shape(&d)),
         "save_sermon_note_draft" => op
             .save_sermon_note_draft(1, draft_input())
+            .await
+            .map(|d| shape(&d)),
+        "save_sermon_note_draft_admitted" => op
+            .save_sermon_note_draft_admitted(1, draft_input(), || true)
+            .await
+            .map(|d| shape(&d)),
+        "stage_sermon_note_regeneration_admitted" => op
+            .stage_sermon_note_regeneration_admitted(1, draft_input(), || true)
             .await
             .map(|d| shape(&d)),
         "update_sermon_note_draft" => op

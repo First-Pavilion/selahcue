@@ -1,0 +1,448 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "operations": {
+    "accountOverview": {
+      "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+      "operationName": "AccountOverview"
+    },
+    "deactivateOwnDevice": {
+      "query": "mutation DeactivateOwnDevice($devicePublicId: String!, $requestId: String!) {\n  deactivateOwnDevice(devicePublicId: $devicePublicId, requestId: $requestId) { alreadyInactive }\n}",
+      "operationName": "DeactivateOwnDevice"
+    }
+  },
+  "cases": [
+    {
+      "name": "null_license_allowance",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {}
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "ADMIN",
+            "canDeactivateDevices": true,
+            "license": null,
+            "allowance": null,
+            "devices": {
+              "nodes": [],
+              "nextCursor": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "administrator_current",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {}
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "ADMIN",
+            "canDeactivateDevices": true,
+            "license": {
+              "status": "ACTIVATED",
+              "startsAt": "2026-11-04T10:00:00+00:00",
+              "expiresAt": "2026-12-09T10:00:00+00:00",
+              "validNow": true,
+              "renewal": "NOT_MANAGED",
+              "deviceLimit": 1,
+              "activeDeviceCount": "2"
+            },
+            "allowance": {
+              "planDisplayName": "Free",
+              "stt": {
+                "limit": "1200",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1200",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "CURRENT_OBSERVED"
+              },
+              "notes": {
+                "limit": "1",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "STALE"
+              }
+            },
+            "devices": {
+              "nodes": [
+                {
+                  "publicId": "account-device-a",
+                  "displayName": "Main booth",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                },
+                {
+                  "publicId": "account-device-b",
+                  "displayName": "",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                }
+              ],
+              "nextCursor": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "member",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {}
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "MEMBER",
+            "canDeactivateDevices": false,
+            "license": {
+              "status": "ACTIVATED",
+              "startsAt": "2026-11-04T10:00:00+00:00",
+              "expiresAt": "2026-12-09T10:00:00+00:00",
+              "validNow": true,
+              "renewal": "NOT_MANAGED",
+              "deviceLimit": 1,
+              "activeDeviceCount": "2"
+            },
+            "allowance": {
+              "planDisplayName": "Free",
+              "stt": {
+                "limit": "1200",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1200",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              },
+              "notes": {
+                "limit": "1",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              }
+            },
+            "devices": {
+              "nodes": [
+                {
+                  "publicId": "account-device-a",
+                  "displayName": "Main booth",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                },
+                {
+                  "publicId": "account-device-b",
+                  "displayName": "",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                }
+              ],
+              "nextCursor": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "large_counter",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {}
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "ADMIN",
+            "canDeactivateDevices": true,
+            "license": {
+              "status": "ACTIVATED",
+              "startsAt": "2026-11-04T10:00:00+00:00",
+              "expiresAt": "2026-12-09T10:00:00+00:00",
+              "validNow": true,
+              "renewal": "NOT_MANAGED",
+              "deviceLimit": 1,
+              "activeDeviceCount": "2"
+            },
+            "allowance": {
+              "planDisplayName": "Free",
+              "stt": {
+                "limit": "1200",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1200",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              },
+              "notes": {
+                "limit": "1",
+                "settled": "9223372036854775807",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "0",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "STALE"
+              }
+            },
+            "devices": {
+              "nodes": [
+                {
+                  "publicId": "account-device-a",
+                  "displayName": "Main booth",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                },
+                {
+                  "publicId": "account-device-b",
+                  "displayName": "",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                }
+              ],
+              "nextCursor": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "page_first",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {
+          "first": 1
+        }
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "ADMIN",
+            "canDeactivateDevices": true,
+            "license": {
+              "status": "ACTIVATED",
+              "startsAt": "2026-11-04T10:00:00+00:00",
+              "expiresAt": "2026-12-09T10:00:00+00:00",
+              "validNow": true,
+              "renewal": "NOT_MANAGED",
+              "deviceLimit": 1,
+              "activeDeviceCount": "2"
+            },
+            "allowance": {
+              "planDisplayName": "Free",
+              "stt": {
+                "limit": "1200",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1200",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              },
+              "notes": {
+                "limit": "1",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              }
+            },
+            "devices": {
+              "nodes": [
+                {
+                  "publicId": "account-device-a",
+                  "displayName": "Main booth",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                }
+              ],
+              "nextCursor": "AWFjY291bnQtZGV2aWNlLWE"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "page_next",
+      "request": {
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "operationName": "AccountOverview",
+        "variables": {
+          "first": 1,
+          "after": "AWFjY291bnQtZGV2aWNlLWE"
+        }
+      },
+      "response": {
+        "data": {
+          "accountOverview": {
+            "orgName": "Grace Chapel",
+            "displayName": "Ada",
+            "email": "admin@grace.example.test",
+            "role": "ADMIN",
+            "canDeactivateDevices": true,
+            "license": {
+              "status": "ACTIVATED",
+              "startsAt": "2026-11-04T10:00:00+00:00",
+              "expiresAt": "2026-12-09T10:00:00+00:00",
+              "validNow": true,
+              "renewal": "NOT_MANAGED",
+              "deviceLimit": 1,
+              "activeDeviceCount": "2"
+            },
+            "allowance": {
+              "planDisplayName": "Free",
+              "stt": {
+                "limit": "1200",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1200",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              },
+              "notes": {
+                "limit": "1",
+                "settled": "0",
+                "held": "0",
+                "carriedDebt": "0",
+                "remaining": "1",
+                "asOf": "2026-11-15T12:00:00+00:00",
+                "resetsAt": "2026-11-16T00:00:00+00:00",
+                "status": "NOT_INITIALIZED"
+              }
+            },
+            "devices": {
+              "nodes": [
+                {
+                  "publicId": "account-device-b",
+                  "displayName": "",
+                  "platform": "macos",
+                  "appVersion": "",
+                  "createdAt": "2026-11-15T12:00:00+00:00",
+                  "status": "ACTIVE"
+                }
+              ],
+              "nextCursor": null
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "first_deactivation",
+      "request": {
+        "query": "mutation DeactivateOwnDevice($devicePublicId: String!, $requestId: String!) {\n  deactivateOwnDevice(devicePublicId: $devicePublicId, requestId: $requestId) { alreadyInactive }\n}",
+        "operationName": "DeactivateOwnDevice",
+        "variables": {
+          "devicePublicId": "account-device-a",
+          "requestId": "account-fixture-deactivate-001"
+        }
+      },
+      "response": {
+        "data": {
+          "deactivateOwnDevice": {
+            "alreadyInactive": false
+          }
+        }
+      }
+    },
+    {
+      "name": "repeated_deactivation",
+      "request": {
+        "query": "mutation DeactivateOwnDevice($devicePublicId: String!, $requestId: String!) {\n  deactivateOwnDevice(devicePublicId: $devicePublicId, requestId: $requestId) { alreadyInactive }\n}",
+        "operationName": "DeactivateOwnDevice",
+        "variables": {
+          "devicePublicId": "account-device-a",
+          "requestId": "account-fixture-deactivate-001"
+        }
+      },
+      "response": {
+        "data": {
+          "deactivateOwnDevice": {
+            "alreadyInactive": true
+          }
+        }
+      }
+    },
+    {
+      "name": "foreign_target",
+      "request": {
+        "query": "mutation DeactivateOwnDevice($devicePublicId: String!, $requestId: String!) {\n  deactivateOwnDevice(devicePublicId: $devicePublicId, requestId: $requestId) { alreadyInactive }\n}",
+        "operationName": "DeactivateOwnDevice",
+        "variables": {
+          "devicePublicId": "foreign-device",
+          "requestId": "account-fixture-deactivate-001"
+        }
+      },
+      "response": {
+        "data": null,
+        "errors": [
+          {
+            "message": "The requested resource was not found.",
+            "extensions": {
+              "code": "NOT_FOUND"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

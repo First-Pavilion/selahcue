@@ -1,6 +1,8 @@
 //! Compiles the actual operator selector; no Tauri state or provider network needed.
 #![cfg(feature = "pilot-credentials")]
 #![allow(clippy::unwrap_used)]
+// Import the real selector; app-only entry points are exercised by bin tests.
+#[allow(dead_code)]
 #[path = "../src/provider_source.rs"]
 mod provider_source;
 use selahcue_cloud::transport::{HttpResponse, HttpTransport, TransportError};
@@ -40,10 +42,40 @@ fn selected_source_drives_both_readiness_and_real_authorization() {
     let ready = std::env::var("PILOT_TEST_EXPECT_READY").as_deref() == Ok("1");
     assert_eq!(provider_source::notes_model().is_some(), ready);
     assert_eq!(provider_source::transcription_readiness().is_ready(), ready);
+    if let Ok(expected) = std::env::var("PILOT_TEST_EXPECT_EXPIRY") {
+        let expected = if expected == "none" {
+            None
+        } else {
+            Some(expected.parse::<u64>().expect("integer expiry expectation"))
+        };
+        assert_eq!(
+            provider_source::access_status()
+                .expect("pilot access status")
+                .effective_expiry_unix_seconds,
+            expected
+        );
+    }
     let status = provider_source::transcription_status();
     assert_eq!(status.ready, ready);
     assert_eq!(status.provider.is_some(), ready);
-    assert!(!status.detail.contains(".env"));
+    assert_eq!(status.key_variable, "");
+    assert_eq!(status.state, if ready { "ready" } else { "key_missing" });
+    assert_eq!(
+        status.provider_status,
+        if ready {
+            "direct_provider"
+        } else {
+            "key_missing"
+        }
+    );
+    assert_eq!(
+        status.detail,
+        if ready {
+            "Cloud transcription uses the restricted pilot package configuration"
+        } else {
+            "Pilot cloud transcription is unavailable: package configuration is missing, invalid or expired"
+        }
+    );
     let client = provider_source::openai(InspectTransport);
     assert_eq!(client.is_some(), ready);
     let credential = provider_source::deepgram();
@@ -160,4 +192,29 @@ fn developer_environment_is_still_refused_in_release() {
     }
     assert!(selahcue_cloud::OpenAiNoteProvider::from_env(InspectTransport).is_none());
     assert!(selahcue_stt_cloud::developer_credential_from_env().is_err());
+}
+
+#[test]
+fn release_executable_does_not_contain_the_test_clock_override() {
+    use std::io::Read;
+    let marker = b"SELAHCUE_PILOT_TEST_EPOCH";
+    let mut binary = std::fs::File::open(env!("CARGO_BIN_EXE_selahcue-operator"))
+        .expect("production executable");
+    let mut tail = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let n = binary.read(&mut chunk).expect("read executable bytes");
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&chunk[..n]);
+        assert!(
+            !tail.windows(marker.len()).any(|w| w == marker),
+            "production executable must exclude test-clock environment lookup"
+        );
+        let retain = marker.len() - 1;
+        if tail.len() > retain {
+            tail.drain(..tail.len() - retain);
+        }
+    }
 }
