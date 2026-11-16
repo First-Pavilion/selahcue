@@ -994,10 +994,232 @@ def valid_settle_sample(value):
     return True
 
 
+HOST_CHRONOLOGY_PREFIX = "WEBKIT_HOST_CHRONOLOGY "
+HOST_CHRONOLOGY_LINE_LIMIT = 4096
+HOST_STAMP_MAX = 9007199254740991
+HOST_STAMP_FIELDS = ("utc_us", "mono_before_us", "mono_after_us")
+HOST_CELL_MARKS = ("cell_start", "settle_start", "exception_catch", "probe_start", "page_close_start")
+HOST_SWEEP_MARKS = ("sweep_start", "browser_ready", "teardown_start", "teardown_end")
+HOST_LIFECYCLE = ("crash", "close")
+HOST_OUTCOMES = ("pass", "assertion_failure", "infra_failure", "engine_unavailable", "exception", "unknown")
+HOST_FAILURE_KINDS = ("infra", "exception", "assertion")
+HOST_OBSERVER_ERRORS = ("clock", "registration", "serialization")
+HOST_CHRONOLOGY_FALLBACK = (
+    HOST_CHRONOLOGY_PREFIX + '{"version":1,"engine":"webkit","outcome":"unknown",'
+    '"observer_errors":{"clock":false,"registration":false,"serialization":true}}'
+)
+
+
+def valid_host_integer(value, low, high):
+    return type(value) is int and low <= value <= high
+
+
+def sample_host_stamp() -> dict | None:
+    """Bracket a UTC reading with independent host monotonic readings."""
+    try:
+        before = time.monotonic_ns()
+        utc = time.time_ns()
+        after = time.monotonic_ns()
+        if any(type(value) is not int or value < 0 for value in (before, utc, after)):
+            return None
+        stamp = dict(utc_us=utc // 1000, mono_before_us=before // 1000, mono_after_us=after // 1000)
+        return stamp if valid_host_stamp(stamp) else None
+    except Exception:
+        return None
+
+
+def host_object(value, fields):
+    return type(value) is dict and len(value) == len(fields) and all(field in value for field in fields)
+
+
+def valid_host_stamp(value):
+    return value is None or (
+        host_object(value, HOST_STAMP_FIELDS)
+        and all(valid_host_integer(value[field], 0, HOST_STAMP_MAX) for field in HOST_STAMP_FIELDS)
+        and value["mono_after_us"] >= value["mono_before_us"]
+    )
+
+
+def valid_host_lifecycle(value, disconnect=False):
+    fields = ("armed", "seen", "stamp", "active_ordinal") if disconnect else ("armed", "seen", "stamp")
+    return (
+        host_object(value, fields)
+        and type(value["armed"]) is bool
+        and type(value["seen"]) is bool
+        and valid_host_stamp(value["stamp"])
+        and (not disconnect or value["active_ordinal"] is None
+             or valid_host_integer(value["active_ordinal"], 1, 205))
+    )
+
+
+def valid_host_cell(value):
+    return value is None or (
+        host_object(value, ("ordinal", "route_index", "width_index", "kind", *HOST_CELL_MARKS, *HOST_LIFECYCLE))
+        and valid_host_integer(value["ordinal"], 1, 205)
+        and valid_host_integer(value["route_index"], 1, 41)
+        and (value["width_index"] is None or valid_host_integer(value["width_index"], 1, 5))
+        and type(value["kind"]) is str and value["kind"] in HOST_FAILURE_KINDS
+        and all(valid_host_stamp(value[name]) for name in HOST_CELL_MARKS)
+        and all(valid_host_lifecycle(value[name]) for name in HOST_LIFECYCLE)
+    )
+
+
+def valid_host_chronology(value):
+    if not host_object(value, ("version", "engine", "outcome", "planned_cells", "sweep",
+                               "disconnect", "failed_cell", "observer_errors")):
+        return False
+    sweep, errors = value["sweep"], value["observer_errors"]
+    return (
+        valid_host_integer(value["version"], 1, 1)
+        and type(value["engine"]) is str and value["engine"] == "webkit"
+        and type(value["outcome"]) is str and value["outcome"] in HOST_OUTCOMES
+        and valid_host_integer(value["planned_cells"], 0, 205)
+        and host_object(sweep, HOST_SWEEP_MARKS)
+        and all(valid_host_stamp(sweep[name]) for name in HOST_SWEEP_MARKS)
+        and valid_host_lifecycle(value["disconnect"], disconnect=True)
+        and valid_host_cell(value["failed_cell"])
+        and host_object(errors, HOST_OBSERVER_ERRORS)
+        and all(type(errors[name]) is bool for name in HOST_OBSERVER_ERRORS)
+    )
+
+
+def host_call(observer, method, *args):
+    """Keep each optional host observation independent of the gate and of its neighbors."""
+    try:
+        if observer is not None:
+            return getattr(observer, method)(*args)
+    except Exception:
+        pass
+    return None
+
+
+class CellChronology:
+    """Fixed scalar state for a single page's original cell."""
+
+    def __init__(self, stamp, observer_errors, ordinal, route_index, width_index):
+        self.stamp = stamp
+        self.observer_errors = observer_errors
+        self.marked = {"cell_start"}
+        self.record = dict.fromkeys(HOST_CELL_MARKS)
+        self.record.update(ordinal=ordinal, route_index=route_index, width_index=width_index,
+                           kind=None, cell_start=stamp())
+        for kind in HOST_LIFECYCLE:
+            self.record[kind] = dict(armed=False, seen=False, stamp=None)
+
+    def mark(self, name):
+        if name in HOST_CELL_MARKS and name not in self.marked:
+            self.marked.add(name)
+            self.record[name] = self.stamp()
+
+    def observe_lifecycle(self, kind):
+        if kind in HOST_LIFECYCLE:
+            event = self.record[kind]
+            if not event["seen"]:
+                event["seen"] = True
+                event["stamp"] = self.stamp()
+
+    def registration(self, kind, armed):
+        self.record[kind]["armed"] = armed
+        if not armed:
+            self.observer_errors["registration"] = True
+
+
+class SweepChronology:
+    """Keep only the active cell, the selected failure and fixed sweep anchors."""
+
+    def __init__(self):
+        self.active = None
+        self.retained = None
+        self.sweep = dict.fromkeys(HOST_SWEEP_MARKS)
+        self.marked = set()
+        self.disconnect = dict(armed=False, seen=False, active_ordinal=None, stamp=None)
+        self.errors = dict.fromkeys(HOST_OBSERVER_ERRORS, False)
+        self.planned_cells = None
+        self.emitted = False
+
+    def configure(self, routes, widths):
+        count = len(routes) * len(widths)
+        if (count <= 205 and len(routes) <= 41 and len(widths) <= 5
+                and len(set(routes)) == len(routes) and len(set(widths)) == len(widths)):
+            self.planned_cells = count
+
+    def stamp(self):
+        try:
+            stamp = sample_host_stamp()
+        except Exception:
+            stamp = None
+        if stamp is None:
+            self.errors["clock"] = True
+        return stamp
+
+    def begin_cell(self, ordinal: int, route_index: int, width_index: int | None) -> CellChronology:
+        self.active = CellChronology(self.stamp, self.errors, ordinal, route_index, width_index)
+        return self.active
+
+    def begin_route(self, ordinal, route, width):
+        route_index = ROUTES.index(route) + 1
+        width_index = WIDTHS.index(width) + 1 if width in WIDTHS else None
+        return self.begin_cell(ordinal, route_index, width_index)
+
+    def end_cell(self):
+        self.active = None
+
+    def retain_failure(self, cell, kind):
+        if cell is not None and kind in HOST_FAILURE_KINDS:
+            if self.retained is None or kind != "assertion":
+                cell.record["kind"] = kind
+                self.retained = cell
+
+    def arm_disconnect(self, browser):
+        try:
+            browser.on("disconnected", lambda *_: host_call(self, "observe_disconnect"))
+            self.disconnect["armed"] = True
+        except Exception:
+            self.errors["registration"] = True
+
+    def observe_disconnect(self):
+        if not self.disconnect["seen"]:
+            self.disconnect["seen"] = True
+            if self.active is not None:
+                self.disconnect["active_ordinal"] = self.active.record["ordinal"]
+            self.disconnect["stamp"] = self.stamp()
+
+    def mark_sweep(self, name):
+        if name in HOST_SWEEP_MARKS and name not in self.marked:
+            self.marked.add(name)
+            self.sweep[name] = self.stamp()
+
+    def emit_terminal(self, outcome):
+        if self.emitted:
+            return
+        self.emitted = True
+        line = HOST_CHRONOLOGY_FALLBACK
+        try:
+            receipt = dict(version=1, engine="webkit", outcome=outcome, planned_cells=self.planned_cells,
+                           sweep=self.sweep, disconnect=self.disconnect,
+                           failed_cell=self.retained.record if self.retained else None,
+                           observer_errors=self.errors)
+            if valid_host_chronology(receipt):
+                encoded = json.dumps(receipt, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
+                candidate = HOST_CHRONOLOGY_PREFIX + encoded
+                if len(candidate.encode("ascii")) + 1 <= HOST_CHRONOLOGY_LINE_LIMIT:
+                    line = candidate
+        except Exception:
+            pass
+        try:
+            emit_diagnostic_line(line)
+        except Exception:
+            pass
+
+    def release(self):
+        self.active = self.retained = None
+
+
 class SettleDiagnostic:
     """Bounded per-cell ledger; callbacks must never change sweep outcomes."""
 
-    def __init__(self, page, path, width):
+    def __init__(self, page, path, width, *, chronology_cell=None):
+        self.chronology_cell = chronology_cell
         self.path = path.split("?", 1)[0].split("#", 1)[0][:96]
         self.viewport = {"width": width, "height": HEIGHT}
         self.started = time.monotonic()
@@ -1024,8 +1246,11 @@ class SettleDiagnostic:
                 page.on(category, lambda req, category=category: self.observe(category, req))
             page.on("response", lambda response: self.observe("response", response.request, response))
             page.on("pageerror", lambda _: self.observe("pageerror"))
-            page.on("crash", lambda: self.observe("crash"))
-            page.on("close", lambda: self.observe("close"))
+        except Exception:
+            self.dropped["observerErrors"] += 1
+        for kind in HOST_LIFECYCLE:
+            self.register_lifecycle(page, kind)
+        try:
             page.on("domcontentloaded", lambda: self.observe("domcontentloaded"))
             page.on("load", lambda: self.observe("load"))
             page.on("console", self.console)
@@ -1033,6 +1258,18 @@ class SettleDiagnostic:
             page.on("framenavigated", self.navigation_listener)
         except Exception:  # observation setup must not replace the original result
             self.dropped["observerErrors"] += 1
+
+    def register_lifecycle(self, page, kind):
+        armed = False
+        try:
+            page.on(kind, lambda: self.observe(kind))
+            armed = True
+        except Exception:
+            self.dropped["observerErrors"] += 1
+        host_call(self.chronology_cell, "registration", kind, armed)
+
+    def detach_chronology(self):
+        self.chronology_cell = None
 
     def observe_navigation(self, page, frame):
         try:
@@ -1077,7 +1314,8 @@ class SettleDiagnostic:
 
     def observe(self, category, request=None, response=None):
         try:
-            if category in ("close", "crash"):
+            if category in HOST_LIFECYCLE:
+                host_call(self.chronology_cell, "observe_lifecycle", category)
                 self.observe_probe_lifecycle(category)
             if self.closed or time.monotonic() - self.started > 12:
                 return
@@ -1755,218 +1993,266 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             failures.append(f"FAIL {fn.__name__} {width}px: check aborted: {str(exc).splitlines()[0][:200]}")
 
+    chronology = cell = diagnostic = None
+    ordinal = 0
+    outcome = "unknown"
+    if args.engine == "webkit":
+        try:
+            chronology = SweepChronology()
+        except Exception:
+            pass
+        host_call(chronology, "configure", routes, widths)
+        host_call(chronology, "mark_sweep", "sweep_start")
+
     try:
         with sync_playwright() as pw:
             try:
-                browser = getattr(pw, args.engine).launch()
-            except Exception as exc:  # noqa: BLE001 -- any launch failure is "engine unavailable"
-                return skip_or_fail(f"{args.engine} could not launch ({str(exc).splitlines()[0]})")
+                try:
+                    browser = getattr(pw, args.engine).launch()
+                except Exception as exc:  # noqa: BLE001 -- any launch failure is "engine unavailable"
+                    outcome = "engine_unavailable"
+                    return skip_or_fail(f"{args.engine} could not launch ({str(exc).splitlines()[0]})")
 
-            emit_browser_identity(browser)
+                host_call(chronology, "mark_sweep", "browser_ready")
+                host_call(chronology, "arm_disconnect", browser)
+                emit_browser_identity(browser)
 
-            for width in widths:
-                context = browser.new_context(
-                    viewport={"width": width, "height": HEIGHT},
-                    has_touch=width < 768,
-                    is_mobile=False,
-                )
-                install_stubs(context)
-                for path, bare in routes:
-                    page = context.new_page()
-                    errors: list[str] = []
-                    page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
-                    diagnostic = (
-                        SettleDiagnostic(page, path, width)
-                        if args.engine == "webkit"
-                        else None
+                for width in widths:
+                    context = browser.new_context(
+                        viewport={"width": width, "height": HEIGHT},
+                        has_touch=width < 768,
+                        is_mobile=False,
                     )
-                    try:
-                        if diagnostic:
-                            diagnostic.stage("navigation-start")
-                        page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
-                        if diagnostic:
-                            diagnostic.stage("navigation-end")
-                            diagnostic.stage("visible-content-start")
-                        # App now renders a real shell status while the initial route imports.
-                        # Measure the resolved route, retaining every geometry/assertion check below.
-                        page.wait_for_selector("main > :not(.loading)", timeout=10000)
-                        if diagnostic:
-                            diagnostic.stage("visible-content-end")
-                            diagnostic.stage("settle-start")
-                        page.wait_for_function(
-                            OBSERVED_SETTLE_JS if diagnostic else SETTLE_JS, timeout=10000,
-                        )  # lazy chunk painted, nothing mid-transition
-                        if diagnostic:
-                            diagnostic.stage("settle-end")
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}", flush=True)
-                        if diagnostic:
-                            try:
-                                diagnostic.emit("infra", len(errors))
-                            except Exception:
-                                pass
-                        if diagnostic:
-                            if diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
-                                emit_settle_probe(page, "after-timeout", diagnostic)
-                            else:
-                                diagnostic.end_probe_observation(page)
-                        return 2
+                    install_stubs(context)
+                    for route in routes:
+                        path, bare = route
+                        ordinal += 1
+                        cell = host_call(chronology, "begin_route", ordinal, route, width)
+                        page = context.new_page()
+                        errors: list[str] = []
+                        page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
+                        diagnostic = (
+                            SettleDiagnostic(page, path, width, chronology_cell=cell)
+                            if args.engine == "webkit"
+                            else None
+                        )
+                        try:
+                            if diagnostic:
+                                diagnostic.stage("navigation-start")
+                            page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
+                            if diagnostic:
+                                diagnostic.stage("navigation-end")
+                                diagnostic.stage("visible-content-start")
+                            # App now renders a real shell status while the initial route imports.
+                            # Measure the resolved route, retaining every geometry/assertion check below.
+                            page.wait_for_selector("main > :not(.loading)", timeout=10000)
+                            if diagnostic:
+                                diagnostic.stage("visible-content-end")
+                                diagnostic.stage("settle-start")
+                            host_call(cell, "mark", "settle_start")
+                            page.wait_for_function(
+                                OBSERVED_SETTLE_JS if diagnostic else SETTLE_JS, timeout=10000,
+                            )  # lazy chunk painted, nothing mid-transition
+                            if diagnostic:
+                                diagnostic.stage("settle-end")
+                        except Exception as exc:  # noqa: BLE001
+                            host_call(cell, "mark", "exception_catch")
+                            host_call(chronology, "retain_failure", cell, "infra")
+                            outcome = "infra_failure"
+                            print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}", flush=True)
+                            if diagnostic:
+                                try:
+                                    diagnostic.emit("infra", len(errors))
+                                except Exception:
+                                    pass
+                            if diagnostic:
+                                if diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
+                                    host_call(cell, "mark", "probe_start")
+                                    emit_settle_probe(page, "after-timeout", diagnostic)
+                                else:
+                                    diagnostic.end_probe_observation(page)
+                            return 2
 
-                    if diagnostic:
-                        diagnostic.stage("geometry-start")
-                    try:
-                        failures_before = len(failures)
-                        info = page.evaluate(PAGE_JS)
                         if diagnostic:
-                            diagnostic.settle_state = valid_settle_state(info.get("settleState"))
-                        tag = f"{args.engine} {width:>4}px {path}"
+                            diagnostic.stage("geometry-start")
+                        try:
+                            failures_before = len(failures)
+                            info = page.evaluate(PAGE_JS)
+                            if diagnostic:
+                                diagnostic.settle_state = valid_settle_state(info.get("settleState"))
+                            tag = f"{args.engine} {width:>4}px {path}"
 
-                        checks += 1
-                        if info["scrollWidth"] > info["vw"]:
-                            failures.append(
-                                f"{tag}: horizontal scroll, scrollWidth {info['scrollWidth']} > {info['vw']}; "
-                                f"offenders: {'; '.join(info['offenders']) or '(none found outside scroll containers)'}"
-                            )
-
-                        checks += 1
-                        if info["clipped"]:
-                            failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
-
-                        checks += 1
-                        if info["edge"]:
-                            failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
-
-                        expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
-                        # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
-                        # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
-                        # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
-                        # of the old scoped containers. All applicable routes now use the shared container;
-                        # keep the distinct --page-gutter token check above, but reject legacy 24px containers.
-                        shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
-                        checks += 1
-                        if info["gutterToken"] != f"{expected_gutter}px":
-                            failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
-                        checks += 1
-                        # Bare auth/landing pages are exempt: their geometry is the auth handoff's
-                        # own (a 92vw card in a 20px-padded page), not the marketing gutter.
-                        allowed_gutters = (shared_container_gutter,)
-                        wrong = [] if bare else [
-                            b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
-                        ]
-                        if wrong:
-                            failures.append(
-                                f"{tag}: page container padding is not the {' or '.join(sorted(set(allowed_gutters)))}px {info['mode']} gutter: "
-                                f"{'; '.join(wrong[:4])}"
-                            )
-                        checks += 1
-                        if info["smallInputs"]:
-                            failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
-                        checks += 1
-                        if info["unfocusableScrollers"]:
-                            failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
-                        if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
                             checks += 1
-                            if not info["pricingFirstIsPopular"]:
-                                failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
-
-                        checks += 1
-                        if info["mainTextLength"] < 20:
-                            failures.append(f"{tag}: rendered (almost) nothing, main text length {info['mainTextLength']}")
-
-                        checks += 1
-                        if errors:
-                            failures.append(f"{tag}: uncaught page error: {errors[0][:160]}")
-
-                        is_mobile = page.evaluate(IS_MOBILE_JS)
-                        if not bare:
-                            nav = page.evaluate(NAV_STATE_JS)
-                            checks += 1
-                            if not nav["hasHeader"]:
-                                failures.append(f"{tag}: no navbar rendered on a non-bare route")
-                            else:
-                                if nav["toggleVisible"] != is_mobile or nav["desktopNavVisible"] == is_mobile:
-                                    failures.append(
-                                        f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
-                                        f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
-                                    )
-                            if path == "/":
-                                checks += 1
-                                hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
-                                if hiw is None:
-                                    failures.append(f"{tag}: the navbar has no How it works link")
-                                elif hiw[0] is not None:
-                                    failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
-                        else:
-                            # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
-                            # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
-                            # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
-                            # The non-bare branch above is the positive control: the same selectors find the chrome there.
-                            chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
-                            checks += 1
-                            if chrome["header"] or chrome["footer"]:
-                                failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
-
-                        if is_mobile:
-                            checks += 1
-                            bad = page.evaluate(TOUCH_JS, TOUCH_SCOPES)
-                            if bad:
-                                failures.append(f"{tag}: touch targets < 44px: {'; '.join(bad)}")
-
-                        if shots:
-                            safe = path.strip("/").replace("/", "_").split("?")[0] or "home"
-                            # Tall pages are cut into viewport-friendly tiles: a 12,000px strip
-                            # scaled to fit a screen is unreadable, which defeats looking at it.
-                            total_h = page.evaluate("document.documentElement.scrollHeight")
-                            tile = 1400
-                            for i, top in enumerate(range(0, total_h, tile)):
-                                page.screenshot(
-                                    path=str(shots / f"{safe}-{width}-{i:02d}.png"),
-                                    full_page=True,
-                                    clip={"x": 0, "y": top, "width": width, "height": min(tile, total_h - top)},
+                            if info["scrollWidth"] > info["vw"]:
+                                failures.append(
+                                    f"{tag}: horizontal scroll, scrollWidth {info['scrollWidth']} > {info['vw']}; "
+                                    f"offenders: {'; '.join(info['offenders']) or '(none found outside scroll containers)'}"
                                 )
-                    except Exception:
-                        if diagnostic:
-                            diagnostic.emit("exception", len(errors))
-                        raise
-                    if diagnostic:
-                        diagnostic.stage("geometry-end")
-                        diagnostic.end_probe_observation(page)
-                        diagnostic.finish(len(errors), len(failures) > failures_before)
-                        if not healthy_probe_attempted and len(failures) == failures_before:
-                            healthy_probe_attempted = True
-                            emit_settle_probe(page, "healthy-control")
-                    page.close()
-                context.close()
 
-                # ---- behaviours CSS cannot prove ------------------------------------
-                base = f"http://127.0.0.1:{port}"
-                if width < 768 and not args.routes:
-                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
-                    install_stubs(ctx)
-                    guarded(check_nav_sheet, ctx, base, width)
-                    ctx.close()
-                if width == widths[-1] and not args.routes:
-                    # boundary widths are their own matrix: run once per engine, after the standard widths
-                    guarded(lambda c, b, w, f, n: check_boundaries(browser, b, args.engine, f, n), None, base, 0)
-                if width < 768 and not args.routes:
-                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
-                    install_stubs(ctx)
-                    guarded(check_overlays, ctx, base, width)
-                    ctx.close()
-                if width == 375 and not args.routes:
-                    guarded(check_reduced_motion, browser, base, width)
-                if not args.routes:
-                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=width < 768)
-                    install_stubs(ctx)
-                    guarded(check_footer, ctx, base, width)
-                    ctx.close()
-                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT})
-                    install_stubs(ctx)
-                    ctx.add_init_script(SESSION_HINT_INIT)
-                    guarded(check_signed_in_nav, ctx, base, width)
-                    ctx.close()
-            browser.close()
+                            checks += 1
+                            if info["clipped"]:
+                                failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
+
+                            checks += 1
+                            if info["edge"]:
+                                failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
+
+                            expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
+                            # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
+                            # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
+                            # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
+                            # of the old scoped containers. All applicable routes now use the shared container;
+                            # keep the distinct --page-gutter token check above, but reject legacy 24px containers.
+                            shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
+                            checks += 1
+                            if info["gutterToken"] != f"{expected_gutter}px":
+                                failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
+                            checks += 1
+                            # Bare auth/landing pages are exempt: their geometry is the auth handoff's
+                            # own (a 92vw card in a 20px-padded page), not the marketing gutter.
+                            allowed_gutters = (shared_container_gutter,)
+                            wrong = [] if bare else [
+                                b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
+                            ]
+                            if wrong:
+                                failures.append(
+                                    f"{tag}: page container padding is not the {' or '.join(sorted(set(allowed_gutters)))}px {info['mode']} gutter: "
+                                    f"{'; '.join(wrong[:4])}"
+                                )
+                            checks += 1
+                            if info["smallInputs"]:
+                                failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
+                            checks += 1
+                            if info["unfocusableScrollers"]:
+                                failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
+                            if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
+                                checks += 1
+                                if not info["pricingFirstIsPopular"]:
+                                    failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
+
+                            checks += 1
+                            if info["mainTextLength"] < 20:
+                                failures.append(f"{tag}: rendered (almost) nothing, main text length {info['mainTextLength']}")
+
+                            checks += 1
+                            if errors:
+                                failures.append(f"{tag}: uncaught page error: {errors[0][:160]}")
+
+                            is_mobile = page.evaluate(IS_MOBILE_JS)
+                            if not bare:
+                                nav = page.evaluate(NAV_STATE_JS)
+                                checks += 1
+                                if not nav["hasHeader"]:
+                                    failures.append(f"{tag}: no navbar rendered on a non-bare route")
+                                else:
+                                    if nav["toggleVisible"] != is_mobile or nav["desktopNavVisible"] == is_mobile:
+                                        failures.append(
+                                            f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
+                                            f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
+                                        )
+                                if path == "/":
+                                    checks += 1
+                                    hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+                                    if hiw is None:
+                                        failures.append(f"{tag}: the navbar has no How it works link")
+                                    elif hiw[0] is not None:
+                                        failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
+                            else:
+                                # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
+                                # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
+                                # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
+                                # The non-bare branch above is the positive control: the same selectors find the chrome there.
+                                chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
+                                checks += 1
+                                if chrome["header"] or chrome["footer"]:
+                                    failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
+
+                            if is_mobile:
+                                checks += 1
+                                bad = page.evaluate(TOUCH_JS, TOUCH_SCOPES)
+                                if bad:
+                                    failures.append(f"{tag}: touch targets < 44px: {'; '.join(bad)}")
+
+                            if shots:
+                                safe = path.strip("/").replace("/", "_").split("?")[0] or "home"
+                                # Tall pages are cut into viewport-friendly tiles: a 12,000px strip
+                                # scaled to fit a screen is unreadable, which defeats looking at it.
+                                total_h = page.evaluate("document.documentElement.scrollHeight")
+                                tile = 1400
+                                for i, top in enumerate(range(0, total_h, tile)):
+                                    page.screenshot(
+                                        path=str(shots / f"{safe}-{width}-{i:02d}.png"),
+                                        full_page=True,
+                                        clip={"x": 0, "y": top, "width": width, "height": min(tile, total_h - top)},
+                                    )
+                        except Exception:
+                            host_call(cell, "mark", "exception_catch")
+                            if diagnostic:
+                                diagnostic.emit("exception", len(errors))
+                            raise
+                        if len(failures) > failures_before:
+                            host_call(chronology, "retain_failure", cell, "assertion")
+                        if diagnostic:
+                            diagnostic.stage("geometry-end")
+                            diagnostic.end_probe_observation(page)
+                            diagnostic.finish(len(errors), len(failures) > failures_before)
+                            if not healthy_probe_attempted and len(failures) == failures_before:
+                                healthy_probe_attempted = True
+                                host_call(cell, "mark", "probe_start")
+                                emit_settle_probe(page, "healthy-control")
+                        host_call(cell, "mark", "page_close_start")
+                        page.close()
+                        host_call(diagnostic, "detach_chronology")
+                        host_call(chronology, "end_cell")
+                        cell = diagnostic = None
+                    context.close()
+
+                    # ---- behaviours CSS cannot prove ------------------------------------
+                    base = f"http://127.0.0.1:{port}"
+                    if width < 768 and not args.routes:
+                        ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
+                        install_stubs(ctx)
+                        guarded(check_nav_sheet, ctx, base, width)
+                        ctx.close()
+                    if width == widths[-1] and not args.routes:
+                        # boundary widths are their own matrix: run once per engine, after the standard widths
+                        guarded(lambda c, b, w, f, n: check_boundaries(browser, b, args.engine, f, n), None, base, 0)
+                    if width < 768 and not args.routes:
+                        ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
+                        install_stubs(ctx)
+                        guarded(check_overlays, ctx, base, width)
+                        ctx.close()
+                    if width == 375 and not args.routes:
+                        guarded(check_reduced_motion, browser, base, width)
+                    if not args.routes:
+                        ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=width < 768)
+                        install_stubs(ctx)
+                        guarded(check_footer, ctx, base, width)
+                        ctx.close()
+                        ctx = browser.new_context(viewport={"width": width, "height": HEIGHT})
+                        install_stubs(ctx)
+                        ctx.add_init_script(SESSION_HINT_INIT)
+                        guarded(check_signed_in_nav, ctx, base, width)
+                        ctx.close()
+                host_call(chronology, "mark_sweep", "teardown_start")
+                browser.close()
+                outcome = "assertion_failure" if failures else "pass"
+            except BaseException:
+                host_call(cell, "mark", "exception_catch")
+                host_call(chronology, "retain_failure", cell, "exception")
+                outcome = "exception"
+                raise
+            finally:
+                host_call(chronology, "mark_sweep", "teardown_start")
+    except BaseException:
+        outcome = "exception"
+        raise
     finally:
+        host_call(chronology, "mark_sweep", "teardown_end")
+        host_call(chronology, "emit_terminal", outcome)
+        host_call(diagnostic, "detach_chronology")
+        host_call(chronology, "release")
+        cell = diagnostic = None
         server.shutdown()
 
     for line in failures:

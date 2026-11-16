@@ -8,6 +8,11 @@ use selahcue_engine::raster::{render, FrameBuffer};
 use selahcue_engine::scene::{Frame, Layer, Rect, Rgba};
 use selahcue_gpu::Compositor;
 
+#[path = "support/parity_diagnostics.rs"]
+mod parity_diagnostics;
+
+use parity_diagnostics::{observe_construct, observe_readback, Case, Observer, Stage};
+
 fn scenes() -> Vec<Frame> {
     let mut solid = Frame::new(320, 180).with_background(Rgba::rgb(20, 40, 120));
 
@@ -90,14 +95,18 @@ fn scenes() -> Vec<Frame> {
 
 #[test]
 fn wgpu_matches_cpu_rasterizer_to_ssim_0_99() {
-    let Some(compositor) = Compositor::new() else {
+    let mut observer = Observer::for_case(Case::Ssim);
+    observer.case_enter();
+    let Some(compositor) = observe_construct(&mut observer, 1, Compositor::new) else {
         eprintln!("no GPU adapter — skipping wgpu parity (compile-only in this environment)");
         return;
     };
 
-    for frame in scenes() {
+    for (index, frame) in scenes().into_iter().enumerate() {
         let cpu = render(&frame);
-        let gpu_pixels = compositor.render_to_pixels(&frame);
+        let gpu_pixels = observe_readback(&mut observer, 1, index + 1, || {
+            compositor.render_to_pixels(&frame)
+        });
         let gpu = FrameBuffer::from_rgba(frame.width, frame.height, gpu_pixels).unwrap();
         let score = ssim(&cpu, &gpu);
         assert!(
@@ -106,7 +115,12 @@ fn wgpu_matches_cpu_rasterizer_to_ssim_0_99() {
             frame.width,
             frame.height
         );
+        observer.record(Stage::SceneAssertionPassed {
+            generation: 1,
+            scene: index + 1,
+        });
     }
+    observer.record(Stage::AssertionsPassed(1));
 }
 
 /// NFR-024 (story 86ajpew0j): whole-device GPU loss is survivable — the lost
@@ -117,30 +131,43 @@ fn device_loss_signals_and_recovery_renders_identically() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let Some(first) = Compositor::new() else {
+    let mut observer = Observer::for_case(Case::DeviceLoss);
+    observer.case_enter();
+    let Some(first) = observe_construct(&mut observer, 1, Compositor::new) else {
         eprintln!("no GPU available — skipping (headless env without a software driver)");
         return;
     };
     let frame = scenes().remove(0);
-    let before = first.render_to_pixels(&frame);
+    let before = observe_readback(&mut observer, 1, 1, || first.render_to_pixels(&frame));
     assert!(!before.is_empty());
+    observer.record(Stage::SceneAssertionPassed {
+        generation: 1,
+        scene: 1,
+    });
 
     // Inject the loss: the lost callback must fire (the desktop shell's cue to
     // recreate) and the destroy path must not panic.
     let lost = Arc::new(AtomicBool::new(false));
     let flag = lost.clone();
     first.on_device_lost(move |_| flag.store(true, Ordering::SeqCst));
+    observer.record(Stage::LossEnter);
     first.simulate_device_loss();
+    observer.record(Stage::LossReturned);
     // `simulate_device_loss` polls the device, which is what delivers the callback (wgpu's
     // `destroy()` only invalidates the device; see its doc comment).
+    observer.record(Stage::FirstDropEnter);
     drop(first);
+    observer.record(Stage::FirstDropReturned);
     assert!(
         lost.load(Ordering::SeqCst),
         "the device-lost signal must fire on destruction"
     );
+    observer.record(Stage::CallbackObserved);
 
     // Recovery: a fresh compositor renders byte-identically.
-    let second = Compositor::new().expect("recreate after device loss");
-    let after = second.render_to_pixels(&frame);
+    let second =
+        observe_construct(&mut observer, 2, Compositor::new).expect("recreate after device loss");
+    let after = observe_readback(&mut observer, 2, 1, || second.render_to_pixels(&frame));
     assert_eq!(before, after, "recovered output is pixel-identical");
+    observer.record(Stage::AssertionsPassed(2));
 }
