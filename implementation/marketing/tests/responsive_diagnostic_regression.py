@@ -84,8 +84,11 @@ const output = scenarios.map((scenario) => {
   let error = null;
   try { vm.runInContext('(' + probe + ')("WEBKIT_SETTLE_STATE ")', context); }
   catch (exception) { error = exception.message; }
+  const stateAfterProbe = scenario.readStateAfterProbe
+    ? vm.runInContext('window.__selahcueSettleState()', context)
+    : undefined;
   return { records: lines.filter(line => line.startsWith('WEBKIT_SETTLE_PROBE ')),
-           error, gateReads: context.gateReads };
+           error, gateReads: context.gateReads, stateAfterProbe };
 });
 process.stdout.write(JSON.stringify(output));
 """
@@ -359,7 +362,7 @@ class DiagnosticProbeInertRegression(ReceiptMainAssertions, unittest.TestCase):
         self.assertEqual(json.loads(results[2]['records'][0].removeprefix(PROBE_PREFIX))['kind'], 'probe')
 
     def test_probe_rechecks_gate_once_without_mutating_poll_state(self):
-        results = run_protocol_js([dict(poll=True, setup=setup) for setup in (
+        results = run_protocol_js([dict(poll=True, setup=setup, readStateAfterProbe=True) for setup in (
             "window.gateReads = 0; document.getAnimations = () => {"
             " ++window.gateReads;"
             " return [{playState:'running', effect:{getComputedTiming:() => ({iterations:1})}}]; };",
@@ -376,6 +379,9 @@ class DiagnosticProbeInertRegression(ReceiptMainAssertions, unittest.TestCase):
                 self.assertEqual(probe['outcome'], 'snapshot')
                 self.assertEqual(probe['state']['totalPolls'], 2)
                 self.assertIs(probe['state']['lastResult'], True)
+                live_state = result['stateAfterProbe']
+                self.assertEqual(live_state['totalPolls'], 2)
+                self.assertIs(live_state['lastResult'], True)
                 self.assertNotIn('private-', result['records'][1])
                 self.assertTrue(result['error'].startswith('WEBKIT_SETTLE_STATE '))
 
@@ -503,36 +509,51 @@ class DiagnosticProbeInertRegression(ReceiptMainAssertions, unittest.TestCase):
 
 
 class DiagnosticLedgerPrivacy(ReceiptMainAssertions, unittest.TestCase):
-    def test_untrusted_probe_protocol_refuses_invalid_records_and_duplicates(self):
+    def test_untrusted_probe_protocol_refuses_invalid_records(self):
         good = probe_record()
         record = protocol_text(good)
-        rejected = [
-            PROBE_PREFIX + '[]',
-            PROBE_PREFIX + '{',
-            PROBE_PREFIX + record.removeprefix(PROBE_PREFIX).replace('"version":1', '"version":1,"version":1'),
-            record.replace('"totalPolls":2', '"totalPolls":2,"totalPolls":2'),
-            record.replace('"totalPolls":2', '"totalPolls":NaN'),
-            record.replace('"elapsedMs":10078', '"elapsedMs":Infinity'),
-            record + '\u00a0',
-            record.ljust(len(PROBE_PREFIX) + 769),
-            protocol_text({**good, 'version': True}),
-            protocol_text({**good, 'version': 2}),
-            protocol_text({**good, 'note': 'private-raw-url-cookie-credential'}),
-            protocol_text({**good, 'document': FIRST_DOCUMENT.upper()}),
-            protocol_text({**good, 'outcome': 'private-error-secret'}),
-            protocol_text({**good, 'gateResult': 0}),
-            protocol_text({**good, 'state': {**PROBE_STATE, 'totalPolls': 65536}}),
-            protocol_text({**good, 'state': {**PROBE_STATE, 'lateTimerEntries': 2}}),
-            protocol_text({**good, 'state': {**PROBE_STATE, 'extra': 'private-dom-content'}}),
-            protocol_text({**good, 'state': None}),
-            protocol_text({**good, 'outcome': 'nullish'}),
-            protocol_text(protocol_record('document', OTHER_DOCUMENT)),
-        ]
-        padded = record.ljust(len(PROBE_PREFIX) + 768)
-        observed = self.assert_timeout_receipt(during=(*rejected, padded, protocol_text({
+        rejected = {
+            'array': PROBE_PREFIX + '[]',
+            'incomplete JSON': PROBE_PREFIX + '{',
+            'repeated version': record.replace('"version":1', '"version":1,"version":1'),
+            'repeated state field': record.replace('"totalPolls":2', '"totalPolls":2,"totalPolls":2'),
+            'nonstandard NaN': record.replace('"totalPolls":2', '"totalPolls":NaN'),
+            'nonstandard Infinity': record.replace('"elapsedMs":10078', '"elapsedMs":Infinity'),
+            'non-ASCII suffix': record + '\u00a0',
+            '769-byte body': record.ljust(len(PROBE_PREFIX) + 769),
+            'boolean version': protocol_text({**good, 'version': True}),
+            'unknown version': protocol_text({**good, 'version': 2}),
+            'extra field': protocol_text({**good, 'note': 'private-raw-url-cookie-credential'}),
+            'invalid nonce': protocol_text({**good, 'document': FIRST_DOCUMENT.upper()}),
+            'unknown outcome': protocol_text({**good, 'outcome': 'private-error-secret'}),
+            'integer gate result': protocol_text({**good, 'gateResult': 0}),
+            'poll count overflow': protocol_text({**good, 'state': {**PROBE_STATE, 'totalPolls': 65536}}),
+            'timer count overflow': protocol_text({**good, 'state': {**PROBE_STATE, 'lateTimerEntries': 2}}),
+            'extra state field': protocol_text({**good, 'state': {**PROBE_STATE, 'extra': 'private-dom-content'}}),
+            'snapshot without state': protocol_text({**good, 'state': None}),
+            'state for a nullish outcome': protocol_text({**good, 'outcome': 'nullish'}),
+            'late document record': protocol_text(protocol_record('document', OTHER_DOCUMENT)),
+        }
+        for label, invalid in rejected.items():
+            with self.subTest(label=label):
+                observed = self.assert_timeout_receipt(during=(invalid,))
+                self.assertEqual(observed['rejected'], 1)
+                self.assertIsNone(observed['console'])
+                self.assertEqual(observed['documentMatch'], 'unknown')
+
+    def test_probe_protocol_accepts_a_768_byte_body(self):
+        padded = protocol_text(probe_record()).ljust(len(PROBE_PREFIX) + 768)
+        observed = self.assert_timeout_receipt(during=(padded,))
+        self.assertEqual(observed['rejected'], 0)
+        self.assertEqual(observed['documentMatch'], 'same')
+        self.assertEqual(observed['console'], dict(outcome='snapshot', gateResult=False, state=PROBE_STATE))
+
+    def test_probe_protocol_retains_the_first_valid_probe_record(self):
+        good = probe_record()
+        observed = self.assert_timeout_receipt(during=(protocol_text(good), protocol_text({
             **good, 'document': OTHER_DOCUMENT, 'gateResult': True,
         })))
-        self.assertEqual(observed['rejected'], len(rejected) + 1)
+        self.assertEqual(observed['rejected'], 1)
         self.assertEqual(observed['documentMatch'], 'same')
         self.assertEqual(observed['console'], dict(outcome='snapshot', gateResult=False, state=PROBE_STATE))
 
