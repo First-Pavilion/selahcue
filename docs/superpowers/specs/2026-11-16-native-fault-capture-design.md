@@ -1,0 +1,100 @@
+# Native fault capture binding draft
+
+2026-11-16. Scope: one next normal candidate CI capture in the existing Linux Rust and marketing jobs. **Draft for parent review; this document does not authorize runtime/core/debugger operations.** Architecture and supporting evidence: [native-fault-next-capture-design.md](/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/release-evidence/open-pr-review/native-fault-next-capture-design.md). Baseline source `4cddbb0969cc1e9b8e10c79a1ce91def879fc8a7`; failed composition tree `65f0ef5d49f81343b0678164ce50459c554a6dd7`. Existing PR415 failure remediation; no new ticket or delivery stream.
+
+## Outcome and exclusions
+
+Record original frame ordinal, native TID, module build identity where available, actual GPU readback versus `Compositor::new() -> None`, and original gate outcome. Attribute a SIGSEGV to a thread only through a corroborated kernel record. Missing or ambiguous evidence remains explicitly unknown.
+
+Preserve `cargo test --workspace --no-fail-fast`, default libtest concurrency, production compositor, all seven SSIM ≥0.99 scenes, device-loss callback/readback/equality assertions, existing browser route/width coverage, Playwright 1.61.0/WebKit 2311, all package/backend/OS choices, jobs/matrices/runners/caches/timeouts and gate exit statuses. No serialization, sleeps, retry, broadening of no-GPU skips, generic framework, provider credentials or page/protocol capture. Local heavy/native execution hold persists. No core, debugger, install, build or CI trigger is authorized by drafting.
+
+## File ownership and contracts
+
+1. Extend `implementation/marketing/scripts/webkit_crash_journal.py` in place, with fixed `webkit`/`gpu-parity` profiles; retain default WebKit CLI compatibility. Reuse its reader/process-group cleanup and strict parser. No arbitrary command/profile configuration.
+2. Extend `implementation/marketing/tests/test_webkit_crash_journal.py` with replay and actual controlled-child boundary tests. No live journal/kernel access in tests.
+3. Add tiny `implementation/desktop/crates/selahcue-gpu/tests/support/parity_diagnostics.rs`, use from existing `tests/test_parity.rs`, and add `tests/test_parity_diagnostics.rs` to exercise only stdlib/fake-closure observer behavior. No production source/dependency/Cargo feature changes.
+4. Narrow `.github/workflows/ci.yml` edits only: timestamp/ID and Linux-only diagnostic flag on existing workspace step, best-effort Linux post-step collector, existing WebKit collector upgrade, expanded controls in existing lint-workflows step. Existing unrelated edits belong to their owner and must remain intact.
+
+## Collector schema and finite limits
+
+- `schema_version:2`; retain availability/handler/partial/truncated/rejected count; add fixed omission reasons, per-record `threads`, `fault_attribution`, `core_truncated` and `module_identity`. A listed stack is `listed_only`, never fault by position.
+- Current boot; inclusive epoch-second window ≤3,600 seconds. Missing/reversed/invalid/oversized window exits 2 with safe JSON before query. Ordinary diagnostic absence/denial/timeout exits 0 with explicit availability.
+- Coredump query: existing six fields plus `_BOOT_ID`, `COREDUMP_TRUNCATED`, `COREDUMP_FILENAME`, `COREDUMP_PACKAGE_JSON`; 256 KiB + one probe byte; four-second subprocess deadline. Kernel query: `MESSAGE,__REALTIME_TIMESTAMP,_BOOT_ID,_TRANSPORT`, `_TRANSPORT=kernel`; 64 KiB + one probe byte; two seconds. At most two sequential queries, no retry. Whole metadata ceiling eight seconds including TERM(0.15s)/KILL/reap(0.5s), parsing and output. No raw files/output. No environment/args/maps/status/FD/core fields requested.
+- Three eligible crash records maximum. Parse/index up to 64 distinct valid thread headers per record **before export selection**, with private original-#0 evidence and at most twelve sanitized frames per indexed thread (≤2,304 internal frames across three records). Only after correlation select at most three stacks × twelve frames per record, proven signal thread first, then listed order. A fourth eligible record or 65th distinct thread makes candidate inspection incomplete; do not enlarge caps. Preserve native ordinal 0..999 and TID 1..2,147,483,647. Never renumber after rejecting a frame. Keep PC private for joins; emit approved module, relative offset (≤16 hex digits; offset < PC), finite-allowlist symbol only. GPU marker joining occurs later from archived stdout/stderr, with no sidecar or Actions-log API.
+- Exactly one ASCII JSON line ≤24 KiB including newline. Drop lowest-priority peer evidence first, then extra records; mark `export_limit`. This replaces the old 8 KiB cap deliberately. Core truncation is separate, true only for field `1`, otherwise unknown; a filename means external storage was reported, not that a core is accessible.
+- Fixed reasons: `raw_limit`, `kernel_limit`, `record_limit`, `thread_limit`, `frame_limit`, `export_limit`, `malformed`, `module_filtered`, `symbol_filtered`, `ordinal_missing`, `identity_missing`, `identity_conflict`, `kernel_unavailable`, `kernel_no_match`, `kernel_ambiguous`, `kernel_unsupported_format`, `join_incomplete`, `deadline`, `reap_unconfirmed`. Tool absence/denial/nonzero status never exposes error text or enables broader fallback. Close pipes and terminate/reap owned groups on every exit.
+
+## Identity and fault attribution
+
+WebKit roles/directories stay pinned to the current exact allowlist. GPU executable must be a canonical regular file directly within current checkout `implementation/desktop/target/debug/deps`, basename `test_parity-[0-9a-f]{16}`, no symlink escape/suffix. Preserve existing module allowlist; add only admitted parity binary plus `libvulkan.so.1`, `libvulkan_lvp.so`, `libvulkan_intel.so`, `libvulkan_radeon.so`, `libEGL.so.1`, `libEGL_mesa.so.0`, `libGLdispatch.so.0`, `libGLX.so.0`, `libGLX_mesa.so.0`. Unknown driver modules remain filtered.
+
+Parse optional module-keyed `COREDUMP_PACKAGE_JSON.buildId` and exact `Module <approved module>, build-id=<hex>` message format; even lowercase hex length 8..128, max sixteen modules. Duplicate conflicting identities are unknown/conflict. These are supported upstream systemd formats, not a guarantee the runner supplies them. No package-name/version or arbitrary nested fields exported. [Upstream formatter](https://github.com/systemd/systemd/blob/main/src/shared/elf-util.c#L310-L335).
+
+Installed-file identity is a distinct receipt: one fixed WPE library per WebKit invocation, or the unique admitted crashing parity binary in GPU mode. If no unique crash, GPU byte identity stays uncollected; use observed basename/PID only. A fixed-profile owned child streams SHA256/ELF GNU build ID: 256 MiB file max, 1 MiB chunks, 128 program headers, 1 MiB notes, ELF64 LE x86_64, checked offsets, two-second deadline including cleanup. Total post-step diagnostic ceiling ten seconds. Reject changed inode/size/mtime or escaped symlink, never execute/upload a file. Keep installed identity distinct from crash-mapped identity unless build IDs match. Source receipt uses actual checkout/tree SHA, supplied candidate source, run/attempt/profile, bounded kernel/systemd version tokens, pinned browser/toolchain and lock hash; no environment dump.
+
+Accept fault ownership only for a complete supported x86 user-segfault kernel record whose TID is present in the coredump thread headers, exact IP equals that thread's original frame-zero PC, current boot matches, and kernel timestamp lies in `[crash_us, crash_us + 2_000_000)`. Require exactly one matching pair across the **entire invocation's eligible coredump/kernel population**, with complete candidate inspection as defined below; compare module tokens when both known. Export `basis:kernel_tid_and_frame0_pc`, TID, time delta and already validated module-relative frame zero. Never export IP/fault address/SP/code bytes or subtract a kernel VMA start to invent ELF offsets. Unjoined kernel event can be labeled unjoined but cannot select a crash/case. Upstream reports task TID, conditionally/rate-limited. [Kernel source](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/fault.c#L695-L727).
+
+Kernel line bound is 4,096 ASCII bytes, hexadecimal fields ≤16 digits; unsupported grammar/control bytes are rejected. Any additional fixed Git/version subprocesses share ≤0.5 seconds and 4 KiB output inside the eight-second metadata ceiling, under the same supervision; lockfile read ≤1 MiB. A parent deadline covers parsing/file work as well as child waits. Missing metadata never extends these limits.
+
+This may identify the signal thread in stripped WebKit without naming its function. It does not prove a page-to-PID join, the original memory-corruption cause, or a shared mechanism with Rust. No symbols means offsets remain offsets. If no corroboration exists, `fault_thread:null` is required.
+
+### Settled kernel grammar and literal fixtures
+
+These are complete journal `MESSAGE` strings, without printk loglevel/time prefixes. Strip at most one final LF (the producer emits a newline); reject CR, other embedded controls/newlines, extra suffixes and lines over 4,096 ASCII bytes. Match from beginning to end. `TASK` is 1..64 printable ASCII characters excluding `[` and `]`, discarded immediately. `TID` is decimal 1..2,147,483,647. Fault-address/error/module numeric values are 1..16 lowercase hex digits without `0x`; IP/SP are exactly sixteen lowercase hex digits for the supported x86_64 producer. `MODULE` is an existing approved token, never a path. CPU is decimal 0..2,147,483,647; core/socket are signed 32-bit decimal (including `-1`), no plus sign. No task name, address, error, module-clause numeric value or CPU/core/socket data is exported. Only TID/IP/module are used privately for the existing join; exported relative offset still comes from the validated systemd frame.
+
+The fixed prefix is `TASK[TID]: segfault at HEX ip PC16 sp SP16 error HEX`. Supported endings are exactly:
+
+| Ending | Verified producer |
+| --- | --- |
+| ` in MODULE[HEX,HEX+HEX] likely on CPU D (core S, socket S)` | v7.0 three-number formatter plus v7.0 fault reporter |
+| ` in MODULE[HEX+HEX] likely on CPU D (core S, socket S)` | v6.8 two-number formatter plus v6.8 fault reporter |
+| ` in MODULE[HEX+HEX]` | v5.15 two-number formatter plus v5.15 reporter without CPU suffix |
+| ` likely on CPU D (core S, socket S)` | v7.0/v6.8 when module formatter returns without output |
+| empty | v5.15 when module formatter returns without output |
+
+The CPU suffix is optional across these supported producer versions, **not** optional on the v7 three-number alternative. Three-number/no-CPU, partial CPU suffix and unknown variants yield `kernel_unsupported_format`, not a permissive match. No claim that the next runner runs any particular source version. Primary source pairs inspected: [v7.0 module](https://github.com/torvalds/linux/blob/v7.0/mm/memory.c#L6754-L6773) and [reporter](https://github.com/torvalds/linux/blob/v7.0/arch/x86/mm/fault.c#L712-L725); [v6.8 module](https://github.com/torvalds/linux/blob/v6.8/mm/memory.c#L5684-L5710) and [reporter](https://github.com/torvalds/linux/blob/v6.8/arch/x86/mm/fault.c#L734-L748); [v5.15 module](https://github.com/torvalds/linux/blob/v5.15/mm/memory.c#L4914-L4940) and [reporter](https://github.com/torvalds/linux/blob/v5.15/arch/x86/mm/fault.c#L731-L737).
+
+Required complete positive fixture lines P1–P5, all synthetic (each must parse TID 4204 and private IP `00007f0000001234`; module is known for P1–P3 and absent for P4–P5):
+
+```text
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[1234,7f0000000000+200000] likely on CPU 2 (core 1, socket 0)
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[7f0000000000+200000] likely on CPU 2 (core -1, socket -1)
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[7f0000000000+200000]
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2 (core 1, socket 0)
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4
+```
+
+Required complete negative fixture lines N1–N6: unsupported three-number/no-CPU; incomplete suffix; trailing payload; unapproved module/path; invalid hex; out-of-range CPU. None can contribute a pair:
+
+```text
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in libWPEWebKit-2.0.so.1[1234,7f0000000000+200000]
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2 (core 1, socket 0) SyntheticPrivateToken
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 in /tmp/SyntheticPrivateToken.so[7f0000000000+200000]
+WPEWebProcess[4204]: segfault at 10 ip 00007f00000012zz sp 00007fff00001000 error 4
+WPEWebProcess[4204]: segfault at 10 ip 00007f0000001234 sp 00007fff00001000 error 4 likely on CPU 2147483648 (core 1, socket 0)
+```
+
+### Complete candidate inspection before attribution
+
+Pipeline is bounded input acquisition → complete eligible-record/thread and kernel-candidate indexing → global pair enumeration → attribution → export selection. The three-stack export limit never limits candidate indexing. Inspect all complete JSONL lines within the existing raw caps, including headers of records beyond the third to detect eligible overflow; do not parse/store their stacks or raise the cap. Index every encountered valid TID up to 64 per admitted record before choosing three stacks. Frame storage remains twelve per thread, but continue inspecting bounded MESSAGE lines for original #0 and duplicate/malformed headers/ordinals; never stop parsing a thread at its twelfth retained frame.
+
+Add `candidate_scan_complete` and `export_truncated` booleans; retain aggregate legacy `truncated`. Any raw/kernel byte overflow, fourth eligible coredump, 65th distinct TID, deadline/incomplete query, or malformed relevant candidate that prevents excluding another join forces `candidate_scan_complete:false`, `fault_thread:null`, and fixed `join_incomplete` plus its concrete cause. Relevance includes malformed/unclassifiable projected JSON or nontext MESSAGE, unsupported kernel text containing `segfault`, malformed eligible crash/thread headers, and missing/filtered/duplicate/conflicting original #0 for a TID which a parsed kernel candidate could join. Valid out-of-window/wrong-profile records and valid non-segfault kernel messages can be excluded without taint; arbitrary undecodable records cannot. A fully inspected original #0 with disallowed module still cannot authorize a fault attribution. Do not count a missing/filtered #0 as evidence there was no competing pair.
+
+When scan is complete: zero pairs gives `kernel_no_match`; more than one pair anywhere in the invocation gives `kernel_ambiguous` and every `fault_thread:null`; exactly one pair authorizes attribution for that record only. Duplicate projected kernel entries count as competing entries; do not silently deduplicate to produce uniqueness. Only then select the matched thread first, followed by listed peers, and apply 24 KiB export limits. Loss solely from this selection/export stage sets `export_truncated:true`/`frame_limit` or `export_limit` without clearing `candidate_scan_complete` or inventing ambiguity; keep matched frame zero. Symbol omission alone does not taint candidate completeness when numeric join evidence remains valid. No guarantees about kernel rate-limited events outside the retrieved journal population.
+
+Required correlation fixtures use boot `0123456789abcdef0123456789abcdef`, crash `1794837031000000`, kernel `1794837031500000` and P1 above. The eligible crash lists TIDs 4201, 4202, 4203, **4204** with distinct #0 PCs; 4204 has `#0  0x00007f0000001234 n/a (libWPEWebKit-2.0.so.1 + 0x1234)`. With complete input, select 4204 despite its fourth listing and export it first. Add the same case at listing 64. Negatives: put a potentially competing eligible fourth record after the first three (`record_limit`); cut a second matching kernel event at 64 KiB (`kernel_limit`); cut a relevant record at 256 KiB (`raw_limit`); add a 65th header (`thread_limit`); replace 4204 #0 with #4 (`ordinal_missing`); add an unclassifiable malformed candidate. Each yields null with `join_incomplete`. Add two fully parsed disjoint matching pairs (global `kernel_ambiguous`) and an export-only overflow after a unique complete join (attribution survives). These assertions are mandatory Task 2 behavior, not optional reviewer suggestions.
+
+## GPU observer
+
+Enable only for Linux workspace step with exact `SELAHCUE_GPU_PARITY_DIAGNOSTICS=1`. Two fixed case enums (`ssim`, `device_loss`), generation 1/2, per-case sequence, PID, native TID parsed from `/proc/thread-self` or null, UTC microseconds; canonical executable basename in the case-start record. Direct best-effort `std::io::stderr().write_all` bypasses libtest capture. No `--nocapture`, arbitrary strings, adapter names, scene data or pixel bytes. Single-line lock only; never hold across operation.
+
+Max 48 records/case including one overflow marker, 96 total, 256 bytes/record and 24 KiB/process. Original operations/return/panic/drop lifetime remain unchanged even if writer fails. Mark `case_enter`, constructor enter/some/none, render enter/readback-returned (scene ordinal, byte count), scene-assertion-passed, loss enter/returned, first-drop enter/returned, callback-observed after original assertion, assertions-passed. No extra destructor or callback logging. Constructor-None retains both current early returns; replacement constructor retains `expect`. Actual readback plus existing oracle event establishes rendering; constructor-some does not. Assertions-passed precedes implicit teardown and is not a process verdict.
+
+## Acceptance checks and TDD
+
+Start with existing callable/replay behavior, not missing function/import/unknown-CLI errors. Current `collect` loses thread/frame identity: a two-thread fixture with filtered #0/#1 followed by #4 must fail an assertion for original TID/ordinal; build-ID fixture likewise fails because identity is dropped. Add kernel join fixtures through an already callable parser seam, then implement correlation; no ownership from first-list/time-only matching. Verify wrong PC/TID/boot/time, duplicate joins, missing #0, unknown modules and malicious strings.
+
+Extend existing real-child tests for byte caps, pipe-holding descendants, deadlines, denial, overflow, reaping and safe output; test the exact 24 KiB cap with full identities. Tiny synthetic ELF fixtures cover identity limits/mutation/paths. GPU: extract a behavior-preserving pass-through test-local seam first, then RED tests proving `None`, bytes, panic and writer failures currently emit no required stage evidence; implement observer. Fake closures prove diagnostic behavior only, not GPU correctness. Abrupt controlled-child exit must preserve directly written enter evidence. Interleaved cases must remain independent.
+
+Parent controls fixture verification admission while local native/heavy hold persists. User-selected SDD uses a fresh implementation worker per task and fresh review at each boundary. Necessary tests-only hosted RED/GREEN checkpoints may occur before final capture wiring under that hold; they are not diagnostic reruns or final evidence. After Task 4 wiring and required independent review, perform exactly one FINAL instrumented normal candidate capture in the existing jobs. Preserve failed gates, unavailable captures and unknown causes in final evidence; no blind rerun or auto-repeat. Root has selected metadata-only: core/debugger fallback is excluded, with no unresolved approval choice.
