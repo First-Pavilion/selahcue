@@ -33,6 +33,7 @@ transactional tests that run after this one see the schema they expect.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
@@ -44,6 +45,7 @@ from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.devices import services as device_services
+from selahcue_api.apps.devices.models import DeviceToken
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
     activate_device,
@@ -52,7 +54,6 @@ from selahcue_api.apps.devices.services import (
 from selahcue_api.apps.entitlements.services import build_entitlement_manifest
 from selahcue_api.apps.entitlements.signing import load_signing_key, verify_envelope
 from selahcue_api.apps.license_keys import services as license_services
-from selahcue_api.apps.license_keys.free_lifecycle import RenewalResult
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.admin_schema import customer_to_type, license_key_to_type
 from selahcue_api.graphql.errors import SafeAPIError
@@ -112,8 +113,36 @@ def _environment(settings):
 
 @pytest.fixture
 def restore_schema():
-    yield
-    _migrate(_latest())
+    frontier = _latest()
+    try:
+        yield
+    finally:
+        _migrate(frontier)
+
+
+@contextmanager
+def _seed_before_org_limit_removal():
+    targets = _targets_with(BEFORE)
+    old = _migrate(targets)
+    assert "device_limit" in _org_table_columns()
+    old_apps = old.loader.project_state(targets).apps
+    # The old fixture still calls today's ORM to activate and probe seats. Bridge
+    # only the two future columns during that snapshot. A DB default allows
+    # historical models to insert rows without knowing about the extra columns.
+    tables = []
+    try:
+        with connection.cursor() as cursor:
+            for model in (AppLicenseKey, DeviceToken):
+                table = connection.ops.quote_name(model._meta.db_table)
+                cursor.execute(
+                    f"ALTER TABLE {table} ADD COLUMN staff_extension_generation bigint NOT NULL DEFAULT 0"
+                )
+                tables.append(table)
+        yield _seed(old_apps)
+    finally:
+        with connection.cursor() as cursor:
+            for table in reversed(tables):
+                cursor.execute(f"ALTER TABLE {table} DROP COLUMN staff_extension_generation")
 
 
 # --- Scenario table ---------------------------------------------------------------------------
@@ -345,11 +374,8 @@ def _snapshot(seeded):
 
 def _snapshot_before_free_lifecycle(seeded, monkeypatch):
     # accounts 0003 predates the marker table, so every historical key is unmanaged.
-    def no_managed_renewal(token, now, request_id):
-        return RenewalResult(False, token.device.license_key.expires_at, token.expires_at)
-
     with monkeypatch.context() as historical:
-        historical.setattr(device_services, "renew_free_license_for_device", no_managed_renewal)
+        historical.setattr(device_services, "is_managed_free_license", lambda *_: False)
         return _snapshot(seeded)
 
 
@@ -385,16 +411,9 @@ def test_the_migration_is_a_single_forward_remove_field():
 
 
 def test_every_key_grants_exactly_what_it_did_before(restore_schema, monkeypatch):
-    old = _migrate(_targets_with(BEFORE))
-    old_apps = old.loader.project_state(_targets_with(BEFORE)).apps
-    # POSITIVE CONTROL: the "before" state really is the old schema, with the column present.
-    assert "device_limit" in _org_table_columns(), (
-        "the database was not migrated back, so this test would compare the new schema with itself"
-    )
-
-    seeded = _seed(old_apps)
-    before_snapshot = _snapshot_before_free_lifecycle(seeded, monkeypatch)
-    before_keys = _key_table()
+    with _seed_before_org_limit_removal() as seeded:
+        before_snapshot = _snapshot_before_free_lifecycle(seeded, monkeypatch)
+        before_keys = _key_table()
     assert len(before_keys) == len(SCENARIOS) + 2, "premise: every seeded key is in the table"
     # NON-VACUITY, spelled out for the pair that was once vacuous: the grandfathered org's two
     # keys give DIFFERENT, real answers (a is full, b has room), so equal snapshots across the
@@ -417,16 +436,12 @@ def test_every_key_grants_exactly_what_it_did_before(restore_schema, monkeypatch
         )
 
 
-def test_the_scenarios_really_differ_so_equality_is_not_vacuous(monkeypatch):
+def test_the_scenarios_really_differ_so_equality_is_not_vacuous(restore_schema, monkeypatch):
     """The comparison above would pass for a snapshot function that returns the same thing for
     every key. This shows the scenarios produce distinct observations — at least one key that
     admits another device, one that does not, and one that errors — on the old schema."""
-    old = _migrate(_targets_with(BEFORE))
-    try:
-        seeded = _seed(old.loader.project_state(_targets_with(BEFORE)).apps)
+    with _seed_before_org_limit_removal() as seeded:
         snapshot = _snapshot_before_free_lifecycle(seeded, monkeypatch)
-    finally:
-        _migrate(_latest())
 
     probes = {tuple(s["admits_one_more"]) for s in snapshot.values()}
     assert ("ok", True) in probes, "no scenario admits another device"
@@ -442,22 +457,21 @@ def test_the_scenarios_really_differ_so_equality_is_not_vacuous(monkeypatch):
 
 
 def test_an_org_with_no_keys_survives_the_migration(restore_schema):
-    old = _migrate(_targets_with(BEFORE))
-    seeded = _seed(old.loader.project_state(_targets_with(BEFORE)).apps)
+    with _seed_before_org_limit_removal() as seeded:
+        no_key_org_pk = seeded.no_key_org_pk
     _migrate(_targets_with(AFTER))
 
-    org = CustomerOrg.objects.get(pk=seeded.no_key_org_pk)
+    org = CustomerOrg.objects.get(pk=no_key_org_pk)
     assert org.name == "Migration Church no-keys"
     assert not org.license_keys.exists()
     assert customer_to_type(org).name == org.name
 
 
 def test_the_grandfathered_org_keeps_both_keys_each_with_its_own_limit(restore_schema):
-    old = _migrate(_targets_with(BEFORE))
-    seeded = _seed(old.loader.project_state(_targets_with(BEFORE)).apps)
+    with _seed_before_org_limit_removal() as seeded:
+        (pk_a, full_a, _), (pk_b, full_b, _) = seeded.grandfathered["a"], seeded.grandfathered["b"]
     _migrate(_targets_with(AFTER))
 
-    (pk_a, full_a, _), (pk_b, full_b, _) = seeded.grandfathered["a"], seeded.grandfathered["b"]
     key_a, key_b = AppLicenseKey.objects.get(pk=pk_a), AppLicenseKey.objects.get(pk=pk_b)
     assert key_a.customer_id == key_b.customer_id
     assert (key_a.device_limit, key_b.device_limit) == (2, 3)

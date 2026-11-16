@@ -69,9 +69,8 @@ revoke and extend all do, before any query runs (`license_keys.services._require
 `allow_wrapping_transaction=True`, it raises
 `WrappedTransitionRefused` (INTERNAL) before reading or writing anything. A docstring was the
 only mitigation, with 17 `atomic()` sites in production; the loss now announces itself instead
-of being found in an audit. The opt-in is keyword-only and off by default. There are two
-opted-in callers, and neither is a shape to copy for a caller whose refusals are reachable and
-which cannot do what extend does:
+of being found in an audit. The opt-in is keyword-only and off by default. Three caller
+compositions are explicitly accounted for:
 
 * **Device activation** (`_activate_device_for_key`, 86ak5v7av) transitions ISSUED -> ACTIVATED
   inside its own `atomic()` block because the status change, the device, its token and both
@@ -84,15 +83,18 @@ which cannot do what extend does:
 * **Extend** (`extend_license_key`, 86ak1090r) moves `expires_at` and the status in one
   transaction. It catches `IllegalLicenseTransition` INSIDE its block (case [C] above), so the
   DENIED row commits, and re-raises after the block exits.
+* **Managed Free renewal** (`free_lifecycle._renew_locked`) can save expiry before the writer.
+  The outer activation or refresh owner lets `FreeRenewalDenied` unwind its entire transaction,
+  including the inner writer denial. It then records one durable Free denial from the safe
+  licence ID, request ID and error code carried by that exception. A failed success audit rolls
+  back the renewal. If the audit store is unavailable, the operation fails.
 
 A new caller whose refusals ARE reachable (the expiry job, conversion, archiving) must call
-outside a wrapping transaction, or catch the refusal inside its block as extend does, or the
-denial it exists to record is rolled back with everything else.
+in autocommit or provide a documented denial owner. Catching inside is only safe when the
+outer transaction can commit its audit without committing partial state.
 
-**Agreed escalation, recorded so it is not re-litigated under pressure:** if a flow ever
-needs both a durable denial and a wider atomic block, the answer is a small `audit` database
-alias used for DENIED rows only — never for SUCCESS rows, which must stay transactional with
-the change they describe.
+A separate `audit` database alias remains an escalation option for flows that cannot use
+these compositions. SUCCESS rows must stay transactional with the change they describe.
 
 The individual mutations — revoke/extend (86ak1090r, shipped), the expiry job (86ak109dv),
 suspend/reinstate (86ak5mn0c, shipped), conversion (86ak5mn2k), archiving (86ak5mn2m) — live in
@@ -580,8 +582,8 @@ def apply_license_status_transition(
     caller's work, and PRD §13's "refused and audited" silently fails. The opt-in says the
     caller has weighed that and either (a) cannot reach a refusal (device activation: the edge
     is table-pinned) or (b) catches the refusal inside its own block so the row commits
-    (extend). A caller whose refusals ARE reachable and which cannot do (b) must not opt in; it
-    needs the agreed `audit` database alias instead (module docstring).
+    (extend), or (c) rolls back its entire transaction and records one safe denial outside
+    it (managed Free renewal). The module docstring describes each caller's ownership.
 
     Outcomes, in the order they are decided:
 
@@ -604,9 +606,8 @@ def apply_license_status_transition(
     `atomic()` block unwinds, so it survives on its own. A CALLER that wraps this in its
     own transaction and then lets `IllegalLicenseTransition` propagate will roll that row
     back with everything else (the tripwire above refuses that shape unless the caller opted
-    in by name); catching the refusal INSIDE the wider block keeps the row. Device activation
-    and extend are the callers that opt in; see "durability of refusals" in the module
-    docstring for why each is safe and why neither is a shape to copy blindly.
+    in by name); a caller that catches the refusal inside keeps the row. See "durability of
+    refusals" in the module docstring for the device activation, extend and Free opt-ins.
     """
     # AC 8 (86ak1090r): the mechanical tripwire for the wrapped-transaction denial loss. A
     # docstring was the only mitigation, with 17 `atomic()` sites in production; this makes the

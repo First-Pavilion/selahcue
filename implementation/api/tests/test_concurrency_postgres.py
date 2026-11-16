@@ -43,6 +43,7 @@ from selahcue_api.apps.devices.models import (
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
     ActivateDeviceWithSessionData,
+    STAFF_EXTENSION_ROTATION,
     activate_device,
     activate_device_with_session,
     refresh_license,
@@ -1570,9 +1571,10 @@ def test_ordinary_refresh_does_not_wait_on_licence_write_lock(client, settings):
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET statement_timeout = '5s'")
+            started = time.monotonic()
             with CaptureQueriesContext(connection) as queries:
                 response = post(Client(), REFRESH, {"token_rotation": "staff-extension-v1"}, bearer)
-            return response, queries.captured_queries
+            return response, queries.captured_queries, time.monotonic() - started
         finally:
             connections.close_all()
 
@@ -1581,7 +1583,7 @@ def test_ordinary_refresh_does_not_wait_on_licence_write_lock(client, settings):
             AppLicenseKey.objects.select_for_update().get(pk=key.pk)
             worker = pool.submit(refresh)
             # Leaving this scope releases the write lock even if the future times out.
-            response, queries = worker.result(timeout=3)
+            response, queries, elapsed = worker.result(timeout=3)
 
     assert response.status_code == 200
     refreshed = response.json()
@@ -1589,6 +1591,9 @@ def test_ordinary_refresh_does_not_wait_on_licence_write_lock(client, settings):
     assert refreshed["device"]["device_public_id"] == initial["device"]["device_public_id"]
     assert refreshed["license"]["valid_now"] is True
     assert refreshed["token"]["expires_at"] == token["expires_at"].isoformat()
+    print(f"ordinary refresh SQL statements: {len(queries)}")
+    print(f"ordinary refresh elapsed seconds: {elapsed:.6f}")
+    assert len(queries) == 3
     assert not any(
         " FOR UPDATE" in query["sql"].upper() or " FOR NO KEY UPDATE" in query["sql"].upper()
         for query in queries
@@ -1612,20 +1617,20 @@ def test_two_live_refreshes_rotate_only_once_under_real_contention():
     key, activated = _live_extended_device("two-refreshes")
     results = []
     def refresh():
-        results.append(refresh_license(activated.full_token))
+        results.append(refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION))
     errors, waiting = _race_behind_row_lock(key, [refresh, refresh])
     assert waiting == 2
     assert len(errors) == 1 and errors[0].code == ErrorCode.UNAUTHENTICATED
     assert len(results) == 1 and results[0].full_token
     assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
     assert AuditEvent.objects.filter(action="device_token.reminted").count() == 1
-    assert refresh_license(results[0].full_token).full_token is None
+    assert refresh_license(results[0].full_token, token_rotation=STAFF_EXTENSION_ROTATION).full_token is None
 
 
 @pytest.mark.parametrize("revoke_first", [True, False])
 def test_refresh_and_revoke_respect_licence_lock_arrival_order(revoke_first):
     key, activated = _live_extended_device(f"refresh-revoke-{revoke_first}")
-    renewal = lambda: refresh_license(activated.full_token)
+    renewal = lambda: refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
     revoke = _revoke_call(key, f"refresh-revoke-{revoke_first}-req")
     calls = [revoke, renewal] if revoke_first else [renewal, revoke]
     results, errors, waiting = _race_in_arrival_order(key, calls)
@@ -1641,18 +1646,24 @@ def test_refresh_and_revoke_respect_licence_lock_arrival_order(revoke_first):
 def test_refresh_and_extension_observe_the_serialized_expiry(extend_first):
     key, full_key = _seed_license_key(tag=f"refresh-extend-{extend_first}")
     activated = _enroll(full_key, idem=f"refresh-extend-{extend_first}-act", fingerprint="fp-refresh-ext")()
-    target = key.expires_at + timedelta(days=30)
-    renewal = lambda: refresh_license(activated.full_token)
+    # Both orders start pending. An equal-generation refresh is allowed to read
+    # without queuing behind a staff writer it has not observed yet.
+    first_expiry = key.expires_at + timedelta(days=15)
+    _extend_call(key, f"refresh-extend-{extend_first}-first", first_expiry)()
+    target = first_expiry + timedelta(days=15)
+    renewal = lambda: refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
     extension = _extend_call(key, f"refresh-extend-{extend_first}-req", target)
     results, errors, waiting = _race_in_arrival_order(
         key, [extension, renewal] if extend_first else [renewal, extension])
     assert waiting == 2 and errors == []
     renewed = dict(results)[1 if extend_first else 0]
-    assert bool(renewed.full_token) is extend_first
+    assert renewed.full_token
     if not extend_first:
-        renewed = refresh_license(activated.full_token)
+        assert renewed.token_expires_at == first_expiry.isoformat()
+        renewed = refresh_license(renewed.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
     assert renewed.token_expires_at == target.isoformat() and renewed.full_token
-    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    active = DeviceToken.objects.get(device=activated.device, status=DeviceTokenStatus.ACTIVE)
+    assert active.staff_extension_generation == 2
 
 
 def test_two_cascades_cannot_duplicate_a_token_revocation_audit():

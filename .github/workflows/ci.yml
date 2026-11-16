@@ -1927,29 +1927,6 @@ jobs:
             tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api \
             > "$expected"
           echo "file=$expected" >> "$GITHUB_OUTPUT"
-      # Temporary Task 2 checkpoint: collect all six route/lock outcomes even
-      # when the unchanged full suite stops on an earlier failure.
-      - name: Task 2 licence refresh diagnostic
-        if: ${{ !cancelled() }}
-        env:
-          SQL_ENGINE: django.db.backends.postgresql
-          SQL_DATABASE: selahcue_test
-          SQL_USER: selahcue
-          SQL_PASSWORD: selahcue
-          SQL_HOST: localhost
-          SQL_PORT: "5432"
-          CACHE_URL: redis://localhost:6379/1
-          CELERY_BROKER_URL: redis://localhost:6379/2
-          TEST_STT_REDIS_URL: redis://localhost:6379/3
-        run: >-
-          python -m pytest
-          tests/test_free_license_lifecycle.py::test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit
-          tests/test_free_license_concurrency_postgres.py::test_free_writer_refusal_rolls_back_and_leaves_one_denial
-          tests/test_license_revoke_extend.py::test_legacy_refresh_does_not_consume_staff_extension
-          tests/test_license_revoke_extend.py::test_negotiated_staff_extension_rotates_ordinary_and_managed_free
-          tests/test_free_license_concurrency_postgres.py::test_frozen_clock_two_extensions_then_free_catchup_requires_replacement
-          tests/test_concurrency_postgres.py::test_ordinary_refresh_does_not_wait_on_licence_write_lock
-          -v -rfEs --maxfail=0 --capture=tee-sys
       - name: Tests
         if: ${{ !cancelled() }}
         env:

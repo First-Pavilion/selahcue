@@ -91,10 +91,16 @@ def test_renewal_at_30_days_extends_only_presented_live_token(client, monkeypatc
     expected = RENEWED_TO if renews else old_expiry
     assert response.json()["license"]["expires_at"] == expected.isoformat()
     assert response.json()["token"]["expires_at"] == expected.isoformat()
+    licence.refresh_from_db()
     first.refresh_from_db()
     other.refresh_from_db()
     assert first.expires_at == expected
     assert other.expires_at == old_expiry
+    assert {
+        licence.staff_extension_generation,
+        first.staff_extension_generation,
+        other.staff_extension_generation,
+    } == {0}
     assert DeviceToken.objects.count() == 2
     assert AuditEvent.objects.filter(action="license_key.free_renewed").count() == int(renews)
 

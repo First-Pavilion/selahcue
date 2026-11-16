@@ -64,7 +64,7 @@ class Device(models.Model):
 class DeviceToken(models.Model):
     """A show-once device token: the credential the desktop presents on every subsequent
     `device_token`-authed /v1 call. Only the masked triple + hash + fingerprint are stored;
-    the full token leaves the system exactly once (the activation response)."""
+    the full token leaves the system once in its activation or replacement response."""
 
     device = models.ForeignKey(
         Device,
@@ -79,6 +79,7 @@ class DeviceToken(models.Model):
     status = models.CharField(max_length=16, choices=DeviceTokenStatus.choices, default=DeviceTokenStatus.ACTIVE)
     issued_at = models.DateTimeField()
     expires_at = models.DateTimeField()
+    staff_extension_generation = models.PositiveBigIntegerField(default=0)
     timezone = models.CharField(max_length=64, default="UTC")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

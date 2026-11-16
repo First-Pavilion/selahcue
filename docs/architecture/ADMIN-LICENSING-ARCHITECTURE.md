@@ -278,13 +278,38 @@ Endpoint: `POST /graphql/account`
 | ID | Endpoint | Auth | Notes |
 |---|---|---|---|
 | DESKTOP-API-001 | `POST /v1/activations` | App key plus device attestation/fingerprint | Validates key and device limit; returns signed license policy and device token if accepted. |
-| DESKTOP-API-002 | `POST /v1/license:refresh` | Device token | Returns current signed license policy, entitlement manifest version, and denial/warning states. |
+| DESKTOP-API-002 | `POST /v1/license:refresh` | Device token | Returns current licence, entitlement and token status. The exact JSON capability `"token_rotation":"staff-extension-v1"` allows a live bearer to consume a pending staff extension and receive a show-once `activation_token`. |
 | DESKTOP-API-003 | `GET /v1/entitlements/manifest` | Device token | Lists active, expiring, revoked, refresh-required, and unavailable translations with attribution and policy constraints. |
 | DESKTOP-API-004 | `POST /v1/downloads:prepare` | Device token | Validates entitlement and returns short-lived download lease plus package metadata/checksum. |
 | DESKTOP-API-005 | `POST /v1/downloads/{lease_id}:complete` | Device token | Records checksum/result and local-store package version. |
 | DESKTOP-API-006 | `POST /v1/usage-events:batch` | Device token | Batches display/download/reporting events; idempotent by event id. |
 | DESKTOP-API-007 | `POST /v1/sessions` | Account email + password (JSON only; no cookie read or set) | Native-client sign-in (DEC-011 pt 3): returns a 30-day account session token. CSRF-exempt like the rest of `/v1` because it can neither read nor set an ambient browser credential; the browser equivalent stays on the CSRF-enforced `/graphql/account` (ADR-0029). Per-IP throttled; per-account lockout shared with the browser login. |
 | DESKTOP-API-008 | `POST /v1/activations:with-session` | Account session as `Authorization: Bearer` (ADMIN only; no cookie read) | Registers the device for the signed-in administrator's organisation; same response shape and instance limit as DESKTOP-API-001. Per-IP throttled. |
+
+#### Staff extension and device refresh
+
+Each successful staff extension advances the licence's generation with the expiry and
+success audit. Each issued device token snapshots that generation. A live bearer with
+an older generation can use the exact refresh capability to receive a replacement at
+the latest generation, subject to commercial validity and the existing device allowance.
+Refresh responses and validation errors use `Cache-Control: no-store`. The client must
+save a replacement before requesting the signed entitlement manifest. The former bearer
+loses authority when the replacement commits, and the activation receipt stays immutable.
+
+Legacy refresh requests can read the new licence expiry but keep their original bearer
+expiry while staff renewal is pending. An eligible managed Free licence may still renew
+its own window. Pure Free renewal or catch-up retains the live bearer and its generation.
+An ordinary refresh reads status without row locks. Managed renewal takes organisation,
+licence, device, token, marker and fallback-assignment locks in that order. The fallback
+assignment lock targets the assignment row. Free renewal allows the status writer inside
+that transaction. If the writer refuses, the owner rolls back the partial expiry save,
+token changes and inner audit before recording one durable Free denial.
+
+The generation migrations initialise existing tokens to zero and set a zero licence
+generation to one when historical successful staff extension audits identify that licence.
+This can require one extra rotation on an imported licence. Operational rollback retains
+generations and activation receipts. Old clients keep status-only staff refresh and may
+need an upgrade or authorised recovery once their original bearer expires.
 
 ### Billing And Provider Inputs
 

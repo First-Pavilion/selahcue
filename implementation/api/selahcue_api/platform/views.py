@@ -19,6 +19,7 @@ from selahcue_api.apps.devices.bound_activation import (
     activate_bound_with_key, activate_bound_with_session,
 )
 from selahcue_api.apps.devices.services import (
+    STAFF_EXTENSION_ROTATION,
     ActivateDeviceData,
     ActivateDeviceWithSessionData,
     activate_device as _activate_device_service,
@@ -438,11 +439,18 @@ def refresh_license(request):
     status to update its cached offline entitlement (DEC-004). An eligible managed Free licence
     and the presented live device token may be renewed."""
     try:
-        result = _refresh_license_service(_device_bearer_token(request))
+        body = _json_object(request) or {}
+        capability = body.get("token_rotation")
+        if "token_rotation" in body and capability != STAFF_EXTENSION_ROTATION:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        bearer = _bearer_from_header(request)
+        if bearer is None:
+            bearer = str(body.get("device_token") or "")
+        result = _refresh_license_service(bearer, token_rotation=capability)
     except SafeAPIError as error:
-        return command_error_response(
+        return _no_store(command_error_response(
             code=error.code, surface="desktop", operation="license_refresh"
-        )
+        ))
     payload = {
         "device": {
             "device_public_id": result.device_public_id,

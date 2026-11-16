@@ -50,7 +50,7 @@ from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import seat_plan_code
-from test_bound_activation import KEY, body, post
+from test_bound_activation import KEY, admin_session, body, post
 from test_free_license_lifecycle import MANIFEST, REFRESH, activate_free
 from selahcue_api.apps.throttling import guards as throttle_guards
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
@@ -59,7 +59,9 @@ from selahcue_api.apps.devices.models import (
     Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus,
 )
 from selahcue_api.apps.devices import services as device_services
-from selahcue_api.apps.devices.services import license_allows_commercial_service, refresh_license
+from selahcue_api.apps.devices.services import (
+    STAFF_EXTENSION_ROTATION, license_allows_commercial_service, refresh_license,
+)
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys import state_machine
@@ -1224,11 +1226,13 @@ def test_extend_moves_the_date_and_returns_a_lapsed_licence_to_an_activatable_st
         "status": source.value,
         "prior_status": "",
         "expires_at": old_expiry.isoformat(),
+        "staff_extension_generation": 0,
     }
     assert row.after == {
         "status": expected_status.value,
         "prior_status": "",
         "expires_at": new_expiry.isoformat(),
+        "staff_extension_generation": 1,
     }
     assert (row.target_type, row.target_id) == (AUDIT_TARGET_TYPE, str(key.pk))
 
@@ -1562,6 +1566,7 @@ def test_a_failure_while_moving_the_date_rolls_the_status_and_the_audit_row_back
 
     stored = _fresh(key)
     assert (stored.status, stored.expires_at) == (before.status, before.expires_at)
+    assert stored.staff_extension_generation == 0
     assert _rows(key).count() == rows_before, "no SUCCESS row survives a failed extension"
 
 
@@ -1584,6 +1589,7 @@ def test_if_the_table_ever_loses_the_renewal_edge_the_refusal_is_still_durable(m
     assert raised.value.code == ErrorCode.CONFLICT
     stored = _fresh(key)
     assert (stored.status, stored.expires_at) == (before.status, before.expires_at)
+    assert stored.staff_extension_generation == 0
     new_rows = list(_rows(key))[rows_before:]
     assert len(new_rows) == 1 and new_rows[0].result == AuditResult.DENIED
     assert new_rows[0].action == REFUSED_ACTION
@@ -1939,6 +1945,25 @@ def test_graphql_a_customer_session_cannot_revoke_or_extend(client):
         )
         assert _error_code(response) == "PERMISSION_DENIED"
     assert _fresh(key).status == S.ISSUED
+
+
+def test_genuine_customer_session_cannot_read_a_target_through_staff_mutations(client, settings):
+    settings.SELAHCUE_TRUST_ACTOR_HEADERS = False
+    key, _ = _seed_key("genuine-customer-session")
+    session = admin_session(client, key.customer)
+
+    with CaptureQueriesContext(connection) as queries:
+        for query, variables in (
+            (REVOKE_MUTATION, _revoke_input(key, "genuine-customer-revoke")),
+            (EXTEND_MUTATION, _extend_input(key, "genuine-customer-extend", _later())),
+        ):
+            response = client.post(
+                "/graphql/admin", data=json.dumps({"query": query, "variables": variables}),
+                content_type="application/json", HTTP_AUTHORIZATION=f"Bearer {session}",
+            )
+            assert _error_code(response) == "PERMISSION_DENIED"
+    assert all(AppLicenseKey._meta.db_table not in query["sql"] for query in queries)
+    assert (_fresh(key).status, key.staff_extension_generation) == (S.ISSUED, 0)
 
 
 def test_graphql_unknown_licence_is_not_found_and_a_refusal_never_names_internals(client):
@@ -2392,6 +2417,7 @@ _THE_WRITER = "selahcue_api/apps/license_keys/state_machine.py"
 
 EXPECTED_OPT_IN_SITES = {
     ("selahcue_api/apps/devices/services.py", "_activate_device_for_key"),
+    ("selahcue_api/apps/license_keys/free_lifecycle.py", "_renew_locked"),
     ("selahcue_api/apps/license_keys/services.py", "_extend_under_locks"),
 }
 
@@ -2497,11 +2523,9 @@ def _unwritten_status_targets(root=None) -> set[tuple[str, str, str]]:
     return found
 
 
-def test_only_device_activation_and_extend_may_open_the_writer_inside_a_transaction():
+def test_only_device_activation_and_extend_and_free_renewal_may_open_the_wrapped_writer():
     assert _opt_in_sites() == EXPECTED_OPT_IN_SITES, (
-        "a new caller passes allow_wrapping_transaction to the licence writer. That opt-in accepts "
-        "the loss of a DENIED audit row (state_machine module docstring), so each site is "
-        "reviewed by name: add it here only with the reason written next to the call."
+        "Each licence writer opt-in needs a reviewed denial composition and a named allowlist entry."
     )
 
 
@@ -2941,8 +2965,7 @@ def test_next_refresh_rotates_a_live_token_and_the_http_caller_adopts_it(client,
     target = key.expires_at + timedelta(days=30)
     _extend(key, target, "refresh-renewal-ext")
     def refresh(credential):
-        return client.post("/v1/license:refresh", data="{}", content_type="application/json",
-                           HTTP_AUTHORIZATION=f"Bearer {credential}")
+        return post(client, REFRESH, {"token_rotation": "staff-extension-v1"}, credential)
     response = refresh(old_credential)
     assert response.status_code == 200, response.content
     body = response.json()
@@ -2973,8 +2996,7 @@ def test_extension_never_lets_a_dead_token_rotate_itself(client, monkeypatch, de
         DeviceToken.objects.filter(pk=old.pk).update(status=DeviceTokenStatus.REVOKED)
     else:
         type(old.device).objects.filter(pk=old.device_id).update(status="REVOKED")
-    response = client.post("/v1/license:refresh", data="{}", content_type="application/json",
-                           HTTP_AUTHORIZATION=f"Bearer {credential}")
+    response = post(client, REFRESH, {"token_rotation": "staff-extension-v1"}, credential)
     assert response.status_code == 401
     assert DeviceToken.objects.filter(device=old.device).count() == 1
 
@@ -2990,10 +3012,10 @@ def test_rotation_failure_rolls_back_supersession_and_audit(client, monkeypatch)
     with monkeypatch.context() as failure:
         failure.setattr(device_services, "record_audit_event", failing_audit)
         with pytest.raises(RuntimeError, match="injected audit storage failure"):
-            refresh_license(credential)
+            refresh_license(credential, token_rotation=STAFF_EXTENSION_ROTATION)
     assert DeviceToken.objects.filter(device__license_key=key).count() == 1
     assert DeviceToken.objects.get(device__license_key=key).status == DeviceTokenStatus.ACTIVE
-    renewed = refresh_license(credential)
+    renewed = refresh_license(credential, token_rotation=STAFF_EXTENSION_ROTATION)
     assert renewed.full_token
     audit = AuditEvent.objects.get(action="device_token.reminted")
     serialized = json.dumps({"before": audit.before, "after": audit.after, "reason": audit.reason})
@@ -3011,6 +3033,113 @@ def test_refresh_rechecks_token_expiry_after_licence_lock_wait(client, monkeypat
         return original(*args, **kwargs)
     monkeypatch.setattr(AppLicenseKey.objects, "select_for_update", delayed_lock)
     with pytest.raises(SafeAPIError) as refused:
-        refresh_license(activated.json()["activation_token"])
+        refresh_license(activated.json()["activation_token"], token_rotation=STAFF_EXTENSION_ROTATION)
     assert refused.value.code == ErrorCode.UNAUTHENTICATED
     assert DeviceToken.objects.filter(device__license_key=key).count() == 1
+
+
+@pytest.mark.parametrize("source", [S.ACTIVATED, S.EXPIRING], ids=lambda status: status.value)
+def test_extension_replay_refusal_and_failure_do_not_advance_generation(source, monkeypatch):
+    key, _ = _seed_key(f"generation-{source.value.lower()}")
+    _drive_to(key, source)
+    target = key.expires_at + timedelta(days=30)
+    intent = "generation-success-first"
+    result = _extend(key, target, intent)
+    assert result.changed and _fresh(key).staff_extension_generation == 1
+    assert result.audit_event.before["staff_extension_generation"] == 0
+    assert result.audit_event.after["staff_extension_generation"] == 1
+
+    replay = _extend(key, target, intent)
+    assert not replay.changed and replay.audit_event.pk == result.audit_event.pk
+    assert _error(_extend, key, target, "generation-refused-date").code == ErrorCode.VALIDATION_FAILED
+    assert _fresh(key).staff_extension_generation == 1
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+
+    # Exercise the expiry-only success audit after the generation has already been saved.
+    def failed_audit(*args, **kwargs):
+        raise RuntimeError("extension audit unavailable")
+
+    with monkeypatch.context() as failure:
+        failure.setattr(license_services, "record_audit_event", failed_audit)
+        with pytest.raises(RuntimeError, match="extension audit unavailable"):
+            _extend(key, target + timedelta(days=1), "generation-audit-failure")
+    key.refresh_from_db()
+    assert (key.expires_at, key.staff_extension_generation, key.status) == (target, 1, S.ACTIVATED)
+    assert _rows(key, action=EXTEND_ACTION).count() == 1
+
+
+@pytest.mark.parametrize("source", [S.ACTIVATED, S.EXPIRING], ids=lambda status: status.value)
+def test_generation_overflow_is_atomic(source):
+    key, _ = _seed_key(f"generation-overflow-{source.value.lower()}")
+    _drive_to(key, source)
+    AppLicenseKey.objects.filter(pk=key.pk).update(staff_extension_generation=2**63 - 2)
+    target = key.expires_at + timedelta(days=20)
+    assert _extend(key, target, "generation-last-valid").changed
+    assert _fresh(key).staff_extension_generation == 2**63 - 1
+    row_before = AppLicenseKey.objects.values().get(pk=key.pk)
+    audits_before = list(_rows(key).values())
+    assert _error(_extend, key, target + timedelta(days=1), "generation-overflow").code == ErrorCode.CONFLICT
+    assert AppLicenseKey.objects.values().get(pk=key.pk) == row_before
+    assert list(_rows(key).values()) == audits_before
+
+
+def test_token_issuance_snapshots_latest_staff_generation(client):
+    key, full_key = _seed_key("initial-token-generation")
+    _extend(key, key.expires_at + timedelta(days=20), "issued-staff-extension")
+    activated = post(client, KEY, body(license_key=full_key))
+    assert activated.status_code == 200
+    original = DeviceToken.objects.get(device__license_key=key)
+    assert original.staff_extension_generation == 1
+
+    bearer = activated.json()["activation_token"]
+    response = post(client, REFRESH, {"token_rotation": "staff-extension-v1"}, bearer)
+    assert response.status_code == 200
+    assert response.json().get("activation_token") is None
+    assert DeviceToken.objects.get(device__license_key=key).pk == original.pk
+
+
+@pytest.mark.parametrize("value", [None, False, 1, "", "staff-extension-v2", [], {}])
+def test_refresh_rejects_every_other_rotation_capability(client, value):
+    key, full_key = _seed_key("invalid-rotation-capability")
+    activated = _activate(client, full_key)
+    assert activated.status_code == 200
+    bearer = activated.json()["activation_token"]
+    _extend(key, key.expires_at + timedelta(days=20), "rotation-capability-extension")
+    response = post(client, REFRESH, {"device_token": bearer, "token_rotation": value})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+    assert response["Cache-Control"] == "no-store"
+    assert DeviceToken.objects.filter(device__license_key=key).count() == 1
+    assert not AuditEvent.objects.filter(action="device_token.reminted").exists()
+
+
+def test_refresh_negotiates_with_body_bearer_and_keeps_header_only_legacy(client):
+    key, full_key = _seed_key("refresh-body-bearer")
+    activated = _activate(client, full_key)
+    assert activated.status_code == 200
+    bearer = activated.json()["activation_token"]
+    _extend(key, key.expires_at + timedelta(days=20), "refresh-body-extension")
+    legacy = client.post(REFRESH, HTTP_AUTHORIZATION=f"Bearer {bearer}")
+    assert legacy.status_code == 200
+    assert legacy.json().get("activation_token") is None
+    refreshed = post(client, REFRESH, {"device_token": bearer, "token_rotation": "staff-extension-v1"})
+    assert refreshed.status_code == 200
+    assert bool(refreshed.json().get("activation_token"))
+
+
+def test_refresh_rejects_token_generation_ahead_of_licence_before_writes(client):
+    _org, _session, initial, licence = activate_free(client)
+    expiry = timezone.now() + timedelta(days=2)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(expires_at=expiry)
+    DeviceToken.objects.filter(device__license_key=licence).update(
+        staff_extension_generation=1, expires_at=expiry,
+    )
+    before = DeviceToken.objects.values().get(device__license_key=licence)
+    audit_count = AuditEvent.objects.count()
+    response = post(client, REFRESH, {"token_rotation": "staff-extension-v1"}, initial["activation_token"])
+    assert response.status_code == 500
+    assert response["Cache-Control"] == "no-store"
+    licence.refresh_from_db()
+    assert (licence.expires_at, licence.staff_extension_generation) == (expiry, 0)
+    assert DeviceToken.objects.values().get(device__license_key=licence) == before
+    assert AuditEvent.objects.count() == audit_count

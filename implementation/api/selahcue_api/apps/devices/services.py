@@ -26,7 +26,10 @@ from selahcue_api.apps.accounts.models import CustomerRole
 from selahcue_api.apps.license_keys.free_lifecycle import (
     FreeRenewalDenied,
     ensure_free_license_under_org_lock,
-    renew_free_license_for_device,
+    has_pending_staff_extension,
+    is_managed_free_license,
+    lock_device_refresh_rows,
+    renew_free_license_for_device_under_locks,
 )
 from selahcue_api.apps.license_keys.selection import (
     ACTIVATABLE_KEY_STATUSES as ACTIVATABLE_KEY_STATUSES,
@@ -60,6 +63,7 @@ ACTIVATION_PLATFORMS = frozenset({"macos", "windows", "linux"})
 # ISSUED -> ACTIVATED move; there is no operator to supply one. Worded to be true on both
 # entry points (enrollment key and signed-in account), so it names neither.
 FIRST_ACTIVATION_REASON = "First device activation of this licence."
+STAFF_EXTENSION_ROTATION = "staff-extension-v1"
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,18 @@ def require_commercial_service(license_key: AppLicenseKey) -> None:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
-def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[DeviceToken, str]:
+def _rotation_issue_time(license_key: AppLicenseKey, presented: DeviceToken) -> datetime:
+    now = timezone.now()
+    if presented.expires_at <= now:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    if not license_allows_commercial_service(license_key, at=now):
+        raise SafeAPIError(ErrorCode.POLICY_DENIED)
+    return now
+
+
+def _new_device_token(
+    device: Device, license_key: AppLicenseKey, *, rotating_token: DeviceToken | None = None,
+) -> tuple[DeviceToken, str]:
     full_token = _generate_full_token()
     prefix, suffix, masked = _mask(full_token)
     token = DeviceToken(
@@ -251,16 +266,23 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
         token_hash=_device_token_hash(full_token),
         token_fingerprint=_fingerprint(full_token),
         status=DeviceTokenStatus.ACTIVE,
-        issued_at=timezone.now(),
+        issued_at=(
+            _rotation_issue_time(license_key, rotating_token) if rotating_token is not None
+            else timezone.now()
+        ),
         # The device token (offline entitlement window) never outlives the license validity.
         # A shorter, signed policy envelope with an explicit offline-grace is a tracked follow-up.
         expires_at=license_key.expires_at,
+        staff_extension_generation=license_key.staff_extension_generation,
         timezone=license_key.timezone,
     )
     try:
         token.full_clean()
     except ValidationError as error:
         raise _validation_error() from error
+    if rotating_token is not None:
+        # Validation can query the database. Sample liveness again before the insert.
+        token.issued_at = _rotation_issue_time(license_key, rotating_token)
     token.save()
     return token, full_token
 
@@ -290,6 +312,7 @@ def _remint_device_token(
     audit_actor: ActorContext | None,
     source_surface: str,
     reason: str = "device held no usable token; licence is currently activatable",
+    rotating_token: DeviceToken | None = None,
 ) -> tuple[DeviceToken, str]:
     """Issue a replacement after activation credentials or a locked, live-token renewal.
 
@@ -321,7 +344,9 @@ def _remint_device_token(
         status=DeviceTokenStatus.REVOKED
     ).update(status=DeviceTokenStatus.REVOKED, updated_at=now)
 
-    token, full_token = _new_device_token(device, license_key)
+    # The update can wait on a sibling credential, so issuance rechecks the
+    # original bearer's clock and rolls back supersession if it has elapsed.
+    token, full_token = _new_device_token(device, license_key, rotating_token=rotating_token)
 
     actor = audit_actor or ActorContext(kind=ActorKind.DEVICE, actor_id=device.device_public_id)
     record_audit_event(
@@ -759,16 +784,58 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
     return token
 
 
-def refresh_license(presented_token: str) -> LicenseRefreshResult:
-    """Return the current license/entitlement status for an authenticated device token, so the
-    desktop can refresh its cached offline entitlement (DEC-004). An eligible managed Free
-    licence and the presented live token can be extended. Blocked licences still report
-    their current status through the existing refresh contract."""
+def refresh_license(
+    presented_token: str, *, token_rotation: str | None = None,
+) -> LicenseRefreshResult:
+    """Read current status and rotate a live bearer only on negotiated staff renewal."""
+    if token_rotation is not None and token_rotation != STAFF_EXTENSION_ROTATION:
+        raise _validation_error()
+
     token = authenticate_device_token(presented_token)
-    renewal = renew_free_license_for_device(token, None, uuid4().hex)
     device = token.device
     license_key = device.license_key
+    pending = has_pending_staff_extension(license_key, token)
+    managed = is_managed_free_license(device.customer_id, license_key)
+    rotate = token_rotation == STAFF_EXTENSION_ROTATION
+    if not managed and not (rotate and pending):
+        return _refresh_result(license_key, device, token)
 
+    request_id = uuid4().hex
+    try:
+        with transaction.atomic():
+            # Managed renewals acquire the org first. Ordinary rotation never needs it.
+            customer = lock_customer_for_key_changes(device.customer_id) if managed else None
+            license_key, device, token = lock_device_refresh_rows(token)
+            pending = has_pending_staff_extension(license_key, token)
+            if customer is not None:
+                renew_free_license_for_device_under_locks(
+                    customer, license_key, device, token, now=None, request_id=request_id,
+                    allow_token_catchup=not pending,
+                )
+
+            now = timezone.now()
+            if token.expires_at <= now:
+                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+            full_token = None
+            if rotate and pending and license_allows_commercial_service(license_key, at=now):
+                if not _remint_is_within_plan_allowance(device, license_key):
+                    raise SafeAPIError(ErrorCode.POLICY_DENIED)
+                token, full_token = _remint_device_token(
+                    device, license_key, idempotency_key=request_id, audit_actor=None,
+                    source_surface="desktop_v1",
+                    reason="live device token renewed after licence extension",
+                    rotating_token=token,
+                )
+            return _refresh_result(license_key, device, token, full_token=full_token)
+    except FreeRenewalDenied as error:
+        error.audit()
+        raise
+
+
+def _refresh_result(
+    license_key: AppLicenseKey, device: Device, token: DeviceToken, *,
+    full_token: str | None = None,
+) -> LicenseRefreshResult:
     instances_used = Device.objects.filter(
         license_key=license_key, status=DeviceStatus.ACTIVE
     ).count()
@@ -779,11 +846,12 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
         device_status=device.status,
         license_status=license_key.status,
         license_starts_at=license_key.starts_at.isoformat(),
-        license_expires_at=renewal.license_expires_at.isoformat(),
+        license_expires_at=license_key.expires_at.isoformat(),
         license_valid_now=valid_now,
         instances_used=instances_used,
         instances_limit=license_key.device_limit,
-        token_expires_at=renewal.token_expires_at.isoformat(),
+        token_expires_at=token.expires_at.isoformat(),
         feature_scope=license_key.feature_scope,
         territory=license_key.territory,
+        full_token=full_token,
     )

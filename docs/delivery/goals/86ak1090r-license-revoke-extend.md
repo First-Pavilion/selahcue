@@ -297,3 +297,19 @@ six-writer requirement, and the live scope excludes scheduled status writers. DE
 remains PROPOSED pending explicit disposition. Production staff identity, staff
 consequence-confirmation UI, scheduled states, billing, changes to `LEGAL_TRANSITIONS`,
 and production enablement remain outside this amendment.
+
+### Task 2 backend source checkpoint
+
+Hosted PostgreSQL run `43929689686` exercised all six new route and lock cases. Two
+controls passed. Four cases exposed the wrapped Free writer refusal, missing negotiated
+replacement and the legacy Free catch-up that overwrote a pending staff bearer window.
+That revision's full suite stopped early and the joint cases did not execute.
+
+The correction adds two ordered generation migrations. A staff extension now commits
+its generation, validity and success audit together. Refresh rotates only for the exact
+`staff-extension-v1` capability and a live bearer behind the licence generation. Free
+renewal has its own reviewed wrapped-writer composition, with rollback of partial writes
+before the outer handler records a denial. The generation backfill preserves expiry,
+audit and receipt data; rollback retains the columns and existing generations. The
+corrected source still requires hosted focused, migration, full API and joint checks,
+generation mutation checks, and independent review.

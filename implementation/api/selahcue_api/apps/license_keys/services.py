@@ -1005,6 +1005,7 @@ _EXTENDS_TO_ACTIVATED = frozenset({LicenseKeyStatus.EXPIRING, LicenseKeyStatus.E
 # expiry; measured from now alone, a licence issued for seven years could not be extended even by
 # a day). Four steps reach about 2058, each audited. Flagged for the owner; changing it is one constant.
 MAX_EXTENSION_FROM_NOW = timedelta(days=5 * 365)
+MAX_STAFF_EXTENSION_GENERATION = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -1061,10 +1062,10 @@ def _same_instant(recorded: object, requested: datetime) -> bool:
 
 
 def _move_expiry(locked: AppLicenseKey, new_expires_at: datetime) -> None:
-    """The one place an extension writes the date. A named seam so the tests can make exactly
-    this step fail and watch the status change and the audit row roll back with it."""
+    """Advance the date and generation together within the staff extension transaction."""
     locked.expires_at = new_expires_at
-    locked.save(update_fields=["expires_at", "updated_at"])
+    locked.staff_extension_generation += 1
+    locked.save(update_fields=["expires_at", "staff_extension_generation", "updated_at"])
 
 
 def extend_license_key(
@@ -1079,7 +1080,7 @@ def extend_license_key(
     caller); and an archived customer's licence is not extended.
 
     One transaction holds the organisation row lock, then the licence row lock, and commits the
-    new date, the status change and the single audit row together. Retries: the idempotency key
+    new date, generation, status change and the single audit row together. The idempotency key
     is per user intent. A retry of a request that took effect applies nothing and reports the
     licence's CURRENT state with `changed=False` and the original audit row, checked under the
     lock BEFORE anything else so it is never judged against the state the first call produced.
@@ -1208,6 +1209,9 @@ def _extend_under_locks(
         # expiry, so this is a limit on each extension, not an absolute cap.
         if new_expires_at - max(now, old_expires_at) > MAX_EXTENSION_FROM_NOW:
             raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        old_generation = locked.staff_extension_generation
+        if old_generation >= MAX_STAFF_EXTENSION_GENERATION:
+            raise SafeAPIError(ErrorCode.CONFLICT)
 
         try:
             require_no_overlapping_license_key(
@@ -1228,6 +1232,14 @@ def _extend_under_locks(
             ) from None
 
         # 4. Apply. The status goes through the writer, never assigned here.
+        before_window = {
+            "expires_at": old_expires_at.isoformat(),
+            "staff_extension_generation": old_generation,
+        }
+        after_window = {
+            "expires_at": new_expires_at.isoformat(),
+            "staff_extension_generation": old_generation + 1,
+        }
         if before_status in _EXTENDS_TO_ACTIVATED:
             try:
                 transition = apply_license_status_transition(
@@ -1237,8 +1249,8 @@ def _extend_under_locks(
                     reason=reason,
                     request_id=idempotency_key,
                     action=EXTEND_ACTION,
-                    extra_before={"expires_at": old_expires_at.isoformat()},
-                    extra_after={"expires_at": new_expires_at.isoformat()},
+                    extra_before=before_window,
+                    extra_after=after_window,
                     # Wrapped on purpose: the date, the status and the audit row commit together.
                     # A refusal is unreachable while the renewal edges stay in the table, and if
                     # one does arise it is caught right here, inside the block, so its DENIED row
@@ -1269,12 +1281,12 @@ def _extend_under_locks(
                 before={
                     "status": before_status.value,
                     "prior_status": locked.prior_status,
-                    "expires_at": old_expires_at.isoformat(),
+                    **before_window,
                 },
                 after={
                     "status": locked.status,
                     "prior_status": locked.prior_status,
-                    "expires_at": new_expires_at.isoformat(),
+                    **after_window,
                 },
             )
             return LicenseTransitionResult(
