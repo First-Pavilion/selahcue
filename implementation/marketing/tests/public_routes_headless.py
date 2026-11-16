@@ -14,13 +14,14 @@ from core_pages_headless import DIST, Server, SpaHandler
 DOWNLOAD = '/download#public-downloads'
 CSRF_PATH = '/graphql/csrf'
 ACCOUNT_PATH = '/graphql/account'
-SYNTHETIC_CSRF = 'synthetic'
+SYNTHETIC_CSRF = 'SyntheticCsrfToken0123456789AbCd'
 VERIFY_QUERY = 'mutation VerifyEmail($token: String!) { verifyEmail(token: $token) { verified } }'
 VERIFY_CASES = (
     ('verify-success', 'synthetic-success', {'data': {'verifyEmail': {'verified': True}}}),
     ('verify-invalid', 'synthetic-invalid', {'errors': [{'extensions': {'code': 'VALIDATION_FAILED'}}]}),
 )
-EXPECTED_RECEIPTS = [('bootstrap', 200), *((label, 200, True, True) for label, _, _ in VERIFY_CASES)]
+BOOTSTRAP_RECEIPT = ('bootstrap', 200)
+EXPECTED_POST_RECEIPTS = [(label, 200, True, True) for label, _, _ in VERIFY_CASES]
 EXCLUDED = (
     '/admin', '/admin/', '/admin/customers', '/admin/customers/example/',
     '/admin/users', '/admin/subscriptions', '/admin/licenses', '/admin/affiliates',
@@ -206,6 +207,16 @@ def csrf_header_state(values):
     return 'match' if values[0] == SYNTHETIC_CSRF else 'mismatch'
 
 
+def post_receipts(receipts):
+    return [receipt for receipt in receipts if receipt[0] != 'bootstrap']
+
+
+def assert_acquisition_receipts(receipts):
+    assert receipts and receipts[0] == BOOTSTRAP_RECEIPT, receipts
+    assert all(receipt == BOOTSTRAP_RECEIPT for receipt in receipts if receipt[0] == 'bootstrap'), receipts
+    assert post_receipts(receipts) == EXPECTED_POST_RECEIPTS, receipts
+
+
 class LocalSpaHandler(SpaHandler):
     def end_headers(self):
         self.send_header(
@@ -214,15 +225,16 @@ class LocalSpaHandler(SpaHandler):
         )
         super().end_headers()
 
-    def send_fixture_json(self, status, value, set_cookie=False):
+    def send_fixture_json(self, status, value, set_csrf=False):
         body = json.dumps(value, separators=(',', ':')).encode('utf-8')
         self.send_response(status)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
-        if set_cookie:
+        if set_csrf:
             # HTTP loopback only. Production uses Secure outside debug.
             self.send_header('Set-Cookie', f'csrftoken={SYNTHETIC_CSRF}; Path=/; SameSite=Strict')
+            self.send_header('X-CSRFToken', SYNTHETIC_CSRF)
         self.end_headers()
         self.wfile.write(body)
 
@@ -233,11 +245,10 @@ class LocalSpaHandler(SpaHandler):
                 return
             return super().do_GET()
         with self.server.receipt_lock:
-            status = 409 if self.server.receipts else 200
-            self.send_fixture_json(status, {'ready': status == 200}, set_cookie=status == 200)
-            self.server.receipts.append(('bootstrap', status))
+            self.send_fixture_json(200, {'ready': True}, set_csrf=True)
+            self.server.receipts.append(BOOTSTRAP_RECEIPT)
             if self.server.csrf_trace is not None:
-                self.server.csrf_trace.add(['server-bootstrap', status])
+                self.server.csrf_trace.add(['server-bootstrap', 200])
 
     def read_verification(self, token):
         lengths = self.headers.get_all('Content-Length', [])
@@ -278,8 +289,10 @@ class LocalSpaHandler(SpaHandler):
             return
         with self.server.receipt_lock:
             receipts = self.server.receipts
-            index = len(receipts) - 1
-            if not 0 <= index < len(VERIFY_CASES) or receipts != EXPECTED_RECEIPTS[:len(receipts)]:
+            posts = post_receipts(receipts)
+            index = len(posts)
+            if (not receipts or receipts[0] != BOOTSTRAP_RECEIPT
+                    or index >= len(VERIFY_CASES) or posts != EXPECTED_POST_RECEIPTS[:index]):
                 receipts.append(('unexpected-account-post', 400))
                 self.send_error(400)
                 return
@@ -440,7 +453,8 @@ def run(engine, server):
         expect(page.get_by_role('heading', name='This page needs a verification link')).to_be_visible()
         expect(page.get_by_role('button', name='Send a verification link')).to_be_visible()
 
-        assert server.receipts == EXPECTED_RECEIPTS, server.receipts
+        with server.receipt_lock:
+            assert_acquisition_receipts(server.receipts)
         assert len(manifest_requests) == 4, manifest_requests
         assert not unexpected, unexpected
         assert not errors, errors

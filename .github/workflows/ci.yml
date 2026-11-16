@@ -1845,7 +1845,9 @@ jobs:
         run: python3 scripts/legal_pages_headless.py --only all
       - name: Public acquisition and route exclusions (Chromium + WebKit)
         if: ${{ !cancelled() }}
-        run: python3 tests/public_routes_headless.py --engine both
+        run: |
+          python3 tests/public_acquisition_fixture_regression.py
+          python3 tests/public_routes_headless.py --engine both
       - name: Public downloads (Chromium + WebKit)
         if: ${{ !cancelled() }}
         run: python3 tests/public_downloads_headless.py --engine both
