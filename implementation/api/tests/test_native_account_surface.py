@@ -1165,7 +1165,7 @@ def test_lost_refresh_response_recovers_via_admin_session_without_reviving_dead_
         ExtendLicenseKeyData(idempotency_key="lost-refresh-extension", license_key_id=str(key.pk),
                              new_expires_at=key.expires_at + timezone.timedelta(days=30),
                              reason="Renewed subscription for response loss test."))
-    refreshed = post_json(client, "/v1/license:refresh", {}, **bearer(original))
+    refreshed = post_json(client, "/v1/license:refresh", {"token_rotation": "staff-extension-v1"}, **bearer(original))
     assert refreshed.status_code == 200 and refreshed.json()["activation_token"]
     lost = refreshed.json()["activation_token"]
     assert post_json(client, "/v1/license:refresh", {}, **bearer(original)).status_code == 401

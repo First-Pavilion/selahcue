@@ -1793,9 +1793,10 @@ def test_concurrent_admin_replacements_are_locked_and_show_once(same_intent):
         return lambda: activate_device_with_session(admin, ActivateDeviceWithSessionData(
             idempotency_key=f"replace-request-{0 if same_intent else index}",
             device_fingerprint="fp-replace", platform="macos", replace_token=True))
-    results, errors, waiting = _race_in_arrival_order(key, [replace(0), replace(1)])
-    assert waiting == 2 and errors == []
-    assert sum(bool(result.full_token) for _, result in results) == (1 if same_intent else 2)
+    results = _run_activation_lock_arrangement(
+        key, [replace(0), replace(1)], session=True, extension_index=0,
+    )
+    assert sum(bool(result.full_token) for result in results) == (1 if same_intent else 2)
     assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
     assert DeviceToken.objects.get(pk=activated.device_token.pk).status == DeviceTokenStatus.REVOKED
     assert AuditEvent.objects.filter(action="device_token.reminted").count() == (1 if same_intent else 2)
