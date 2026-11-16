@@ -22,7 +22,7 @@ def artifacts(json_path: str) -> tuple[list[pathlib.Path], list[pathlib.Path]]:
     """
     libraries: list[pathlib.Path] = []
     executables: list[pathlib.Path] = []
-    for line in pathlib.Path(json_path).read_text().splitlines():
+    for line in pathlib.Path(json_path).read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line.startswith("{"):
             continue

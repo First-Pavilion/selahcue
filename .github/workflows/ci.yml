@@ -338,6 +338,8 @@ jobs:
       # this workflow excludes. Repeating the stdlib-only control here is cheap.
       - name: Installer scanner self-test (no installer artifacts)
         run: python3 scripts/installer_secret_scan.py --self-test
+      - name: Cargo receipt scanner tests
+        run: python3 scripts/test_dev_key_scan.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
