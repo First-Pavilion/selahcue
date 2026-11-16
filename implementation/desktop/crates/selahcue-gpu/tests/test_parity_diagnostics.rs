@@ -5,9 +5,11 @@
 #[path = "support/parity_diagnostics.rs"]
 mod parity_diagnostics;
 
-use parity_diagnostics::{observe_construct, observe_readback, parse_native_tid, Case, Observer};
+use parity_diagnostics::{
+    observe_construct, observe_readback, parity_basename, parse_native_tid, Case, Observer, Stage,
+};
 use std::cell::{Cell, RefCell};
-use std::io;
+use std::io::{self, Write};
 use std::panic::{catch_unwind, panic_any, AssertUnwindSafe};
 use std::path::Path;
 use std::process::{self, Command, Stdio};
@@ -136,6 +138,14 @@ fn abrupt_exit_child() {
     let mut observer = Observer::for_case(Case::Ssim);
     observer.case_enter();
     let _ = observe_construct(&mut observer, 1, || -> Option<()> {
+        // Sample the link independently on the same libtest thread as the markers.
+        let expected_tid = std::fs::read_link("/proc/thread-self")
+            .ok()
+            .and_then(|target| target.file_name()?.to_str()?.parse::<i32>().ok())
+            .filter(|&tid| tid > 0)
+            .map_or_else(|| "null".to_owned(), |tid| tid.to_string());
+        writeln!(io::stdout(), "\nfixture_tid={expected_tid}").unwrap();
+        io::stdout().flush().unwrap();
         eprintln!("captured by libtest");
         process::exit(CHILD_EXIT);
     });
@@ -151,7 +161,7 @@ fn constructor_enter_survives_abrupt_child_exit_on_linux() {
         .env_remove("RUST_TEST_NOCAPTURE")
         .env(CHILD_ENV, "1")
         .env("SELAHCUE_GPU_PARITY_DIAGNOSTICS", "1")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
@@ -159,6 +169,11 @@ fn constructor_enter_survives_abrupt_child_exit_on_linux() {
     let output = child.wait_with_output().unwrap();
 
     assert_eq!(output.status.code(), Some(CHILD_EXIT));
+    let stdout = std::str::from_utf8(&output.stdout).unwrap();
+    let expected_tid = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("fixture_tid="))
+        .unwrap();
     let stderr = std::str::from_utf8(&output.stderr).unwrap();
     assert!(!stderr.contains("captured by libtest"));
     let records: Vec<_> = stderr
@@ -178,8 +193,7 @@ fn constructor_enter_survives_abrupt_child_exit_on_linux() {
     assert_eq!(field(records[1], "seq"), Some("2"));
     for record in records {
         assert_eq!(field(record, "pid"), Some(pid.as_str()));
-        let tid = field(record, "tid").unwrap();
-        assert!(tid == "null" || tid.parse::<i32>().is_ok_and(|tid| tid > 0));
+        assert_eq!(field(record, "tid"), Some(expected_tid));
         assert!(field(record, "utc_us").unwrap().parse::<u64>().unwrap() > 0);
     }
 }
@@ -322,5 +336,60 @@ fn missing_or_malformed_native_tid_stays_unknown() {
             None,
             "{target:?}"
         );
+    }
+}
+
+#[test]
+fn device_loss_milestones_use_fixed_stages_and_generations() {
+    let records = RefCell::new(Vec::new());
+    let mut observer = Observer::with_writer(Case::DeviceLoss, true, recording_writer(&records));
+    for stage in [
+        Stage::SceneAssertionPassed {
+            generation: 1,
+            scene: 1,
+        },
+        Stage::LossEnter,
+        Stage::LossReturned,
+        Stage::FirstDropEnter,
+        Stage::FirstDropReturned,
+        Stage::CallbackObserved,
+        Stage::AssertionsPassed(2),
+    ] {
+        observer.record(stage);
+    }
+
+    let records = records.borrow();
+    assert_eq!(records.len(), 7);
+    assert_eq!(field(&records[0], "scene"), Some("1"));
+    let expected = [
+        ("scene_assertion_passed", "1"),
+        ("loss_enter", "1"),
+        ("loss_returned", "1"),
+        ("first_drop_enter", "1"),
+        ("first_drop_returned", "1"),
+        ("callback_observed", "1"),
+        ("assertions_passed", "2"),
+    ];
+    for (record, (stage, generation)) in records.iter().zip(expected) {
+        record_check(record, "device_loss", stage, generation);
+    }
+}
+
+#[test]
+fn case_start_only_admits_the_parity_executable_basename() {
+    assert_eq!(
+        parity_basename(Path::new(
+            "/checkout/target/debug/deps/test_parity-1234567890abcdef"
+        )),
+        Some("test_parity-1234567890abcdef")
+    );
+    for invalid in [
+        "test_parity-1234567890abcde",
+        "test_parity-1234567890abcdeF",
+        "test_parity-1234567890abcdeg",
+        "test_parity-1234567890abcdef.exe",
+        "test_parity_diagnostics-1234567890abcdef",
+    ] {
+        assert_eq!(parity_basename(Path::new(invalid)), None, "{invalid:?}");
     }
 }
