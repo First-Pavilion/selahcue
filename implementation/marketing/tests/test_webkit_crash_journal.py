@@ -221,7 +221,7 @@ class CrashJournalCLI(unittest.TestCase):
         self.assertEqual(pid, group)
         self.assertNotEqual(group, os.getpgrp())
         self.assertEqual(args, [
-            "-n", "journalctl", "-b", "--no-pager", "--quiet",
+            "-n", "journalctl", "-b", "--no-pager", "--quiet", "--all",
             "--since", "@1794837000", "--until", "@1794837060.999999",
             "MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1", "-o", "json",
             "--output-fields=COREDUMP_TIMESTAMP,COREDUMP_PID,COREDUMP_SIGNAL_NAME,"
