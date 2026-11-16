@@ -1,6 +1,8 @@
-# Licence generation qualification: binding budget amendment
+# Licence generation qualification: historical58-case amendment
 
-Status: accepted by coordinator for authorized PR233 technical remediation on 2026-11-16, before implementation. This is a verification design amendment, not runtime acceptance or production enablement.
+**Superseded for duplicate isolated selection by [the accepted seven-control amendment](2026-11-16-license-generation-minimal-qualification.md).** The58-case manifest and rationale below are retained as historical evidence. All493 canonical coverage requirements remain mandatory.
+
+Historical status: accepted by coordinator for authorized PR233 technical remediation on 2026-11-16, before implementation. This is a verification design amendment, not runtime acceptance or production enablement.
 
 ## Ruling and scope
 
