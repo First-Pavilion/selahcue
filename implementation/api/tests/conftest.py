@@ -27,6 +27,42 @@ from selahcue_api.apps.throttling import services as throttle_services
 from selahcue_api.apps.throttling.circuit import CacheCircuit
 
 
+_G1_REQUIRED_CONTROL_IDS = {
+    "tests/test_native_account_controller_integration.py::test_required_g1_missing_binary_fails",
+    "tests/test_native_account_controller_integration.py::"
+    "test_required_g1_workflow_keeps_api_reachable_and_requires_same_source_artifact",
+}
+_G1_FAILURE_BODY_LIMIT = 65_536
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(items):
+    result = yield
+    # Promote only the G1 controls after pytest-django orders the suite. The
+    # stable sort keeps every other selected item in its existing order.
+    items.sort(key=lambda item: item.nodeid not in _G1_REQUIRED_CONTROL_IDS)
+    return result
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if (
+        report.nodeid in _G1_REQUIRED_CONTROL_IDS
+        and report.when == "call"
+        and report.failed
+        and call.excinfo is not None
+    ):
+        # The API job can time out before pytest's final summary. Emit the
+        # observed failure now, with no locals, arguments or captured sections.
+        body = str(call.excinfo.getrepr(style="short", showlocals=False, funcargs=False))
+        print(f"\n--- G1 call failure for {report.nodeid} ---")
+        print(body[:_G1_FAILURE_BODY_LIMIT], flush=True)
+        if len(body) > _G1_FAILURE_BODY_LIMIT:
+            print(f"[G1 failure trace truncated at {_G1_FAILURE_BODY_LIMIT} characters]", flush=True)
+    return report
+
+
 @pytest.fixture(autouse=True)
 def _cold_catalogue_grant_cache():
     from selahcue_api.apps.catalogue.cache import GRANT_CACHE
