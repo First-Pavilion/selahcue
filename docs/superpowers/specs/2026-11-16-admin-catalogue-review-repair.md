@@ -19,6 +19,8 @@ Preserve all four existing PostgreSQL race cases (competing administrators, conc
 
 Run current full API checks, migration checks, tier-name sweep and the real PostgreSQL/Redis suite after repair. Preserve all failure/skip boundaries; hosted execution is required under the local paging hold. No new provider call, real secret, staff onboarding, billing, public feed, browser retry or CI relaxation belongs here.
 
+For the RED checkpoint only, collect all real API failures by changing the existing pytest `--maxfail=1` to `--maxfail=0` in the workflow, matching Makefile command and command-parity self-test literals. Preserve the full selected suite and failure exit status. Restore those three files to current-main bytes for this setting before the final GREEN candidate. This temporary diagnostic change avoids paying for repeated full CI runs that stop after one of several known defects; it does not suppress or expect failures.
+
 ## Integration and execution limits
 
 Work only in `/private/tmp/selahcue-admin-catalogue-fix-20261116`, branch `codex/admin-catalogue-fix-20261116`. Root owns remote pushes, CI observation and merge. Other worktrees, protected documents and sibling plans remain untouched. One source implementer is active at a time. No local application import, dependency installation, database/container/browser/compiler runtime under the resource hold. Static standard-library parsing, Git and text inspection are allowed. The root will run the prepared tests on the existing hosted API job, first for RED and then for full GREEN. No added job or alternate shallow test gate is authorized.
