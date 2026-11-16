@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "inputs_sha256": "a4892c1c8d3975690100102defb4093fe10cdaa4a39507d456eb69e933350788",
+  "historical": {
+    "matrix_input": "bb4d75ea9bd6d18b42b5bc24eddfe1f4378f947aea6d572172828a9f226432d9",
+    "matrix_output": "5c0aa4104a2e34dfdbad2e7d7a72dc9b1926de887c6a1b82ff1828ceef56b75f",
+    "wrapper_raw": "9596a90312891c2a348f0089bfff9f739f5e2dfcb82a8d54f532aea10fcbcba8",
+    "wrapper_envelopes": [
+      {
+        "bytes": 524288,
+        "sha256": "dfdf3fb42fc1ce910f72c3662e1574ed9fe2c1824eb9afb838dd6e7169d920ef"
+      },
+      {
+        "bytes": 524289,
+        "sha256": "a90bd62fcf791441a48eeb90b2440e7dcca2ab9386e7d2dc7c2b4e086c93710c"
+      },
+      {
+        "bytes": 528326,
+        "sha256": "3d1a558349289d600fab3fcbf2a2492c074e9efbb53d2fefb688440f8fda5899"
+      }
+    ]
+  },
+  "batches": [
+    {
+      "name": "matrix",
+      "count": 1024,
+      "bytes": 718848,
+      "sha256": "bb4d75ea9bd6d18b42b5bc24eddfe1f4378f947aea6d572172828a9f226432d9"
+    },
+    {
+      "name": "translations",
+      "count": 8,
+      "bytes": 5628,
+      "sha256": "ad0ceffd2490f3ea0f676364df58dfb91f9246b7548bc08c10c136863ff56aba"
+    },
+    {
+      "name": "content",
+      "count": 1,
+      "bytes": 1188,
+      "sha256": "847ee6dd200ab1c7564d541b213511883f054ca47cabc5b4cc194caa7b1187e2"
+    },
+    {
+      "name": "helper scan",
+      "count": 1,
+      "bytes": 1473,
+      "sha256": "bfce2e42e8c46d7492731cc66b59cf818518975d31550ba850ebe9d1b55c7d21"
+    },
+    {
+      "name": "Unicode",
+      "count": 64,
+      "bytes": 45424,
+      "sha256": "e79c8a63d280c10525c43db0c033d18aeac89e1722ee140c7e61517fca6f848f"
+    },
+    {
+      "name": "scalar caps",
+      "count": 3,
+      "bytes": 26687,
+      "sha256": "79c5e02c6b0470607e1007ea5785c1200cb546f8d03ff7ac1acf90004a99a029"
+    },
+    {
+      "name": "list caps",
+      "count": 2,
+      "bytes": 19746,
+      "sha256": "e590f87b35d0c9bbd1c9cbf41eea170c9b05ce2410399547947f061f439447fa"
+    },
+    {
+      "name": "wrapper",
+      "count": 3,
+      "bytes": 26082,
+      "sha256": "5ec5e56d481b06b3dbe4de4757bef3d1bad110a662aa552862fc7d5f15abaf88"
+    },
+    {
+      "name": "raw digest",
+      "count": 2,
+      "bytes": 1353,
+      "sha256": "83c59af5d78c8a80c1403fcb24667f0b6b7d87018c81df30d5d3f297c4d3d65e"
+    },
+    {
+      "name": "public cap",
+      "count": 1,
+      "bytes": 262885,
+      "sha256": "2d38d3885d7a8a99ece8bdc68407e3c977f100cde0a685c05f449e474570cac6"
+    },
+    {
+      "name": "combined scriptures",
+      "count": 2,
+      "bytes": 6912,
+      "sha256": "11e016d6b5658cfc1be0f2ae816798c15e647cde3d61ccbf1cc3299c5956c0b5"
+    }
+  ],
+  "pure_rejections": [
+    "option-0:options_invalid",
+    "option-1:options_invalid",
+    "option-2:options_invalid",
+    "option-3:options_invalid",
+    "option-4:options_invalid",
+    "option-5:options_invalid",
+    "option-6:options_invalid",
+    "option-7:options_invalid",
+    "option-8:options_invalid",
+    "option-9:options_invalid",
+    "blank-0:local_contract",
+    "blank-1:local_contract",
+    "blank-2:local_contract",
+    "blank-3:local_contract",
+    "blank-4:local_contract",
+    "blank-5:local_contract",
+    "blank-6:local_contract",
+    "blank-7:local_contract",
+    "blank-8:local_contract",
+    "blank-9:local_contract",
+    "blank-10:local_contract",
+    "blank-11:local_contract",
+    "blank-12:local_contract",
+    "blank-13:local_contract",
+    "blank-14:local_contract",
+    "blank-15:local_contract",
+    "blank-16:local_contract",
+    "blank-17:local_contract",
+    "blank-18:local_contract",
+    "blank-19:local_contract",
+    "blank-20:local_contract",
+    "blank-21:local_contract",
+    "blank-22:local_contract",
+    "blank-23:local_contract",
+    "blank-24:local_contract",
+    "scalar-title:local_contract",
+    "scalar-summary:local_contract",
+    "scalar-main_scripture:local_contract",
+    "list-illustrations:local_contract",
+    "list-supporting_scriptures:local_contract",
+    "public-byte:byte_limit",
+    "teaching-2001:local_contract",
+    "outline-33:local_contract",
+    "subpoints-17:local_contract",
+    "teachings-97:local_contract",
+    "combined-False:local_contract",
+    "combined-True:local_contract"
+  ],
+  "independent_reproduction": {
+    "candidate_source_sha256": "fc8baf7bf006e4bd3afbe677b63d9fbc5e3296dd0adc5b3392adfdc22cfedbae",
+    "candidate_manifest_sha256": "a884bbae617d8aba2f797ad319c4d604575bc513dee07887e7082dae3697a84d",
+    "report_sha256": "b73ffab97e2c16de15b457d20fbd8e2396cdeea75ab4a4aade54d32972b1f68e",
+    "root_disposition_sha256": "2bd1f23ce196494e9a2c53df64eab14dec9bbcd9fabad050b536fbdeff637790"
+  },
+  "comparator": {
+    "path": "scripts/macos_native_fixtures.py",
+    "bytes": 31563,
+    "sha256": "8a5ff4f27da232f0d1dee6dc74f1d741f2eb58f8c24d77f5d4e6709d37c4d0eb"
+  }
+}
