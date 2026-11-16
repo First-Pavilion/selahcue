@@ -1811,6 +1811,8 @@ jobs:
           python3 tests/responsive_diagnostic_regression.py
           DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
           DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
+          DiagnosticProbeInertRegression
+          DiagnosticLedgerPrivacy
 
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.
