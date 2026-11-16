@@ -1927,6 +1927,57 @@ jobs:
             tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api \
             > "$expected"
           echo "file=$expected" >> "$GITHUB_OUTPUT"
+      # Temporary PostgreSQL qualification. Mutations run exclusively in a verified scratch copy.
+      - name: Qualify licence extension generations on PostgreSQL
+        id: licence-generation-qualification
+        if: ${{ !cancelled() }}
+        env:
+          SQL_ENGINE: django.db.backends.postgresql
+          SQL_DATABASE: selahcue_test
+          SQL_USER: selahcue
+          SQL_PASSWORD: selahcue
+          SQL_HOST: localhost
+          SQL_PORT: "5432"
+          CACHE_URL: redis://localhost:6379/1
+          CELERY_BROKER_URL: redis://localhost:6379/2
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: python -B ../../.github/scripts/qualify_license_generation.py
+      - name: Retain licence generation qualification evidence
+        if: ${{ !cancelled() && steps.licence-generation-qualification.outputs.evidence != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: licence-generation-qualification-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/receipt.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/fixtures.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/fixtures.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/baseline.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/baseline.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/baseline.junit.xml
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/baseline.collected.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/baseline.backend.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/free-writer.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/free-writer.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/free-writer.junit.xml
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/free-writer.collected.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/free-writer.backend.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/staff-increment.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/staff-increment.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/staff-increment.junit.xml
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/staff-increment.collected.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/staff-increment.backend.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/token-snapshot.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/token-snapshot.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/token-snapshot.junit.xml
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/token-snapshot.collected.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/token-snapshot.backend.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/pending-catchup.stdout.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/pending-catchup.stderr.log
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/pending-catchup.junit.xml
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/pending-catchup.collected.json
+            ${{ steps.licence-generation-qualification.outputs.evidence }}/pending-catchup.backend.json
       - name: Tests
         if: ${{ !cancelled() }}
         env:
