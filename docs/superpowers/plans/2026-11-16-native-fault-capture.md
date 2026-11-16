@@ -65,7 +65,7 @@
 
 ## Task 4: Wire one normal capture and review
 
-**Files:** `.github/workflows/ci.yml`; existing `implementation/marketing/scripts/webkit_crash_journal.py` and `implementation/marketing/tests/test_webkit_crash_journal.py` only for the approved finite rejection-stage amendment; evidence docs as needed. Native Tasks1–3 and the separately reviewed Home observer must be complete before final wiring/capture.
+**Files:** `.github/workflows/ci.yml`; existing `implementation/marketing/scripts/webkit_crash_journal.py` and `implementation/marketing/tests/test_webkit_crash_journal.py` for the approved finite rejection-stage amendment, bounded source receipt, and actual workflow-command/status controls; the two existing native spec/plan documents may record the ownership ruling. Native Tasks1–3 and the separately reviewed Home observer must be complete before final wiring/capture.
 
 **Additional interface:** optional top-level `kernel_rejection_stage` follows the binding spec's approved finite stage addition. Preserve public `parse_kernel_message` compatibility, one strict parse path, existing omission reasons and null/incomplete joins.
 
@@ -74,6 +74,8 @@
 - [ ] Run focused new stdlib controls to GREEN, then the complete collector fixture file once under the prior bounded offline-only admission. Report actual results, no live journal/core/debugger/GPU/browser/local app execution.
 - [ ] Add the already approved `python3 implementation/marketing/tests/test_home_anchor_capture.py` invocation in the existing workflow lint job. The existing Node glob selects its paired fixture. This additive selection preserves every original job, condition, timeout and command.
 
+- [ ] Implement the source receipt as settled in the spec/ruling: distinct actual checkout/tree versus candidate, fixed profiles/pins/files, shared 0.5-second/4 KiB owned children, safe bounded regular-file reads and export revalidation. Prove offline/no-host and invalid-window isolation, unavailable/hostile/malformed/overflow/nonzero/timeout behavior, shared budgets, file mutation/refusal, combined cap and matched-frame priority. Keep source incompleteness separate from kernel attribution.
+- [ ] Execute the four actual workflow run blocks with controlled commands, preserving gate exits 0/101/2 and timestamp failures; model Actions selection separately. No real Cargo/browser invocation.
 - [ ] Add workspace step ID, best-effort timestamp output and exact Linux-only diagnostic flag. Its final command/exit remains unchanged. Select post-step GPU collector only when the original Linux gate ran success/failure; diagnostic step alone is `continue-on-error`.
 - [ ] Keep WebKit sweep and existing post-step collector selection; supply fixed profile/source identity and upgrade controls in the existing lint job. No jobs/matrices/runners/versions/timeouts/coverage change.
 - [ ] Review workflow diff with actionlint and existing repository permission/structural controls when admitted. Use a controlled command/status fixture to prove collector failure does not alter original 0/101/2 gate outcomes; do not test only YAML string presence.

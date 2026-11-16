@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import runpy
+import re
+import shlex
 import struct
 import subprocess
 import sys
@@ -102,6 +104,7 @@ class CrashJournalCLI(unittest.TestCase):
                 sys.argv.pop(0)
                 main = runpy.run_path(sys.argv[0])["main"]
                 main.__globals__["installed_identity"] = lambda *args, **kwargs: (None, set())
+                main.__globals__["source_receipt"] = lambda *args, **kwargs: dict()
                 raise SystemExit(main())
             """)
         if bootstrap is not None:
@@ -514,8 +517,19 @@ class CrashJournalCLI(unittest.TestCase):
         collector = runpy.run_path(str(COLLECTOR))
         indexed = collector["summary"]("available")
         collector["collect"](indexed, data, False, int(SINCE), int(UNTIL))
+        indexed["source_receipt"] = {
+            "profile": "webkit", "checkout_sha": "a" * 40, "tree_sha": "b" * 40,
+            "candidate_source_sha": "c" * 40, "run_id": "9" * 20, "run_attempt": "9" * 20,
+            "kernel_release": "x" * 64, "systemd_version": "9" * 10,
+            "playwright_version": "1.61.0", "webkit_revision": "2311", "lock_sha256": "f" * 64,
+        }
+        indexed["kernel_rejection_stage"] = "mixed"
         export = collector["export"]
-        budget = len(json.dumps(result, separators=(",", ":")).encode("ascii")) + 1 - 100
+        full = collector["encode_export"](indexed)
+        self.assertLessEqual(len(full) + 1, 24 * 1024)
+        export.__globals__["EXPORT_LIMIT"] = len(full) + 1
+        self.assertEqual(len(collector["encode_export"](indexed)) + 1, len(full) + 1)
+        budget = len(full) + 1 - 100
         export.__globals__["EXPORT_LIMIT"] = budget
         with redirect_stdout(io.StringIO()) as out:
             export(indexed)
@@ -720,7 +734,7 @@ class KernelCorrelation(unittest.TestCase):
         CrashJournalCLI.setUp(self)
         self.collector = runpy.run_path(str(COLLECTOR))
 
-    def correlated(self, crashes, kernel, *, cut=False, budget=None):
+    def correlated(self, crashes, kernel, *, cut=False, budget=None, additions=None):
         result = self.collector["summary"]("available")
         self.collector["collect"](result, crashes, cut, int(SINCE), int(UNTIL))
         records, complete, reasons = self.collector["correlate_kernel"](
@@ -728,6 +742,8 @@ class KernelCorrelation(unittest.TestCase):
         )
         result.update(records=records, candidate_scan_complete=complete,
                       omission_reasons=sorted({*result["omission_reasons"], *reasons}))
+        if additions:
+            result.update(additions)
         output = io.StringIO()
         export = self.collector["export"]
         limit = export.__globals__["EXPORT_LIMIT"]
@@ -752,6 +768,48 @@ class KernelCorrelation(unittest.TestCase):
             self.assertIsNone(crash["fault_attribution"]["fault_thread"])
         if not complete:
             self.assertIn("join_incomplete", result["omission_reasons"])
+
+    def rejected_stage(self, messages, *, availability="available"):
+        result = self.collector["summary"]("available")
+        self.collector["collect"](result, jsonl(joining_record()), False, int(SINCE), int(UNTIL))
+        self.collector["attach_kernel"](
+            result, availability, jsonl(*(kernel_row(message) for message in messages)), False, True,
+        )
+        raw = self.collector["encode_export"](result)
+        self.assertNotIn(SECRET, raw)
+        self.assertNotIn("00007f0000001234", raw)
+        return json.loads(raw)
+
+    def test_kernel_rejection_stage_classifies_existing_branches(self):
+        # A missing/wrong branch code must fail independently of the refusal itself.
+        cases = (
+            (POSITIVE_KERNEL[0] + "é", "text_bounds"),
+            ("segfault " + SECRET, "prefix_shape"),
+            (POSITIVE_KERNEL[0].replace("4204", "2147483648"), "numeric_range"),
+            (NEGATIVE_KERNEL[1], "suffix_shape"),
+            (POSITIVE_KERNEL[2].replace("libWPEWebKit-2.0.so.1", SECRET), "module_policy"),
+            (NEGATIVE_KERNEL[0], "producer_ending"),
+            (NEGATIVE_KERNEL[5], "numeric_range"),
+        )
+        for message, stage in cases:
+            with self.subTest(stage=stage):
+                result = self.rejected_stage([message])
+                self.assertEqual(result.get("kernel_rejection_stage"), stage)
+                self.assert_unknown(result, "kernel_unsupported_format")
+
+    def test_kernel_rejection_stage_aggregates_without_event_details(self):
+        a, b = NEGATIVE_KERNEL[0], "segfault " + SECRET
+        for messages, expected in (([a, a], "producer_ending"), ([a, b, a], "mixed")):
+            result = self.rejected_stage(messages)
+            self.assertEqual(result.get("kernel_rejection_stage"), expected)
+            self.assert_unknown(result, "kernel_unsupported_format")
+            self.assertNotIn("kernel_events", result)
+
+    def test_kernel_rejection_stage_absent_without_unsupported_text(self):
+        for messages, availability in ((POSITIVE_KERNEL, "available"), ([], "unavailable"),
+                                       ([None], "available"), (["ordinary " + SECRET], "available")):
+            result = self.rejected_stage(messages, availability=availability)
+            self.assertNotIn("kernel_rejection_stage", result)
 
     def test_literal_kernel_grammar(self):
         parse = self.collector["parse_kernel_message"]
@@ -852,9 +910,10 @@ class KernelCorrelation(unittest.TestCase):
     def test_export_budget_keeps_proven_frame_zero_before_peers(self):
         crash = jsonl(record(), joining_record())
         k = jsonl(kernel_row(), kernel_row("irrelevant event"))
-        expected = self.correlated(crash, k)
+        additions = {"source_receipt": {"profile": "webkit", "candidate_source_sha": "c" * 40}}
+        expected = self.correlated(crash, k, additions=additions)
         compact = len(json.dumps(expected, separators=(",", ":")).encode("ascii")) + 1
-        constrained = self.correlated(crash, k, budget=compact - 190)
+        constrained = self.correlated(crash, k, budget=compact - 190, additions=additions)
         self.assertTrue(constrained["candidate_scan_complete"])
         self.assertIn("export_limit", constrained["omission_reasons"])
         selected = next(row for row in constrained["records"] if row["pid"] == 4201)
@@ -1155,6 +1214,330 @@ class InstalledIdentity(unittest.TestCase):
         })
         for rows in ([], [row, row], [row, {"_parity_exe": second}]):
             self.assertIsNone(identity("gpu-parity", rows)[0])
+
+
+class SourceReceipt(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.tmp = Path(temp.name).resolve()
+        self.collector = runpy.run_path(str(COLLECTOR))
+        self.produce = self.collector["source_receipt"]
+        self.state = self.produce.__globals__
+        self.state["REPOSITORY_ROOT"] = self.tmp
+        self.lock = self.tmp / "implementation/marketing/package-lock.json"
+        self.lock.parent.mkdir(parents=True)
+        self.lock.write_bytes(b"abc")
+        cargo = self.tmp / "implementation/desktop/Cargo.lock"
+        cargo.parent.mkdir(parents=True)
+        cargo.write_bytes(b"abc")
+        (self.tmp / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.98.0"\n')
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.witness = self.tmp / "calls"
+        self.command("git", "printf '%s\\n' " + "a" * 40 + " " + "b" * 40)
+        self.command("systemd", "printf '%s\\n' 'systemd 259 (private build)' " + SECRET)
+        self.environ = {"PATH": str(self.bin), "GITHUB_RUN_ID": "12345", "GITHUB_RUN_ATTEMPT": "2"}
+
+    def command(self, name, body):
+        expected = ["-C", str(self.tmp), "rev-parse", "HEAD", "HEAD^{tree}"] if name == "git" else ["--version"]
+        path = self.bin / name
+        checks = "\n".join(f'[ "${i}" = {shlex.quote(arg)} ] || exit 97' for i, arg in enumerate(expected, 1))
+        path.write_text(f"#!/bin/sh\n[ \"$#\" = {len(expected)} ] || exit 97\n" + checks + "\n"
+                        + f"printf '%s\\n' {name} >> {shlex.quote(str(self.witness))}\n" + body + "\n")
+        path.write_text(path.read_text().replace("#!/bin/sh\n", '#!/bin/sh\n[ "$FIXTURE_PREPARE" != 1 ] || exit 0\n', 1))
+        path.chmod(0o700)
+        # Fresh local fixture executables have taken >0.5s to start here; the
+        # cause is unknown. Prepare them before testing the unchanged production
+        # half-second budget; this is fixture preparation, never a probe retry.
+        subprocess.run([str(path), *expected], env={"FIXTURE_PREPARE": "1"}, capture_output=True, timeout=2)
+        self.witness.write_text("")
+
+    def receipt(self, profile="webkit", candidate="c" * 40):
+        with patch.dict(os.environ, self.environ, clear=True), patch.object(os, "uname", return_value=type("U", (), {"release": "6.8.0-fixture"})()):
+            receipt = self.produce(profile, candidate, deadline=time.monotonic() + 2)
+        result = self.collector["summary"]("empty")
+        result["source_receipt"] = receipt
+        raw = self.collector["encode_export"](result)
+        self.assertNotIn(SECRET, raw)
+        self.assertNotIn(str(self.tmp), raw)
+        return json.loads(raw).get("source_receipt", {})
+
+    def test_source_receipt_actual_checkout_is_distinct_from_candidate(self):
+        result = self.receipt()
+        self.assertEqual(result.get("checkout_sha"), "a" * 40)
+        self.assertEqual(result.get("tree_sha"), "b" * 40)
+        self.assertEqual(result.get("candidate_source_sha"), "c" * 40)
+        self.assertEqual(result.get("run_id"), "12345")
+        self.assertEqual(result.get("run_attempt"), "2")
+        self.assertEqual(result.get("kernel_release"), "6.8.0-fixture")
+        self.assertEqual(result.get("systemd_version"), "259")
+        self.assertEqual(result.get("profile"), "webkit")
+        self.assertEqual(result.get("job"), "marketing")
+        self.assertEqual(result.get("playwright_version"), "1.61.0")
+        self.assertEqual(result.get("webkit_revision"), "2311")
+        self.assertEqual(result.get("lock_sha256"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        self.assertTrue(result.get("complete"))
+        self.assertEqual(self.witness.read_text().splitlines(), ["git", "systemd"])
+
+    def test_source_receipt_gpu_uses_fixed_channel_and_lock(self):
+        result = self.receipt("gpu-parity")
+        self.assertEqual(result.get("job"), "rust")
+        self.assertEqual(result.get("rust_channel"), "1.98.0")
+        self.assertEqual(result.get("lock_sha256"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        self.assertNotIn("playwright_version", result)
+        self.assertTrue(result.get("complete"))
+
+    def test_source_receipt_unavailable_and_hostile_values_are_unknown(self):
+        self.command("git", "printf '%s\\n' " + SECRET)
+        self.command("systemd", "printf '%s\\n' 'systemd " + SECRET + "'")
+        self.environ.update(GITHUB_RUN_ID=SECRET, GITHUB_RUN_ATTEMPT="9" * 21)
+        result = self.receipt(candidate=SECRET)
+        self.assertFalse(result.get("complete", True))
+        for field in ("checkout_sha", "tree_sha", "candidate_source_sha", "systemd_version", "run_id", "run_attempt"):
+            self.assertIn(field, result)
+            self.assertIsNone(result[field])
+        (self.bin / "git").unlink()
+        result = self.receipt()
+        self.assertIsNone(result["checkout_sha"])
+        self.assertIsNone(result["systemd_version"])
+        self.assertFalse(result["complete"])
+
+
+    def test_nonzero_output_cannot_reset_the_shared_probe_byte_budget(self):
+        self.command("git", "printf '%04096d' 0; exit 1")
+        result = self.receipt()
+        self.assertIsNone(result.get("systemd_version"))
+        self.assertEqual(self.witness.read_text().splitlines(), ["git"])
+        self.assertFalse(result["complete"])
+
+    def test_shared_probe_deadline_and_output_overflow_are_bounded(self):
+        # A second child never receives a fresh half-second or fresh 4 KiB.
+        self.command("git", "/bin/sleep 0.30; printf '%s\\n' " + "a" * 40 + " " + "b" * 40)
+        marker = self.tmp / "timed-out-child"
+        self.command("systemd", f"printf '%s\\n' \"$$\" > {shlex.quote(str(marker))}; /bin/sleep 0.30; printf '%s\\n' 'systemd 259'")
+        start = time.monotonic()
+        result = self.receipt()
+        self.assertLess(time.monotonic() - start, 0.85)
+        self.assertIsNone(result["systemd_version"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(self.witness.read_text().splitlines(), ["git", "systemd"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(marker.read_text()), 0)
+        self.command("git", "printf '%04080d' 0")
+        self.command("systemd", "printf 'systemd 259\\n1234'")
+        result = self.receipt()
+        self.assertEqual(result["systemd_version"], "259")
+        self.assertFalse(result["complete"])
+        self.command("systemd", "printf '%s' 'systemd 259 '; printf '%040d' 0")
+        result = self.receipt()
+        self.assertIsNone(result["checkout_sha"])
+        self.assertIsNone(result["systemd_version"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(self.witness.read_text().splitlines(), ["git", "systemd"])
+        self.command("git", "printf '%04097d' 0")
+        result = self.receipt()
+        self.assertEqual(self.witness.read_text().splitlines(), ["git"])
+        self.assertFalse(result["complete"])
+
+    def test_source_fixed_files_reject_size_nonregular_escape_and_mutation(self):
+        self.lock.write_bytes(b"x" * (1024 * 1024))
+        self.assertEqual(self.receipt()["lock_sha256"], hashlib.sha256(b"x" * (1024 * 1024)).hexdigest())
+        self.lock.write_bytes(b"x" * (1024 * 1024 + 1))
+        self.assertIsNone(self.receipt()["lock_sha256"])
+        self.lock.unlink()
+        os.mkfifo(self.lock)
+        self.assertIsNone(self.receipt()["lock_sha256"])
+        self.lock.unlink()
+        outside = self.tmp / "outside"
+        outside.write_bytes(b"abc")
+        self.lock.symlink_to(outside)
+        self.assertIsNone(self.receipt()["lock_sha256"])
+        self.lock.unlink()
+        self.lock.write_bytes(b"abc")
+        original = os.fstat
+        calls = 0
+        def changed(fd):
+            nonlocal calls
+            result = original(fd)
+            calls += 1
+            if calls == 1:
+                self.lock.write_bytes(b"xyz")
+            return result
+        with patch.object(os, "fstat", side_effect=changed):
+            self.assertIsNone(self.receipt()["lock_sha256"])
+        toolchain = self.tmp / "rust-toolchain.toml"
+        for content in (b"x" * 4097, b'[toolchain]\nchannel="stable"', b'[toolchain]\nchannel="1.2.3"\nchannel="9.8.7"'):
+            toolchain.write_bytes(content)
+            self.assertIsNone(self.receipt("gpu-parity")["rust_channel"])
+
+    def test_source_export_revalidates_and_does_not_change_kernel_ownership(self):
+        result = self.collector["summary"]("available")
+        self.collector["collect"](result, jsonl(joining_record()), False, int(SINCE), int(UNTIL))
+        self.collector["attach_kernel"](result, "available", jsonl(kernel_row()), False, True)
+        result["source_receipt"] = {"profile": "webkit", "checkout_sha": SECRET, "arbitrary": SECRET,
+                                    "kernel_release": "x/" + SECRET, "job": SECRET, "complete": True}
+        result["kernel_rejection_stage"] = SECRET
+        safe = json.loads(self.collector["encode_export"](result))
+        self.assertNotIn(SECRET, json.dumps(safe))
+        self.assertFalse(safe["source_receipt"]["complete"])
+        self.assertTrue(safe["candidate_scan_complete"])
+        self.assertEqual(safe["records"][0]["fault_attribution"]["fault_thread"]["tid"], 4204)
+
+    def test_main_receipt_integration_and_offline_invalid_window_no_host(self):
+        main = self.collector["main"]
+        state = main.__globals__
+        outputs = []
+        state["write_export"] = lambda encoded, deadline: outputs.append(json.loads(encoded))
+        state["core_handler"] = lambda: "not_checked"
+        state["query"] = lambda *args: ("available", b"", False, True)
+        state["query_kernel"] = lambda *args: ("available", b"", False, True)
+        state["installed_identity"] = lambda *args, **kwargs: (None, set())
+        args = [str(COLLECTOR), "--since", SINCE, "--until", UNTIL, "--candidate-source-sha", "c" * 40]
+        with patch.dict(os.environ, self.environ, clear=True), patch.object(os, "uname", return_value=type("U", (), {"release": "6.8.0-fixture"})()), patch.object(sys, "argv", args):
+            self.assertEqual(main(), 0)
+        self.assertEqual(outputs[-1]["source_receipt"]["checkout_sha"], "a" * 40)
+        def forbidden(*args, **kwargs):
+            self.fail("offline/invalid invocation reached a host probe")
+        for name in ("source_receipt", "core_handler", "query", "query_kernel", "installed_identity"):
+            state[name] = forbidden
+        replay = self.tmp / "replay"
+        replay.write_bytes(b"")
+        for extra, since, expected in ((["--journal-jsonl", str(replay)], SINCE, 0), ([], "", 2)):
+            with patch.object(sys, "argv", [str(COLLECTOR), "--since", since, "--until", UNTIL, *extra]):
+                self.assertEqual(main(), expected)
+                self.assertNotIn("source_receipt", outputs[-1])
+
+
+    def test_parent_watchdog_discards_partial_receipt_without_losing_safe_fallback(self):
+        main = self.collector["main"]
+        state = main.__globals__
+        outputs = []
+        state["METADATA_SECONDS"] = 0.20
+        state["write_export"] = lambda encoded, deadline: outputs.append(json.loads(encoded))
+        state["core_handler"] = lambda: "not_checked"
+        state["query"] = lambda *args: ("available", jsonl(joining_record()), False, True)
+        state["query_kernel"] = lambda *args: ("available", jsonl(kernel_row()), False, True)
+        def slow_receipt(*args, **kwargs):
+            time.sleep(0.40)
+            return {"profile": "webkit", "checkout_sha": "a" * 40}
+        state["source_receipt"] = slow_receipt
+        args = [str(COLLECTOR), "--since", SINCE, "--until", UNTIL]
+        start = time.monotonic()
+        with patch.object(sys, "argv", args):
+            self.assertEqual(main(), 0)
+        self.assertLess(time.monotonic() - start, 0.40)
+        self.assertNotIn("source_receipt", outputs[-1])
+        self.assertNotIn("kernel_rejection_stage", outputs[-1])
+        self.assertIn("deadline", outputs[-1]["omission_reasons"])
+        self.assertFalse(outputs[-1]["candidate_scan_complete"])
+        self.assertIsNone(outputs[-1]["records"][0]["fault_attribution"]["fault_thread"])
+
+
+class WorkflowCommands(unittest.TestCase):
+    def step(self, name):
+        # Only named six-space step blocks and their literal run forms are admitted.
+        text = (COLLECTOR.parents[3] / ".github/workflows/ci.yml").read_text()
+        marker = "      - name: " + name + "\n"
+        self.assertEqual(text.count(marker), 1)
+        block = text.split(marker, 1)[1]
+        block = re.split(r"^      - |^[^ #]", block, maxsplit=1, flags=re.M)[0]
+        lines = block.splitlines()
+        run = next(i for i, line in enumerate(lines) if line.startswith("        run: "))
+        value = lines[run].removeprefix("        run: ")
+        if value == "|":
+            selected = []
+            for line in lines[run + 1:]:
+                if line and not line.startswith("          "):
+                    break
+                selected.append(line[10:])
+            value = "\n".join(selected)
+        self.assertNotEqual(value, ">-")
+        return block, value
+
+    def test_actual_workflow_shells_preserve_gate_exits_and_diagnostic_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            calls, output = tmp / "calls", tmp / "output"
+            env = {"PATH": str(tmp), "GITHUB_OUTPUT": str(output), "CALLS": str(calls),
+                   "CANDIDATE_SOURCE_SHA": "c" * 40, "WEBKIT_SWEEP_STARTED_AT": SINCE,
+                   "GPU_PARITY_STARTED_AT": SINCE}
+            fake = """#!/bin/sh
+case "$0" in
+  */date) [ "$#" = 1 ] && [ "$1" = +%s ] || exit 97
+    [ "$DATE_FAIL" != 1 ] || exit 9
+    printf '%s\n' 1794837000 ;;
+  */cargo) [ "$*" = 'test --workspace --no-fail-fast' ] || exit 97
+    printf '%s\n' cargo >> "$CALLS"
+    exit "$GATE_STATUS" ;;
+  */python3)
+    if [ "$1" = scripts/responsive_sweep.py ]; then
+      [ "$*" = 'scripts/responsive_sweep.py --engine webkit' ] || exit 97
+      printf '%s\n' sweep >> "$CALLS"
+      exit "$GATE_STATUS"
+    fi
+    [ "$#" = 9 ] || exit 97
+    case "$1:$3" in
+      ../marketing/scripts/webkit_crash_journal.py:gpu-parity|scripts/webkit_crash_journal.py:webkit) ;;
+      *) exit 97 ;;
+    esac
+    [ "$2" = --profile ] && [ "$4" = --candidate-source-sha ] && [ "$5" = "$CANDIDATE_SOURCE_SHA" ] || exit 97
+    [ "$6" = --since ] && [ "$7" = 1794837000 ] && [ "$8" = --until ] && [ "$9" = 1794837000 ] || exit 97
+    printf '%s\n' collector >> "$CALLS"
+    exit 19 ;;
+  *) exit 97 ;;
+esac
+"""
+            for name in ("date", "cargo", "python3"):
+                path = tmp / name
+                path.write_text(fake)
+                path.chmod(0o700)
+            for gate, diagnostic, witness in (
+                ("Test (workspace, incl. GPU parity where an adapter exists)", "Collect existing GPU parity crash summaries", "cargo"),
+                ("Responsive sweep (WebKit)", "Collect existing WebKit crash summaries", "sweep"),
+            ):
+                block, command = self.step(gate)
+                # This exact expansion is Linux-only; Windows retains an empty
+                # prelude and its default shell. Never interpret arbitrary YAML.
+                expression = re.compile(r"\$\{\{ runner.os == 'Linux' && '(.*)' \|\| '' \}\}")
+                command = expression.sub(lambda match: match[1].replace("''", "'"), command)
+                self.assertNotIn("${{", command)
+                self.assertNotIn("shell:", block)
+                self.assertIn("if: ${{ !cancelled() }}", block)
+                self.assertNotIn("continue-on-error:", block)
+                for code in (0, 101, 2):
+                    output.write_text("")
+                    calls.write_text("")
+                    run = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
+                                         env={**env, "GATE_STATUS": str(code)}, capture_output=True, timeout=2)
+                    self.assertEqual(run.returncode, code, run.stderr)
+                    self.assertEqual(calls.read_text().splitlines(), [witness])
+                    self.assertEqual(output.read_text(), "started_at=1794837000\n")
+                    collector_block, collector = self.step(diagnostic)
+                    self.assertIn("continue-on-error: true", collector_block)
+                    run = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", collector],
+                                         env=env, capture_output=True, timeout=2)
+                    self.assertEqual(run.returncode, 19, run.stderr)
+                    self.assertEqual(calls.read_text().splitlines(), [witness, "collector"])
+                    # Actions conclusion mapping is modeled, not hosted proof:
+                    # a separately continued diagnostic leaves the original code.
+                    effective = code if "continue-on-error: true" in collector_block else run.returncode
+                    self.assertEqual(effective, code)
+                    for failure in ("date", "output"):
+                        output.write_text("")
+                        bad = {**env, "GATE_STATUS": str(code), "DATE_FAIL": "1" if failure == "date" else "0"}
+                        if failure == "output":
+                            bad["GITHUB_OUTPUT"] = str(tmp)
+                        run = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
+                                             env=bad, capture_output=True, timeout=2)
+                        self.assertEqual(run.returncode, code)
+                        self.assertEqual(output.read_text(), "")
+                step_id = "workspace_tests" if witness == "cargo" else "responsive_webkit"
+                expected = "!cancelled() && " + ("runner.os == 'Linux' && " if witness == "cargo" else "")
+                expected += f"(steps.{step_id}.outcome == 'success' || steps.{step_id}.outcome == 'failure')"
+                self.assertIn("if: ${{ " + expected + " }}", collector_block)
+                if witness == "cargo":
+                    self.assertIn("SELAHCUE_GPU_PARITY_DIAGNOSTICS: ${{ runner.os == 'Linux' && '1' || '' }}", block)
 
 
 def _token():

@@ -91,7 +91,8 @@ MODULE_SYMBOLS = {
 MODULE_DIRS = {"/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu",
                f"{BUNDLE}/lib", f"{BUNDLE}/sys/lib"}
 VERSIONED_MODULE = re.compile(r"(.{1,48}\.so\.[0-9]{1,2})(?:\.[0-9]{1,3}){1,2}")
-PARITY_DEPS = Path(__file__).resolve().parents[3] / "implementation/desktop/target/debug/deps"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+PARITY_DEPS = REPOSITORY_ROOT / "implementation/desktop/target/debug/deps"
 PARITY_NAME = re.compile(r"test_parity-[0-9a-f]{16}")
 GPU_MODULES = {
     "libvulkan.so.1", "libvulkan_lvp.so", "libvulkan_intel.so", "libvulkan_radeon.so",
@@ -591,37 +592,42 @@ def collect(result, data, cut, since, until, *, profile="webkit"):
 
 
 
-def parse_kernel_message(message, parity_names=()):
+def _parse_kernel_message(message, parity_names=()):
     if (not isinstance(message, str) or len(message) > KERNEL_LINE_LIMIT
             or not message.isascii()):
-        return None
+        return None, "text_bounds"
     match = KERNEL_PREFIX.fullmatch(message.removesuffix("\n"))
     if not match:
-        return None
+        return None, "prefix_shape"
     tid, pc, ending = int(match["tid"]), int(match["pc"], 16), match["ending"]
     if not 1 <= tid <= MAX_TID:
-        return None
+        return None, "numeric_range"
     module = None
     if ending:
         suffix = KERNEL_ENDING.fullmatch(ending)
         if not suffix:
-            return None
+            return None, "suffix_shape"
         module = suffix["module"]
         if module is not None and module not in MODULE_SYMBOLS and module not in parity_names:
-            return None
+            return None, "module_policy"
         cpu = suffix["cpu"]
         if cpu is None:
             # Only the older two-number module formatter can stand alone.
             if module is None or suffix["third"] is not None:
-                return None
+                return None, "producer_ending"
         elif not (int(cpu) <= MAX_TID
                   and all(-2_147_483_648 <= int(suffix[name]) <= MAX_TID for name in ("core", "socket"))):
-            return None
-    return tid, pc, module
+            return None, "numeric_range"
+    return (tid, pc, module), None
 
 
-def correlate_kernel(records, kernel_bytes, candidate_scan_complete):
+def parse_kernel_message(message, parity_names=()):
+    return _parse_kernel_message(message, parity_names)[0]
+
+
+def correlate_kernel(records, kernel_bytes, candidate_scan_complete, *, diagnostics=None):
     reasons = set()
+    rejection_stage = None
     indexed_threads = {}
     parity_names = set()
     for record in records:
@@ -663,8 +669,11 @@ def correlate_kernel(records, kernel_bytes, candidate_scan_complete):
                 continue
             if "segfault" not in message:
                 continue
-            event = parse_kernel_message(message, parity_names)
+            event, stage = _parse_kernel_message(message, parity_names)
             if event is None:
+                rejection_stage = stage if rejection_stage is None else (
+                    rejection_stage if rejection_stage == stage else "mixed"
+                )
                 reasons.add("kernel_unsupported_format")
                 continue
             tid, pc, module = event
@@ -698,6 +707,8 @@ def correlate_kernel(records, kernel_bytes, candidate_scan_complete):
         record["fault_attribution"]["fault_thread"] = {
             "tid": tid, "basis": FAULT_BASIS, "delta_us": delta, "frame_zero": frame,
         }
+    if diagnostics is not None and rejection_stage is not None:
+        diagnostics["kernel_rejection_stage"] = rejection_stage
     return records, complete, reasons
 
 
@@ -859,6 +870,112 @@ def installed_identity(profile, eligible_records, *, deadline=None):
     return None, reasons | {"identity_missing"}
 
 
+SOURCE_SECONDS = 0.5
+SOURCE_OUTPUT_LIMIT = 4096
+SOURCE_LOCK_LIMIT = 1024 * 1024
+KERNEL_REJECTION_STAGES = frozenset((
+    "text_bounds", "prefix_shape", "numeric_range", "suffix_shape",
+    "module_policy", "producer_ending", "mixed",
+))
+SOURCE_PATTERNS = {
+    "checkout_sha": r"[0-9a-f]{40}", "tree_sha": r"[0-9a-f]{40}",
+    "candidate_source_sha": r"[0-9a-f]{40}",
+    "run_id": r"[0-9]{1,20}", "run_attempt": r"[0-9]{1,20}",
+    "kernel_release": r"[A-Za-z0-9._+\-]{1,64}", "systemd_version": r"[0-9]{1,10}",
+    "lock_sha256": r"[0-9a-f]{64}",
+}
+
+
+def safe_source_receipt(receipt):
+    # Revalidate at export too: private command output and unknown keys never cross.
+    profile = receipt.get("profile")
+    if profile not in ("webkit", "gpu-parity"):
+        return None
+    patterns = dict(SOURCE_PATTERNS)
+    if profile == "webkit":
+        patterns.update(playwright_version=r"1\.61\.0", webkit_revision=r"2311")
+    else:
+        patterns["rust_channel"] = r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
+    safe = {"profile": profile, "job": "marketing" if profile == "webkit" else "rust"}
+    for key, pattern in patterns.items():
+        value = receipt.get(key)
+        safe[key] = value if isinstance(value, str) and re.fullmatch(pattern, value) else None
+    safe["complete"] = all(safe[key] is not None for key in patterns)
+    return safe
+
+
+def read_source_file(relative, limit):
+    # Fixed caller paths only. Nonblocking open plus no-follow directory walking
+    # rejects FIFOs, devices and symlink ancestors without touching their contents.
+    path = REPOSITORY_ROOT / relative
+    directory = open_fixed_directory(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
+        with os.fdopen(fd, "rb", buffering=0) as source:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                raise ValueError
+            data = source.read(limit + 1)
+            after = os.fstat(fd)
+            named = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+            if (len(data) > limit or len(data) != before.st_size
+                    or identity(before) != identity(after) or identity(before) != identity(named)):
+                raise ValueError
+            return data
+    finally:
+        os.close(directory)
+
+
+def source_receipt(profile, candidate_source_sha, *, deadline):
+    receipt = {"profile": profile, "candidate_source_sha": candidate_source_sha,
+               "run_id": os.environ.get("GITHUB_RUN_ID"),
+               "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
+    # Both children share one budget, including cleanup. Reserve a small slice
+    # for immediate KILL/reap instead of the query supervisor's full 0.65s.
+    probe_deadline = min(deadline, time.monotonic() + SOURCE_SECONDS)
+    remaining_bytes = SOURCE_OUTPUT_LIMIT
+    for name, args in (
+        ("git", ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "HEAD", "HEAD^{tree}"]),
+        ("systemd", ["systemd", "--version"]),
+    ):
+        if remaining_bytes <= 0 or time.monotonic() >= probe_deadline - 0.05:
+            break
+        status, data, cut, reaped = read_child(args, remaining_bytes, probe_deadline - 0.05, probe_deadline)
+        remaining_bytes -= len(data)
+        if status != "available" or cut or not reaped:
+            # The supervisor deliberately discards nonzero output. Stop here
+            # rather than accidentally giving another child a fresh byte cap.
+            break
+        if name == "git":
+            match = re.fullmatch(rb"([0-9a-f]{40})\n([0-9a-f]{40})\n", data)
+            if match:
+                receipt.update(checkout_sha=match[1].decode("ascii"), tree_sha=match[2].decode("ascii"))
+        else:
+            match = re.match(rb"systemd ([0-9]{1,10})(?=[ \n]|$)", data)
+            if match:
+                receipt["systemd_version"] = match[1].decode("ascii")
+    try:
+        receipt["kernel_release"] = os.uname().release
+    except (OSError, AttributeError):
+        pass
+    if profile == "webkit":
+        receipt.update(playwright_version="1.61.0", webkit_revision="2311")
+        lock = "implementation/marketing/package-lock.json"
+    else:
+        lock = "implementation/desktop/Cargo.lock"
+        try:
+            import tomllib
+            receipt["rust_channel"] = tomllib.loads(read_source_file("rust-toolchain.toml", 4096).decode("utf-8"))["toolchain"]["channel"]
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    try:
+        receipt["lock_sha256"] = hashlib.sha256(read_source_file(lock, SOURCE_LOCK_LIMIT)).hexdigest()
+    except (OSError, ValueError):
+        pass
+    return safe_source_receipt(receipt)
+
+
 def safe_frame(frame):
     return {key: frame[key] for key in ("ordinal", "module", "offset", "symbol") if key in frame}
 
@@ -872,6 +989,13 @@ def encode_export(result):
     )}
     if "installed_identity" in result:
         payload["installed_identity"] = result["installed_identity"]
+    stage = result.get("kernel_rejection_stage")
+    if stage in KERNEL_REJECTION_STAGES:
+        payload["kernel_rejection_stage"] = stage
+    if "source_receipt" in result:
+        receipt = safe_source_receipt(result["source_receipt"])
+        if receipt is not None:
+            payload["source_receipt"] = receipt
     records = payload["records"] = []
 
     def mark_export_limit():
@@ -1008,6 +1132,7 @@ def attach_kernel(result, availability, kernel_data, cut, reaped):
         reasons.add("reap_unconfirmed")
     records, complete, join_reasons = correlate_kernel(
         result["records"], kernel_data, result["candidate_scan_complete"] and not reasons,
+        diagnostics=result,
     )
     reasons |= join_reasons
     result["records"] = records
@@ -1026,6 +1151,7 @@ def main():
     parser.add_argument("--until", required=True)
     parser.add_argument("--journal-jsonl", metavar="FILE")
     parser.add_argument("--kernel-jsonl", metavar="FILE")
+    parser.add_argument("--candidate-source-sha")
     parser.add_argument("--profile", choices=("webkit", "gpu-parity"), default="webkit")
     try:
         options = parser.parse_args()
@@ -1086,6 +1212,10 @@ def main():
                 attach_kernel(result, *kernel_status)
                 fallback = encode_timeout(result)
         with time_bound(deadline):
+            if not offline:
+                result["source_receipt"] = source_receipt(
+                    options.profile, options.candidate_source_sha, deadline=deadline,
+                )
             encoded = encode_export(result)
     except DiagnosticDeadline:
         write_export(fallback, output_deadline)
