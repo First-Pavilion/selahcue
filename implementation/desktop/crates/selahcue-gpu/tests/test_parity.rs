@@ -8,6 +8,11 @@ use selahcue_engine::raster::{render, FrameBuffer};
 use selahcue_engine::scene::{Frame, Layer, Rect, Rgba};
 use selahcue_gpu::Compositor;
 
+#[path = "support/parity_diagnostics.rs"]
+mod parity_diagnostics;
+
+use parity_diagnostics::{observe_construct, observe_readback, Case, Observer};
+
 fn scenes() -> Vec<Frame> {
     let mut solid = Frame::new(320, 180).with_background(Rgba::rgb(20, 40, 120));
 
@@ -90,14 +95,18 @@ fn scenes() -> Vec<Frame> {
 
 #[test]
 fn wgpu_matches_cpu_rasterizer_to_ssim_0_99() {
-    let Some(compositor) = Compositor::new() else {
+    let mut observer = Observer::for_case(Case::Ssim);
+    observer.case_enter();
+    let Some(compositor) = observe_construct(&mut observer, 1, Compositor::new) else {
         eprintln!("no GPU adapter — skipping wgpu parity (compile-only in this environment)");
         return;
     };
 
-    for frame in scenes() {
+    for (index, frame) in scenes().into_iter().enumerate() {
         let cpu = render(&frame);
-        let gpu_pixels = compositor.render_to_pixels(&frame);
+        let gpu_pixels = observe_readback(&mut observer, 1, index + 1, || {
+            compositor.render_to_pixels(&frame)
+        });
         let gpu = FrameBuffer::from_rgba(frame.width, frame.height, gpu_pixels).unwrap();
         let score = ssim(&cpu, &gpu);
         assert!(
@@ -117,12 +126,14 @@ fn device_loss_signals_and_recovery_renders_identically() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    let Some(first) = Compositor::new() else {
+    let mut observer = Observer::for_case(Case::DeviceLoss);
+    observer.case_enter();
+    let Some(first) = observe_construct(&mut observer, 1, Compositor::new) else {
         eprintln!("no GPU available — skipping (headless env without a software driver)");
         return;
     };
     let frame = scenes().remove(0);
-    let before = first.render_to_pixels(&frame);
+    let before = observe_readback(&mut observer, 1, 1, || first.render_to_pixels(&frame));
     assert!(!before.is_empty());
 
     // Inject the loss: the lost callback must fire (the desktop shell's cue to
@@ -140,7 +151,8 @@ fn device_loss_signals_and_recovery_renders_identically() {
     );
 
     // Recovery: a fresh compositor renders byte-identically.
-    let second = Compositor::new().expect("recreate after device loss");
-    let after = second.render_to_pixels(&frame);
+    let second =
+        observe_construct(&mut observer, 2, Compositor::new).expect("recreate after device loss");
+    let after = observe_readback(&mut observer, 2, 1, || second.render_to_pixels(&frame));
     assert_eq!(before, after, "recovered output is pixel-identical");
 }
