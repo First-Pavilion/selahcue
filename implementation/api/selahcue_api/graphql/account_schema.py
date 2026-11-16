@@ -1,9 +1,14 @@
+import logging
+from enum import Enum
+
 import strawberry
 from django.conf import settings
+from django.utils import timezone
 from graphql import GraphQLError
 from strawberry.extensions import DisableIntrospection
 from strawberry.types import ExecutionContext
 
+from selahcue_api.apps.accounts.account_overview import account_overview, validate_account_pagination
 from selahcue_api.apps.accounts.services import (
     ACCOUNT_SESSION_TTL,
     ConfirmPasswordResetResult,
@@ -19,11 +24,12 @@ from selahcue_api.apps.accounts.services import (
     resend_email_verification,
     verify_email,
 )
-from selahcue_api.apps.throttling.services import client_ip
+from selahcue_api.apps.devices.deactivation import deactivate_own_device
 from selahcue_api.apps.devices.services import (
     ActivateDeviceWithSessionData,
     activate_device_with_session,
 )
+from selahcue_api.apps.throttling.services import client_ip
 from selahcue_api.graphql.context import (
     ACCOUNT_SESSION_COOKIE,
     _read_account_session_token,
@@ -31,6 +37,17 @@ from selahcue_api.graphql.context import (
     require_customer_org,
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+
+
+_logger = logging.getLogger(__name__)
+
+
+class _AccountFieldError(SafeAPIError):
+    """Only new account fields use bounded, query-free fault reporting."""
+
+    def __init__(self, code: ErrorCode, field: str):
+        super().__init__(code)
+        self.account_field = field
 
 
 class AccountSchema(strawberry.Schema):
@@ -43,8 +60,14 @@ class AccountSchema(strawberry.Schema):
         # per-refusal traceback would bypass that suppression under a reset flood.
         # Only our typed refusal qualifies: an arbitrary exception carrying the
         # same extension code must still reach the framework's traceback logger.
+        scoped = [error for error in errors if isinstance(error.original_error, _AccountFieldError)]
+        for error in scoped:
+            safe = error.original_error
+            if safe.code == ErrorCode.INTERNAL:
+                _logger.error("Account field failed: field=%s code=INTERNAL", safe.account_field)
         unexpected = [
             error for error in errors
+            if not isinstance(error.original_error, _AccountFieldError)
             if not (
                 isinstance(error.original_error, SafeAPIError)
                 and error.original_error.code == ErrorCode.RATE_LIMITED
@@ -58,6 +81,150 @@ class AccountViewer:
     surface: str
     actor_id: str
     org_id: str
+
+
+@strawberry.enum
+class AccountRole(Enum):
+    ADMIN = "ADMIN"
+    MEMBER = "MEMBER"
+
+
+@strawberry.enum
+class AccountLicenseStatus(Enum):
+    ISSUED = "ISSUED"
+    ACTIVATED = "ACTIVATED"
+    EXPIRING = "EXPIRING"
+    EXPIRED = "EXPIRED"
+    SUSPENDED = "SUSPENDED"
+    REVOKED = "REVOKED"
+    CONVERTED = "CONVERTED"
+    ARCHIVED = "ARCHIVED"
+
+
+@strawberry.enum
+class AccountRenewal(Enum):
+    AUTOMATIC = "AUTOMATIC"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_MANAGED = "NOT_MANAGED"
+
+
+@strawberry.enum
+class AccountQuotaStatus(Enum):
+    CURRENT_OBSERVED = "current_observed"
+    STALE = "stale"
+    NOT_INITIALIZED = "not_initialized"
+
+
+@strawberry.enum
+class AccountDeviceStatus(Enum):
+    ACTIVE = "ACTIVE"
+    REVOKED = "REVOKED"
+
+
+@strawberry.type
+class AccountLicense:
+    status: AccountLicenseStatus
+    starts_at: str
+    expires_at: str
+    valid_now: bool
+    renewal: AccountRenewal
+    device_limit: int
+    active_device_count: str
+
+
+@strawberry.type
+class AccountQuota:
+    limit: str
+    settled: str
+    held: str
+    carried_debt: str
+    remaining: str
+    as_of: str
+    resets_at: str
+    status: AccountQuotaStatus
+
+
+@strawberry.type
+class AccountAllowance:
+    plan_display_name: str
+    stt: AccountQuota
+    notes: AccountQuota
+
+
+@strawberry.type
+class AccountDevice:
+    public_id: str
+    display_name: str
+    platform: str
+    app_version: str
+    created_at: str
+    status: AccountDeviceStatus
+
+
+@strawberry.type
+class AccountDevicePage:
+    nodes: list[AccountDevice]
+    next_cursor: str | None
+
+
+@strawberry.type
+class AccountOverview:
+    org_name: str
+    display_name: str
+    email: str
+    role: AccountRole
+    can_deactivate_devices: bool
+    license: AccountLicense | None
+    allowance: AccountAllowance | None
+    devices: AccountDevicePage
+
+
+@strawberry.type
+class DeactivationResult:
+    already_inactive: bool
+
+
+def _claim_account_field(info: strawberry.Info, field: str) -> None:
+    request = getattr(getattr(info, "context", None), "request", None)
+    if request is not None:
+        flag = "_selahcue_claimed_" + field
+        if getattr(request, flag, False):
+            raise _AccountFieldError(ErrorCode.VALIDATION_FAILED, field)
+        # Synchronous resolvers share this HTTP request across aliases/fragments.
+        setattr(request, flag, True)
+
+
+def _account_quota(snapshot) -> AccountQuota:
+    return AccountQuota(
+        limit=str(snapshot.limit), settled=str(snapshot.settled), held=str(snapshot.held),
+        carried_debt=str(snapshot.carried_debt), remaining=str(snapshot.remaining),
+        as_of=snapshot.as_of.isoformat(), resets_at=snapshot.resets_at.isoformat(),
+        status=AccountQuotaStatus(snapshot.status),
+    )
+
+
+def _account_projection(row) -> AccountOverview:
+    license_row = row.license
+    license = None if license_row is None else AccountLicense(
+        status=AccountLicenseStatus(license_row.status), starts_at=license_row.starts_at.isoformat(),
+        expires_at=license_row.expires_at.isoformat(), valid_now=license_row.valid_now,
+        renewal=AccountRenewal(license_row.renewal), device_limit=license_row.device_limit,
+        active_device_count=str(license_row.active_device_count),
+    )
+    allowance = None if row.allowance is None else AccountAllowance(
+        plan_display_name=row.allowance.plan_display_name, stt=_account_quota(row.allowance.stt),
+        notes=_account_quota(row.allowance.notes),
+    )
+    return AccountOverview(
+        org_name=row.org_name, display_name=row.display_name, email=row.email,
+        role=AccountRole(row.role), can_deactivate_devices=row.can_deactivate_devices,
+        license=license, allowance=allowance,
+        devices=AccountDevicePage(nodes=[AccountDevice(
+            public_id=device.public_id, display_name=device.display_name, platform=device.platform,
+            app_version=device.app_version, created_at=device.created_at.isoformat(),
+            status=AccountDeviceStatus(device.status),
+        ) for device in row.devices.nodes], next_cursor=row.devices.next_cursor),
+    )
 
 
 # --- inputs ----------------------------------------------------------------
@@ -170,6 +337,19 @@ def _set_session_cookie(info: strawberry.Info, token: str) -> None:
 @strawberry.type
 class AccountQuery:
     @strawberry.field
+    def account_overview(
+        self, info: strawberry.Info, first: int = 20, after: str | None = None,
+    ) -> AccountOverview:
+        try:
+            _claim_account_field(info, "accountOverview")
+            validate_account_pagination(first, after)
+            return _account_projection(account_overview(actor_from_info(info), timezone.now(), after, first))
+        except SafeAPIError as error:
+            raise _AccountFieldError(error.code, "accountOverview") from None
+        except Exception:
+            raise _AccountFieldError(ErrorCode.INTERNAL, "accountOverview") from None
+
+    @strawberry.field
     def account_viewer(self, info: strawberry.Info) -> AccountViewer:
         actor = actor_from_info(info)
         checked = require_customer_org(actor, actor.org_id if actor else "")
@@ -178,6 +358,19 @@ class AccountQuery:
 
 @strawberry.type
 class AccountMutation:
+    @strawberry.mutation
+    def deactivate_own_device(
+        self, info: strawberry.Info, device_public_id: str, request_id: str,
+    ) -> DeactivationResult:
+        try:
+            _claim_account_field(info, "deactivateOwnDevice")
+            result = deactivate_own_device(actor_from_info(info), device_public_id, request_id)
+            return DeactivationResult(already_inactive=result.already_inactive)
+        except SafeAPIError as error:
+            raise _AccountFieldError(error.code, "deactivateOwnDevice") from None
+        except Exception:
+            raise _AccountFieldError(ErrorCode.INTERNAL, "deactivateOwnDevice") from None
+
     @strawberry.mutation
     def register_customer_user(
         self, info: strawberry.Info, input: RegisterCustomerUserInput
