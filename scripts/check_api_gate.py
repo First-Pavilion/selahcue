@@ -356,7 +356,7 @@ def install_then_check_passes(ctx):
     check(r.stamp.exists() and r.marker.exists(), "no stamp or marker after a successful install")
     rc, out = r.check_gate()
     check(rc == 0, "api-check exit %d:\n%s" % (rc, out))
-    check(r.calls() == ["manage check", "manage makemigrations --check --noinput", "pytest tests -v -rfEs --maxfail=1 --capture=tee-sys"],
+    check(r.calls() == ["manage check", "manage makemigrations --check --noinput", "pytest tests -v -rfEs --maxfail=0 --capture=tee-sys"],
           "wrong commands or order: %r" % r.calls())
     check(r.prefixes() == {os.path.realpath(str(r.venv))},
           "the commands did not run under the venv's interpreter: %r" % r.prefixes())
@@ -1038,15 +1038,20 @@ def help_lists_the_api_targets(ctx):
     check("NOT covered" in h.get("ci", ""), "the ci help line does not list what it does not cover: %r" % h.get("ci"))
 
 
+def workflow_job_lines(text, job):
+    """Return the non-comment lines of a named job in this workflow's block style."""
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.rstrip() == f"  {job}:"), None)
+    if start is None:
+        return []
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  \S", lines[i])), len(lines))
+    return [line for line in lines[start + 1:end] if not line.lstrip().startswith("#")]
+
+
 def api_commands_from_ci(text):
     """The `python manage.py ...` / `python -m pytest ...` run: lines of ci.yml's `api` job, in order."""
-    lines = text.splitlines()
-    start = next((i for i, l in enumerate(lines) if l.rstrip() == "  api:"), None)
-    if start is None:
-        return None
-    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  \S", lines[i])), len(lines))
     cmds = []
-    for l in lines[start:end]:
+    for l in workflow_job_lines(text, "api"):
         m = re.match(r"^\s*run:\s*python (manage\.py .+|-m pytest .+)$", l)
         if m:
             cmds.append(m.group(1).strip())
@@ -1175,7 +1180,7 @@ _STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_
 MUTATIONS = [
     ("exact local uv pin check removed", H, [('    if found.stdout.split()[:2] != ["uv", version]:', "    if False:")], "different_uv_patch_is_refused_by_install"),
     ("locked flag dropped", H, [('"sync", "--locked",', '"sync",')], "locked_manifest_drift_is_refused"),
-    ("pytest failure swallowed", M, [("-m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys", "-m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys || true")], "failing_test_goes_red"),
+    ("pytest failure swallowed", M, [("-m pytest tests -v -rfEs --maxfail=0 --capture=tee-sys", "-m pytest tests -v -rfEs --maxfail=0 --capture=tee-sys || true")], "failing_test_goes_red"),
     ("migration check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput\n', "")],
      "missing_migration_goes_red"),
     ("system check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py check\n', "")], "system_check_failure_goes_red"),

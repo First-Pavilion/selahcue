@@ -8,8 +8,12 @@ No production tenant, network destination, signing material or OS keychain is ne
 import json
 import os
 import queue
+import re
+import runpy
 import subprocess
+import sys
 import threading
+import xml.etree.ElementTree as ET
 from datetime import timedelta
 from pathlib import Path
 
@@ -29,6 +33,115 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLife
 
 OPERATOR_TEST = "account::tests::controller::django_g1_real_api"
 RUST_BIN = os.environ.get("SELAHCUE_G1_OPERATOR_TEST_BIN")
+
+
+def test_required_g1_missing_binary_fails(tmp_path):
+    """Required coverage may never turn an absent executable into a successful skip."""
+    module = Path(__file__).resolve()
+    joint_test = "test_native_account_controller_against_local_platform_api"
+    junit = tmp_path / "missing-binary.xml"
+    # Select only the joint cases (never this probe). Even if a case reaches its
+    # fixtures, it gets temporary SQLite and process-local cache and broker,
+    # independently of the parent runner's PostgreSQL/Redis configuration.
+    test_db = tmp_path / "test-child.sqlite3"
+    (tmp_path / "g1_missing_binary_settings.py").write_text(
+        "from selahcue_api.settings import *\n"
+        f"DATABASES['default']['TEST'] = {{'NAME': {str(test_db)!r}}}\n",
+        encoding="utf-8",
+    )
+    env = {
+        name: os.environ[name]
+        for name in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR")
+        if name in os.environ
+    }
+    env.update(
+        DJANGO_SETTINGS_MODULE="g1_missing_binary_settings",
+        PYTHONPATH=str(tmp_path),
+        SQL_ENGINE="django.db.backends.sqlite3",
+        SQL_DATABASE=str(tmp_path / "child.sqlite3"),
+        CELERY_BROKER_URL="memory://",
+        CELERY_RESULT_BACKEND="cache+memory://",
+        SELAHCUE_G1_REQUIRE="1",
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+    )
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", "-p", "pytest_django.plugin",
+            "-p", "no:cacheprovider", "-q", "-rs",
+            "--junitxml", str(junit), f"tests/{module.name}::{joint_test}",
+        ],
+        cwd=module.parents[1], env=env, capture_output=True, text=True, timeout=90,
+    )
+    diagnostics = f"Required G1 child exited {result.returncode}:\n{result.stdout}{result.stderr}"
+    assert result.returncode == pytest.ExitCode.TESTS_FAILED, diagnostics
+    cases = ET.parse(junit).findall(".//testcase")
+    names = {case.attrib["name"] for case in cases}
+    expected = {
+        "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
+        "lost-initial", "managed-free-lost-initial", "race-loss", "race-replay",
+    }
+    assert {f"{joint_test}[{scenario}]" for scenario in expected} <= names, diagnostics
+    assert len(cases) == len(names), diagnostics
+    for case in cases:
+        assert case.find("skipped") is None and case.find("error") is None, diagnostics
+        failure = case.find("failure")
+        assert failure is not None, diagnostics
+        assert "SELAHCUE_G1_OPERATOR_TEST_BIN" in failure.get("message", ""), diagnostics
+
+
+def test_required_g1_workflow_keeps_api_reachable_and_requires_same_source_artifact():
+    """A job failure or skip must not hide ordinary API tests or bypass the joint proof."""
+    repo = Path(__file__).resolve().parents[3]
+    # Reuse the stdlib workflow inspection behind the API parity self-test.
+    # The contract test runs in pytest, after that self-test and system checks.
+    inspection = runpy.run_path(str(repo / "scripts" / "check_api_gate.py"))
+    workflow = inspection["CI_YML"].read_text()
+    job_lines = inspection["workflow_job_lines"]
+    api = "\n".join(job_lines(workflow, "api"))
+    operator = "\n".join(job_lines(workflow, "operator"))
+    changes = "\n".join(job_lines(workflow, "changes"))
+
+    needs = re.search(r"^    needs:.*$", api, re.MULTILINE)
+    assert needs is not None and {"changes", "operator"} <= set(re.findall(r"\w+", needs[0])), (
+        "The API job must depend on operator for the required same-run G1 artifact"
+    )
+
+    def condition(block, indent):
+        value = next((line.strip()[3:].strip() for line in block.splitlines()
+                      if line.startswith(" " * indent + "if:")), "")
+        return value.removeprefix("${{").removesuffix("}}").strip()
+
+    joint = "needs.changes.outputs.native_account_joint == 'true'"
+    api_area = f"needs.changes.outputs.api == 'true' || {joint}"
+    assert condition(api, 4) == f"always() && !cancelled() && ({api_area})", (
+        "The API job must remain reachable when the operator dependency fails or is skipped"
+    )
+    assert condition(operator, 4) == f"needs.changes.outputs.desktop == 'true' || {joint}"
+    assert "steps.filter.outputs.native_account_joint" in changes
+
+    def steps(job_text):
+        return re.split(r"^      - ", job_text, flags=re.MULTILINE)[1:]
+
+    stage = next((step for step in steps(operator) if "g1_operator_artifact.py stage" in step), "")
+    assert "git rev-parse HEAD" in stage and "--source-sha" in stage
+
+    def joint_artifact_steps(job_text, action):
+        artifact_name = "g1-operator-linux-${{ github.sha }}"
+        return [step for step in steps(job_text)
+                if f"uses: actions/{action}-artifact@" in step
+                and f"          name: {artifact_name}" in step.splitlines()]
+
+    uploads = joint_artifact_steps(operator, "upload")
+    assert len(uploads) == 1 and "runner.os == 'Linux'" in condition(uploads[0], 8)
+    downloads = joint_artifact_steps(api, "download")
+    assert len(downloads) == 1 and joint in condition(downloads[0], 8)
+    assert not re.search(r"^\s*(run-id|repository|github-token):", downloads[0], re.MULTILINE)
+    verify = next((step for step in steps(api) if "g1_operator_artifact.py verify " in step), "")
+    assert "git rev-parse HEAD" in verify and "--expected-source-sha" in verify
+
+    tests = [step for step in steps(api) if re.match(r"name: Tests\s*\n", step)]
+    assert len(tests) == 1 and re.search(r"^        if:.*!cancelled\(\)", tests[0], re.MULTILINE)
+    assert "SELAHCUE_G1_REQUIRE:" in tests[0] and "SELAHCUE_G1_OPERATOR_TEST_BIN:" in tests[0]
 
 
 @pytest.mark.skipif(not RUST_BIN, reason="requires staged Rust operator integration test binary")
