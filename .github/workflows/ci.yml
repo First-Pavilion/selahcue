@@ -348,6 +348,10 @@ jobs:
         run: python3 scripts/installer_secret_scan.py --self-test
       - name: Cargo receipt scanner tests
         run: python3 scripts/test_dev_key_scan.py
+      - name: WebKit crash journal collector (offline controls)
+        run: |
+          python3 implementation/marketing/tests/test_webkit_crash_journal.py
+          python3 implementation/marketing/tests/test_home_anchor_capture.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -786,6 +790,9 @@ jobs:
           CI_DISK_MIN_FREE_GB: "10"
         run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
+        id: workspace_tests
+        env:
+          SELAHCUE_GPU_PARITY_DIAGNOSTICS: ${{ runner.os == 'Linux' && '1' || '' }}
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
         # failure in an early crate hides every later crate's results.
@@ -799,7 +806,16 @@ jobs:
         # Stated without that qualifier it sent a reader hunting a failure that does not
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          ${{ runner.os == 'Linux' && 'if started_at="$(date +%s)"; then printf "started_at=%s\n" "$started_at" >> "$GITHUB_OUTPUT" || true; fi' || '' }}
+          cargo test --workspace --no-fail-fast
+      - name: Collect existing GPU parity crash summaries
+        if: ${{ !cancelled() && runner.os == 'Linux' && (steps.workspace_tests.outcome == 'success' || steps.workspace_tests.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          GPU_PARITY_STARTED_AT: ${{ steps.workspace_tests.outputs.started_at }}
+          CANDIDATE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 ../marketing/scripts/webkit_crash_journal.py --profile gpu-parity --candidate-source-sha "$CANDIDATE_SOURCE_SHA" --since "$GPU_PARITY_STARTED_AT" --until "$(date +%s)"
       # A2: deliberate bounded Windows scheduling evidence, even if an unrelated
       # workspace test failed. The existing workspace/debug and licensing/release
       # runs remain; each failed repetition exits this step immediately.
@@ -938,6 +954,26 @@ jobs:
       - name: Clippy (cloud http feature)
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-cloud --features http --all-targets -- -D warnings
+      - name: Test (cloud http and openai — Linux system trust and missing-key precedence)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_name=the_system_store_decides_who_is_trusted_and_an_empty_one_fails_closed
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          cargo test -p selahcue-cloud --features http,openai --test test_tls_system_store_linux --no-fail-fast 2>&1 | tee "$log"
+          python3 - "$log" "$test_name" "Linux system trust" <<'PY'
+          from pathlib import Path
+          import sys
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          name, label = sys.argv[2:]
+          if f"test {name} ... ok" not in lines or not any(
+              line.startswith("test result: ok. 1 passed; 0 failed;") for line in lines
+          ):
+              sys.exit(f"{label}: expected exactly one passing test: {name}")
+          PY
       # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
@@ -1310,6 +1346,26 @@ jobs:
       - name: Test (dev-keys,openai-notes)
         if: ${{ !cancelled() }}
         run: cargo test --features dev-keys,openai-notes --no-fail-fast
+      - name: Test (cloud-live — Hosted construction fallback)
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_name=regenerate_with_retention_tests::hosted_construction_fallback_respects_preflight_and_saves_or_stages
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          cargo test --features cloud-live --bin selahcue-operator --no-fail-fast "$test_name" -- --exact 2>&1 | tee "$log"
+          python3 - "$log" "$test_name" "Hosted construction fallback" <<'PY'
+          from pathlib import Path
+          import sys
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          name, label = sys.argv[2:]
+          if f"test {name} ... ok" not in lines or not any(
+              line.startswith("test result: ok. 1 passed; 0 failed;") for line in lines
+          ):
+              sys.exit(f"{label}: expected exactly one passing test: {name}")
+          PY
       # Behavioural gate for the webview JS (audit #9): runs the real dist/ under
       # headless Chrome (pre-installed on ubuntu-latest) and asserts the console
       # render / plan-dedup / transcript-cap / designer wiring. Linux only (browser-
@@ -1532,7 +1588,7 @@ jobs:
             log="$(mktemp)"
             "$@" 2>&1 | tee "$log"
             case "$phase" in
-              before-bin) required=(pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
+              before-bin) required=(pilot_construction_fallback_preserves_terminal_policy pilot_clean_stop_retains_real_worker_rejection pilot_status_lookup_keeps_the_event_loop_responsive pilot_status_without_hosted_endpoint pilot_rejection_is_lane_specific pilot_late_result_and_expiry pilot_expiry_during_remote_backend_mutex pilot_cutoff_precedes_next_audio configured_hosted_route_is_captured) ;;
               before-sources) required=(real_notes_rejection_observer selected_source_drives_both observed_transcription_rejection release_executable_does_not_contain_the_test_clock) ;;
               mixed-cutoff) required=(configured_hosted_route_is_captured) ;;
               *) required=(selected_source_drives_both release_executable_does_not_contain_the_test_clock) ;;
@@ -1548,6 +1604,68 @@ jobs:
           run_pilot_tests source-cutoff cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
           export SELAHCUE_PILOT_TEST_EPOCH=1809129600
           run_pilot_tests source-after cargo test --release --features pilot-credentials,cloud-live --test test_pilot_source --no-fail-fast
+      - name: Test (pilot-credentials,cloud-live — Hosted construction fallback at pilot cutoff)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          SELAHCUE_PILOT_TEST_EPOCH: '1809129599'
+          PILOT_TEST_EXPECT_READY: '0'
+          PILOT_MIXED_EXPECT_EXPIRED: '1'
+        run: |
+          set -euo pipefail
+          test_name=regenerate_with_retention_tests::hosted_construction_fallback_respects_preflight_and_saves_or_stages
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          echo "Hosted construction fallback at pilot cutoff ($SELAHCUE_PILOT_TEST_EPOCH)"
+          cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast "$test_name" -- --exact 2>&1 | tee "$log"
+          python3 - "$log" "$test_name" "Hosted construction fallback at pilot cutoff" <<'PY'
+          from pathlib import Path
+          import sys
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          name, label = sys.argv[2:]
+          if f"test {name} ... ok" not in lines or not any(
+              line.startswith("test result: ok. 1 passed; 0 failed;") for line in lines
+          ):
+              sys.exit(f"{label}: expected exactly one passing test: {name}")
+          PY
+      - name: Test (pilot-credentials,cloud-live — explicit construction fallback cases)
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          SELAHCUE_PILOT_CONFIG_PATH: ${{ github.workspace }}/implementation/desktop/crates/selahcue-operator/tests/fixtures/pilot-valid.json
+          PILOT_TEST_EXPECT_READY: '1'
+          PILOT_MIXED_EXPECT_EXPIRED: '0'
+        run: |
+          set -euo pipefail
+          unset SELAHCUE_CLOUD_URL
+          test_name=regenerate_with_retention_tests::pilot_construction_fallback_preserves_terminal_policy
+          log="$(mktemp)"
+          trap 'rm -f "$log"' EXIT
+          while read -r child_case epoch; do
+            echo "Pilot construction fallback: $child_case (epoch $epoch)"
+            SELAHCUE_PILOT_CONSTRUCTION_TEST_CASE="$child_case" SELAHCUE_PILOT_TEST_EPOCH="$epoch" \
+              cargo test --release --features pilot-credentials,cloud-live --bin selahcue-operator --no-fail-fast "$test_name" -- --exact </dev/null 2>&1 | tee "$log"
+            python3 - "$log" "$test_name" "$child_case (epoch $epoch)" <<'PY'
+          from pathlib import Path
+          import sys
+
+          lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          name, label = sys.argv[2:]
+          if f"test {name} ... ok" not in lines or not any(
+              line.startswith("test result: ok. 1 passed; 0 failed;") for line in lines
+          ):
+              sys.exit(f"{label}: expected exactly one passing test: {name}")
+          PY
+          done <<'CASES'
+          expired 1809129599
+          terminal 1809125999
+          admitted 1809125999
+          build-rejected 1809125999
+          build-expired 1809129596
+          late 1809125999
+          CASES
       # Cloud (Deepgram) live transcription (86akby7th): `cloud-stt` wires the already-tested
       # `selahcue-stt-cloud` streaming session into `listening.rs`'s capture path. It implies
       # `stt` (mic capture lives in `selahcue-stt` regardless of which recognizer consumes it),
@@ -1879,11 +1997,24 @@ jobs:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine chromium
       - name: Responsive sweep (WebKit)
+        id: responsive_webkit
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
           DEBUG: "pw:browser"
-        run: python3 scripts/responsive_sweep.py --engine webkit
+        run: |
+          if started_at="$(date +%s)"; then
+            printf 'started_at=%s\n' "$started_at" >> "$GITHUB_OUTPUT" || true
+          fi
+          python3 scripts/responsive_sweep.py --engine webkit
+
+      - name: Collect existing WebKit crash summaries
+        if: ${{ !cancelled() && (steps.responsive_webkit.outcome == 'success' || steps.responsive_webkit.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          WEBKIT_SWEEP_STARTED_AT: ${{ steps.responsive_webkit.outputs.started_at }}
+          CANDIDATE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/webkit_crash_journal.py --profile webkit --candidate-source-sha "$CANDIDATE_SOURCE_SHA" --since "$WEBKIT_SWEEP_STARTED_AT" --until "$(date +%s)"
 
       - name: Responsive touch-target and geometry controls (WebKit)
         if: ${{ !cancelled() }}
@@ -1893,6 +2024,7 @@ jobs:
           DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
           DiagnosticProbeInertRegression
           DiagnosticLedgerPrivacy
+          HostChronologyInertRegression
 
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.

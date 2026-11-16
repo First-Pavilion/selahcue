@@ -277,20 +277,35 @@ pub fn notes_model_from_key(key: Option<&str>, model: &str) -> Option<(String, b
         .map(|_| (model.to_owned(), true))
 }
 
-#[cfg(any(feature = "pilot-credentials", feature = "openai-notes"))]
+#[cfg(all(test, feature = "pilot-credentials"))]
+#[allow(dead_code)] // Also compiled by the isolated pilot integration test binaries.
 pub fn openai<T: selahcue_cloud::transport::HttpTransport>(
     transport: T,
 ) -> Option<selahcue_cloud::OpenAiNoteProvider<T>> {
+    openai_with_transport(|| Ok(transport)).ok()
+}
+
+#[cfg(any(feature = "pilot-credentials", feature = "openai-notes"))]
+pub fn openai_with_transport<T, F>(
+    build: F,
+) -> Result<selahcue_cloud::OpenAiNoteProvider<T>, selahcue_core::providers::NoteError>
+where
+    T: selahcue_cloud::transport::HttpTransport,
+    F: FnOnce() -> Result<T, selahcue_core::providers::NoteError>,
+{
     #[cfg(feature = "pilot-credentials")]
     {
+        use selahcue_core::providers::NoteError;
         if notes_fault().is_some() {
-            return None;
+            return Err(NoteError::NotConfigured);
         }
-        pilot()?.openai(transport, now()?)
+        let config = pilot().ok_or(NoteError::NotConfigured)?;
+        let now = now().ok_or(NoteError::NotConfigured)?;
+        config.openai_with_transport(build, now)
     }
     #[cfg(not(feature = "pilot-credentials"))]
     {
-        selahcue_cloud::OpenAiNoteProvider::from_env(transport)
+        selahcue_cloud::OpenAiNoteProvider::from_env_with_transport(build)
     }
 }
 
@@ -447,8 +462,7 @@ pub(crate) fn pilot_notes_transport_with<T>(
         return Err(NoteError::NotConfigured);
     }
     let admitted = deadline().map_err(|_| NoteError::NotConfigured)?;
-    build(admitted, notes_rejected())
-        .map_err(|_| NoteError::Transport("could not initialize pilot HTTP transport".into()))
+    build(admitted, notes_rejected()).map_err(|e| NoteError::Transport(e.to_string()))
 }
 
 #[cfg(test)]

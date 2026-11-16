@@ -2,6 +2,7 @@
 """Real-WebKit observation checks; synthetic controls are not app reproduction."""
 import contextlib
 import copy
+import gc
 import importlib.util
 import io
 import json
@@ -11,6 +12,7 @@ import tempfile
 import types
 from pathlib import Path
 import unittest
+import weakref
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
@@ -37,6 +39,7 @@ def inert_playwright_api():
 PROBE_STATE = dict(elapsedMs=10078, totalPolls=2, lastResult=False, stopped=False,
                    earlyTimerEntries=0, periodicTimerEntries=0, lateTimerEntries=0)
 
+CHRONOLOGY_PREFIX = 'WEBKIT_HOST_CHRONOLOGY '
 PROBE_PREFIX = 'WEBKIT_SETTLE_PROBE '
 FIRST_DOCUMENT = '0123456789abcdef0123456789abcdef'
 OTHER_DOCUMENT = 'fedcba9876543210fedcba9876543210'
@@ -127,10 +130,12 @@ class InertTimeoutPage:
         self.main_frame = types.SimpleNamespace(parent_frame=None)
         self.child_frame = types.SimpleNamespace(parent_frame=self.main_frame)
         self.clock = 0
+        self.utc_offset = 1000
         self.waits = []
 
     def on(self, event, callback):
-        if 'registration' in self.faults and event == 'framenavigated':
+        if (event + '-registration' in self.faults
+                or ('registration' in self.faults and event == 'framenavigated')):
             raise RuntimeError('private-listener-registration')
         self.listeners.setdefault(event, []).append(callback)
 
@@ -173,6 +178,13 @@ class InertTimeoutPage:
             self.emit(self.before)
             # Simulate delivery after the existing generic observer cutoff without waiting.
             self.clock = 13
+            if 'utc-step' in self.faults:
+                self.utc_offset = 500
+            if 'late-crash' in self.faults:
+                self.dispatch('crash')
+                self.clock = 14
+                if 'duplicate-crash' in self.faults:
+                    self.dispatch('crash')
             raise InertPlaywrightTimeout('ORIGINAL 10000ms failure')
         self.emit(self.during)
         raise InertPlaywrightError('private-error-channel-without-marker')
@@ -191,14 +203,45 @@ def run_receipt_main(first_document=FIRST_DOCUMENT, before=(), during=(), faults
     api = inert_playwright_api()
     context = types.SimpleNamespace(new_page=lambda: page)
     browser = types.SimpleNamespace(new_context=lambda **kwargs: context)
-    api.sync_playwright = lambda: contextlib.nullcontext(types.SimpleNamespace(
-        webkit=types.SimpleNamespace(launch=lambda: browser)))
+    disconnect = []
+    def register_disconnect(event, callback):
+        if 'disconnect-registration' in faults:
+            raise RuntimeError('private-disconnect-registration')
+        if event != 'disconnected':
+            raise AssertionError(event)
+        disconnect.append(callback)
+
+    browser.on = register_disconnect
+
+    @contextlib.contextmanager
+    def playwright():
+        try:
+            yield types.SimpleNamespace(webkit=types.SimpleNamespace(launch=lambda: browser))
+        finally:
+            if 'unwind' in faults:
+                page.clock = 16
+                page.dispatch('close')
+                page.clock = 17
+                for callback in disconnect:
+                    callback(browser)
+                page.clock = 18
+
+    api.sync_playwright = playwright
     server = types.SimpleNamespace(server_address=('127.0.0.1', 1234),
                                    serve_forever=lambda: None, shutdown=lambda: None)
+    def time_ns():
+        if 'clock-read' in faults and page.clock == 13:
+            raise RuntimeError('private-clock')
+        return (page.utc_offset + page.clock) * 10**9
+
     bindings = dict(Server=lambda *args: server,
                     threading=types.SimpleNamespace(Thread=lambda **kwargs:
                                                     types.SimpleNamespace(start=lambda: None)),
-                    time=types.SimpleNamespace(monotonic=lambda: page.clock),
+                    time=types.SimpleNamespace(
+                        monotonic=lambda: page.clock,
+                        monotonic_ns=lambda: page.clock * 10**9,
+                        time_ns=time_ns,
+                    ),
                     emit_browser_identity=lambda *args: None, install_stubs=lambda *args: None)
     if 'output' in faults:
         def refuse_line(_line):
@@ -214,6 +257,526 @@ def run_receipt_main(first_document=FIRST_DOCUMENT, before=(), during=(), faults
             contextlib.redirect_stdout(output):
         code = sweep.main()
     return code, output.getvalue(), page.waits
+
+
+class InertSweepPage(InertTimeoutPage):
+    def __init__(self, driver, ordinal, width):
+        super().__init__(None, (), (), ())
+        self.driver, self.ordinal, self.width = driver, ordinal, width
+
+    def add_init_script(self, script):
+        self.driver.record('page-init', script)
+
+    def goto(self, url, **kwargs):
+        self.driver.record('goto', url, kwargs)
+        super().goto()
+        if self.ordinal > 1 and self.driver.cell_refs:
+            # Deliver old-page callbacks while the new page's original cell is active.
+            self.driver.pages[-2].dispatch('crash')
+            cell = self.driver.cell_refs[-1]()
+            if cell is not None:
+                self.driver.active_crashes_after_old_callbacks.append(cell.record['crash']['seen'])
+
+    def wait_for_selector(self, selector, **kwargs):
+        self.driver.record('selector', selector, kwargs)
+
+    def wait_for_function(self, expression, **kwargs):
+        self.driver.record('wait', expression, kwargs)
+        if expression == sweep.OBSERVED_SETTLE_JS or expression == sweep.SETTLE_JS:
+            if self.ordinal in self.driver.timeouts:
+                raise InertPlaywrightTimeout('ORIGINAL 10000ms failure')
+            return
+        if expression != sweep.SETTLE_STATE_PROBE_JS:
+            raise AssertionError('unexpected script')
+        if self.ordinal in self.driver.timeouts:
+            raise InertPlaywrightError('private-fake-probe')
+        raise InertPlaywrightError('WEBKIT_SETTLE_STATE ' + json.dumps(PROBE_STATE))
+
+    def evaluate(self, expression, *args):
+        self.driver.record('evaluate', expression, args)
+        if expression == sweep.PAGE_JS:
+            if self.ordinal in self.driver.geometry_errors:
+                raise self.driver.original
+            mode, gutter = ('mobile', 20) if self.width < 768 else (
+                ('tablet', 48) if self.width < 1200 else ('desktop', 24))
+            return dict(scrollWidth=self.width, vw=self.width, clipped=[], edge=[], mode=mode,
+                        gutterToken=f'{gutter}px', fullBleed=[], smallInputs=[], unfocusableScrollers=[],
+                        pricingFirstIsPopular=None, mainTextLength=1 if self.ordinal in self.driver.assertions else 50)
+        if expression == sweep.IS_MOBILE_JS:
+            return self.width < 768
+        if expression == sweep.NAV_STATE_JS:
+            return dict(hasHeader=True, toggleVisible=self.width < 768, desktopNavVisible=self.width >= 768)
+        if expression == sweep.TOUCH_JS:
+            return []
+        if expression.startswith('({header:'):
+            return dict(header=False, footer=False)
+        if 'How it works' in expression:
+            return [None]
+        raise AssertionError('unexpected script')
+
+    def close(self):
+        self.driver.record('page-close')
+        self.dispatch('close')
+        if self.ordinal in self.driver.page_close_errors:
+            raise self.driver.original
+
+
+class InertSweep:
+    """Drive the real sweep and keep every fake page/listener alive through teardown."""
+
+    def __init__(self, assertions=(), timeouts=(), geometry_errors=(), page_close_errors=(),
+                 fail_at=None, behavior_disconnect=False):
+        self.assertions, self.timeouts = assertions, timeouts
+        self.geometry_errors, self.page_close_errors = geometry_errors, page_close_errors
+        self.fail_at, self.behavior_disconnect = fail_at, behavior_disconnect
+        self.original = RuntimeError('private-original-exception')
+        self.pages, self.actions, self.cell_refs, self.live_counts = [], [], [], []
+        self.unwind_live_counts = []
+        self.active_crashes_after_old_callbacks = []
+        self.output = io.StringIO()
+        self.clock = 0
+        self.disconnect = None
+
+    def record(self, operation, *args):
+        self.actions.append((operation, *args))
+        self.clock += 1
+        if operation == self.fail_at:
+            raise self.original
+
+    def begin_cell(self, observer, ordinal, route_index, width_index):
+        cell = self.real_begin_cell(observer, ordinal, route_index, width_index)
+        self.cell_refs.append(weakref.ref(cell))
+        self.live_counts.append(sum(ref() is not None for ref in self.cell_refs))
+        return cell
+
+    def on(self, event, callback):
+        if event != 'disconnected' or self.disconnect is not None:
+            raise AssertionError(event)
+        self.disconnect = callback
+
+    def new_context(self, **kwargs):
+        self.record('context', kwargs)
+
+        def new_page():
+            self.record('new-page')
+            page = InertSweepPage(self, len(self.pages) + 1, kwargs['viewport']['width'])
+            self.pages.append(page)
+            return page
+
+        return types.SimpleNamespace(new_page=new_page, close=lambda: self.record('context-close'),
+                                     add_init_script=lambda script: self.record('context-init', script))
+
+    def browser_close(self):
+        self.record('browser-close')
+        if self.disconnect:
+            self.disconnect(self)
+
+    def launch(self):
+        self.record('launch')
+        return types.SimpleNamespace(on=self.on, new_context=self.new_context, close=self.browser_close)
+
+    @contextlib.contextmanager
+    def playwright(self):
+        self.record('playwright-enter')
+        try:
+            yield types.SimpleNamespace(webkit=types.SimpleNamespace(launch=self.launch),
+                                        chromium=types.SimpleNamespace(launch=self.launch))
+        finally:
+            self.record('playwright-unwind')
+            self.unwind_live_counts.append(sum(ref() is not None for ref in self.cell_refs))
+            if self.pages:
+                self.pages[-1].dispatch('close')
+            if self.disconnect:
+                self.disconnect(self)
+            self.record('playwright-exit')
+
+    def behavior(self, name):
+        def check(*args):
+            self.record(name)
+            if name == 'check_nav_sheet' and self.behavior_disconnect and self.disconnect is not None:
+                self.disconnect(self)
+        return check
+
+    def run(self, *args, engine='webkit', faults=None):
+        api = inert_playwright_api()
+        api.sync_playwright = self.playwright
+        server = types.SimpleNamespace(server_address=('127.0.0.1', 1234),
+                                       serve_forever=lambda: None,
+                                       shutdown=lambda: self.record('shutdown'))
+        bindings = dict(Server=lambda *args: server, REQUIRE=True,
+                        threading=types.SimpleNamespace(Thread=lambda **kwargs:
+                                                        types.SimpleNamespace(start=lambda: self.record('server-start'))),
+                        time=types.SimpleNamespace(monotonic=lambda: self.clock / 1000,
+                                                   monotonic_ns=lambda: self.clock * 10**6,
+                                                   time_ns=lambda: (1000 + self.clock) * 10**6),
+                        emit_browser_identity=lambda *args: self.record('identity'),
+                        install_stubs=lambda *args: self.record('stubs'))
+        for name in ('check_nav_sheet', 'check_boundaries', 'check_overlays', 'check_reduced_motion',
+                     'check_footer', 'check_signed_in_nav'):
+            bindings[name] = self.behavior(name)
+        self.real_begin_cell = sweep.SweepChronology.begin_cell
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(sweep.SweepChronology, 'begin_cell',
+                                            lambda observer, *args: self.begin_cell(observer, *args)))
+            for owner, name, replacement in faults or ():
+                stack.enter_context(patch.object(owner, name, replacement))
+            stack.enter_context(patch.dict(sys.modules, {'playwright': types.ModuleType('playwright'),
+                                                         'playwright.sync_api': api}))
+            stack.enter_context(patch.dict(sweep.__dict__, bindings))
+            stack.enter_context(patch.object(Path, 'exists', return_value=True))
+            stack.enter_context(patch.object(sys, 'argv', ['sweep', '--engine', engine, *args]))
+            stack.enter_context(contextlib.redirect_stdout(self.output))
+            return sweep.main()
+
+
+class HostChronologyInertRegression(unittest.TestCase):
+    def terminal(self, output):
+        lines = [line for line in output.splitlines(keepends=True) if line.startswith(CHRONOLOGY_PREFIX)]
+        self.assertEqual(len(lines), 1, output)
+        self.assertLessEqual(len(lines[0].encode('ascii')), 4096)
+        return json.loads(lines[0].removeprefix(CHRONOLOGY_PREFIX))
+
+    def test_late_timeout_records_first_receipts_through_playwright_unwind(self):
+        code, output, waits = run_receipt_main(faults=('late-crash', 'unwind'))
+        self.assertEqual(code, 2)
+        self.assertEqual(waits, [
+            (sweep.OBSERVED_SETTLE_JS, {'timeout': 10000}),
+            (sweep.SETTLE_STATE_PROBE_JS, {'arg': 'WEBKIT_SETTLE_STATE ', 'timeout': 1000, 'polling': 100}),
+        ])
+        original = output.splitlines()[:3]
+        self.assertEqual(original[0], 'INFRA webkit 1024px /signin: ORIGINAL 10000ms failure')
+        self.assertTrue(original[1].startswith('WEBKIT_SETTLE_TRACE '))
+        self.assertTrue(original[2].startswith('WEBKIT_SETTLE_STATE '))
+        self.assertEqual(json.loads(original[1].split(' ', 1)[1])['outcome'], 'infra')
+        self.assertEqual(json.loads(original[2].split(' ', 1)[1])['capture'], 'after-timeout')
+        terminal = [line for line in output.splitlines() if line.startswith(CHRONOLOGY_PREFIX)]
+        self.assertEqual(len(terminal), 1, 'expected one terminal host chronology after Playwright unwind')
+        receipt = json.loads(terminal[0].removeprefix(CHRONOLOGY_PREFIX))
+        self.assertEqual(receipt['outcome'], 'infra_failure')
+        self.assertEqual(receipt['planned_cells'], 1)
+        cell = receipt['failed_cell']
+        self.assertEqual((cell['ordinal'], cell['route_index'], cell['width_index'], cell['kind']),
+                         (1, 20, 4, 'infra'))
+        self.assertIsNone(cell['page_close_start'])
+
+        def at(seconds):
+            return dict(utc_us=(1000 + seconds) * 10**6,
+                        mono_before_us=seconds * 10**6, mono_after_us=seconds * 10**6)
+
+        for name, second in (('cell_start', 0), ('settle_start', 0),
+                             ('exception_catch', 14), ('probe_start', 14)):
+            self.assertEqual(cell[name], at(second))
+        self.assertEqual(cell['crash'], dict(armed=True, seen=True, stamp=at(13)))
+        self.assertEqual(cell['close'], dict(armed=True, seen=True, stamp=at(16)))
+        self.assertEqual(receipt['disconnect'], dict(armed=True, seen=True, active_ordinal=1, stamp=at(17)))
+        self.assertEqual(receipt['sweep'], dict(sweep_start=at(0), browser_ready=at(0),
+                                                teardown_start=at(14), teardown_end=at(18)))
+
+
+    def test_failed_first_clock_and_wall_clock_step_never_reorder_or_replace_crash(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed):
+                faults = ('late-crash', 'unwind', 'duplicate-crash', 'utc-step')
+                code, output, _ = run_receipt_main(faults=faults + (('clock-read',) if failed else ()))
+                self.assertEqual(code, 2)
+                receipt = self.terminal(output)
+                cell = receipt['failed_cell']
+                crash = cell['crash']
+                self.assertTrue(crash['seen'])
+                self.assertIs(receipt['observer_errors']['clock'], failed)
+                if failed:
+                    self.assertIsNone(crash['stamp'])
+                else:
+                    self.assertEqual(crash['stamp']['mono_before_us'], 13_000_000)
+                    self.assertLess(crash['stamp']['utc_us'], cell['settle_start']['utc_us'])
+                    self.assertLess(cell['settle_start']['mono_after_us'], crash['stamp']['mono_before_us'])
+                    self.assertLess(crash['stamp']['mono_after_us'], cell['exception_catch']['mono_before_us'])
+
+    def test_host_clock_samples_bracket_and_reject_invalid_values(self):
+        cases = (
+            ((1001, 1_999_999, 2001), dict(utc_us=1999, mono_before_us=1, mono_after_us=2)),
+            ((2000, 1000, 1000), None),
+            ((True, 1000, 1000), None),
+            ((0, float('nan'), 0), None),
+            ((0, -1, 0), None),
+            ((0, 9_007_199_254_740_992_000, 0), None),
+        )
+        for values, expected in cases:
+            with self.subTest(values=values):
+                before, utc, after = values
+                reads = []
+                monos = iter((before, after))
+
+                def mono():
+                    reads.append('monotonic')
+                    return next(monos)
+
+                def wall():
+                    reads.append('utc')
+                    return utc
+
+                with patch.object(sweep, 'time', types.SimpleNamespace(monotonic_ns=mono, time_ns=wall)):
+                    self.assertEqual(sweep.sample_host_stamp(), expected)
+                self.assertEqual(reads, ['monotonic', 'utc', 'monotonic'])
+
+    def test_lifecycle_registration_failures_are_independent(self):
+        for failing in ('crash', 'close', 'disconnect'):
+            with self.subTest(failing=failing):
+                code, output, _ = run_receipt_main(faults=('late-crash', 'unwind', failing + '-registration'))
+                self.assertEqual(code, 2)
+                receipt = self.terminal(output)
+                self.assertTrue(receipt['observer_errors']['registration'])
+                for kind, event in (('crash', receipt['failed_cell']['crash']),
+                                    ('close', receipt['failed_cell']['close']),
+                                    ('disconnect', receipt['disconnect'])):
+                    self.assertIs(event['armed'], kind != failing)
+                    self.assertIs(event['seen'], kind != failing)
+                    self.assertIs(event['stamp'] is None, kind == failing)
+
+    def test_full_matrix_preserves_actions_checks_and_bounded_old_listeners(self):
+        driver = InertSweep(behavior_disconnect=True)
+        self.assertEqual(driver.run(), 0)
+        receipt = self.terminal(driver.output.getvalue())
+        self.assertEqual(receipt['planned_cells'], 205)
+        self.assertEqual(receipt['outcome'], 'pass')
+        self.assertIsNone(receipt['failed_cell'])
+        self.assertIsNone(receipt['disconnect']['active_ordinal'])
+        self.assertTrue(receipt['disconnect']['seen'])
+        self.assertEqual(receipt['sweep']['teardown_end']['mono_before_us']
+                         - receipt['sweep']['teardown_start']['mono_after_us'], 3000)
+        self.assertEqual([page.ordinal for page in driver.pages], list(range(1, 206)))
+        self.assertEqual(driver.live_counts, [1] * 205)
+        self.assertEqual(driver.active_crashes_after_old_callbacks, [False] * 204)
+        self.assertEqual(driver.unwind_live_counts, [0])
+        self.assertTrue(all(ref() is None for ref in driver.cell_refs))
+        self.assertEqual(len(driver.pages), 205)
+        for page in driver.pages:
+            for kind in ('crash', 'close'):
+                callback, = page.listeners[kind]
+                diagnostic, = (slot.cell_contents for slot in callback.__closure__
+                               if isinstance(slot.cell_contents, sweep.SettleDiagnostic))
+                self.assertIsNone(diagnostic.chronology_cell)
+        self.assert_full_actions(driver.actions)
+        output = driver.output.getvalue().splitlines()
+        self.assertEqual([line.split(' ', 1)[0] for line in output],
+                         ['WEBKIT_SETTLE_STATE', 'WEBKIT_SETTLE_TRACE', 'WEBKIT_SETTLE_TRACE',
+                          'WEBKIT_SETTLE_TRACE', 'WEBKIT_HOST_CHRONOLOGY', 'webkit:'])
+        self.assertEqual(output[-1], 'webkit: 2137 checks over 41 routes x 5 widths, 0 failed')
+
+    def assert_full_actions(self, actual):
+        expected = [('server-start',), ('playwright-enter',), ('launch',), ('identity',)]
+
+        def context(width, **options):
+            expected.extend([('context', dict(viewport=dict(width=width, height=800), **options)), ('stubs',)])
+
+        for width in (320, 375, 768, 1024, 1440):
+            context(width, has_touch=width < 768, is_mobile=False)
+            for path, bare in sweep.ROUTES:
+                expected.extend([
+                    ('new-page',), ('page-init', sweep.SETTLE_DIAGNOSTIC_JS),
+                    ('goto', 'http://127.0.0.1:1234' + path, dict(wait_until='load', timeout=20000)),
+                    ('selector', 'main > :not(.loading)', dict(timeout=10000)),
+                    ('wait', sweep.OBSERVED_SETTLE_JS, dict(timeout=10000)),
+                    ('evaluate', sweep.PAGE_JS, ()), ('evaluate', sweep.IS_MOBILE_JS, ()),
+                ])
+                if bare:
+                    expected.append(('evaluate', "({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})", ()))
+                else:
+                    expected.append(('evaluate', sweep.NAV_STATE_JS, ()))
+                    if path == '/':
+                        expected.append(('evaluate', "(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()", ()))
+                if width < 768:
+                    expected.append(('evaluate', sweep.TOUCH_JS, (sweep.TOUCH_SCOPES,)))
+                if (width, path) == (320, '/'):
+                    expected.append(('wait', sweep.SETTLE_STATE_PROBE_JS,
+                                     dict(arg='WEBKIT_SETTLE_STATE ', timeout=1000, polling=100)))
+                expected.append(('page-close',))
+            expected.append(('context-close',))
+            if width < 768:
+                for name in ('check_nav_sheet', 'check_overlays'):
+                    context(width, has_touch=True)
+                    expected.extend([(name,), ('context-close',)])
+            if width == 375:
+                expected.append(('check_reduced_motion',))
+            if width == 1440:
+                expected.append(('check_boundaries',))
+            context(width, has_touch=width < 768)
+            expected.extend([('check_footer',), ('context-close',)])
+            context(width)
+            expected.extend([('context-init', sweep.SESSION_HINT_INIT), ('check_signed_in_nav',), ('context-close',)])
+        expected.extend([('browser-close',), ('playwright-unwind',), ('playwright-exit',), ('shutdown',)])
+        self.assertEqual(actual, expected)
+
+    def test_assertion_close_receipt_and_terminal_replacement_preserve_lifetime(self):
+        for timeout in (False, True):
+            with self.subTest(timeout=timeout):
+                driver = InertSweep(assertions=(1, 2), timeouts=(3,) if timeout else ())
+                self.assertEqual(driver.run('--routes', '/admin', '--widths', '601'), 2 if timeout else 1)
+                receipt = self.terminal(driver.output.getvalue())
+                cell = receipt['failed_cell']
+                self.assertEqual(receipt['outcome'], 'infra_failure' if timeout else 'assertion_failure')
+                self.assertEqual((cell['ordinal'], cell['route_index'], cell['width_index'], cell['kind']),
+                                 (3, 34, None, 'infra') if timeout else (1, 32, None, 'assertion'))
+                self.assertTrue(cell['close']['seen'])
+                self.assertFalse(cell['crash']['seen'])
+                self.assertLess(cell['cell_start']['mono_after_us'], cell['settle_start']['mono_before_us'])
+                if timeout:
+                    self.assertIsNone(cell['page_close_start'])
+                    self.assertEqual(driver.live_counts, [1, 2, 2])
+                    self.assertEqual(driver.unwind_live_counts, [1])
+                    self.assertLess(receipt['sweep']['teardown_start']['mono_after_us'],
+                                    cell['close']['stamp']['mono_before_us'])
+                    self.assertEqual(receipt['disconnect']['active_ordinal'], 3)
+                else:
+                    self.assertEqual(cell['page_close_start']['mono_after_us'] + 1000,
+                                     cell['close']['stamp']['mono_before_us'])
+                    self.assertEqual(driver.live_counts, [1] + [2] * (len(driver.pages) - 1))
+                    self.assertEqual(driver.unwind_live_counts, [1])
+                    self.assertIsNone(receipt['disconnect']['active_ordinal'])
+                gc.collect()
+                self.assertTrue(all(ref() is None for ref in driver.cell_refs))
+
+    def test_observer_faults_preserve_original_action_trace_exit_and_shutdown(self):
+        args = ('--routes', '/signin', '--widths', '1024')
+
+        def broken(*args, **kwargs):
+            raise RuntimeError('private-observer-failure')
+
+        write_line = sweep.emit_diagnostic_line
+
+        def broken_terminal_writer(line):
+            if line.startswith(CHRONOLOGY_PREFIX):
+                broken()
+            write_line(line)
+
+        # Keep the baseline in-process and compare every browser action and argument.
+        matrix = (
+            ('constructor', (sweep, 'SweepChronology', broken)),
+            ('cell constructor', (sweep, 'CellChronology', broken)),
+            ('clock', (sweep, 'sample_host_stamp', broken)),
+            ('writer', (sweep, 'emit_diagnostic_line', broken_terminal_writer)),
+            ('disconnect registration', (InertSweep, 'on', broken)),
+            ('cleanup', (sweep.SettleDiagnostic, 'detach_chronology', broken)),
+            ('finally cleanup', (sweep.SweepChronology, 'release', broken)),
+            ('finally mark', (sweep.SweepChronology, 'mark_sweep', broken)),
+            ('finally emit', (sweep.SweepChronology, 'emit_terminal', broken)),
+            ('serialization', (sweep, 'valid_host_chronology', broken)),
+        )
+        for expected_exit, configuration in ((0, {}), (2, {'timeouts': (1,)}),
+                                             (None, {'geometry_errors': (1,)})):
+            baseline = InertSweep(**configuration)
+            if expected_exit is None:
+                self.assert_original_exception(baseline, args)
+            else:
+                self.assertEqual(baseline.run(*args), expected_exit)
+            for name, fault in matrix:
+                with self.subTest(name=name, expected_exit=expected_exit):
+                    driver = InertSweep(**configuration)
+                    if expected_exit is None:
+                        self.assert_original_exception(driver, args, faults=(fault,))
+                    else:
+                        self.assertEqual(driver.run(*args, faults=(fault,)), expected_exit)
+                    self.assertEqual(driver.actions, baseline.actions)
+                    self.assertEqual(driver.actions[-1], ('shutdown',))
+                    self.assertNotIn('private-observer', driver.output.getvalue())
+                    if name == 'serialization':
+                        self.assertEqual(self.terminal(driver.output.getvalue()), self.fallback())
+
+    def assert_original_exception(self, driver, args, **kwargs):
+        with self.assertRaises(RuntimeError) as caught:
+            driver.run(*args, **kwargs)
+        self.assertIs(caught.exception, driver.original)
+
+    def test_browser_page_and_context_unwind_errors_preserve_identity_and_order(self):
+        args = ('--routes', '/signin', '--widths', '1024')
+        for fail_at, page_close_errors in (('browser-close', ()), ('playwright-exit', ()), (None, (1,))):
+            with self.subTest(fail_at=fail_at, page_close_errors=page_close_errors):
+                driver = InertSweep(fail_at=fail_at, page_close_errors=page_close_errors)
+                self.assert_original_exception(driver, args)
+                self.assertEqual([action[0] for action in driver.actions[-3:]],
+                                 ['playwright-unwind', 'playwright-exit', 'shutdown'])
+                receipt = self.terminal(driver.output.getvalue())
+                self.assertEqual(receipt['outcome'], 'exception')
+                if page_close_errors:
+                    self.assertEqual(driver.unwind_live_counts, [1])
+                    self.assertEqual(receipt['failed_cell']['kind'], 'exception')
+                    self.assertEqual(receipt['disconnect']['active_ordinal'], 1)
+                    self.assertIsNone(driver.cell_refs[0](), 'retained original exception must not keep the cell alive')
+                else:
+                    self.assertIsNone(receipt['failed_cell'])
+                self.assertLess(receipt['sweep']['teardown_start']['mono_after_us'],
+                                receipt['sweep']['teardown_end']['mono_before_us'])
+
+    def test_engine_unavailable_and_chromium_preserve_exits_and_scope(self):
+        driver = InertSweep(fail_at='launch')
+        self.assertEqual(driver.run('--behaviours-only'), 3)
+        receipt = self.terminal(driver.output.getvalue())
+        self.assertEqual((receipt['outcome'], receipt['planned_cells']), ('engine_unavailable', 0))
+        self.assertIsNone(receipt['sweep']['browser_ready'])
+        chromium = InertSweep()
+        self.assertEqual(chromium.run('--routes', '/signin', '--widths', '1024', engine='chromium'), 0)
+        self.assertNotIn(CHRONOLOGY_PREFIX, chromium.output.getvalue())
+        self.assertIn(('wait', sweep.SETTLE_JS, dict(timeout=10000)), chromium.actions)
+
+    @staticmethod
+    def fallback():
+        return dict(version=1, engine='webkit', outcome='unknown',
+                    observer_errors=dict(clock=False, registration=False, serialization=True))
+
+    def test_closed_schema_refuses_unknown_keys_types_and_secret_values(self):
+        canary = 'https://private.example/?token=private-token#private-message'
+        for name, mutate in (
+            ('unknown sweep key', lambda host: host.sweep.update(private_url=canary)),
+            ('nonfinite stamp', lambda host: host.sweep.update(sweep_start=dict(
+                utc_us=float('nan'), mono_before_us=1, mono_after_us=2))),
+            ('boolean count', lambda host: setattr(host, 'planned_cells', True)),
+            ('invalid ordinal', lambda host: host.disconnect.update(active_ordinal=206)),
+            ('invalid armed', lambda host: host.disconnect.update(armed=1)),
+            ('unknown failure key', lambda host: host.retained.record.update(private_message=canary)),
+            ('unknown failure kind', lambda host: host.retained.record.update(kind=canary)),
+            ('reversed stamp', lambda host: host.sweep.update(sweep_start=dict(
+                utc_us=1, mono_before_us=2, mono_after_us=1))),
+            ('unbounded width', lambda host: host.retained.record.update(width_index=6)),
+        ):
+            with self.subTest(name=name):
+                host = sweep.SweepChronology()
+                host.configure([sweep.ROUTES[0]], [320])
+                host.retain_failure(host.begin_cell(1, 1, 1), 'infra')
+                mutate(host)
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    host.emit_terminal('infra_failure')
+                    host.emit_terminal(canary)
+                self.assertEqual(self.terminal(output.getvalue()), self.fallback())
+                self.assertNotIn('private', output.getvalue())
+
+    def test_complete_line_byte_limit_includes_prefix_and_newline(self):
+        dumps = json.dumps
+        for byte_count in (4096, 4097):
+            with self.subTest(byte_count=byte_count):
+                host = sweep.SweepChronology()
+                host.configure([], [320])
+                output = io.StringIO()
+
+                def padded(*args, **kwargs):
+                    return dumps(*args, **kwargs).ljust(byte_count - len(CHRONOLOGY_PREFIX) - 1)
+
+                with contextlib.redirect_stdout(output), patch.object(sweep.json, 'dumps', padded):
+                    host.emit_terminal('pass')
+                receipt = self.terminal(output.getvalue())
+                if byte_count == 4096:
+                    self.assertEqual(len(output.getvalue().encode('ascii')), 4096)
+                    self.assertEqual(receipt['outcome'], 'pass')
+                else:
+                    self.assertEqual(receipt, self.fallback())
+
+    def test_oversized_and_noncanonical_matrices_fall_back_without_changing_gate(self):
+        for widths in ('320,320', '320,375,768,1024,1440,512'):
+            with self.subTest(widths=widths):
+                driver = InertSweep()
+                self.assertEqual(driver.run('--widths', widths), 0)
+                self.assertEqual(self.terminal(driver.output.getvalue()), self.fallback())
+                self.assertEqual(len(driver.pages), 41 * len(widths.split(',')))
 
 
 class ReceiptMainAssertions:
@@ -232,10 +795,12 @@ class ReceiptMainAssertions:
         if 'output' in kwargs.get('faults', ()):
             self.assertEqual(len(lines), 1)
             return None
-        self.assertEqual(len(lines), 3)
-        self.assertTrue(lines[1].startswith('WEBKIT_SETTLE_TRACE '))
-        self.assertTrue(lines[2].startswith('WEBKIT_SETTLE_STATE '))
-        receipt = json.loads(lines[2].split(' ', 1)[1])
+        trace, = (line for line in lines if line.startswith('WEBKIT_SETTLE_TRACE '))
+        state, = (line for line in lines if line.startswith('WEBKIT_SETTLE_STATE '))
+        terminal, = (line for line in lines if line.startswith(CHRONOLOGY_PREFIX))
+        self.assertEqual(lines, [lines[0], trace, state, terminal])
+        self.assertEqual(json.loads(trace.split(' ', 1)[1])['outcome'], 'infra')
+        receipt = json.loads(state.split(' ', 1)[1])
         self.assertEqual(receipt['capture'], 'after-timeout')
         self.assertEqual(receipt['outcome'], 'missing-marker')
         self.assertEqual(receipt['errorFamily'], 'playwright-error')
@@ -493,10 +1058,14 @@ class DiagnosticProbeInertRegression(ReceiptMainAssertions, unittest.TestCase):
                     self.assertEqual(stderr, '')
                     if mode == 'healthy-reader':
                         remaining = process.stdout.read().splitlines()
-                        self.assertEqual(len(remaining), 2)
-                        self.assertTrue(remaining[0].startswith('WEBKIT_SETTLE_TRACE '))
-                        self.assertTrue(remaining[1].startswith('WEBKIT_SETTLE_STATE '))
-                        receipt = json.loads(remaining[1].split(' ', 1)[1])
+                        trace, = (line for line in remaining if line.startswith('WEBKIT_SETTLE_TRACE '))
+                        state, = (line for line in remaining if line.startswith('WEBKIT_SETTLE_STATE '))
+                        terminal, = (line for line in remaining if line.startswith(CHRONOLOGY_PREFIX))
+                        self.assertEqual(remaining, [trace, state, terminal])
+                        self.assertEqual(json.loads(trace.split(' ', 1)[1])['outcome'], 'infra')
+                        self.assertEqual(json.loads(terminal.removeprefix(CHRONOLOGY_PREFIX))['outcome'],
+                                         'infra_failure')
+                        receipt = json.loads(state.split(' ', 1)[1])
                         self.assertEqual(receipt['capture'], 'after-timeout')
                         self.assertEqual(receipt['outcome'], 'snapshot')
                         self.assertEqual(receipt['state'], PROBE_STATE)

@@ -45,9 +45,11 @@ pub use mock::MockTransport;
 #[cfg(feature = "openai")]
 pub use openai::OpenAiNoteProvider;
 pub use secret::{InMemorySecretStore, SecretError, SecretStore, Token};
-pub use transport::{HttpResponse, HttpTransport, TransportError};
+pub use transport::{DegradedNoteReason, HttpResponse, HttpTransport, TransportError};
 
-use selahcue_core::providers::{NoteDraft, NoteError, NoteProvider, ProvidersConfig, Quota};
+use selahcue_core::providers::{
+    NoteDraft, NoteError, NoteProvider, NoteRequest, ProvidersConfig, Quota,
+};
 
 /// The outcome of a sermon-note generation: the draft, which provider served it, and
 /// whether the result is degraded (cloud failed → local fallback, FR-135).
@@ -58,6 +60,8 @@ pub struct GenerationOutcome {
     pub provider_label: String,
     /// True when the cloud path failed and the local fallback served the draft.
     pub degraded: bool,
+    /// A fixed category for the immediate fallback notice; absent on cloud success.
+    pub degraded_reason: Option<DegradedNoteReason>,
     /// The monthly quota, when the serving provider reports one (cloud only).
     pub quota: Option<Quota>,
     /// Whether a generative model produced this draft, and so whether it must be
@@ -113,29 +117,84 @@ where
     C: CloudNoteProvider,
     L: NoteProvider,
 {
+    generate_sermon_notes_with_attempt(
+        config,
+        transcript,
+        generate_pressed,
+        |req| cloud_outcome(cloud, req),
+        local,
+    )
+}
+
+/// Construct and use a cloud provider only after consent and the transcript bound are applied.
+/// Construction and request failures share the same transport-only fallback.
+pub fn generate_sermon_notes_with_factory<C, L, F>(
+    config: &ProvidersConfig,
+    transcript: &str,
+    generate_pressed: bool,
+    make_cloud: F,
+    local: &L,
+) -> Result<GenerationOutcome, NoteError>
+where
+    C: CloudNoteProvider,
+    L: NoteProvider,
+    F: FnOnce() -> Result<C, NoteError>,
+{
+    generate_sermon_notes_with_attempt(
+        config,
+        transcript,
+        generate_pressed,
+        |req| make_cloud().and_then(|cloud| cloud_outcome(&cloud, req)),
+        local,
+    )
+}
+
+fn cloud_outcome<C: CloudNoteProvider>(
+    cloud: &C,
+    req: &NoteRequest,
+) -> Result<GenerationOutcome, NoteError> {
+    let (draft, quota) = cloud.generate_with_quota(req)?;
+    let ai_generated = cloud.is_generative();
+    Ok(GenerationOutcome {
+        draft,
+        provider_label: cloud.label().to_string(),
+        degraded: false,
+        degraded_reason: None,
+        quota,
+        ai_generated,
+        disclosure: disclosure_for(ai_generated),
+    })
+}
+
+fn generate_sermon_notes_with_attempt<L, F>(
+    config: &ProvidersConfig,
+    transcript: &str,
+    generate_pressed: bool,
+    attempt: F,
+    local: &L,
+) -> Result<GenerationOutcome, NoteError>
+where
+    L: NoteProvider,
+    F: FnOnce(&NoteRequest) -> Result<GenerationOutcome, NoteError>,
+{
     // Egress choke point — nothing leaves the device unless this succeeds.
     let mut req = config.build_note_request(transcript, generate_pressed)?;
     transcript_bounds::clamp_transcript_in_place(&mut req.transcript);
 
-    match cloud.generate_with_quota(&req) {
-        Ok((draft, quota)) => Ok(GenerationOutcome {
-            draft,
-            provider_label: cloud.label().to_string(),
-            degraded: false,
-            quota,
-            ai_generated: cloud.is_generative(),
-            disclosure: disclosure_for(cloud.is_generative()),
-        }),
+    match attempt(&req) {
+        Ok(outcome) => Ok(outcome),
         // Network blip / unreachable → fall back locally, clearly degraded.
-        Err(NoteError::Transport(_)) => {
+        Err(NoteError::Transport(message)) => {
             let draft = local.generate(&req)?;
+            let ai_generated = local.is_generative();
             Ok(GenerationOutcome {
                 draft,
                 provider_label: local.label().to_string(),
                 degraded: true,
+                degraded_reason: Some(DegradedNoteReason::from_transport_message(&message)),
                 quota: None,
-                ai_generated: local.is_generative(),
-                disclosure: disclosure_for(local.is_generative()),
+                ai_generated,
+                disclosure: disclosure_for(ai_generated),
             })
         }
         // Honest terminal states surface to the UI unchanged.

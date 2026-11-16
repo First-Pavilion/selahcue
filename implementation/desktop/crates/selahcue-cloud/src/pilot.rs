@@ -3,6 +3,7 @@
 //! This is an extraction-prone embedded credential source, not a secret vault. Actual
 //! provider-side restrictions/expiry and release admission remain external prerequisites.
 use crate::{openai::OpenAiNoteProvider, secret::Token, transport::HttpTransport};
+use selahcue_core::providers::NoteError;
 use serde::Deserialize;
 
 /// Fixed owner-approved cohort deadline: 2027-04-30T23:59:59Z (Unix seconds).
@@ -98,14 +99,27 @@ impl PilotConfig {
         transport: T,
         now: u64,
     ) -> Option<OpenAiNoteProvider<T>> {
-        self.available(now).then(|| {
-            OpenAiNoteProvider::new(
-                transport,
-                self.config.openai.key.clone(),
-                self.config.openai.model.clone(),
-            )
-        })
+        self.openai_with_transport(|| Ok(transport), now).ok()
     }
+
+    /// Select the validated pilot credentials before attempting fallible transport construction.
+    pub fn openai_with_transport<T, F>(
+        &self,
+        build: F,
+        now: u64,
+    ) -> Result<OpenAiNoteProvider<T>, NoteError>
+    where
+        T: HttpTransport,
+        F: FnOnce() -> Result<T, NoteError>,
+    {
+        if !self.available(now) {
+            return Err(NoteError::NotConfigured);
+        }
+        let key = self.config.openai.key.clone();
+        let model = self.config.openai.model.clone();
+        Ok(OpenAiNoteProvider::new(build()?, key, model))
+    }
+
     /// Deliberate native-only exit to the Deepgram injected credential constructor.
     /// Never expose this token through IPC, logs or frontend state.
     pub fn deepgram_key(&self, now: u64) -> Option<Token> {
