@@ -73,7 +73,7 @@ dev = [
   # cryptography-dependabot.md.
   #   pytest==9.1.1        highest ceiling <9.0.3 (fixed 9.0.3, GHSA-6w46-j5rx-g56g)
   #   pytest-django==4.14.0 0 advisories exist for this package
-  "pytest==9.1.1",
+  "pytest==9.2.0",
   "pytest-django==4.14.0",
   # Deployed startup controls now need the driver locally (17tnw2b9da0); dev extra only.
   # Exact version from successful CI40945205792: psycopg + psycopg-binary 3.3.6,
