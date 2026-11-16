@@ -1,9 +1,12 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, START_LOCATION } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
+import { landingTokenHandoff } from '@/lib/auth/landingTokenHandoff.ts'
 import { confirmSession, refreshIfExpiringSoon } from '@/lib/auth/sessionStore.ts'
 import { articleRoutes } from './articleRoutes.ts'
 import { siteScrollBehavior } from './scroll.ts'
 
+// Web history reads the current URL as soon as it is constructed.
+landingTokenHandoff.prepare(window.location, window.history, window)
 const router = createRouter({
   history: createWebHistory(),
   scrollBehavior: siteScrollBehavior,
@@ -74,6 +77,8 @@ const router = createRouter({
     },
   ]
 })
+
+landingTokenHandoff.watchInitialNavigation(router, START_LOCATION)
 
 /**
  * Keep signed-out visitors off `meta.requiresSession` routes.

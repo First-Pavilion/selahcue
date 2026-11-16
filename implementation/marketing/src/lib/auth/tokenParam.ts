@@ -26,6 +26,29 @@ export function readTokenParam(value: QueryTokenValue): string {
   return typeof raw === 'string' ? raw.trim() : ''
 }
 
+function decodeQueryPart(part: string): string {
+  const normalized = part.replace(/\+/g, ' ')
+  try {
+    return decodeURIComponent(normalized)
+  } catch {
+    // Classic Router keeps the whole segment when percent decoding fails.
+    return normalized
+  }
+}
+
+/** Read the first token field before Router parses it. Undefined means the field was absent. */
+export function readTokenFromSearch(search: string): string | undefined {
+  const query = search.startsWith('?') ? search.slice(1) : search
+  for (const entry of query.split('&')) {
+    const equals = entry.indexOf('=')
+    const name = equals < 0 ? entry : entry.slice(0, equals)
+    if (decodeQueryPart(name) === 'token') {
+      return readTokenParam(equals < 0 ? null : decodeQueryPart(entry.slice(equals + 1)))
+    }
+  }
+  return undefined
+}
+
 /**
  * True when the page was opened without a usable token — a bookmark, a stripped query,
  * a hand-typed URL, or a link a mail client mangled.
