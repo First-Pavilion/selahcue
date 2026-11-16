@@ -356,7 +356,7 @@ def install_then_check_passes(ctx):
     check(r.stamp.exists() and r.marker.exists(), "no stamp or marker after a successful install")
     rc, out = r.check_gate()
     check(rc == 0, "api-check exit %d:\n%s" % (rc, out))
-    check(r.calls() == ["manage check", "manage makemigrations --check --noinput", "pytest tests -v -rfEs --maxfail=2 --capture=tee-sys"],
+    check(r.calls() == ["manage check", "manage makemigrations --check --noinput", "pytest tests -v -rfEs --maxfail=1 --capture=tee-sys --junitxml=build/api-junit.xml"],
           "wrong commands or order: %r" % r.calls())
     check(r.prefixes() == {os.path.realpath(str(r.venv))},
           "the commands did not run under the venv's interpreter: %r" % r.prefixes())
@@ -1048,6 +1048,31 @@ def workflow_job_lines(text, job):
     return [line for line in lines[start + 1:end] if not line.lstrip().startswith("#")]
 
 
+def api_tests_step(text):
+    api = "\n".join(workflow_job_lines(text, "api"))
+    steps = re.split(r"^      - ", api, flags=re.MULTILINE)[1:]
+    tests = [step for step in steps if step.splitlines()[0] == "name: Tests"]
+    return tests[0] if len(tests) == 1 else ""
+
+
+G1_TEST_STEP_VALUES = {
+    "        if:": "${{ !cancelled() }}",
+    "          SELAHCUE_G1_REQUIRE:": "${{ needs.changes.outputs.native_account_joint == 'true' && '1' || '0' }}",
+    "          SELAHCUE_G1_OPERATOR_TEST_BIN:": "${{ steps.g1-verified.outputs.binary }}",
+}
+
+
+def joint_test_step_errors(text):
+    """Pin the values that keep Tests reachable and require a verified binary for joint changes."""
+    step = api_tests_step(text)
+    errors = []
+    for field, expected in G1_TEST_STEP_VALUES.items():
+        values = [line.removeprefix(field).strip() for line in step.splitlines() if line.startswith(field)]
+        if values != [expected]:
+            errors.append(f"{field.strip()} must be {expected} in the API Tests step")
+    return errors
+
+
 def api_commands_from_ci(text):
     """The `python manage.py ...` / `python -m pytest ...` run: lines of ci.yml's `api` job, in order."""
     cmds = []
@@ -1077,6 +1102,20 @@ def ci_yml_commands_match_makefile(ctx):
     # Positive control: the comparison must see a doctored ci.yml as different.
     doctored = CI_YML.read_text().replace("makemigrations --check --noinput", "makemigrations --check")
     check(api_commands_from_ci(doctored) != mk, "the comparison cannot tell a changed ci.yml from the Makefile")
+
+
+def ci_yml_g1_tests_keep_required_values(ctx):
+    """Reject a disabled Tests guard, an optional joint run, or a dropped artifact path."""
+    workflow = CI_YML.read_text()
+    errors = joint_test_step_errors(workflow)
+    check(not errors, "\n".join(errors))
+    step = api_tests_step(workflow)
+    for field, mutant in zip(G1_TEST_STEP_VALUES, ("false", "'0'", "''")):
+        good = f"{field} {G1_TEST_STEP_VALUES[field]}"
+        changed = workflow.replace(step, step.replace(good, f"{field} {mutant}"), 1)
+        errors = joint_test_step_errors(changed)
+        check(len(errors) == 1 and errors[0].startswith(field.strip()),
+              f"did not catch the API Tests value {field.strip()} {mutant}: {errors}")
 
 
 def only_with_an_unknown_name_fails(ctx):
@@ -1138,6 +1177,7 @@ CASES = [
     ci_target_includes_api_check,
     help_lists_the_api_targets,
     ci_yml_commands_match_makefile,
+    ci_yml_g1_tests_keep_required_values,
     only_with_an_unknown_name_fails,
 ]
 
@@ -1180,7 +1220,7 @@ _STAMP_LINE = '(venv / STAMP).write_text(json.dumps({"python": full, "pyproject_
 MUTATIONS = [
     ("exact local uv pin check removed", H, [('    if found.stdout.split()[:2] != ["uv", version]:', "    if False:")], "different_uv_patch_is_refused_by_install"),
     ("locked flag dropped", H, [('"sync", "--locked",', '"sync",')], "locked_manifest_drift_is_refused"),
-    ("pytest failure swallowed", M, [("-m pytest tests -v -rfEs --maxfail=2 --capture=tee-sys", "-m pytest tests -v -rfEs --maxfail=2 --capture=tee-sys || true")], "failing_test_goes_red"),
+    ("pytest failure swallowed", M, [("-m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys --junitxml=build/api-junit.xml", "-m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys --junitxml=build/api-junit.xml || true")], "failing_test_goes_red"),
     ("migration check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput\n', "")],
      "missing_migration_goes_red"),
     ("system check removed", M, [('\tcd $(API) && $(API_ENV) "$(API_VPY)" manage.py check\n', "")], "system_check_failure_goes_red"),

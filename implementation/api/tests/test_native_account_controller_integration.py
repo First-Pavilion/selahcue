@@ -33,6 +33,7 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLife
 
 OPERATOR_TEST = "account::tests::controller::django_g1_real_api"
 RUST_BIN = os.environ.get("SELAHCUE_G1_OPERATOR_TEST_BIN")
+REQUIRE_G1 = os.environ.get("SELAHCUE_G1_REQUIRE") == "1"
 
 
 def test_required_g1_missing_binary_fails(tmp_path):
@@ -139,18 +140,22 @@ def test_required_g1_workflow_keeps_api_reachable_and_requires_same_source_artif
     verify = next((step for step in steps(api) if "g1_operator_artifact.py verify " in step), "")
     assert "git rev-parse HEAD" in verify and "--expected-source-sha" in verify
 
-    tests = [step for step in steps(api) if re.match(r"name: Tests\s*\n", step)]
-    assert len(tests) == 1 and re.search(r"^        if:.*!cancelled\(\)", tests[0], re.MULTILINE)
-    assert "SELAHCUE_G1_REQUIRE:" in tests[0] and "SELAHCUE_G1_OPERATOR_TEST_BIN:" in tests[0]
+    errors = inspection["joint_test_step_errors"](workflow)
+    assert not errors, "\n".join(errors)
 
 
-@pytest.mark.skipif(not RUST_BIN, reason="requires staged Rust operator integration test binary")
+@pytest.mark.skipif(not RUST_BIN and not REQUIRE_G1, reason="requires staged Rust operator integration test binary")
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("scenario", [
     "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
     "lost-initial", "managed-free-lost-initial", "race-loss", "race-replay",
 ])
 def test_native_account_controller_against_local_platform_api(scenario, settings, live_server):
+    assert RUST_BIN, "SELAHCUE_G1_OPERATOR_TEST_BIN is required when SELAHCUE_G1_REQUIRE=1"
+    rust_bin = Path(RUST_BIN)
+    assert rust_bin.is_file() and os.access(rust_bin, os.X_OK), (
+        "SELAHCUE_G1_OPERATOR_TEST_BIN must point to an executable file"
+    )
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
     cache.clear()
     now = timezone.now().replace(microsecond=0)
@@ -171,10 +176,14 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
     env["SELAHCUE_G1_FIXTURE_URL"] = live_server.url
     env["SELAHCUE_G1_SCENARIO"] = "lost-initial" if starts_with_free else scenario
     env["NO_PROXY"] = "127.0.0.1,localhost"
-    with subprocess.Popen(
-        [str(Path(RUST_BIN).resolve(strict=True)), OPERATOR_TEST, "--exact", "--ignored", "--nocapture"],
-        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    ) as child:
+    try:
+        process = subprocess.Popen(
+            [str(rust_bin.resolve(strict=True)), OPERATOR_TEST, "--exact", "--ignored", "--nocapture"],
+            env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+    except OSError as error:
+        pytest.fail(f"SELAHCUE_G1_OPERATOR_TEST_BIN could not be executed: {error.strerror}", pytrace=False)
+    with process as child:
         output = queue.Queue()
 
         def collect():
