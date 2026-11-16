@@ -101,14 +101,12 @@ function fixture({ fixedScroll = false, rememberCalls = true } = {}) {
     value: scrollTo, configurable: !fixedScroll, writable: !fixedScroll, enumerable: false,
   });
 
-  let currentObserver: { callback: () => void; target: object | null; active: boolean } | undefined;
-  class MutationObserver {
+  class FixtureMutationObserver {
     target: object | null = null;
     active = false;
     callback: () => void;
     constructor(callback: () => void) {
       this.callback = callback;
-      currentObserver = this;
     }
     observe(target: object) {
       this.target = target;
@@ -119,10 +117,15 @@ function fixture({ fixedScroll = false, rememberCalls = true } = {}) {
     }
   }
 
+  let currentObserver: FixtureMutationObserver | undefined;
   const install = runInNewContext(source, {
     window,
     document,
-    MutationObserver,
+    MutationObserver: function (callback: () => void) {
+      const observer = new FixtureMutationObserver(callback);
+      currentObserver = observer;
+      return observer;
+    },
     performance: {
       now() {
         if (state.clockError) throw state.clockError;
