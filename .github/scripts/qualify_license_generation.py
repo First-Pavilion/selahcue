@@ -21,8 +21,8 @@ import xml.etree.ElementTree as ET
 MAX_OUTPUT = 1024 * 1024
 WHOLE_SECONDS = 450
 CLEANUP_SECONDS = 5
-REVIEWED_SHA = "31943562021dd8aab20c76a522302f256f5b2436"
-REVIEWED_API_TREE = "9abacd18f028254a5313eb39b39551ec13c7080d"
+REVIEWED_SHA = "6b683001cf3f1d0e3f7668d7ecf9aca6dee4a9a1"
+REVIEWED_API_TREE = "5e3dabd545c04e852866b331f4b4d0bdabe03a2d"
 API = Path("implementation/api")
 BASELINE_FILES = (
     "tests/test_free_license_lifecycle.py",
@@ -306,10 +306,14 @@ def mutation(path, before, after, originals):
 # Only the child executes this script. The stdlib fixture imports the supervisor
 # without loading the editable project, Django or pytest.
 BOOTSTRAP = '''
+import hashlib
 import json
+import math
 from pathlib import Path
+import re
 import resource
 import sys
+import time
 
 api, settings_path, receipt_dir, database = sys.argv[1:5]
 api = Path(api).resolve()
@@ -326,21 +330,103 @@ import pytest
 
 
 class Evidence:
+    MANIFEST_LIMIT = 128 * 1024
+    PROGRESS_LIMIT = 384 * 1024
+    PHASES = frozenset({"setup", "call", "teardown"})
+    OUTCOMES = frozenset({"passed", "failed", "skipped", "xfail"})
+    CASE_NAME = re.compile(r"tests/test_[a-z0-9_]{1,64}[.]py::test_[A-Za-z0-9_]{1,144}")
+    TRUNCATED = '\\nLICQ ["progress-truncated"]\\n'
+
     def __init__(self):
         self.nodes = []
         self.calls = []
         self.deselected = 0
+        self.indices = {}
+        self.started_ns = time.monotonic_ns()
+        self.progress_bytes = 0
+        self.progress_closed = False
+
+    def identity(self, nodeid):
+        base, bracket, _ = nodeid.partition("[")
+        if self.CASE_NAME.fullmatch(base):
+            if not bracket:
+                return base
+            digest = hashlib.sha256(nodeid.encode("utf-8", "surrogatepass")).hexdigest()
+            return f"{base}[sha256={digest}]"
+        digest = hashlib.sha256(nodeid.encode("utf-8", "surrogatepass")).hexdigest()
+        return f"node-sha256:{digest}"
+
+    def progress(self, event):
+        if self.progress_closed:
+            return
+        # Write independently of pytest's capture and prefix a newline because its
+        # terminal progress indicator may already be on the current line.
+        line = "\\nLICQ " + json.dumps(event, separators=(",", ":")) + "\\n"
+        if self.progress_bytes + len(line) + len(self.TRUNCATED) > self.PROGRESS_LIMIT:
+            line = self.TRUNCATED
+            self.progress_closed = True
+        try:
+            sys.__stdout__.write(line)
+            sys.__stdout__.flush()
+            self.progress_bytes += len(line)
+        except (OSError, ValueError):
+            # Telemetry is diagnostic. A broken progress sink cannot change a test outcome.
+            self.progress_closed = True
+
+    def elapsed_us(self):
+        return min(450_000_000, (time.monotonic_ns() - self.started_ns) // 1000)
+
+    def phase_start(self, item, phase):
+        index = self.indices.get(item.nodeid)
+        if index is not None:
+            self.progress(["start", index, phase, self.elapsed_us()])
 
     def pytest_collection_finish(self, session):
         self.nodes = [item.nodeid for item in session.items]
+        self.indices = {nodeid: index for index, nodeid in enumerate(self.nodes)}
+        identities = []
+        manifest_bytes = 0
+        for nodeid in self.nodes:
+            identity = self.identity(nodeid)
+            # All emitted identities are ASCII with no JSON escape characters.
+            manifest_bytes += len(identity) + 3
+            if manifest_bytes > self.MANIFEST_LIMIT:
+                break
+            identities.append(identity)
+        self.progress(["collection", len(self.nodes), identities, len(identities) != len(self.nodes)])
 
     def pytest_deselected(self, items):
         self.deselected += len(items)
 
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_setup(self, item):
+        self.phase_start(item, "setup")
+        return (yield)
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_call(self, item):
+        self.phase_start(item, "call")
+        return (yield)
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_runtest_teardown(self, item):
+        self.phase_start(item, "teardown")
+        return (yield)
+
     def pytest_runtest_logreport(self, report):
+        outcome = "xfail" if hasattr(report, "wasxfail") else report.outcome
         if report.when == "call":
-            outcome = "xfail" if hasattr(report, "wasxfail") else report.outcome
             self.calls.append((report.nodeid, outcome))
+        index = self.indices.get(report.nodeid)
+        if index is not None and report.when in self.PHASES:
+            duration = report.duration
+            duration_us = (
+                round(duration * 1_000_000)
+                if isinstance(duration, (int, float)) and 0 <= duration <= 450 and math.isfinite(duration)
+                else None
+            )
+            safe_outcome = outcome if outcome in self.OUTCOMES else "unknown"
+            self.progress(["result", index, report.when, safe_outcome, duration_us, self.elapsed_us()])
 
     def pytest_sessionfinish(self):
         receipt = {"nodes": self.nodes, "calls": self.calls, "deselected": self.deselected}

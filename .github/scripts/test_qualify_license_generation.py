@@ -1,12 +1,17 @@
 """Standalone qualification fixtures. No project imports or runtime services."""
 
+import ast
+import hashlib
+import io
 import json
+import math
 import os
 from pathlib import Path
-import subprocess
+import re
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import xml.etree.ElementTree as ET
 
@@ -18,6 +23,37 @@ SELECTOR = f"{FILE}::test_route"
 EXTRA = f"{FILE}::test_extra[edge]"
 ASSERTION = "assert response.status_code == 200"
 MISMATCH = r"\b500 == 200\b"
+PHASES = ("setup", "call", "teardown")
+
+
+def fake_plugin(directory, stream):
+    """Run the generated plugin class with stand-ins for the pytest hook API."""
+    bootstrap = ast.parse(qualification.BOOTSTRAP)
+    evidence, = [node for node in bootstrap.body if isinstance(node, ast.ClassDef) and node.name == "Evidence"]
+    namespace = {
+        "pytest": SimpleNamespace(hookimpl=lambda **kwargs: lambda function: function),
+        "receipt_dir": Path(directory), "sys": SimpleNamespace(__stdout__=stream),
+        "hashlib": hashlib, "json": json, "math": math, "re": re, "time": time,
+    }
+    exec(compile(ast.Module(body=[evidence], type_ignores=[]), "<fake qualification plugin>", "exec"), namespace)
+    return namespace["Evidence"]()
+
+
+def finish_phase(plugin, item, phase, *, outcome="passed"):
+    wrapper = getattr(plugin, f"pytest_runtest_{phase}")(item)
+    next(wrapper)
+    try:
+        wrapper.send("unmodified hook result")
+    except StopIteration as finish:
+        assert finish.value == "unmodified hook result"
+    plugin.pytest_runtest_logreport(SimpleNamespace(nodeid=item.nodeid, when=phase, outcome=outcome, duration=0.025))
+
+
+def observed_progress(text):
+    return [
+        json.loads(line.removeprefix("LICQ "))
+        for line in text.splitlines() if line.startswith("LICQ ")
+    ]
 
 
 class QualificationFixtures(unittest.TestCase):
@@ -54,7 +90,7 @@ class QualificationFixtures(unittest.TestCase):
 
     def child(self, script, seconds=0.4):
         return qualification.run_child(
-            [sys.executable, "-c", script], cwd=self.root, env=os.environ.copy(),
+            [sys.executable, "-B", "-c", script], cwd=self.root, env=os.environ.copy(),
             deadline=time.monotonic() + seconds,
             stdout=self.root / "stdout.log", stderr=self.root / "stderr.log",
         )
@@ -81,6 +117,96 @@ class QualificationFixtures(unittest.TestCase):
         self.evidence((SELECTOR, "failure", "assert 500 == 200", ASSERTION), calls=[])
         with self.assertRaisesRegex(qualification.QualificationError, "call-phase"):
             self.verify(1, mutant=True)
+
+    def test_progress_hard_kill_leaves_collection_and_the_last_attempted_phase(self):
+        for stopped in PHASES:
+            with self.subTest(stopped=stopped):
+                script = (
+                    "import sys, time; from types import SimpleNamespace; "
+                    f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
+                    "from test_qualify_license_generation import fake_plugin, finish_phase; "
+                    "plugin = fake_plugin('.', sys.stdout); "
+                    f"item = SimpleNamespace(nodeid={SELECTOR!r}); "
+                    "plugin.pytest_collection_finish(SimpleNamespace(items=[item])); "
+                    f"previous = {PHASES[:PHASES.index(stopped)]!r}; "
+                    "[finish_phase(plugin, item, phase) for phase in previous]; "
+                    f"hook = plugin.pytest_runtest_{stopped}(item); next(hook); time.sleep(0.75)"
+                )
+                with self.assertRaisesRegex(qualification.QualificationError, "deadline"):
+                    self.child(script, seconds=0.35)
+                progress = observed_progress((self.root / "stdout.log").read_text())
+                self.assertTrue(progress, "hard termination left no progress")
+                self.assertEqual(progress[0], ["collection", 1, [SELECTOR], False])
+                self.assertEqual(progress[-1][:3], ["start", 0, stopped])
+                self.assertFalse((self.root / "collected.json").exists())
+                with self.assertRaises(qualification.QualificationError):
+                    self.verify()
+
+    def test_progress_is_indexed_and_does_not_change_the_final_call_receipt(self):
+        stream = io.StringIO()
+        plugin = fake_plugin(self.root, stream)
+        items = [SimpleNamespace(nodeid=node) for node in (SELECTOR, EXTRA)]
+        plugin.pytest_collection_finish(SimpleNamespace(items=items))
+        for item in items:
+            for phase in PHASES:
+                finish_phase(plugin, item, phase)
+        plugin.pytest_sessionfinish()
+        self.assertEqual(json.loads((self.root / "collected.json").read_text()), {
+            "nodes": [SELECTOR, EXTRA], "calls": [[SELECTOR, "passed"], [EXTRA, "passed"]], "deselected": 0,
+        })
+        progress = observed_progress(stream.getvalue())
+        self.assertTrue(progress, "collection and phase timing were never written")
+        self.assertEqual(progress[0][0:2], ["collection", 2])
+        self.assertEqual(sum(event[0] == "collection" for event in progress), 1)
+        self.assertEqual(
+            [event[1:3] for event in progress if event[0] == "start"],
+            [[index, phase] for index in range(2) for phase in PHASES],
+        )
+        results = [event for event in progress if event[0] == "result"]
+        self.assertEqual([event[3:5] for event in results], [["passed", 25000]] * 6)
+        elapsed = [event[-1] for event in progress[1:]]
+        self.assertEqual(elapsed, sorted(elapsed))
+        self.assertEqual(stream.getvalue().count(SELECTOR), 1)
+
+    def test_progress_bounds_output_and_does_not_echo_parameter_values(self):
+        stream = io.StringIO()
+        plugin = fake_plugin(self.root, stream)
+        plugin.MANIFEST_LIMIT = 180
+        plugin.PROGRESS_LIMIT = 300
+        items = [
+            SimpleNamespace(nodeid=f"{SELECTOR}[sensitive fixture payload {index}]" + "secret" * 50)
+            for index in range(20)
+        ]
+        plugin.pytest_collection_finish(SimpleNamespace(items=items))
+        for item in items:
+            for phase in PHASES:
+                finish_phase(plugin, item, phase)
+        data = stream.getvalue()
+        self.assertNotIn("sensitive fixture payload", data)
+        self.assertNotIn("secret", data)
+        self.assertLessEqual(len(data.encode()), 300)
+        progress = observed_progress(data)
+        self.assertTrue(progress, "collection and explicit truncation were never written")
+        self.assertEqual(progress[0][:2], ["collection", 20])
+        self.assertTrue(progress[0][3])
+        self.assertEqual(progress[-1], ["progress-truncated"])
+
+    def test_progress_preserves_inner_hook_exceptions_and_bounds_report_values(self):
+        stream = io.StringIO()
+        plugin = fake_plugin(self.root, stream)
+        item = SimpleNamespace(nodeid=SELECTOR)
+        plugin.pytest_collection_finish(SimpleNamespace(items=[item]))
+        wrapper = plugin.pytest_runtest_setup(item)
+        next(wrapper)
+        failure = RuntimeError("sensitive inner exception value")
+        with self.assertRaises(RuntimeError) as raised:
+            wrapper.throw(failure)
+        self.assertIs(raised.exception, failure)
+        plugin.pytest_runtest_logreport(SimpleNamespace(
+            nodeid=SELECTOR, when="setup", outcome="sensitive report value", duration=math.inf,
+        ))
+        self.assertNotIn("sensitive", stream.getvalue())
+        self.assertEqual(observed_progress(stream.getvalue())[-1][0:5], ["result", 0, "setup", "unknown", None])
 
     def test_baseline_rejects_a_case_hidden_in_a_nested_suite(self):
         self.evidence((SELECTOR, None))
