@@ -11,6 +11,7 @@ import argparse
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import io
 import os
 from pathlib import Path, PurePosixPath
 import platform
@@ -222,6 +223,13 @@ class CommandResult:
     stderr: bytes
 
 
+class CompletedCommandFailure(Failure):
+    """A completed nonzero process whose bounded result remains observable."""
+    def __init__(self, message, result):
+        super().__init__(message)
+        self.result = result
+
+
 class ProcessRunner:
     """Bound directly captured streams; kill/reap only this new process group."""
     native_executed = True
@@ -397,35 +405,48 @@ def verify_registry(root, expected):
     for name,version,source,digest in expected:
         require(source=='registry+https://github.com/rust-lang/crates.io-index', 'registry source')
         package = name+'-'+version
-        require(sha256(regular(stores[0]/(package+'.crate'), 100*1024**2)).hexdigest()==digest, 'crate archive checksum')
+        archive_raw=regular(stores[0]/(package+'.crate'),100*1024**2)
+        require(sha256(archive_raw).hexdigest()==digest, 'crate archive checksum')
         unpacked = root/'src'/origin/package
-        checks = parse(regular(unpacked/'.cargo-checksum.json'))
-        require(set(checks)=={'package','files'} and checks['package']==digest, 'unpacked checksum identity')
-        require(type(checks['files']) is dict, 'unpacked file map')
-        archive_files={}
-        with tarfile.open(stores[0]/(package+'.crate'),'r:gz') as archive:
+        # Cargo797e8a9bc fetch generates only this fresh completion marker.
+        # Its extracted registry tree has no vendor .cargo-checksum.json.
+        require(regular(unpacked/'.cargo-ok',7)==b'{"v":1}', 'Cargo extraction marker')
+        archive_files, archive_dirs, seen = {}, set(), set()
+        # Derive expectations from the same bytes authenticated against the
+        # lock, never an extracted checksum manifest or an unchecked reread.
+        with tarfile.open(fileobj=io.BytesIO(archive_raw),mode='r:gz') as archive:
             for member in archive:
                 path=PurePosixPath(member.name)
-                require(not path.is_absolute() and '..' not in path.parts and path.parts[0]==package,
+                require(not path.is_absolute() and '..' not in path.parts and path.parts and path.parts[0]==package,
                         'crate archive traversal')
                 require(member.isdir() or member.isfile(), 'crate archive special member')
-                if member.isdir():continue
-                relative=PurePosixPath(*path.parts[1:]).as_posix()
-                require(relative not in archive_files and member.size<=100*1024**2, 'crate archive duplicate/size')
+                relative=PurePosixPath(*path.parts[1:])
+                name=relative.as_posix()
+                require(name not in seen, 'crate archive duplicate')
+                seen.add(name)
+                require(name!='.cargo-ok' and not name.startswith('.cargo-ok/'), 'archive-supplied Cargo marker')
+                if name=='.':
+                    require(member.isdir(), 'crate archive root kind')
+                    continue
+                archive_dirs.update(str(parent) for parent in relative.parents if str(parent)!='.')
+                if member.isdir():
+                    archive_dirs.add(name)
+                    continue
+                require(member.size<=100*1024**2, 'crate archive file size')
                 digest_file=sha256()
                 with archive.extractfile(member) as reader:
                     while True:
                         chunk=reader.read(65536)
                         if not chunk:break
                         digest_file.update(chunk)
-                archive_files[relative]=digest_file.hexdigest()
-        require(archive_files==checks['files'], 'archive versus unpacked checksum manifest')
-        actual = {p.relative_to(unpacked).as_posix() for p in unpacked.rglob('*') if p.is_file()}
-        require(actual==set(checks['files'])|{'.cargo-checksum.json','.cargo-ok'} or
-                actual==set(checks['files'])|{'.cargo-checksum.json'}, 'unpacked file inventory')
-        for relative,want in checks['files'].items():
-            rel = PurePosixPath(relative)
-            require(not rel.is_absolute() and '..' not in rel.parts and str(rel)==relative, 'crate traversal')
+                archive_files[name]=digest_file.hexdigest()
+        actual_files, actual_dirs = set(), set()
+        for path in unpacked.rglob('*'):
+            relative=path.relative_to(unpacked).as_posix()
+            (actual_dirs if path.is_dir() else actual_files).add(relative)
+        require(actual_files==set(archive_files)|{'.cargo-ok'}, 'unpacked file inventory')
+        require(actual_dirs==archive_dirs, 'unpacked directory inventory')
+        for relative,want in archive_files.items():
             require(sha256(regular(unpacked/relative,100*1024**2)).hexdigest()==want, 'unpacked file checksum')
     return {'packages':len(expected),'tuples':expected}
 
@@ -459,7 +480,8 @@ class SystemHost:
 
     def command(self, argv, **kwargs):
         result = self.process.run(argv, **kwargs)
-        require(result.returncode == 0, 'command failed: '+Path(str(argv[0])).name)
+        if result.returncode != 0:
+            raise CompletedCommandFailure('command failed: '+Path(str(argv[0])).name, result)
         return result
 
     def _query(self, *argv, timeout=10):
@@ -671,6 +693,9 @@ class ProofRun:
             attempt['status']='passed'
             return result.stdout
         except BaseException as exc:
+            if isinstance(exc,CompletedCommandFailure):
+                result=exc.result
+                attempt.update(exit=result.returncode,stdout=identity(result.stdout),stderr=identity(result.stderr))
             attempt.update(status='failed',error=str(exc) if isinstance(exc,Failure) else type(exc).__name__)
             raise
         finally: persist()

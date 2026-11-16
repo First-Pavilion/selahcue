@@ -444,7 +444,7 @@ class OrchestrationTests(unittest.TestCase):
             member=tarfile.TarInfo('pkg-1.0.0/lib.rs');member.size=6;tar.addfile(member,io.BytesIO(b'public'))
         raw=(cache/'pkg-1.0.0.crate').read_bytes();digest=hashlib.sha256(raw).hexdigest()
         (source/'lib.rs').write_bytes(b'public')
-        (source/'.cargo-checksum.json').write_text(json.dumps({'package':digest,'files':{'lib.rs':hashlib.sha256(b'public').hexdigest()}}))
+        (source/'.cargo-ok').write_bytes(b'{"v":1}')
         tuples=[['pkg','1.0.0','registry+https://github.com/rust-lang/crates.io-index',digest]]
         self.assertEqual(self.p.verify_registry(registry,tuples)['packages'],1)
         for mutation in ('archive','file','missing','extra'):
@@ -654,7 +654,8 @@ class HardenedOrchestrationTests(unittest.TestCase):
         expected=[['pkg','1.0.0','registry+https://github.com/rust-lang/crates.io-index',digest]]
         (source/'lib.rs').write_bytes(b'evil')
         (source/'.cargo-checksum.json').write_text(json.dumps({'package':digest,'files':{'lib.rs':hashlib.sha256(b'evil').hexdigest()}}))
-        with self.assertRaisesRegex(self.p.Failure,'archive.*unpacked|unpacked.*archive'):
+        (source/'.cargo-ok').write_bytes(b'{"v":1}')
+        with self.assertRaisesRegex(self.p.Failure,'unpacked'):
             self.p.verify_registry(registry,expected)
 
     def test_exclusive_archive_extract_rejects_path_traversal_links_and_devices(self):
@@ -897,5 +898,112 @@ class ExecutionFlagTests(unittest.TestCase):
         self.assertFalse(result['native_executed'])
         self.assertTrue(result.get('build_executed'))
         self.assertFalse(result.get('build_completed',False))
+
+class CompletedCommandReceiptTests(unittest.TestCase):
+    setUp = StageTests.setUp
+    fake_build_receipt = StageTests.fake_build_receipt
+
+    def test_real_system_host_nonzero_results_keep_exit_and_both_stream_identities(self):
+        self.run.admit_host()
+        host=self.p.SystemHost();self.run.host=host;self.run.deadline=None
+        self.run.commands=[];self.run._begin('setup.json')
+        for code in (37,-9):
+            completed=self.p.CommandResult(code,b'output',b'diagnostic')
+            with self.subTest(code=code),patch.object(host.process,'run',return_value=completed),self.assertRaises(self.p.Failure):
+                self.run._command(['/inert/command'])
+            recorded=parse_test_receipt(self.run,'setup.json')['commands'][-1]
+            self.assertEqual(recorded.get('exit'),code)
+            self.assertEqual(recorded.get('stdout'),{'bytes':6,'sha256':hashlib.sha256(b'output').hexdigest()})
+            self.assertEqual(recorded.get('stderr'),{'bytes':10,'sha256':hashlib.sha256(b'diagnostic').hexdigest()})
+            self.assertEqual(recorded['status'],'failed')
+            self.assertNotIn('diagnostic',recorded['error'])
+
+    def test_timeout_and_overflow_remain_distinct_from_completed_exit(self):
+        self.run.admit_host()
+        host=self.p.SystemHost();self.run.host=host;self.run.deadline=None
+        self.run.commands=[];self.run._begin('setup.json')
+        for reason in ('command timeout','direct stream overflow'):
+            with self.subTest(reason=reason),patch.object(host.process,'run',side_effect=self.p.Failure(reason)),self.assertRaises(self.p.Failure):
+                self.run._command(['/inert/command'])
+            recorded=parse_test_receipt(self.run,'setup.json')['commands'][-1]
+            self.assertEqual(recorded['status'],'failed');self.assertEqual(recorded['error'],reason)
+            self.assertNotIn('exit',recorded);self.assertNotIn('stdout',recorded);self.assertNotIn('stderr',recorded)
+
+
+class CargoFetchRegistryTests(unittest.TestCase):
+    setUp = OrchestrationTests.setUp
+
+    def registry_fixture(self, tag):
+        import io,tarfile
+        root=self.root/tag
+        source=root/'src/index.crates.io-test/pkg-1.0.0'
+        archive=root/'cache/index.crates.io-test/pkg-1.0.0.crate'
+        index=root/'index/index.crates.io-test'
+        (source/'src').mkdir(parents=True);(source/'empty').mkdir()
+        archive.parent.mkdir(parents=True);index.mkdir(parents=True)
+        (index/'config.json').write_bytes(b'{"dl":"https://static.crates.io/crates","api":"https://crates.io"}')
+        members={'Cargo.toml':b'[package]\nname="pkg"\n','src/lib.rs':b'public'}
+        with tarfile.open(archive,'w:gz') as tar:
+            directory=tarfile.TarInfo('pkg-1.0.0/empty');directory.type=tarfile.DIRTYPE;tar.addfile(directory)
+            for name,raw in members.items():
+                member=tarfile.TarInfo('pkg-1.0.0/'+name);member.size=len(raw);tar.addfile(member,io.BytesIO(raw))
+                (source/name).write_bytes(raw)
+        # Exact fresh output of Cargo797e8a9bc unpack_package: compact v=1
+        # marker created after extraction; no vendor checksum manifest.
+        (source/'.cargo-ok').write_bytes(b'{"v":1}')
+        expected=[['pkg','1.0.0','registry+https://github.com/rust-lang/crates.io-index',hashlib.sha256(archive.read_bytes()).hexdigest()]]
+        return root,source,archive,expected
+
+    def test_fresh_cargo_fetch_tree_passes_without_vendor_manifest(self):
+        root,source,archive,expected=self.registry_fixture('valid')
+        self.assertFalse((source/'.cargo-checksum.json').exists())
+        self.assertEqual((source/'.cargo-ok').read_bytes(),b'{"v":1}')
+        self.assertEqual(self.p.verify_registry(root,expected),{'packages':1,'tuples':expected})
+
+    def test_archive_derived_files_and_directories_reject_extracted_mutations(self):
+        import os
+        for fault in ('changed','missing','extra-file','extra-dir','missing-dir','symlink','fifo','forged-vendor-manifest'):
+            root,source,archive,expected=self.registry_fixture(fault)
+            self.assertEqual(self.p.verify_registry(root,expected)['packages'],1)
+            if fault=='changed':(source/'src/lib.rs').write_bytes(b'changed')
+            if fault=='missing':(source/'src/lib.rs').unlink()
+            if fault=='extra-file':(source/'extra').write_bytes(b'extra')
+            if fault=='extra-dir':(source/'extra').mkdir()
+            if fault=='missing-dir':(source/'empty').rmdir()
+            if fault=='symlink':(source/'src/lib.rs').unlink();(source/'src/lib.rs').symlink_to(source/'Cargo.toml')
+            if fault=='fifo':os.mkfifo(source/'fifo')
+            if fault=='forged-vendor-manifest':
+                (source/'src/lib.rs').write_bytes(b'changed')
+                (source/'.cargo-checksum.json').write_text(json.dumps({'package':expected[0][3],'files':{'src/lib.rs':hashlib.sha256(b'changed').hexdigest()}}))
+            with self.subTest(fault=fault),self.assertRaises(self.p.Failure):self.p.verify_registry(root,expected)
+
+    def test_fresh_generated_marker_must_have_exact_bytes_and_regular_kind(self):
+        for index,bad in enumerate((None,b'',b'ok',b'{"v":2}',b'{"v":1,"extra":0}',b'{"v":1}\n',b'{ "v": 1 }','symlink')):
+            root,source,archive,expected=self.registry_fixture('marker-'+str(index))
+            self.assertEqual(self.p.verify_registry(root,expected)['packages'],1)
+            marker=source/'.cargo-ok'
+            if bad is None:marker.unlink()
+            elif bad=='symlink':marker.unlink();marker.symlink_to(source/'Cargo.toml')
+            else:marker.write_bytes(bad)
+            with self.subTest(marker=bad),self.assertRaises(self.p.Failure):self.p.verify_registry(root,expected)
+
+    def test_lock_verified_archive_cannot_supply_marker_links_or_special_entries(self):
+        import io,tarfile
+        for kind in ('marker','symlink','hardlink','device'):
+            root,source,archive,expected=self.registry_fixture('archive-'+kind)
+            self.assertEqual(self.p.verify_registry(root,expected)['packages'],1)
+            with tarfile.open(archive,'r:gz') as original:
+                members=[(member,original.extractfile(member).read() if member.isfile() else None) for member in original]
+            with tarfile.open(archive,'w:gz') as output:
+                for member,raw in members:output.addfile(member,io.BytesIO(raw) if raw is not None else None)
+                addition=tarfile.TarInfo('pkg-1.0.0/'+('.cargo-ok' if kind=='marker' else 'special'))
+                if kind=='marker':addition.size=7
+                if kind=='symlink':addition.type=tarfile.SYMTYPE;addition.linkname='Cargo.toml'
+                if kind=='hardlink':addition.type=tarfile.LNKTYPE;addition.linkname='pkg-1.0.0/Cargo.toml'
+                if kind=='device':addition.type=tarfile.CHRTYPE
+                output.addfile(addition,io.BytesIO(b'{"v":1}') if kind=='marker' else None)
+            expected[0][3]=hashlib.sha256(archive.read_bytes()).hexdigest()
+            with self.subTest(kind=kind),self.assertRaises(self.p.Failure):self.p.verify_registry(root,expected)
+
 
 if __name__=='__main__':unittest.main()
