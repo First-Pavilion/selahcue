@@ -1826,9 +1826,9 @@ jobs:
     needs: [changes, operator]
     if: ${{ always() && !cancelled() && (needs.changes.outputs.api == 'true' || needs.changes.outputs.native_account_joint == 'true') }}
     runs-on: ubuntu-latest
-    # Run 43745074188 reached pytest's 80% progress marker before the 20-minute
-    # job cap. Allow time for the full suite, diagnostics and cleanup.
-    timeout-minutes: 30
+    # Run 43970076858 finished pytest at the 30-minute job boundary, but the cap
+    # cancelled final G1 validation/upload. Allow five minutes of headroom.
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: implementation/api
