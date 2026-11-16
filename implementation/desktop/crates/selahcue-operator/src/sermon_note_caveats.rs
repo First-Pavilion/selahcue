@@ -1146,6 +1146,7 @@ mod tests {
             draft: d,
             provider_label: "SelahCue AI".to_string(),
             degraded: !ai_generated,
+            degraded_reason: None,
             quota: None,
             ai_generated,
             disclosure: ai_generated.then_some("AI-generated. Verify before use."),
