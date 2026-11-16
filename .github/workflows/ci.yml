@@ -371,6 +371,10 @@ jobs:
         run: python3 scripts/installer_secret_scan.py --self-test
       - name: Cargo receipt scanner tests
         run: python3 scripts/test_dev_key_scan.py
+      - name: WebKit crash journal collector (offline controls)
+        run: |
+          python3 implementation/marketing/tests/test_webkit_crash_journal.py
+          python3 implementation/marketing/tests/test_home_anchor_capture.py
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
@@ -806,6 +810,9 @@ jobs:
           CI_DISK_MIN_FREE_GB: "10"
         run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
+        id: workspace_tests
+        env:
+          SELAHCUE_GPU_PARITY_DIAGNOSTICS: ${{ runner.os == 'Linux' && '1' || '' }}
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
         # failure in an early crate hides every later crate's results.
@@ -819,7 +826,16 @@ jobs:
         # Stated without that qualifier it sent a reader hunting a failure that does not
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
-        run: cargo test --workspace --no-fail-fast
+        run: |
+          ${{ runner.os == 'Linux' && 'if started_at="$(date +%s)"; then printf "started_at=%s\n" "$started_at" >> "$GITHUB_OUTPUT" || true; fi' || '' }}
+          cargo test --workspace --no-fail-fast
+      - name: Collect existing GPU parity crash summaries
+        if: ${{ !cancelled() && runner.os == 'Linux' && (steps.workspace_tests.outcome == 'success' || steps.workspace_tests.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          GPU_PARITY_STARTED_AT: ${{ steps.workspace_tests.outputs.started_at }}
+          CANDIDATE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 ../marketing/scripts/webkit_crash_journal.py --profile gpu-parity --candidate-source-sha "$CANDIDATE_SOURCE_SHA" --since "$GPU_PARITY_STARTED_AT" --until "$(date +%s)"
       # A2: deliberate bounded Windows scheduling evidence, even if an unrelated
       # workspace test failed. The existing workspace/debug and licensing/release
       # runs remain; each failed repetition exits this step immediately.
@@ -2131,11 +2147,24 @@ jobs:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine chromium
       - name: Responsive sweep (WebKit)
+        id: responsive_webkit
         if: ${{ !cancelled() }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
           DEBUG: "pw:browser"
-        run: python3 scripts/responsive_sweep.py --engine webkit
+        run: |
+          if started_at="$(date +%s)"; then
+            printf 'started_at=%s\n' "$started_at" >> "$GITHUB_OUTPUT" || true
+          fi
+          python3 scripts/responsive_sweep.py --engine webkit
+
+      - name: Collect existing WebKit crash summaries
+        if: ${{ !cancelled() && (steps.responsive_webkit.outcome == 'success' || steps.responsive_webkit.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          WEBKIT_SWEEP_STARTED_AT: ${{ steps.responsive_webkit.outputs.started_at }}
+          CANDIDATE_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/webkit_crash_journal.py --profile webkit --candidate-source-sha "$CANDIDATE_SOURCE_SHA" --since "$WEBKIT_SWEEP_STARTED_AT" --until "$(date +%s)"
 
       - name: Responsive touch-target and geometry controls (WebKit)
         if: ${{ !cancelled() }}
@@ -2145,6 +2174,7 @@ jobs:
           DiagnosticRegression.test_existing_geometry_guards_detect_bad_controls
           DiagnosticProbeInertRegression
           DiagnosticLedgerPrivacy
+          HostChronologyInertRegression
 
       # Existing page suites need the built bundle and BOTH installed engines.
       # Keep failures visible even if an earlier browser suite fails.

@@ -48,6 +48,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from core_pages_headless import fit_figma_frame
+from home_anchor_capture import HELPER_PATH, build_home_anchor_provenance, run_pricing_anchor_check
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -491,12 +492,15 @@ def run_engine(p, engine_name: str) -> Run:
             r.near(fresh.evaluate("window.scrollY"), 0, 1, f"a cold load of /{hash_} (no such element) stays at the top")
             r.check("instant" not in fresh.evaluate("window.__scrolls"), f"the correction found nothing to scroll to for /{hash_} and did not scroll")
             fresh.close()
+        provenance = build_home_anchor_provenance(
+            engine=engine_name, browser_version=getattr(browser, "version", ""), environ=os.environ,
+            harness_path=Path(__file__), helper_path=HELPER_PATH,
+        )
         page.goto(BASE_URL + "/pricing", wait_until="networkidle")
         page.evaluate("document.fonts && document.fonts.ready")
-        page.get_by_role("link", name="How it works").first.click()
-        page.wait_for_url("**/#how-it-works")
-        page.wait_for_timeout(1200)
-        r.near(page.evaluate(TARGET_TOP_JS, "how-it-works"), 95, 2, "the navbar's How it works, clicked on /pricing, lands on the section clear of the bar")
+        run_pricing_anchor_check(
+            page, r, engine=engine_name, target_top_js=TARGET_TOP_JS, provenance=provenance, sink=sys.stdout,
+        )
 
         # ------------------------------------------------------------------ the other widths
         for w in (768, 375, 320):
