@@ -21,6 +21,8 @@ import qualify_license_generation as qualification
 FILE = "tests/test_route.py"
 SELECTOR = f"{FILE}::test_route"
 EXTRA = f"{FILE}::test_extra[edge]"
+SELECTED_VARIANT = f"{FILE}::test_parameter[allowed]"
+WRONG_VARIANT = f"{FILE}::test_parameter[other]"
 ASSERTION = "assert response.status_code == 200"
 MISMATCH = r"\b500 == 200\b"
 PHASES = ("setup", "call", "teardown")
@@ -82,9 +84,9 @@ class QualificationFixtures(unittest.TestCase):
         receipt = {"nodes": collected, "calls": calls, "deselected": 0}
         self.collected.write_text(json.dumps(receipt), encoding="utf-8")
 
-    def verify(self, returncode=0, *, mutant=False):
+    def verify(self, returncode=0, *, mutant=False, expected=(SELECTOR,)):
         return qualification.verify_results(
-            self.junit, self.collected, returncode, files=(FILE,), required=(SELECTOR,),
+            self.junit, self.collected, returncode, selectors=expected,
             failures={SELECTOR: (ASSERTION, MISMATCH)} if mutant else None,
         )
 
@@ -97,7 +99,33 @@ class QualificationFixtures(unittest.TestCase):
 
     def test_exact_baseline_outcomes_pass(self):
         self.evidence((SELECTOR, None), (EXTRA, None), collected=(SELECTOR, EXTRA))
-        self.verify()
+        self.verify(expected=(SELECTOR, EXTRA))
+
+    def test_baseline_rejects_extra_identity_even_with_complete_passing_evidence(self):
+        self.evidence(
+            (SELECTOR, None), (SELECTED_VARIANT, None), (EXTRA, None),
+            collected=(SELECTOR, SELECTED_VARIANT, EXTRA),
+        )
+        with self.assertRaises(qualification.QualificationError):
+            self.verify(expected=(SELECTOR, SELECTED_VARIANT))
+
+    def test_baseline_rejects_missing_identity_even_with_matching_call_and_junit_totals(self):
+        self.evidence((SELECTOR, None))
+        with self.assertRaises(qualification.QualificationError):
+            self.verify(expected=(SELECTOR, SELECTED_VARIANT))
+
+    def test_baseline_rejects_wrong_parameter_at_same_case_count(self):
+        self.evidence((SELECTOR, None), (WRONG_VARIANT, None), collected=(SELECTOR, WRONG_VARIANT))
+        with self.assertRaises(qualification.QualificationError):
+            self.verify(expected=(SELECTOR, SELECTED_VARIANT))
+
+    def test_baseline_rejects_duplicate_selected_identity(self):
+        self.evidence(
+            (SELECTOR, None), (SELECTED_VARIANT, None), (SELECTED_VARIANT, None),
+            collected=(SELECTOR, SELECTED_VARIANT, SELECTED_VARIANT),
+        )
+        with self.assertRaises(qualification.QualificationError):
+            self.verify(expected=(SELECTOR, SELECTED_VARIANT))
 
     def test_exact_behavioral_failure_qualifies_a_mutant(self):
         self.evidence((SELECTOR, "failure", "assert 500 == 200", "\n    " + ASSERTION))
@@ -106,7 +134,7 @@ class QualificationFixtures(unittest.TestCase):
     def test_baseline_rejects_missing_collected_case(self):
         self.evidence((SELECTOR, None), collected=(SELECTOR, EXTRA))
         with self.assertRaises(qualification.QualificationError):
-            self.verify()
+            self.verify(expected=(SELECTOR, EXTRA))
 
     def test_baseline_rejects_wrong_returncode(self):
         self.evidence((SELECTOR, None))
