@@ -369,6 +369,7 @@ jobs:
           # Offline controls only; installer builds remain manual/main-only.
           python3 scripts/test_linux_installer.py
           # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
+          python3 -m unittest scripts.test_native_supply_check -v
           python3 scripts/check_rust_supply_ci.py --self-test
           python3 scripts/check_rust_supply_ci.py
           python3 scripts/check_rust_canary_coverage.py --self-test
@@ -1913,6 +1914,9 @@ jobs:
       - name: Audit STT crate
         working-directory: implementation/desktop/crates/selahcue-stt
         run: cargo-audit audit
+      - name: Audit frozen native adapter lock
+        working-directory: scripts/fixtures/macos-native-proof/payloads/native-golden
+        run: cargo-audit audit
 
   supply-chain:
     # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
@@ -1929,9 +1933,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-cyclonedx
+          tool: cargo-deny@0.20.2,cargo-cyclonedx
       - name: License / source / bans policy (desktop workspace)
         working-directory: implementation/desktop
         run: cargo-deny check licenses sources bans
@@ -1942,6 +1947,29 @@ jobs:
       - name: License / source / bans policy (STT crate)
         working-directory: implementation/desktop/crates/selahcue-stt
         run: cargo-deny check licenses sources bans
+      # Audit-only copy: sealed native inputs remain unchanged. No build occurs.
+      - name: Prepare frozen native dependency mirror
+        id: native-supply-prepare
+        timeout-minutes: 3
+        run: python3 scripts/prepare_native_supply_check.py prepare
+      - name: License / source / bans policy (frozen native adapter)
+        id: native-supply-deny
+        timeout-minutes: 5
+        working-directory: ${{ runner.temp }}/selahcue-native-supply/adapter
+        env:
+          CARGO_HOME: ${{ runner.temp }}/selahcue-native-supply/cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/selahcue-native-supply/target
+          RUSTUP_TOOLCHAIN: 1.98.0
+        run: cargo-deny --locked --manifest-path Cargo.toml --config deny.toml check licenses sources bans
+      - name: Verify frozen native audit inputs after deny
+        id: native-supply-postcheck
+        timeout-minutes: 1
+        run: python3 scripts/prepare_native_supply_check.py postcheck
+      - name: Clean owned native dependency mirror
+        id: native-supply-cleanup
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: python3 scripts/prepare_native_supply_check.py cleanup
       - name: Generate CycloneDX SBOM (desktop workspace)
         working-directory: implementation/desktop
         run: cargo cyclonedx --format json
