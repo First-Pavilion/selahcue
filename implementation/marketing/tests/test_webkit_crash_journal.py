@@ -693,11 +693,16 @@ def joining_record(listing=4, *, zero=None, total=None, **fields):
 
 
 def elf_fixture(ids=(b"\x12\x34\x56\x78",), *, klass=2, machine=62,
-                note_offset=120, note_size=None, phnum=1):
+                note_offset=120, note_size=None, phnum=1, padded_note_size=None):
     notes = b"".join(
         struct.pack("<III", 4, len(value), 3) + b"GNU\0" + value + bytes(-len(value) % 4)
         for value in ids
     )
+    if padded_note_size is not None:
+        # A second, non-build-ID note fills the segment with valid records.
+        padding = padded_note_size - len(notes) - 16
+        assert padding >= 0 and padding % 4 == 0
+        notes += struct.pack("<III", 4, padding, 1) + b"TST\0" + bytes(padding)
     header = struct.pack("<16sHHIQQQIHHHHHH", b"\x7fELF" + bytes((klass, 1, 1)) + bytes(9),
                          3, machine, 1, 0, 64, 0, 0, 64, 56, phnum, 0, 0, 0)
     segment = struct.pack("<IIQQQQQQ", 4, 4, note_offset, 0, 0,
@@ -954,6 +959,80 @@ class KernelCorrelation(unittest.TestCase):
         time.sleep(max(0, 2.9 - (time.monotonic() - started)))
         self.assertFalse(survivor.exists())
 
+    def test_parent_deadline_uses_prepared_fallback_without_retrying_full_encode(self):
+        kernel = self.tmp / "deadline-kernel"
+        kernel.write_bytes(jsonl(kernel_row()))
+        for stage in ("collect", "encode_export"):
+            with self.subTest(stage=stage):
+                calls = self.tmp / stage
+                bootstrap = textwrap.dedent(f"""
+                    import runpy, sys, time
+                    from pathlib import Path
+                    sys.argv.pop(0)
+                    main = runpy.run_path(sys.argv[0])["main"]
+                    globals_ = main.__globals__
+                    globals_["METADATA_SECONDS"] = 0.30
+                    stage = {stage!r}
+                    original = globals_[stage]
+
+                    def slow(*args, **kwargs):
+                        with Path({str(calls)!r}).open("a") as marker:
+                            marker.write("entered\\n")
+                        if stage == "encode_export" and args[0]["candidate_scan_complete"]:
+                            assert args[0]["records"][0]["fault_attribution"]["fault_thread"]["tid"] == 4204
+                        time.sleep(0.65)
+                        return original(*args, **kwargs)
+
+                    globals_[stage] = slow
+                    raise SystemExit(main())
+                """)
+                started = time.monotonic()
+                result = self.offline(jsonl(joining_record()), kernel=kernel, bootstrap=bootstrap)
+                self.assertEqual(calls.read_text(), "entered\n")
+                self.assertLess(time.monotonic() - started, 0.80)
+                self.assert_unknown(result, "deadline")
+                self.assertEqual([r["pid"] for r in result["records"]], [4201] if stage == "encode_export" else [])
+
+    def test_backpressured_output_pipe_cannot_hold_collector_open(self):
+        source = self.tmp / "backpressure-crash"
+        source.write_bytes(jsonl(record()))
+        bootstrap = textwrap.dedent("""
+            import runpy, sys
+            sys.argv.pop(0)
+            main = runpy.run_path(sys.argv[0])["main"]
+            main.__globals__["METADATA_SECONDS"] = 0.30
+            raise SystemExit(main())
+        """)
+        read_fd, write_fd = os.pipe()
+        try:
+            os.set_blocking(write_fd, False)
+            while True:
+                try:
+                    os.write(write_fd, b"x" * 4096)
+                except BlockingIOError:
+                    try:
+                        # A full atomic-sized write can still leave room
+                        # for a short JSON line. Fill the final few bytes.
+                        while True:
+                            os.write(write_fd, b"x")
+                    except BlockingIOError:
+                        break
+            os.set_blocking(write_fd, True)
+            argv = [sys.executable, "-c", bootstrap, str(COLLECTOR), "--since", SINCE, "--until", UNTIL,
+                    "--journal-jsonl", str(source)]
+            with subprocess.Popen(argv, stdout=write_fd, stderr=subprocess.PIPE, env=self.env) as child:
+                try:
+                    _stdout, stderr = child.communicate(timeout=0.90)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate(timeout=0.50)
+                    self.fail("collector failed to exit while its stdout pipe was full")
+                self.assertEqual(child.returncode, 0)
+                self.assertEqual(stderr, b"")
+        finally:
+            os.close(write_fd)
+            os.close(read_fd)
+
 
 class InstalledIdentity(unittest.TestCase):
     def setUp(self):
@@ -1002,6 +1081,20 @@ class InstalledIdentity(unittest.TestCase):
         self.path.unlink()
         self.path.symlink_to(outside)
         self.assertIsNone(read(self.path, expected_root=self.root))
+
+    def test_elf_note_budget_with_in_file_payload_at_and_over_limit(self):
+        read = self.collector["read_elf_identity"]
+        for size in (1024 * 1024, 1024 * 1024 + 4):
+            data = elf_fixture(padded_note_size=size)
+            self.path.write_bytes(data)
+            self.assertEqual(self.path.stat().st_size, 120 + size)
+            with self.subTest(note_size=size):
+                receipt = read(self.path, expected_root=self.root)
+                if size == 1024 * 1024:
+                    self.assertEqual(receipt, {"sha256": hashlib.sha256(data).hexdigest(),
+                                               "build_id": "12345678"})
+                else:
+                    self.assertIsNone(receipt)
 
     def test_installed_file_changed_during_streaming_is_rejected(self):
         read = self.collector["read_elf_identity"]

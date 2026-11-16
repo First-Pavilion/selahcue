@@ -947,6 +947,44 @@ def export(result):
     print(encode_export(result))
 
 
+def encode_timeout(result):
+    # Prepare a small receipt before expensive work can hit the deadline.
+    # Keep only already collected crash headers. No attribution can survive
+    # a timeout, and this does not traverse or re-encode any stacks.
+    payload = summary("timeout", result["handler"])
+    payload["truncated"] = True
+    payload["omission_reasons"] = sorted({*result["omission_reasons"], "deadline", "join_incomplete"})
+    for record in result["records"]:
+        header = {key: record[key] for key in (
+            "pid", "timestamp_us", "signal", "role", "core_truncated", "core_storage",
+        )}
+        if "executable" in record:
+            header["executable"] = record["executable"]
+        header.update(partial=True, threads=[], module_identity={},
+                      fault_attribution={"fault_thread": None})
+        payload["records"].append(header)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
+EMPTY_TIMEOUT_EXPORT = encode_timeout(summary())
+
+
+def write_export(encoded, deadline):
+    # Bypass buffered stdout so there is nothing for interpreter shutdown to
+    # flush. A backpressured or broken sink can leave a partial/missing line.
+    try:
+        with time_bound(deadline):
+            fd = sys.stdout.fileno()
+            pending = memoryview((encoded + "\n").encode("ascii"))
+            while pending:
+                count = os.write(fd, pending)
+                if count == 0:
+                    break
+                pending = pending[count:]
+    except (DiagnosticDeadline, OSError, ValueError):
+        pass
+
+
 def mark_incomplete(result, *reasons):
     for record in result["records"]:
         record["fault_attribution"] = {"fault_thread": None}
@@ -980,6 +1018,9 @@ def attach_kernel(result, availability, kernel_data, cut, reaped):
 
 
 def main():
+    start = time.monotonic()
+    output_deadline = start + METADATA_SECONDS
+    deadline = output_deadline - OUTPUT_RESERVE_SECONDS
     parser = PrivateParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--since", required=True)
     parser.add_argument("--until", required=True)
@@ -995,11 +1036,11 @@ def main():
         if since > until or until - since >= WINDOW_SECONDS or until > MAX_EPOCH_SECONDS:
             raise ValueError
     except ValueError:
-        export(summary("invalid_window"))
+        invalid = json.dumps(summary("invalid_window"), separators=(",", ":"), ensure_ascii=True)
+        write_export(invalid, output_deadline)
         return 2
 
-    start = time.monotonic()
-    deadline = start + METADATA_SECONDS
+    fallback = EMPTY_TIMEOUT_EXPORT
     offline = options.journal_jsonl is not None
     handler = "not_checked"
     result = summary()
@@ -1022,6 +1063,7 @@ def main():
                 mark_incomplete(result, "deadline")
             if not reaped:
                 mark_incomplete(result, "reap_unconfirmed")
+            fallback = encode_timeout(result)
         # Coredump-only replay remains useful for legacy non-segfault inputs.
         # A SIGSEGV without a companion never counts as a completed join.
         need_kernel = (
@@ -1042,15 +1084,20 @@ def main():
                 kernel_status = ("unavailable", b"", False, True)
             with time_bound(deadline):
                 attach_kernel(result, *kernel_status)
+                fallback = encode_timeout(result)
         with time_bound(deadline):
             encoded = encode_export(result)
     except DiagnosticDeadline:
-        mark_incomplete(result, "deadline")
-        result["truncated"] = True
-        encoded = encode_export(result)
+        write_export(fallback, output_deadline)
+        return 0
     except (OSError, subprocess.SubprocessError, ValueError):
         result = summary(handler=handler)
-        encoded = encode_export(result)
+        try:
+            with time_bound(deadline):
+                encoded = json.dumps(result, separators=(",", ":"), ensure_ascii=True)
+        except DiagnosticDeadline:
+            write_export(fallback, output_deadline)
+            return 0
 
     if not offline:
         # If coredump inspection may have missed another parity executable,
@@ -1060,21 +1107,26 @@ def main():
             availability != "available" or not reaped or not crash_population_complete
         ):
             identities = []
-        total_deadline = start + METADATA_SECONDS + IDENTITY_SECONDS
-        try:
-            identity, reasons = installed_identity(
-                options.profile, identities, deadline=total_deadline - OUTPUT_RESERVE_SECONDS,
-            )
-            with time_bound(total_deadline):
-                if identity is not None:
-                    result["installed_identity"] = identity
-                if reasons:
-                    result["partial"] = True
-                    result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons})
-                encoded = encode_export(result)
-        except DiagnosticDeadline:
-            pass
-    print(encoded)
+        identity_start = time.monotonic()
+        identity, reasons = installed_identity(
+            options.profile, identities,
+            deadline=output_deadline + IDENTITY_SECONDS - OUTPUT_RESERVE_SECONDS,
+        )
+        # Only time spent in the separate identity phase extends the hard
+        # deadline. Metadata and final output share the original budget.
+        output_deadline += min(IDENTITY_SECONDS, time.monotonic() - identity_start)
+        if identity is not None or reasons:
+            try:
+                with time_bound(output_deadline - OUTPUT_RESERVE_SECONDS):
+                    if identity is not None:
+                        result["installed_identity"] = identity
+                    if reasons:
+                        result["partial"] = True
+                        result["omission_reasons"] = sorted({*result["omission_reasons"], *reasons})
+                    encoded = encode_export(result)
+            except DiagnosticDeadline:
+                encoded = fallback
+    write_export(encoded, output_deadline)
     return 0
 
 
