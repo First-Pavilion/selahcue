@@ -3,7 +3,7 @@
 use selahcue_cloud::deadline_transport::DeadlineTransport;
 use selahcue_cloud::transport::HttpTransport;
 use selahcue_core::deadline::{AccessDeadline, Clock, ClockReading};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -55,9 +55,19 @@ impl Trace {
     }
 }
 #[derive(Debug, PartialEq, Eq)]
+enum CloseKind {
+    Eof,
+    PeerReset,
+}
+#[derive(Debug)]
+struct CloseReceipt {
+    kind: CloseKind,
+    observed_at: Instant,
+}
+#[derive(Debug, PartialEq, Eq)]
 struct FixtureFailure {
     phase: &'static str,
-    kind: Option<std::io::ErrorKind>,
+    kind: Option<ErrorKind>,
 }
 fn io_failure(phase: &'static str, error: std::io::Error) -> FixtureFailure {
     FixtureFailure {
@@ -67,6 +77,19 @@ fn io_failure(phase: &'static str, error: std::io::Error) -> FixtureFailure {
 }
 fn fixture_failure(phase: &'static str) -> FixtureFailure {
     FixtureFailure { phase, kind: None }
+}
+fn classify_close_read(
+    read: std::io::Result<usize>,
+    allow_peer_reset: bool,
+) -> Result<CloseKind, FixtureFailure> {
+    match read {
+        Ok(0) => Ok(CloseKind::Eof),
+        Ok(_) => Err(fixture_failure("unexpected-extra-request-bytes")),
+        Err(error) if allow_peer_reset && error.kind() == ErrorKind::ConnectionReset => {
+            Ok(CloseKind::PeerReset)
+        }
+        Err(error) => Err(io_failure("close-read", error)),
+    }
 }
 // A complete, bounded request with the literal synthetic authorization is required
 // before the fixture can classify a close as in-flight cancellation.
@@ -127,7 +150,7 @@ struct CloseFixture {
     url: String,
     trace: Trace,
     stop: Arc<AtomicBool>,
-    receipt: std::sync::mpsc::Receiver<Result<Instant, FixtureFailure>>,
+    receipt: std::sync::mpsc::Receiver<Result<CloseReceipt, FixtureFailure>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl CloseFixture {
@@ -140,8 +163,9 @@ impl CloseFixture {
         let stopped = stop.clone();
         let events = trace.clone();
         let (tx, receipt) = std::sync::mpsc::channel();
+        let allow_peer_reset = head && jump.is_none();
         // Preserve the forward-jump fixture's original 500 ms read bound.
-        let eof_timeout = if jump.is_some() {
+        let close_timeout = if jump.is_some() {
             Duration::from_millis(500)
         } else {
             Duration::from_secs(2)
@@ -184,20 +208,21 @@ impl CloseFixture {
                         .map_err(|e| io_failure("head-body-write", e))?;
                     events.mark("head-body-written");
                 }
-                events.mark("eof-observer-entry");
+                events.mark("close-observer-entry");
                 stream
-                    .set_read_timeout(Some(eof_timeout))
-                    .map_err(|e| io_failure("eof-timeout-setup", e))?;
+                    .set_read_timeout(Some(close_timeout))
+                    .map_err(|e| io_failure("close-timeout-setup", e))?;
                 let mut buf = [0; 512];
-                match stream.read(&mut buf) {
-                    Ok(0) => {
-                        let eof = Instant::now();
-                        events.mark("actual-eof");
-                        Ok(eof)
-                    }
-                    Ok(_) => Err(fixture_failure("unexpected-extra-request-bytes")),
-                    Err(e) => Err(io_failure("eof-read", e)),
-                }
+                // Only the final read after authentication and any partial write
+                // can yield a terminal receipt.
+                let read = stream.read(&mut buf);
+                let observed_at = Instant::now();
+                let kind = classify_close_read(read, allow_peer_reset)?;
+                events.mark(match kind {
+                    CloseKind::Eof => "actual-eof",
+                    CloseKind::PeerReset => "actual-peer-reset",
+                });
+                Ok(CloseReceipt { kind, observed_at })
             })();
             if let Err(error) = &outcome {
                 events.mark(error.phase);
@@ -215,7 +240,7 @@ impl CloseFixture {
     }
     fn observe(
         &self,
-    ) -> Result<Result<Instant, FixtureFailure>, std::sync::mpsc::RecvTimeoutError> {
+    ) -> Result<Result<CloseReceipt, FixtureFailure>, std::sync::mpsc::RecvTimeoutError> {
         let result = self.receipt.recv_timeout(Duration::from_millis(500));
         self.trace.mark("receipt-received-or-watchdog");
         result
@@ -233,12 +258,9 @@ impl Drop for CloseFixture {
         self.join();
     }
 }
-#[test]
-fn delayed_response_fixture_accepts_abortive_peer_close() {
+fn abortive_peer_after_partial_response(fixture: &CloseFixture) -> TcpStream {
     const RESPONSE_PREFIX: &[u8] =
         b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\nx";
-    let trace = Trace::new();
-    let mut fixture = CloseFixture::start(true, None, trace.clone());
     let addr: std::net::SocketAddr = fixture
         .url
         .strip_prefix("http://")
@@ -247,42 +269,89 @@ fn delayed_response_fixture_accepts_abortive_peer_close() {
         .unwrap()
         .parse()
         .unwrap();
-    {
-        let timeout = Duration::from_secs(2);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .enable_time()
-            .build()
-            .unwrap();
-        let mut peer = runtime.block_on(async {
-            let peer = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
-                .await
-                .expect("abortive peer connect timeout")
-                .expect("abortive peer connect failed");
-            peer.set_zero_linger().unwrap();
-            peer.into_std().unwrap()
-        });
-        peer.set_nonblocking(false).unwrap();
-        peer.set_write_timeout(Some(timeout)).unwrap();
-        peer.set_read_timeout(Some(timeout)).unwrap();
-        peer.write_all(
-            b"POST /fixture HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer synthetic-native-fixture\r\nContent-Length: 2\r\n\r\n{}",
-        )
+    let timeout = Duration::from_secs(2);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
         .unwrap();
-        let mut prefix = [0; RESPONSE_PREFIX.len()];
-        peer.read_exact(&mut prefix).unwrap();
-        assert!(prefix.as_slice() == RESPONSE_PREFIX, "partial response");
-        trace.mark("abortive-peer-prefix-read");
-        drop(peer);
-    }
+    let mut peer = runtime.block_on(async {
+        let peer = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr))
+            .await
+            .expect("abortive peer connect timeout")
+            .expect("abortive peer connect failed");
+        peer.set_zero_linger().unwrap();
+        peer.into_std().unwrap()
+    });
+    peer.set_nonblocking(false).unwrap();
+    peer.set_write_timeout(Some(timeout)).unwrap();
+    peer.set_read_timeout(Some(timeout)).unwrap();
+    peer.write_all(
+        b"POST /fixture HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer synthetic-native-fixture\r\nContent-Length: 2\r\n\r\n{}",
+    )
+    .unwrap();
+    let mut prefix = [0; RESPONSE_PREFIX.len()];
+    peer.read_exact(&mut prefix).unwrap();
+    assert!(prefix.as_slice() == RESPONSE_PREFIX, "partial response");
+    fixture.trace.mark("abortive-peer-prefix-read");
+    peer
+}
+#[test]
+fn delayed_response_fixture_accepts_abortive_peer_close() {
+    let trace = Trace::new();
+    let mut fixture = CloseFixture::start(true, None, trace.clone());
+    drop(abortive_peer_after_partial_response(&fixture));
     let receipt = fixture.observe();
     fixture.join();
     trace.report("abortive-peer-close");
     assert!(trace.has("authenticated-request-complete"));
     assert!(trace.has("head-body-written"));
-    receipt
+    let closed = receipt
         .expect("abortive peer close watchdog")
         .expect("abortive peer close must yield a terminal receipt");
+    assert_eq!(closed.kind, CloseKind::PeerReset);
+}
+#[test]
+fn delayed_response_watchdog_refuses_a_still_open_peer() {
+    let trace = Trace::new();
+    let mut fixture = CloseFixture::start(true, None, trace.clone());
+    let peer = abortive_peer_after_partial_response(&fixture);
+    assert_eq!(
+        fixture.observe().unwrap_err(),
+        std::sync::mpsc::RecvTimeoutError::Timeout
+    );
+    drop(peer);
+    let receipt = fixture.observe();
+    fixture.join();
+    trace.report("held-open-peer");
+    assert!(trace.has("authenticated-request-complete"));
+    assert!(trace.has("head-body-written"));
+    let closed = receipt.unwrap().unwrap();
+    assert_eq!(closed.kind, CloseKind::PeerReset);
+}
+#[test]
+fn unqualified_observer_reads_do_not_yield_a_close_receipt() {
+    for (kind, allow_peer_reset) in [
+        (ErrorKind::ConnectionReset, false),
+        (ErrorKind::ConnectionAborted, true),
+        (ErrorKind::TimedOut, true),
+        (ErrorKind::WouldBlock, true),
+    ] {
+        assert_eq!(
+            classify_close_read(Err(kind.into()), allow_peer_reset),
+            Err(FixtureFailure {
+                phase: "close-read",
+                kind: Some(kind),
+            })
+        );
+    }
+    assert_eq!(
+        classify_close_read(Ok(1), true),
+        Err(FixtureFailure {
+            phase: "unexpected-extra-request-bytes",
+            kind: None,
+        })
+    );
 }
 #[test]
 fn delayed_head_and_slow_body_really_close_the_client_at_one_deadline() {
@@ -306,7 +375,6 @@ fn delayed_head_and_slow_body_really_close_the_client_at_one_deadline() {
         } else {
             "stalled-head"
         });
-        eprintln!("HTTP deadline close receipt={receipt:?}");
         assert!(result.is_err());
         assert!(
             trace.has("authenticated-request-complete"),
@@ -320,8 +388,16 @@ fn delayed_head_and_slow_body_really_close_the_client_at_one_deadline() {
         }
         let closed = receipt
             .expect("actual HTTP socket close watchdog")
-            .expect("actual HTTP socket EOF, not fixture error");
-        assert!(closed.duration_since(started) < Duration::from_millis(620));
+            .expect("actual HTTP socket terminal receipt");
+        if !head {
+            assert_eq!(closed.kind, CloseKind::Eof);
+        }
+        let elapsed = closed.observed_at.duration_since(started);
+        eprintln!(
+            "HTTP deadline close kind={:?} since_admission={elapsed:?}",
+            closed.kind
+        );
+        assert!(elapsed < Duration::from_millis(620));
     }
 }
 #[test]
@@ -406,12 +482,12 @@ fn forward_clock_jump_cancels_real_inflight_http_and_expired_dispatch_sends_noth
     let receipt = fixture.observe();
     fixture.join();
     trace.report("forward-clock-jump");
-    eprintln!("HTTP deadline close receipt={receipt:?}");
     assert!(result.is_err());
     assert!(trace.has("authenticated-request-complete"));
-    receipt
+    let closed = receipt
         .expect("wall-jump socket close watchdog")
-        .expect("wall-jump actual EOF");
+        .expect("wall-jump socket terminal receipt");
+    assert_eq!(closed.kind, CloseKind::Eof);
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}/", listener.local_addr().unwrap());
