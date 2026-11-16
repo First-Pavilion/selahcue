@@ -529,6 +529,13 @@ ANIMATION_LABELS = {
 # the timeout path can ask for scalar state only through one separately capped probe.
 SETTLE_DIAGNOSTIC_JS = r"""(() => {
   if (window !== window.top) return;
+  let documentNonce = null;
+  try {
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)),
+      byte => byte.toString(16).padStart(2, '0')).join('');
+    Object.defineProperty(window, '__selahcueSettleDocument', {value: nonce});
+    documentNonce = nonce;
+  } catch (_) {}
   const predicate = (__SETTLE_PREDICATE__);
   const labels = __ANIMATION_LABELS__;
   const label = (field, value) => {
@@ -619,6 +626,11 @@ SETTLE_DIAGNOSTIC_JS = r"""(() => {
     if (typeof result !== 'boolean') return;
     lastPollResult = result;
     pollCount++;
+    if (pollCount === 1 && documentNonce !== null) {
+      try {
+        console.debug('WEBKIT_SETTLE_PROBE {"version":1,"kind":"document","document":"' + documentNonce + '"}');
+      } catch (_) {}
+    }
     if (stopped) return;
     if (pollCount === 1) {
       marker('firstPoll');
@@ -669,11 +681,72 @@ SETTLE_MARKERS = ("firstPoll", "firstFramePoll", "earlyTimer", "periodicSampleSt
 
 
 SETTLE_STATE_PREFIX = "WEBKIT_SETTLE_STATE "
-SETTLE_STATE_PROBE_JS = """prefix => {
-  throw new Error(prefix + JSON.stringify(window.__selahcueSettleState?.() ?? null));
-}"""
 SETTLE_STATE_LIMITS = {"elapsedMs": 120000, "totalPolls": 65535,
                        "earlyTimerEntries": 1, "periodicTimerEntries": 12, "lateTimerEntries": 1}
+SETTLE_PROBE_PREFIX = "WEBKIT_SETTLE_PROBE "
+SETTLE_PROBE_BODY_LIMIT = 768
+SETTLE_PROBE_COUNT_LIMIT = 65535
+
+SETTLE_STATE_PROBE_JS = r"""prefix => {
+  const limits = __SETTLE_STATE_LIMITS__;
+  let documentNonce = null;
+  try {
+    const nonce = window.__selahcueSettleDocument;
+    if (typeof nonce === 'string' && nonce.length === 32 && /^[0-9a-f]{32}$/.test(nonce)) documentNonce = nonce;
+  } catch (_) {}
+
+  let outcome = 'getter-threw', encodedState = 'null', legacyBody, legacyFailure;
+  try {
+    const getter = window.__selahcueSettleState;
+    let value;
+    if (typeof getter === 'function') {
+      value = Reflect.apply(getter, window, []);
+      outcome = value == null ? 'nullish' : 'encoding-failed';
+    } else {
+      outcome = '__selahcueSettleState' in window ? 'non-callable' : 'absent';
+      // Optional call previously raised for a non-nullish, non-callable value.
+      if (getter != null) Reflect.apply(getter, window, []);
+    }
+    legacyBody = JSON.stringify(value ?? null);
+  } catch (error) { legacyFailure = {error}; }
+
+  // Observation must not alter the result of the legacy read and encoding.
+  // Admit only the scalar shape before writing it to the independent channel.
+  try {
+    if (outcome === 'encoding-failed' && typeof legacyBody === 'string' && legacyBody.length <= 256) {
+      const candidate = JSON.parse(legacyBody);
+      if (candidate && Object.keys(candidate).length === Object.keys(limits).length + 2
+          && Object.hasOwn(candidate, 'lastResult') && Object.hasOwn(candidate, 'stopped')
+          && (candidate.lastResult === null || typeof candidate.lastResult === 'boolean')
+          && typeof candidate.stopped === 'boolean'
+          && Object.entries(limits).every(([key, max]) => Object.hasOwn(candidate, key)
+              && Number.isInteger(candidate[key]) && candidate[key] >= 0 && candidate[key] <= max)) {
+        encodedState = legacyBody;
+        outcome = 'snapshot';
+      }
+    }
+  } catch (_) {}
+
+  let gateResult = 'read-error';
+  try {
+    const result = (__SETTLE_PREDICATE__)();
+    if (typeof result === 'boolean') gateResult = result;
+  } catch (_) {}
+  try {
+    // The closed-label record remains writable even if state encoding throws.
+    const nonce = documentNonce === null ? 'null' : '"' + documentNonce + '"';
+    const gate = gateResult === 'read-error' ? '"read-error"' : gateResult;
+    const body = '{"version":1,"kind":"probe","document":' + nonce + ',"outcome":"' + outcome +
+      '","state":' + encodedState + ',"gateResult":' + gate + '}';
+    if (body.length <= __SETTLE_PROBE_BODY_LIMIT__ && /^[\x00-\x7f]*$/.test(body)) {
+      console.debug('WEBKIT_SETTLE_PROBE ' + body);
+    }
+  } catch (_) {}
+  if (legacyFailure) throw legacyFailure.error;
+  throw new Error(prefix + legacyBody);
+}""".replace("__SETTLE_PREDICATE__", SETTLE_JS).replace(
+    "__SETTLE_STATE_LIMITS__", json.dumps(SETTLE_STATE_LIMITS)).replace(
+    "__SETTLE_PROBE_BODY_LIMIT__", str(SETTLE_PROBE_BODY_LIMIT))
 
 
 def valid_settle_state(value):
@@ -688,6 +761,46 @@ def valid_settle_state(value):
 
 def reject_json_constant(_value):
     raise ValueError("nonstandard JSON constant")
+
+
+def unique_json_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("duplicate JSON key")
+        value[key] = item
+    return value
+
+
+def valid_settle_document(value):
+    return (type(value) is str and len(value) == 32
+            and all(character in "0123456789abcdef" for character in value))
+
+
+def parse_settle_probe_record(body):
+    if len(body) > SETTLE_PROBE_BODY_LIMIT or not body.isascii():
+        return None
+    try:
+        record = json.loads(body, parse_constant=reject_json_constant, object_pairs_hook=unique_json_object)
+    except (ValueError, RecursionError):
+        return None
+
+    fields = {"version", "kind", "document"}
+    if type(record) is not dict or type(record.get("version")) is not int or record["version"] != 1:
+        return None
+    kind = record.get("kind")
+    if kind == "document":
+        return record if set(record) == fields and valid_settle_document(record["document"]) else None
+    if kind != "probe" or set(record) != fields | {"outcome", "state", "gateResult"}:
+        return None
+    nonce, outcome, state, gate = (record[key] for key in ("document", "outcome", "state", "gateResult"))
+    if (nonce is not None and not valid_settle_document(nonce)) or (type(gate) is not bool and gate != "read-error"):
+        return None
+    if outcome == "snapshot":
+        return record if valid_settle_state(state) is not None else None
+    if outcome in ("absent", "non-callable", "getter-threw", "encoding-failed", "nullish") and state is None:
+        return record
+    return None
 
 
 def probe_settle_state(page):
@@ -758,10 +871,21 @@ def emit_diagnostic_line(line):
         pass
 
 
-def emit_settle_probe(page, capture):
+def emit_settle_probe(page, capture, diagnostic=None):
     """A refused observation, formatting failure or closed output cannot change the gate."""
     try:
-        result = probe_settle_state(page)
+        if diagnostic is not None:
+            diagnostic.probe_phase = "during"
+        try:
+            result = probe_settle_state(page)
+        finally:
+            if diagnostic is not None:
+                diagnostic.end_probe_observation(page)
+        if diagnostic is not None:
+            try:
+                result["observation"] = diagnostic.probe_observation()
+            except Exception:
+                pass
         emit_diagnostic_line(SETTLE_STATE_PREFIX + json.dumps(
             {"capture": capture, **result}, separators=(",", ":"), allow_nan=False))
     except Exception:
@@ -886,6 +1010,15 @@ class SettleDiagnostic:
         self.stages: list[dict] = []
         self.current_stage = "created"
         self.dropped = {"events": 0, "samples": 0, "observerErrors": 0}
+        self.probe_phase = "before"
+        self.first_document = None
+        self.probe_record = None
+        self.probe_rejected = 0
+        self.probe_lifecycle = {
+            phase: {"close": 0, "crash": 0, "mainDocumentNavigation": 0}
+            for phase in ("before", "during")
+        }
+        self.navigation_listener = lambda frame: self.observe_navigation(page, frame)
         try:
             for category in ("request", "requestfinished", "requestfailed"):
                 page.on(category, lambda req, category=category: self.observe(category, req))
@@ -897,11 +1030,55 @@ class SettleDiagnostic:
             page.on("load", lambda: self.observe("load"))
             page.on("console", self.console)
             page.add_init_script(SETTLE_DIAGNOSTIC_JS)
+            page.on("framenavigated", self.navigation_listener)
         except Exception:  # observation setup must not replace the original result
             self.dropped["observerErrors"] += 1
 
+    def observe_navigation(self, page, frame):
+        try:
+            if frame == page.main_frame:
+                self.observe_probe_lifecycle("mainDocumentNavigation")
+        except Exception:
+            pass
+
+    def observe_probe_lifecycle(self, category):
+        if self.probe_phase is not None:
+            counts = self.probe_lifecycle[self.probe_phase]
+            counts[category] = min(counts[category] + 1, SETTLE_PROBE_COUNT_LIMIT)
+
+    def end_probe_observation(self, page):
+        self.probe_phase = None
+        try:
+            page.remove_listener("framenavigated", self.navigation_listener)
+        except Exception:
+            pass
+
+    def receive_probe_record(self, body):
+        record = parse_settle_probe_record(body)
+        if record is not None:
+            if record["kind"] == "document" and self.probe_phase == "before" and self.first_document is None:
+                self.first_document = record["document"]
+                return
+            if record["kind"] == "probe" and self.probe_phase == "during" and self.probe_record is None:
+                self.probe_record = record
+                return
+        self.probe_rejected = min(self.probe_rejected + 1, SETTLE_PROBE_COUNT_LIMIT)
+
+    def probe_observation(self):
+        console = None
+        document_match = "unknown"
+        if self.probe_record is not None:
+            nonce = self.probe_record["document"]
+            if nonce is not None and self.first_document is not None:
+                document_match = "same" if self.first_document == nonce else "different"
+            console = {key: self.probe_record[key] for key in ("outcome", "state", "gateResult")}
+        return {"console": console, "documentMatch": document_match,
+                "lifecycle": self.probe_lifecycle, "rejected": self.probe_rejected}
+
     def observe(self, category, request=None, response=None):
         try:
+            if category in ("close", "crash"):
+                self.observe_probe_lifecycle(category)
             if self.closed or time.monotonic() - self.started > 12:
                 return
             event = {"category": category, "elapsedMs": round((time.monotonic() - self.started) * 1000)}
@@ -921,7 +1098,17 @@ class SettleDiagnostic:
 
     def console(self, message):
         try:
-            if self.closed or time.monotonic() - self.started > 12:
+            # Only the receipt channel remains open during the failure probe.
+            receiving = self.probe_phase == "during" or (
+                self.probe_phase == "before" and self.current_stage == "settle-start"
+            )
+            if receiving and message.type == "debug":
+                text = message.text
+                if text.startswith(SETTLE_PROBE_PREFIX):
+                    offset = len(SETTLE_PROBE_PREFIX)
+                    self.receive_probe_record(text[offset:offset + SETTLE_PROBE_BODY_LIMIT + 1])
+                    return
+            if self.probe_phase == "during" or self.closed or time.monotonic() - self.started > 12:
                 return
             if message.type == "debug" and message.text.startswith("WEBKIT_SETTLE_"):
                 prefix, _, body = message.text.partition(" ")
@@ -1618,8 +1805,11 @@ def main() -> int:
                                 diagnostic.emit("infra", len(errors))
                             except Exception:
                                 pass
-                        if diagnostic and diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
-                            emit_settle_probe(page, "after-timeout")
+                        if diagnostic:
+                            if diagnostic.current_stage == "settle-start" and isinstance(exc, PlaywrightTimeoutError):
+                                emit_settle_probe(page, "after-timeout", diagnostic)
+                            else:
+                                diagnostic.end_probe_observation(page)
                         return 2
 
                     if diagnostic:
@@ -1740,6 +1930,7 @@ def main() -> int:
                         raise
                     if diagnostic:
                         diagnostic.stage("geometry-end")
+                        diagnostic.end_probe_observation(page)
                         diagnostic.finish(len(errors), len(failures) > failures_before)
                         if not healthy_probe_attempted and len(failures) == failures_before:
                             healthy_probe_attempted = True
