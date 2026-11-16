@@ -228,3 +228,95 @@ def completed_receipts(plan: dict) -> tuple[dict, dict]:
         {**common, "input_sha256": "1" * 64, "prepare_receipt_sha256": "2" * 64,
          "tool_version": "synthetic-aws-cli", "objects": uploaded},
     )
+
+
+def fake_aws_executable(directory: Path):
+    """Stateful subprocess fixture. Only temporary synthetic state is reachable."""
+    import sys
+    state = directory / 'fake-aws-state.json'
+    state.write_text(json.dumps({'objects': {}, 'calls': [], 'puts': [], 'mode': ''}))
+    executable = directory / 'aws'
+    executable.write_text('#!' + sys.executable + '\n' + 'STATE = ' + repr(str(state)) + '\n' + r'''
+import hashlib, json, os, sys, time
+from pathlib import Path
+path = Path(STATE)
+s = json.loads(path.read_text())
+args = sys.argv[1:]
+s['calls'].append({'argv': args, 'env': dict(os.environ)})
+def save(): path.write_text(json.dumps(s))
+def output(value): save(); print(json.dumps(value)); raise SystemExit(0)
+def error(code, operation):
+    save()
+    print(f'\nAn error occurred ({code}) when calling the {operation} operation: synthetic service detail', file=sys.stderr)
+    raise SystemExit(254)
+if args == ['--version']:
+    save(); print('aws-cli/2.31.0 Python/3.13 synthetic/test'); raise SystemExit(0)
+if '--generate-cli-skeleton' in args:
+    keys = ['ACL','Bucket','Key','Body','ContentLength','IfNoneMatch','ContentType','ContentDisposition','CacheControl']
+    if s['mode'] == 'old-model': keys.remove('IfNoneMatch')
+    output(dict.fromkeys(keys, ''))
+assert args[:1] == ['s3api']
+op = args[1]
+assert op in ('head-object','get-object-acl','put-object'), args
+options = {}
+i = 2
+while i < len(args):
+    name = args[i]
+    if name == '--no-cli-pager': i += 1; continue
+    options[name] = args[i+1]; i += 2
+assert options['--bucket'] == 'selahcue-installers'
+assert options['--endpoint-url'] == 'https://sfo3.digitaloceanspaces.com'
+assert options['--region'] == 'sfo3'
+assert options['--cli-connect-timeout'] == '30' and options['--cli-read-timeout'] == '120'
+assert options['--output'] == 'json'
+assert '--debug' not in args and '--no-verify-ssl' not in args
+assert os.environ['AWS_MAX_ATTEMPTS'] == '1'
+assert Path(os.environ['AWS_CONFIG_FILE']).read_bytes() == b''
+assert Path(os.environ['AWS_SHARED_CREDENTIALS_FILE']).read_bytes() == b''
+key = options['--key']
+assert key.startswith('installers/1.2.3-rc.1+synthetic/')
+obj = s['objects'].get(key)
+if s['mode'] == 'flood':
+    save(); sys.stdout.write('x' * (1024*1024+1)); sys.stdout.flush(); time.sleep(5)
+if s['mode'] == 'stderr-flood':
+    save(); sys.stderr.write('s' * 4097); sys.stderr.flush(); time.sleep(5)
+if s['mode'] == 'hang': save(); time.sleep(5)
+if s['mode'] == 'malformed': save(); print('{bad'); raise SystemExit(0)
+if op == 'head-object':
+    if s['mode'] == 'denied': error('403', 'HeadObject')
+    if s['mode'] == 'unrecognized': error('Unexpected', 'HeadObject')
+    if s['mode'] == 'probe-unknown' and s['puts']: error('503','HeadObject')
+    if obj is None: error('404', 'HeadObject')
+    result = dict(obj['head'])
+    if s['mode'] == 'metadata': result['Metadata'] = {'sha256': obj['sha256']}
+    if s['mode'] == 'wrong-header': result['CacheControl'] = 'private'
+    output(result)
+if op == 'get-object-acl':
+    if obj is None: error('NoSuchKey','GetObjectAcl')
+    result = {'Owner': {'ID':'fixture-owner'}, 'Grants': [
+       {'Grantee': {'Type':'CanonicalUser','ID':'fixture-owner'},'Permission':'FULL_CONTROL'},
+       {'Grantee': {'Type':'Group','URI':'http://acs.amazonaws.com/groups/global/AllUsers'},'Permission':'READ'}]}
+    if s['mode'] == 'private': result['Grants'].pop()
+    if s['mode'] == 'public-write': result['Grants'][1]['Permission'] = 'WRITE'
+    output(result)
+assert options['--if-none-match'] == '*' and options['--acl'] == 'public-read'
+assert set(options) == {'--bucket','--key','--endpoint-url','--region','--output','--cli-connect-timeout',
+    '--cli-read-timeout','--body','--content-length','--if-none-match','--acl','--content-type',
+    '--content-disposition','--cache-control'}
+body = Path(options['--body']).read_bytes()
+assert len(body) == int(options['--content-length'])
+assert hashlib.sha256(body).hexdigest() == key.split('/')[2]
+s['puts'].append(key)
+mode = s['mode']
+if obj is not None: error('PreconditionFailed','PutObject')
+if mode == 'conflict-before': error('ConditionalRequestConflict','PutObject')
+if mode in ('unknown-before','probe-unknown'): error('503','PutObject')
+s['objects'][key] = {'body':body.hex(), 'sha256':hashlib.sha256(body).hexdigest(), 'head':{
+   'ContentLength':len(body), 'ContentType':options['--content-type'],
+   'ContentDisposition':options['--content-disposition'], 'CacheControl':options['--cache-control'], 'Metadata':{}}}
+if mode == 'lost': error('500','PutObject')
+if mode == 'race': error('PreconditionFailed','PutObject')
+output({'ETag':'"synthetic-not-a-content-proof"'})
+''')
+    executable.chmod(0o700)
+    return executable, state

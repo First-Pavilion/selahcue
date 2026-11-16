@@ -164,8 +164,8 @@ class PrepareTests(unittest.TestCase):
         target = fixture.original / fixture.data["artifacts"][0]["path"]
         original_hash = prepare_module._stream_hash
 
-        def mutate_after_copy(source, size, destination=None):
-            result = original_hash(source, size, destination)
+        def mutate_after_copy(source, size, destination=None, *, check=prepare_module._no_check):
+            result = original_hash(source, size, destination, check=check)
             if destination is not None and os.path.samestat(os.fstat(source.fileno()), target.stat()):
                 before = target.stat()
                 target.write_bytes(b"Z" * size)

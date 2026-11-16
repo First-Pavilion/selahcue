@@ -11,6 +11,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -308,6 +309,33 @@ raise SystemExit(status)
                     public_verify.verify_object_in_child(_OBJ)
                 self.assertEqual(error.exception.exit_code, code)
                 self.assertNotIn(_MARKER, str(error.exception))
+
+    def test_caller_deadline_validation_never_launches_expired_or_invalid_child(self):
+        for deadline, code in ((float("nan"), 2), (float("inf"), 2), (True, 2), ("123", 2), (10**400, 2),
+                               (time.monotonic() - 1, 4)):
+            with self.subTest(deadline=deadline), patch.object(public_verify.subprocess, "Popen") as spawn:
+                with self.assertRaises(PublicationError) as error:
+                    public_verify.verify_object_in_child(_OBJ, deadline=deadline)
+                self.assertEqual(error.exception.exit_code, code)
+                spawn.assert_not_called()
+
+    def test_caller_deadline_shortens_child_and_cannot_extend_own_cap(self):
+        for own_cap, caller_remaining in ((10.0, 0.15), (0.15, 10.0)):
+            children = []
+            original = subprocess.Popen
+            def spawn(*args, **kwargs):
+                child = original(*args, **kwargs); children.append(child); return child
+            with patch.object(public_verify, "_TOTAL_TIMEOUT", own_cap), patch.object(
+                public_verify, "_child_argv", return_value=[sys.executable, "-I", "-S", "-c",
+                                                           "import time; time.sleep(5)"],
+            ), patch.object(public_verify.subprocess, "Popen", side_effect=spawn):
+                started = time.monotonic()
+                with self.assertRaises(PublicationError) as error:
+                    public_verify.verify_object_in_child(_OBJ, deadline=started + caller_remaining)
+                self.assertEqual(error.exception.exit_code, 4)
+                self.assertLess(time.monotonic() - started, 2)
+                self.assertEqual(len(children), 1)
+                self.assertIsNotNone(children[0].returncode)
 
     def test_invalid_child_input_never_opens_public_connection(self):
         argv = public_verify._child_argv()

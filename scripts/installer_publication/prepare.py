@@ -1,6 +1,6 @@
 """Offline preparation and loading of a private installer custody directory."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 import errno
@@ -168,31 +168,45 @@ def read_regular_file(path: Path, maximum: int = MAX_JSON_BYTES) -> bytes:
         raise PublicationError(2, "Cannot read a contained regular file") from exc
 
 
-def _stream_hash(source: BinaryIO, size: int, destination: BinaryIO | None = None) -> str:
+def _no_check() -> None:
+    pass
+
+
+def _stream_hash(source: BinaryIO, size: int, destination: BinaryIO | None = None, *,
+                 check: Callable[[], None] = _no_check) -> str:
     digest = hashlib.sha256()
     remaining = size
     while remaining:
+        check()
         chunk = source.read(min(_CHUNK, remaining))
         require(bool(chunk), "File was truncated during custody read")
         if destination is not None and destination.write(chunk) != len(chunk):
             raise PublicationError(5, "Short snapshot write")
         digest.update(chunk)
         remaining -= len(chunk)
+        check()
+    check()
     require(not source.read(1), "File grew during custody read")
+    check()
     return digest.hexdigest()
 
 
-def _hash(root: int, relative: str, maximum: int, expected_size: int) -> str:
+def _hash(root: int, relative: str, maximum: int, expected_size: int, *,
+          check: Callable[[], None] = _no_check) -> str:
+    check()
     with _regular(root, relative, maximum) as (file, size):
         require(size == expected_size, "Package length differs from its custody mapping")
-        return _stream_hash(file, size)
+        return _stream_hash(file, size, check=check)
 
 
-def hash_regular_file(path: Path, expected_size: int) -> str:
+def hash_regular_file(path: Path, expected_size: int, *, check: Callable[[], None] = _no_check) -> str:
+    check()
     path = _absolute(path)
     try:
         with _directory(path.parent) as root:
-            return _hash(root, path.name, MAX_PACKAGE_BYTES, expected_size)
+            result = _hash(root, path.name, MAX_PACKAGE_BYTES, expected_size, check=check)
+            check()
+            return result
     except OSError as exc:
         raise PublicationError(2, "Cannot hash a contained regular package") from exc
 
@@ -330,7 +344,9 @@ class _RetainedEvidence:
     """Stream each unique original or retained file, then parse only known small records."""
 
     def __init__(self, release_fd: int, mapping: dict[str, EvidenceMapping], *,
-                 original: int | None = None, evidence_fd: int | None = None):
+                 original: int | None = None, evidence_fd: int | None = None,
+                 check: Callable[[], None] = _no_check):
+        self.check = check
         self.release_fd = release_fd
         self.mapping = mapping
         self.original = original
@@ -339,6 +355,7 @@ class _RetainedEvidence:
         self.total = 0
 
     def validate(self, ref: Ref, maximum: int | None = None) -> int:
+        self.check()
         maximum = MAX_OPAQUE_EVIDENCE_BYTES if maximum is None else maximum
         entry = self.mapping.get(ref.path)
         if entry is not None:
@@ -359,8 +376,9 @@ class _RetainedEvidence:
             require(entry is not None, "Evidence mapping missing")
             with _regular(self.release_fd, entry.snapshot_path, maximum) as (file, size):
                 self._check_total(size)
-                require(_stream_hash(file, size) == ref.sha256, "Retained evidence bytes differ")
+                require(_stream_hash(file, size, check=self.check) == ref.sha256, "Retained evidence bytes differ")
 
+        self.check()
         self.total += size
         self.sizes[ref.path] = size
         return size
@@ -371,6 +389,7 @@ class _RetainedEvidence:
     def read(self, ref: Ref, maximum: int = MAX_JSON_BYTES) -> bytes:
         self.validate(ref, maximum)
         raw = _read(self.release_fd, self.mapping[ref.path].snapshot_path, maximum)
+        self.check()
         require(_sha(raw) == ref.sha256, "Parsed evidence bytes differ")
         return raw
 
@@ -496,13 +515,15 @@ def _snapshot_packages(original: int, package_dir: int, release: ReleaseInput) -
     return tuple(result)
 
 
-def _verify_packages(directory: int, release: ReleaseInput, packages: tuple[PackageMapping, ...]) -> None:
+def _verify_packages(directory: int, release: ReleaseInput, packages: tuple[PackageMapping, ...], *,
+                     check: Callable[[], None] = _no_check) -> None:
     artifacts = {row.id: row for row in release.artifacts}
     for row in packages:
+        check()
         original = artifacts[row.id]
         require((row.original_path, row.size_bytes, row.sha256) == (original.path, original.size_bytes, original.sha256),
                 "Retained package mapping differs from its original identity")
-        require(_hash(directory, row.snapshot_path, MAX_PACKAGE_BYTES, row.size_bytes) == row.sha256,
+        require(_hash(directory, row.snapshot_path, MAX_PACKAGE_BYTES, row.size_bytes, check=check) == row.sha256,
                 "Retained package bytes differ")
 
 
@@ -573,25 +594,36 @@ def prepare_release(input_path: Path, source_tree: Path, out_dir: Path) -> Prepa
         raise PublicationError(2, "Cannot open a contained regular publication input or directory") from exc
 
 
-def load_prepared_release(release_dir: Path) -> PreparedRelease:
+def load_prepared_release(release_dir: Path, *, check: Callable[[], None] = _no_check) -> PreparedRelease:
+    check()
     root = _absolute(release_dir)
     try:
         with _directory(root) as directory:
             require(stat.S_IMODE(os.fstat(directory).st_mode) == 0o700, "Release directory is no longer private")
+            check()
             raw = _read(directory, _INPUT)
+            check()
             plan_raw = _read(directory, _PLAN)
+            check()
             receipt = parse_prepare_receipt(_read(directory, _RECEIPT))
+            check()
             release = parse_release_input(raw)
             plan = parse_public_plan(plan_raw)
             require(receipt.input_sha256 == _sha(raw) and receipt.plan_sha256 == _sha(plan_raw)
                     and receipt.source_commit == release.source_commit and plan == _plan_for(release)
                     and plan_raw == record_bytes(plan), "Retained input or canonical plan identity differs")
+            check()
             require(receipt.publisher_source_sha256 == publisher_source_sha256(), "Publisher source inventory differs")
-            mapping = {row.original_path: row for row in receipt.evidence}
-            retained = _RetainedEvidence(directory, mapping)
+            check()
+            mapping = {}
+            for row in receipt.evidence:
+                check()
+                mapping[row.original_path] = row
+            retained = _RetainedEvidence(directory, mapping, check=check)
             profile, inspections, acceptance = _validate_evidence(release, retained)
             require(retained.sizes.keys() == mapping.keys(), "Unexpected unreferenced evidence mapping")
-            _verify_packages(directory, release, receipt.packages)
+            _verify_packages(directory, release, receipt.packages, check=check)
+            check()
     except OSError as exc:
         raise PublicationError(2, "Cannot read a contained regular snapshot file") from exc
     return PreparedRelease(root, release, profile, inspections, acceptance, receipt, plan)

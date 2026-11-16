@@ -2,6 +2,8 @@
 
 from collections.abc import Callable
 import hashlib
+import math
+from numbers import Real
 import os
 from pathlib import Path
 import re
@@ -313,11 +315,21 @@ def _exchange(child: subprocess.Popen, raw: bytes, deadline: float) -> bytes:
     return bytes(output)
 
 
-def verify_object_in_child(obj: ObjectPlan) -> VerifiedObject:
+def verify_object_in_child(obj: ObjectPlan, *, deadline: float | None = None) -> VerifiedObject:
+    own_deadline = time.monotonic() + _TOTAL_TIMEOUT
+    if deadline is not None:
+        try:
+            valid = not isinstance(deadline, bool) and isinstance(deadline, Real) and math.isfinite(deadline)
+        except (OverflowError, ValueError):
+            valid = False
+        if not valid:
+            raise PublicationError(2, "Invalid verifier caller deadline")
+        own_deadline = min(own_deadline, deadline)
+    deadline = own_deadline
     raw = record_bytes(obj)
     obj = parse_object_plan(raw)
-    deadline = time.monotonic() + _TOTAL_TIMEOUT
     try:
+        _remaining(deadline, time.monotonic)
         with subprocess.Popen(
             _child_argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env={},
         ) as child:
@@ -344,6 +356,10 @@ def verify_object_in_child(obj: ObjectPlan) -> VerifiedObject:
             or result.observed_size_bytes != obj.size_bytes or result.observed_sha256 != obj.sha256
             or not headers_match(result.headers, obj)):
         raise _error(obj, 5, "Verifier child response differs from the object plan")
+    try:
+        _remaining(deadline, time.monotonic)
+    except TimeoutError:
+        raise _error(obj, 4, "Verifier child exceeded its deadline") from None
     return result
 
 
