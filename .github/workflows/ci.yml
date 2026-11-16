@@ -279,6 +279,10 @@ jobs:
             # desktop catch-all is not a substitute.
             marketing:
               - 'implementation/marketing/**'
+              - 'scripts/installer_publication/**'
+              - 'scripts/publish_installers.py'
+              - 'scripts/_installer_publication_fixtures.py'
+              - 'scripts/test_installer_publication_*.py'
               - 'implementation/docker-compose.yml'
               - 'docs/release/pilot-registration/notice.json'
               - '.github/workflows/ci.yml'
@@ -1744,6 +1748,9 @@ jobs:
           python-version: "3.14"
       - name: Install
         run: npm ci
+      - name: Installer publication offline self-test
+        working-directory: .
+        run: python3 scripts/publish_installers.py --self-test
       - name: Reject high and critical npm advisories
         run: npm audit --audit-level=high
       # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
