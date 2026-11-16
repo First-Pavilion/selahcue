@@ -585,9 +585,10 @@ def test_admission_measurement_counts_transactions_past_the_cumulative_log_limit
 
 @pytest.mark.parametrize("statement_count", [4, 5])
 def test_admission_measurement_rejects_a_full_operation_log(monkeypatch, statement_count):
-    connection.ensure_connection()
-    monkeypatch.setattr(connection, "queries_log", deque(maxlen=4))
-    monkeypatch.setattr(connection, "force_debug_cursor", False)
+    wrapper = connections["default"]
+    wrapper.ensure_connection()
+    original_log = wrapper.queries_log
+    original_flag = wrapper.force_debug_cursor
     ticks = iter((0, 0, .01, 1))
 
     def submit_once():
@@ -595,15 +596,25 @@ def test_admission_measurement_rejects_a_full_operation_log(monkeypatch, stateme
             for _ in range(statement_count):
                 cursor.execute("SELECT 1")
 
-    with pytest.raises(AssertionError, match="SQL measurement reached the query log capacity"):
-        _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
-    assert connection.force_debug_cursor is False
+    with monkeypatch.context() as patch:
+        patch.setattr(wrapper, "queries_log", deque(maxlen=4))
+        patch.setattr(wrapper, "force_debug_cursor", False)
+        with pytest.raises(AssertionError, match="SQL measurement reached the query log capacity"):
+            _sample_admissions(submit_once, .5, monotonic=lambda: next(ticks), sleep=lambda _: None)
+        assert connection.force_debug_cursor is False
+
+    assert wrapper.queries_log is original_log
+    assert wrapper.force_debug_cursor is original_flag
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1")
+        assert cursor.fetchone() == (1,)
 
 
 def test_admission_measurement_preserves_operation_error_and_restores_debug_cursor(monkeypatch):
-    connection.ensure_connection()
-    monkeypatch.setattr(connection, "queries_log", deque(maxlen=4))
-    monkeypatch.setattr(connection, "force_debug_cursor", False)
+    wrapper = connections["default"]
+    wrapper.ensure_connection()
+    original_log = wrapper.queries_log
+    original_flag = wrapper.force_debug_cursor
     failure = RuntimeError("original measured operation error")
 
     def submit_once():
@@ -612,10 +623,19 @@ def test_admission_measurement_preserves_operation_error_and_restores_debug_curs
                 cursor.execute("SELECT 1")
         raise failure
 
-    with pytest.raises(RuntimeError) as caught:
-        _sample_admissions(submit_once, .5, monotonic=lambda: 0, sleep=lambda _: None)
-    assert caught.value is failure
-    assert connection.force_debug_cursor is False
+    with monkeypatch.context() as patch:
+        patch.setattr(wrapper, "queries_log", deque(maxlen=4))
+        patch.setattr(wrapper, "force_debug_cursor", False)
+        with pytest.raises(RuntimeError) as caught:
+            _sample_admissions(submit_once, .5, monotonic=lambda: 0, sleep=lambda _: None)
+        assert caught.value is failure
+        assert connection.force_debug_cursor is False
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            assert cursor.fetchone() == (1,)
+
+    assert wrapper.queries_log is original_log
+    assert wrapper.force_debug_cursor is original_flag
     with connection.cursor() as cursor:
         cursor.execute("SELECT 1")
         assert cursor.fetchone() == (1,)
