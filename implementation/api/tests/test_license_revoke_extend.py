@@ -2883,7 +2883,7 @@ def test_legacy_refresh_does_not_consume_staff_extension(client):
 
 def test_negotiated_staff_extension_rotates_ordinary_and_managed_free(client):
     ordinary, full_key = _seed_key("negotiated-staff-extension")
-    enrollment = post(client, KEY, body(license_key=full_key))
+    enrollment = post(client, KEY, body(nonce="2" * 32, license_key=full_key))
     assert enrollment.status_code == 200
     _org, _session, free_activation, managed = activate_free(client)
     refreshes = []
