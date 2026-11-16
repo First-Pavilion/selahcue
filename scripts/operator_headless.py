@@ -2074,7 +2074,10 @@ EXPECTED_MIN_CHECKS = 2973
 EXPECTED_MIN_CHECKS = 2987
 # Reviewed native integration: actual combined run measured 2993 checks, 0 FAIL.
 # Includes the retained storage status and complete notes/PDF scenarios.
-EXPECTED_MIN_CHECKS = 2997  # Task3 actual combined run: 2997 checks, 0 FAIL (four storage+expiry premises)
+# PR398 hosted run 43903586934 on source 7f4385ab72429eaff3fe0d613c5668e2667171f2
+# measured 2999 checks, 0 FAIL; both new TR fallback assertions passed. The run exited 4
+# only because this exact-count guard still expected 2997. Keep equality and every assertion.
+EXPECTED_MIN_CHECKS = 2999
 
 
 def find_chrome():

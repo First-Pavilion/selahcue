@@ -108,6 +108,14 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Result: remediated source is ready for independent re-review. Strict feature Clippy, the focused pilot fixture, and Chrome execution remain pending due to active host paging. The next executed browser run must record the actual assertion count so the headless suite's exact-count expectation can be reconciled if needed.
 - New evidence: round 1 section in the local implementation report, `cloud-evidence/run-focused-host-round1.diff`, and `cloud-evidence/run-focused-host-round1.sha256`.
 
+### Iteration 4 — measured headless count correction
+
+- Target criterion: C-005 evidence only; completion remains pending.
+- Change: corrected the final authoritative `EXPECTED_MIN_CHECKS` from 2997 to 2999 using the actual hosted PR398 receipt; exact equality and all checks remain enabled.
+- Historical verifier evidence: hosted run 43903586934 on source `7f4385ab72429eaff3fe0d613c5668e2667171f2` reported 2999 checks and 0 FAIL, with both new TR fallback assertions named PASS. The owning operator step exited 4 solely because the stale expected count was 2997. Raw receipt and independently rehashed evidence are recorded in `/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/release-evidence/open-pr-review/ci-43903586934-count-red-triage.md`.
+- New-source verification: source syntax, whitespace and diff inspections only. No Chrome, Cargo, application, full local CI, or hosted run has executed on this corrected source. C-005 local CI remains UNRUN/PENDING; historical hosted evidence does not satisfy it. Independent reviews, final hosted GREEN, native/release qualification and C-006 remain pending.
+- Decision: retain all completion criteria as PENDING and hand off the corrected source for parent-owned gates.
+
 ## Risks and rollback
 
 - Risks: erasing pilot/configuration errors, weakening TLS or leaking diagnostic data; explicit error enum, fixed copy and guard tests cover these boundaries.
