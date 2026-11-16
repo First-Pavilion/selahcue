@@ -55,11 +55,14 @@ class CrashJournalCLI(unittest.TestCase):
         sudo.chmod(0o700)
         return sudo
 
-    def invoke(self, *extra, since=SINCE, until=UNTIL, code=0):
+    def invoke(self, *extra, since=SINCE, until=UNTIL, code=0, bootstrap=None):
         # Make RED about missing CLI behavior, without starting a broken interpreter command.
         self.assertTrue(COLLECTOR.is_file(), "missing WebKit crash journal CLI")
+        runner = [sys.executable]
+        if bootstrap is not None:
+            runner.extend(("-c", bootstrap))
         result = subprocess.run(
-            [sys.executable, str(COLLECTOR), "--since", since, "--until", until, *extra],
+            [*runner, str(COLLECTOR), "--since", since, "--until", until, *extra],
             env=self.env, capture_output=True, timeout=5, check=False,
         )
         self.assertEqual(result.stderr, b"")
@@ -185,6 +188,39 @@ class CrashJournalCLI(unittest.TestCase):
         self.assertTrue(result["partial"])
         self.assertEqual([r["pid"] for r in result["records"]], [27625])
         self.assertEqual(result["rejected_records"], 0)
+
+    def test_offline_replay_reads_only_the_cap_and_one_probe_byte(self):
+        source = self.tmp / "oversized.jsonl"
+        source.write_bytes(jsonl(record()) + b"X" * (256 * 1024 + 16384))
+        receipt = self.tmp / "byte-offset"
+        bootstrap = textwrap.dedent(f"""
+            import os, runpy, sys
+            from pathlib import Path
+
+            original_open = os.open
+            observer = None
+
+            def observe_open(path, *args, **kwargs):
+                global observer
+                fd = original_open(path, *args, **kwargs)
+                if os.fspath(path) == {str(source)!r}:
+                    # A duplicate shares the actual file offset past the CLI's close.
+                    observer = os.dup(fd)
+                return fd
+
+            os.open = observe_open
+            sys.argv.pop(0)
+            try:
+                runpy.run_path(sys.argv[0], run_name="__main__")
+            finally:
+                if observer is not None:
+                    Path({str(receipt)!r}).write_text(str(os.lseek(observer, 0, os.SEEK_CUR)))
+                    os.close(observer)
+        """)
+        result = self.invoke("--journal-jsonl", str(source), bootstrap=bootstrap)
+        self.assertTrue(result["truncated"])
+        self.assertEqual([r["pid"] for r in result["records"]], [27625])
+        self.assertEqual(int(receipt.read_text()), 256 * 1024 + 1)
 
     def test_offline_unavailable_file_never_falls_back_to_journal(self):
         result = self.invoke("--journal-jsonl", str(self.tmp / SECRET))
