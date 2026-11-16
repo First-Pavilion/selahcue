@@ -686,6 +686,10 @@ def valid_settle_state(value):
     return value
 
 
+def reject_json_constant(_value):
+    raise ValueError("nonstandard JSON constant")
+
+
 def probe_settle_state(page):
     """Observe one error-channel result; the configured timeout is not a wall-clock cap."""
     from playwright.sync_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
@@ -712,7 +716,7 @@ def probe_settle_state(page):
                     result["outcome"] = "oversized-payload"
                 else:
                     try:
-                        value = json.loads(payload)
+                        value = json.loads(payload, parse_constant=reject_json_constant)
                     except (ValueError, RecursionError):
                         result["outcome"] = "invalid-json"
                     else:
@@ -738,12 +742,28 @@ def probe_settle_state(page):
     return result
 
 
+def emit_diagnostic_line(line):
+    """Keep optional output out of buffers that CPython flushes again at shutdown."""
+    try:
+        try:
+            descriptor = sys.stdout.fileno()
+        except (AttributeError, OSError, ValueError):
+            # In-memory captures have no descriptor or interpreter shutdown buffer.
+            print(line, flush=True)
+        else:
+            # Preserve earlier ordinary output, then write without buffering this line.
+            sys.stdout.flush()
+            os.write(descriptor, (line + "\n").encode("utf-8"))
+    except Exception:
+        pass
+
+
 def emit_settle_probe(page, capture):
     """A refused observation, formatting failure or closed output cannot change the gate."""
     try:
         result = probe_settle_state(page)
-        print(SETTLE_STATE_PREFIX + json.dumps(
-            {"capture": capture, **result}, separators=(",", ":"), allow_nan=False), flush=True)
+        emit_diagnostic_line(SETTLE_STATE_PREFIX + json.dumps(
+            {"capture": capture, **result}, separators=(",", ":"), allow_nan=False))
     except Exception:
         pass
 
@@ -965,9 +985,9 @@ class SettleDiagnostic:
 
     def emit(self, outcome, page_error_count):
         try:
-            print("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
+            emit_diagnostic_line("WEBKIT_SETTLE_TRACE " + self.render(outcome, page_error_count))
         except Exception:
-            print('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
+            emit_diagnostic_line('WEBKIT_SETTLE_TRACE {"truncated":true,"observerError":true}')
 
     def finish(self, page_error_count, failed=False):
         # Successful cells are quiet except the original detail control and the actual
