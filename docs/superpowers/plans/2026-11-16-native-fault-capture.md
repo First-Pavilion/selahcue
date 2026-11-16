@@ -65,7 +65,14 @@
 
 ## Task 4: Wire one normal capture and review
 
-**Files:** `.github/workflows/ci.yml`; evidence docs only as needed.
+**Files:** `.github/workflows/ci.yml`; existing `implementation/marketing/scripts/webkit_crash_journal.py` and `implementation/marketing/tests/test_webkit_crash_journal.py` only for the approved finite rejection-stage amendment; evidence docs as needed. Native Tasks1–3 and the separately reviewed Home observer must be complete before final wiring/capture.
+
+**Additional interface:** optional top-level `kernel_rejection_stage` follows the binding spec's approved finite stage addition. Preserve public `parse_kernel_message` compatibility, one strict parse path, existing omission reasons and null/incomplete joins.
+
+- [ ] Before final wiring, add `test_kernel_rejection_stage_classifies_existing_branches`, `test_kernel_rejection_stage_aggregates_without_event_details` and `test_kernel_rejection_stage_absent_without_unsupported_text` through existing callable collection. Cover all six finite rejection stages, homogeneous/mixed aggregation, hostile sentinel privacy, supported P1–P5, unavailable and nontext projection. Observe actual missing-field assertion RED; missing imports/functions never qualify.
+- [ ] Implement the one-parser finite result and constant-space aggregation. Preserve N1–N6 refusal, global ambiguity/incompleteness, private PCs and all original query/byte/population/deadline/output limits. Extend existing exact-cap/hostile-output controls for the field, keep matched frame zero and safe deadline fallback. No new grammar or raw evidence.
+- [ ] Run focused new stdlib controls to GREEN, then the complete collector fixture file once under the prior bounded offline-only admission. Report actual results, no live journal/core/debugger/GPU/browser/local app execution.
+- [ ] Add the already approved `python3 implementation/marketing/tests/test_home_anchor_capture.py` invocation in the existing workflow lint job. The existing Node glob selects its paired fixture. This additive selection preserves every original job, condition, timeout and command.
 
 - [ ] Add workspace step ID, best-effort timestamp output and exact Linux-only diagnostic flag. Its final command/exit remains unchanged. Select post-step GPU collector only when the original Linux gate ran success/failure; diagnostic step alone is `continue-on-error`.
 - [ ] Keep WebKit sweep and existing post-step collector selection; supply fixed profile/source identity and upgrade controls in the existing lint job. No jobs/matrices/runners/versions/timeouts/coverage change.
