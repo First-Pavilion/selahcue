@@ -30,6 +30,6 @@ def find_eligible_org_license(org_id: int, at: datetime) -> AppLicenseKey | None
             starts_at__lte=at,
             expires_at__gt=at,
         )
-        .order_by("-expires_at")
+        .order_by("-expires_at", "-pk")
         .first()
     )
