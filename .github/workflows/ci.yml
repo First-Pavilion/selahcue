@@ -334,6 +334,10 @@ jobs:
         with:
           # Fidelity audit commit citations must be checked, not unknown due to shallow history.
           fetch-depth: 0
+      # Provision only the pinned Cargo used by offline alias controls.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
       # The tiny installer-scanner-controls workflow also covers ordinary docs that
       # this workflow excludes. Repeating the stdlib-only control here is cheap.
       - name: Installer scanner self-test (no installer artifacts)

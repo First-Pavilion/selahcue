@@ -11,7 +11,6 @@ import argparse
 import copy
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -84,6 +83,42 @@ def native_mirror_problems(job):
         return ['native supply: inherited environment/working-directory overrides are forbidden']
     return []
 
+def native_audit_order_problems(job):
+    steps = job.get('steps', [])
+    frozen = {'name': 'Audit frozen native adapter lock',
+              'working-directory': NATIVE_ROOT, 'run': 'cargo-audit audit'}
+    audit = [(i,s) for i,s in enumerate(steps)
+             if s.get('working-directory') == NATIVE_ROOT or s.get('name') == frozen['name']]
+    checkout = [(i,s) for i,s in enumerate(steps) if str(s.get('uses','')).startswith('actions/checkout@')]
+    coverage = [(i,s) for i,s in enumerate(steps) if 'check_dependency_audit_coverage.py' in str(s.get('run',''))]
+    install = [(i,s) for i,s in enumerate(steps) if (s.get('with') or {}).get('tool') == 'cargo-audit']
+    if len(audit) != 1 or audit[0][1] != frozen or any(len(rows) != 1 for rows in (checkout, coverage, install)):
+        return ['native audit: one exact audit and each prerequisite required']
+    if coverage[0][1] != {'name': 'Verify dependency-audit coverage of every Cargo.lock in the repo',
+                          'run': 'python3 scripts/check_dependency_audit_coverage.py'}:
+        return ['native audit: exact unmasked coverage precheck required']
+    if install[0][1] != {'uses': 'taiki-e/install-action@v2', 'with': {'tool': 'cargo-audit'}}:
+        return ['native audit: exact unmasked auditor installation required']
+    if any(key in checkout[0][1] for key in ('if', 'continue-on-error', 'env')):
+        return ['native audit: checkout prerequisite must be unmasked']
+    if not checkout[0][0] < coverage[0][0] < install[0][0] < audit[0][0]:
+        return ['native audit: require checkout then coverage then installation before audit']
+    return []
+
+
+def native_lint_toolchain_problems(job):
+    steps = job.get('steps', [])
+    setups = [(i,s) for i,s in enumerate(steps) if str(s.get('uses','')).startswith('dtolnay/rust-toolchain@')]
+    checkouts = [i for i,s in enumerate(steps) if str(s.get('uses','')).startswith('actions/checkout@')]
+    controls = [i for i,s in enumerate(steps) if any(command in str(s.get('run',''))
+                for command in ('check_rust_supply_ci.py', 'scripts.test_native_supply_check'))]
+    expected = {'uses': 'dtolnay/rust-toolchain@stable', 'with': {'toolchain': '1.98.0'}}
+    if (len(setups) != 1 or setups[0][1] != expected or len(checkouts) != 1 or not controls
+            or not checkouts[0] < setups[0][0] < min(controls)):
+        return ['native lint: exact hosted 1.98.0 setup required before alias controls']
+    return []
+
+
 def problems(workflow, roots):
     found = []
     jobs = workflow['jobs']
@@ -105,6 +140,8 @@ def problems(workflow, roots):
                 found.append(f'{name}: {root} needs exactly one unmasked `{command}` step')
     if NATIVE_ROOT in roots:
         found += native_mirror_problems(jobs['supply-chain'])
+        found += native_audit_order_problems(jobs['audit'])
+        found += native_lint_toolchain_problems(jobs.get('lint-workflows', {}))
     events = workflow.get('on', workflow.get(True, {}))
     if events.get('schedule') != [{'cron': '17 3 * * 0'}]:
         found.append('weekly: preserve the existing Sunday03:17UTC schedule, do not duplicate it')
@@ -118,13 +155,13 @@ def problems(workflow, roots):
 
 
 def alias_probes(workflow, roots):
-    cargo = shutil.which('cargo')
-    if cargo and Path(cargo).resolve().name == 'rustup':
-        rustup_home = Path(os.environ.get('RUSTUP_HOME', str(Path.home() / '.rustup')))
-        installed = list((rustup_home / 'toolchains').glob('1.98.0-*/bin/cargo'))
-        cargo = str(installed[0]) if len(installed) == 1 else None
-    if not cargo or not Path(cargo).is_file():
-        raise AssertionError('installed Cargo 1.98.0 required for aliases; no toolchain setup is permitted')
+    # Resolve the installed toolchain independently of PATH proxy link style.
+    rustup_home = Path(os.environ.get('RUSTUP_HOME', str(Path.home() / '.rustup')))
+    installed = sorted((rustup_home / 'toolchains').glob('1.98.0-*/bin/cargo'))
+    if (len(installed) != 1 or installed[0].is_symlink() or not installed[0].is_file()
+            or not os.access(installed[0], os.X_OK)):
+        raise AssertionError('one installed direct Cargo 1.98.0 required; no toolchain setup is permitted')
+    cargo = str(installed[0].resolve())
     checks = 0
     with tempfile.TemporaryDirectory(prefix='rust-ci-alias-') as directory:
         fixture = Path(directory)
@@ -190,9 +227,9 @@ def self_test(workflow, roots):
         job.update(permissions={'contents': 'read'}, **{'timeout-minutes': 10})
         for checkout in [s for s in job['steps'] if str(s.get('uses', '')).startswith('actions/checkout@')]:
             checkout.setdefault('with', {})['persist-credentials'] = False
-        job['steps'] = [s for s in job['steps'] if not (s.get('working-directory') in roots and str(s.get('run', '')).startswith(('cargo audit', 'cargo-audit', 'cargo deny', 'cargo-deny')))]
+        job['steps'] = [s for s in job['steps'] if not (s.get('working-directory') in roots and s.get('working-directory') != NATIVE_ROOT and str(s.get('run', '')).startswith(('cargo audit', 'cargo-audit', 'cargo deny', 'cargo-deny')))]
         job['steps'] += [{'name': f'Fixture {root}', 'working-directory': root, 'run': command}
-                         for root in sorted(roots) if not (name == 'supply-chain' and root == NATIVE_ROOT)]
+                         for root in sorted(roots) if root != NATIVE_ROOT]
     assert problems(good, roots) == [], problems(good, roots)
     mutations = [
         ('restore cargo alias dispatch', lambda w: w['jobs']['audit']['steps'][-1].update(run='cargo audit')),

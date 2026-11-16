@@ -15,10 +15,10 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import signal
+import selectors
 import stat
 import subprocess
 import tarfile
-import tempfile
 import time
 import tomllib
 
@@ -159,22 +159,89 @@ def extract_source(raw, destination, expected):
 
 
 def command(argv, *, cwd, env, deadline, cap=16*1024**2):
-    """Bounded owned process group; metadata and Git only, no build interface."""
+    """Capture bounded pipes and terminate only the session this call created.
+
+    Observe exit without reaping: the leader's PID reserves its process-group
+    identity until SIGKILL has also reached any same-group descendants. A final
+    reap gets a two-second cleanup allowance; success must still meet deadline.
+    """
+    require(os.name == 'posix' and callable(getattr(os, 'waitid', None))
+            and all(hasattr(os, flag) for flag in ('P_PID', 'WEXITED', 'WNOHANG', 'WNOWAIT')),
+            'waitid WNOWAIT unavailable')
+    require(signal.getsignal(signal.SIGCHLD) == signal.SIG_DFL,
+            'exclusive child wait ownership required')
     require(time.monotonic() < deadline, 'preparation deadline')
-    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as error:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=output, stderr=error, start_new_session=True)
+    captured = {'stdout': bytearray(), 'stderr': bytearray()}
+    ceilings = {'stdout': cap, 'stderr': 1024**2}
+    failure, returncode = None, None
+    may_signal, signaled = True, False
+    with selectors.DefaultSelector() as ready:
+        child = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+
+        def terminate_owned_group():
+            nonlocal signaled
+            if may_signal and not signaled:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                signaled = True
+
         try:
-            while process.poll() is None:
+            for label, stream in (('stdout', child.stdout), ('stderr', child.stderr)):
+                os.set_blocking(stream.fileno(), False)
+                ready.register(stream, selectors.EVENT_READ, label)
+            while True:
                 require(time.monotonic() < deadline, 'preparation deadline')
-                require(os.fstat(output.fileno()).st_size <= cap and os.fstat(error.fileno()).st_size <= 1024**2, 'command output cap')
-                time.sleep(.05)
-            require(os.fstat(output.fileno()).st_size <= cap and os.fstat(error.fileno()).st_size <= 1024**2, 'command output cap')
-            require(process.returncode == 0, 'command failed: '+Path(argv[0]).name+' exit '+str(process.returncode))
-            output.seek(0);return output.read(cap+1)
+                try:
+                    exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                except ChildProcessError:
+                    # Another reaper broke our ownership. Never signal a reusable ID.
+                    may_signal = False
+                    raise Failure('child wait ownership lost')
+                except InterruptedError:
+                    continue
+                if exited is not None:
+                    terminate_owned_group()
+                require(time.monotonic() < deadline, 'preparation deadline')
+                if exited is not None and not ready.get_map():
+                    break
+                for key, _ in ready.select(min(.05, max(0, deadline-time.monotonic()))):
+                    require(time.monotonic() < deadline, 'preparation deadline')
+                    label = key.data
+                    available = ceilings[label] - len(captured[label])
+                    try:
+                        block = os.read(key.fd, min(65536, available) if available else 1)
+                    except BlockingIOError:
+                        continue
+                    if not block:
+                        ready.unregister(key.fileobj)
+                    else:
+                        # At capacity, the single-byte overflow probe is discarded.
+                        require(len(block) <= available, 'command output cap')
+                        captured[label].extend(block)
+        except BaseException as exc:
+            failure = exc
         finally:
-            if process.poll() is None:
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+            try:
+                terminate_owned_group()
+            except OSError as exc:
+                if failure is None:
+                    failure = exc
+            finally:
+                child.stdout.close()
+                child.stderr.close()
+                try:
+                    returncode = child.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    if failure is None:
+                        failure = Failure('owned process shutdown deadline')
+    if failure is not None:
+        raise failure
+    require(time.monotonic() < deadline, 'preparation deadline')
+    require(returncode == 0, 'command failed: '+Path(argv[0]).name+' exit '+str(returncode))
+    return bytes(captured['stdout'])
 
 
 def metadata_environment(stage, ambient):
@@ -277,10 +344,15 @@ class Mirror:
         data,_=inputs(self.repo)  # Authenticate before creating any stage.
         self.initialize(); deadline=time.monotonic()+180
         env=metadata_environment(self.root, os.environ)
-        # Neither Cargo nor deny may inherit an ancestor config/exception file.
+        # An ancestor .cargo/bin is an ordinary hosted installation, not config.
         for parent in (self.root, *self.root.parents):
-            for name in ('.cargo', 'Cargo.toml', 'deny.exceptions.toml', '.deny.exceptions.toml'):
-                require(not (parent/name).exists() and not (parent/name).is_symlink(), 'ambient Cargo/deny configuration')
+            cargo = parent/'.cargo'
+            nofollow(cargo)
+            require(not cargo.exists() or cargo.is_dir(), 'ambient Cargo directory shape')
+            for path in (cargo/'config', cargo/'config.toml', cargo/'credentials',
+                         cargo/'credentials.toml', parent/'Cargo.toml', parent/'deny.toml',
+                         parent/'deny.exceptions.toml', parent/'.deny.exceptions.toml'):
+                require(not path.exists() and not path.is_symlink(), 'ambient Cargo/deny configuration')
         git_env={'PATH':os.defpath,'HOME':str(self.root),'GIT_CONFIG_NOSYSTEM':'1','GIT_CONFIG_GLOBAL':os.devnull,'GIT_OPTIONAL_LOCKS':'0'}
         command(['git','merge-base','--is-ancestor',NORMATIVE,'HEAD'],cwd=self.repo,env=git_env,deadline=deadline)
         tree=command(['git','ls-tree','-r',NORMATIVE,'--',*SOURCE_SCOPE],cwd=self.repo,env=git_env,deadline=deadline)
