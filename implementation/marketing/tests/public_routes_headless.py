@@ -335,7 +335,8 @@ def check_pending_auth_departure(browser, base, path, chunk):
     canary = 'synthetic-pending-auth-' + uuid4().hex
     chunk_url = re.compile(re.escape(base) + rf'/assets/{chunk}-[^/?]+\.js$')
     context = browser.new_context(service_workers='block')
-    chunk_held = False
+    held_routes = []
+    releasing = False
     api_requested = False
     unexpected_request = False
     diagnostic_retained = False
@@ -344,12 +345,15 @@ def check_pending_auth_departure(browser, base, path, chunk):
         return request.method == 'GET' and chunk_url.fullmatch(request.url) is not None
 
     def fixture(route):
-        nonlocal chunk_held, api_requested, unexpected_request
+        nonlocal api_requested, unexpected_request
         request = route.request
         url_path = urlsplit(request.url).path
         if is_chunk(request):
-            # Keep the matching import pending until the document leaves.
-            chunk_held = True
+            if releasing:
+                route.abort('aborted')
+            else:
+                # Keep the matching import pending until departure has been inspected.
+                held_routes.append(route)
         elif url_path.startswith('/graphql/'):
             api_requested = True
             route.abort()
@@ -385,7 +389,7 @@ def check_pending_auth_departure(browser, base, path, chunk):
             )
         assert response and response.ok, f'{path}: landing fixture failed'
         expect(page.locator('#app .loading[role=status]')).to_be_visible(timeout=PENDING_AUTH_TIMEOUT_MS)
-        assert chunk_held, f'{path}: lazy bundle was not held'
+        assert held_routes, f'{path}: lazy bundle was not held'
         assert page.locator('#app main h1').count() == 0, f'{path}: auth view mounted before departure'
         assert not api_requested, f'{path}: account API requested before auth view mount'
 
@@ -438,7 +442,13 @@ def check_pending_auth_departure(browser, base, path, chunk):
         # Playwright's error text can include the original navigation URL.
         raise AssertionError(f'{path}: browser operation failed while {stage} ({type(error).__name__})') from None
     finally:
-        context.close()
+        releasing = True
+        try:
+            for route in held_routes:
+                route.abort('aborted')
+            context.unroute_all(behavior='wait')
+        finally:
+            context.close()
 
 
 def run(engine, server):
