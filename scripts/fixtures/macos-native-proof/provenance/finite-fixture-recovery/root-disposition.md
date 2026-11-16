@@ -1,0 +1,9 @@
+# Finite fixture recovery disposition
+
+Root read the complete preparation report and comparison receipt, then independently read and hashed all 22 staged destinations and the six newly recovered inert fixture archives. All paired byte counts and SHA256 pins matched. The separate `root-verification.json` records the actual readback; `comparisons-final.json` retains all seven expected/actual matrix hashes, 1,030 ordered rows and 30 prompt variants. Native setup and protected request snapshots match before and after. The failed locale-only startup remains historical, distinct from the successful construction.
+
+This closes the six missing fixture-byte comparisons. It does not accept application extraction, a native build, current native compatibility, paid provider quality, or current C1/C2/C3 authority. Q remains absent. Future Task 1 uses these exact artifacts and the accepted explicit relative-import transformation; it must preserve source identity and independently review its own changes.
+
+The older recovery amendment's two missing documentary provenance entries are also superseded by the already-existing `corpus-provenance-archive/RECEIPT.md`. Root read that receipt, the complete 6,957-byte manifest and 5,245-byte independent re-review after the preparation agent independently rehashed their historical pins. They establish historical English source/rubric documentary provenance only. Case 04 retains English narrative/Scripture/source-coverage scope; Yoruba linguistic qualification is not passed. Original-path/current-C2 checks remain separate.
+
+Resource admission at 18:58:45–19:00:00 UTC again failed: +610 pageouts, +3,402 swapins and 10,306.62 MiB used swap in the second sample. Local native compilation and service-heavy checks remain held. The first sample's sandbox-denied swap read is preserved; the approved second sample succeeded. No user processes were stopped and no native build was attempted.

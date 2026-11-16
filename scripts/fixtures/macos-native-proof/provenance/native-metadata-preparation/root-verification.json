@@ -1,0 +1,26 @@
+{
+  "observed_at": "2026-11-15T18:21:05.228047+00:00",
+  "staged_inputs_verified": 6,
+  "owner_files_verified": 102,
+  "owner_head": "4727834c7da594db23da9ab28c5d26b61fb0e628",
+  "historical_lock_exact": true,
+  "scratch_lock": [
+    13676,
+    "a78dcb39e5e302086a11c214800ab6875a07d4d7413ce428e1e0d068ab3c0718"
+  ],
+  "metadata": [
+    290952,
+    "98a59849031520ceafff1e778ecd8292404c09a92e12889453a161062ae6ed64"
+  ],
+  "registry_tuple_count": 56,
+  "local_features": {
+    "coverage-native-golden": [],
+    "selahcue-cloud": [
+      "openai"
+    ],
+    "selahcue-core": [],
+    "selahcue-scripture": []
+  },
+  "build_executed": false,
+  "native_acceptance": false
+}

@@ -1,0 +1,23 @@
+{
+  "source": "Steady hands gather baskets.  “Gather gently.”  Take care with the small things. “Share freely.” John 3:16. Psalms 23:1.",
+  "title": "  Steady hands 🥁  ",
+  "summary": "Keep the small things safe.\t",
+  "main_scripture": "  John 3:16\u3000",
+  "supporting_scriptures": ["Psalms 23:1", "Genesis 99:99"],
+  "quotes": [" “Gather gently.” ", "“Share freely.”"],
+  "points": [
+    {"text": "Steady hands gather baskets.", "sub_points": [" Take care with the small things. ", "Embedded Romans 8:1."]},
+    {"text": "Share freely.", "sub_points": []}
+  ],
+  "chapter_markers": ["Steady hands gather baskets.", "Interlude", "Share freely."],
+  "segments": [
+    {"id": 1, "start_ms": 1000, "end_ms": 2500, "text": "Steady hands gather baskets."},
+    {"id": 2, "start_ms": 9000, "end_ms": 10500, "text": "Share freely."}
+  ],
+  "scripture_verdicts": [
+    {"reference": "John 3:16", "verified": true},
+    {"reference": "Psalms 23:1", "verified": true},
+    {"reference": "Genesis 99:99", "verified": false},
+    {"reference": "Romans 8:1", "verified": true}
+  ]
+}

@@ -1,0 +1,13 @@
+[package]
+name = "coverage-native-golden"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+selahcue-core = { path = "/Users/m.oluwole/.codex/worktrees/selahcue-provider-qualification/scph/implementation/desktop/crates/selahcue-core", default-features = false }
+selahcue-cloud = { path = "/Users/m.oluwole/.codex/worktrees/selahcue-provider-qualification/scph/implementation/desktop/crates/selahcue-cloud", default-features = false, features = ["openai"] }
+selahcue-scripture = { path = "/Users/m.oluwole/.codex/worktrees/selahcue-provider-qualification/scph/implementation/desktop/crates/selahcue-scripture", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+sha2 = "=0.11.1"
