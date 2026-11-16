@@ -1,6 +1,7 @@
 """Standalone qualification fixtures. No project imports or runtime services."""
 
 import ast
+from contextlib import ExitStack, redirect_stdout
 import hashlib
 import io
 import json
@@ -13,6 +14,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import qualify_license_generation as qualification
@@ -26,6 +28,99 @@ WRONG_VARIANT = f"{FILE}::test_parameter[other]"
 ASSERTION = "assert response.status_code == 200"
 MISMATCH = r"\b500 == 200\b"
 PHASES = ("setup", "call", "teardown")
+
+
+# Literal identities from the accepted seven-control specification. These are
+# independent of the configured manifest supplied to qualify_child.
+MINIMAL_BASELINE = (
+    "tests/test_free_license_lifecycle.py::test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit",
+    "tests/test_free_license_concurrency_postgres.py::test_free_writer_refusal_rolls_back_and_leaves_one_denial",
+    "tests/test_license_revoke_extend.py::test_extension_replay_refusal_and_failure_do_not_advance_generation[ACTIVATED]",
+    "tests/test_license_revoke_extend.py::test_extension_replay_refusal_and_failure_do_not_advance_generation[EXPIRING]",
+    "tests/test_license_revoke_extend.py::test_token_issuance_snapshots_latest_staff_generation",
+    "tests/test_free_license_concurrency_postgres.py::test_frozen_clock_two_extensions_then_free_catchup_requires_replacement",
+    "tests/test_concurrency_postgres.py::test_ordinary_refresh_does_not_wait_on_licence_write_lock",
+)
+WRONG_SEVENTH = "tests/test_license_revoke_extend.py::test_generation_overflow_is_atomic[ACTIVATED]"
+# Preserve the retired configuration as an independent behavioral regression.
+RETIRED_BASELINE = tuple(
+    f"tests/{module}.py::{case}"
+    for module, cases in (
+        ("test_free_license_lifecycle", (
+            "test_first_verified_admin_activation_issues_one_free_license",
+            "test_expired_token_requires_admin_same_fingerprint_recovery",
+            "test_completed_live_replay_leaves_managed_licence_and_receipt_unchanged[False]",
+            "test_completed_live_replay_leaves_managed_licence_and_receipt_unchanged[True]",
+            "test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit",
+        )),
+        ("test_free_license_concurrency_postgres", (
+            "test_waiting_free_renewal_rechecks_committed_suspension[refresh]",
+            "test_waiting_free_renewal_rechecks_committed_suspension[recover]",
+            "test_migration_preserves_existing_licence_without_managing_it",
+            "test_free_writer_refusal_rolls_back_and_leaves_one_denial",
+            "test_free_success_audit_failure_rolls_back_the_status_expiry_and_bearer",
+            "test_frozen_clock_two_extensions_then_free_catchup_requires_replacement",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-renewal]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-catch-up]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-rotation]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-renewal]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-catch-up]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-rotation]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[before-expiry-assignment-renewal]",
+            "test_refresh_rechecks_expiry_after_eligibility_lock[after-expiry-assignment-renewal]",
+            "test_staff_write_and_managed_rotation_follow_row_lock_order[staff-first-extend]",
+            "test_staff_write_and_managed_rotation_follow_row_lock_order[staff-first-revoke]",
+            "test_staff_write_and_managed_rotation_follow_row_lock_order[refresh-first-extend]",
+            "test_staff_write_and_managed_rotation_follow_row_lock_order[refresh-first-revoke]",
+            "test_managed_pending_concurrent_rotation_has_one_winning_bearer",
+            "test_managed_rotation_rechecks_bearer_after_waiting_to_supersede_sibling",
+            "test_different_org_refreshes_do_not_lock_the_shared_fallback_plan[pure-free]",
+            "test_different_org_refreshes_do_not_lock_the_shared_fallback_plan[staff-pending]",
+            "test_refresh_assignment_lock_serializes_the_staff_assignment_writer",
+        )),
+        ("test_license_revoke_extend", (
+            "test_extension_replay_refusal_and_failure_do_not_advance_generation[ACTIVATED]",
+            "test_extension_replay_refusal_and_failure_do_not_advance_generation[EXPIRING]",
+            "test_generation_overflow_is_atomic[ACTIVATED]",
+            "test_generation_overflow_is_atomic[EXPIRING]",
+            "test_token_issuance_snapshots_latest_staff_generation",
+            "test_legacy_refresh_does_not_consume_staff_extension",
+            "test_negotiated_staff_extension_rotates_ordinary_and_managed_free",
+            "test_next_refresh_rotates_a_live_token_and_the_http_caller_adopts_it",
+            "test_extension_never_lets_a_dead_token_rotate_itself[expired]",
+            "test_extension_never_lets_a_dead_token_rotate_itself[revoked]",
+            "test_extension_never_lets_a_dead_token_rotate_itself[device_revoked]",
+            "test_rotation_failure_rolls_back_supersession_and_audit",
+            "test_refresh_rechecks_token_expiry_after_licence_lock_wait",
+            "test_refresh_rejects_token_generation_ahead_of_licence_before_writes",
+            "test_refresh_negotiates_with_body_bearer_and_keeps_header_only_legacy",
+        )),
+        ("test_staff_extension_generation_migration", (
+            "test_generation_migration_preserves_expiry_audits_receipts",
+            "test_generation_backfill_ignores_invalid_target_and_never_resets_nonzero",
+        )),
+        ("test_concurrency_postgres", (
+            "test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[activation-first]",
+            "test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[extension-first]",
+            "test_session_activation_and_extension_follow_the_org_then_licence_lock_order[activation-first]",
+            "test_session_activation_and_extension_follow_the_org_then_licence_lock_order[extension-first]",
+            "test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent",
+            "test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins",
+            "test_ordinary_refresh_does_not_wait_on_licence_write_lock",
+        )),
+        ("test_migration_remove_org_device_limit", (
+            "test_the_migration_is_a_single_forward_remove_field",
+            "test_every_key_grants_exactly_what_it_did_before",
+            "test_the_scenarios_really_differ_so_equality_is_not_vacuous",
+            "test_an_org_with_no_keys_survives_the_migration",
+            "test_the_grandfathered_org_keeps_both_keys_each_with_its_own_limit",
+        )),
+        ("test_migration_receipt_token_delete", (
+            "test_receipt_migration_reversal_and_reapply_preserve_rows_and_database_action",
+        )),
+    )
+    for case in cases
+)
 
 
 def fake_plugin(directory, stream):
@@ -96,6 +191,100 @@ class QualificationFixtures(unittest.TestCase):
             deadline=time.monotonic() + seconds,
             stdout=self.root / "stdout.log", stderr=self.root / "stderr.log",
         )
+
+    def baseline_child(self, nodes, *, configured=None, required=None):
+        """Fake only the process boundary; keep stage/evidence verification real."""
+        self.evidence(*[(node, None) for node in nodes], collected=nodes)
+        with tempfile.TemporaryDirectory(dir=self.root) as area, ExitStack() as stack:
+            scratch = Path(area)
+            api = scratch / "api"
+            evidence = scratch / "evidence"
+            api.mkdir()
+            evidence.mkdir()
+            receipt = {"children": []}
+
+            def passing_child(command, *, cwd, env, deadline, stdout, stderr):
+                self.assertEqual(command[command.index("--junitxml") + 2:], list(nodes))
+                stage = stdout.parent
+                (stage / "junit.xml").write_bytes(self.junit.read_bytes())
+                (stage / "collected.json").write_bytes(self.collected.read_bytes())
+                (stage / "backend.json").write_text(json.dumps({
+                    "vendor": "postgresql", "database": command[8], "server_version_num": 160016,
+                    "installed_app": str(api / "selahcue_api" / "__init__.py"),
+                }))
+                stdout.write_text(
+                    "ordinary refresh SQL statements: 3\n"
+                    "ordinary refresh elapsed seconds: 0.012345\n"
+                )
+                stderr.write_bytes(b"")
+                return 0
+
+            stack.enter_context(patch.dict(os.environ, {
+                "SQL_ENGINE": "django.db.backends.postgresql", "SQL_DATABASE": "selahcue_test",
+                "SQL_USER": "selahcue", "SQL_HOST": "localhost", "SQL_PORT": "5432",
+                "SQL_PASSWORD": "fixture-only", "CACHE_URL": "redis://localhost:6379/1",
+                "CELERY_BROKER_URL": "redis://localhost:6379/2", "TEST_STT_REDIS_URL": "redis://localhost:6379/3",
+                "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
+            }))
+            stack.enter_context(patch.object(qualification, "run_child", passing_child))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            if configured is not None:
+                stack.enter_context(patch.object(qualification, "BASELINE_SELECTORS", configured))
+            if required is not None:
+                stack.enter_context(patch.object(qualification, "REQUIRED", required))
+            qualification.qualify_child(
+                api, scratch, evidence, receipt, deadline=time.monotonic() + 0.9, index=0,
+            )
+            return json.loads((evidence / "receipt.json").read_text())["children"][0]
+
+    def assert_minimal_baseline_passes(self, *, configured=None):
+        try:
+            record = self.baseline_child(MINIMAL_BASELINE, configured=configured)
+        except qualification.QualificationError as error:
+            self.fail(f"the exact seven-control baseline was refused: {error}")
+        self.assertEqual(record["status"], "baseline-passed")
+        self.assertEqual(record["files"], {
+            "tests/test_free_license_lifecycle.py": 1,
+            "tests/test_free_license_concurrency_postgres.py": 2,
+            "tests/test_license_revoke_extend.py": 3,
+            "tests/test_concurrency_postgres.py": 1,
+        })
+        self.assertEqual(record["sql_statements"], "3")
+        self.assertEqual(record["ordinary_refresh_elapsed_seconds"], "0.012345")
+
+    def test_default_baseline_runs_exact_seven_controls(self):
+        self.assert_minimal_baseline_passes()
+
+    def test_policy_accepts_exact_seven_with_complete_passing_evidence(self):
+        self.assert_minimal_baseline_passes(configured=MINIMAL_BASELINE)
+
+    def test_policy_rejects_retired_58_even_with_complete_passing_evidence(self):
+        with self.assertRaisesRegex(qualification.QualificationError, "baseline manifest"):
+            self.baseline_child(RETIRED_BASELINE, configured=RETIRED_BASELINE)
+
+    def test_policy_rejects_wrong_seventh_even_with_complete_passing_evidence(self):
+        wrong = (*MINIMAL_BASELINE[:-1], WRONG_SEVENTH)
+        with self.assertRaisesRegex(qualification.QualificationError, "baseline manifest"):
+            self.baseline_child(wrong, configured=wrong)
+
+    def test_policy_rejects_missing_extra_duplicate_or_changed_parameter(self):
+        for configured in (
+            MINIMAL_BASELINE[:-1],
+            (*MINIMAL_BASELINE, WRONG_SEVENTH),
+            (*MINIMAL_BASELINE[:-1], MINIMAL_BASELINE[0]),
+            (*MINIMAL_BASELINE[:2],
+             "tests/test_license_revoke_extend.py::test_extension_replay_refusal_and_failure_do_not_advance_generation[EXPIRED]",
+             *MINIMAL_BASELINE[3:]),
+        ):
+            with self.subTest(configured=configured):
+                with self.assertRaisesRegex(qualification.QualificationError, "baseline manifest"):
+                    self.baseline_child(configured, configured=configured)
+
+    def test_policy_requires_six_unique_recipe_controls(self):
+        # Seven recipe identities that already include ordinary refresh would
+        # satisfy a union-only guard, so cardinality needs its own check.
+        with self.assertRaisesRegex(qualification.QualificationError, "baseline manifest"):
+            self.baseline_child(MINIMAL_BASELINE, configured=MINIMAL_BASELINE, required=MINIMAL_BASELINE)
 
     def test_exact_baseline_outcomes_pass(self):
         self.evidence((SELECTOR, None), (EXTRA, None), collected=(SELECTOR, EXTRA))

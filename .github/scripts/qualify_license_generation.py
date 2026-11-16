@@ -26,84 +26,17 @@ REVIEWED_API_TREE = "0410de586e948265ca1d20d69281ba950c5490d1"
 API = Path("implementation/api")
 # Binding temporary qualification manifest. All 493 original identities still
 # require a passing canonical full API result.
-BASELINE_SELECTORS = tuple(
-    f"tests/{module}.py::{case}"
-    for module, cases in (
-        ("test_free_license_lifecycle", (
-            "test_first_verified_admin_activation_issues_one_free_license",
-            "test_expired_token_requires_admin_same_fingerprint_recovery",
-            "test_completed_live_replay_leaves_managed_licence_and_receipt_unchanged[False]",
-            "test_completed_live_replay_leaves_managed_licence_and_receipt_unchanged[True]",
-            "test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit",
-        )),
-        ("test_free_license_concurrency_postgres", (
-            "test_waiting_free_renewal_rechecks_committed_suspension[refresh]",
-            "test_waiting_free_renewal_rechecks_committed_suspension[recover]",
-            "test_migration_preserves_existing_licence_without_managing_it",
-            "test_free_writer_refusal_rolls_back_and_leaves_one_denial",
-            "test_free_success_audit_failure_rolls_back_the_status_expiry_and_bearer",
-            "test_frozen_clock_two_extensions_then_free_catchup_requires_replacement",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-renewal]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-catch-up]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-assignment-rotation]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-renewal]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-catch-up]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[exact-expiry-marker-rotation]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[before-expiry-assignment-renewal]",
-            "test_refresh_rechecks_expiry_after_eligibility_lock[after-expiry-assignment-renewal]",
-            "test_staff_write_and_managed_rotation_follow_row_lock_order[staff-first-extend]",
-            "test_staff_write_and_managed_rotation_follow_row_lock_order[staff-first-revoke]",
-            "test_staff_write_and_managed_rotation_follow_row_lock_order[refresh-first-extend]",
-            "test_staff_write_and_managed_rotation_follow_row_lock_order[refresh-first-revoke]",
-            "test_managed_pending_concurrent_rotation_has_one_winning_bearer",
-            "test_managed_rotation_rechecks_bearer_after_waiting_to_supersede_sibling",
-            "test_different_org_refreshes_do_not_lock_the_shared_fallback_plan[pure-free]",
-            "test_different_org_refreshes_do_not_lock_the_shared_fallback_plan[staff-pending]",
-            "test_refresh_assignment_lock_serializes_the_staff_assignment_writer",
-        )),
-        ("test_license_revoke_extend", (
-            "test_extension_replay_refusal_and_failure_do_not_advance_generation[ACTIVATED]",
-            "test_extension_replay_refusal_and_failure_do_not_advance_generation[EXPIRING]",
-            "test_generation_overflow_is_atomic[ACTIVATED]",
-            "test_generation_overflow_is_atomic[EXPIRING]",
-            "test_token_issuance_snapshots_latest_staff_generation",
-            "test_legacy_refresh_does_not_consume_staff_extension",
-            "test_negotiated_staff_extension_rotates_ordinary_and_managed_free",
-            "test_next_refresh_rotates_a_live_token_and_the_http_caller_adopts_it",
-            "test_extension_never_lets_a_dead_token_rotate_itself[expired]",
-            "test_extension_never_lets_a_dead_token_rotate_itself[revoked]",
-            "test_extension_never_lets_a_dead_token_rotate_itself[device_revoked]",
-            "test_rotation_failure_rolls_back_supersession_and_audit",
-            "test_refresh_rechecks_token_expiry_after_licence_lock_wait",
-            "test_refresh_rejects_token_generation_ahead_of_licence_before_writes",
-            "test_refresh_negotiates_with_body_bearer_and_keeps_header_only_legacy",
-        )),
-        ("test_staff_extension_generation_migration", (
-            "test_generation_migration_preserves_expiry_audits_receipts",
-            "test_generation_backfill_ignores_invalid_target_and_never_resets_nonzero",
-        )),
-        ("test_concurrency_postgres", (
-            "test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[activation-first]",
-            "test_an_extension_and_a_first_activation_on_one_licence_never_deadlock[extension-first]",
-            "test_session_activation_and_extension_follow_the_org_then_licence_lock_order[activation-first]",
-            "test_session_activation_and_extension_follow_the_org_then_licence_lock_order[extension-first]",
-            "test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent",
-            "test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins",
-            "test_ordinary_refresh_does_not_wait_on_licence_write_lock",
-        )),
-        ("test_migration_remove_org_device_limit", (
-            "test_the_migration_is_a_single_forward_remove_field",
-            "test_every_key_grants_exactly_what_it_did_before",
-            "test_the_scenarios_really_differ_so_equality_is_not_vacuous",
-            "test_an_org_with_no_keys_survives_the_migration",
-            "test_the_grandfathered_org_keeps_both_keys_each_with_its_own_limit",
-        )),
-        ("test_migration_receipt_token_delete", (
-            "test_receipt_migration_reversal_and_reapply_preserve_rows_and_database_action",
-        )),
-    )
-    for case in cases
+BASELINE_SELECTORS = (
+    "tests/test_free_license_lifecycle.py::test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit",
+    "tests/test_free_license_concurrency_postgres.py::test_free_writer_refusal_rolls_back_and_leaves_one_denial",
+    "tests/test_license_revoke_extend.py::test_extension_replay_refusal_and_failure_do_not_advance_generation[ACTIVATED]",
+    "tests/test_license_revoke_extend.py::test_extension_replay_refusal_and_failure_do_not_advance_generation[EXPIRING]",
+    "tests/test_license_revoke_extend.py::test_token_issuance_snapshots_latest_staff_generation",
+    "tests/test_free_license_concurrency_postgres.py::test_frozen_clock_two_extensions_then_free_catchup_requires_replacement",
+    "tests/test_concurrency_postgres.py::test_ordinary_refresh_does_not_wait_on_licence_write_lock",
 )
+ORDINARY_REFRESH_SELECTOR = "tests/test_concurrency_postgres.py::test_ordinary_refresh_does_not_wait_on_licence_write_lock"
+
 SERVICES = {
     "SQL_ENGINE": "django.db.backends.postgresql",
     "SQL_DATABASE": "selahcue_test",
@@ -697,8 +630,17 @@ def qualify_child(api, scratch, evidence, receipt, *, deadline, index, recipe=No
         encoding="utf-8",
     )
     selectors_for_child = tuple(recipe.failures) if recipe is not None else BASELINE_SELECTORS
-    if recipe is None and (len(BASELINE_SELECTORS) != 58 or not set(REQUIRED).issubset(BASELINE_SELECTORS)):
-        raise QualificationError("baseline manifest must contain 58 selectors including all mutant controls")
+    if recipe is None:
+        required = set(REQUIRED)
+        if (
+            len(required) != 6
+            or len(BASELINE_SELECTORS) != 7
+            or len(set(BASELINE_SELECTORS)) != len(BASELINE_SELECTORS)
+            or set(BASELINE_SELECTORS) != required | {ORDINARY_REFRESH_SELECTOR}
+        ):
+            raise QualificationError(
+                "baseline manifest must contain exactly six unique mutant controls and ordinary refresh"
+            )
     timeout = 60 if recipe is not None else 180
     command = [
         sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(api), str(stage), str(stage), database,
