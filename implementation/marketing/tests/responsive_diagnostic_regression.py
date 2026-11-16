@@ -8,15 +8,181 @@ import json
 import sys
 import subprocess
 import tempfile
+import types
 from pathlib import Path
 import unittest
-
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
     'responsive_sweep', Path(__file__).resolve().parents[1] / 'scripts/responsive_sweep.py')
 sweep = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(sweep)
+
+
+class InertPlaywrightError(Exception):
+    pass
+
+
+class InertPlaywrightTimeout(InertPlaywrightError):
+    pass
+
+
+def inert_playwright_api():
+    api = types.ModuleType('playwright.sync_api')
+    api.Error = InertPlaywrightError
+    api.TimeoutError = InertPlaywrightTimeout
+    return api
+
+
+PROBE_STATE = dict(elapsedMs=10078, totalPolls=2, lastResult=False, stopped=False,
+                   earlyTimerEntries=0, periodicTimerEntries=0, lateTimerEntries=0)
+
+
+class InertProbePage:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def wait_for_function(self, *args, **kwargs):
+        raise InertPlaywrightError('Page.wait_for_function: Error: WEBKIT_SETTLE_STATE '
+                                  + self.payload + '\nprivate-stack-detail')
+
+
+def run_timeout_pipe_child(mode):
+    """Real production main/stdout/shutdown; only browser/server boundaries are inert."""
+    api = inert_playwright_api()
+
+    class Page(InertProbePage):
+        def on(self, *args):
+            pass
+
+        def add_init_script(self, *args):
+            pass
+
+        def goto(self, *args, **kwargs):
+            pass
+
+        def wait_for_selector(self, *args, **kwargs):
+            pass
+
+        def wait_for_function(self, expression, **kwargs):
+            if expression == sweep.OBSERVED_SETTLE_JS:
+                assert kwargs == {'timeout': 10000}
+                raise InertPlaywrightTimeout('ORIGINAL 10000ms failure')
+            return super().wait_for_function(expression, **kwargs)
+
+    class Diagnostic(sweep.SettleDiagnostic):
+        def emit(self, *args):
+            # main has just flushed INFRA. Parent closes its reader before releasing us.
+            assert sys.stdin.readline() == 'reader ready\n'
+            if mode != 'probe-only' and mode != 'without-diagnostics':
+                super().emit(*args)
+
+    page = Page(json.dumps(PROBE_STATE))
+    context = types.SimpleNamespace(new_page=lambda: page, close=lambda: None)
+    browser = types.SimpleNamespace(new_context=lambda **kwargs: context, close=lambda: None)
+    api.sync_playwright = lambda: contextlib.nullcontext(types.SimpleNamespace(
+        webkit=types.SimpleNamespace(launch=lambda: browser)))
+    server = types.SimpleNamespace(server_address=('127.0.0.1', 1234),
+                                   serve_forever=lambda: None, shutdown=lambda: None)
+    bindings = dict(Server=lambda *args: server, SettleDiagnostic=Diagnostic,
+                    threading=types.SimpleNamespace(Thread=lambda **kwargs:
+                                                    types.SimpleNamespace(start=lambda: None)),
+                    emit_browser_identity=lambda *args: None, install_stubs=lambda *args: None)
+    if mode == 'without-diagnostics':
+        bindings['emit_settle_probe'] = lambda *args: None
+    with patch.dict(sys.modules, {'playwright': types.ModuleType('playwright'),
+                                 'playwright.sync_api': api}), \
+            patch.dict(sweep.__dict__, bindings), \
+            patch.object(Path, 'exists', return_value=True), \
+            patch.object(sys, 'argv', ['sweep', '--engine', 'webkit', '--routes', '/signin',
+                                      '--widths', '1024']):
+        # This must be a buffered pipe, not -u or a StringIO/print replacement.
+        assert isinstance(sys.stdout, io.TextIOWrapper)
+        assert isinstance(sys.stdout.buffer, io.BufferedWriter)
+        return sweep.main()
+
+
+class DiagnosticProbeInertRegression(unittest.TestCase):
+    def test_nonstandard_json_constants_are_syntax_refusals(self):
+        # Default Python JSON parsing accepts these tokens, including nested ones.
+        payloads = ('NaN', 'Infinity', '-Infinity', '{"elapsedMs":NaN}',
+                    '{"nested":[Infinity]}', '{"nested":{"value":-Infinity}}')
+        with patch.dict(sys.modules, {'playwright': types.ModuleType('playwright'),
+                                     'playwright.sync_api': inert_playwright_api()}):
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    result = sweep.probe_settle_state(InertProbePage(payload))
+                    self.assertEqual(result['outcome'], 'invalid-json')
+                    self.assertIsNone(result['state'])
+                    self.assertNotIn(payload, json.dumps(result))
+
+    def test_valid_json_keeps_schema_null_and_snapshot_results(self):
+        cases = [('"NaN"', 'invalid-state', None), ('"Infinity"', 'invalid-state', None),
+                 ('"-Infinity"', 'invalid-state', None),
+                 ('{"words":"NaN Infinity -Infinity"}', 'invalid-state', None),
+                 ('{}', 'invalid-state', None), ('null', 'unavailable', None),
+                 (json.dumps(PROBE_STATE), 'snapshot', PROBE_STATE)]
+        with patch.dict(sys.modules, {'playwright': types.ModuleType('playwright'),
+                                     'playwright.sync_api': inert_playwright_api()}):
+            for payload, outcome, state in cases:
+                with self.subTest(payload=payload):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        sweep.emit_settle_probe(InertProbePage(payload), 'healthy-control')
+                    receipt = output.getvalue()
+                    self.assertTrue(receipt.startswith('WEBKIT_SETTLE_STATE '))
+                    result = json.loads(receipt.split(' ', 1)[1])
+                    self.assertEqual(result['capture'], 'healthy-control')
+                    self.assertEqual(result['outcome'], outcome)
+                    self.assertEqual(result['state'], state)
+                    self.assertEqual(result['errorFamily'], 'playwright-error')
+                    self.assertEqual(set(result), {'capture', 'outcome', 'state', 'errorFamily', 'elapsedMs'})
+                    self.assertNotIn('private-stack-detail', receipt)
+                    self.assertLess(len(receipt), 512)
+
+    def test_real_pipe_closure_preserves_infrastructure_process_exit(self):
+        driver = ("import runpy, sys; ns = runpy.run_path(sys.argv[1]); "
+                  "sys.exit(ns['run_timeout_pipe_child'](sys.argv[2]))")
+        for mode in ('without-diagnostics', 'probe-only', 'trace-and-probe', 'healthy-reader'):
+            with self.subTest(mode=mode):
+                process = subprocess.Popen(
+                    [sys.executable, '-I', '-B', '-c', driver, str(Path(__file__).resolve()), mode],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                try:
+                    # A finite helper thread prevents a regression from blocking on readline.
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=1) as executor:
+                        first = executor.submit(process.stdout.readline)
+                        try:
+                            original = first.result(timeout=5)
+                        except Exception:
+                            process.kill()
+                            raise
+                    self.assertEqual(original, 'INFRA webkit 1024px /signin: ORIGINAL 10000ms failure\n')
+                    if mode != 'healthy-reader':
+                        process.stdout.close()
+                    process.stdin.write('reader ready\n')
+                    process.stdin.close()
+                    code = process.wait(timeout=5)
+                    stderr = process.stderr.read()
+                    self.assertEqual(code, 2, stderr)
+                    self.assertEqual(stderr, '')
+                    if mode == 'healthy-reader':
+                        remaining = process.stdout.read().splitlines()
+                        self.assertEqual(len(remaining), 2)
+                        self.assertTrue(remaining[0].startswith('WEBKIT_SETTLE_TRACE '))
+                        self.assertTrue(remaining[1].startswith('WEBKIT_SETTLE_STATE '))
+                        receipt = json.loads(remaining[1].split(' ', 1)[1])
+                        self.assertEqual(receipt['capture'], 'after-timeout')
+                        self.assertEqual(receipt['outcome'], 'snapshot')
+                        self.assertEqual(receipt['state'], PROBE_STATE)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.wait(timeout=5)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        stream.close()
 
 
 class DiagnosticLedgerPrivacy(unittest.TestCase):
@@ -32,6 +198,9 @@ class DiagnosticLedgerPrivacy(unittest.TestCase):
 class DiagnosticRegression(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        global PlaywrightTimeoutError
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
+
         cls.playwright = sync_playwright().start()
         cls.browser = cls.playwright.webkit.launch()
         sweep.emit_browser_identity(cls.browser)
