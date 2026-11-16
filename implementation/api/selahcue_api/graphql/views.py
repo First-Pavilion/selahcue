@@ -1,6 +1,8 @@
 from cross_web.exceptions import HTTPException
 from django.core.exceptions import RequestDataTooBig
 from django.http import JsonResponse
+from django.middleware.csrf import get_token
+from django.utils.cache import patch_cache_control
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET
 from strawberry.django.views import GraphQLView
@@ -11,7 +13,7 @@ from selahcue_api.graphql.errors import ErrorCode, safe_error_payload, safe_grap
 @require_GET
 @ensure_csrf_cookie
 def csrf_bootstrap(request):
-    """Issue the `csrftoken` cookie the browser surfaces require. Call once on SPA load.
+    """Issue the browser's CSRF cookie and a matching masked response token.
 
     WHY THIS ENDPOINT EXISTS. Both GraphQL surfaces declare `*_session_with_csrf`
     (`route_contracts.py`) and `CsrfViewMiddleware` enforces it — but the SPA is served as
@@ -39,6 +41,7 @@ def csrf_bootstrap(request):
     `Access-Control-Allow-Origin` header lets them read the response at all.
     """
     response = JsonResponse({"ready": True})
+    response["X-CSRFToken"] = get_token(request)
     # A shared cache must never serve one visitor the token minted for another. Django already
     # adds `Vary: Cookie` when it sets the cookie, but that does not stop a cache storing the
     # response to a request that arrived with NO cookie — which is precisely this one.
@@ -82,3 +85,8 @@ class AdminGraphQLView(SafeGraphQLView):
 
 class AccountGraphQLView(SafeGraphQLView):
     surface = "account"
+
+    def dispatch(self, request, *args, **kwargs):
+        response = super().dispatch(request, *args, **kwargs)
+        patch_cache_control(response, no_store=True)
+        return response
