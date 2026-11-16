@@ -1877,9 +1877,19 @@ esac
                 path = tmp / name
                 path.write_text(fake)
                 path.chmod(0o700)
-            for gate, diagnostic, witness in (
-                ("Test (workspace, incl. GPU parity where an adapter exists)", "Collect existing GPU parity crash summaries", "cargo"),
-                ("Responsive sweep (WebKit)", "Collect existing WebKit crash summaries", "sweep"),
+            for gate, diagnostic, witness, statuses in (
+                (
+                    "Test (workspace, incl. GPU parity where an adapter exists)",
+                    "Collect existing GPU parity crash summaries",
+                    "cargo",
+                    (0, 101, 2),
+                ),
+                (
+                    "Responsive sweep (WebKit)",
+                    "Collect existing WebKit crash summaries",
+                    "sweep",
+                    (0, 101, 2, 1, 3),
+                ),
             ):
                 block, command = self.step(gate)
                 # This exact expansion is Linux-only; Windows retains an empty
@@ -1890,7 +1900,7 @@ esac
                 self.assertNotIn("shell:", block)
                 self.assertIn("if: ${{ !cancelled() }}", block)
                 self.assertNotIn("continue-on-error:", block)
-                for code in (0, 101, 2):
+                for code in statuses:
                     output.write_text("")
                     calls.write_text("")
                     run = subprocess.run(["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
