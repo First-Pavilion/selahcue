@@ -8,6 +8,7 @@ window or invocation emits the same safe schema and exits 2.
 import argparse
 import json
 import os
+from pathlib import Path
 import re
 import selectors
 import signal
@@ -17,15 +18,23 @@ import time
 
 
 RAW_LIMIT = 256 * 1024
-EXPORT_LIMIT = 8 * 1024
+EXPORT_LIMIT = 24 * 1024
 RECORD_LIMIT = 3
+THREAD_LIMIT = 64
+STACK_EXPORT_LIMIT = 3
 FRAME_LIMIT = 12
+MODULE_ID_LIMIT = 16
+WINDOW_SECONDS = 3600
+MAX_TID = 2_147_483_647
 # Reserve time within five seconds for signaling the sudo supervisor and reaping.
 QUERY_SECONDS = 4
 TERMINATION_GRACE = 0.15
 REAP_SECONDS = 0.5
 MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
-FIELDS = "COREDUMP_TIMESTAMP,COREDUMP_PID,COREDUMP_SIGNAL_NAME,COREDUMP_EXE,COREDUMP_COMM,MESSAGE"
+FIELDS = (
+    "COREDUMP_TIMESTAMP,COREDUMP_PID,COREDUMP_SIGNAL_NAME,COREDUMP_EXE,COREDUMP_COMM,MESSAGE,"
+    "_BOOT_ID,COREDUMP_TRUNCATED,COREDUMP_FILENAME,COREDUMP_PACKAGE_JSON"
+)
 
 # The hosted log fixes the cache root and revision. The pinned Playwright
 # registry identifies the WPE bin directory; the WebKit WPE build names its
@@ -65,12 +74,24 @@ MODULE_SYMBOLS = {
 MODULE_DIRS = {"/usr/lib/x86_64-linux-gnu", "/lib/x86_64-linux-gnu",
                f"{BUNDLE}/lib", f"{BUNDLE}/sys/lib"}
 VERSIONED_MODULE = re.compile(r"(.{1,48}\.so\.[0-9]{1,2})(?:\.[0-9]{1,3}){1,2}")
-THREAD = re.compile(r"Stack trace of thread [1-9][0-9]{0,9}:")
+PARITY_DEPS = Path(__file__).resolve().parents[3] / "implementation/desktop/target/debug/deps"
+PARITY_NAME = re.compile(r"test_parity-[0-9a-f]{16}")
+GPU_MODULES = {
+    "libvulkan.so.1", "libvulkan_lvp.so", "libvulkan_intel.so", "libvulkan_radeon.so",
+    "libEGL.so.1", "libEGL_mesa.so.0", "libGLdispatch.so.0", "libGLX.so.0", "libGLX_mesa.so.0",
+}
+THREAD = re.compile(r"Stack trace of thread ([1-9][0-9]{0,9}):")
+ORDINAL = re.compile(r"#([0-9]{1,3})(?![0-9])")
 FRAME = re.compile(
-    r"#[0-9]{1,3} +0x([0-9a-f]{1,16}) ([^\r\n]*) "
-    r"\(([^ ()\r\n]+) \+ 0x([0-9a-f]{1,8})\)"
+    r"#([0-9]{1,3}) +0x([0-9a-f]{1,16}) ([\x20-\x7e]*) "
+    r"\(([!-~]+) \+ 0x([0-9a-f]{1,16})\)"
 )
-
+# Parse canonical spellings, but recognize malformed structural lines so they
+# cannot silently change the owner or reliability of following frame evidence.
+LEADING_CONTROL = re.compile(r"^[\x00-\x20]*")
+MODULE_ID_LINE = re.compile(r"Module ([!-~]+), build-id=([0-9a-f]{8,128})")
+BUILD_ID = re.compile(r"(?:[0-9a-f]{2}){4,64}")
+BOOT_ID = re.compile(r"[0-9a-f]{32}")
 
 class PrivateParser(argparse.ArgumentParser):
     def error(self, _message):
@@ -84,10 +105,12 @@ def number(value, digits):
 
 
 def summary(availability="unavailable", handler="not_checked"):
+    complete = availability in ("available", "empty")
     return {
-        "availability": availability, "handler": handler,
+        "schema_version": 2, "availability": availability, "handler": handler,
         "partial": availability != "empty", "truncated": False,
-        "rejected_records": 0, "records": [],
+        "rejected_records": 0, "records": [], "candidate_scan_complete": complete,
+        "export_truncated": False, "omission_reasons": [] if complete else ["join_incomplete"],
     }
 
 
@@ -144,7 +167,7 @@ def stop_owned_group(child):
 
 def query(since, until):
     # --all retains MESSAGE fields larger than journalctl's default JSON
-    # threshold (4096 bytes). The six-field projection and our own read cap
+    # threshold (4096 bytes). The fixed field projection and our own read cap
     # still apply. Journalctl also adds its unavoidable JSON bookkeeping.
     args = [
         "sudo", "-n", "journalctl", "-b", "--no-pager", "--quiet", "--all",
@@ -202,64 +225,192 @@ def invalid_constant(_value):
     raise ValueError
 
 
-def approved_module(module):
+def parity_executable(exe):
+    path = Path(exe)
+    if not PARITY_NAME.fullmatch(path.name) or exe != str(PARITY_DEPS / path.name):
+        return None
+    try:
+        if path.resolve(strict=True) == path and path.is_file():
+            return path
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return None
+
+
+def approved_module(module, parity_exe=None):
     directory, slash, name = module.rpartition("/")
-    if module in ROLES:
+    if module in ROLES or (parity_exe and module == str(parity_exe)):
         return name
     if slash and directory not in MODULE_DIRS:
         return None
+    if parity_exe and (name in GPU_MODULES or (not slash and name == parity_exe.name)):
+        return name
     if name not in MODULE_SYMBOLS:
         versioned = VERSIONED_MODULE.fullmatch(name)
         name = versioned[1] if versioned else None
     return name if name in MODULE_SYMBOLS else None
 
 
-def stack(message):
-    frames = []
-    partial = truncated = False
-    in_stack = False
+def stack(message, parity_exe=None):
+    threads = {}
+    reasons = set()
+    complete = True
+    current = None
+    ordinals = 0
     if not isinstance(message, str):
-        return frames, True, False
+        return [], {"malformed", "ordinal_missing"}, False
+
     for line in message.split("\n"):
-        if THREAD.fullmatch(line):
-            # Retain one systemd-listed stack. Never mix frames from multiple
-            # threads or treat the first listed thread as a proven crash thread.
-            if in_stack:
-                partial = truncated = True
-                break
-            in_stack = True
+        possible = LEADING_CONTROL.sub("", line).lstrip()
+        if possible.startswith("Stack trace of thread"):
+            current = None
+            match = THREAD.fullmatch(line)
+            if not match or int(match[1]) > MAX_TID:
+                complete = False
+                reasons.add("malformed")
+                continue
+            tid = int(match[1])
+            if tid in threads:
+                complete = False
+                reasons.add("malformed")
+                threads[tid]["_frame_zero"] = None
+                threads[tid]["frames"] = [f for f in threads[tid]["frames"] if f["ordinal"] != 0]
+                continue
+            if len(threads) == THREAD_LIMIT:
+                complete = False
+                reasons.add("thread_limit")
+                continue
+            current = {"tid": tid, "basis": "listed_only", "_listing_index": len(threads),
+                       "_frame_zero": None, "frames": []}
+            threads[tid] = current
+            ordinals = 0
             continue
-        if not in_stack or not line.startswith("#"):
+
+        if not possible.startswith("#"):
             continue
+        if current is None:
+            if not threads:
+                complete = False
+                reasons.add("malformed")
+            continue
+
+        ordinal_match = ORDINAL.match(possible)
+        if ordinal_match is None:
+            reasons.add("malformed")
+            continue
+        ordinal = int(ordinal_match[1])
+        bit = 1 << ordinal
+        frames = current["frames"]
+        if ordinals & bit:
+            reasons.add("malformed")
+            if ordinal == 0:
+                current["_frame_zero"] = None
+            frames[:] = [f for f in frames if f["ordinal"] != ordinal]
+            continue
+        ordinals |= bit
+
         match = FRAME.fullmatch(line)
         if match is None:
-            partial = True
+            reasons.add("malformed")
             continue
-        pc, symbol, module, offset = match.groups()
-        module = approved_module(module)
-        if module is None or int(offset, 16) >= int(pc, 16):
-            partial = True
+        _, pc, symbol, module, offset = match.groups()
+        module = approved_module(module, parity_exe)
+        if module is None:
+            reasons.add("module_filtered")
             continue
-        if len(frames) == FRAME_LIMIT:
-            partial = truncated = True
-            break
-        safe_frame = {"module": module, "offset": hex(int(offset, 16))}
-        if symbol in MODULE_SYMBOLS[module]:
-            safe_frame["symbol"] = symbol
+        pc, offset = int(pc, 16), int(offset, 16)
+        if offset >= pc:
+            reasons.add("malformed")
+            continue
+
+        frame = {"ordinal": ordinal, "module": module, "offset": hex(offset)}
+        if symbol in MODULE_SYMBOLS.get(module, ()):
+            frame["symbol"] = symbol
         else:
-            partial = True
-        frames.append(safe_frame)
-    return frames, partial or not frames, truncated
+            reasons.add("symbol_filtered")
+
+        if len(frames) == FRAME_LIMIT:
+            reasons.add("frame_limit")
+            if ordinal != 0:
+                continue
+            # The original #0 can occur after the storage cap. Retain it
+            # without increasing the frame budget for this thread.
+            frames.pop()
+        frames.append(frame)
+        if ordinal == 0:
+            current["_frame_zero"] = {"pc": pc, "module": module, "frame": frame}
+
+    if not threads or any(t["_frame_zero"] is None for t in threads.values()):
+        reasons.add("ordinal_missing")
+    if not threads:
+        complete = False
+    return list(threads.values()), reasons, complete
 
 
-def collect(result, data, cut, since, until):
+def module_identities(package_json, message, parity_exe, slots, reasons):
+    identities = {}
+
+    def add(module, build_id):
+        nonlocal slots
+        module = approved_module(module, parity_exe)
+        if module is None:
+            reasons.add("module_filtered")
+            return
+        if not isinstance(build_id, str) or not BUILD_ID.fullmatch(build_id):
+            reasons.add("identity_missing")
+            return
+        if module in identities:
+            if identities[module] != build_id:
+                reasons.add("identity_conflict")
+                identities[module] = None
+        elif slots:
+            identities[module] = build_id
+            slots -= 1
+        else:
+            reasons.add("identity_missing")
+
+    if package_json is not None:
+        try:
+            if not isinstance(package_json, str):
+                raise ValueError
+            package = json.loads(package_json, object_pairs_hook=unique_fields,
+                                 parse_constant=invalid_constant)
+            if not isinstance(package, dict):
+                raise ValueError
+        except (ValueError, RecursionError):
+            # Optional identity metadata is independent of thread/PC inspection.
+            reasons.add("malformed")
+        else:
+            for module, entry in package.items():
+                if isinstance(entry, dict) and "buildId" in entry:
+                    add(module, entry["buildId"])
+    if isinstance(message, str):
+        for line in message.split("\n"):
+            if match := MODULE_ID_LINE.fullmatch(line):
+                add(*match.groups())
+
+    identities = {module: build_id for module, build_id in identities.items() if build_id is not None}
+    if not identities:
+        reasons.add("identity_missing")
+    return identities, slots
+
+
+def collect(result, data, cut, since, until, *, profile="webkit"):
+    reasons = set(result["omission_reasons"])
+    complete = result["candidate_scan_complete"]
+    if len(data) > RAW_LIMIT:
+        data, cut = data[:RAW_LIMIT], True
     if cut:
         # A partial trailing line could be an incomplete valid record.
         data = data[:data.rfind(b"\n") + 1]
+        reasons.add("deadline" if result["availability"] == "timeout" else "raw_limit")
+        complete = False
+
     malformed = 0
+    identity_slots = MODULE_ID_LIMIT
     first_us, last_us = since * 1_000_000, (until + 1) * 1_000_000
     for line in data.split(b"\n"):
-        if not line.strip():
+        if not line:
             continue
         try:
             row = json.loads(line.decode("utf-8"), object_pairs_hook=unique_fields,
@@ -270,44 +421,117 @@ def collect(result, data, cut, since, until):
             pid = number(row.get("COREDUMP_PID"), 10)
             exe = row.get("COREDUMP_EXE")
             sig = row.get("COREDUMP_SIGNAL_NAME")
-            if (timestamp < 1_000_000 or pid > 2_147_483_647 or not isinstance(exe, str)
+            if (timestamp < 1_000_000 or pid > MAX_TID or not isinstance(exe, str)
                     or not isinstance(sig, str) or sig not in SIGNALS):
                 raise ValueError
         except (ValueError, RecursionError):
             malformed += 1
             result["rejected_records"] += 1
+            complete = False
+            reasons.add("malformed")
             continue
-        role = ROLES.get(exe)
-        if role is None or not first_us <= timestamp < last_us:
+        if not first_us <= timestamp < last_us:
+            result["rejected_records"] += 1
+            continue
+        parity_exe = parity_executable(exe) if profile == "gpu-parity" else None
+        role = ("gpu_parity" if parity_exe else None) if profile == "gpu-parity" else ROLES.get(exe)
+        if role is None:
             result["rejected_records"] += 1
             continue
         if len(result["records"]) == RECORD_LIMIT:
-            cut = True
+            complete = False
+            reasons.add("record_limit")
             continue
-        frames, partial, limited = stack(row.get("MESSAGE"))
-        result["records"].append({
+
+        message = row.get("MESSAGE")
+        threads, record_reasons, stack_complete = stack(message, parity_exe)
+        identities, identity_slots = module_identities(
+            row.get("COREDUMP_PACKAGE_JSON"), message, parity_exe, identity_slots, record_reasons,
+        )
+        boot_id = row.get("_BOOT_ID")
+        if not isinstance(boot_id, str) or not BOOT_ID.fullmatch(boot_id):
+            boot_id = None
+        filename = row.get("COREDUMP_FILENAME")
+        record = {
             "pid": pid, "timestamp_us": timestamp, "signal": sig, "role": role,
-            "partial": partial, "frames": frames,
-        })
-        cut |= limited
+            "partial": bool(record_reasons), "threads": threads,
+            "core_truncated": True if row.get("COREDUMP_TRUNCATED") == "1" else None,
+            "core_storage": "external_reported" if isinstance(filename, str) and filename else "unknown",
+            "module_identity": identities, "fault_attribution": {"fault_thread": None},
+            "_boot_id": boot_id,
+        }
+        if parity_exe:
+            record["executable"] = parity_exe.name
+            record["_parity_exe"] = parity_exe
+        result["records"].append(record)
+        complete &= stack_complete
+        reasons.update(record_reasons)
+
     if result["availability"] == "available" and not result["records"]:
         result["availability"] = "truncated" if cut else "malformed" if malformed else "empty"
-    result["truncated"] = cut
-    result["partial"] = bool(
-        cut or malformed or any(record["partial"] for record in result["records"])
-    )
+    if not complete:
+        reasons.add("join_incomplete")
+    result["candidate_scan_complete"] = complete
+    result["export_truncated"] = "frame_limit" in reasons
+    result["truncated"] = bool(reasons & {"raw_limit", "deadline", "record_limit", "thread_limit", "frame_limit"})
+    result["partial"] = bool(reasons)
+    result["omission_reasons"] = sorted(reasons)
 
 
 def export(result):
-    def encode():
-        return json.dumps(result, separators=(",", ":"), ensure_ascii=True)
+    # Only these fields cross the public boundary. Absolute PCs, boot IDs and
+    # canonical installed paths are private even when the stack was selected.
+    payload = {key: result[key] for key in (
+        "schema_version", "availability", "handler", "partial", "truncated",
+        "rejected_records", "candidate_scan_complete", "export_truncated", "omission_reasons",
+    )}
+    records = payload["records"] = []
 
-    payload = encode()
-    while len(payload) + 1 > EXPORT_LIMIT and result["records"]:
-        result["records"].pop()
-        result["truncated"] = result["partial"] = True
-        payload = encode()
-    print(payload)
+    def mark_export_limit():
+        payload["truncated"] = payload["partial"] = payload["export_truncated"] = True
+        payload["omission_reasons"] = sorted({*payload["omission_reasons"], "export_limit"})
+
+    for record in result["records"]:
+        safe = {key: record[key] for key in (
+            "pid", "timestamp_us", "signal", "role", "partial", "core_truncated",
+            "core_storage", "module_identity",
+        )}
+        safe["fault_attribution"] = {"fault_thread": None}
+        if "executable" in record:
+            safe["executable"] = record["executable"]
+        threads = safe["threads"] = []
+        for thread in record["threads"][:STACK_EXPORT_LIMIT]:
+            threads.append({
+                "tid": thread["tid"], "basis": "listed_only",
+                "frames": [
+                    {key: frame[key] for key in ("ordinal", "module", "offset", "symbol") if key in frame}
+                    for frame in thread["frames"]
+                ],
+            })
+        if len(record["threads"]) > STACK_EXPORT_LIMIT:
+            safe["partial"] = True
+            mark_export_limit()
+        records.append(safe)
+
+    def encode():
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+    encoded = encode()
+    if len(encoded) + 1 > EXPORT_LIMIT:
+        mark_export_limit()
+        for record in reversed(records):
+            while record["threads"] and len(encoded) + 1 > EXPORT_LIMIT:
+                frames = record["threads"][-1]["frames"]
+                if frames:
+                    frames.pop()
+                else:
+                    record["threads"].pop()
+                record["partial"] = True
+                encoded = encode()
+        while records and len(encoded) + 1 > EXPORT_LIMIT:
+            records.pop()
+            encoded = encode()
+    print(encoded)
 
 
 def main():
@@ -315,11 +539,12 @@ def main():
     parser.add_argument("--since", required=True)
     parser.add_argument("--until", required=True)
     parser.add_argument("--journal-jsonl", metavar="FILE")
+    parser.add_argument("--profile", choices=("webkit", "gpu-parity"), default="webkit")
     try:
         options = parser.parse_args()
         since, until = number(options.since, 12), number(options.until, 12)
         # journalctl must be able to represent both times in ordinary UTC.
-        if since > until or until > 253402300799:
+        if since > until or until - since >= WINDOW_SECONDS or until > 253402300799:
             raise ValueError
     except ValueError:
         export(summary("invalid_window"))
@@ -333,7 +558,7 @@ def main():
         )
         result = summary(availability, handler)
         if availability in ("available", "timeout"):
-            collect(result, data, cut, since, until)
+            collect(result, data, cut, since, until, profile=options.profile)
     except (OSError, subprocess.SubprocessError, ValueError):
         result = summary(handler=handler)
     export(result)
