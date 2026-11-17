@@ -519,10 +519,23 @@ class SystemHost:
 
     def clone_probe(self, root):
         import ctypes
-        import plistlib
-        fs = plistlib.loads(self.command(['/usr/sbin/diskutil','info','-plist','/private/tmp'],
-                             cwd=REPO,env={'PATH':SAFE_PATH},timeout=10).stdout)
-        require(fs.get('FilesystemType')=='apfs', 'APFS required')
+        # macOS df accepts a file operand; -P -Y shows its containing filesystem and type.
+        raw = self.command(['/bin/df', '-P', '-Y', str(root)], cwd=REPO,
+                           env={'PATH': SAFE_PATH, 'LC_ALL': 'C'}, timeout=10).stdout
+        try:
+            lines = raw.decode('utf-8').removesuffix('\n').split('\n')
+        except UnicodeDecodeError as exc:
+            raise Failure('df output is not UTF-8') from exc
+        require(len(lines) == 2 and re.split(r'[ \t]+', lines[0]) ==
+                ['Filesystem', 'Type', '512-blocks', 'Used', 'Available', 'Capacity', 'Mounted', 'on'],
+                'df filesystem header/row count')
+        # Bind Type to its column and keep the absolute mountpoint as a single tail.
+        row = re.fullmatch(r'[^ \t\x00-\x1f\x7f]+[ \t]+([^ \t\x00-\x1f\x7f]+)[ \t]+'
+                           r'[0-9]+[ \t]+[0-9]+[ \t]+-?[0-9]+[ \t]+[0-9]+%[ \t]+'
+                           r'/[^\x00-\x08\x0a-\x1f\x7f]*', lines[1])
+        require(row is not None, 'df filesystem row')
+        filesystem = row[1]
+        require(filesystem == 'apfs', 'APFS required')
         original, clone = root/'clone-original', root/'clone-copy'
         exclusive(original,b'clone probe\n')
         library = ctypes.CDLL(None,use_errno=True)
@@ -534,7 +547,7 @@ class SystemHost:
         with clone.open('wb') as writer: writer.write(b'independent\n')
         require(regular(original)==b'clone probe\n','clone independence')
         original.unlink();clone.unlink()
-        return {'apfs_clone':True,'filesystem':fs.get('FilesystemType')}
+        return {'apfs_clone':True,'filesystem':filesystem}
 
     def network_probe(self, *, cwd, env, timeout):
         require(Path('/usr/bin/sandbox-exec').is_file(), 'sandbox-exec unavailable')
