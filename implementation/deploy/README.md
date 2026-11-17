@@ -50,25 +50,37 @@ client IP on both routes. [Proxy trust](../../docs/ops/DEPLOYMENT.md#6c-ops-requ
 
 The labels require Traefik entrypoints named `http` and `https` and a certificate resolver
 named `letsencrypt`. Check the server's proxy configuration (Servers, then Proxy) before the
-first deploy. Verify that the configured labels match. Start HSTS at the template values
-`300/0/0`. Follow the [HSTS ramp-up](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
-after verifying both HTTPS routes.
+first deploy. Verify that the configured labels match. Start a new resource's HSTS at the
+template values `300/0/0`. For the initial HSTS rollout, follow the
+[HSTS ramp-up](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
+after verifying both HTTPS routes. Retain the approved policy on existing resources.
 
 ## First deploy
 
 1. Point DNS for both domains at the production Coolify server.
 2. Create a resource from the repository with build pack **Docker Compose**, base directory
-   `/implementation` and compose location `/docker-compose.prod.yml`. Coolify builds `api` from
-   `implementation/api` and `website` from the repository root, as the runbook requires.
-3. Environment Variables, Developer view: paste [`production.env.example`](production.env.example),
-   fill the required values and the SMTP credentials needed by your provider, then lock the
-   secrets. Values marked `:?` in the Compose file stop the deploy when empty. Use the
+   `/implementation` and compose location `/docker-compose.prod.yml`. Keep the selected branch
+   free of pushes during setup. Set **Advanced → Deployment → Auto deploy → Manual deployments
+   only** and confirm no automated workflow or integration uses the authenticated Deploy Webhook
+   for this resource. Coolify builds `api` from `implementation/api` and `website` from the
+   repository root. [Manual deployment control](../../DEPLOYMENT.md#manual-deployment-control)
+3. Import [`production.env.example`](production.env.example) in Developer view only for a new
+   resource with an empty variable list. In an existing or pre-populated resource, edit only
+   the intended entries in Normal view and preserve the selected image references, database
+   identity, HSTS and other overrides. Use Normal view for locked entries.
+   Before the first build, set `SECRET_KEY`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, `SQL_PASSWORD`,
+   `REDIS_PASSWORD` and `MAIL_PASSWORD` to **Not available during build** and **Available in
+   the container**. Verify their saved scopes by name without recording values, then lock any
+   unlocked secret. Compose inputs marked `:?` stop the deploy when empty. Use the
+   [runtime environment procedure](../../DEPLOYMENT.md#runtime-environment) and
    [matching entitlement seed](../../DEPLOYMENT.md#entitlement-signing-key).
 4. Leave every Domains field empty. Apply the edge controls below and review the migration plan.
    Before the owner triggers sustained or unattended production deployment, complete the
    [account-only scheduler prerequisite](../../DEPLOYMENT.md#account-only-scheduler-prerequisite)
-   in bounded isolated staging.
-5. Run the [platform checks](../../DEPLOYMENT.md#deploy-and-verify-the-platform) from the runtime
+   in bounded isolated staging. Check the selected source ref against the recorded release commit,
+   then have the owner select **Deploy** in Coolify.
+5. Verify the deployed commit and image digests. Run the
+   [platform checks](../../DEPLOYMENT.md#deploy-and-verify-the-platform) from the runtime
    containers and the `curl` checks from outside. Complete the
    [Free journey](../../DEPLOYMENT.md#free-account-and-activation-acceptance), including actual
    delivered email and native activation.
@@ -81,10 +93,10 @@ that drops a column (docs/ops/DEPLOYMENT.md section 6d), stop the resource in Co
 then deploy.** Take a database backup before any deploy that migrates.
 
 For sustained account-only deployments, use a scheduler arrangement that passed the staging
-queue and maintenance checks above. Pin each deploy to the reviewed commit and record the actual
-image digests. `API_IMAGE`, `WEBSITE_IMAGE` and `RELEASE_TAG` set the image references. The build
-declarations remain
-active in this file. Verify how Coolify resolves the images for the deployment.
+queue and maintenance checks above. Recheck the manual trigger policy and runtime-only secret
+scopes before the owner deploys the recorded commit. `API_IMAGE`, `WEBSITE_IMAGE` and
+`RELEASE_TAG` set the image references. The Compose build declarations remain active. Verify how
+Coolify resolves the images and record the actual deployed digests.
 
 ## Backups
 
