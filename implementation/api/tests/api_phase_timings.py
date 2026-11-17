@@ -11,7 +11,25 @@ _LABELS = {
 }
 _PHASES = ("setup", "call", "teardown")
 _BUCKET_SIZE = 50
-_PROGRESS_LIMIT = 12 - len(_LABELS)  # One final line is reserved for each file.
+
+
+class ApiPhaseTimingBudget:
+    """Allow at most twelve diagnostic records across pytest sessions."""
+
+    __slots__ = ("_remaining",)
+
+    def __init__(self) -> None:
+        self._remaining = 12
+
+    def claim(self, *, reserved: int = 0) -> bool:
+        if self._remaining <= reserved:
+            return False
+        self._remaining -= 1
+        return True
+
+
+# Pytest can reload conftest for a new session. This imported helper stays cached.
+_PROCESS_BUDGET = ApiPhaseTimingBudget()
 
 
 @dataclass(slots=True)
@@ -33,11 +51,11 @@ class _FileTimings:
             f"completed_teardowns={self.reported_at} {phases}"
         )
 
-    def finish(self, label: str) -> str | None:
+    def finish(self, label: str, budget: ApiPhaseTimingBudget) -> str | None:
         if self.finalized:
             return None
         self.finalized = True
-        if self.counts["teardown"] != self.reported_at:
+        if self.counts["teardown"] != self.reported_at and budget.claim():
             return self.line(label)
         return None
 
@@ -45,11 +63,13 @@ class _FileTimings:
 class ApiPhaseTimings:
     """Track report counts and finite duration sums for one pytest session."""
 
-    __slots__ = ("_files", "_progress_remaining")
+    __slots__ = ("_files", "_budget")
 
-    def __init__(self, selected_nodeids: Iterable[str]) -> None:
+    def __init__(
+        self, selected_nodeids: Iterable[str], *, budget: ApiPhaseTimingBudget | None = None
+    ) -> None:
         self._files = {path: _FileTimings() for path in _LABELS}
-        self._progress_remaining = _PROGRESS_LIMIT
+        self._budget = _PROCESS_BUDGET if budget is None else budget
         for nodeid in selected_nodeids:
             if totals := self._files.get(nodeid.split("::", 1)[0]):
                 totals.selected += 1
@@ -73,16 +93,19 @@ class ApiPhaseTimings:
         if completed == totals.reported_at:
             return None
         if completed == totals.selected:
-            return totals.finish(_LABELS[path])
-        if completed % _BUCKET_SIZE == 0 and self._progress_remaining:
-            self._progress_remaining -= 1
-            return totals.line(_LABELS[path])
+            return totals.finish(_LABELS[path], self._budget)
+        if completed % _BUCKET_SIZE == 0:
+            reserved = sum(
+                file.selected > 0 and not file.finalized for file in self._files.values()
+            )
+            if self._budget.claim(reserved=reserved):
+                return totals.line(_LABELS[path])
         return None
 
     def finish(self) -> list[str]:
         """Flush tails when pytest stops before completing its selection."""
         records = []
         for path, totals in self._files.items():
-            if record := totals.finish(_LABELS[path]):
+            if record := totals.finish(_LABELS[path], self._budget):
                 records.append(record)
         return records

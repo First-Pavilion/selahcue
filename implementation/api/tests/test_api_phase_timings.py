@@ -4,12 +4,16 @@ import math
 import tracemalloc
 import unittest
 
-from api_phase_timings import ApiPhaseTimings
+from api_phase_timings import ApiPhaseTimingBudget, ApiPhaseTimings
 
 
 _REVOKE = "tests/test_license_revoke_extend.py"
 _SUSPEND = "tests/test_license_suspend_reinstate.py"
 _MARKER = "synthetic-token-DO-NOT-EMIT"
+
+
+def _isolated_timings(selected):
+    return ApiPhaseTimings(selected, budget=ApiPhaseTimingBudget())
 
 
 def _records(timings, path, count):
@@ -37,7 +41,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
             "tests/test_license_suspend_reinstate.py.backup",
             "tests/test_unrelated.py",
         )
-        timings = ApiPhaseTimings((*ignored, _REVOKE, _SUSPEND))
+        timings = _isolated_timings((*ignored, _REVOKE, _SUSPEND))
         records = []
         for path in (*ignored, _REVOKE, _SUSPEND):
             records += _records(timings, path, 1)
@@ -49,7 +53,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
 
     def test_counts_and_sums_each_report_phase_including_missing_call(self):
         nodeid = f"{_REVOKE}::test_matrix[{_MARKER}]"
-        timings = ApiPhaseTimings([nodeid, nodeid])
+        timings = _isolated_timings([nodeid, nodeid])
         timings.observe(nodeid, "setup", 0.5)
         timings.observe(nodeid, "teardown", 0.25)
         self.assertIsNone(timings.progress(nodeid))
@@ -78,7 +82,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(len(record.splitlines()), 1)
 
     def test_canonical_selection_emits_each_fifty_and_the_final_partial(self):
-        timings = ApiPhaseTimings([_REVOKE] * 375 + [_SUSPEND] * 178)
+        timings = _isolated_timings([_REVOKE] * 375 + [_SUSPEND] * 178)
         revoke = _records(timings, _REVOKE, 375)
         suspend = _records(timings, _SUSPEND, 178)
         self.assertEqual(
@@ -94,7 +98,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(list(timings.finish()), [])
 
     def test_exact_bucket_and_final_boundary_emits_once(self):
-        timings = ApiPhaseTimings([_REVOKE] * 100)
+        timings = _isolated_timings([_REVOKE] * 100)
         records = _records(timings, _REVOKE, 100)
         self.assertEqual(
             [int(_fields(record)["completed_teardowns"]) for record in records], [50, 100]
@@ -103,7 +107,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(list(timings.finish()), [])
 
     def test_early_finish_shows_observed_and_selected_counts_without_duplication(self):
-        timings = ApiPhaseTimings([_REVOKE] * 200 + [_SUSPEND] * 300)
+        timings = _isolated_timings([_REVOKE] * 200 + [_SUSPEND] * 300)
         records = _records(timings, _REVOKE, 52)
         self.assertEqual(len(records), 1)
         self.assertEqual(_fields(records[0])["completed_teardowns"], "50")
@@ -116,13 +120,13 @@ class ApiPhaseTimingsTests(unittest.TestCase):
     def test_empty_ignored_and_new_sessions_are_independent(self):
         for selected in ([], ["tests/test_unrelated.py"]):
             with self.subTest(selected=selected):
-                timings = ApiPhaseTimings(selected)
+                timings = _isolated_timings(selected)
                 self.assertEqual(_records(timings, "tests/test_unrelated.py", 51), [])
                 self.assertEqual(list(timings.finish()), [])
 
-        active = ApiPhaseTimings([_REVOKE] * 200)
+        active = _isolated_timings([_REVOKE] * 200)
         self.assertEqual(len(_records(active, _REVOKE, 50)), 1)
-        fresh = ApiPhaseTimings([_REVOKE])
+        fresh = _isolated_timings([_REVOKE])
         self.assertIsNone(fresh.progress(_REVOKE))
         records = _records(fresh, _REVOKE, 1)
         self.assertEqual(len(records), 1)
@@ -130,7 +134,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(_fields(records[0])["setup_seconds"], "0.25")
 
     def test_twelve_line_cap_reserves_both_finals_under_larger_selection(self):
-        timings = ApiPhaseTimings([_REVOKE] * 751 + [_SUSPEND] * 800)
+        timings = _isolated_timings([_REVOKE] * 751 + [_SUSPEND] * 800)
         records = _records(timings, _REVOKE, 751) + _records(timings, _SUSPEND, 800)
         records += list(timings.finish())
         self.assertEqual(len(records), 12)
@@ -139,8 +143,35 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(_fields(records[-2])["file"], "test_license_revoke_extend.py")
         self.assertEqual(_fields(records[-1])["file"], "test_license_suspend_reinstate.py")
 
+    def test_successive_sessions_share_the_line_cap_and_reset_measurements(self):
+        budget = ApiPhaseTimingBudget()
+        first = ApiPhaseTimings([_REVOKE] * 400, budget=budget)
+        first_records = _records(first, _REVOKE, 302) + first.finish()
+        self.assertEqual(len(first_records), 7)
+        self.assertEqual(_fields(first_records[-1])["completed_teardowns"], "302")
+
+        for selected in ([], ["tests/test_unrelated.py"]):
+            with self.subTest(selected=selected):
+                ignored = ApiPhaseTimings(selected, budget=budget)
+                self.assertEqual(_records(ignored, "tests/test_unrelated.py", 51), [])
+                self.assertEqual(ignored.finish(), [])
+
+        second = ApiPhaseTimings([_REVOKE] * 375 + [_SUSPEND] * 178, budget=budget)
+        second_records = _records(second, _REVOKE, 375) + _records(second, _SUSPEND, 178)
+        second_records += second.finish()
+        self.assertEqual(len(first_records + second_records), 12)
+        self.assertEqual(
+            [int(_fields(record)["completed_teardowns"]) for record in second_records],
+            [50, 100, 150, 375, 178],
+        )
+        self.assertEqual(_fields(second_records[0])["setup_seconds"], "12.5")
+        self.assertEqual(_fields(second_records[0])["selected"], "375")
+
+        exhausted = ApiPhaseTimings([_REVOKE] * 90, budget=budget)
+        self.assertEqual(_records(exhausted, _REVOKE, 51) + exhausted.finish(), [])
+
     def test_nonfinite_durations_never_poison_numeric_output(self):
-        timings = ApiPhaseTimings([_REVOKE] * 2)
+        timings = _isolated_timings([_REVOKE] * 2)
         for duration in (0.25, math.inf):
             timings.observe(_REVOKE, "setup", duration)
             timings.observe(_REVOKE, "call", math.nan)
@@ -154,7 +185,7 @@ class ApiPhaseTimingsTests(unittest.TestCase):
         self.assertEqual(fields["setup_seconds"], "0.25")
 
     def test_retained_memory_stays_bounded_with_unique_parameter_ids(self):
-        timings = ApiPhaseTimings(_REVOKE for _ in range(20_100))
+        timings = _isolated_timings(_REVOKE for _ in range(20_100))
         already_tracing = tracemalloc.is_tracing()
         if not already_tracing:
             tracemalloc.start()
