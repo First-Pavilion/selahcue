@@ -1956,6 +1956,7 @@ jobs:
           echo "file=$expected" >> "$GITHUB_OUTPUT"
       # Temporary Task 3 tests-only checkpoint; remove before final GREEN.
       - name: Task 3 focused HTTP recovery RED
+        if: ${{ !cancelled() }}
         env:
           SQL_ENGINE: django.db.backends.postgresql
           SQL_DATABASE: selahcue_test
