@@ -1954,6 +1954,33 @@ jobs:
             tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api \
             > "$expected"
           echo "file=$expected" >> "$GITHUB_OUTPUT"
+      # Temporary Task 3 tests-only checkpoint; remove before final GREEN.
+      - name: Task 3 focused HTTP recovery RED
+        env:
+          SQL_ENGINE: django.db.backends.postgresql
+          SQL_DATABASE: selahcue_test
+          SQL_USER: selahcue
+          SQL_PASSWORD: selahcue
+          SQL_HOST: localhost
+          SQL_PORT: "5432"
+          CACHE_URL: redis://localhost:6379/1
+          CELERY_BROKER_URL: redis://localhost:6379/2
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: |
+          python -m pytest -vv -rfEs --maxfail=0 --tb=long --capture=tee-sys \
+            tests/test_bound_activation.py::test_bound_v2_admin_recovers_undisclosed_live_replacement \
+            tests/test_bound_activation.py::test_bound_v2_refuses_enrollment_initial_member_and_foreign_identity \
+            tests/test_bound_activation.py::test_nonce_cannot_change_protocol_version \
+            tests/test_bound_activation.py::test_completed_receipt_never_switches_to_new_result \
+            tests/test_bound_activation.py::test_bound_v2_keeps_strict_fields_and_version_types \
+            tests/test_bound_activation.py::test_bound_v2_policy_denial_leaves_existing_credential_and_receipts_unchanged \
+            tests/test_bound_activation_postgres.py::test_bound_v2_concurrent_duplicate_remints_once \
+            tests/test_bound_activation_postgres.py::test_bound_v2_receipt_insert_failure_rolls_back_remint_and_audit \
+            tests/test_bound_activation_postgres.py::test_bound_v2_original_result_race_preserves_completed_receipt \
+            tests/test_bound_activation.py::test_bound_v1_still_refuses_replace_token_field \
+            tests/test_bound_activation.py::test_bound_routes_refuse_missing_or_unknown_fields_and_cookie_authority \
+            tests/test_bound_activation.py::test_bound_recovery_does_not_accept_a_device_bearer_as_account_authority \
+            tests/test_bound_activation.py::test_completed_operation_cannot_be_retargeted
       - name: Tests
         if: ${{ !cancelled() }}
         env:
