@@ -1,5 +1,7 @@
 # API CI capacity: binding narrow amendment
 
+Active sequencing update: [the accepted canonical-cleanup amendment](2026-11-17-license-canonical-cleanup.md) supersedes the overlay-before-removal ordering below. The completed isolated proof permits planned removal now; one complete canonical full API/493/G1 run, final validation and retained evidence remain required. The35-minute ceiling and every other bound remain unchanged. The earlier reasoning and failed attempts below remain historical evidence.
+
 Accepted by the coordinator on 2026-11-17 after reading the actual terminal evidence and the independent builder's terminal-evidence addendum. Change only the existing `api` job's outer ceiling from **30 to 35 minutes** and its adjacent rationale comment. Keep the operator at 30 minutes and every other job, runner, matrix, dependency, condition, command, order, environment, artifact, failure rule and test selection unchanged. This supersedes the active API-only 30-minute references in the repair specification, plan and minimal qualification amendment. It does not change application performance requirements or authorize another automatic increase.
 
 ## Measured reason

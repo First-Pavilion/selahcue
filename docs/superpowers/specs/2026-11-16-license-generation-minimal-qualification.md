@@ -1,5 +1,7 @@
 # Licence generation minimal mutation baseline: binding amendment
 
+Active sequencing update: [the accepted canonical-cleanup amendment](2026-11-17-license-canonical-cleanup.md) supersedes the overlay-before-removal ordering below. The completed isolated proof permits planned removal now; one complete canonical full API/493/G1 run, final validation and retained evidence remain required. The35-minute ceiling and every other bound remain unchanged. The earlier reasoning and failed attempts below remain historical evidence.
+
 Coordinator accepted on 2026-11-16, after independently reviewed buildability: run **seven fixed unmutated controls** before the existing four mutations. Require **all 493 original identities to pass** in the same normal hosted API run with mandatory G1, and again in normal hosted CI after removing the temporary qualification overlay. Keep the full API command, workflow order, job structure and 180 s baseline, 60 s per mutant, 450 s qualification limits; the original 30-minute API outer ceiling is superseded only by [the accepted API capacity amendment](2026-11-17-api-ci-capacity.md), which sets it to 35 minutes. This amendment supersedes the 58-case duplicate isolated manifest. It does not authorize production changes or claim qualification success. The preceding design and failed58-case run remain historical evidence.
 
 ## Observed outcome
