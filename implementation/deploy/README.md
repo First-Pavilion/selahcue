@@ -103,22 +103,22 @@ with compatible client trust.
 ### Isolated restore rehearsal
 
 Provision a disposable PostgreSQL instance and volume on an isolated rehearsal host. Use the
-same PostgreSQL major version as production. Bind this instance to loopback on the rehearsal host
-and create a distinct role and empty database, both named `selahcue_restore_rehearsal`. Use
-rehearsal-only credentials and connection settings. The drill runs entirely outside the
-production Coolify resource.
-Keep the live database and its writers running during the drill.
+same PostgreSQL major version as production. Bind this instance to loopback on the rehearsal host.
+Create a `selahcue_restore_rehearsal` login role and make it the owner of a new empty database
+named `selahcue_restore_rehearsal`. Use rehearsal-only credentials and connection settings.
+The drill runs entirely outside the production Coolify resource. Keep the live database and its
+writers running during the drill.
 
 From the rehearsal host, check the exact destination before restoring. For the sample
 commands, the disposable instance listens on `127.0.0.1:55432`. Compare the reported host,
-port, database and role with the rehearsal inventory, and confirm the instance uses the
-disposable volume and the target is empty. Stop if any value differs or if any live connection
-is possible.
+port, database and connected role with the rehearsal inventory. Verify that the listed owner
+of the target database is `selahcue_restore_rehearsal`, the database is empty and the instance
+uses the disposable volume. Stop if any check fails or if any live connection is possible.
 
 ```sh
 psql -X --host=127.0.0.1 --port=55432 \
   --username=selahcue_restore_rehearsal --dbname=selahcue_restore_rehearsal \
-  --command='\conninfo'
+  --command='\conninfo' --command='\list selahcue_restore_rehearsal'
 ```
 
 Set `backup_file` to the path of the selected dump copied into protected rehearsal storage.
