@@ -691,13 +691,15 @@ Production Compose explicitly enables it for the single trusted Traefik hop.
 3. **Forward the public Host.** Keep `DJANGO_CSRF_TRUSTED_ORIGINS` empty when the browser's HTTPS
    Origin matches the forwarded Host. If an alternate proxy changes the Host or drops a
    non-default port, configure the exact trusted browser origins.
-4. **Count the trusted hops on every path.** Compose sets `SELAHCUE_TRUSTED_PROXY_COUNT=1`
-   because both Django routes go directly through Traefik. In the alternate nginx GraphQL
-   proxy layout, nginx sets `X-Forwarded-Proto` from the trusted edge and appends to the client
-   IP chain. Check the actual values and configure the trusted count for each path with any
-   nginx, CDN or load balancer added. Trust forwarded headers only from the verified upstream
-   addresses and make sure clients cannot reach the origin around that boundary. Keep
-   Traefik's `forwardedHeaders.insecure` off.
+4. **Check trusted depth on every path.** Compose sets `SELAHCUE_TRUSTED_PROXY_COUNT=1`
+   because both Django routes go directly through Traefik. This count is process-wide. In the
+   alternate nginx GraphQL layout, nginx sets `X-Forwarded-Proto` from the trusted edge and
+   appends a hop to the client IP chain. If that route and the direct native route share Django,
+   use trusted ingress to normalise both forwarded chains to the same verified depth. If they
+   require different depths, route them to separate API services and set the correct count for
+   each service. Verify the effective client IP and forwarded scheme on each route. Trust
+   forwarded headers only from verified upstream addresses and keep direct access to the origin
+   closed. Keep Traefik's `forwardedHeaders.insecure` off.
 
 ### HSTS ramp-up
 

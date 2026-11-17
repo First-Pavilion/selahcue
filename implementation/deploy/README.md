@@ -40,12 +40,13 @@ the API reads (`Actor-Id`, `Actor-Kind`, `Org-Id`, `Staff-Permissions`). The ded
 router rewrites the request to the unrouted path. If the API ever reads a new identity header,
 add it to the `selahcue-strip-identity` middleware.
 
-Django sees exactly one proxy hop on every route, so the compose file fixes
+Both public Django routes use one Traefik hop, so Compose fixes
 `SELAHCUE_TRUSTED_PROXY_COUNT=1` and `SELAHCUE_TRUST_FORWARDED_PROTO=1`. That holds because
 Traefik replaces a client's `X-Forwarded-For`/`-Proto` unless its entrypoint trusts that client.
-**If the production server sits behind Cloudflare, a load balancer, or a Traefik configured with
-`forwardedHeaders.trustedIPs`, re-derive both values before going live** (docs/ops/DEPLOYMENT.md
-sections 6b and 6c).
+The trusted count applies to the entire Django process. If Cloudflare, a load balancer or the
+alternate nginx route produces different trusted depths, normalise the chains at trusted ingress
+or use separate API services with their own correct count. Verify forwarded headers and effective
+client IP on both routes. [Proxy trust](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
 
 The labels require Traefik entrypoints named `http` and `https` and a certificate resolver
 named `letsencrypt`. Check the server's proxy configuration (Servers, then Proxy) before the
@@ -63,8 +64,10 @@ after verifying both HTTPS routes.
    fill the required values and the SMTP credentials needed by your provider, then lock the
    secrets. Values marked `:?` in the Compose file stop the deploy when empty. Use the
    [matching entitlement seed](../../DEPLOYMENT.md#entitlement-signing-key).
-4. Leave every Domains field empty. Apply the edge controls below and have the owner trigger the
-   deployment manually after reviewing the migration plan.
+4. Leave every Domains field empty. Apply the edge controls below and review the migration plan.
+   Before the owner triggers sustained or unattended production deployment, complete the
+   [account-only scheduler prerequisite](../../DEPLOYMENT.md#account-only-scheduler-prerequisite)
+   in bounded isolated staging.
 5. Run the [platform checks](../../DEPLOYMENT.md#deploy-and-verify-the-platform) from the runtime
    containers and the `curl` checks from outside. Complete the
    [Free journey](../../DEPLOYMENT.md#free-account-and-activation-acceptance), including actual
@@ -77,8 +80,10 @@ keeps serving while the migration runs. That is fine for additive migrations. **
 that drops a column (docs/ops/DEPLOYMENT.md section 6d), stop the resource in Coolify first,
 then deploy.** Take a database backup before any deploy that migrates.
 
-Pin each deploy to the reviewed commit and record the actual image digests. `API_IMAGE`,
-`WEBSITE_IMAGE` and `RELEASE_TAG` set the image references. The build declarations remain
+For sustained account-only deployments, use a scheduler arrangement that passed the staging
+queue and maintenance checks above. Pin each deploy to the reviewed commit and record the actual
+image digests. `API_IMAGE`, `WEBSITE_IMAGE` and `RELEASE_TAG` set the image references. The build
+declarations remain
 active in this file. Verify how Coolify resolves the images for the deployment.
 
 ## Backups
@@ -91,17 +96,50 @@ backups, and ship it off the server encrypted:
 pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /backups/selahcue-$(date -u +%Y%m%dT%H%M%SZ).dump
 ```
 
-Rehearse a restore with the `db` writers stopped (stop `api`, `worker` and `beat`):
-
-```sh
-pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists /backups/<file>.dump
-```
-
 Back up `SECRET_KEY` and the matching entitlement seed in restricted storage outside Coolify.
 Rotating `SECRET_KEY` invalidates credential fingerprints. Rotate the entitlement signer only
 with compatible client trust.
 
+### Isolated restore rehearsal
+
+Provision a disposable PostgreSQL instance and volume on an isolated rehearsal host. Use the
+same PostgreSQL major version as production. Bind this instance to loopback on the rehearsal host
+and create a distinct role and empty database, both named `selahcue_restore_rehearsal`. Use
+rehearsal-only credentials and connection settings. The drill runs entirely outside the
+production Coolify resource.
+Keep the live database and its writers running during the drill.
+
+From the rehearsal host, check the exact destination before restoring. For the sample
+commands, the disposable instance listens on `127.0.0.1:55432`. Compare the reported host,
+port, database and role with the rehearsal inventory, and confirm the instance uses the
+disposable volume and the target is empty. Stop if any value differs or if any live connection
+is possible.
+
+```sh
+psql -X --host=127.0.0.1 --port=55432 \
+  --username=selahcue_restore_rehearsal --dbname=selahcue_restore_rehearsal \
+  --command='\conninfo'
+```
+
+Set `backup_file` to the path of the selected dump copied into protected rehearsal storage.
+Restore into the empty database.
+
+```sh
+backup_file='/restore-rehearsal/approved-selahcue-backup.dump'
+pg_restore --host=127.0.0.1 --port=55432 \
+  --username=selahcue_restore_rehearsal --dbname=selahcue_restore_rehearsal \
+  --exit-on-error --single-transaction --no-owner --no-privileges "$backup_file"
+```
+
+Verify the restored migration frontier and expected data. Record the recovery point and time,
+then dispose of the instance, volume and protected backup copy according to the backup retention
+policy. For a deliberate live recovery, follow the
+[rollback procedure](../../DEPLOYMENT.md#backup-rollback-and-recovery).
+
 ## Rehearse locally
+
+Use isolated data, broker and volumes and set a stop time before starting. Stop the rehearsal
+stack at the end.
 
 ```bash
 cd implementation
