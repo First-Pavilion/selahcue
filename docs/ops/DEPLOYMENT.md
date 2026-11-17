@@ -6,29 +6,34 @@ obtain each one.
 - **Build/design detail** lives elsewhere: `docs/ops/WINDOWS-INSTALLER.md` and
   `docs/superpowers/specs/2026-08-13-macos-dmg-build-design.md`. This document is about
   *credentials*.
-- **Nothing here belongs in git.** Everything is either a GitHub Actions secret, a Git LFS payload,
-  or a runtime environment variable on the host.
+- Keep private signing material and credentials outside git. Store them in the intended Actions,
+  runtime or release-operator secret store.
 
 ## Status at a glance
 
 | What | Needed for | Who supplies | State |
 |------|-----------|--------------|-------|
-| Apple Developer ID (6 secrets) | Signed + notarized macOS DMG | Owner | **Not yet supplied** |
-| macOS NDI SDK (`libndi.dylib`) | NDI broadcast in the Mac build | Owner | Vendored locally; not yet in LFS |
+| Apple Developer ID (6 secrets) | Future Developer ID signing and notarization | Owner | Waived for this release |
+| macOS NDI SDK (`libndi.dylib`) | Mac NDI build dependency | Owner | Stage the licensed universal SDK locally |
 | Windows NDI runtime | NDI broadcast in the Windows build | — | **Self-provisioning in CI**; nothing to do |
-| Windows code-signing cert | Removing the SmartScreen warning | Owner | Optional; not planned |
+| Windows code-signing cert | Authenticode signing | Owner | Record the final package's observed signature status |
 | Django API env vars | Running the Platform API | Owner | Deployment-time |
 
-No GitHub Actions secret is referenced by any workflow today — the Apple credentials below will be
-the first.
+The translation publication workflow already references Actions secrets. Installer upload uses
+separate scoped credentials held by the release operator.
+[Translation workflow](../../.github/workflows/publish-translations.yml) ·
+[Installer publication](../../DEPLOYMENT.md#publisher-and-website-cutover)
 
 ---
 
 ## 1. Apple Developer ID — macOS signing and notarization
 
-Six secrets. The names are **Tauri v2's contract**, not arbitrary; do not rename them. When all six
-are present, Tauri signs the app, submits it to Apple's notary service, waits for the ticket, and
-staples it — no scripting on our side.
+For the current release the owner waived Apple Developer ID and notarization. Inspect the final
+package and disclose **ad-hoc signed application, unsigned DMG, no Apple Developer ID signature or notarization**.
+Record Gatekeeper behaviour and the native and Rosetta coverage.
+[macOS package inspection](../delivery/evidence/public-release-macos-20261114.md)
+
+The six secrets below use Tauri v2's names for a future Developer ID and notarization setup.
 
 | Secret | Example / format |
 |--------|------------------|
@@ -135,14 +140,12 @@ scripted downloads — this is why the Windows job takes a different route).
 
 1. Download the **NDI SDK for Apple** from [ndi.video](https://ndi.video/for-developers/ndi-sdk/)
    (accept the licence; they email a link).
-2. Install it, then vendor it into the repo layout:
+2. Install it on the build host, then stage it locally.
    ```bash
    scripts/fetch_ndi_sdk.sh              # auto-detects /Library/NDI SDK for Apple
    ```
-3. Commit `libndi.dylib` via Git LFS (§3).
-
-The vendored dylib is already Universal (`x86_64 arm64`) with an `@rpath` install name, so it needs
-no further processing.
+3. Check the staged dylib for both `x86_64` and `arm64` slices and the `@rpath` install name.
+   Capture its exact input digest in the build receipt.
 
 ### Windows — nothing to do
 
@@ -156,21 +159,11 @@ attribution: *"NDI® is a registered trademark of Vizrt NDI AB."*
 
 ---
 
-## 3. Git LFS
+## 3. macOS SDK build input
 
-`libndi.dylib` is 28 MB — orders of magnitude past GitHub's per-secret size limit — so it is
-committed as an LFS object rather than passed to CI as a secret.
-
-```bash
-brew install git-lfs
-git lfs install
-git lfs track "implementation/desktop/vendor/ndi/macos/lib/*.dylib"
-git add .gitattributes implementation/desktop/vendor/ndi/macos/
-```
-
-Any workflow that needs the real bytes must check out with `lfs: true`; without it, the file
-arrives as a small pointer and the link fails with a confusing error. Only the macOS installer job
-needs this.
+The current source tracks no macOS SDK dylib in Git LFS. Use the locally staged SDK in §2
+and record the exact licensed input and final-package inspection.
+[macOS packaging baseline](../delivery/evidence/public-release-macos-20261114.md)
 
 ---
 
@@ -192,13 +185,12 @@ a build failure, so verify each value before setting it.
 
 ---
 
-## 5. Windows code signing (optional, not planned)
+## 5. Windows code signing
 
-The Windows installer is deliberately unsigned for internal test builds; users click through
-SmartScreen. Removing that warning needs an **OV or EV code-signing certificate** from a CA
-(DigiCert, Sectigo, …) at roughly $200–600/year, and since June 2023 the private key must live on
-approved hardware (HSM or cloud signing service) — so it is not a simple "add a secret" change. EV
-certificates get SmartScreen reputation immediately; OV certificates must build it over time.
+Record actual Authenticode status on the final NSIS package and the installed binaries.
+Test SmartScreen behaviour with a browser-downloaded package on clean Windows. An unsigned
+public package requires the owner's Windows signing decision and matching disclosure.
+[Windows package acceptance](../../DEPLOYMENT.md#final-packages)
 
 ---
 
@@ -239,7 +231,7 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `SELAHCUE_TRUST_ACTOR_HEADERS` | follows `DEBUG` in dev; false elsewhere | **Startup refuses true outside exact `dev`, including staging and explicit opt-in.** See below |
 | `SELAHCUE_ENABLE_ADMIN_CATALOGUE` | false | **Keep false/unset in every shared deployment. Startup and the service refuse enablement outside exact `dev`.** The admin catalogue slice is mergeable before staff sign-in, but must remain disabled in production until that authenticator passes security review. This flag is not authentication. |
 | `SELAHCUE_ENTITLEMENT_SIGNING_KEY` | **none** | **Required** to issue offline entitlements. See §6a |
-| `SECURE_HSTS_SECONDS` | `31536000` when not debug | Keep the default. Only emitted once Django knows the request is secure: see §6c |
+| `SECURE_HSTS_SECONDS` | `31536000` when debug is off | Start with `300` and both subdomain and preload flags off, as in production Compose. Ramp up after HTTPS verification. See §6c. |
 | `ACCOUNT_SESSION_TTL_SECONDS` | 30 days | Policy choice |
 | `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS` | 24 hours | Policy choice |
 | `ACCOUNT_PASSWORD_RESET_TTL_SECONDS` | 1 hour | Policy choice |
@@ -299,15 +291,15 @@ manifests (DEC-004). **It has no default**, and unlike `SECRET_KEY` it has no de
 `GET /v1/entitlements/manifest` fails loudly rather than serving an unsigned manifest. A
 well-known dev fallback would let anyone forge an entitlement and void the offline model.
 
-Generate one:
+For the current public release, obtain the authorised matching seed from restricted storage.
+It must decode from standard base64 to 32 bytes. Verify its derived raw public key and ID
+`e506b735` against the final packaged trust. A new independent seed will fail verification
+with those packages. If custody of the matching seed cannot be verified, pause rollout and
+qualify a coordinated rotation.
 
-```bash
-python -c "import base64,os; print(base64.b64encode(os.urandom(32)).decode())"
-```
-
-Store it as an environment variable on the API host, alongside `SECRET_KEY`. Never commit
-it — anything signed with it is accepted by every SelahCue install that trusts the corresponding
-public key.
+Store the seed in the API runtime environment and a restricted recovery store. Exercise
+acceptance of a matching manifest and refusal of an untrusted signature on each final package.
+[Signer inspection and release checks](../../DEPLOYMENT.md#entitlement-signing-key)
 
 ### Rotation
 
@@ -347,10 +339,12 @@ precedence over the bridge. Production staff identity integration remains separa
 ### Per-IP flood protection belongs at the edge
 
 The app carries a fixed-window rate limiter on the `/v1` device-auth endpoints (activation,
-licence refresh, entitlement manifest, and the native account sign-in pair `POST /v1/sessions` and
-`POST /v1/activations:with-session` — ADR-0029), keyed on `(endpoint, client IP)` with the budgets
-in `SELAHCUE_THROTTLE_*`. Treat it as the **second** layer, never the only one. If your ingress
-rate rule is keyed on `/graphql/account`, extend it to the two native paths: it does not cover them.
+licence refresh, entitlement manifest and native account sign-in). It uses endpoint and client
+IP budgets in `SELAHCUE_THROTTLE_*`. Apply connection and request-rate limits at the edge
+on both public origins for reachable routes. Include `/graphql/account`, `POST /v1/sessions`,
+`POST /v1/activations:bound-with-session`, `POST /v1/activations:with-session` and the
+other reachable device routes. Verify edge limits and Django's client IP on both origins.
+[Coolify ingress procedure](../../DEPLOYMENT.md#deploy-and-verify-the-platform)
 
 It runs *inside* Django, so a request must be accepted, routed and middleware-processed before it
 can be refused — a flood large enough to matter has already consumed a worker slot by then. It
@@ -394,7 +388,8 @@ is held for as long as Redis stays wedged, and a cache fault becomes a full API 
 
 Routes that spend a budget, and how many:
 
-- **One budget:** `POST /v1/activations`, `POST /v1/sessions`, `POST /v1/activations:with-session`,
+- **One budget:** `POST /v1/activations`, `POST /v1/activations:bound`, `POST /v1/sessions`,
+  `POST /v1/activations:with-session`, `POST /v1/activations:bound-with-session`,
   `POST /v1/license:refresh`, `GET /v1/entitlements/manifest`, and the GraphQL mutations
   `verifyEmail` and `confirmPasswordReset`.
 - **Three budgets:** the GraphQL mutations `requestPasswordReset` and `resendVerificationEmail`.
@@ -682,52 +677,42 @@ would treat a plain-HTTP request as secure (HSTS, the CSRF origin comparison and
 logic all read it). So the app never assumes a proxy exists. It is a separate switch from
 `SELAHCUE_TRUSTED_PROXY_COUNT` (§6b) on purpose: that one decides how many `X-Forwarded-For`
 entries to believe for rate limiting, this one decides whether to believe a different header, and
-turning on the first must not quietly decide the second. Local development and the compose stack
-leave it off and are unchanged.
+turning on the first must not quietly decide the second. Local development leaves it off.
+Production Compose explicitly enables it for the single trusted Traefik hop.
 
 ### What the proxy must do before you turn it on
 
-1. **Overwrite, never append or pass through, `X-Forwarded-Proto`** with the scheme the *client*
-   used. A proxy that forwards whatever the client sent is exactly the forgery described above.
-   The TLS edge (Cloudflare, Coolify's Traefik) sets it itself. The marketing nginx is the
-   trusted hop behind it: `implementation/marketing/nginx.conf` passes the edge's `https` through
-   (any other value, or none, becomes the scheme nginx itself saw) and replaces any inbound copy
-   with `proxy_set_header`.
-2. **Make that proxy the only way in.** Django's port must not be published to the internet or to
-   any network a client can reach, and any intermediate hop (the marketing nginx container) must
-   be reachable only from the TLS edge. Verify with a request that goes around the proxy and
-   sends `X-Forwarded-Proto: https` by hand: with the flag on, anything that answers it as secure
-   is a hole.
-3. **Forward the public `Host`** (`proxy_set_header Host $host;`, already done by
-   `implementation/marketing/nginx.conf`). Then the browser's `Origin` equals
-   `https://<host>` and `DJANGO_CSRF_TRUSTED_ORIGINS` can stay empty. Set it when the proxy
-   rewrites `Host` to an internal name, and also when the public site is on a non-default port:
-   nginx's `$host` drops the port, so a browser `Origin` of `https://selahcue.example:8443` no
-   longer matches the forwarded Host.
-4. **Know what each hop reports.** Browser traffic reaches Django through the marketing nginx (the
-   same-origin `/graphql/` proxy), which sits behind the TLS edge, so nginx's own `$scheme` is
-   `http` and the `X-Forwarded-Proto` the edge side sends is the only source of `https`. If any hop
-   does not preserve it, Django sees `http` and the flag cannot fix the 403. Check the hop after
-   Cloudflare first: Cloudflare sends the header, but the next hop (for example a Traefik that
-   trusts no inbound forwarded headers) may replace it with the scheme of its own plain-HTTP
-   connection. Configure Traefik `forwardedHeaders.trustedIPs` with Cloudflare's published
-   address ranges. Never use `forwardedHeaders.insecure=true`: it accepts client-supplied
-   forwarded headers whenever the origin can be reached without Cloudflare. Cloudflare in
-   "Flexible" mode (plain HTTP to the origin) can have the same effect.
-   That fails closed (you keep the 403), never open. Native clients (`/v1/...`) do not go through
-   nginx; their route to Django is the edge directly, and the same two rules hold.
+1. **Overwrite `X-Forwarded-Proto` at the edge.** In production Compose, Traefik routes both the
+   API hostname and the website's `/graphql/*` straight to Django. Website pages go to nginx.
+   Confirm the edge sets the scheme and controls forwarded client addresses on each Django route.
+2. **Make the proxy the only public path.** Keep Django and any intermediate nginx GraphQL proxy
+   on private networks. Leave every Coolify Domains field empty so Compose's guarded routes are
+   the ones used. Confirm the staff graph returns 404 on both public origins.
+3. **Forward the public Host.** Keep `DJANGO_CSRF_TRUSTED_ORIGINS` empty when the browser's HTTPS
+   Origin matches the forwarded Host. If an alternate proxy changes the Host or drops a
+   non-default port, configure the exact trusted browser origins.
+4. **Check trusted depth on every path.** Compose sets `SELAHCUE_TRUSTED_PROXY_COUNT=1`
+   because both Django routes go directly through Traefik. This count is process-wide. In the
+   alternate nginx GraphQL layout, nginx sets `X-Forwarded-Proto` from the trusted edge and
+   appends a hop to the client IP chain. If that route and the direct native route share Django,
+   use trusted ingress to normalise both forwarded chains to the same verified depth. If they
+   require different depths, route them to separate API services and set the correct count for
+   each service. Verify the effective client IP and forwarded scheme on each route. Trust
+   forwarded headers only from verified upstream addresses and keep direct access to the origin
+   closed. Keep Traefik's `forwardedHeaders.insecure` off.
 
-### HSTS goes live the first time you turn this on
+### HSTS ramp-up
 
-The HSTS defaults in §6 were never in effect behind the proxy, so enabling the flag publishes a
-**one-year, `includeSubDomains`, `preload`** policy for the first time. Browsers that see it will
-refuse plain HTTP to the host and every subdomain for that long, so roll it out deliberately:
+Django emits HSTS when it recognises the request as secure. The production Compose starts with a
+five-minute, host-only policy. Set the ramp-up values explicitly in other deployment layouts
+before enabling forwarded HTTPS trust.
 
-1. Confirm every subdomain of the host serves valid HTTPS before enabling `includeSubDomains`.
-2. Start small and narrow: `SECURE_HSTS_SECONDS=300` (five minutes),
-   `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and `SECURE_HSTS_PRELOAD=0`. Watch for breakage, then raise
-   `SECURE_HSTS_SECONDS` in steps to the one-year default.
-3. Switch `SECURE_HSTS_INCLUDE_SUBDOMAINS` back on only once step 1 is true for every subdomain, and
+1. Verify both public HTTPS routes and confirm every subdomain in scope serves valid HTTPS before
+   enabling `includeSubDomains`.
+2. Start with `SECURE_HSTS_SECONDS=300`, `SECURE_HSTS_INCLUDE_SUBDOMAINS=0` and
+   `SECURE_HSTS_PRELOAD=0`. Watch for breakage, then increase the duration in steps up to
+   `31536000` seconds.
+3. Enable `SECURE_HSTS_INCLUDE_SUBDOMAINS` only once step 1 is true for every subdomain, and
    `SECURE_HSTS_PRELOAD` on only when you have decided, on purpose, to submit the domain to the
    browser preload list. Removal from that list takes months.
 4. **Rollback.** Turning the flag off, or setting `SECURE_HSTS_SECONDS=0`, only makes Django stop
@@ -743,14 +728,14 @@ refuse plain HTTP to the host and every subdomain for that long, so roll it out 
    `Strict-Transport-Security: max-age=0` must be served by the edge. Starting small (step 2) is
    what keeps this recoverable; a policy already on the preload list cannot be rolled back this way.
 
-### Non-browser clients must send an Origin
+### Origin and Referer
 
-With the flag on, a request counts as https, and Django's CSRF check for an https request with
-**no `Origin` header** falls back to the `Referer` header. nginx blanks the `Referer` on its way to
-Django, so the fallback fails and the POST is refused (403), token or not. Browsers always send
-`Origin` on a POST, so the SPA is unaffected. A script or `curl` calling `/graphql/account` or
-`/graphql/admin` must send `Origin: https://<host>` along with its CSRF cookie and header. The
-native `/v1` routes need none of this.
+Exercise the browser's matching HTTPS Origin, CSRF cookie and header on an actual
+`/graphql/account` mutation. For secure requests without Origin, Django can fall back to
+Referer. The alternate nginx GraphQL proxy suppresses Referer, so scripts using that
+route need an explicit `Origin: https://<host>` with the CSRF cookie and header. In the
+primary Compose layout, verify how Traefik handles Referer on the direct routes and excludes
+token-bearing values from edge logs. The native `/v1` device and session routes are CSRF-exempt.
 
 ### Verify after deploying
 
@@ -760,25 +745,28 @@ native `/v1` routes need none of this.
 - Django: `curl -si http://<django-internal-host>:8000/graphql/csrf -H 'X-Forwarded-Proto: https'`
   from outside the proxy is **unreachable** (rule 2). If it answers, the flag is unsafe in that
   environment until that is fixed.
-- The marketing nginx container: `curl -si http://<marketing-container-or-host-port>/graphql/csrf
+- In the alternate layout, the marketing nginx container: `curl -si http://<marketing-container-or-host-port>/graphql/csrf
   -H 'X-Forwarded-Proto: https'` from outside the edge must be unreachable, or must not return
   `Strict-Transport-Security`. If it answers as secure, anyone who can reach the container can
   claim https.
-- Optionally rehearse the nginx map without the stack: run the image with `nginx -t` against
+- For the alternate layout, optionally rehearse the nginx map without the stack: run the image with `nginx -t` against
   `implementation/marketing/nginx.conf`, and a server that echoes `$selahcue_client_proto`, then
   send no header, `https`, `http` and a junk value; expect `http`, `https`, `http`, `http`. The
   map's shape and those outcomes are also pinned by `tests/test_nginx_forwarded_proto.py` in the API
   suite.
 
-The native `/v1` routes (`POST /v1/sessions`, `POST /v1/activations:with-session`) are
-`csrf_exempt` and unaffected either way.
+Verify the edge and nginx log rules independently on `/verify` and `/reset` using synthetic
+tokens. nginx's safe logger does not control Traefik's logs. Include the CSRF-exempt
+`POST /v1/sessions`, `POST /v1/activations:bound-with-session` and
+`POST /v1/activations:with-session` in the edge checks.
 
 ---
 
 ## 6d. Database migrations — deploy order (Platform API)
 
-The Gunicorn API image and development Compose both require a separate migration step.
-Run the one-off migration from the release image using the order in the
+The production Compose runs its one-off migration from the release image before
+starting the new API, worker and beat. Verify the migration plan and record the actual
+frontier using the order in the
 [Coolify runbook](../../DEPLOYMENT.md#deploy-and-verify-the-platform).
 
 Most migrations only add things and can run beside the running release. A **column drop cannot**.
@@ -820,8 +808,8 @@ does not work, because of the `NOT NULL` point above.
 - The `.p12` certificate, its password, or any exported private key.
 - App-specific passwords and App Store Connect `.p8` keys.
 - `SECRET_KEY`, `SQL_PASSWORD`, or any production database credentials.
-- NDI SDK **headers and libraries** are the exception: the Windows headers and the macOS dylib are
-  committed deliberately (the latter via LFS) under the redistribution terms in §2.
+- Keep the locally staged macOS SDK out of source control. Follow the build input and
+  redistribution instructions in §2.
 
 If a signing credential leaks, revoke the certificate at
 [developer.apple.com](https://developer.apple.com/account/resources/certificates/list) immediately —
