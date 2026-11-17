@@ -4,6 +4,7 @@ import copy
 import hashlib
 import importlib
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -324,6 +325,105 @@ class FixtureTests(unittest.TestCase):
             with self.subTest(raw=raw),self.assertRaises(self.f.ProofError):self.f.check_observations('raw digest',raw)
         with patch.object(self.f,'MAX_STDOUT',8),self.assertRaises(self.f.ProofError):self.f.check_observations('raw digest',b'123456789\n')
         with patch.object(self.f,'MAX_LINE',8),self.assertRaises(self.f.ProofError):self.f.check_observations('raw digest',b'123456789\n')
+
+
+class CloneProbeTests(unittest.TestCase):
+    # C-locale macOS df -P -Y capture, with a synthetic space-bearing mountpoint.
+    header = b'Filesystem    Type 512-blocks       Used Available Capacity  Mounted on\n'
+    row = b'/dev/disk3s5  apfs 1942597960 1624101792 242848464    87%    /Volumes/Probe Data\n'
+    old_diskutil_failure = (
+        b'<?xml version="1.0" encoding="UTF-8"?>\n'
+        b'<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        b'<plist version="1.0">\n<dict>\n\t<key>Error</key>\n\t<true/>\n'
+        b'\t<key>ErrorMessage</key>\n\t<string>Could not find disk: /private/tmp</string>\n'
+        b'\t<key>ExitCode</key>\n\t<integer>1</integer>\n</dict>\n</plist>\n'
+    )
+
+    def setUp(self):
+        self.p = importlib.import_module('scripts.macos_native_proof')
+        self.host = self.p.SystemHost()
+        tmp = self.enterContext(tempfile.TemporaryDirectory(prefix='clone probe '))
+        self.root = Path(tmp).resolve()
+        self.result = self.p.CommandResult(0, self.header + self.row, b'')
+        self.process = self.enterContext(patch.object(self.host.process, 'run', side_effect=self._query))
+        self.library = self.enterContext(patch('ctypes.CDLL'))
+        self.library.return_value.clonefile.side_effect = self._copy
+
+    def _query(self, argv, **kwargs):
+        self.assertEqual(list(self.root.iterdir()), [])
+        if argv == ['/usr/sbin/diskutil', 'info', '-plist', '/private/tmp']:
+            return self.p.CommandResult(1, self.old_diskutil_failure, b'')
+        self.assertEqual(argv, ['/bin/df', '-P', '-Y', str(self.root)])
+        return self.result
+
+    @staticmethod
+    def _copy(source, destination, flags):
+        with Path(os.fsdecode(destination)).open('xb') as clone:
+            clone.write(Path(os.fsdecode(source)).read_bytes())
+        return 0
+
+    def test_queries_owned_directory_then_clones_and_cleans_up(self):
+        try:
+            observed = self.host.clone_probe(self.root)
+        except self.p.CompletedCommandFailure as exc:
+            self.fail(f'could not query the owned directory: {exc}; exit {exc.result.returncode}')
+        self.assertEqual(observed, {'apfs_clone': True, 'filesystem': 'apfs'})
+        self.process.assert_called_once_with(
+            ['/bin/df', '-P', '-Y', str(self.root)], cwd=self.p.REPO,
+            env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LC_ALL': 'C'}, timeout=10,
+        )
+        self.library.return_value.clonefile.assert_called_once_with(
+            os.fsencode(self.root/'clone-original'), os.fsencode(self.root/'clone-copy'), 0,
+        )
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_rejects_invalid_filesystem_reports_before_creating_files(self):
+        reports = {
+            'empty': b'',
+            'missing row': self.header,
+            'multiple rows': self.header + self.row + self.row,
+            'extra blank row': self.header + self.row + b'\n',
+            'missing Type header': self.header.replace(b'Type ', b'') + self.row,
+            'misplaced Type header': self.header.replace(b'Type 512-blocks', b'512-blocks Type') + self.row,
+            'missing Type field': self.header + self.row.replace(b'apfs ', b''),
+            'wrong type': self.header + self.row.replace(b'apfs ', b'hfs '),
+            'type is case sensitive': self.header + self.row.replace(b'apfs ', b'APFS '),
+            'apfs only in device': self.header + self.row.replace(b'/dev/disk3s5  apfs', b'apfs  hfs'),
+            'apfs only in mountpoint': self.header + b'/dev/disk3s5 hfs 10 9 1 90% /Volumes/apfs Data\n',
+            'malformed blocks': self.header + self.row.replace(b'1942597960', b'bad'),
+            'malformed used': self.header + self.row.replace(b'1624101792', b'bad'),
+            'malformed available': self.header + self.row.replace(b'242848464', b'bad'),
+            'malformed capacity': self.header + self.row.replace(b'87%', b'87'),
+            'shifted mountpoint': self.header + self.row.replace(b'/Volumes', b'extra /Volumes'),
+            'missing mountpoint': self.header + b'/dev/disk3s5 apfs 10 9 1 90%\n',
+            'invalid UTF-8': self.header + self.row.replace(b'Probe', b'\xff'),
+        }
+        for name, raw in reports.items():
+            with self.subTest(name=name):
+                self.result = self.p.CommandResult(0, raw, b'')
+                with self.assertRaises(self.p.Failure) as caught:
+                    self.host.clone_probe(self.root)
+                self.assertNotIsInstance(caught.exception, self.p.CompletedCommandFailure)
+                self.library.assert_not_called()
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_nonzero_filesystem_query_rejects_even_valid_output(self):
+        self.result = self.p.CommandResult(1, self.header + self.row, b'df failed')
+        with self.assertRaises(self.p.CompletedCommandFailure) as caught:
+            self.host.clone_probe(self.root)
+        self.assertEqual(caught.exception.result, self.result)
+        self.library.assert_not_called()
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_apfs_report_with_hard_link_fails_write_independence(self):
+        def hard_link(source, destination, flags):
+            Path(os.fsdecode(destination)).hardlink_to(Path(os.fsdecode(source)))
+            return 0
+
+        self.library.return_value.clonefile.side_effect = hard_link
+        with self.assertRaisesRegex(self.p.Failure, 'clone independence'):
+            self.host.clone_probe(self.root)
+        self.assertEqual((self.root/'clone-original').read_bytes(), b'independent\n')
 
 
 class OrchestrationTests(unittest.TestCase):
