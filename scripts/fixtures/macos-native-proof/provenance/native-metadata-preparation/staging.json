@@ -1,0 +1,122 @@
+[
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/native-harness-archive/build_pinned.py.txt",
+    "archived_after": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ],
+    "archived_before": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ],
+    "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/build_pinned.py",
+    "staged_final": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ],
+    "staged_readback": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ]
+  },
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/native-harness-archive/main.rs.txt",
+    "archived_after": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ],
+    "archived_before": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ],
+    "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/src/main.rs",
+    "staged_final": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ],
+    "staged_readback": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ]
+  },
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-native-setup-archive/Cargo.toml.txt",
+    "archived_after": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ],
+    "archived_before": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ],
+    "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.toml",
+    "staged_final": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ],
+    "staged_readback": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ]
+  },
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/documents/coverage-v1.md",
+    "archived_after": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "archived_before": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/docs/superpowers/specs/coverage-v1.md",
+    "staged_final": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "staged_readback": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ]
+  },
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/documents/coverage-v1.md",
+    "archived_after": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "archived_before": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "destination": "/private/tmp/selahcue-notes-coverage-spec-20261114.md",
+    "staged_final": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "staged_readback": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ]
+  },
+  {
+    "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-native-setup-archive/selahcue-notes-native-input-pin-20261115.json.txt",
+    "archived_after": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ],
+    "archived_before": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ],
+    "destination": "/private/tmp/selahcue-notes-native-input-pin-20261115.json",
+    "staged_final": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ],
+    "staged_readback": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ]
+  }
+]

@@ -310,6 +310,10 @@ jobs:
               - 'implementation/marketing/**'
               # apiSeam.test.ts derives the client error-code contract from this enum.
               - 'implementation/api/selahcue_api/graphql/errors.py'
+              - 'scripts/installer_publication/**'
+              - 'scripts/publish_installers.py'
+              - 'scripts/_installer_publication_fixtures.py'
+              - 'scripts/test_installer_publication_*.py'
               - 'implementation/docker-compose.yml'
               - 'docs/release/pilot-registration/notice.json'
               - '.github/workflows/ci.yml'
@@ -365,6 +369,10 @@ jobs:
         with:
           # Fidelity audit commit citations must be checked, not unknown due to shallow history.
           fetch-depth: 0
+      # Provision only the pinned Cargo used by offline alias controls.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.98.0'
       # The tiny installer-scanner-controls workflow also covers ordinary docs that
       # this workflow excludes. Repeating the stdlib-only control here is cheap.
       - name: Installer scanner self-test (no installer artifacts)
@@ -400,10 +408,13 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+          # Finite synthetic fixtures/fake orchestration only; no native build or install.
+          python3 -m unittest scripts.test_macos_native_proof -v
           python3 .github/scripts/check_installer_scanner_ci.py
           # Offline controls only; installer builds remain manual/main-only.
           python3 scripts/test_linux_installer.py
           # Real Cargo aliases cannot replace the CI security tools. No network fixtures.
+          python3 -m unittest scripts.test_native_supply_check -v
           python3 scripts/check_rust_supply_ci.py --self-test
           python3 scripts/check_rust_supply_ci.py
           python3 scripts/check_rust_canary_coverage.py --self-test
@@ -424,13 +435,13 @@ jobs:
       # The same target is called early in make ci; this job runs for every CI event.
       - name: Visual-parity and fidelity audit (shared Makefile target, no browser)
         run: python3 .github/scripts/check_visual_audit_ci.py --run
-      # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
+      # The minute rules (17tnw2b2nxk): only the guarded native-proof macOS exception; Windows through
       # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
       # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`
       # in a matrix puts Windows back on every pull request. The alarm self-test is in the
       # `ci-alarm` job as well; it is repeated here so a pull request that breaks it is red on
       # the PR and not for the first time on `main`.
-      - name: Minute rules (no macOS, Windows only via the tier) + alarm self-test
+      - name: Minute rules (guarded macOS proof, Windows only via the tier) + alarm self-test
         run: |
           # PyYAML is installed (pinned) by the step above.
           python3 .github/scripts/check_ci_minutes.py --self-test
@@ -1441,7 +1452,7 @@ jobs:
         # `--user` install working on a PEP 668 externally-managed runner image (Ubuntu 24.04+),
         # where a plain `pip install --user` would otherwise refuse (audit #11 review).
         run: |
-          python3 -m pip install --user --break-system-packages playwright==1.61.0
+          python3 -m pip install --user --break-system-packages playwright==1.65.2
           python3 -m playwright install --with-deps webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
@@ -2040,6 +2051,9 @@ jobs:
           python-version: "3.14"
       - name: Install
         run: npm ci
+      - name: Installer publication offline self-test
+        working-directory: .
+        run: python3 scripts/publish_installers.py --self-test
       - name: Reject high and critical npm advisories
         run: npm audit --audit-level=high
       # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
@@ -2089,7 +2103,7 @@ jobs:
       # engine a hard failure instead of a silent skip that reads as a pass.
       - name: Install Playwright (Chromium + WebKit)
         run: |
-          python3 -m pip install --quiet playwright==1.61.0
+          python3 -m pip install --quiet playwright==1.65.2
           python3 -m playwright install --with-deps chromium webkit
       - name: Responsive sweep (Chromium)
         env:
@@ -2222,6 +2236,9 @@ jobs:
       - name: Audit STT crate
         working-directory: implementation/desktop/crates/selahcue-stt
         run: cargo-audit audit
+      - name: Audit frozen native adapter lock
+        working-directory: scripts/fixtures/macos-native-proof/payloads/native-golden
+        run: cargo-audit audit
 
   supply-chain:
     # Story 86ajpew0j: license allowlist (no copyleft in the shipped tree,
@@ -2238,9 +2255,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny,cargo-cyclonedx
+          tool: cargo-deny@0.20.2,cargo-cyclonedx
       - name: License / source / bans policy (desktop workspace)
         working-directory: implementation/desktop
         run: cargo-deny check licenses sources bans
@@ -2251,6 +2269,29 @@ jobs:
       - name: License / source / bans policy (STT crate)
         working-directory: implementation/desktop/crates/selahcue-stt
         run: cargo-deny check licenses sources bans
+      # Audit-only copy: sealed native inputs remain unchanged. No build occurs.
+      - name: Prepare frozen native dependency mirror
+        id: native-supply-prepare
+        timeout-minutes: 3
+        run: python3 scripts/prepare_native_supply_check.py prepare
+      - name: License / source / bans policy (frozen native adapter)
+        id: native-supply-deny
+        timeout-minutes: 5
+        working-directory: ${{ runner.temp }}/selahcue-native-supply/adapter
+        env:
+          CARGO_HOME: ${{ runner.temp }}/selahcue-native-supply/cargo
+          CARGO_TARGET_DIR: ${{ runner.temp }}/selahcue-native-supply/target
+          RUSTUP_TOOLCHAIN: 1.98.0
+        run: cargo-deny --locked --manifest-path Cargo.toml --config deny.toml check licenses sources bans
+      - name: Verify frozen native audit inputs after deny
+        id: native-supply-postcheck
+        timeout-minutes: 1
+        run: python3 scripts/prepare_native_supply_check.py postcheck
+      - name: Clean owned native dependency mirror
+        id: native-supply-cleanup
+        if: ${{ always() }}
+        timeout-minutes: 1
+        run: python3 scripts/prepare_native_supply_check.py cleanup
       - name: Generate CycloneDX SBOM (desktop workspace)
         working-directory: implementation/desktop
         run: cargo cyclonedx --format json

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "release": "1.98.0",
+  "target": "aarch64-apple-darwin",
+  "date": "2026-08-20",
+  "manifest": {
+    "url": "https://static.rust-lang.org/dist/channel-rust-1.98.0.toml",
+    "bytes": 898637,
+    "sha256": "3f7d139b73bbbd0004ef6e58b430831c68cdad2b1f64ee2eb35d54c09199489a"
+  },
+  "components": [
+    {
+      "name": "rustc",
+      "url": "https://static.rust-lang.org/dist/2026-08-20/rustc-1.98.0-aarch64-apple-darwin.tar.xz",
+      "bytes": 49401680,
+      "sha256": "287edbc2e285b9c23ef7b085413b90cb8539909eda9c4b49f2a55ec0b52819d4"
+    },
+    {
+      "name": "cargo",
+      "url": "https://static.rust-lang.org/dist/2026-08-20/cargo-1.98.0-aarch64-apple-darwin.tar.xz",
+      "bytes": 8894708,
+      "sha256": "2c2a8bbf3cba4353c0ca2cf1ba8280603f3ca82ceebb538fee4a1a987147f743"
+    },
+    {
+      "name": "rust-std",
+      "url": "https://static.rust-lang.org/dist/2026-08-20/rust-std-1.98.0-aarch64-apple-darwin.tar.xz",
+      "bytes": 29740736,
+      "sha256": "48c05269ed36fb5f0a8438065156891fe59fcb868d90cfed9b7209540d54b2ce"
+    }
+  ]
+}

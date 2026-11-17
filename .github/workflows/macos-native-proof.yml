@@ -1,0 +1,67 @@
+# One root-controlled initial dispatch after review/merge; never rerun automatically.
+# Receipt-only adapter proof: no Tauri, installer, signing or provider execution.
+name: macOS native proof
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: macos-native-proof
+  cancel-in-progress: false
+jobs:
+  native-proof:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Refuse non-main, non-manual and repeated attempts
+        shell: bash
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+      - name: Checkout dispatch SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify pinned inputs and prepare finite fixtures
+        shell: bash
+        run: python3 scripts/macos_native_fixtures.py --prepare-check
+      - name: Admit disposable host
+        shell: bash
+        run: python3 scripts/macos_native_proof.py admit
+      - name: Provision pinned toolchain and locked public crates
+        shell: bash
+        run: python3 scripts/macos_native_proof.py setup
+      - name: Run frozen native proof once
+        shell: bash
+        run: python3 scripts/macos_native_proof.py prove
+      - name: Finalize bounded receipts
+        if: ${{ always() }}
+        shell: bash
+        run: python3 scripts/macos_native_proof.py finalize
+      - name: Upload bounded receipts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: macos-native-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .macos-native-proof-receipts/run.json
+            .macos-native-proof-receipts/inputs.json
+            .macos-native-proof-receipts/admission.json
+            .macos-native-proof-receipts/setup.json
+            .macos-native-proof-receipts/build.json
+            .macos-native-proof-receipts/feature-tree.txt
+            .macos-native-proof-receipts/proof.json
+            .macos-native-proof-receipts/result.json
+            .macos-native-proof-receipts/artifact-manifest.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false
+          include-hidden-files: true
+      - name: Clean recorded owned paths after upload
+        if: ${{ always() }}
+        shell: bash
+        run: python3 scripts/macos_native_proof.py cleanup
