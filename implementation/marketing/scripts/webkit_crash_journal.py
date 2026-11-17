@@ -54,7 +54,7 @@ FIELDS = (
 # The hosted log fixes the cache root and revision. The pinned Playwright
 # registry identifies the WPE bin directory; the WebKit WPE build names its
 # helpers. pw_run.sh and the MiniBrowser shell wrapper are not ELF crash roles.
-BUNDLE = "/home/runner/.cache/ms-playwright/webkit-2311/minibrowser-wpe"
+BUNDLE = "/home/runner/.cache/ms-playwright/webkit-2388/minibrowser-wpe"
 WPE_MODULE = "libWPEWebKit-2.0.so.1"
 WPE_LIBRARY = Path(BUNDLE) / "lib" / WPE_MODULE
 ROLES = {
@@ -1034,7 +1034,7 @@ def safe_source_receipt(receipt):
         return None
     patterns = dict(SOURCE_PATTERNS)
     if profile == "webkit":
-        patterns.update(playwright_version=r"1\.61\.0", webkit_revision=r"2311")
+        patterns.update(playwright_version=r"1\.65\.2", webkit_revision=r"2388")
     else:
         patterns["rust_channel"] = r"[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
     safe = {"profile": profile, "job": "marketing" if profile == "webkit" else "rust"}
@@ -1101,7 +1101,7 @@ def source_receipt(profile, candidate_source_sha, *, deadline):
     except (OSError, AttributeError):
         pass
     if profile == "webkit":
-        receipt.update(playwright_version="1.61.0", webkit_revision="2311")
+        receipt.update(playwright_version="1.65.2", webkit_revision="2388")
         lock = "implementation/marketing/package-lock.json"
     else:
         lock = "implementation/desktop/Cargo.lock"

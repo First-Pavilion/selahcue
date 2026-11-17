@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "normative_commit": "1ea22e1ce6e52ab8aa2e0fd83fda1c9d90b094da",
+  "payloads": [
+    {
+      "path": "payloads/native-golden/build_pinned.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/build_pinned.py",
+      "bytes": 8731,
+      "sha256": "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    },
+    {
+      "path": "payloads/native-golden/src/main.rs",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/src/main.rs",
+      "bytes": 8490,
+      "sha256": "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    },
+    {
+      "path": "payloads/native-golden/Cargo.toml",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.toml",
+      "bytes": 751,
+      "sha256": "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    },
+    {
+      "path": "payloads/docs/superpowers/specs/coverage-v1.md",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/docs/superpowers/specs/coverage-v1.md",
+      "bytes": 58562,
+      "sha256": "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    },
+    {
+      "path": "payloads/external/selahcue-notes-coverage-spec-20261114.md",
+      "destination": "/private/tmp/selahcue-notes-coverage-spec-20261114.md",
+      "bytes": 58562,
+      "sha256": "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    },
+    {
+      "path": "payloads/external/selahcue-notes-native-input-pin-20261115.json",
+      "destination": "/private/tmp/selahcue-notes-native-input-pin-20261115.json",
+      "bytes": 14771,
+      "sha256": "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    },
+    {
+      "path": "payloads/native-golden/Cargo.lock",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.lock",
+      "bytes": 13676,
+      "sha256": "a78dcb39e5e302086a11c214800ab6875a07d4d7413ce428e1e0d068ab3c0718"
+    },
+    {
+      "path": "payloads/coverage_contract.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_contract.py",
+      "bytes": 7799,
+      "sha256": "5b9de5eb84c08f69ac7cd47d649c58972ee7f0a13a70b85518125d3025ce3d10"
+    },
+    {
+      "path": "payloads/coverage_json.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_json.py",
+      "bytes": 7057,
+      "sha256": "67a8f3ae2dbc75eaca2d55f0dcf6397c00c2c6b9e31383141d5a935809301bf9"
+    },
+    {
+      "path": "payloads/coverage_index.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_index.py",
+      "bytes": 1669,
+      "sha256": "b2170f02085b34e82cf2d6afc6d7a9761e410bed8bf48c4e8b09250cf46e6134"
+    },
+    {
+      "path": "payloads/coverage_compile.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_compile.py",
+      "bytes": 11111,
+      "sha256": "1923f5920e6724499880624f3b3ff0fed5342cbc4a09f4e24a7c7424ccc80788"
+    },
+    {
+      "path": "payloads/coverage_requests.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_requests.py",
+      "bytes": 15066,
+      "sha256": "84b79c8de00b644744721e0166ea0f7b29675b83e316ed8679d828944c6797d3"
+    },
+    {
+      "path": "payloads/coverage_response.py",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_response.py",
+      "bytes": 15395,
+      "sha256": "bc9ab57b870622cea76aca8ebdd19ea8a97bf1d6d2dfe472d883b22cc759bd36"
+    },
+    {
+      "path": "payloads/fixtures/contract/private-draft.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/private-draft.json",
+      "bytes": 1186,
+      "sha256": "b2185929c79790d46023802652647ee666b1663db241ab225301f242f0f96726"
+    },
+    {
+      "path": "payloads/fixtures/contract/public-draft.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/public-draft.json",
+      "bytes": 316,
+      "sha256": "06fe04e8dfbc0e2c105d535d75f7136ae19776b927b8e8b8b164023beed5ceb0"
+    },
+    {
+      "path": "payloads/fixtures/native/content.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/content.json",
+      "bytes": 1092,
+      "sha256": "16594a59bcf3d1d23b263ac619c8cd563f40eaa61cad88b18ac6364cccdee234"
+    },
+    {
+      "path": "payloads/fixtures/native/matrix-golden.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/matrix-golden.json",
+      "bytes": 211,
+      "sha256": "bad8a589143916640368f7e29682f46ad8618b022403db5329cd63ccad05fc73"
+    },
+    {
+      "path": "payloads/fixtures/native/wrapper-golden.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/wrapper-golden.json",
+      "bytes": 811,
+      "sha256": "74d7cc4167ea0e5c745ac31f2abc8881c4a0d052e359aef6b7665307eb111a4f"
+    },
+    {
+      "path": "payloads/fixtures/requests/context-correction.txt",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/context-correction.txt",
+      "bytes": 692,
+      "sha256": "0f74dda8407180d34b12a92da5d2a4373835f4a9247ecf5c926df82fc2f0027e"
+    },
+    {
+      "path": "payloads/fixtures/requests/private-instruction.txt",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/private-instruction.txt",
+      "bytes": 2587,
+      "sha256": "ee814223f80eb751f001d4f94c14cfd274e6b83042ffddb665f13e8574c6d3c7"
+    },
+    {
+      "path": "payloads/fixtures/requests/contract-appendix.txt",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/contract-appendix.txt",
+      "bytes": 3236,
+      "sha256": "1b8eeb68ab5392250d89578118ea1016cd8ff873f1a2fe46b6b3414f07a474b4"
+    },
+    {
+      "path": "payloads/fixtures/requests/native-prompt-parts.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/native-prompt-parts.json",
+      "bytes": 2199,
+      "sha256": "23f40b847c776b6012b455ba7e02f5adc41970917e3d07dde6584c3235d2290e"
+    },
+    {
+      "path": "payloads/fixtures/requests/baseline-options.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-options.json",
+      "bytes": 276,
+      "sha256": "1d004805392c2de6ea7aa4e121ec466790962aba2033df3bfe99138b8ca0cc6d"
+    },
+    {
+      "path": "payloads/fixtures/contract/baseline-public-schema.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/baseline-public-schema.json",
+      "bytes": 1116,
+      "sha256": "2baa7451a3d98f0d2f64ba64de48b04c6e357cc81a787ece123469db27121db7"
+    },
+    {
+      "path": "payloads/fixtures/requests/baseline-initial.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial.json",
+      "bytes": 11397,
+      "sha256": "c42450c38234844f9c3d6e351b4b561981edacf1404705a935e32534002ae410"
+    },
+    {
+      "path": "payloads/fixtures/requests/baseline-initial-count.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial-count.json",
+      "bytes": 11278,
+      "sha256": "356c1a2256d9fdf21c164c97094a43428fd72c2115320fa00dc9f3db4b29e86d"
+    },
+    {
+      "path": "payloads/fixtures/requests/baseline-repair.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair.json",
+      "bytes": 11556,
+      "sha256": "85efea398e1ec226d4f6019dc8fdc4929d80fbb5bd8c8b59e072b3a74447d9f2"
+    },
+    {
+      "path": "payloads/fixtures/requests/baseline-repair-count.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair-count.json",
+      "bytes": 11437,
+      "sha256": "63ae419dccdff92d751d16e5b89548022253d5c5b45859be2d17942219b08044"
+    },
+    {
+      "path": "payloads/fixtures/requests/manifest.json",
+      "destination": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/manifest.json",
+      "bytes": 44573,
+      "sha256": "d1f2b401a308410f73395ee3a4d7caee7ca884ebac8dc449aa8a77180fe24786"
+    }
+  ],
+  "provenance": [
+    {
+      "path": "provenance/native-metadata-preparation/staging.json",
+      "source": "E/recovery/native-metadata-preparation/staging.json",
+      "bytes": 4426,
+      "sha256": "d222670840496d7a424246fc68aeee00fd6c525e14d3d3077eb3deb791a13234",
+      "inert": true
+    },
+    {
+      "path": "provenance/native-metadata-preparation/root-verification.json",
+      "source": "E/recovery/native-metadata-preparation/root-verification.json",
+      "bytes": 670,
+      "sha256": "dfe7d6f6ec757aa86bcf440d84302b4ea7af1e5132be3280d867afdf7a9d2215",
+      "inert": true
+    },
+    {
+      "path": "provenance/native-metadata-preparation/resolution-validation.json",
+      "source": "E/recovery/native-metadata-preparation/resolution-validation.json",
+      "bytes": 93707,
+      "sha256": "bbda5fc277758990b1efcd0d360ee0f74e39ea3c1d10fb61a834ebe7f5c78420",
+      "inert": true
+    },
+    {
+      "path": "provenance/native-metadata-preparation/root-disposition.md",
+      "source": "E/recovery/native-metadata-preparation/root-disposition.md",
+      "bytes": 1727,
+      "sha256": "971197a3657a760e9287ef17f7bcd3d4ed4417123c3c984d6db9e59c2a9f43b2",
+      "inert": true
+    },
+    {
+      "path": "provenance/finite-fixture-recovery/root-verification.json",
+      "source": "E/recovery/finite-fixture-recovery/root-verification.json",
+      "bytes": 5907,
+      "sha256": "f517a500a3c7fcb5bcce093b7d9ffbc4d4cc70cef159083b421e5eabfa83db81",
+      "inert": true
+    },
+    {
+      "path": "provenance/finite-fixture-recovery/comparisons-final.json",
+      "source": "E/recovery/finite-fixture-recovery/comparisons-final.json",
+      "bytes": 29164,
+      "sha256": "ed4c378564ddaab9c6307980701956beb7ffeda547035dbb82facf55956e41fa",
+      "inert": true
+    },
+    {
+      "path": "provenance/finite-fixture-recovery/root-disposition.md",
+      "source": "E/recovery/finite-fixture-recovery/root-disposition.md",
+      "bytes": 1937,
+      "sha256": "0c60a7c3041ca027c05d5dd0eb2c28a631364d31defbfeb1484531acc7071913",
+      "inert": true
+    }
+  ],
+  "constructors": {
+    "N": "rollout-2026-11-15T04-21-48-01a1dd39-b15a-7d81-8fd7-88749972204b.jsonl:68,148,187,221",
+    "T1": "rollout-2026-11-15T01-04-26-01a1dc84-fffe-7f03-bcfb-bae4fa04c6b8.jsonl:74,88",
+    "T2": "rollout-2026-11-15T01-31-45-01a1dc9e-02bf-70e3-8a59-6581e0ec82fb.jsonl:90"
+  },
+  "historical": {
+    "matrix_input": "bb4d75ea9bd6d18b42b5bc24eddfe1f4378f947aea6d572172828a9f226432d9",
+    "matrix_output": "5c0aa4104a2e34dfdbad2e7d7a72dc9b1926de887c6a1b82ff1828ceef56b75f",
+    "wrapper_raw": "9596a90312891c2a348f0089bfff9f739f5e2dfcb82a8d54f532aea10fcbcba8"
+  }
+}

@@ -1,0 +1,631 @@
+{
+  "status": "DONE",
+  "started_utc": "2026-11-15T18:52:54.981837+00:00",
+  "python": "3.14.5",
+  "cwd": "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline",
+  "env_keys": [
+    "LC_CTYPE",
+    "__CF_USER_TEXT_ENCODING"
+  ],
+  "modules": {
+    "coverage_contract.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_contract.py.txt",
+      "bytes_sha256": [
+        7799,
+        "5b9de5eb84c08f69ac7cd47d649c58972ee7f0a13a70b85518125d3025ce3d10"
+      ],
+      "imports": [
+        "dataclasses",
+        "re"
+      ]
+    },
+    "coverage_json.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_json.py.txt",
+      "bytes_sha256": [
+        7057,
+        "67a8f3ae2dbc75eaca2d55f0dcf6397c00c2c6b9e31383141d5a935809301bf9"
+      ],
+      "imports": [
+        "json",
+        "math",
+        "re",
+        "coverage_contract"
+      ]
+    },
+    "coverage_index.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_index.py.txt",
+      "bytes_sha256": [
+        1669,
+        "b2170f02085b34e82cf2d6afc6d7a9761e410bed8bf48c4e8b09250cf46e6134"
+      ],
+      "imports": [
+        "dataclasses",
+        "coverage_contract"
+      ]
+    },
+    "coverage_compile.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_compile.py.txt",
+      "bytes_sha256": [
+        11111,
+        "1923f5920e6724499880624f3b3ff0fed5342cbc4a09f4e24a7c7424ccc80788"
+      ],
+      "imports": [
+        "dataclasses",
+        "hashlib",
+        "json",
+        "coverage_contract",
+        "coverage_index",
+        "coverage_json"
+      ]
+    },
+    "coverage_requests.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_requests.py.txt",
+      "bytes_sha256": [
+        15066,
+        "84b79c8de00b644744721e0166ea0f7b29675b83e316ed8679d828944c6797d3"
+      ],
+      "imports": [
+        "json",
+        "re",
+        "dataclasses",
+        "hashlib",
+        "coverage_contract",
+        "coverage_index",
+        "coverage_json"
+      ]
+    },
+    "coverage_response.py": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_response.py.txt",
+      "bytes_sha256": [
+        15395,
+        "bc9ab57b870622cea76aca8ebdd19ea8a97bf1d6d2dfe472d883b22cc759bd36"
+      ],
+      "imports": [
+        "re",
+        "dataclasses",
+        "typing",
+        "coverage_compile",
+        "coverage_contract",
+        "coverage_index",
+        "coverage_json",
+        "coverage_requests"
+      ]
+    }
+  },
+  "fixture_archive_inputs": {
+    "contract/private-draft.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/contract/private-draft.json.txt",
+      "bytes_sha256": [
+        1186,
+        "b2185929c79790d46023802652647ee666b1663db241ab225301f242f0f96726"
+      ]
+    },
+    "contract/public-draft.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/contract/public-draft.json.txt",
+      "bytes_sha256": [
+        316,
+        "06fe04e8dfbc0e2c105d535d75f7136ae19776b927b8e8b8b164023beed5ceb0"
+      ]
+    },
+    "native/content.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/content.json.txt",
+      "bytes_sha256": [
+        1092,
+        "16594a59bcf3d1d23b263ac619c8cd563f40eaa61cad88b18ac6364cccdee234"
+      ]
+    },
+    "native/matrix-golden.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/matrix-golden.json.txt",
+      "bytes_sha256": [
+        211,
+        "bad8a589143916640368f7e29682f46ad8618b022403db5329cd63ccad05fc73"
+      ]
+    },
+    "native/wrapper-golden.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/wrapper-golden.json.txt",
+      "bytes_sha256": [
+        811,
+        "74d7cc4167ea0e5c745ac31f2abc8881c4a0d052e359aef6b7665307eb111a4f"
+      ]
+    },
+    "requests/context-correction.txt": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/context-correction.txt.txt",
+      "bytes_sha256": [
+        692,
+        "0f74dda8407180d34b12a92da5d2a4373835f4a9247ecf5c926df82fc2f0027e"
+      ]
+    },
+    "requests/private-instruction.txt": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/private-instruction.txt.txt",
+      "bytes_sha256": [
+        2587,
+        "ee814223f80eb751f001d4f94c14cfd274e6b83042ffddb665f13e8574c6d3c7"
+      ]
+    },
+    "requests/contract-appendix.txt": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/contract-appendix.txt.txt",
+      "bytes_sha256": [
+        3236,
+        "1b8eeb68ab5392250d89578118ea1016cd8ff873f1a2fe46b6b3414f07a474b4"
+      ]
+    },
+    "requests/native-prompt-parts.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/native-prompt-parts.json.txt",
+      "bytes_sha256": [
+        2199,
+        "23f40b847c776b6012b455ba7e02f5adc41970917e3d07dde6584c3235d2290e"
+      ]
+    },
+    "requests/baseline-options.json": {
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/metadata-archive/baseline-options.json.txt",
+      "bytes_sha256": [
+        276,
+        "1d004805392c2de6ea7aa4e121ec466790962aba2033df3bfe99138b8ca0cc6d"
+      ]
+    }
+  },
+  "comparisons": {
+    "contract/baseline-public-schema.json": {
+      "expected": [
+        1116,
+        "2baa7451a3d98f0d2f64ba64de48b04c6e357cc81a787ece123469db27121db7"
+      ],
+      "actual": [
+        1116,
+        "2baa7451a3d98f0d2f64ba64de48b04c6e357cc81a787ece123469db27121db7"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/contract--baseline-public-schema.json.txt"
+    },
+    "requests/baseline-initial.json": {
+      "expected": [
+        11397,
+        "c42450c38234844f9c3d6e351b4b561981edacf1404705a935e32534002ae410"
+      ],
+      "actual": [
+        11397,
+        "c42450c38234844f9c3d6e351b4b561981edacf1404705a935e32534002ae410"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/requests--baseline-initial.json.txt"
+    },
+    "requests/baseline-initial-count.json": {
+      "expected": [
+        11278,
+        "356c1a2256d9fdf21c164c97094a43428fd72c2115320fa00dc9f3db4b29e86d"
+      ],
+      "actual": [
+        11278,
+        "356c1a2256d9fdf21c164c97094a43428fd72c2115320fa00dc9f3db4b29e86d"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/requests--baseline-initial-count.json.txt"
+    },
+    "requests/baseline-repair.json": {
+      "expected": [
+        11556,
+        "85efea398e1ec226d4f6019dc8fdc4929d80fbb5bd8c8b59e072b3a74447d9f2"
+      ],
+      "actual": [
+        11556,
+        "85efea398e1ec226d4f6019dc8fdc4929d80fbb5bd8c8b59e072b3a74447d9f2"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/requests--baseline-repair.json.txt"
+    },
+    "requests/baseline-repair-count.json": {
+      "expected": [
+        11437,
+        "63ae419dccdff92d751d16e5b89548022253d5c5b45859be2d17942219b08044"
+      ],
+      "actual": [
+        11437,
+        "63ae419dccdff92d751d16e5b89548022253d5c5b45859be2d17942219b08044"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/requests--baseline-repair-count.json.txt"
+    },
+    "requests/manifest.json": {
+      "expected": [
+        44573,
+        "d1f2b401a308410f73395ee3a4d7caee7ca884ebac8dc449aa8a77180fe24786"
+      ],
+      "actual": [
+        44573,
+        "d1f2b401a308410f73395ee3a4d7caee7ca884ebac8dc449aa8a77180fe24786"
+      ],
+      "archive": "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/finite-fixture-recovery/requests--manifest.json.txt"
+    }
+  },
+  "staged": {
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_contract.py": [
+      7799,
+      "5b9de5eb84c08f69ac7cd47d649c58972ee7f0a13a70b85518125d3025ce3d10"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_json.py": [
+      7057,
+      "67a8f3ae2dbc75eaca2d55f0dcf6397c00c2c6b9e31383141d5a935809301bf9"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_index.py": [
+      1669,
+      "b2170f02085b34e82cf2d6afc6d7a9761e410bed8bf48c4e8b09250cf46e6134"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_compile.py": [
+      11111,
+      "1923f5920e6724499880624f3b3ff0fed5342cbc4a09f4e24a7c7424ccc80788"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_requests.py": [
+      15066,
+      "84b79c8de00b644744721e0166ea0f7b29675b83e316ed8679d828944c6797d3"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_response.py": [
+      15395,
+      "bc9ab57b870622cea76aca8ebdd19ea8a97bf1d6d2dfe472d883b22cc759bd36"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/private-draft.json": [
+      1186,
+      "b2185929c79790d46023802652647ee666b1663db241ab225301f242f0f96726"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/public-draft.json": [
+      316,
+      "06fe04e8dfbc0e2c105d535d75f7136ae19776b927b8e8b8b164023beed5ceb0"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/content.json": [
+      1092,
+      "16594a59bcf3d1d23b263ac619c8cd563f40eaa61cad88b18ac6364cccdee234"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/matrix-golden.json": [
+      211,
+      "bad8a589143916640368f7e29682f46ad8618b022403db5329cd63ccad05fc73"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/wrapper-golden.json": [
+      811,
+      "74d7cc4167ea0e5c745ac31f2abc8881c4a0d052e359aef6b7665307eb111a4f"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/context-correction.txt": [
+      692,
+      "0f74dda8407180d34b12a92da5d2a4373835f4a9247ecf5c926df82fc2f0027e"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/private-instruction.txt": [
+      2587,
+      "ee814223f80eb751f001d4f94c14cfd274e6b83042ffddb665f13e8574c6d3c7"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/contract-appendix.txt": [
+      3236,
+      "1b8eeb68ab5392250d89578118ea1016cd8ff873f1a2fe46b6b3414f07a474b4"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/native-prompt-parts.json": [
+      2199,
+      "23f40b847c776b6012b455ba7e02f5adc41970917e3d07dde6584c3235d2290e"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-options.json": [
+      276,
+      "1d004805392c2de6ea7aa4e121ec466790962aba2033df3bfe99138b8ca0cc6d"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/baseline-public-schema.json": [
+      1116,
+      "2baa7451a3d98f0d2f64ba64de48b04c6e357cc81a787ece123469db27121db7"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial.json": [
+      11397,
+      "c42450c38234844f9c3d6e351b4b561981edacf1404705a935e32534002ae410"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial-count.json": [
+      11278,
+      "356c1a2256d9fdf21c164c97094a43428fd72c2115320fa00dc9f3db4b29e86d"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair.json": [
+      11556,
+      "85efea398e1ec226d4f6019dc8fdc4929d80fbb5bd8c8b59e072b3a74447d9f2"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair-count.json": [
+      11437,
+      "63ae419dccdff92d751d16e5b89548022253d5c5b45859be2d17942219b08044"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/manifest.json": [
+      44573,
+      "d1f2b401a308410f73395ee3a4d7caee7ca884ebac8dc449aa8a77180fe24786"
+    ]
+  },
+  "native_before": {
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.toml": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.lock": [
+      13676,
+      "a78dcb39e5e302086a11c214800ab6875a07d4d7413ce428e1e0d068ab3c0718"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/build_pinned.py": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/src/main.rs": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/docs/superpowers/specs/coverage-v1.md": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "/private/tmp/selahcue-notes-coverage-spec-20261114.md": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "/private/tmp/selahcue-notes-native-input-pin-20261115.json": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-target/.rustc_info.json": [
+      1968,
+      "bd569e9d59c2ecc60d0e970e20416ba21da18061576de993f2c74dd2c60b6dfc"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home/registry/CACHEDIR.TAG": [
+      177,
+      "6d9d1d216e0f83abc5e5662ca62c92b4f23009466b54fa27321a69acdb778bb2"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target": [
+      16777234,
+      231835270
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-target": [
+      16777234,
+      231835273
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home": [
+      16777234,
+      231835274
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home/registry": [
+      16777234,
+      231835275
+    ]
+  },
+  "protected_request_before": [
+    3075,
+    "51149590fee8f68be3a584488258e3de51f7431a1c26440f66fb5d9c54c127a0"
+  ],
+  "compact_baseline_schema_pins": {
+    "expected": {
+      "private": "b55867c8c3fecb8bbf64d3d79d5d1f8ac778c9995e4a6745985cb0e6b59f1441",
+      "public": "65c5f9e5c2837549dcf27df32bb757bda86950ff31d4c14ac0eb178342971c68"
+    },
+    "actual": {
+      "private": "b55867c8c3fecb8bbf64d3d79d5d1f8ac778c9995e4a6745985cb0e6b59f1441",
+      "public": "65c5f9e5c2837549dcf27df32bb757bda86950ff31d4c14ac0eb178342971c68"
+    }
+  },
+  "matrix": {
+    "rows": 1030,
+    "module_replay_rows": 1030,
+    "prompt_variants": 30,
+    "digests_expected": {
+      "options": "d7fbc229f5f2c866f75dc03ec628e69b050f5401bd5dc7eb6ea6309e12060fdd",
+      "private_schema": "03f6e637a09d46480c51a53fc535fc2542bd919502a57d1866e9165e84fdedbb",
+      "public_schema": "78c222f2ec8ad7bc1d8798cd2fd22c66886f18e625e716871694cec8d00f0750",
+      "initial_generation": "4aa3e439da626c4891715342c5c4884f70185003d21afddb03a4c40ac4d85205",
+      "initial_count": "66592f1a34a96d383cc7b6775dbdd5e9ff733cc68ef6e24b312ecd85c24acbe0",
+      "repair_generation": "051c495934db156fb98ecb7a54d1cc0a315617c27349063ef2e25eb9e36f2807",
+      "repair_count": "a5edd3b9b61509847288783699ca49445864a756804b6d327dc13375e86d0e30"
+    },
+    "digests_actual": {
+      "options": "d7fbc229f5f2c866f75dc03ec628e69b050f5401bd5dc7eb6ea6309e12060fdd",
+      "private_schema": "03f6e637a09d46480c51a53fc535fc2542bd919502a57d1866e9165e84fdedbb",
+      "public_schema": "78c222f2ec8ad7bc1d8798cd2fd22c66886f18e625e716871694cec8d00f0750",
+      "initial_generation": "4aa3e439da626c4891715342c5c4884f70185003d21afddb03a4c40ac4d85205",
+      "initial_count": "66592f1a34a96d383cc7b6775dbdd5e9ff733cc68ef6e24b312ecd85c24acbe0",
+      "repair_generation": "051c495934db156fb98ecb7a54d1cc0a315617c27349063ef2e25eb9e36f2807",
+      "repair_count": "a5edd3b9b61509847288783699ca49445864a756804b6d327dc13375e86d0e30"
+    }
+  },
+  "archive_readback": {
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_contract.py.txt": [
+      7799,
+      "5b9de5eb84c08f69ac7cd47d649c58972ee7f0a13a70b85518125d3025ce3d10"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_json.py.txt": [
+      7057,
+      "67a8f3ae2dbc75eaca2d55f0dcf6397c00c2c6b9e31383141d5a935809301bf9"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_index.py.txt": [
+      1669,
+      "b2170f02085b34e82cf2d6afc6d7a9761e410bed8bf48c4e8b09250cf46e6134"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_compile.py.txt": [
+      11111,
+      "1923f5920e6724499880624f3b3ff0fed5342cbc4a09f4e24a7c7424ccc80788"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_requests.py.txt": [
+      15066,
+      "84b79c8de00b644744721e0166ea0f7b29675b83e316ed8679d828944c6797d3"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/pure-core-archive/coverage_response.py.txt": [
+      15395,
+      "bc9ab57b870622cea76aca8ebdd19ea8a97bf1d6d2dfe472d883b22cc759bd36"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/contract/private-draft.json.txt": [
+      1186,
+      "b2185929c79790d46023802652647ee666b1663db241ab225301f242f0f96726"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/contract/public-draft.json.txt": [
+      316,
+      "06fe04e8dfbc0e2c105d535d75f7136ae19776b927b8e8b8b164023beed5ceb0"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/content.json.txt": [
+      1092,
+      "16594a59bcf3d1d23b263ac619c8cd563f40eaa61cad88b18ac6364cccdee234"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/matrix-golden.json.txt": [
+      211,
+      "bad8a589143916640368f7e29682f46ad8618b022403db5329cd63ccad05fc73"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/native/wrapper-golden.json.txt": [
+      811,
+      "74d7cc4167ea0e5c745ac31f2abc8881c4a0d052e359aef6b7665307eb111a4f"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/context-correction.txt.txt": [
+      692,
+      "0f74dda8407180d34b12a92da5d2a4373835f4a9247ecf5c926df82fc2f0027e"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/private-instruction.txt.txt": [
+      2587,
+      "ee814223f80eb751f001d4f94c14cfd274e6b83042ffddb665f13e8574c6d3c7"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/contract-appendix.txt.txt": [
+      3236,
+      "1b8eeb68ab5392250d89578118ea1016cd8ff873f1a2fe46b6b3414f07a474b4"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/task1-fixtures-archive/requests/native-prompt-parts.json.txt": [
+      2199,
+      "23f40b847c776b6012b455ba7e02f5adc41970917e3d07dde6584c3235d2290e"
+    ],
+    "/Users/m.oluwole/.codex/visualizations/2026/11/14/01a1d9e8-f42c-7583-89ee-386ea3167ba8/recovery/metadata-archive/baseline-options.json.txt": [
+      276,
+      "1d004805392c2de6ea7aa4e121ec466790962aba2033df3bfe99138b8ca0cc6d"
+    ]
+  },
+  "staged_readback": {
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_contract.py": [
+      7799,
+      "5b9de5eb84c08f69ac7cd47d649c58972ee7f0a13a70b85518125d3025ce3d10"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_json.py": [
+      7057,
+      "67a8f3ae2dbc75eaca2d55f0dcf6397c00c2c6b9e31383141d5a935809301bf9"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_index.py": [
+      1669,
+      "b2170f02085b34e82cf2d6afc6d7a9761e410bed8bf48c4e8b09250cf46e6134"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_compile.py": [
+      11111,
+      "1923f5920e6724499880624f3b3ff0fed5342cbc4a09f4e24a7c7424ccc80788"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_requests.py": [
+      15066,
+      "84b79c8de00b644744721e0166ea0f7b29675b83e316ed8679d828944c6797d3"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/coverage_response.py": [
+      15395,
+      "bc9ab57b870622cea76aca8ebdd19ea8a97bf1d6d2dfe472d883b22cc759bd36"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/private-draft.json": [
+      1186,
+      "b2185929c79790d46023802652647ee666b1663db241ab225301f242f0f96726"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/public-draft.json": [
+      316,
+      "06fe04e8dfbc0e2c105d535d75f7136ae19776b927b8e8b8b164023beed5ceb0"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/content.json": [
+      1092,
+      "16594a59bcf3d1d23b263ac619c8cd563f40eaa61cad88b18ac6364cccdee234"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/matrix-golden.json": [
+      211,
+      "bad8a589143916640368f7e29682f46ad8618b022403db5329cd63ccad05fc73"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/native/wrapper-golden.json": [
+      811,
+      "74d7cc4167ea0e5c745ac31f2abc8881c4a0d052e359aef6b7665307eb111a4f"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/context-correction.txt": [
+      692,
+      "0f74dda8407180d34b12a92da5d2a4373835f4a9247ecf5c926df82fc2f0027e"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/private-instruction.txt": [
+      2587,
+      "ee814223f80eb751f001d4f94c14cfd274e6b83042ffddb665f13e8574c6d3c7"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/contract-appendix.txt": [
+      3236,
+      "1b8eeb68ab5392250d89578118ea1016cd8ff873f1a2fe46b6b3414f07a474b4"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/native-prompt-parts.json": [
+      2199,
+      "23f40b847c776b6012b455ba7e02f5adc41970917e3d07dde6584c3235d2290e"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-options.json": [
+      276,
+      "1d004805392c2de6ea7aa4e121ec466790962aba2033df3bfe99138b8ca0cc6d"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/contract/baseline-public-schema.json": [
+      1116,
+      "2baa7451a3d98f0d2f64ba64de48b04c6e357cc81a787ece123469db27121db7"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial.json": [
+      11397,
+      "c42450c38234844f9c3d6e351b4b561981edacf1404705a935e32534002ae410"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-initial-count.json": [
+      11278,
+      "356c1a2256d9fdf21c164c97094a43428fd72c2115320fa00dc9f3db4b29e86d"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair.json": [
+      11556,
+      "85efea398e1ec226d4f6019dc8fdc4929d80fbb5bd8c8b59e072b3a74447d9f2"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/baseline-repair-count.json": [
+      11437,
+      "63ae419dccdff92d751d16e5b89548022253d5c5b45859be2d17942219b08044"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/fixtures/requests/manifest.json": [
+      44573,
+      "d1f2b401a308410f73395ee3a4d7caee7ca884ebac8dc449aa8a77180fe24786"
+    ]
+  },
+  "native_after": {
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.toml": [
+      751,
+      "71cd48fb470a9fe9cb3fef092b46878429a7f9e4fc985651bfe5cf0f15344ef3"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/Cargo.lock": [
+      13676,
+      "a78dcb39e5e302086a11c214800ab6875a07d4d7413ce428e1e0d068ab3c0718"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/build_pinned.py": [
+      8731,
+      "9330b76280f088fa49d1260e485c76ea6d5d144d3b25535fb4bcc4f73ed51484"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/native-golden/src/main.rs": [
+      8490,
+      "fce22c69defa8cd1e98150f8791a1a6f3a9939d6f709043d2fb8eb38834b8da5"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/docs/superpowers/specs/coverage-v1.md": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "/private/tmp/selahcue-notes-coverage-spec-20261114.md": [
+      58562,
+      "e27c305d911e5087539666087d299b15af52ea70aeadb9a9b1fba122bc5d85bd"
+    ],
+    "/private/tmp/selahcue-notes-native-input-pin-20261115.json": [
+      14771,
+      "f3f6dbb0f33098d5e723701c3d1cdb7f0f9f157242fb0bd55a47b434d06b864f"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-target/.rustc_info.json": [
+      1968,
+      "bd569e9d59c2ecc60d0e970e20416ba21da18061576de993f2c74dd2c60b6dfc"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home/registry/CACHEDIR.TAG": [
+      177,
+      "6d9d1d216e0f83abc5e5662ca62c92b4f23009466b54fa27321a69acdb778bb2"
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target": [
+      16777234,
+      231835270
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-target": [
+      16777234,
+      231835273
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home": [
+      16777234,
+      231835274
+    ],
+    "/private/tmp/selahcue-provider-spike-20261114/notes-coverage-v1-offline/.native-target/cargo-home/registry": [
+      16777234,
+      231835275
+    ]
+  },
+  "protected_request_after": [
+    3075,
+    "51149590fee8f68be3a584488258e3de51f7431a1c26440f66fb5d9c54c127a0"
+  ],
+  "finished_utc": "2026-11-15T18:52:55.564580+00:00"
+}

@@ -1,0 +1,30 @@
+{
+  "sections": {
+    "title": " Á 🥁 ",
+    "main_scripture": "",
+    "supporting_scriptures": [],
+    "illustrations": [],
+    "quotes": ["Pause here."],
+    "prayer_points": [],
+    "calls_to_action": [],
+    "key_lessons": [],
+    "chapter_markers": [],
+    "introduction": [],
+    "summary": "  A summary\t"
+  },
+  "schema_version": "1",
+  "outcome": "complete",
+  "failure_code": "none",
+  "teachings": [
+    {"id": "T000", "kind": "movement", "text": "  Remain steady.\n", "source_blocks": ["B0000"]},
+    {"id": "T001", "kind": "application", "text": "Listen \u001c closely.", "source_blocks": ["B0000"]}
+  ],
+  "source_dispositions": [{"block_id": "B0000", "teaching_ids": ["T000", "T001"], "section_paths": ["/quotes/0", "/summary", "/title"], "excluded_reasons": ["optional_detail"], "repeats_teaching_ids": []}],
+  "outline": [{"teaching_id": "T000", "sub_point_ids": ["T001"]}],
+  "section_links": [
+    {"path": "/quotes/0", "source_blocks": ["B0000"]},
+    {"path": "/summary", "source_blocks": ["B0000"]},
+    {"path": "/title", "source_blocks": ["B0000"]}
+  ],
+  "quote_spans": [{"quote_index": 0, "first_block": "B0000", "last_block": "B0000", "occurrence": 1}]
+}

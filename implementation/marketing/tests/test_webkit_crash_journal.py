@@ -20,7 +20,7 @@ from unittest.mock import patch
 
 
 COLLECTOR = Path(__file__).resolve().parents[1] / "scripts" / "webkit_crash_journal.py"
-BUNDLE_BIN = "/home/runner/.cache/ms-playwright/webkit-2311/minibrowser-wpe/bin"
+BUNDLE_BIN = "/home/runner/.cache/ms-playwright/webkit-2388/minibrowser-wpe/bin"
 SINCE = "1794837000"
 UNTIL = "1794837060"
 CRASH = "1794837031000000"
@@ -204,7 +204,7 @@ class CrashJournalCLI(unittest.TestCase):
             row(12, "/usr/bin/WPEWebProcess"),
             row(13, f"{BUNDLE_BIN}/../unexpected/WPEWebProcess"),
             row(14, f"{BUNDLE_BIN}/RandomProcess"),
-            row(15, f"{BUNDLE_BIN.replace('2311', '2312')}/WPEWebProcess"),
+            row(15, "/home/runner/.cache/ms-playwright/webkit-2311/minibrowser-wpe/bin/WPEWebProcess"),
             row(16, f"{BUNDLE_BIN}/MiniBrowser", "1794837000000000"),
             row(17, f"{BUNDLE_BIN}/WPENetworkProcess", "1794837060000000"),
             row(18, f"{BUNDLE_BIN}/WPEGPUProcess"),
@@ -522,7 +522,7 @@ class CrashJournalCLI(unittest.TestCase):
             "profile": "webkit", "checkout_sha": "a" * 40, "tree_sha": "b" * 40,
             "candidate_source_sha": "c" * 40, "run_id": "9" * 20, "run_attempt": "9" * 20,
             "kernel_release": "x" * 64, "systemd_version": "9" * 10,
-            "playwright_version": "1.61.0", "webkit_revision": "2311", "lock_sha256": "f" * 64,
+            "playwright_version": "1.65.2", "webkit_revision": "2388", "lock_sha256": "f" * 64,
         }
         indexed["kernel_rejection_stage"] = "mixed"
         export = collector["export"]
@@ -1659,8 +1659,8 @@ class SourceReceipt(unittest.TestCase):
         self.assertEqual(result.get("systemd_version"), "259")
         self.assertEqual(result.get("profile"), "webkit")
         self.assertEqual(result.get("job"), "marketing")
-        self.assertEqual(result.get("playwright_version"), "1.61.0")
-        self.assertEqual(result.get("webkit_revision"), "2311")
+        self.assertEqual(result.get("playwright_version"), "1.65.2")
+        self.assertEqual(result.get("webkit_revision"), "2388")
         self.assertEqual(result.get("lock_sha256"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         self.assertTrue(result.get("complete"))
         self.assertEqual(self.witness.read_text().splitlines(), ["git", "systemd"])
@@ -1760,6 +1760,17 @@ class SourceReceipt(unittest.TestCase):
         result = self.collector["summary"]("available")
         self.collector["collect"](result, jsonl(joining_record()), False, int(SINCE), int(UNTIL))
         self.collector["attach_kernel"](result, "available", jsonl(kernel_row()), False, True)
+        result["source_receipt"] = {
+            "profile": "webkit", "checkout_sha": "a" * 40, "tree_sha": "b" * 40,
+            "candidate_source_sha": "c" * 40, "run_id": "12345", "run_attempt": "2",
+            "kernel_release": "6.8.0-fixture", "systemd_version": "259", "lock_sha256": "f" * 64,
+            "playwright_version": "1.61.0", "webkit_revision": "2311", "complete": True,
+        }
+        safe = json.loads(self.collector["encode_export"](result))
+        self.assertIsNone(safe["source_receipt"]["playwright_version"])
+        self.assertIsNone(safe["source_receipt"]["webkit_revision"])
+        self.assertFalse(safe["source_receipt"]["complete"])
+
         result["source_receipt"] = {"profile": "webkit", "checkout_sha": SECRET, "arbitrary": SECRET,
                                     "kernel_release": "x/" + SECRET, "job": SECRET, "complete": True}
         result["kernel_rejection_stage"] = SECRET
