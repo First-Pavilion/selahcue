@@ -15,7 +15,7 @@ from selahcue_api.apps.accounts.services import (
     revoke_native_session as _logout_session_service,
 )
 from selahcue_api.apps.devices.bound_activation import (
-    BoundActivationData, BoundEnrollmentData, CompletedActivationReceipt,
+    BoundActivationData, BoundActivationError, BoundEnrollmentData, CompletedActivationReceipt,
     activate_bound_with_key, activate_bound_with_session,
 )
 from selahcue_api.apps.devices.services import (
@@ -399,17 +399,18 @@ def _bound_activation(request, *, session: bool):
     except CompletedActivationReceipt as completed:
         payload = {
             "error": {"code": completed.code.value, "message": SAFE_MESSAGES[completed.code]},
-            "surface": "desktop", "operation": operation, "operation_version": 1,
+            "surface": "desktop", "operation": operation, "operation_version": completed.operation_version,
             "completed_activation": completed.identity,
         }
         assert_no_restricted_payload_fields(payload)
         return _no_store(JsonResponse(payload, status=409))
     except SafeAPIError as error:
         return _no_store(command_error_response(
-            code=error.code, surface="desktop", operation=operation, operation_version=1,
+            code=error.code, surface="desktop", operation=operation,
+            operation_version=error.operation_version if isinstance(error, BoundActivationError) else 1,
         ))
     payload = _activation_payload(result.activation, operation=operation)
-    payload.update(operation_version=1, idempotency_key=result.idempotency_key,
+    payload.update(operation_version=result.operation_version, idempotency_key=result.idempotency_key,
                    operation_state=result.operation_state)
     return _no_store(JsonResponse(payload))
 

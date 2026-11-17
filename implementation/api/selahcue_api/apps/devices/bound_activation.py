@@ -55,13 +55,22 @@ class BoundActivationResult:
     activation: ActivateDeviceResult
     idempotency_key: str
     operation_state: str
+    operation_version: int
 
 
-class CompletedActivationReceipt(SafeAPIError):
+class BoundActivationError(SafeAPIError):
+    """A safe refusal after the request's protocol version has been validated."""
+
+    def __init__(self, code: ErrorCode, operation_version: int):
+        super().__init__(code)
+        self.operation_version = operation_version
+
+
+class CompletedActivationReceipt(BoundActivationError):
     """Authenticated proof of a completed operation whose token is unusable."""
 
-    def __init__(self, receipt: DeviceActivationOperation, device: Device):
-        super().__init__(ErrorCode.ACTIVATION_OPERATION_COMPLETED)
+    def __init__(self, receipt: DeviceActivationOperation, device: Device, *, operation_version: int):
+        super().__init__(ErrorCode.ACTIVATION_OPERATION_COMPLETED, operation_version)
         self.identity = {
             "idempotency_key": receipt.operation_key,
             "device_public_id": device.device_public_id,
@@ -73,11 +82,12 @@ def _conflict():
     return SafeAPIError(ErrorCode.ACTIVATION_OPERATION_CONFLICT)
 
 
-def _normalized(data: BoundActivationData) -> BoundActivationData:
+def _normalized(data: BoundActivationData, *, account_session: bool = False) -> BoundActivationData:
     expected = data.expected_device_public_id
     if (
         type(data.operation_version) is not int
-        or data.operation_version != 1
+        or data.operation_version not in ((1, 2) if account_session else (1,))
+        or (data.operation_version == 2 and data.mode != "recover")
         or not isinstance(data.idempotency_key, str)
         or re.fullmatch(r"[a-f0-9]{32}", data.idempotency_key) is None
         or not (
@@ -88,7 +98,7 @@ def _normalized(data: BoundActivationData) -> BoundActivationData:
     ):
         raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
     nonce, fingerprint, platform, version, name = _activation_metadata(data)
-    return BoundActivationData(1, data.mode, nonce, expected, fingerprint, platform, version, name)
+    return BoundActivationData(data.operation_version, data.mode, nonce, expected, fingerprint, platform, version, name)
 
 
 def activate_bound_with_key(data: BoundEnrollmentData) -> BoundActivationResult:
@@ -100,7 +110,8 @@ def activate_bound_with_key(data: BoundEnrollmentData) -> BoundActivationResult:
 
 def activate_bound_with_session(actor: ActorContext | None, data: BoundActivationData) -> BoundActivationResult:
     checked = require_customer_role(actor, CustomerRole.ADMIN)
-    return _complete(_normalized(data), int(checked.org_id), "account_session", actor=checked)
+    request = _normalized(data, account_session=True)
+    return _complete(request, int(checked.org_id), "account_session", actor=checked)
 
 
 def _complete(data, org_id, auth_path, *, enrollment=None, actor=None):
@@ -119,7 +130,11 @@ def _complete(data, org_id, auth_path, *, enrollment=None, actor=None):
             return _transaction(data, org_id, auth_path, digest, enrollment=enrollment, actor=actor)
     except FreeRenewalDenied as error:
         error.audit()
+        raise BoundActivationError(error.code, data.operation_version) from error
+    except CompletedActivationReceipt:
         raise
+    except SafeAPIError as error:
+        raise BoundActivationError(error.code, data.operation_version) from error
 
 
 def _verify_receipt(receipt, org_id, auth_path, digest, enrollment):
@@ -187,13 +202,13 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
                 )
                 if not may_recover:
                     require_commercial_service(license_key)
-            raise CompletedActivationReceipt(receipt, device)
+            raise CompletedActivationReceipt(receipt, device, operation_version=data.operation_version)
         if actor is not None:
             if _locked_marker(customer, license_key) is not None:
                 _authorize_managed_activation(customer, actor)
             require_commercial_service(license_key)
         activation = ActivateDeviceResult(device, token, license_key, None, False)
-        return BoundActivationResult(activation, data.idempotency_key, "replay")
+        return BoundActivationResult(activation, data.idempotency_key, "replay", data.operation_version)
 
     if data.expected_device_public_id is not None:
         device = devices.filter(device_public_id=data.expected_device_public_id).first()
@@ -206,7 +221,8 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
             require_commercial_service(license_key)
         activation = _existing_device_result(
             device, license_key, idempotency_key=data.idempotency_key,
-            audit_actor=actor, source_surface="desktop_v1", lock_result_token=True,
+            audit_actor=actor, source_surface="desktop_v1",
+            replace_token=data.operation_version == 2, lock_result_token=True,
         )
     else:
         # Legacy creation keys are scoped to a licence. If a stored creation key
@@ -243,7 +259,7 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
         ),
         completed_at=timezone.now(),
     )
-    return BoundActivationResult(activation, data.idempotency_key, "completed")
+    return BoundActivationResult(activation, data.idempotency_key, "completed", data.operation_version)
 
 
 def _verify_device(data, device):

@@ -14,47 +14,70 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 - **Device activation** `POST /v1/activations` — enrollment-key authed, instance-limit enforced, show-once device token
 - **Account-based activation** `activateDeviceWithSession` (GraphQL, ADMIN-only per DEC-005)
 - **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls (`selahcue-licensing`, ClickUp 17tnw2b1we2); it never calls `/graphql/account`, which authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. These routes and the single-session cleanup route below are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
-- **License refresh** `POST /v1/license:refresh` — device-token authed; reports status and rotates a still-live token after a valid licence extension (FR-509)
+- **License refresh** `POST /v1/license:refresh` — device-token authed; reports status, with explicitly negotiated staff-extension rotation (FR-509)
+- **Bound activation/recovery** `POST /v1/activations:bound` (v1 enrollment) and `/v1/activations:bound-with-session` (v1 activation/recovery; v2 explicit ADMIN credential replacement) — immutable, no-secret replay receipts
 - **Signed offline entitlement** `GET /v1/entitlements/manifest` — see below
 
 ## Live-token renewal and response-loss recovery (FR-509)
 
-`POST /v1/license:refresh` keeps the existing response fields. When a still-live device
-credential expires before its currently valid licence, the response additionally contains
-`activation_token`, using activation's existing show-once field name. `token.expires_at`
-then names the replacement's expiry. The old token is REVOKED in the same transaction
-as replacement issuance and its audit. Persist the new credential securely before the
-next API call; do not log the response. Responses use `Cache-Control: no-store`.
-Ordinary status reads return no `activation_token`. Expired/revoked tokens and revoked
-devices return 401 and cannot renew themselves; blocked licences report their status
-without minting credentials. Licence, device and token are rechecked under row locks.
+`POST /v1/license:refresh` keeps the existing status fields. Staff extension advances
+`staff_extension_generation` on the licence; an issued device token snapshots that
+generation. A live bearer with an older generation can rotate only when its request
+explicitly sends `{"token_rotation":"staff-extension-v1"}`. An expiry difference alone
+does not trigger staff rotation. Existing `{}` and header-only requests remain status
+reads for staff extensions; app version never implies capability. Managed Free renewal
+without a pending staff extension retains its automatic same-bearer renewal/catch-up.
 
-If a response is lost before persistence, repeating the old device credential returns
-401. An ADMIN must authenticate through the existing account session and explicitly
-replace the known installation's token:
+A negotiated replacement response additionally contains the show-once `activation_token`;
+`token.expires_at` names its expiry. Its generation matches the licence, and every
+superseded credential for that installation is revoked in the same transaction as
+issuance and audit. Persist the new credential securely before subsequent API calls;
+never log the response. Status-only responses omit `activation_token`. Responses use
+`Cache-Control: no-store`. Expired/revoked bearers and revoked devices return 401 and
+cannot recover themselves. Blocked licences do not mint replacements. Eligibility and
+liveness are rechecked under the existing licence/device/token and managed Free locks.
+
+If a rotating response is lost before persistence, the old bearer is rejected. Explicit
+ADMIN recovery uses the established installation identity on the bound session route:
 
 ```http
-POST /v1/activations:with-session
+POST /v1/activations:bound-with-session
 Authorization: Bearer <admin account session>
 Content-Type: application/json
 
-{"idempotency_key":"new-recovery-intent-001","device_fingerprint":"same-install-id","platform":"macos","replace_token":true}
+{"operation_version":2,"mode":"recover","idempotency_key":"8c31a6b04ce64d57a2b3e75cf867a901","expected_device_public_id":"dev_0123456789abcdef0123456789abcdef","device_fingerprint":"same-install-id","platform":"macos","app_version":"0.1","display_name":"Main"}
 ```
 
-Use the existing `device_fingerprint`, a fresh idempotency key and JSON boolean `true`.
-Only a known ACTIVE device of the session's own org is eligible; licence validity and
-plan allowance are checked under the licence lock. The response uses activation's normal
-`activation_token`/`reminted` fields. Persist it through the same secret-store path as
-activation. Replaying the recovery intent returns no raw credential and does not rotate
-again. If that response is also lost, use a fresh explicit recovery intent. Defaults remain
-show-once/idempotent; the enrollment-key route does not expose this option. The account
-GraphQL twin accepts `replaceToken: true` with the same ADMIN gates. Neither path can
-recover a revoked device or a blocked licence.
+The example nonce and device identity are illustrative. Generate a fresh 32-character
+lowercase-hex nonce once for an explicitly authorized replacement intent; send the
+installation's recorded public ID and original metadata. All eight fields are required;
+unknown fields (including `replace_token`) refuse. V2 accepts only account-session ADMIN
+`mode:"recover"`, never enrollment or initial activation. It replaces even an already
+current-generation live credential, preserves the device/public ID/seat, and checks the
+same organization, fingerprint, platform, active-device, commercial/Free and plan policies.
 
-No shipped refresh client exists in the current desktop/mobile/marketing source: the
-native licensing client implements sign-in, activation and manifest retrieval. The API
-HTTP tests cover adopting the rotated token and the actual ADMIN recovery route; adding
-a scheduled native refresh caller or recovery UI remains separate product work.
+The first response has `operation_version:2`, `operation_state:"completed"`,
+`created:false`, `reminted:true` and the show-once `activation_token`. Persist it through
+the secret-store path. Exact retries preserve the original nonce/version/payload and
+return no secret: a live original result yields 200 `operation_state:"replay"` with
+`activation_token:null`; a dead/deleted result yields 409
+`ACTIVATION_OPERATION_COMPLETED` and its recorded nonce/device/platform proof. A completed
+receipt never switches to a newer credential. Changed version/payload/identity under the
+same nonce yields 409 `ACTIVATION_OPERATION_CONFLICT`. Success and post-validation
+errors echo the validated version; pre-validation refusals retain the v1 envelope.
+
+If the recovery response is also uncertain, reconcile that exact receipt first. A
+confirmed completed operation without custody requires a new explicit replacement
+intent; ordinary Retry must not automatically change nonce or protocol. Existing v1
+bound requests remain unchanged and never replace a usable credential. The legacy
+`POST /v1/activations:with-session` boolean `replace_token:true` and account GraphQL
+`replaceToken:true` remain available with their existing ADMIN, identity and policy gates;
+they are not additional fields on either bound protocol.
+
+This API checkpoint does not establish native adoption of rotated credentials, durable
+custody after response loss, or the explicit v2 recovery UI. Those are Task 4 work with
+separate runtime gates. API/full-suite/joint native qualification and deployment approval
+must be recorded separately; production staff identity integration remains out of scope.
 
 The cascade processes 500-token working sets until drained or its 240-second delivery
 budget ends, then requests a continuation. The minute beat tick recovers remaining ACTIVE
