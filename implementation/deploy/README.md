@@ -6,12 +6,12 @@ with Coolify's **Docker Compose** build pack:
 | Service | Image | Role |
 |---|---|---|
 | `api` | API image | Gunicorn on :8000 (default image command) |
-| `worker` | API image | Celery worker; the only process that sends mail |
+| `worker` | API image | Celery maintenance worker on `celery`, concurrency two. Sends account mail. |
 | `beat` | API image | Celery beat. Run exactly one |
 | `migrate` | API image | One-off `manage.py migrate`. The app processes wait for it to succeed |
 | `website` | marketing image | nginx serving the SPA on :80 |
 | `db` | `postgres:16-alpine` | PostgreSQL, volume `selahcue-pgdata` |
-| `redis` | `redis:7-alpine` | Password-protected; cache in DB 1, broker in DB 2; AOF on |
+| `redis` | `redis:7-alpine` | Password-protected, cache in DB 1, broker/results in DB 2, AOF on volume `selahcue-redisdata` |
 
 No service publishes a host port. Coolify's Traefik proxy reaches `api` and `website` over the
 resource network. The API image processes run as `nobody`, with a read-only root filesystem,
@@ -35,33 +35,55 @@ service, and that router has none of the rules below.
 | `/graphql/admin*` on either domain | rewritten to an unrouted path (Django 404) | Production staff auth does not exist yet |
 | `http://` on either domain | 301 to `https://` | |
 
-Every HTTPS router strips the four `X-SelahCue-*` identity headers the API reads (`Actor-Id`,
-`Actor-Kind`, `Org-Id`, `Staff-Permissions`). If the API ever reads a new one, add it to the
-`selahcue-strip-identity` middleware.
+The API, website and website GraphQL routers strip the four `X-SelahCue-*` identity headers
+the API reads (`Actor-Id`, `Actor-Kind`, `Org-Id`, `Staff-Permissions`). The dedicated staff
+router rewrites the request to the unrouted path. If the API ever reads a new identity header,
+add it to the `selahcue-strip-identity` middleware.
 
-Django sees exactly one proxy hop on every route, so the compose file fixes
+Both public Django routes use one Traefik hop, so Compose fixes
 `SELAHCUE_TRUSTED_PROXY_COUNT=1` and `SELAHCUE_TRUST_FORWARDED_PROTO=1`. That holds because
 Traefik replaces a client's `X-Forwarded-For`/`-Proto` unless its entrypoint trusts that client.
-**If the production server sits behind Cloudflare, a load balancer, or a Traefik configured with
-`forwardedHeaders.trustedIPs`, re-derive both values before going live** (docs/ops/DEPLOYMENT.md
-sections 6b and 6c).
+The trusted count applies to the entire Django process. If Cloudflare, a load balancer or the
+alternate nginx route produces different trusted depths, normalise the chains at trusted ingress
+or use separate API services with their own correct count. Verify forwarded headers and effective
+client IP on both routes. [Proxy trust](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
 
-The labels assume Coolify's default Traefik configuration: entrypoints named `http` and `https`,
-and a certificate resolver named `letsencrypt`. Check the production server's proxy configuration
-(Servers, then Proxy) before the first deploy. If the names differ, change the labels to match.
+The labels require Traefik entrypoints named `http` and `https` and a certificate resolver
+named `letsencrypt`. Check the server's proxy configuration (Servers, then Proxy) before the
+first deploy. Verify that the configured labels match. Start a new resource's HSTS at the
+template values `300/0/0`. For the initial HSTS rollout, follow the
+[HSTS ramp-up](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
+after verifying both HTTPS routes. Retain the approved policy on existing resources.
 
 ## First deploy
 
 1. Point DNS for both domains at the production Coolify server.
 2. Create a resource from the repository with build pack **Docker Compose**, base directory
-   `/implementation` and compose location `/docker-compose.prod.yml`. Coolify builds `api` from
-   `implementation/api` and `website` from the repository root, as the runbook requires.
-3. Environment Variables, Developer view: paste [`production.env.example`](production.env.example),
-   fill every value and lock the secrets. Values marked `:?` in the compose file stop the deploy
-   when empty.
-4. Leave every Domains field empty (see above). Deploy.
-5. Run the runbook's checks (DEPLOYMENT.md "Deploy and verify the platform", steps 6 and 7) from
-   the `api` and `worker` containers' terminals, and the `curl` checks from outside.
+   `/implementation` and compose location `/docker-compose.prod.yml`. Keep the selected branch
+   free of pushes during setup. Set **Advanced → Deployment → Auto deploy → Manual deployments
+   only** and confirm no automated workflow or integration uses the authenticated Deploy Webhook
+   for this resource. Coolify builds `api` from `implementation/api` and `website` from the
+   repository root. [Manual deployment control](../../DEPLOYMENT.md#manual-deployment-control)
+3. Import [`production.env.example`](production.env.example) in Developer view only for a new
+   resource with an empty variable list. In an existing or pre-populated resource, edit only
+   the intended entries in Normal view and preserve the selected image references, database
+   identity, HSTS and other overrides. Use Normal view for locked entries.
+   Before the first build, set `SECRET_KEY`, `SELAHCUE_ENTITLEMENT_SIGNING_KEY`, `SQL_PASSWORD`,
+   `REDIS_PASSWORD` and `MAIL_PASSWORD` to **Not available during build** and **Available in
+   the container**. Verify their saved scopes by name without recording values, then lock any
+   unlocked secret. Compose inputs marked `:?` stop the deploy when empty. Use the
+   [runtime environment procedure](../../DEPLOYMENT.md#runtime-environment) and
+   [matching entitlement seed](../../DEPLOYMENT.md#entitlement-signing-key).
+4. Leave every Domains field empty. Apply the edge controls below and review the migration plan.
+   Before the owner triggers sustained or unattended production deployment, complete the
+   [account-only scheduler prerequisite](../../DEPLOYMENT.md#account-only-scheduler-prerequisite)
+   in bounded isolated staging. Check the selected source ref against the recorded release commit,
+   then have the owner select **Deploy** in Coolify.
+5. Verify the deployed commit and image digests. Run the
+   [platform checks](../../DEPLOYMENT.md#deploy-and-verify-the-platform) from the runtime
+   containers and the `curl` checks from outside. Complete the
+   [Free journey](../../DEPLOYMENT.md#free-account-and-activation-acceptance), including actual
+   delivered email and native activation.
 
 ## Every later deploy
 
@@ -70,9 +92,11 @@ keeps serving while the migration runs. That is fine for additive migrations. **
 that drops a column (docs/ops/DEPLOYMENT.md section 6d), stop the resource in Coolify first,
 then deploy.** Take a database backup before any deploy that migrates.
 
-Pin each deploy to the reviewed commit and record the image digests, as the release prerequisites
-require. To deploy prebuilt images instead of building on the server, set `API_IMAGE`,
-`WEBSITE_IMAGE` and `RELEASE_TAG` to the registry images.
+For sustained account-only deployments, use a scheduler arrangement that passed the staging
+queue and maintenance checks above. Recheck the manual trigger policy and runtime-only secret
+scopes before the owner deploys the recorded commit. `API_IMAGE`, `WEBSITE_IMAGE` and
+`RELEASE_TAG` set the image references. The Compose build declarations remain active. Verify how
+Coolify resolves the images and record the actual deployed digests.
 
 ## Backups
 
@@ -84,16 +108,50 @@ backups, and ship it off the server encrypted:
 pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f /backups/selahcue-$(date -u +%Y%m%dT%H%M%SZ).dump
 ```
 
-Rehearse a restore with the `db` writers stopped (stop `api`, `worker` and `beat`):
+Back up `SECRET_KEY` and the matching entitlement seed in restricted storage outside Coolify.
+Rotating `SECRET_KEY` invalidates credential fingerprints. Rotate the entitlement signer only
+with compatible client trust.
+
+### Isolated restore rehearsal
+
+Provision a disposable PostgreSQL instance and volume on an isolated rehearsal host. Use the
+same PostgreSQL major version as production. Bind this instance to loopback on the rehearsal host.
+Create a `selahcue_restore_rehearsal` login role and make it the owner of a new empty database
+named `selahcue_restore_rehearsal`. Use rehearsal-only credentials and connection settings.
+The drill runs entirely outside the production Coolify resource. Keep the live database and its
+writers running during the drill.
+
+From the rehearsal host, check the exact destination before restoring. For the sample
+commands, the disposable instance listens on `127.0.0.1:55432`. Compare the reported host,
+port, database and connected role with the rehearsal inventory. Verify that the listed owner
+of the target database is `selahcue_restore_rehearsal`, the database is empty and the instance
+uses the disposable volume. Stop if any check fails or if any live connection is possible.
 
 ```sh
-pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists /backups/<file>.dump
+psql -X --host=127.0.0.1 --port=55432 \
+  --username=selahcue_restore_rehearsal --dbname=selahcue_restore_rehearsal \
+  --command='\conninfo' --command='\list selahcue_restore_rehearsal'
 ```
 
-Back up `SECRET_KEY` and the entitlement seed outside Coolify too. Neither can be regenerated
-without invalidating every token and offline manifest.
+Set `backup_file` to the path of the selected dump copied into protected rehearsal storage.
+Restore into the empty database.
+
+```sh
+backup_file='/restore-rehearsal/approved-selahcue-backup.dump'
+pg_restore --host=127.0.0.1 --port=55432 \
+  --username=selahcue_restore_rehearsal --dbname=selahcue_restore_rehearsal \
+  --exit-on-error --single-transaction --no-owner --no-privileges "$backup_file"
+```
+
+Verify the restored migration frontier and expected data. Record the recovery point and time,
+then dispose of the instance, volume and protected backup copy according to the backup retention
+policy. For a deliberate live recovery, follow the
+[rollback procedure](../../DEPLOYMENT.md#backup-rollback-and-recovery).
 
 ## Rehearse locally
+
+Use isolated data, broker and volumes and set a stop time before starting. Stop the rehearsal
+stack at the end.
 
 ```bash
 cd implementation
@@ -106,9 +164,14 @@ with `http`/`https` entrypoints and a `letsencrypt` resolver, the way Coolify do
 
 ## Not handled by this stack
 
-- **Per-IP rate limiting at the edge.** The application's account and device throttles stay on.
-  Add a Traefik `ratelimit` middleware or a CDN/WAF rule for `/graphql/account`, `/v1/sessions`
-  and `/v1/activations:with-session` before opening sign-up.
+- **Edge rate limiting and log rules.** Before opening sign-up, configure per-IP protection on
+  both public origins for reachable routes. Include `/graphql/account`, `POST /v1/sessions`,
+  `POST /v1/activations:bound-with-session`, `POST /v1/activations:with-session` and the
+  other device routes in the [ingress procedure](../../DEPLOYMENT.md#deploy-and-verify-the-platform).
+  Check actual client IP and verify edge and nginx log exclusions with synthetic tokens.
+- **Cloud roles.** The stack supplies no provider-specific settings, mounts or queue workers.
+  Coolify values only reach containers through the service definitions. See
+  [the public cloud boundary](../../DEPLOYMENT.md#public-cloud-boundary) for the open requirements.
 - **Network isolation.** Coolify attaches every service to the resource network, which has
   outbound access. The web process only needs the database and Redis.
 - **Error reporting.** `SENTRY_DSN` is read, but no SDK is wired.
