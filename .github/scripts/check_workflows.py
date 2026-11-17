@@ -1125,6 +1125,177 @@ def native_proof_policy_self_test(validate):
     return failures
 
 
+def marketing_guard_self_test() -> list[str]:
+    """Exercise the checked-in marketing schedule without running step commands."""
+    filename = ".github/workflows/ci.yml"
+    label = f"{filename}: marketing"
+    try:
+        workflow = read_mapping(Path(__file__).resolve().parents[2] / filename, filename)
+        job = checked_jobs(workflow, filename).get("marketing")
+    except WorkflowInputError as error:
+        return [str(error)]
+    if job is None:
+        return [f"{label}: missing job"]
+
+    names = {
+        "checkout": "actions/checkout",
+        "node": "actions/setup-node",
+        "python": "actions/setup-python",
+        "npm": "Install",
+        "publication": "Installer publication offline self-test",
+        "audit": "Reject high and critical npm advisories",
+        "make": "Type-check, lint, test, build (make marketing-check)",
+        "django": "Install the pinned Django for the mirror check",
+        "mirrors": "Client/server mirrors",
+        "auth": "Auth page states (headless)",
+        "playwright": "Install Playwright (Chromium + WebKit)",
+        "chromium": "Responsive sweep (Chromium)",
+        "webkit": "Responsive sweep (WebKit)",
+        "collector": "Collect existing WebKit crash summaries",
+        "geometry": "Responsive touch-target and geometry controls (WebKit)",
+        "components": "Shared components (Chromium + WebKit)",
+        "core": "Core pages (Chromium + WebKit)",
+        "home": "Home page (Chromium + WebKit)",
+        "secondary": "Secondary pages (Chromium + WebKit)",
+        "legal_source": "Legal source and generated pages agree",
+        "legal_pages": "Legal pages (full Chromium suite)",
+        "acquisition": "Public acquisition and route exclusions (Chromium + WebKit)",
+        "downloads": "Public downloads (Chromium + WebKit)",
+        "headers": "Build and verify production security headers",
+    }
+    keys_by_name = {name: key for key, name in names.items()}
+    setup_actions = {names[key] for key in ("checkout", "node", "python")}
+    steps = {}
+    for step in job.get("steps", []):
+        action = str(step.get("uses", "")).split("@", 1)[0]
+        name = action if action in setup_actions else step.get("name")
+        if not isinstance(name, str):
+            return [f"{label}: expected a named check or a setup action, got {name!r}"]
+        key = keys_by_name.get(name)
+        if key is None or key in steps:
+            return [f"{label}: unexpected or duplicate step {name!r}"]
+        steps[key] = step
+    missing = names.keys() - steps.keys()
+    if missing:
+        return [f"{label}: missing steps: {', '.join(sorted(names[key] for key in missing))}"]
+
+    failures = []
+    audit_command = "npm audit --audit-level=high"
+    audit_run = steps["audit"].get("run")
+    audit_count = sum(
+        line.strip() == audit_command
+        for step in steps.values() for line in str(step.get("run", "")).splitlines()
+    )
+    if not isinstance(audit_run, str) or audit_run.strip() != audit_command or audit_count != 1:
+        failures.append(f"{label}: expected exactly one audit step running `{audit_command}`")
+    ordered = list(steps)
+    audit_index = ordered.index("audit")
+    if ordered[audit_index - 1:audit_index + 2] != ["publication", "audit", "make"]:
+        failures.append(f"{label}: audit must run immediately after the publication self-test and before Make")
+    if job.get("continue-on-error", False) is not False:
+        failures.append(f"{label}: the job must be blocking (continue-on-error absent or false)")
+
+    prefix = {"checkout", "node", "python", "npm", "publication", "audit"}
+    no_cancel = r"!\s*cancelled\s*\(\s*\)"
+    success = r"steps\.([A-Za-z_][A-Za-z0-9_-]*)\.outcome\s*==\s*'success'"
+    sweep = r"steps\.responsive_webkit\.outcome\s*==\s*"
+    collector_condition = rf"{no_cancel}\s*&&\s*\(\s*{sweep}'success'\s*\|\|\s*{sweep}'failure'\s*\)"
+    collector_env = steps["collector"].get("env")
+    collector_start = collector_env.get("WEBKIT_SWEEP_STARTED_AT") if isinstance(collector_env, dict) else None
+    if steps["webkit"].get("id") != "responsive_webkit" or not re.fullmatch(
+        r"\s*\$\{\{\s*steps\.responsive_webkit\.outputs\.started_at\s*\}\}\s*", str(collector_start)
+    ):
+        failures.append(f"{label}: collector must read the WebKit sweep's started_at output")
+
+    prerequisites: dict[str, list[str] | None] = {}
+    step_ids = set()
+    for key, step in steps.items():
+        step_label = f"{label}: {names[key]}"
+        best_effort = key == "collector"
+        if step.get("continue-on-error", False) is not best_effort:
+            expectation = "best-effort" if best_effort else "blocking"
+            failures.append(f"{step_label}: must remain {expectation}")
+        if "id" in step:
+            step_id = step["id"]
+            if not isinstance(step_id, str) or not step_id or step_id in step_ids:
+                return failures + [f"{step_label}: invalid or duplicate step ID {step_id!r}"]
+            step_ids.add(step_id)
+        if key in prefix and "if" in step:
+            failures.append(f"{step_label}: must retain its default-success condition")
+        if "if" not in step and key != "collector":
+            prerequisites[key] = None
+            continue
+        condition = str(step.get("if", "")).strip()
+        wrapped = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", condition, re.S)
+        body = wrapped[1] if wrapped else condition
+        if key == "collector" and re.fullmatch(collector_condition, body):
+            continue
+        if key != "collector" and re.fullmatch(rf"{no_cancel}(?:\s*&&\s*{success})*", body):
+            prerequisites[key] = re.findall(success, body)
+            continue
+        return failures + [f"{step_label}: unexpected condition {condition!r}"]
+
+    # These runnable sets come from the check contracts, independent of the YAML
+    # guards. The only simulated inputs are a failed command or a cancellation point.
+    all_steps = names.keys()
+    cases = [
+        ("all succeed", None, None, all_steps, "success"),
+        ("audit exits 1", "audit", None, all_steps, "failure"),
+        ("Playwright install fails", "playwright", None,
+         {"checkout", "node", "python", "npm", "publication", "audit", "make", "django",
+          "mirrors", "auth", "playwright", "legal_source"}, "failure"),
+        ("Make fails", "make", None,
+         all_steps - {"chromium", "webkit", "collector", "components", "legal_pages", "acquisition", "downloads"},
+         "failure"),
+        ("npm ci fails", "npm", None,
+         {"checkout", "node", "python", "npm", "django", "mirrors", "playwright", "geometry", "legal_source", "headers"},
+         "failure"),
+        ("Python setup fails", "python", None, {"checkout", "node", "python", "legal_source"}, "failure"),
+        ("Node setup fails", "node", None, {"checkout", "node"}, "failure"),
+        ("Django install fails", "django", None, all_steps - {"mirrors"}, "failure"),
+        ("WebKit sweep fails", "webkit", None, all_steps, "failure"),
+        ("collector fails", "collector", None, all_steps, "success"),
+        ("cancel after audit", None, "audit", prefix, "cancelled"),
+        ("cancel after WebKit sweep", None, "webkit",
+         prefix | {"make", "django", "mirrors", "auth", "playwright", "chromium", "webkit"}, "cancelled"),
+    ]
+    for scenario, failing, cancel_after, expected, expected_result in cases:
+        ran = set()
+        outcomes = {}
+        collector_outcome = "skipped"
+        cancelled = blocked = False
+        for key, step in steps.items():
+            if key == "collector":
+                eligible = outcomes.get("responsive_webkit") in {"success", "failure"}
+            elif prerequisites[key] is None:
+                eligible = not blocked
+            else:
+                eligible = all(outcomes.get(provider) == "success" for provider in prerequisites[key])
+            outcome = "skipped"
+            if eligible and not cancelled:
+                ran.add(key)
+                outcome = "failure" if key == failing else "success"
+                blocked |= outcome == "failure" and step.get("continue-on-error") is not True
+                cancelled = key == cancel_after
+            if "id" in step:
+                outcomes[step["id"]] = outcome
+            if key == "collector":
+                collector_outcome = outcome
+
+        result = "cancelled" if cancelled else "failure" if blocked else "success"
+        if ran != expected or result != expected_result:
+            missed = sorted(names[key] for key in expected - ran)
+            unexpected = sorted(names[key] for key in ran - expected)
+            failures.append(
+                f"{label}: {scenario}: missing eligible steps {missed}; "
+                f"unexpectedly eligible steps {unexpected}; expected job {expected_result}, got {result}"
+            )
+        else:
+            print(f"marketing guard PASS: {scenario}: {len(ran)}/{len(steps)} steps ran, "
+                  f"collector {collector_outcome}, job {result}")
+    return failures
+
+
 def self_test() -> int:
     def wf(text):
         return yaml.safe_load(text)
@@ -1425,6 +1596,7 @@ jobs:
         elif needle is not None and not any(needle in v for v in found):
             failures.append(f"{label}: expected a violation mentioning {needle!r}, got {found}")
     failures += native_proof_policy_self_test(native_proof_workflow_violations)
+    failures += marketing_guard_self_test()
     for label, workflow, filename, rejected in native_proof_policy_cases():
         if filename == NATIVE_PROOF_WORKFLOW and bool(all_violations(workflow, filename)) != rejected:
             failures.append(f"native all-workflow dispatch: {label}")
