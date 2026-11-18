@@ -3838,15 +3838,67 @@ fn stale_manifest_401_does_not_reject_newer_custody() {
         let before = storage
             .load_or_create(CredentialPresence::Unavailable)
             .expect("original metadata");
+        let cache_path = selahcue_licensing::EntitlementCache::new(directory.path()).path();
+        let read_manifest = || {
+            let bytes = std::fs::read(&cache_path).expect("signed cache");
+            serde_json::from_slice::<Value>(&bytes).expect("signed envelope")
+        };
+        let original_manifest = read_manifest();
         let result = wire(&account.execute(Command::Refresh { explicit: true }));
         let transport = account.client().transport();
 
         let requests = transport.requests.borrow();
-        let [status, manifest, ..] = requests.as_slice() else {
+        let [status, manifest, follow_ups @ ..] = requests.as_slice() else {
             panic!("fixture must reach the manifest request");
         };
-        assert!(status.route == StaffRoute::Status && status.bearer == StaffBearer::Original);
-        assert!(manifest.route == StaffRoute::Manifest && manifest.bearer == StaffBearer::Original);
+        assert!(
+            status.route == StaffRoute::Status
+                && status.bearer == StaffBearer::Original
+                && status.stored
+        );
+        assert!(
+            manifest.route == StaffRoute::Manifest
+                && manifest.bearer == StaffBearer::Original
+                && manifest.stored
+        );
+
+        if !custody_updated {
+            assert!(
+                follow_ups.is_empty(),
+                "a manifest 401 for the still-current bearer must end the refresh"
+            );
+        }
+        let mut has_fresh_sibling_status = false;
+        let mut sibling_manifest_fetched = false;
+        for request in follow_ups {
+            assert!(
+                request.bearer == StaffBearer::Sibling && request.stored,
+                "after a stale manifest 401, every follow-up must use the stored sibling bearer"
+            );
+            match request.route {
+                StaffRoute::Status => has_fresh_sibling_status = true,
+                StaffRoute::Manifest => {
+                    assert!(
+                        has_fresh_sibling_status,
+                        "a sibling manifest fetch after a stale 401 needs fresh sibling status"
+                    );
+                    has_fresh_sibling_status = false;
+                    sibling_manifest_fetched = true;
+                }
+            }
+        }
+        let (expected_manifest, expected_expiry) = if sibling_manifest_fetched {
+            (
+                serde_json::from_str(&transport.sibling_manifest).expect("sibling signed envelope"),
+                "2027-02-01T00:00:00Z",
+            )
+        } else {
+            (original_manifest, "2026-12-01T00:00:00Z")
+        };
+        assert!(
+            read_manifest() == expected_manifest,
+            "after a manifest 401, the cache may change only to the fresh sibling's signed envelope"
+        );
         assert_eq!(
             storage
                 .load_or_create(CredentialPresence::Unavailable)
@@ -3854,7 +3906,8 @@ fn stale_manifest_401_does_not_reject_newer_custody() {
             before
         );
         assert_eq!(result["entitlement_state"], "current");
-        assert_eq!(result["manifest_expires_at"], "2026-12-01T00:00:00Z");
+        assert_eq!(result["manifest_expires_at"], expected_expiry);
+        assert_eq!(result["license_expires_at"], expected_expiry);
         if custody_updated {
             assert_eq!(
                 custody.get(DEVICE_TOKEN_NAME).expect("current custody"),
