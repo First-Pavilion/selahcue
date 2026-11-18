@@ -2884,3 +2884,92 @@ fn bound_definitive_refusal_requires_exact_version_operation_surface_and_status_
         );
     }
 }
+
+fn bound_completed_error(surface: Option<&str>, operation: Option<&str>) -> ActivationFailure {
+    let nonce = "0123456789abcdef0123456789abcdef";
+    let mut response = serde_json::json!({
+        "operation_version": 1,
+        "error": {"code": "ACTIVATION_OPERATION_COMPLETED", "message": "fixture"},
+        "completed_activation": {
+            "idempotency_key": nonce,
+            "device_public_id": DEVICE_ID,
+            "platform": "macos"
+        }
+    });
+    if let Some(surface) = surface {
+        response["surface"] = serde_json::json!(surface);
+    }
+    if let Some(operation) = operation {
+        response["operation"] = serde_json::json!(operation);
+    }
+    let client = LicensingClient::new(
+        ScriptedTransport::responding(409, response.to_string()),
+        BASE,
+    )
+    .expect("fixture API");
+    let error = client
+        .activate_bound(
+            ActivationPath::AccountSession,
+            &Token::new(SESSION),
+            &identity(),
+            &IdempotencyKey::new(nonce).expect("fixture nonce"),
+            Some(DEVICE_ID),
+        )
+        .expect_err("fixture 409 must return an activation error");
+    let requests = client.transport().recorded();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(
+        requests[0].url,
+        "https://api.selahcue.example/v1/activations:bound-with-session"
+    );
+    assert!(requests[0].had_bearer);
+    error
+}
+
+fn assert_bound_completion_not_authoritative(surface: Option<&str>, operation: Option<&str>) {
+    let error = bound_completed_error(surface, operation);
+    assert!(
+        !matches!(
+            error,
+            ActivationFailure::ActivationOperationCompleted {
+                device_public_id: Some(_)
+            }
+        ),
+        "409 completion must not establish identity with surface {surface:?} and operation {operation:?}"
+    );
+}
+
+#[test]
+fn bound_completed_error_with_matching_surface_and_operation_proves_identity() {
+    let error = bound_completed_error(Some("desktop"), Some("activation_bound_with_session"));
+    assert_eq!(
+        error,
+        ActivationFailure::ActivationOperationCompleted {
+            device_public_id: Some(DEVICE_ID.into()),
+        }
+    );
+}
+
+#[test]
+fn bound_completed_error_without_surface_does_not_prove_identity() {
+    assert_bound_completion_not_authoritative(None, Some("activation_bound_with_session"));
+}
+
+#[test]
+fn bound_completed_error_with_wrong_surface_does_not_prove_identity() {
+    assert_bound_completion_not_authoritative(
+        Some("account"),
+        Some("activation_bound_with_session"),
+    );
+}
+
+#[test]
+fn bound_completed_error_without_operation_does_not_prove_identity() {
+    assert_bound_completion_not_authoritative(Some("desktop"), None);
+}
+
+#[test]
+fn bound_completed_error_with_wrong_operation_does_not_prove_identity() {
+    assert_bound_completion_not_authoritative(Some("desktop"), Some("activation_bound"));
+}
