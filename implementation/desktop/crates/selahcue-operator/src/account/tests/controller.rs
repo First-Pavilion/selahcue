@@ -3934,6 +3934,11 @@ const REPLACEMENT_SESSION: &str = "synthetic-unconfirmed-session";
 const OBSOLETE_DEVICE: &str = "synthetic-pre-remint-device";
 const SESSION_ACTIVATION: &str = "/v1/activations:bound-with-session";
 
+struct BootstrapRemoval {
+    candidate_installed: bool,
+    pending_at_owned_read: Option<crate::account::state::PendingActivation>,
+}
+
 struct ObservedEntry {
     name: &'static str,
     candidate: &'static str,
@@ -3941,7 +3946,7 @@ struct ObservedEntry {
     attempts: std::cell::Cell<usize>,
     removals: std::cell::Cell<usize>,
     owned_readback: std::cell::Cell<bool>,
-    read_before_retirement: std::cell::Cell<bool>,
+    pending_at_owned_read: std::cell::RefCell<Option<crate::account::state::PendingActivation>>,
 }
 
 #[derive(Clone)]
@@ -3949,6 +3954,7 @@ struct ObservedCustody {
     inner: Custody,
     storage: AccountMetadataStore,
     entry: std::rc::Rc<ObservedEntry>,
+    bootstrap_removals: Option<std::rc::Rc<std::cell::RefCell<Vec<BootstrapRemoval>>>>,
 }
 
 impl ObservedCustody {
@@ -3963,8 +3969,9 @@ impl ObservedCustody {
                 attempts: 0.into(),
                 removals: 0.into(),
                 owned_readback: false.into(),
-                read_before_retirement: false.into(),
+                pending_at_owned_read: Default::default(),
             }),
+            bootstrap_removals: None,
         }
     }
 
@@ -3991,8 +3998,8 @@ impl SecretStore for ObservedCustody {
                 Ok(_unowned) => {}
                 Err(AccountStorageError::Io(std::io::ErrorKind::WouldBlock)) => {
                     self.entry.owned_readback.set(true);
-                    if self.metadata().pending_activation().is_some() {
-                        self.entry.read_before_retirement.set(true);
+                    if let Some(pending) = self.metadata().pending_activation() {
+                        *self.entry.pending_at_owned_read.borrow_mut() = Some(pending.clone());
                     }
                 }
                 Err(error) => panic!("could not observe fixture ownership: {error}"),
@@ -4004,7 +4011,7 @@ impl SecretStore for ObservedCustody {
     fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
         if name == self.entry.name {
             self.entry.owned_readback.set(false);
-            self.entry.read_before_retirement.set(false);
+            *self.entry.pending_at_owned_read.borrow_mut() = None;
             if token.expose() == self.entry.candidate {
                 self.entry.attempts.set(self.entry.attempts.get() + 1);
                 if self.entry.acknowledge_only.get() {
@@ -4016,10 +4023,17 @@ impl SecretStore for ObservedCustody {
     }
 
     fn remove(&self, name: &str) -> Result<(), SecretError> {
+        if let (ACCOUNT_SESSION_NAME, Some(removals)) = (name, &self.bootstrap_removals) {
+            removals.borrow_mut().push(BootstrapRemoval {
+                candidate_installed: self.stored(DEVICE_TOKEN_NAME).as_ref().map(Token::expose)
+                    == Some(self.entry.candidate),
+                pending_at_owned_read: self.entry.pending_at_owned_read.borrow().clone(),
+            });
+        }
         if name == self.entry.name {
             self.entry.removals.set(self.entry.removals.get() + 1);
             self.entry.owned_readback.set(false);
-            self.entry.read_before_retirement.set(false);
+            *self.entry.pending_at_owned_read.borrow_mut() = None;
         }
         self.inner.remove(name)
     }
@@ -4114,12 +4128,14 @@ fn bound_receipt(body: &str, state: &str, token: Option<&str>, reminted: bool) -
 fn activation_keeps_pending_when_successful_device_set_does_not_read_back() {
     use std::cell::{Cell, RefCell};
     let directory = tempfile::tempdir().expect("directory");
-    let custody = ObservedCustody::new(
+    let mut custody = ObservedCustody::new(
         directory.path(),
         Custody::default(),
         DEVICE_TOKEN_NAME,
         SECRET,
     );
+    let removals = std::rc::Rc::new(RefCell::new(Vec::new()));
+    custody.bootstrap_removals = Some(removals.clone());
     recovery_binding(&custody.storage, &custody.inner);
     let frozen = RefCell::new(None);
     let logins = Cell::new(0);
@@ -4157,10 +4173,12 @@ fn activation_keeps_pending_when_successful_device_set_does_not_read_back() {
                     "/v1/sessions:revoke" => SESSION,
                     _ => SECRET,
                 };
+                let frozen = frozen.borrow();
                 follow_ups.borrow_mut().push((
                     route.to_owned(),
                     installed
-                        && custody.entry.read_before_retirement.get()
+                        && frozen.is_some()
+                        && custody.entry.pending_at_owned_read.borrow().as_ref() == frozen.as_ref()
                         && bearer == Some(expected_bearer),
                 ));
                 match (method, route, bearer) {
@@ -4201,6 +4219,10 @@ fn activation_keeps_pending_when_successful_device_set_does_not_read_back() {
     assert_eq!(logins.get(), 1);
     assert_eq!(activations.get(), 1);
     assert!(follow_ups.borrow().is_empty());
+    assert!(
+        removals.borrow().is_empty(),
+        "failed device persistence must retain the bootstrap session without attempting removal"
+    );
     custody.entry.acknowledge_only.set(false);
     let retried = wire(&account.execute(Command::RetryActivation));
     assert_eq!(logins.get(), 1);
@@ -4209,6 +4231,22 @@ fn activation_keeps_pending_when_successful_device_set_does_not_read_back() {
     assert_eq!(retried["setup_state"], "completed");
     assert_eq!(custody.stored(DEVICE_TOKEN_NAME), Some(Token::new(SECRET)));
     assert!(custody.stored(ACCOUNT_SESSION_NAME).is_none());
+    let removals = removals.borrow();
+    assert!(
+        !removals.is_empty(),
+        "retry must remove the bootstrap session"
+    );
+    for removal in removals.iter() {
+        assert!(
+            removal.candidate_installed,
+            "replacement missing at bootstrap cleanup"
+        );
+        assert_eq!(
+            removal.pending_at_owned_read.as_ref(),
+            frozen.borrow().as_ref(),
+            "bootstrap cleanup must follow an owned device readback during the frozen operation"
+        );
+    }
     assert!(custody.metadata().pending_activation().is_none());
     let traffic = follow_ups.borrow();
     assert_eq!(
