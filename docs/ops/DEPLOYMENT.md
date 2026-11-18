@@ -216,6 +216,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CELERY_BROKER_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Redis broker TCP connect timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
 | `CELERY_BROKER_SOCKET_TIMEOUT` | `0.5` (seconds) | Redis broker per-command timeout; allowed `0.05` to `10`, invalid values refuse startup. See §6b |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
+| `SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED` | `false` | Beat only. Enable the five-second provisioning sweep after verifying the dedicated `provider_provisioning` worker. |
+| `SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED` | `false` | Beat only. Enable the minutely usage sweep after verifying the dedicated `provider_usage` worker. |
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
 | `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |

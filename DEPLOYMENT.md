@@ -34,7 +34,7 @@ Before the first build and on each existing-resource preflight, use Normal view 
 | `SECURE_HSTS_SECONDS`, `SECURE_HSTS_INCLUDE_SUBDOMAINS`, `SECURE_HSTS_PRELOAD` | Start a new resource at `300`, `0`, `0`. Ramp up to `31536000` seconds after verifying HTTPS. Review subdomain and preload settings separately. Preserve the approved HSTS policy on an existing resource. |
 | `API_IMAGE`, `WEBSITE_IMAGE`, `RELEASE_TAG` | Optional image-reference inputs. Defaults are `selahcue-api`, `selahcue-website` and `latest`. Use an approved release tag. The file still declares both builds. Check how Coolify resolves the image and verify the digest actually deployed. |
 
-Compose sets `DEBUG=0`, builds the database and Redis connection settings, and supplies the shared runtime environment for the API, maintenance worker, beat and migration. Keep the dev actor bridge, dev admin catalogue and both legacy pilot flags off. The website uses same-origin account requests and receives no Django or provider secrets. Keep browser CORS and Vite overrides unset for this flow. Additional settings in the [configuration reference](deployments.md) only reach a container if its service definition passes them through. The standard stack has no provider-role settings or mounts.
+Compose sets `DEBUG=0`, builds the database and Redis connection settings, and supplies the shared runtime environment for the API, maintenance worker, beat and migration. Keep the dev actor bridge, dev admin catalogue and both legacy pilot flags off. The website uses same-origin account requests and receives no Django or provider secrets. Keep browser CORS and Vite overrides unset for this flow. Additional settings in the [configuration reference](deployments.md) only reach a container if its service definition passes them through. The standard stack passes the two optional scheduling flags only to beat. See [scheduled work](#scheduled-work).
 
 The website release manifest is copied into the website image at build time. The packaged desktop API origin is compiled as `https://api.selahcueapp.com`. Plan final-package acceptance around an authorised endpoint at that hostname. Record separate staging coverage if a staging build has a different compiled origin.
 
@@ -50,13 +50,20 @@ python manage.py shell -c 'from cryptography.hazmat.primitives.serialization imp
 
 Keep the private seed in the API runtime environment and its restricted recovery store. The included Compose shares that runtime environment across API-image processes. Keep the seed out of build arguments, desktop packages, the website, logs and source control. Verify that the installed client accepts a manifest from this signer and rejects an untrusted signature. For planned rotation, ship clients with both public keys, wait for adoption, switch the API signer, and retire the old client trust in a later release. [Signing operations](docs/ops/DEPLOYMENT.md#6a-entitlement-signing-key-platform-api)
 
-## Account-only scheduler prerequisite
+## Scheduled work
 
-The checked-in beat schedules work for `provider_provisioning` every five seconds and `provider_usage` every minute, even with cloud disabled. The default stack has no consumers for these queues. Redis persists broker work with AOF. Leaving the defaults running can accumulate unconsumed provider jobs.
+Run exactly one maintenance beat and the maintenance worker on the `celery` queue. By default beat schedules the minutely usage retention sweep, the hourly licence revocation cascade and the 03:30 credential sweep in Celery's configured time zone (UTC).
 
-Before the owner deploys an account-only stack for sustained or unattended production use, have a separate scheduler arrangement reviewed and verify it on isolated staging. It must prevent unused provider jobs from accumulating and retain one maintenance beat and the `celery` worker. Preserve the hourly licence revocation cascade, the 03:30 credential sweep in Celery's configured time zone and the minutely usage retention job.
+| Beat-only Compose input | Optional schedule |
+|---|---|
+| `SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED` | `providers.sweep` every five seconds on `provider_provisioning`. |
+| `SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED` | `usage.sweep` every minute on `provider_usage`. |
 
-Use a bounded staging run with its own broker and a defined stop time. Observe both provider queues across multiple intervals, verify that unconsumed work does not accumulate, and record actual maintenance dispatch and worker completion. Stop staging beat at the end of the rehearsal. The owner deploys for sustained use only after these queue and maintenance checks pass.
+Leave both inputs unset or set them to `0` for the account stack. To enable a schedule, first deploy and verify its dedicated consumer and then set the matching input to `1` and recreate beat. Both inputs are independent of the public admission and provider creation flags. Usage reconciliation can run while public admission is disabled. Beat runs in the maintenance role without provider credentials or mounts. See the [configuration reference](deployments.md#provider-process-configuration) for the accepted values.
+
+Rehearse the intended settings in bounded staging with its own broker and a defined stop time. Observe the provider queues across multiple intervals and record maintenance dispatch and worker completion. With both inputs off, confirm beat publishes neither provider sweep. With an input on, verify that its dedicated worker consumes the scheduled work. Stop staging beat at the end of the rehearsal.
+
+To roll back a provider schedule, set its input to `0` and recreate beat. Check that new publishes for that schedule have stopped and reconcile outstanding jobs with the appropriate consumer before stopping it. Redis AOF can retain messages that were already queued. Account-only rollbacks need a version with the maintenance defaults or a verified maintenance scheduler before starting beat.
 
 ## Manual deployment control
 
@@ -78,7 +85,7 @@ The authenticated **Deploy Webhook** is a separate trigger that remains callable
 
 4. **Review migrations before the owner deploys.** For an existing database, take an encrypted backup and record the current migration frontier, image digests and secret versions. In the new release image with the target settings, inspect `python manage.py check`, `python manage.py showmigrations --plan` and `python manage.py migrate --plan`. If the migration is incompatible with the running release, stop the old writers and scheduled jobs before migration. Allocate a maintenance window for a deployment needing this stop.
 
-   For sustained production use, complete the [account-only scheduler prerequisite](#account-only-scheduler-prerequisite) before the owner deploys the recorded revision from the Coolify dashboard. Verify the manual trigger policy and runtime-only secret scopes before selecting **Deploy**. Compose runs the one-off `python manage.py migrate --noinput` with `PGOPTIONS='-c lock_timeout=5000'`. Expect an exit code of zero before API, worker and beat can start. In the deployed API container confirm `python manage.py migrate --check` and record the actual frontier with `python manage.py showmigrations --plan`. Catalogue migration `0007` is irreversible through Django. Use the matching backup for rollback across it. [Migration operations](docs/ops/DEPLOYMENT.md#6d-database-migrations--deploy-order-platform-api)
+   Verify [scheduled work](#scheduled-work) on staging before the owner deploys the recorded revision from the Coolify dashboard. Verify the manual trigger policy and runtime-only secret scopes before selecting **Deploy**. Compose runs the one-off `python manage.py migrate --noinput` with `PGOPTIONS='-c lock_timeout=5000'`. Expect an exit code of zero before API, worker and beat can start. In the deployed API container confirm `python manage.py migrate --check` and record the actual frontier with `python manage.py showmigrations --plan`. Catalogue migration `0007` is irreversible through Django. Use the matching backup for rollback across it. [Migration operations](docs/ops/DEPLOYMENT.md#6d-database-migrations--deploy-order-platform-api)
 
 5. **Check dependencies, mail and scheduled work.** Verify PostgreSQL and Redis health. Check a write/read/delete against the configured Django cache and ping the worker through the broker from the API container. Run one maintenance worker pool on the logical `celery` queue at the Compose default concurrency of two, and exactly one beat. Review the recorded staging dispatch and completion and confirm that the deployed services use the verified schedule.
 
@@ -109,7 +116,7 @@ The authenticated **Deploy Webhook** is a separate trigger that remains callable
 
 The API implements device-authenticated, no-store `POST /v1/stt/session` and `GET /v1/quota`, with Deepgram grant, policy, reservation and usage handling. Public native delivery has yet to be qualified. The `cloud-stt` and `openai-notes` Cargo features use development credentials and are barred from release. Keep long-lived provider, admin and usage credentials out of the installer and website. The planned STT flow requires native consent and a short-lived server-issued credential before the client streams audio to Deepgram.
 
-The default production Compose has no provider-specific environment mappings, secret-file mounts or dedicated workers. Adding variables in Coolify alone cannot wire these roles. The following source roles need a reviewed deployment and operational receipts before cloud admission.
+The default production Compose only maps the two beat scheduling inputs for provider work. It supplies neither provider secret-file mounts nor dedicated workers. Adding variables in Coolify alone cannot wire these roles. The following source roles need a reviewed deployment and operational receipts before cloud admission.
 
 | Role | Required boundary |
 |---|---|

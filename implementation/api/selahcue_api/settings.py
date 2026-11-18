@@ -16,6 +16,16 @@ def env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _provider_flag(name: str) -> bool:
+    raw = os.getenv(name, "")
+    normalized = raw.strip().casefold()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if raw == "" or normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ImproperlyConfigured(f"PCFG_SCHEMA_INVALID ({name})")
+
+
 def env_list(name: str, default: str = "") -> list[str]:
     """Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
     Commas are also tolerated so an older comma-separated value cannot silently collapse into a
@@ -477,16 +487,8 @@ CELERY_TASK_ROUTES.update({
 })
 
 CELERY_BEAT_SCHEDULE = {
-    "sweep-provider-usage": {
-        "task": "usage.sweep", "schedule": 60.0, "options": {"queue": "provider_usage"},
-    },
     "sweep-usage-retention": {
         "task": "usage.retention_sweep", "schedule": 60.0, "options": {"queue": "celery"},
-    },
-    "sweep-provider-provisioning": {
-        "task": "providers.sweep",
-        "schedule": 5.0,
-        "options": {"queue": "provider_provisioning"},
     },
     # Hourly: a revoked licence should stop working within the hour, not at expiry.
     "cascade-license-revocations": {
@@ -499,6 +501,23 @@ CELERY_BEAT_SCHEDULE = {
         "schedule": crontab(hour=3, minute=30),
     },
 }
+
+# Beat schedules provider jobs only for deployments with the dedicated consumers.
+SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED = _provider_flag("SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED")
+SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED = _provider_flag("SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED")
+
+if SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED:
+    CELERY_BEAT_SCHEDULE["sweep-provider-provisioning"] = {
+        "task": "providers.sweep",
+        "schedule": 5.0,
+        "options": {"queue": "provider_provisioning"},
+    }
+if SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED:
+    CELERY_BEAT_SCHEDULE["sweep-provider-usage"] = {
+        "task": "usage.sweep",
+        "schedule": 60.0,
+        "options": {"queue": "provider_usage"},
+    }
 
 # --- Cache / throttling ---------------------------------------------------------------
 # Redis db 1 — deliberately NOT db 2, which is the Celery broker: a FLUSHDB on either
@@ -862,16 +881,6 @@ FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:2000")
 SELAHCUE_ENABLE_ADMIN_CATALOGUE = env_bool("SELAHCUE_ENABLE_ADMIN_CATALOGUE", False)
 if SELAHCUE_ENABLE_ADMIN_CATALOGUE and ENVIRONMENT != "dev":
     raise ImproperlyConfigured("Admin catalogue mutations require the real staff authenticator before production enablement.")
-
-
-def _provider_flag(name: str) -> bool:
-    raw = os.getenv(name, "")
-    normalized = raw.strip().casefold()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if raw == "" or normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ImproperlyConfigured(f"PCFG_SCHEMA_INVALID ({name})")
 
 
 SELAHCUE_PROVIDER_PROCESS_ROLE = os.getenv("SELAHCUE_PROVIDER_PROCESS_ROLE", "maintenance")
