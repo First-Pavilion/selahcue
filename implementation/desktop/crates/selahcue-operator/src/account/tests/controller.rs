@@ -23,6 +23,7 @@ const NOW: Time = (1_794_672_000, 123_456_789);
 struct Custody {
     store: Arc<InMemorySecretStore>,
     fail_write: Arc<std::sync::atomic::AtomicBool>,
+    denied_device_writes: Arc<std::sync::atomic::AtomicUsize>,
     fail_session_write: Arc<std::sync::atomic::AtomicBool>,
     fail_remove: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -34,6 +35,8 @@ impl SecretStore for Custody {
 
     fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
         if name == DEVICE_TOKEN_NAME && self.fail_write.load(std::sync::atomic::Ordering::SeqCst) {
+            self.denied_device_writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(SecretError("synthetic keyring denial".into()));
         }
         if name == ACCOUNT_SESSION_NAME
@@ -661,6 +664,65 @@ fn django_g1_real_api() {
         sync::atomic::{AtomicBool, Ordering},
     };
 
+    // Only the test transport can inspect the show-once answer. Store a redacted
+    // Token for comparisons on delivered answers; discard lost answers immediately.
+    #[derive(Default)]
+    struct StaffRefresh {
+        public_id: String,
+        original: Option<Token>,
+        replacement: Option<Token>,
+        lose_reply: bool,
+        dropped: bool,
+        calls: Vec<RefreshCall>,
+        manifests_with_saved_replacement: Vec<bool>,
+    }
+
+    struct RefreshCall {
+        capable: bool,
+        original: bool,
+        replacement: bool,
+        status: u16,
+        issued: bool,
+    }
+
+    impl StaffRefresh {
+        fn observe(&mut self, body: &str, bearer: Option<&str>, response: &HttpResponse) -> bool {
+            let request: Value = serde_json::from_str(body).expect("refresh request");
+            let answer: Value =
+                serde_json::from_str(&response.body).expect("live API refresh response");
+            let sent = bearer.map(Token::new);
+            let issued = answer["activation_token"].as_str().map(Token::new);
+            self.calls.push(RefreshCall {
+                capable: request == json!({"token_rotation": "staff-extension-v1"}),
+                original: sent.is_some() && sent == self.original,
+                replacement: sent.is_some() && sent == self.replacement,
+                status: response.status,
+                issued: issued.is_some(),
+            });
+            if let Some(token) = issued {
+                assert_eq!(response.status, 200);
+                assert_eq!(
+                    answer["device"]["device_public_id"].as_str(),
+                    Some(self.public_id.as_str())
+                );
+                assert_eq!(answer["license"]["valid_now"], true);
+                assert!(answer["token"]["expires_at"].is_string());
+                assert_eq!(
+                    answer["token"]["expires_at"],
+                    answer["license"]["expires_at"]
+                );
+                assert!(!token.is_blank() && !token.has_control_characters());
+                assert!(Some(&token) != self.original.as_ref());
+                if self.lose_reply && !self.dropped {
+                    self.dropped = true;
+                    return true;
+                }
+                self.replacement = Some(token);
+            }
+            false
+        }
+    }
+
     struct Wire {
         inner: ReqwestTransport,
         custody: Custody,
@@ -668,6 +730,7 @@ fn django_g1_real_api() {
         offline: Arc<AtomicBool>,
         expected_remint: Arc<AtomicBool>,
         lose_initial_reply: Arc<AtomicBool>,
+        staff: Arc<std::sync::Mutex<StaffRefresh>>,
     }
 
     impl HttpTransport for Wire {
@@ -699,7 +762,24 @@ fn django_g1_real_api() {
                 assert!(metadata.activated_public_id.is_some());
                 assert!(metadata.pending_activation().is_none());
             }
+            if url.ends_with("/v1/activations:bound-with-session")
+                && self.staff.lock().unwrap().lose_reply
+            {
+                let request: Value = serde_json::from_str(body).expect("generic sign-in request");
+                assert_ne!(
+                    request["operation_version"], 2,
+                    "generic sign-in or Retry requested credential replacement"
+                );
+            }
             let response = self.inner.post_json(url, body, bearer)?;
+            if url.ends_with("/v1/license:refresh") {
+                let mut staff = self.staff.lock().unwrap();
+                if staff.original.is_some() && staff.observe(body, bearer, &response) {
+                    return Err(TransportError(
+                        "lost committed staff refresh response".into(),
+                    ));
+                }
+            }
             if url.ends_with("/v1/activations:bound-with-session")
                 && self.lose_initial_reply.swap(false, Ordering::SeqCst)
             {
@@ -726,6 +806,7 @@ fn django_g1_real_api() {
                         offline: Arc::new(AtomicBool::new(scenario == "race-loss")),
                         expected_remint: Arc::new(AtomicBool::new(false)),
                         lose_initial_reply: Arc::new(AtomicBool::new(false)),
+                        staff: self.staff.clone(),
                     };
                     let base = std::env::var("SELAHCUE_G1_FIXTURE_URL").expect("base");
                     let client =
@@ -759,6 +840,18 @@ fn django_g1_real_api() {
             if self.offline.load(Ordering::SeqCst) {
                 return Err(TransportError("synthetic network unavailable".into()));
             }
+            if url.ends_with("/v1/entitlements/manifest") {
+                let mut staff = self.staff.lock().unwrap();
+                if staff.original.is_some() {
+                    let sent = bearer.map(Token::new);
+                    let saved = self
+                        .custody
+                        .get(DEVICE_TOKEN_NAME)
+                        .expect("custody at manifest GET");
+                    let matches = sent.is_some() && sent == staff.replacement && sent == saved;
+                    staff.manifests_with_saved_replacement.push(matches);
+                }
+            }
             self.inner.get(url, bearer)
         }
     }
@@ -781,6 +874,7 @@ fn django_g1_real_api() {
     let offline = Arc::new(AtomicBool::new(false));
     let expected_remint = Arc::new(AtomicBool::new(false));
     let lose_initial_reply = Arc::new(AtomicBool::new(false));
+    let staff = Arc::new(std::sync::Mutex::new(StaffRefresh::default()));
     let synthetic_seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let public_key = ed25519_dalek::SigningKey::from_bytes(&synthetic_seed)
         .verifying_key()
@@ -795,6 +889,7 @@ fn django_g1_real_api() {
             offline: offline.clone(),
             expected_remint: expected_remint.clone(),
             lose_initial_reply: lose_initial_reply.clone(),
+            staff: staff.clone(),
         };
         let api = LicensingClient::new_for_loopback_tests(transport, &base).expect("loopback only");
         AccountController::new(
@@ -813,7 +908,11 @@ fn django_g1_real_api() {
         .expect("local synthetic fixtures");
     let init: Value = serde_json::from_str(&init).expect("fixture inputs");
     let auth = || match scenario.as_str() {
-        "cascade" | "initial-restart" | "lost-initial" => Command::SignIn {
+        "cascade"
+        | "initial-restart"
+        | "lost-initial"
+        | "staff-extension-managed-free"
+        | "staff-extension-response-lost" => Command::SignIn {
             email: init["email"].as_str().expect("fixture email").into(),
             password: Token::new(init["password"].as_str().expect("fixture password")),
             display_name: "G1 live booth".into(),
@@ -917,6 +1016,127 @@ fn django_g1_real_api() {
     operator.select(first);
     let live = operator.go_live().live_index.expect("fixture slide on air");
     checkpoint(&mut input, "activated");
+
+    if scenario.starts_with("staff-extension") {
+        let loss = scenario == "staff-extension-response-lost";
+        let store_fault = scenario == "staff-extension-store-failed";
+        let restart = scenario == "staff-extension-restart";
+        let managed = scenario == "staff-extension-managed-free";
+        {
+            let mut trace = staff.lock().unwrap();
+            trace.original = Some(original.clone());
+            trace.public_id = public_id.to_owned();
+            trace.lose_reply = loss;
+        }
+        custody.fail_write.store(store_fault, Ordering::SeqCst);
+        let refresh = || Command::Refresh { explicit: true };
+        let first = wire(&account.execute(refresh()));
+        checkpoint(&mut input, "staff refresh returned");
+        assert_eq!(operator.view().live_index, Some(live));
+        assert_eq!(first["entitlement_state"], "current");
+
+        if loss {
+            assert!(staff.lock().unwrap().dropped,
+                "no successful replacement response from the real API to drop after staff extension");
+            assert_eq!(first["error_code"], "network_unavailable");
+        }
+        if store_fault {
+            assert_eq!(
+                custody.denied_device_writes.load(Ordering::SeqCst),
+                1,
+                "staff refresh never attempted to store the replacement in device custody"
+            );
+            assert_eq!(first["device_state"], "credential_not_saved");
+        }
+        if loss || store_fault {
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("old custody"),
+                Some(original.clone())
+            );
+            assert!(staff
+                .lock()
+                .unwrap()
+                .manifests_with_saved_replacement
+                .is_empty());
+            assert_eq!(
+                first["manifest_expires_at"],
+                activate["manifest_expires_at"]
+            );
+            checkpoint(&mut input, "replacement unavailable locally");
+        }
+        if store_fault {
+            custody.fail_write.store(false, Ordering::SeqCst);
+            let saved = wire(&account.execute(Command::RetryActivation));
+            assert_eq!(saved["entitlement_state"], "current");
+        }
+        if restart || managed {
+            if restart {
+                drop(account);
+                account = make_controller();
+            }
+            let next = wire(&account.execute(refresh()));
+            assert_eq!(next["entitlement_state"], "current");
+            assert_eq!(next["instances_used"], 1);
+            assert_eq!(next["instance_limit"], activate["instance_limit"]);
+            let trace = staff.lock().unwrap();
+            assert_eq!(trace.calls.len(), 2);
+            let next = &trace.calls[1];
+            assert!(next.replacement && next.capable && next.status == 200 && !next.issued,
+                "the next online refresh must use the already-stored staff replacement and receive status only");
+        }
+        {
+            let trace = staff.lock().unwrap();
+            let call = trace.calls.first().expect("real staff refresh POST");
+            assert!(call.capable && call.original && call.status == 200 && call.issued,
+                "the native refresh did not negotiate and receive a replacement for the live original bearer");
+            if !loss {
+                assert_eq!(
+                    trace.manifests_with_saved_replacement,
+                    vec![true; if restart || managed { 2 } else { 1 }],
+                    "every manifest GET must already have the real replacement in device custody and in its bearer header"
+                );
+                assert_eq!(
+                    custody.get(DEVICE_TOKEN_NAME).expect("final custody"),
+                    trace.replacement
+                );
+            }
+            if store_fault {
+                assert!(
+                    trace.calls[1..]
+                        .iter()
+                        .all(|call| call.replacement && !call.issued && call.status == 200),
+                    "retry must use the retained answer without re-posting the revoked original"
+                );
+            }
+        }
+        assert!(matches!(
+            account.client().refresh_license(&original, public_id),
+            Err(selahcue_licensing::ActivationFailure::Unauthenticated)
+        ));
+        if loss {
+            // Restart has only the previously stored bearer. Generic actions
+            // must preserve the presentation and cannot authorize replacement.
+            drop(account);
+            account = make_controller();
+            for command in [Command::RetryActivation, auth()] {
+                let view = wire(&account.execute(command));
+                assert_eq!(view["entitlement_state"], "current");
+                assert_eq!(
+                    custody.get(DEVICE_TOKEN_NAME).expect("old custody"),
+                    Some(original.clone())
+                );
+                assert_eq!(operator.view().live_index, Some(live));
+            }
+        }
+        let after = storage
+            .load_or_create(CredentialPresence::Present)
+            .expect("preserved staff binding");
+        assert_eq!(after.activated_public_id, initial_id.activated_public_id);
+        assert_eq!(after.fingerprint(), initial_id.fingerprint());
+        assert_eq!(operator.view().live_index, Some(live));
+        println!("G1 staff extension checked");
+        return;
+    }
 
     if scenario == "missing-local" {
         custody

@@ -1954,6 +1954,23 @@ jobs:
             tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api \
             > "$expected"
           echo "file=$expected" >> "$GITHUB_OUTPUT"
+      - name: Exercise all joint native scenarios for the tests-only checkpoint
+        if: ${{ !cancelled() && needs.changes.outputs.native_account_joint == 'true' }}
+        env:
+          SELAHCUE_G1_REQUIRE: '1'
+          SELAHCUE_G1_OPERATOR_TEST_BIN: ${{ steps.g1-verified.outputs.binary }}
+          SQL_ENGINE: django.db.backends.postgresql
+          SQL_DATABASE: selahcue_test
+          SQL_USER: selahcue
+          SQL_PASSWORD: selahcue
+          SQL_HOST: localhost
+          SQL_PORT: "5432"
+          CACHE_URL: redis://localhost:6379/1
+          CELERY_BROKER_URL: redis://localhost:6379/2
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: |
+          python -m pytest -v -rfEs --maxfail=0 --capture=tee-sys \
+            tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api
       - name: Tests
         if: ${{ !cancelled() }}
         env:

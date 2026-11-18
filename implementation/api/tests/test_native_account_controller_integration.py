@@ -24,9 +24,11 @@ from django.utils import timezone
 from test_bound_activation import another_license
 from test_device_token_remint import TEST_SEED_B64, _expire_tokens, _renew, _seed_license_key
 from test_free_license_lifecycle import self_service_org
+from test_license_revoke_extend import _extend
 from test_native_account_surface import seed_user
 from selahcue_api.apps.accounts.models import CustomerSession
-from selahcue_api.apps.audit.models import AuditEvent
+from selahcue_api.apps.audit.models import AuditEvent, AuditResult
+from selahcue_api.apps.catalogue.models import LicensePlanAssignment
 from selahcue_api.apps.devices.models import Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
@@ -80,6 +82,8 @@ def test_required_g1_missing_binary_fails(tmp_path):
     expected = {
         "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
         "lost-initial", "managed-free-lost-initial", "race-loss", "race-replay",
+        "staff-extension", "staff-extension-response-lost", "staff-extension-store-failed",
+        "staff-extension-restart", "staff-extension-managed-free",
     }
     assert {f"{joint_test}[{scenario}]" for scenario in expected} <= names, diagnostics
     assert len(cases) == len(names), diagnostics
@@ -144,11 +148,97 @@ def test_required_g1_workflow_keeps_api_reachable_and_requires_same_source_artif
     assert not errors, "\n".join(errors)
 
 
+def _staff_extension_case(scenario, customer, receive, advance):
+    key = AppLicenseKey.objects.get(customer=customer)
+    device = Device.objects.get(license_key=key)
+    original = DeviceToken.objects.get(device=device)
+    receipt = DeviceActivationOperation.objects.values().get(device=device)
+    assert receipt["issued_token_pk"] == receipt["result_token_id"] == original.pk
+    assert original.status == DeviceTokenStatus.ACTIVE and original.expires_at > timezone.now()
+    assert original.staff_extension_generation == key.staff_extension_generation
+    managed = scenario == "staff-extension-managed-free"
+    if managed:
+        marker = FreeLicenseLifecycle.objects.values().get(customer=customer, license_key=key)
+        grant = LicensePlanAssignment.objects.values().get(license_key=key, plan__is_fallback=True)
+        assert marker["renewal_enabled"]
+        assert AuditEvent.objects.filter(
+            action="customer_org.free_activated", target_id=str(customer.pk), result=AuditResult.SUCCESS,
+        ).count() == 1
+
+    expiry = key.expires_at + timedelta(days=30)
+    result = _extend(key, expiry, idem=f"g1-{scenario}")
+    key.refresh_from_db()
+    assert result.changed and key.expires_at == expiry
+    assert key.staff_extension_generation == original.staff_extension_generation + 1
+    extension = AuditEvent.objects.get(
+        action="license_key.extended", target_id=str(key.pk), result=AuditResult.SUCCESS,
+    )
+    assert result.audit_event.pk == extension.pk
+    assert (extension.actor_kind, extension.actor_id, extension.request_id) == ("staff", "staff_ops_7", f"g1-{scenario}")
+    assert extension.before["staff_extension_generation"] == original.staff_extension_generation
+    assert extension.after["staff_extension_generation"] == key.staff_extension_generation
+    original.refresh_from_db()
+    assert original.status == DeviceTokenStatus.ACTIVE
+    assert original.staff_extension_generation == key.staff_extension_generation - 1
+
+    def assert_rotated():
+        original.refresh_from_db()
+        assert original.status == DeviceTokenStatus.REVOKED
+        tokens = DeviceToken.objects.filter(device=device)
+        assert tokens.count() == 2
+        replacement = tokens.get(status=DeviceTokenStatus.ACTIVE)
+        assert replacement.pk != original.pk
+        assert replacement.expires_at == expiry
+        assert replacement.staff_extension_generation == key.staff_extension_generation
+        assert Device.objects.filter(customer=customer).count() == 1
+        persisted = Device.objects.get(pk=device.pk)
+        assert persisted.device_public_id == device.device_public_id
+        assert persisted.device_fingerprint == device.device_fingerprint
+        assert persisted.license_key_id == key.pk
+        assert DeviceActivationOperation.objects.values().get(pk=receipt["id"]) == receipt
+        assert AuditEvent.objects.filter(
+            action="device_token.reminted", after__device_public_id=device.device_public_id,
+            result=AuditResult.SUCCESS,
+        ).count() == 1
+
+    advance()
+    receive("staff refresh returned")
+    # Record database evidence even when the native behavioral assertion below
+    # fails on a status-only legacy response. Keep identifiers and secrets out
+    # of pytest output. The child is paused after its real HTTP call.
+    original.refresh_from_db()
+    live_generations = list(DeviceToken.objects.filter(
+        device=device, status=DeviceTokenStatus.ACTIVE,
+    ).values_list("staff_extension_generation", flat=True))
+    print(f"{scenario}: licence generation={key.staff_extension_generation}, "
+          f"original status={original.status}, active token generations={live_generations}")
+    assert DeviceActivationOperation.objects.values().get(pk=receipt["id"]) == receipt
+    advance()
+    if scenario in {"staff-extension-response-lost", "staff-extension-store-failed"}:
+        # Child emits this only after it observes the real dropped response or
+        # the denied device write. On a legacy status-only response it exits
+        # with the specific behavioral assertion, which receive() reports.
+        receive("replacement unavailable locally")
+        assert_rotated()
+        assert DeviceActivationOperation.objects.filter(device=device).count() == 1
+        advance()
+    receive("staff extension checked")
+    assert_rotated()
+    if scenario != "staff-extension-response-lost":
+        assert DeviceActivationOperation.objects.filter(device=device).count() == 1
+    if managed:
+        assert FreeLicenseLifecycle.objects.values().get(customer=customer) == marker
+        assert LicensePlanAssignment.objects.values().get(license_key=key) == grant
+        assert not AuditEvent.objects.filter(action="license_key.free_renewed").exists()
+
+
 @pytest.mark.skipif(not RUST_BIN and not REQUIRE_G1, reason="requires staged Rust operator integration test binary")
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("scenario", [
     "expired", "cascade", "missing", "missing-local", "live", "initial-restart",
     "lost-initial", "managed-free-lost-initial", "race-loss", "race-replay",
+    "staff-extension", "staff-extension-response-lost", "staff-extension-store-failed",
+    "staff-extension-restart", "staff-extension-managed-free",
 ])
 def test_native_account_controller_against_local_platform_api(scenario, settings, live_server):
     assert RUST_BIN, "SELAHCUE_G1_OPERATOR_TEST_BIN is required when SELAHCUE_G1_REQUIRE=1"
@@ -159,7 +249,8 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
     settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
     cache.clear()
     now = timezone.now().replace(microsecond=0)
-    starts_with_free = scenario == "managed-free-lost-initial"
+    legacy_free_loss = scenario == "managed-free-lost-initial"
+    starts_with_free = legacy_free_loss or scenario == "staff-extension-managed-free"
     if starts_with_free:
         customer = self_service_org()
         enrollment_key = None
@@ -169,12 +260,14 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
         customer = key.customer
     email = f"admin-{scenario}@fixture.test"
     password = "Synthetic-loopback-fixture-only-548!"
-    if starts_with_free or scenario in {"cascade", "initial-restart", "lost-initial"}:
+    if starts_with_free or scenario in {
+        "cascade", "initial-restart", "lost-initial", "staff-extension-response-lost",
+    }:
         seed_user(customer, email=email, password=password)
 
     env = os.environ.copy()
     env["SELAHCUE_G1_FIXTURE_URL"] = live_server.url
-    env["SELAHCUE_G1_SCENARIO"] = "lost-initial" if starts_with_free else scenario
+    env["SELAHCUE_G1_SCENARIO"] = "lost-initial" if legacy_free_loss else scenario
     env["NO_PROXY"] = "127.0.0.1,localhost"
     try:
         process = subprocess.Popen(
@@ -226,7 +319,7 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
                 # original response; restart retains the identical retry authority.
                 assert CustomerSession.objects.filter(revoked_at__isnull=True).count() == 1
                 return
-            if starts_with_free or scenario == "lost-initial":
+            if legacy_free_loss or scenario == "lost-initial":
                 receive("initial response lost")
                 receipt = DeviceActivationOperation.objects.get()
                 origin = receipt.device
@@ -270,6 +363,10 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
                 assert AuditEvent.objects.filter(action="device_token.reminted").count() == 1
                 return
             receive("activated")
+            if scenario.startswith("staff-extension"):
+                _staff_extension_case(scenario, customer, receive, advance)
+                assert child.wait(timeout=30) == 0
+                return
             initial = Device.objects.get(license_key=key)
             original = DeviceToken.objects.get(device=initial)
             if scenario == "missing-local":
