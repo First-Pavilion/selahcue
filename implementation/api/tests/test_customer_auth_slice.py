@@ -312,10 +312,14 @@ def test_registration_and_trace_hourly_configuration(monkeypatch, name, shipped)
     assert read() == (shipped, 3600)
     monkeypatch.setenv(name, "7")
     assert read() == (7, 3600)
-    for invalid in ("0", "-1", "bad", "2147483648"):
+    monkeypatch.setenv(name, "2147483647")
+    assert read() == (2147483647, 3600)
+    for invalid in ("0", "-1", "private-invalid-limit", "2147483648"):
         monkeypatch.setenv(name, invalid)
-        with pytest.raises(ImproperlyConfigured, match=name):
+        with pytest.raises(ImproperlyConfigured, match=name) as error:
             read()
+        assert "an integer from 1 to 2147483647;" in str(error.value)
+        assert "private-invalid-limit" not in str(error.value)
 
 
 # --- AUTH-2: signup --------------------------------------------------------

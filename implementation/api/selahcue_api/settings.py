@@ -626,9 +626,12 @@ def _bounded_env_number(name: str, default: str, minimum: float, maximum: float,
         value = None
     if value is None or not minimum <= value <= maximum:
         # Even malformed environment input must never be echoed in diagnostics.
+        if integer:
+            requirement = f"an integer from {int(minimum)} to {int(maximum)}"
+        else:
+            requirement = f"a finite number from {minimum:g} to {maximum:g}"
         raise ImproperlyConfigured(
-            f"{name} must be {'an integer' if integer else 'a finite number'} from "
-            f"{minimum:g} to {maximum:g}; see docs/ops/DEPLOYMENT.md §6b."
+            f"{name} must be {requirement}; see docs/ops/DEPLOYMENT.md §6b."
         ) from None
     return value
 
