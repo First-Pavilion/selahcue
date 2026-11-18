@@ -201,7 +201,7 @@ def _staff_extension_case(scenario, customer, receive, advance):
             result=AuditResult.SUCCESS,
         ).count() == 1
 
-    advance()
+    advance(extended_expiry=key.expires_at)
     receive("staff refresh returned")
     # Record database evidence even when the native behavioral assertion below
     # fails on a status-only legacy response. Keep identifiers and secrets out
@@ -296,8 +296,10 @@ def test_native_account_controller_against_local_platform_api(scenario, settings
                 if line.strip() == f"G1 {marker}":
                     return
 
-        def advance():
+        def advance(*, extended_expiry=None):
             child.stdin.write("continue\n")
+            if extended_expiry is not None:
+                child.stdin.write(extended_expiry.isoformat() + "\n")
             child.stdin.flush()
 
         try:

@@ -288,6 +288,7 @@ jobs:
               - 'implementation/api/tests/test_bound_activation.py'
               - 'implementation/api/tests/test_device_token_remint.py'
               - 'implementation/api/tests/test_free_license_lifecycle.py'
+              - 'implementation/api/tests/test_license_revoke_extend.py'
               - 'implementation/api/tests/test_native_account_*.py'
               - 'implementation/desktop/crates/selahcue-licensing/**'
               - 'implementation/desktop/crates/selahcue-operator/src/account/**'

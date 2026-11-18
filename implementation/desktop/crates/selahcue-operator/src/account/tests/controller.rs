@@ -1018,6 +1018,41 @@ fn django_g1_real_api() {
     checkpoint(&mut input, "activated");
 
     if scenario.starts_with("staff-extension") {
+        // The parent sends the licence expiry reloaded after the staff writer committed.
+        // Compare instants so UTC offsets and fractional-second formatting can differ.
+        let mut expiry_line = String::new();
+        input
+            .read_line(&mut expiry_line)
+            .expect("staff expiry from database");
+        let parse_expiry = |date: &str| {
+            time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
+                .expect("fixture licence expiry")
+        };
+        let extended_expiry = parse_expiry(expiry_line.trim());
+        assert_ne!(
+            parse_expiry(
+                activate["license_expires_at"]
+                    .as_str()
+                    .expect("original signed expiry")
+            ),
+            extended_expiry
+        );
+        let assert_extended_entitlement = |view: &Value| {
+            assert!(
+                view["error_code"].is_null(),
+                "unexpected account command error: {}",
+                view["error_code"]
+            );
+            assert_eq!(view["entitlement_state"], "current");
+            let signed_expiry = view["license_expires_at"]
+                .as_str()
+                .expect("signed licence expiry");
+            assert_eq!(
+                parse_expiry(signed_expiry),
+                extended_expiry,
+                "the verified entitlement must contain the committed staff expiry"
+            );
+        };
         let loss = scenario == "staff-extension-response-lost";
         let store_fault = scenario == "staff-extension-store-failed";
         let restart = scenario == "staff-extension-restart";
@@ -1062,20 +1097,25 @@ fn django_g1_real_api() {
                 first["manifest_expires_at"],
                 activate["manifest_expires_at"]
             );
+            assert_eq!(first["license_expires_at"], activate["license_expires_at"]);
             checkpoint(&mut input, "replacement unavailable locally");
+        } else {
+            assert_extended_entitlement(&first);
         }
         if store_fault {
             custody.fail_write.store(false, Ordering::SeqCst);
             let saved = wire(&account.execute(Command::RetryActivation));
-            assert_eq!(saved["entitlement_state"], "current");
+            assert_extended_entitlement(&saved);
         }
         if restart || managed {
             if restart {
                 drop(account);
                 account = make_controller();
+                let startup = wire(&account.execute(Command::Startup));
+                assert_extended_entitlement(&startup);
             }
             let next = wire(&account.execute(refresh()));
-            assert_eq!(next["entitlement_state"], "current");
+            assert_extended_entitlement(&next);
             assert_eq!(next["instances_used"], 1);
             assert_eq!(next["instance_limit"], activate["instance_limit"]);
             let trace = staff.lock().unwrap();
@@ -1109,10 +1149,21 @@ fn django_g1_real_api() {
                 );
             }
         }
+        let calls_before_probe = staff.lock().unwrap().calls.len();
         assert!(matches!(
             account.client().refresh_license(&original, public_id),
             Err(selahcue_licensing::ActivationFailure::Unauthenticated)
         ));
+        {
+            let trace = staff.lock().unwrap();
+            assert_eq!(trace.calls.len(), calls_before_probe + 1);
+            let probe = &trace.calls[calls_before_probe];
+            assert!(probe.original, "probe must present the original bearer");
+            assert_eq!(
+                probe.status, 401,
+                "real API must reject the original bearer with HTTP 401"
+            );
+        }
         if loss {
             // Restart has only the previously stored bearer. Generic actions
             // must preserve the presentation and cannot authorize replacement.
