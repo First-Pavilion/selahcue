@@ -336,24 +336,9 @@ RESET_CONFIRM_IP_BUDGET = (20, 3600)
 # point, what it must never hold.
 RESET_CONFIRM_FAILED_ACTION = "customer_user.password_reset_confirm_failed"
 
-# Bounds on how many of those rows are written. The per-source budget bounds one source; it does
-# not bound a flood from many sources (a trusted-proxy hop count set too high lets a caller pick
-# its own left-hand X-Forwarded-For entry per request, i.e. a fresh source per request) and it
-# bounds nothing at all while the store is down and every budget fails open. All of these skip
-# the ROW and never the response, and all are sized generously: a legitimate failed confirm must
-# not lose its trace, so they are flood brakes and not budgets. Settings of the same names ship
-# in settings.py.
-#
-# TWO allowances, because one shared counter would let anyone blind the trace to the outcomes it
-# exists for (see `_trace_skip_reason`):
-#   - outcomes that name NO account (unknown or malformed token, an internal error before any
-#     account was identified) spend a SHARED budget per hour, and a per-worker ceiling in an
-#     outage;
-#   - outcomes that name an ACCOUNT (consumed, expired, wrong purpose, rejected password, an
-#     internal error after the token validated) spend only that account's own allowance, keyed by
-#     user id: 60 an hour (a person retrying a weak password needs a handful, and the per-source
-#     budget already caps one source at 20), and 30 an hour per worker in an outage, tracked in a
-#     table of at most RESET_CONFIRM_TRACE_ACCOUNT_TABLE_MAX accounts.
+# Anonymous failures spend a fixed global budget. Named failures spend a separate
+# aggregate and then an account budget. These allowances affect audit rows only.
+_NAMED_AGGREGATE_SPENT = "named aggregate spent"
 RESET_CONFIRM_TRACE_SCOPE = "password_reset_confirm_trace_global"
 RESET_CONFIRM_TRACE_BUDGET = (1000, 3600)
 RESET_CONFIRM_TRACE_DEGRADED_CEILING = (200, 3600)
@@ -822,7 +807,7 @@ class ConfirmPasswordResetResult:
 
 
 # --- services --------------------------------------------------------------
-def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
+def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "") -> AcceptedResult:
     """Self-serve signup (DEC-007 product answer): create a NEW CustomerOrg (TRIAL) and its first
     Admin user atomically, then email a verification token. Returns a UNIFORM accepted:true whether
     or not the email already exists — no user-enumeration oracle."""
@@ -833,6 +818,16 @@ def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
     country = data.country.strip().upper()
     if not org_name or len(country) != 2:
         raise _validation_error()
+    # A fixed global claim bounds new source keys. Either store failure closes
+    # admission before the password hash, account queries and mail publication.
+    global_claim = spend_budget("register_global", "all", "SELAHCUE_THROTTLE_REGISTER_GLOBAL", (500, 3600))
+    if global_claim is not BudgetOutcome.ALLOWED:
+        raise SafeAPIError(ErrorCode.RATE_LIMITED)
+    source_claim = spend_budget(
+        "register_ip", client_ip or UNRESOLVED_CLIENT_IP, "SELAHCUE_THROTTLE_REGISTER_IP", (20, 3600),
+    )
+    if source_claim is not BudgetOutcome.ALLOWED:
+        raise SafeAPIError(ErrorCode.RATE_LIMITED)
     fingerprint = _email_fingerprint(email)
     # Namespace the (actor, idempotency_key) guard PER EMAIL: two distinct signups that happen to
     # pick the same client idempotency key must not alias and swallow one another. Email is the real
@@ -1603,7 +1598,7 @@ class _SuppressedTally:
     first of them looked like, and up to `_TRACE_REPORT_ACCOUNTS_MAX` distinct account ids.
 
     State is a lock, one int, one string capped at `_TRACE_REPORT_DETAIL_MAX` characters, one
-    float and a set of at most `_TRACE_REPORT_ACCOUNTS_MAX` ints, whatever the event rate and
+    float, one aggregate alarm flag and a set of at most `_TRACE_REPORT_ACCOUNTS_MAX` ints,
     however many distinct sources or accounts there are. A per-source map would be keyed by
     attacker-chosen values on an unauthenticated endpoint -- the unbounded growth the repo
     forbids -- and would grow fastest exactly during the flood this reports on.
@@ -1624,21 +1619,25 @@ class _SuppressedTally:
             self._count = 0
             self._first = ""
             self._accounts: set[int] = set()
+            self._aggregate_hit = False
             self._last_report = float("-inf")
 
-    def note(self, detail: str, account_id: int | None = None) -> tuple[int, str, list[int]] | None:
-        """Record one event. Returns (count since the last report, first detail, the distinct
-        account ids seen, capped) when a report is due, resetting the tally, else None."""
+    def note(
+        self, detail: str, account_id: int | None = None, *, aggregate_hit: bool = False,
+    ) -> tuple[int, str, list[int], bool] | None:
+        """Release count, first detail, capped account IDs and aggregate alarm once per interval."""
         now = time.monotonic()
         with self._lock:
             if self._count == 0:
                 self._first = detail[:_TRACE_REPORT_DETAIL_MAX]
             self._count += 1
+            self._aggregate_hit |= aggregate_hit
             if account_id is not None and len(self._accounts) < _TRACE_REPORT_ACCOUNTS_MAX:
                 self._accounts.add(account_id)
             if now - self._last_report < _TRACE_REPORT_INTERVAL_SECONDS:
                 return None
-            released = (self._count, self._first, sorted(self._accounts))
+            released = (self._count, self._first, sorted(self._accounts), self._aggregate_hit)
+            self._aggregate_hit = False
             self._count = 0
             self._first = ""
             self._accounts = set()
@@ -1646,47 +1645,48 @@ class _SuppressedTally:
             return released
 
 
-class _AccountCeilings:
-    """Per-worker, per-account fixed windows: the outage stand-in for the per-account allowance.
+class _AccountClaim(Enum):
+    ALLOWED = "allowed"
+    EXHAUSTED = "exhausted"
+    OVERFLOW = "overflow"
 
-    Process-local on purpose (the shared store is what is down), so with N workers the real
-    allowance is N times the limit. MEMORY IS BOUNDED BY CONSTRUCTION: at most `max_entries`
-    accounts are tracked, and starting a window for a new account first evicts the
-    least-recently-started one. An account keyed here is a real account (the id comes from a
-    token row that exists), never an attacker-chosen string. Eviction forgets an account's count,
-    so a caller who can name more than `max_entries` accounts in an hour gets a fresh window for
-    the ones evicted: a bounded loss of protection, chosen over unbounded growth.
-    """
+
+class _AccountCeilings:
+    """Bounded per-worker outage windows, ordered by start time for expiry reclamation."""
 
     def __init__(self, *, setting_name: str, default: tuple[int, int], max_entries: int):
         self._setting_name = setting_name
         self._default = default
         self._max_entries = max_entries
         self._lock = threading.Lock()
-        self._windows: OrderedDict[int, list[float]] = OrderedDict()
+        self._windows: OrderedDict[int, tuple[float, int]] = OrderedDict()
 
     def reset(self) -> None:
         """Test seam."""
         with self._lock:
             self._windows.clear()
 
-    def claim(self, account_id: int) -> bool:
-        """Claim one unit of `account_id`'s window. False means: skip the row."""
+    def claim(self, account_id: int) -> _AccountClaim:
         limit, window = getattr(settings, self._setting_name, self._default)
         limit, window = int(limit), float(window)
-        now = time.monotonic()
         with self._lock:
+            now = time.monotonic()
+            # Read the clock under the lock so insertion order is also start-time order.
+            while self._windows:
+                oldest, _ = next(iter(self._windows.values()))
+                if now - oldest < window:
+                    break
+                self._windows.popitem(last=False)
             entry = self._windows.get(account_id)
-            if entry is None or now - entry[0] >= window:
-                entry = [now, 0]
-                self._windows[account_id] = entry
-                self._windows.move_to_end(account_id)
-                while len(self._windows) > self._max_entries:
-                    self._windows.popitem(last=False)
-            if entry[1] >= limit:
-                return False
-            entry[1] += 1
-            return True
+            if entry is None:
+                if len(self._windows) >= self._max_entries:
+                    return _AccountClaim.OVERFLOW
+                entry = (now, 0)
+            start, count = entry
+            if count >= limit:
+                return _AccountClaim.EXHAUSTED
+            self._windows[account_id] = (start, count + 1)
+            return _AccountClaim.ALLOWED
 
 
 _trace_lost_tally = _SuppressedTally()
@@ -1697,6 +1697,11 @@ _reset_confirm_trace_ceiling = _DegradedSendCeiling(
     label="password-reset-confirm-trace",
     setting_name="SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING",
     default=RESET_CONFIRM_TRACE_DEGRADED_CEILING,
+)
+_reset_confirm_trace_named_ceiling = _DegradedSendCeiling(
+    label="password-reset-confirm-trace-named",
+    setting_name="SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING",
+    default=(600, 3600),
 )
 _reset_confirm_trace_account_ceilings = _AccountCeilings(
     setting_name="SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING",
@@ -1710,62 +1715,53 @@ def _reset_trace_reporting() -> None:
     _trace_lost_tally.reset()
     _trace_skipped_tally.reset()
     _reset_confirm_trace_ceiling.reset()
+    _reset_confirm_trace_named_ceiling.reset()
     _reset_confirm_trace_account_ceilings.reset()
 
 
 def _trace_skip_reason(trace: _ResetConfirmTrace, limiter_degraded: bool) -> str | None:
-    """Why this failure's ROW must not be written, or None to write it. Never affects the
-    response.
-
-    TWO allowances, because one shared counter lets a flood blind the trace to exactly the
-    outcomes it exists for. Unauthenticated noise (an unknown or malformed token, or an internal
-    error before any account was identified) costs nothing to produce and spends the SHARED
-    brake. An outcome that NAMES AN ACCOUNT (consumed, expired, wrong purpose, a rejected
-    password, or an internal error after the token validated) is what a probe of a skimmed token
-    looks like, so it spends only that account's own allowance, keyed by user id: a stranger
-    cannot fill another account's allowance (they would need that account's own token), and the
-    key space is bounded by real accounts. A SEPARATE shared bucket for named outcomes would not
-    do: anyone can mint wrong-purpose noise from tokens of accounts they own.
-
-    Healthy store: the budget lives in the shared store. Store down -- either the per-source
-    budget already failed open, or this very call finds the store unavailable -- a process-local
-    ceiling of the same shape stands in. Once the per-source budget has failed open the store is
-    not asked again (one round trip per request, so a stalled Redis costs one timeout, not two).
-    """
+    """Return a reason to skip this audit row. A known store outage uses only local ceilings."""
     account_id = trace.customer_user_id
     if account_id is None:
-        budget = (
-            RESET_CONFIRM_TRACE_SCOPE,
-            "all",
-            "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE",
-            RESET_CONFIRM_TRACE_BUDGET,
-        )
+        if not limiter_degraded:
+            shared = spend_budget(
+                RESET_CONFIRM_TRACE_SCOPE, "all", "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE",
+                RESET_CONFIRM_TRACE_BUDGET, report_denial=False,
+            )
+            if shared is BudgetOutcome.ALLOWED:
+                return None
+            if shared is BudgetOutcome.DENIED:
+                return "shared brake spent"
+        return None if _reset_confirm_trace_ceiling.claim() else "outage ceiling spent"
 
-        def claim_in_process() -> bool:
-            return _reset_confirm_trace_ceiling.claim()
-
-        spent = "shared brake spent"
-        spent_in_outage = "outage ceiling spent"
-    else:
-        budget = (
-            RESET_CONFIRM_TRACE_ACCOUNT_SCOPE,
-            str(account_id),
-            "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT",
-            RESET_CONFIRM_TRACE_ACCOUNT_BUDGET,
-        )
-
-        def claim_in_process() -> bool:
-            return _reset_confirm_trace_account_ceilings.claim(account_id)
-
-        spent = "account allowance spent"
-        spent_in_outage = "account outage allowance spent"
+    # Bound both named rows and new per-account cache keys. A rejected account
+    # still spends aggregate allowance, independently of the anonymous budget.
     if not limiter_degraded:
-        outcome = spend_budget(*budget, report_denial=False)
-        if outcome is BudgetOutcome.DENIED:
-            return spent
-        limiter_degraded = outcome is BudgetOutcome.STORE_UNAVAILABLE
-    if limiter_degraded and not claim_in_process():
-        return spent_in_outage
+        aggregate = spend_budget(
+            "password_reset_confirm_trace_named", "all", "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED",
+            (6000, 3600), report_denial=False,
+        )
+        if aggregate is BudgetOutcome.DENIED:
+            return _NAMED_AGGREGATE_SPENT
+        if aggregate is BudgetOutcome.ALLOWED:
+            account = spend_budget(
+                RESET_CONFIRM_TRACE_ACCOUNT_SCOPE, str(account_id), "SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT",
+                RESET_CONFIRM_TRACE_ACCOUNT_BUDGET, report_denial=False,
+            )
+            if account is BudgetOutcome.ALLOWED:
+                return None
+            if account is BudgetOutcome.DENIED:
+                return "account allowance spent"
+
+    # Either shared claim can discover an outage. Bound every local admission,
+    # even when the global shared claim succeeded and the account claim failed.
+    if not _reset_confirm_trace_named_ceiling.claim():
+        return _NAMED_AGGREGATE_SPENT
+    local_account = _reset_confirm_trace_account_ceilings.claim(account_id)
+    if local_account is _AccountClaim.EXHAUSTED:
+        return "account outage allowance spent"
+    if local_account is _AccountClaim.OVERFLOW and not _reset_confirm_trace_ceiling.claim():
+        return "outage ceiling spent"
     return None
 
 
@@ -1781,7 +1777,7 @@ def _note_lost_trace(error: Exception, outcome: ResetConfirmOutcome, source: str
             label = "unlabelled"
         released = _trace_lost_tally.note(f"{type(error).__name__} outcome={outcome.value} source={label}")
         if released is not None:
-            count, first, _accounts = released
+            count, first, _accounts, _aggregate_hit = released
             logger.warning(
                 "could not write the audit row for %d failed password-reset confirm(s) since the "
                 "last report (first: %s). The callers' responses were unchanged; those attempts "
@@ -1807,17 +1803,18 @@ def _trace_failed_confirm(trace: _ResetConfirmTrace, source: str, limiter_degrad
             return
         released = _trace_skipped_tally.note(
             f"outcome={outcome.value} source={audit_source_pseudonym(source)} reason={reason}",
-            trace.customer_user_id,
+            trace.customer_user_id, aggregate_hit=reason == _NAMED_AGGREGATE_SPENT,
         )
         if released is not None:
-            count, first, accounts = released
+            count, first, accounts, aggregate_hit = released
             logger.warning(
                 "skipped %d audit row(s) for failed password-reset confirms since the last report "
-                "(first: %s%s). The callers' responses were unchanged; those attempts have no "
+                "(first: %s%s)%s. The callers' responses were unchanged; those attempts have no "
                 "trace. Further reports suppressed for %.0fs.",
                 count,
                 first,
                 f"; accounts {accounts}" if accounts else "",
+                " named_aggregate_cap_hit" if aggregate_hit else "",
                 _TRACE_REPORT_INTERVAL_SECONDS,
             )
     except Exception as error:  # noqa: BLE001 -- see the docstring

@@ -618,7 +618,7 @@ CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIM
 CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
 
 
-def _cache_circuit_number(name: str, default: str, minimum: float, maximum: float, *, integer=False):
+def _bounded_env_number(name: str, default: str, minimum: float, maximum: float, *, integer=False):
     raw = (os.getenv(name) or "").strip() or default
     try:
         value = int(raw) if integer else float(raw)
@@ -626,17 +626,20 @@ def _cache_circuit_number(name: str, default: str, minimum: float, maximum: floa
         value = None
     if value is None or not minimum <= value <= maximum:
         # Even malformed environment input must never be echoed in diagnostics.
+        if integer:
+            requirement = f"an integer from {int(minimum)} to {int(maximum)}"
+        else:
+            requirement = f"a finite number from {minimum:g} to {maximum:g}"
         raise ImproperlyConfigured(
-            f"{name} must be {'an integer' if integer else 'a finite number'} from "
-            f"{minimum:g} to {maximum:g}; see docs/ops/DEPLOYMENT.md §6b."
+            f"{name} must be {requirement}; see docs/ops/DEPLOYMENT.md §6b."
         ) from None
     return value
 
 
-CACHE_CIRCUIT_FAILURE_THRESHOLD = _cache_circuit_number(
+CACHE_CIRCUIT_FAILURE_THRESHOLD = _bounded_env_number(
     "CACHE_CIRCUIT_FAILURE_THRESHOLD", "3", 1, 100, integer=True,
 )
-CACHE_CIRCUIT_COOLDOWN = _cache_circuit_number("CACHE_CIRCUIT_COOLDOWN", "5", 0.1, 60)
+CACHE_CIRCUIT_COOLDOWN = _bounded_env_number("CACHE_CIRCUIT_COOLDOWN", "5", 0.1, 60)
 
 
 def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> dict:
@@ -695,6 +698,15 @@ SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
 SELAHCUE_THROTTLE_SESSION_LOGIN = (10, 60)
 # Native single-session cleanup has a separate per-IP bucket; it cannot spend sign-in/activation budgets.
 SELAHCUE_THROTTLE_SESSION_REVOKE = (10, 60)
+
+
+def _hourly_budget(name: str, default: int) -> tuple[int, int]:
+    limit = _bounded_env_number(name, str(default), 1, 2_147_483_647, integer=True)
+    return limit, 3600
+
+
+SELAHCUE_THROTTLE_REGISTER_GLOBAL = _hourly_budget("SELAHCUE_THROTTLE_REGISTER_GLOBAL", 500)
+SELAHCUE_THROTTLE_REGISTER_IP = _hourly_budget("SELAHCUE_THROTTLE_REGISTER_IP", 20)
 
 # Resend-verification is unauthenticated AND sends email on demand, so it is both a spam
 # vector (flooding an arbitrary victim's mailbox) and a cost vector. Three budgets, because
@@ -773,11 +785,15 @@ SELAHCUE_RESET_SEND_DEGRADED_CEILING = (20, 3600)
 # How many audit rows the failed password-reset confirm trace may write (86ak5r2pt). They skip
 # the ROW only, never the response, and are flood brakes sized generously, not budgets. Outcomes
 # that name no account (unknown or malformed token) share the first pair; outcomes that name an
-# account have their own allowance PER ACCOUNT, so noise cannot blind the trace to a probe of a
-# skimmed token. The ceilings are per worker and apply only while the limiter store is down.
+# account spend a separate named aggregate allowance and their per-account allowance. The
+# ceilings are per worker and apply while the limiter store is down.
 # See apps/accounts/services.py (`_trace_skip_reason`) and the runbook, docs/ops/DEPLOYMENT.md.
 SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (1000, 3600)
 SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (200, 3600)
+SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED = _hourly_budget("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED", 6000)
+SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = _hourly_budget(
+    "SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING", 600,
+)
 SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (60, 3600)
 SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (30, 3600)
 

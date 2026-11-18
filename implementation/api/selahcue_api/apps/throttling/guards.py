@@ -128,7 +128,7 @@ def report_native_login_failure() -> None:
 # global, address-fingerprint and audit-allowance keys retain their own scheme.
 _IP_BUDGET_SCOPES = frozenset({
     "verify_email_ip", "resend_verify_ip", "password_reset_request_ip",
-    "password_reset_confirm_ip",
+    "password_reset_confirm_ip", "register_ip",
 })
 
 

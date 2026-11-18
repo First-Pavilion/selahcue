@@ -223,6 +223,10 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `CACHE_CIRCUIT_FAILURE_THRESHOLD` | `3` | Integer `1` to `100`; consecutive cache errors before this worker bypasses the store. See §6b |
 | `CACHE_CIRCUIT_COOLDOWN` | `5` (seconds) | Finite `0.1` to `60`; bypass duration before a single recovery probe. See §6b |
+| `SELAHCUE_THROTTLE_REGISTER_GLOBAL` | `500` | Global signup claims per fixed hour, checked before the source budget. |
+| `SELAHCUE_THROTTLE_REGISTER_IP` | `20` | Signup claims per trusted source per fixed hour. |
+| `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED` | `6000` | Shared hourly allowance for failed reset-confirm audit rows naming accounts. |
+| `SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING` | `600` | Hourly named trace allowance per worker during a cache outage. |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `SELAHCUE_TRUST_FORWARDED_PROTO` | `0` (off) | Set `1` (or `true`/`yes`/`on`) behind a TLS-terminating proxy that overwrites `X-Forwarded-Proto`, else browser CSRF fails and HSTS is never sent. Opt-in because the header is forgeable, and it makes HSTS live. See §6c |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | empty | Exact `https://host[:port]` origins (no `*`, no path), only if the browser `Origin` differs from the forwarded `Host`. A bad entry refuses to boot. See §6c |
@@ -350,12 +354,9 @@ other reachable device routes. Verify edge limits and Django's client IP on both
 
 It runs *inside* Django, so a request must be accepted, routed and middleware-processed before it
 can be refused — a flood large enough to matter has already consumed a worker slot by then. It
-also **fails open** by design (this includes `POST /v1/sessions`, where the only remaining brake on
-password guessing during an outage is the per-account lockout): if Redis is unavailable the limiter allows the request and logs,
-because refusing all device traffic during a cache outage would cause the outage it exists to
-prevent. Both properties are deliberate, and both mean the app limiter cannot absorb a real
-flood. Put connection- and request-rate limits on the ingress; the app layer is there to catch
-per-endpoint abuse that looks like ordinary traffic at the edge.
+also permits ordinary device traffic during Redis outages. Native bootstrap sign-in and
+browser signup require successful cache admission before password work. Ingress connection
+and request-rate limits protect the worker slots before a request reaches Django.
 
 `SELAHCUE_TRUSTED_PROXY_COUNT` ties the two together. It is the count of **your own** proxies
 between the client and Django, and it defaults to `0`, meaning the limiter keys on `REMOTE_ADDR`
@@ -363,6 +364,22 @@ and ignores `X-Forwarded-For` entirely. Raise it only to the real number of hops
 the header is caller-supplied, so a count that is too high makes the limiter read an attacker-
 controlled value and hands out a fresh budget per request — one header, limiter gone. Too low is
 merely inaccurate (everyone behind the proxy shares a bucket); too high is a bypass.
+
+### Signup admission
+
+`registerCustomerUser` checks valid input against a fixed global window (500 per hour), then a
+window for the trusted source (20 per hour). Missing request context shares one fixed source
+bucket. Both checks precede password hashing, database work and mail. Source refusals still
+consume global credit. Each global window can start at most its limit in new source keys.
+A full window or an unavailable cache returns the same `RATE_LIMITED` GraphQL error for
+existing and new email addresses. Restore Redis to recover signup during a store outage.
+
+The signup limits and the two named trace aggregate limits in the environment table accept
+integer claims per hour from 1 through 2147483647. Unset or blank uses the documented defaults.
+An invalid value stops settings startup. To roll back tuning, restore the prior values (or
+remove overrides for defaults) and recreate the API workers. Shared counters retain their
+original expiry. Reverting to a release predating these limits restores the previous unbounded
+signup and named trace behavior.
 
 ### Redis must not be publicly reachable
 
@@ -382,8 +399,7 @@ cannot take the other with it.
 
 ### A Redis that stops answering must not stall requests
 
-"Fails open when Redis is unavailable" (above) is only true if the app gives up on a Redis that has
-gone quiet. A Redis that is **up but wedged** — a failing node, a network partition, memory pressure
+The outage policy takes effect once the cache operation times out. A Redis that is **up but wedged** — a failing node, a network partition, memory pressure
 — still accepts the connection and then never replies. With no socket timeout the app waits forever
 for that reply, so the limiter never gets to fail open: every request that spends a throttle budget
 is held for as long as Redis stays wedged, and a cache fault becomes a full API outage.
@@ -393,7 +409,9 @@ Routes that spend a budget, and how many:
 - **One budget:** `POST /v1/activations`, `POST /v1/activations:bound`, `POST /v1/sessions`,
   `POST /v1/activations:with-session`, `POST /v1/activations:bound-with-session`,
   `POST /v1/license:refresh`, `GET /v1/entitlements/manifest`, and the GraphQL mutations
-  `verifyEmail` and `confirmPasswordReset`.
+  `verifyEmail` and the source check for `confirmPasswordReset`. A failed confirm may also
+  consult one anonymous trace budget or two named trace budgets.
+- **Two budgets:** the GraphQL mutation `registerCustomerUser`.
 - **Three budgets:** the GraphQL mutations `requestPasswordReset` and `resendVerificationEmail`.
 
 The cache connection therefore carries two timeouts, in seconds, both read from the environment:
@@ -425,7 +443,8 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   (26 ms at worst in this change's performance review), so the default is at least 19 times the
   worst healthy sample.
 - **A stalled Redis is treated exactly like a down one.** The call raises, the throttle **permits
-  the request** except native `POST /v1/sessions`: bootstrap login returns429 before password
+  the request** with two exceptions. Browser signup returns `RATE_LIMITED`. Native bootstrap
+  login (`POST /v1/sessions`) returns 429 before password
   work when its budget cannot be checked (17tnw2b1wq9; see the API README). Already activated
   devices and other native routes retain their existing fail-open availability. The degraded
   send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
@@ -447,7 +466,7 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   `POST /v1/sessions` retains its distinct429-before-password-work outage refusal; activated
   devices and the other native routes retain their existing fail-open policy.
 - **IP cache-key privacy and root-key rotation (17tnw2b1x1p).** Native route IP budgets and
-  the four browser IP scopes (verify email, resend verification, request reset and confirm
+  the five browser IP scopes (registration, verify email, resend verification, request reset and confirm
   reset) store `ip:v1:` plus an HMAC-SHA256 digest of the already-resolved source bucket.
   Django's `salted_hmac` derives dedicated key material as SHA256 of the purpose
   `selahcue_api.apps.throttling.ip_bucket.v1` followed by the configured `SECRET_KEY`.
@@ -541,8 +560,8 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   when a mail send is skipped). This repo configures no `LOGGING` and has no Sentry integration
   wired (`SENTRY_DSN` is read into settings but nothing consumes it), so those lines reach only
   whatever collects your process output: page on them there. It is also visible from outside:
-  while it lasts, every throttled response is slower by the figures above and `RATE_LIMITED`
-  (429) answers stop appearing, so a flood is no longer refused.
+  during an outage signup and native bootstrap login refuse admission, while fail-open
+  routes can continue past their shared limits.
 - **The task broker has its own socket limits (17tnw2b2k4x).** The two broker timeout
   variables in the API environment table use the same inclusive 0.05–10 second validation as
   the cache, with 0.5 second defaults. They configure Kombu's Redis transport through the Python setting
@@ -577,36 +596,30 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
 
 ### The failed password-reset confirm trace (86ak5r2pt)
 
-Every `confirmPasswordReset` that fails past the per-IP budget writes one audit row
-(`customer_user.password_reset_confirm_failed`, result DENIED). It holds the outcome, a random
-attempt id, the account id when the token resolved, and the source as a keyed, daily-rotating
-pseudonym `src:v1:<32 hex>` (never the address). Four knobs bound how many rows are written; they
-skip the **row**, never the response, and ship in `settings.py`:
+A failed `confirmPasswordReset` past the source throttle can write an audit row
+(`customer_user.password_reset_confirm_failed`, result DENIED). The row carries the outcome,
+a random attempt ID, the account ID if known and a keyed daily source pseudonym.
 
-- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE` (1000 an hour): outcomes that name no account (an unknown
-  or malformed token, or an internal error before any account was identified), shared by everyone.
-- `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT` (60 an hour): outcomes that name an account, **per
-  account**, so noise cannot hide a probe of one account's link.
-- `SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING` (200 an hour) and
-  `SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING` (30 an hour per account, at most 1024
-  accounts tracked): the same two, per worker, applying only while the rate-limit store is down.
-
-A skipped or unwritable row is counted and logged once a minute per worker (`skipped N audit
-row(s)` / `could not write the audit row`), with the first one's outcome and pseudonym. The
-**skip** line also lists up to 20 account ids; the **could not write** line does not. That line is
-the signal to look.
-
-Two things to know when reading the counts:
-
-- **Allowance is charged before the write.** A row's allowance is spent before the INSERT. With a
-  healthy cache and a down audit store, each lost write still spends the account's allowance for
-  that hour (60), so after that hour's allowance is gone later rows are reported as skipped while the
-  real cause is the audit store. Bounded to the hour, and both lines are counted.
-- **Rows that name an account have no aggregate ceiling.** Each account has its own 60 an hour; there
-  is no limit across accounts. The per-source budget (20 an hour per source) only bounds that when
-  `SELAHCUE_TRUSTED_PROXY_COUNT` is right, and in an outage the per-worker table holds 1024 accounts
-  and evicts the oldest, so rotating through more than 1024 accounts gets a fresh window each time.
-  Recorded and accepted for now; a follow-up adds an aggregate ceiling and a registration throttle.
+- Anonymous failures share `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE` (1000 per hour). In a cache
+  outage each worker uses `SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING` (200 per hour).
+- Named failures first spend `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED` (6000 per hour across
+  workers), then `SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT` (60 per account per hour).
+  An account-level refusal consumes aggregate credit. This order bounds account-key creation.
+- A failed cache claim switches the remaining checks to local accounting. Each worker first
+  spends `SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING` (600 per hour), then
+  `SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING` (30 per account per hour).
+  The local table holds 1024 account windows and reclaims expired entries. While full, it
+  preserves each incumbent's count. Untracked accounts also need credit from the shared
+  200-per-hour outage ceiling used for anonymous rows. An exhausted incumbent skips its row.
+  Local windows start independently, reset on worker restart and add capacity per worker
+  during outages. A switch between Redis and local accounting can spend both allowances.
+- Allowance is charged before the audit insert. A failed insert still consumes credit.
+  `could not write the audit row` counts lost writes. `skipped N audit row(s)` counts
+  suppressed writes and lists up to 20 affected account IDs. Each worker emits a first
+  report immediately, then flushes on the next event after a minute. Alert on
+  `named_aggregate_cap_hit` in the skip summary. It marks any aggregate refusal in that
+  interval, even if an account-level refusal was reported as the first reason. The caller
+  receives the normal reset response and retains the usual token retry semantics.
 
 To find the rows from a known address: `python manage.py failed_reset_confirms --ip <address>
 [--date YYYY-MM-DD]`. It prints account ids, so **do not run it in CI or put its output in a log

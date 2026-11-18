@@ -1,4 +1,11 @@
-"""Failed password-reset confirms against a REAL, UNREACHABLE Redis (86ak5r2pt).
+"""Historical evidence for failed password-reset confirms with unreachable Redis (86ak5r2pt).
+
+The recorded observations are in `real-redis-outage.txt`. The command below is for the
+legacy fixture. On the current branch, registration intentionally returns `RATE_LIMITED`
+when shared admission is unavailable. The `named` setup registers its synthetic account
+after pointing the cache at an unreachable port, so it stops before posting any reset
+confirms. See `implementation/api/tests/test_customer_auth_slice.py` and
+`implementation/api/tests/test_password_reset_throttle.py` for current coverage.
 
 The test suite simulates a limiter outage with a broken store object. This script uses the real
 thing: the Django cache is pointed at a port nothing listens on, so every limiter call fails with
@@ -13,7 +20,10 @@ Two scenarios:
 - `named`: weak passwords behind one account's live reset link. They name an account, so they
   spend that account's own per-worker outage allowance (30 an hour).
 
-Run (from the repository root; needs `make api-install` once; no network, no Redis):
+To reproduce the legacy fixture, use a separate checkout of the pre-throttle revision
+`56fc891e03d459892d7923b8fc9e7740e79073e3` and prepare its API environment with
+`make api-install`. From that checkout's repository root, run the demo with no Redis server
+or external network access:
 
     cd implementation/api && env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" \
       CACHE_URL=redis://127.0.0.1:1 SQL_DATABASE=:memory: \
