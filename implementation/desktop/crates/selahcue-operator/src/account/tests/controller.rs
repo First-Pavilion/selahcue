@@ -763,7 +763,11 @@ fn django_g1_real_api() {
                 assert!(metadata.pending_activation().is_none());
             }
             if url.ends_with("/v1/activations:bound-with-session")
-                && self.staff.lock().unwrap().lose_reply
+                && self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned")
+                    .lose_reply
             {
                 let request: Value = serde_json::from_str(body).expect("generic sign-in request");
                 assert_ne!(
@@ -773,7 +777,10 @@ fn django_g1_real_api() {
             }
             let response = self.inner.post_json(url, body, bearer)?;
             if url.ends_with("/v1/license:refresh") {
-                let mut staff = self.staff.lock().unwrap();
+                let mut staff = self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned");
                 if staff.original.is_some() && staff.observe(body, bearer, &response) {
                     return Err(TransportError(
                         "lost committed staff refresh response".into(),
@@ -841,7 +848,10 @@ fn django_g1_real_api() {
                 return Err(TransportError("synthetic network unavailable".into()));
             }
             if url.ends_with("/v1/entitlements/manifest") {
-                let mut staff = self.staff.lock().unwrap();
+                let mut staff = self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned");
                 if staff.original.is_some() {
                     let sent = bearer.map(Token::new);
                     let saved = self
@@ -1058,7 +1068,7 @@ fn django_g1_real_api() {
         let restart = scenario == "staff-extension-restart";
         let managed = scenario == "staff-extension-managed-free";
         {
-            let mut trace = staff.lock().unwrap();
+            let mut trace = staff.lock().expect("staff refresh trace lock poisoned");
             trace.original = Some(original.clone());
             trace.public_id = public_id.to_owned();
             trace.lose_reply = loss;
@@ -1071,7 +1081,7 @@ fn django_g1_real_api() {
         assert_eq!(first["entitlement_state"], "current");
 
         if loss {
-            assert!(staff.lock().unwrap().dropped,
+            assert!(staff.lock().expect("staff refresh trace lock poisoned").dropped,
                 "no successful replacement response from the real API to drop after staff extension");
             assert_eq!(first["error_code"], "network_unavailable");
         }
@@ -1090,7 +1100,7 @@ fn django_g1_real_api() {
             );
             assert!(staff
                 .lock()
-                .unwrap()
+                .expect("staff refresh trace lock poisoned")
                 .manifests_with_saved_replacement
                 .is_empty());
             assert_eq!(
@@ -1118,14 +1128,14 @@ fn django_g1_real_api() {
             assert_extended_entitlement(&next);
             assert_eq!(next["instances_used"], 1);
             assert_eq!(next["instance_limit"], activate["instance_limit"]);
-            let trace = staff.lock().unwrap();
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
             assert_eq!(trace.calls.len(), 2);
             let next = &trace.calls[1];
             assert!(next.replacement && next.capable && next.status == 200 && !next.issued,
                 "the next online refresh must use the already-stored staff replacement and receive status only");
         }
         {
-            let trace = staff.lock().unwrap();
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
             let call = trace.calls.first().expect("real staff refresh POST");
             assert!(call.capable && call.original && call.status == 200 && call.issued,
                 "the native refresh did not negotiate and receive a replacement for the live original bearer");
@@ -1149,13 +1159,17 @@ fn django_g1_real_api() {
                 );
             }
         }
-        let calls_before_probe = staff.lock().unwrap().calls.len();
+        let calls_before_probe = staff
+            .lock()
+            .expect("staff refresh trace lock poisoned")
+            .calls
+            .len();
         assert!(matches!(
             account.client().refresh_license(&original, public_id),
             Err(selahcue_licensing::ActivationFailure::Unauthenticated)
         ));
         {
-            let trace = staff.lock().unwrap();
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
             assert_eq!(trace.calls.len(), calls_before_probe + 1);
             let probe = &trace.calls[calls_before_probe];
             assert!(probe.original, "probe must present the original bearer");
