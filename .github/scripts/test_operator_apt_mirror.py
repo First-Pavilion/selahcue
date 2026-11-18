@@ -2,7 +2,7 @@
 
 from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
-from io import StringIO
+from io import BytesIO, StringIO
 import json
 import os
 from pathlib import Path
@@ -281,6 +281,24 @@ class GuardFixture(AptFiles):
         self.assertEqual(self.configure(), "promoted")
         self.assertEqual(self.source.read_bytes(), enabled)
 
+    def assert_unsupported_source(self, source):
+        self.source.write_bytes(source)
+        before = self.attributes(self.mirror)
+        self.assertEqual(self.configure(), "unsupported_sources")
+        self.assertEqual(self.mirror.read_bytes(), ORIGINAL)
+        self.assertEqual(self.attributes(self.mirror), before)
+        self.assertEqual(self.source.read_bytes(), source)
+        self.assert_no_staging()
+
+    def test_flat_suite_with_components_skips_without_publication(self):
+        self.assert_unsupported_source(ACTIVE.replace(b"resolute resolute-updates resolute-backports", b"./"))
+
+    def test_mixed_named_and_flat_suites_with_components_skip_without_publication(self):
+        self.assert_unsupported_source(ACTIVE.replace(b"resolute-updates", b"./"))
+
+    def test_enabled_schemeless_uri_alongside_mirror_skips_without_publication(self):
+        self.assert_unsupported_source(ACTIVE.replace(b"http://security.ubuntu.com/ubuntu/", b"broken"))
+
     def test_unreferenced_and_ambiguous_deb822_never_rewrite_mirror(self):
         uri = b"mirror+file:/etc/apt/apt-mirrors.txt"
         direct = ACTIVE.split(b"\n\n", 1)[1]
@@ -382,6 +400,46 @@ class GuardFixture(AptFiles):
                 with runner:
                     self.assert_guard_failure(query=self.helper.query_paths)
                 self.assertEqual(self.mirror.read_bytes(), ORIGINAL)
+
+    def test_query_deadline_bounds_reap_when_termination_is_unconfirmed(self):
+        now = 0.0
+        waits = []
+
+        def no_output(timeout):
+            nonlocal now
+            now += timeout
+            return []
+
+        def still_running(timeout=None):
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired("fixture", timeout)
+
+        selector = mock.MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.side_effect = no_output
+        process = mock.MagicMock(stdin=None, stdout=BytesIO(), stderr=None)
+        process.poll.return_value = None
+        process.wait.side_effect = still_running
+        process.__enter__.return_value = process
+        # Exercise the real context cleanup if the guard relies on it.
+        process.__exit__.side_effect = subprocess.Popen.__exit__.__get__(process)
+        before = self.attributes(self.mirror)
+        source_before = self.attributes(self.source)
+        with (mock.patch.dict(os.environ), mock.patch.object(subprocess, "Popen", return_value=process),
+              mock.patch.object(self.helper, "time", SimpleNamespace(monotonic=lambda: now)),
+              mock.patch.object(self.helper.selectors, "DefaultSelector", return_value=selector)):
+            os.environ.pop("APT_CONFIG", None)
+            self.assert_guard_failure(query=self.helper.query_paths)
+        self.assertEqual(now, 2)
+        process.kill.assert_called_once_with()
+        self.assertTrue(waits and all(t is not None and 0 <= t <= 1 for t in waits),
+                        f"expected only finite post-kill waits within one second, got {waits}")
+        self.assertLessEqual(sum(waits), 1)
+        self.assertTrue(process.stdout.closed)
+        self.assertEqual(self.mirror.read_bytes(), ORIGINAL)
+        self.assertEqual(self.attributes(self.mirror), before)
+        self.assertEqual(self.source.read_bytes(), ACTIVE)
+        self.assertEqual(self.attributes(self.source), source_before)
 
     def test_refuses_symlinked_paths_hardlinks_and_nonregular_targets(self):
         outside = self.root / "outside"

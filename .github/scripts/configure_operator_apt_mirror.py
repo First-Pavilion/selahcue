@@ -70,25 +70,27 @@ def query_paths():
 
     deadline = time.monotonic() + 2
     output = bytearray()
-    with subprocess.Popen(query, executable="/usr/bin/apt-config", shell=False,
-                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
-        try:
-            with selectors.DefaultSelector() as ready:
-                ready.register(process.stdout, selectors.EVENT_READ)
-                while time.monotonic() < deadline and ready.select(deadline - time.monotonic()):
-                    chunk = os.read(process.stdout.fileno(), min(1024, 8193 - len(output)))
-                    if not chunk:
-                        break
-                    if len(output) + len(chunk) > 8192:
-                        raise GuardFailure("configuration query exceeded its output bound")
-                    output.extend(chunk)
-                else:
-                    raise GuardFailure("configuration query timed out")
-            if process.wait(timeout=max(0, deadline - time.monotonic())) != 0:
-                raise GuardFailure("configuration query failed")
-        finally:
-            if process.poll() is None:
-                process.kill()
+    process = subprocess.Popen(query, executable="/usr/bin/apt-config", shell=False,
+                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        with process.stdout as stream, selectors.DefaultSelector() as ready:
+            ready.register(stream, selectors.EVENT_READ)
+            while time.monotonic() < deadline and ready.select(deadline - time.monotonic()):
+                chunk = os.read(stream.fileno(), min(1024, 8193 - len(output)))
+                if not chunk:
+                    break
+                if len(output) + len(chunk) > 8192:
+                    raise GuardFailure("configuration query exceeded its output bound")
+                output.extend(chunk)
+            else:
+                raise GuardFailure("configuration query timed out")
+        if process.wait(timeout=max(0, deadline - time.monotonic())) != 0:
+            raise GuardFailure("configuration query failed")
+    finally:
+        # Popen's context manager waits indefinitely even after a kill.
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=1)
     return stock_paths(bytes(output))
 
 
@@ -121,8 +123,11 @@ def active_reference(contents):
         uris = fields.get(b"uris", [])
         suites = fields.get(b"suites", [])
         enabled = fields.get(b"enabled", [b"yes"])
-        if (not types or set(types) - {b"deb", b"deb-src"} or len(uris) != 1 or not suites
-                or (any(not suite.endswith(b"/") for suite in suites) and not fields.get(b"components"))
+        if len(uris) != 1 or not re.fullmatch(rb"[a-zA-Z][a-zA-Z0-9.+-]*:.+", uris[0]):
+            raise Skip("unsupported_sources")
+        # The hosted Ubuntu layout uses named distribution suites with components.
+        if (not types or set(types) - {b"deb", b"deb-src"} or not suites or not fields.get(b"components")
+                or any(suite.endswith(b"/") for suite in suites)
                 or enabled not in ([b"yes"], [b"no"])):
             raise Skip("unsupported_sources")
         if b"deb" in types and uris == [MIRROR_SOURCE] and enabled == [b"yes"]:
