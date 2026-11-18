@@ -126,6 +126,7 @@ def _renew_locked(
                 license_key, to_status=LicenseKeyStatus.ACTIVATED, actor=FREE_SERVICE,
                 reason=RENEWAL_REASON, request_id=request_id, action=RENEWAL_ACTION,
                 source_surface="free_lifecycle", extra_before=before, extra_after=after,
+                allow_wrapping_transaction=True,
             )
         else:
             record_audit_event(
@@ -259,75 +260,109 @@ def ensure_free_license(actor: ActorContext, now: datetime, request_id: str) -> 
         raise
 
 
+def has_pending_staff_extension(license_key: AppLicenseKey, token: DeviceToken) -> bool:
+    if token.staff_extension_generation > license_key.staff_extension_generation:
+        raise SafeAPIError(ErrorCode.INTERNAL)
+    return token.staff_extension_generation < license_key.staff_extension_generation
+
+
+def is_managed_free_license(customer_id: int, license_key: AppLicenseKey) -> bool:
+    return FreeLicenseLifecycle.objects.filter(customer_id=customer_id, license_key=license_key).exists()
+
+
+def lock_device_refresh_rows(token: DeviceToken) -> tuple[AppLicenseKey, Device, DeviceToken]:
+    """Re-read the authenticated rows in licence → device → token order inside the owner transaction."""
+    device = token.device
+    license_key = AppLicenseKey.objects.select_for_update().filter(
+        pk=device.license_key_id, customer_id=device.customer_id,
+    ).first()
+    if license_key is None:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    device = Device.objects.select_for_update().filter(
+        pk=device.pk, customer_id=device.customer_id, license_key=license_key,
+        status=DeviceStatus.ACTIVE,
+    ).first()
+    if device is None:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    locked_token = DeviceToken.objects.select_for_update().filter(
+        pk=token.pk, device=device, status=DeviceTokenStatus.ACTIVE,
+        token_fingerprint=token.token_fingerprint,
+    ).first()
+    if locked_token is None:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    return license_key, device, locked_token
+
+
+def renew_free_license_for_device_under_locks(
+    customer: CustomerOrg,
+    license_key: AppLicenseKey,
+    device: Device,
+    locked_token: DeviceToken,
+    *,
+    now: datetime | None,
+    request_id: str,
+    allow_token_catchup: bool = True,
+) -> RenewalResult:
+    """Renew managed dates after org, licence, device and token locking.
+
+    A denial propagates to the transaction owner, which rolls back before auditing it.
+    """
+    marker = _locked_marker(customer, license_key)
+    fallback_assigned = marker is not None and _lock_fallback_assignment(license_key)
+    # Eligibility rows can wait behind staff writes. Sample liveness after both locks.
+    now = now if now is not None else timezone.now()
+    if locked_token.expires_at <= now:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+
+    renewed = marker is not None and _renew_locked(
+        customer, license_key, marker, now, request_id, fallback_assigned=fallback_assigned,
+    )
+    extend_token = allow_token_catchup and (renewed or (
+        marker is not None
+        and customer.status == CustomerStatus.ACTIVE
+        and locked_token.expires_at - now <= RENEWAL_WINDOW
+        and locked_token.expires_at < license_key.expires_at
+        and _may_renew(marker, license_key, now, fallback_assigned=fallback_assigned)
+    ))
+    if extend_token:
+        old_expiry = locked_token.expires_at
+        locked_token.expires_at = license_key.expires_at
+        locked_token.save(update_fields=["expires_at", "updated_at"])
+        if not renewed:
+            record_audit_event(
+                FREE_SERVICE, action="device_token.free_validity_extended",
+                target_type="device_token", target_id=str(locked_token.pk),
+                request_id=request_id, source_surface="free_lifecycle",
+                before={"expires_at": old_expiry.isoformat()},
+                after={"expires_at": locked_token.expires_at.isoformat()},
+            )
+
+    license_key.customer = customer
+    device.license_key = license_key
+    return RenewalResult(renewed or extend_token, license_key.expires_at, locked_token.expires_at)
+
+
 def renew_free_license_for_device(
     token: DeviceToken, now: datetime | None, request_id: str,
 ) -> RenewalResult:
     """Recheck a previously authenticated token before extending managed Free dates."""
     device = token.device
     license_key = device.license_key
-    if not FreeLicenseLifecycle.objects.filter(
-        customer_id=device.customer_id, license_key=license_key,
-    ).exists():
+    if not is_managed_free_license(device.customer_id, license_key):
         return RenewalResult(False, license_key.expires_at, token.expires_at)
 
     try:
         with transaction.atomic():
             customer = lock_customer_for_key_changes(device.customer_id)
-            license_key = AppLicenseKey.objects.select_for_update().filter(
-                pk=license_key.pk, customer=customer,
-            ).first()
-            if license_key is None:
-                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
-            device = Device.objects.select_for_update().filter(
-                pk=device.pk, customer=customer, license_key=license_key, status=DeviceStatus.ACTIVE,
-            ).first()
-            if device is None:
-                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
-            locked_token = DeviceToken.objects.select_for_update().filter(
-                pk=token.pk, device=device, status=DeviceTokenStatus.ACTIVE,
-                token_fingerprint=token.token_fingerprint,
-            ).first()
-            if locked_token is None:
-                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
-            marker = _locked_marker(customer, license_key)
-            fallback_assigned = marker is not None and _lock_fallback_assignment(license_key)
-            # Marker/assignment reads can wait behind staff writes. Sample the
-            # production clock only after every eligibility lock, then use that
-            # instant for both licence renewal and presented-token catch-up.
-            now = now if now is not None else timezone.now()
-            if locked_token.expires_at <= now:
-                raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
-
-            renewed = marker is not None and _renew_locked(
-                customer, license_key, marker, now, request_id, fallback_assigned=fallback_assigned,
+            license_key, device, locked_token = lock_device_refresh_rows(token)
+            result = renew_free_license_for_device_under_locks(
+                customer, license_key, device, locked_token, now=now, request_id=request_id,
+                allow_token_catchup=not has_pending_staff_extension(license_key, locked_token),
             )
-            extend_token = renewed or (
-                marker is not None
-                and customer.status == CustomerStatus.ACTIVE
-                and locked_token.expires_at - now <= RENEWAL_WINDOW
-                and locked_token.expires_at < license_key.expires_at
-                and _may_renew(marker, license_key, now, fallback_assigned=fallback_assigned)
-            )
-            if extend_token:
-                old_expiry = locked_token.expires_at
-                locked_token.expires_at = license_key.expires_at
-                locked_token.save(update_fields=["expires_at", "updated_at"])
-                if not renewed:
-                    record_audit_event(
-                        FREE_SERVICE, action="device_token.free_validity_extended",
-                        target_type="device_token", target_id=str(locked_token.pk),
-                        request_id=request_id, source_surface="free_lifecycle",
-                        before={"expires_at": old_expiry.isoformat()},
-                        after={"expires_at": locked_token.expires_at.isoformat()},
-                    )
-
-            # Keep the authenticated instance aligned with the same locked rows
-            # used for the renewal decision and subsequent refresh response.
-            license_key.customer = customer
-            device.license_key = license_key
+            # Preserve the caller's authenticated instance after the locked renewal.
             token.device = device
             token.expires_at = locked_token.expires_at
-            return RenewalResult(renewed or extend_token, license_key.expires_at, token.expires_at)
+            return result
     except FreeRenewalDenied as error:
         error.audit()
         raise

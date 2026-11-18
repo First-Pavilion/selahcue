@@ -44,6 +44,7 @@ class AppLicenseKey(models.Model):
     secret_fingerprint = models.CharField(max_length=64, unique=True)
     starts_at = models.DateTimeField()
     expires_at = models.DateTimeField()
+    staff_extension_generation = models.PositiveBigIntegerField(default=0)
     timezone = models.CharField(max_length=64, default="UTC")
     feature_scope = models.CharField(max_length=64)
     seat_limit = models.PositiveIntegerField(default=1)

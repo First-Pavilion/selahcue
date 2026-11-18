@@ -10,13 +10,16 @@ What "written by a production code path" means for the sweep: this ticket owns t
 not the individual mutations. Revoke/extend (86ak1090r), the expiry job (86ak109dv),
 suspend/reinstate (86ak5mn0c), conversion (86ak5mn2k) and archiving (86ak5mn2m) each land
 separately and call straight through `apply_license_status_transition`. The sweep therefore
-proves each status is reachable through the audited writer. When those tickets land it
-should be tightened to name their entry points as well.
+proves each status is reachable through the audited writer. It is table-derived, so it counts
+all eight statuses; the stricter question of which statuses a production ENTRY POINT writes
+today, and which are deliberately unwritten with the ticket that owns them, is answered in
+`tests/test_license_revoke_extend.py` (revoke/extend and suspend/reinstate have landed).
 """
 
 from __future__ import annotations
 
 import ast
+import functools
 import pathlib
 from collections import deque
 from datetime import timedelta
@@ -42,7 +45,7 @@ from selahcue_api.apps.license_keys.state_machine import (
     TERMINAL_STATUSES,
     IllegalLicenseTransition,
     PriorStatusTarget,
-    apply_license_status_transition,
+    apply_license_status_transition as _production_writer,
     statuses_without_writer,
     statuses_written_by_transition,
 )
@@ -50,6 +53,21 @@ from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermissio
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = pytest.mark.django_db
+
+
+@functools.wraps(_production_writer)
+def apply_license_status_transition(*args, **kwargs):
+    """The production writer, opted in to running inside a transaction.
+
+    This module runs under pytest-django's default per-test transaction, so every call here IS
+    a wrapped one, and since 86ak1090r (AC 8) the writer refuses those unless the caller says
+    so by name. The tripwire itself is tested in `tests/test_license_revoke_extend.py`; here
+    the writer is the thing under test, so each call opts in once, in this one place, rather
+    than at every call site. The tests that exercise durability (`transaction=True`) are
+    unaffected: autocommit needs no opt-in, and the ones that deliberately wrap rely on it.
+    """
+    kwargs.setdefault("allow_wrapping_transaction", True)
+    return _production_writer(*args, **kwargs)
 
 
 REASON = "State-machine battery exercising the transition."

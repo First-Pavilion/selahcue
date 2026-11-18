@@ -4,7 +4,8 @@ Assembles the payload a desktop install caches and verifies locally. Knows nothi
 HTTP; the view maps `SafeAPIError` codes to statuses.
 
 **Issuance is an allow-list, and deliberately stricter than `/v1/license:refresh`.**
-That endpoint reports honestly rather than denying, because it mints nothing. This one
+That endpoint reports blocked status honestly without minting; live-token renewal is
+gated on current commercial validity. This one
 mints a signed, device-bound credential cacheable until the licence expiry, and with no
 revocation list issuance is the ONLY enforcement point that exists. Revoking a licence
 key does not cascade to `DeviceToken`, and `authenticate_device_token` never consults

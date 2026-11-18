@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -29,10 +30,16 @@ STUB = r"""
     entitlement_state: "unavailable", operation_state: "idle",
     platform: "macos", app_version: "0.1.0", pending_cleanup: false,
   };
+  const credentialCommands = new Set([
+    "account_sign_in_and_activate", "account_activate_with_enrollment", "account_replace_device_credential",
+    "account_retry_activation", "account_retry_session_cleanup", "account_refresh",
+  ]);
   const fixture = window.accountFixture = {
     view: { ...base, ...INITIAL_VIEW },
     response: {},
     calls: [],
+    credentialCalls: [],
+    signingInAfterBack: false,
     resolve: null,
     skipFailure: false,
     finishWebOpen: null,
@@ -60,7 +67,19 @@ STUB = r"""
     },
     core: {
       async invoke(cmd, args) {
-        fixture.calls.push({ cmd, args });
+        if (credentialCommands.has(cmd)) {
+          const afterBack = fixture.signingInAfterBack && cmd === "account_sign_in_and_activate";
+          const observation = { cmd, keys: Object.keys(args ?? {}).sort(),
+            emailMatched: args?.email === (afterBack ? "ordinary@example.test" : "account@example.test"),
+            displayNameMatched: args?.displayName === "Fixture Booth",
+            passwordMatched: args?.password === (afterBack ? "synthetic-fresh-password" : "synthetic-password") };
+          fixture.credentialCalls.push(observation);
+          fixture.calls.push(cmd === "account_refresh" ?
+            { cmd, args: { explicit: typeof args?.explicit === "boolean" ? args.explicit : undefined } } :
+            observation);
+        } else {
+          fixture.calls.push({ cmd, args });
+        }
         if (cmd === "account_view") return fixture.view;
         if (cmd === "account_open_web") {
           if (fixture.holdWebOpen) {
@@ -74,7 +93,8 @@ STUB = r"""
           fixture.view = { ...fixture.view, setup_state: "skipped", revision: fixture.view.revision + 1 };
           return fixture.view;
         }
-        if (cmd === "account_sign_in_and_activate" || cmd === "account_activate_with_enrollment") {
+        if (cmd === "account_sign_in_and_activate" || cmd === "account_activate_with_enrollment" ||
+            cmd === "account_replace_device_credential") {
           const fields = fixture.response;
           if (fields.hold) {
             await new Promise((resolve) => { fixture.resolve = resolve; });
@@ -563,6 +583,100 @@ def exercise_reauthentication(browser, dist, viewport):
     page.close()
 
 
+def exercise_replacement_consent(browser, dist, viewport, *, cancel=False):
+    recovery = {**ACTIVE, "device_state": "reauthentication_needed", "error_code": "reauthentication_required"}
+    page, errors = boot(browser, dist, viewport, initial=recovery)
+    action = "Replace this device’s credential"
+    explanation = "The previous credential for this installation will stop working. Sign in as an administrator to continue."
+    expected_args = {
+        "keys": ["displayName", "email", "password"],
+        "emailMatched": True, "displayNameMatched": True, "passwordMatched": True,
+    }
+    try:
+        open_account(page)
+        replace = page.get_by_role("button", name=action, exact=True)
+        assert replace.is_visible(), f"{viewport}: established-device recovery must offer ‘{action}’"
+        replace.click()
+        card = page.locator("#account-card")
+        stage = card.locator("[data-account-view]:visible")
+        consequence = stage.get_by_text(explanation, exact=True)
+        assert consequence.is_visible(), (
+            "The administrator must see the effect of replacement before submitting credentials"
+        )
+        form = stage.locator("form:visible").filter(has=page.locator("input[type='password']:visible"))
+        password = form.get_by_label("Password", exact=True)
+        assert password.is_visible(), "The explicit replacement action must open administrator sign-in"
+        assert form.evaluate("""form => {
+          const focused = document.activeElement;
+          if (!focused || !focused.getClientRects().length ||
+              getComputedStyle(focused).visibility !== "visible") return false;
+          const stage = form.closest("[data-account-view]");
+          const stageHeading = stage.contains(focused) &&
+            focused.matches("h1, h2, h3, h4, h5, h6, [role=heading]");
+          const formControl = form.contains(focused) &&
+            focused.matches("input:not([type=hidden]), select, textarea, button[type=submit]") &&
+            !focused.matches(":disabled, [aria-disabled=true]");
+          return stageHeading || formControl;
+        }"""), (
+            "Keyboard focus must move to the visible replacement heading or an administrator form control"
+        )
+        assert page.evaluate("accountFixture.credentialCalls") == [], (
+            "Opening replacement consent must not dispatch a credential command"
+        )
+        fill_sign_in(form)
+        passwords_cleared = """() => [...document.querySelectorAll('input[type="password"]')].every(
+          input => input.value === "")"""
+        if cancel:
+            back = stage.get_by_role("button", name=re.compile(r"\bback\b", re.I))
+            if not back.is_visible():
+                back = card.get_by_role("button", name="Back to Account", exact=True)
+            assert back.is_visible(), "Provide Back from the replacement form before submitting"
+            back.click()
+            assert page.evaluate(passwords_cleared), "Leaving replacement must clear the typed password"
+            assert not consequence.is_visible(), "Back must leave the replacement stage"
+            assert page.evaluate("accountFixture.credentialCalls") == [], "Back must not submit either form"
+            ordinary_heading = card.get_by_role("heading", name="Sign in to SelahCue", exact=True)
+            ordinary_choice = card.get_by_role("button", name="Sign in to your SelahCue account", exact=True)
+            if not ordinary_heading.is_visible() and not ordinary_choice.is_visible():
+                click(page, "Sign in to continue")
+            if ordinary_choice.is_visible():
+                ordinary_choice.click()
+            expect(ordinary_heading).to_be_visible()
+            ordinary_form = stage.locator("form:visible").filter(has=page.locator("input[type='password']:visible"))
+            ordinary_form.get_by_label("Email", exact=True).fill("ordinary@example.test")
+            ordinary_form.get_by_label("Password", exact=True).fill("synthetic-fresh-password")
+            page.evaluate("accountFixture.signingInAfterBack = true")
+            rules(page, ACTIVE)
+            ordinary_form.locator('button[type="submit"]').click()
+            expect(card).to_be_hidden()
+            assert page.evaluate("accountFixture.credentialCalls") == [
+                {"cmd": "account_sign_in_and_activate", **expected_args}
+            ], "Back must leave exactly one ordinary activation and zero replacements after fresh sign-in"
+            assert not errors, "The Back and ordinary sign-in flow produced browser errors"
+            return
+        rules(page, {**ACTIVE, "hold": True})
+        # Model two rapid submit events on the real form before the IPC reply.
+        form.evaluate("""form => { form.requestSubmit(); form.dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true })); }""")
+        assert page.evaluate("typeof accountFixture.resolve === 'function'"), (
+            "The administrator's submit must reach the native replacement command"
+        )
+        assert page.evaluate(passwords_cleared), "Clear the password on submit"
+        assert not form.is_visible() or form.locator('button[type="submit"]').is_disabled(), (
+            "The form must stop accepting input while replacement is pending"
+        )
+        expected_calls = [{"cmd": "account_replace_device_credential", **expected_args}]
+        assert page.evaluate("accountFixture.credentialCalls") == expected_calls, (
+            "Both submit events must produce one replacement and no other credential command"
+        )
+        page.evaluate("accountFixture.resolve()")
+        expect(card).to_be_hidden()
+        assert page.evaluate("accountFixture.credentialCalls") == expected_calls
+        assert not errors, "The replacement flow produced browser errors"
+    finally:
+        page.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--engine", choices=("chromium", "webkit"), default="chromium")
@@ -582,6 +696,9 @@ def main():
                 exercise_combined_errors(browser, dist, screenshots, (width, height), code)
             exercise_reauthentication(browser, dist, (width, height))
             print(f"Account setup, browser links, Settings and emergency hit targets passed in {args.engine} at {size}.", flush=True)
+        for viewport in SUPPORTED_VIEWPORTS:
+            exercise_replacement_consent(browser, dist, viewport)
+            exercise_replacement_consent(browser, dist, viewport, cancel=True)
         browser.close()
 
 

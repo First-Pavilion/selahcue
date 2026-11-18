@@ -236,3 +236,136 @@ def test_receipt_fk_has_database_set_null_and_identity_protection():
             WHERE c.conrelid = %s::regclass AND c.contype = 'f' AND a.attname = 'result_token_id'
         """, [DeviceActivationOperation._meta.db_table])
         assert cursor.fetchall() == [("n",)]
+
+
+def test_bound_v2_concurrent_duplicate_remints_once(settings):
+    from test_bound_activation import SESSION, established_v2_recovery
+
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (100, 60)
+    _, session, initial, request = established_v2_recovery(Client(), tag="v2-parallel")
+    original_pk = DeviceToken.objects.get().pk
+    responses = parallel(
+        lambda: post(Client(), SESSION, request, session),
+        lambda: post(Client(), SESSION, request, session),
+    )
+    assert [response.status_code for response in responses] == [200, 200]
+    replies = [response.json() for response in responses]
+    assert {reply["operation_state"] for reply in replies} == {"completed", "replay"}
+    assert all(reply["operation_version"] == 2 for reply in replies)
+    assert sum(reply["activation_token"] is not None for reply in replies) == 1
+    winner = next(reply for reply in replies if reply["activation_token"] is not None)
+    assert winner["reminted"] is True and winner["created"] is False
+    assert all(reply["device"]["device_public_id"] == initial["device"]["device_public_id"] for reply in replies)
+    assert Device.objects.count() == 1
+    assert DeviceToken.objects.count() == DeviceActivationOperation.objects.count() == 2
+    live = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+    assert live.pk != original_pk
+    assert DeviceToken.objects.get(pk=original_pk).status == DeviceTokenStatus.REVOKED
+    receipt = DeviceActivationOperation.objects.get(operation_key=request["idempotency_key"])
+    assert receipt.outcome == "REMINTED"
+    assert receipt.result_token_id == receipt.issued_token_pk == live.pk
+    assert post(Client(), "/v1/license:refresh", {}, initial["activation_token"]).status_code == 401
+    assert post(Client(), "/v1/license:refresh", {}, winner["activation_token"]).status_code == 200
+
+
+def test_bound_v2_receipt_insert_failure_rolls_back_remint_and_audit(settings, monkeypatch):
+    from uuid import uuid4
+    from selahcue_api.apps.audit.models import AuditEvent
+    from test_bound_activation import SESSION, established_v2_recovery
+
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (100, 60)
+    client = Client(raise_request_exception=False)
+    _, session, _, first_request = established_v2_recovery(client, tag="v2-rollback")
+    first = post(client, SESSION, first_request, session)
+    assert first.status_code == 200  # Existing-route behavioral RED before fault injection.
+    original_pk = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE).pk
+    request = {**first_request, "idempotency_key": uuid4().hex}
+    models = (Device, DeviceToken, DeviceActivationOperation, AuditEvent)
+    before = [list(model.objects.order_by("pk").values()) for model in models]
+    manager = DeviceActivationOperation.objects
+    observed = []
+
+    def fail_before_receipt_insert(**kwargs):
+        # All remint writes and their success audit are real; only durable receipt insertion fails.
+        new_token = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+        assert new_token.pk != original_pk
+        assert DeviceToken.objects.get(pk=original_pk).status == DeviceTokenStatus.REVOKED
+        assert AuditEvent.objects.filter(action="device_token.reminted", request_id=request["idempotency_key"]).exists()
+        assert kwargs["result_token"].pk == kwargs["issued_token_pk"] == new_token.pk
+        observed.append(new_token.pk)
+        raise RuntimeError("injected receipt insert failure after real v2 remint")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(manager, "create", fail_before_receipt_insert)
+        failed = post(client, SESSION, request, session)
+    assert failed.status_code == 500
+    assert len(observed) == 1
+    assert [list(model.objects.order_by("pk").values()) for model in models] == before
+    assert post(client, "/v1/license:refresh", {}, first.json()["activation_token"]).status_code == 200
+    retried = post(client, SESSION, request, session)
+    assert retried.status_code == 200
+    assert retried.json()["activation_token"] and retried.json()["reminted"]
+    assert Device.objects.count() == 1
+    assert DeviceToken.objects.count() == DeviceActivationOperation.objects.count() == 3
+    assert DeviceToken.objects.filter(status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert DeviceToken.objects.get(pk=original_pk).status == DeviceTokenStatus.REVOKED
+    assert AuditEvent.objects.filter(action="device_token.reminted", request_id=request["idempotency_key"]).count() == 1
+
+
+@pytest.mark.parametrize("change", ["revoke", "delete"])
+def test_bound_v2_original_result_race_preserves_completed_receipt(settings, change):
+    from uuid import uuid4
+    from test_bound_activation import SESSION, established_v2_recovery
+
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (100, 60)
+    client = Client()
+    _, session, initial, request = established_v2_recovery(client, tag=f"v2-result-race-{change}")
+    completed = post(client, SESSION, request, session)
+    assert completed.status_code == 200
+    receipt = DeviceActivationOperation.objects.get(operation_key=request["idempotency_key"])
+    original_pk = receipt.result_token_id
+    immutable = (receipt.issued_token_pk, receipt.request_digest, receipt.completed_at, receipt.device_id)
+
+    def invalidate():
+        query = DeviceToken.objects.filter(pk=original_pk)
+        return query.delete() if change == "delete" else query.update(status=DeviceTokenStatus.REVOKED)
+
+    replay, _ = parallel(lambda: post(Client(), SESSION, request, session), invalidate)
+    assert replay.status_code in {200, 409}
+    assert replay.json()["operation_version"] == 2
+    assert replay.json().get("activation_token") is None
+    if replay.status_code == 200:
+        assert replay.json()["operation_state"] == "replay"
+    else:
+        assert replay.json()["error"]["code"] == "ACTIVATION_OPERATION_COMPLETED"
+    proof = {
+        "idempotency_key": request["idempotency_key"],
+        "device_public_id": initial["device"]["device_public_id"], "platform": "macos",
+    }
+    old = post(client, SESSION, request, session)
+    assert old.status_code == 409
+    assert old.json()["completed_activation"] == proof
+    receipt.refresh_from_db()
+    assert receipt.result_token_id == (None if change == "delete" else original_pk)
+    assert (receipt.issued_token_pk, receipt.request_digest, receipt.completed_at, receipt.device_id) == immutable
+    assert DeviceActivationOperation.objects.count() == 2
+    assert DeviceToken.objects.count() == (1 if change == "delete" else 2)
+    replacement = post(client, SESSION, {**request, "idempotency_key": uuid4().hex}, session)
+    assert replacement.status_code == 200
+    live = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+    assert live.pk != original_pk
+    before_replay = list(DeviceToken.objects.order_by("pk").values())
+    old_again = post(client, SESSION, request, session)
+    assert old_again.status_code == 409
+    assert old_again.json()["error"]["code"] == "ACTIVATION_OPERATION_COMPLETED"
+    assert old_again.json()["operation_version"] == 2
+    assert old_again.json()["completed_activation"] == proof
+    assert old_again.json().get("activation_token") is None
+    assert list(DeviceToken.objects.order_by("pk").values()) == before_replay
+    receipt.refresh_from_db()
+    assert receipt.result_token_id == (None if change == "delete" else original_pk)
+    assert (receipt.issued_token_pk, receipt.request_digest, receipt.completed_at, receipt.device_id) == immutable
+    assert Device.objects.count() == 1
+    assert DeviceActivationOperation.objects.count() == 3
+    assert post(client, "/v1/license:refresh", {}, completed.json()["activation_token"]).status_code == 401
+    assert post(client, "/v1/license:refresh", {}, replacement.json()["activation_token"]).status_code == 200

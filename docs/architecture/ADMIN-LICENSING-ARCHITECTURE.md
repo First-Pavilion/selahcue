@@ -246,8 +246,8 @@ Endpoint: `POST /graphql/admin`
 | ADMIN-GQL-002 | `Mutation.adminCreateCustomer` | Staff `ManageCustomers` | Creates prospect/customer; validates country/timezone/contact; requires idempotency key. |
 | ADMIN-GQL-003 | `Query.adminCustomer` | Staff `ViewCustomers` | Aggregated customer detail: subscription, keys, devices, entitlements, support, audit summary. |
 | ADMIN-GQL-004 | `Mutation.adminGenerateLicenseKey` | Staff `GenerateLicenseKey` | Returns full key once; requires reason; stores hash only. |
-| ADMIN-GQL-005 | `Mutation.adminExtendLicenseKey` | Staff `ExtendLicenseKey` | Requires reason and valid new end date. |
-| ADMIN-GQL-006 | `Mutation.adminRevokeLicenseKey` | Staff `RevokeLicenseKey` | Requires consequence confirmation token and reason. |
+| ADMIN-GQL-005 | `Mutation.adminExtendLicenseKey` | Staff `ExtendLicenseKey` | Requires reason and valid new end date. Shipped (86ak1090r, FR-509): the new end date carries a UTC offset, is later than the current one and in the future, and is at most five years beyond the later of now and the current end date; from ISSUED or ACTIVATED only the date moves, from EXPIRING or EXPIRED the licence returns to ACTIVATED through the state machine, in one transaction with one audit row; SUSPENDED (reinstate first), CONVERTED, REVOKED and ARCHIVED are refused with CONFLICT and a durable DENIED audit row; a date that would overlap another valid licence of the organisation, or an archived customer, is refused with POLICY_DENIED. A retry with the same key and the same date reports `replayed=true`; the same key with a different date, or a new key with the date already in effect, is rejected. Shares the per-staff lifecycle throttle (FR-539). |
+| ADMIN-GQL-006 | `Mutation.adminRevokeLicenseKey` | Staff `RevokeLicenseKey` | Requires consequence confirmation token and reason. Shipped WITHOUT the confirmation token (86ak1090r, FR-505): **the consequence confirmation token is NOT built; it is an open decision for the architect and owner** (ClickUp [17tnw2b9dpq](https://app.clickup.com/t/17tnw2b9dpq)). What shipped requires a reason and a retry key; revocation is permanent (nothing leaves REVOKED except archiving); revoking a REVOKED licence is a no-op (`changed=false`) and revoking an ARCHIVED one is refused with CONFLICT and a durable DENIED audit row; activation and manifest issuance refuse at once, and tokens already issued are revoked by the bounded cascade drain with minute recovery (NFR-503, 65 minutes). |
 | ADMIN-GQL-007 | `Query.adminTranslations` | Staff `ViewCatalogue` | Catalogue connection with legal and availability filters. |
 | ADMIN-GQL-008 | `Mutation.adminUpdateTranslation` | Staff `ManageCatalogue` | Draft/Review/Approved/Published/Suspended/Retired transitions. |
 | ADMIN-GQL-009 | `Mutation.adminGrantEntitlement` | Staff `GrantEntitlement` | Validates translation, legal fields, territory, plan/basis, and reason. |
@@ -278,13 +278,38 @@ Endpoint: `POST /graphql/account`
 | ID | Endpoint | Auth | Notes |
 |---|---|---|---|
 | DESKTOP-API-001 | `POST /v1/activations` | App key plus device attestation/fingerprint | Validates key and device limit; returns signed license policy and device token if accepted. |
-| DESKTOP-API-002 | `POST /v1/license:refresh` | Device token | Returns current signed license policy, entitlement manifest version, and denial/warning states. |
+| DESKTOP-API-002 | `POST /v1/license:refresh` | Device token | Returns current licence, entitlement and token status. The exact JSON capability `"token_rotation":"staff-extension-v1"` allows a live bearer to consume a pending staff extension and receive a show-once `activation_token`. |
 | DESKTOP-API-003 | `GET /v1/entitlements/manifest` | Device token | Lists active, expiring, revoked, refresh-required, and unavailable translations with attribution and policy constraints. |
 | DESKTOP-API-004 | `POST /v1/downloads:prepare` | Device token | Validates entitlement and returns short-lived download lease plus package metadata/checksum. |
 | DESKTOP-API-005 | `POST /v1/downloads/{lease_id}:complete` | Device token | Records checksum/result and local-store package version. |
 | DESKTOP-API-006 | `POST /v1/usage-events:batch` | Device token | Batches display/download/reporting events; idempotent by event id. |
 | DESKTOP-API-007 | `POST /v1/sessions` | Account email + password (JSON only; no cookie read or set) | Native-client sign-in (DEC-011 pt 3): returns a 30-day account session token. CSRF-exempt like the rest of `/v1` because it can neither read nor set an ambient browser credential; the browser equivalent stays on the CSRF-enforced `/graphql/account` (ADR-0029). Per-IP throttled; per-account lockout shared with the browser login. |
 | DESKTOP-API-008 | `POST /v1/activations:with-session` | Account session as `Authorization: Bearer` (ADMIN only; no cookie read) | Registers the device for the signed-in administrator's organisation; same response shape and instance limit as DESKTOP-API-001. Per-IP throttled. |
+
+#### Staff extension and device refresh
+
+Each successful staff extension advances the licence's generation with the expiry and
+success audit. Each issued device token snapshots that generation. A live bearer with
+an older generation can use the exact refresh capability to receive a replacement at
+the latest generation, subject to commercial validity and the existing device allowance.
+Refresh responses and validation errors use `Cache-Control: no-store`. The client must
+save a replacement before requesting the signed entitlement manifest. The former bearer
+loses authority when the replacement commits, and the activation receipt stays immutable.
+
+Legacy refresh requests can read the new licence expiry but keep their original bearer
+expiry while staff renewal is pending. An eligible managed Free licence may still renew
+its own window. Pure Free renewal or catch-up retains the live bearer and its generation.
+An ordinary refresh reads status without row locks. Managed renewal takes organisation,
+licence, device, token, marker and fallback-assignment locks in that order. The fallback
+assignment lock targets the assignment row. Free renewal allows the status writer inside
+that transaction. If the writer refuses, the owner rolls back the partial expiry save,
+token changes and inner audit before recording one durable Free denial.
+
+The generation migrations initialise existing tokens to zero and set a zero licence
+generation to one when historical successful staff extension audits identify that licence.
+This can require one extra rotation on an imported licence. Operational rollback retains
+generations and activation receipts. Old clients keep status-only staff refresh and may
+need an upgrade or authorised recovery once their original bearer expires.
 
 ### Billing And Provider Inputs
 
@@ -360,6 +385,7 @@ Use stable machine codes with safe display messages:
 | `PROVIDER_UNAVAILABLE` | Upstream/provider unavailable |
 | `REPORTING_REQUIRED` | Reporting hook missing for a required provider |
 | `RATE_LIMITED` | Request over abuse or provider-safe limit |
+| `CREDENTIAL_IN_INPUT` | A licence key was found in text that is stored permanently (a lifecycle reason, or a retry key) on the staff admin surface; the fixed message names the problem and carries none of the key (86ak1090r, DEC-020) |
 
 ## 13. Event Contracts
 

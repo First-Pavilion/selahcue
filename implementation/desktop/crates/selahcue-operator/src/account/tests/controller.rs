@@ -23,6 +23,7 @@ const NOW: Time = (1_794_672_000, 123_456_789);
 struct Custody {
     store: Arc<InMemorySecretStore>,
     fail_write: Arc<std::sync::atomic::AtomicBool>,
+    denied_device_writes: Arc<std::sync::atomic::AtomicUsize>,
     fail_session_write: Arc<std::sync::atomic::AtomicBool>,
     fail_remove: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -34,6 +35,8 @@ impl SecretStore for Custody {
 
     fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
         if name == DEVICE_TOKEN_NAME && self.fail_write.load(std::sync::atomic::Ordering::SeqCst) {
+            self.denied_device_writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Err(SecretError("synthetic keyring denial".into()));
         }
         if name == ACCOUNT_SESSION_NAME
@@ -661,6 +664,65 @@ fn django_g1_real_api() {
         sync::atomic::{AtomicBool, Ordering},
     };
 
+    // Only the test transport can inspect the show-once answer. Store a redacted
+    // Token for comparisons on delivered answers; discard lost answers immediately.
+    #[derive(Default)]
+    struct StaffRefresh {
+        public_id: String,
+        original: Option<Token>,
+        replacement: Option<Token>,
+        lose_reply: bool,
+        dropped: bool,
+        calls: Vec<RefreshCall>,
+        manifests_with_saved_replacement: Vec<bool>,
+    }
+
+    struct RefreshCall {
+        capable: bool,
+        original: bool,
+        replacement: bool,
+        status: u16,
+        issued: bool,
+    }
+
+    impl StaffRefresh {
+        fn observe(&mut self, body: &str, bearer: Option<&str>, response: &HttpResponse) -> bool {
+            let request: Value = serde_json::from_str(body).expect("refresh request");
+            let answer: Value =
+                serde_json::from_str(&response.body).expect("live API refresh response");
+            let sent = bearer.map(Token::new);
+            let issued = answer["activation_token"].as_str().map(Token::new);
+            self.calls.push(RefreshCall {
+                capable: request == json!({"token_rotation": "staff-extension-v1"}),
+                original: sent.is_some() && sent == self.original,
+                replacement: sent.is_some() && sent == self.replacement,
+                status: response.status,
+                issued: issued.is_some(),
+            });
+            if let Some(token) = issued {
+                assert_eq!(response.status, 200);
+                assert_eq!(
+                    answer["device"]["device_public_id"].as_str(),
+                    Some(self.public_id.as_str())
+                );
+                assert_eq!(answer["license"]["valid_now"], true);
+                assert!(answer["token"]["expires_at"].is_string());
+                assert_eq!(
+                    answer["token"]["expires_at"],
+                    answer["license"]["expires_at"]
+                );
+                assert!(!token.is_blank() && !token.has_control_characters());
+                assert!(Some(&token) != self.original.as_ref());
+                if self.lose_reply && !self.dropped {
+                    self.dropped = true;
+                    return true;
+                }
+                self.replacement = Some(token);
+            }
+            false
+        }
+    }
+
     struct Wire {
         inner: ReqwestTransport,
         custody: Custody,
@@ -668,6 +730,7 @@ fn django_g1_real_api() {
         offline: Arc<AtomicBool>,
         expected_remint: Arc<AtomicBool>,
         lose_initial_reply: Arc<AtomicBool>,
+        staff: Arc<std::sync::Mutex<StaffRefresh>>,
     }
 
     impl HttpTransport for Wire {
@@ -699,7 +762,31 @@ fn django_g1_real_api() {
                 assert!(metadata.activated_public_id.is_some());
                 assert!(metadata.pending_activation().is_none());
             }
+            if url.ends_with("/v1/activations:bound-with-session")
+                && self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned")
+                    .lose_reply
+            {
+                let request: Value = serde_json::from_str(body).expect("generic sign-in request");
+                assert_ne!(
+                    request["operation_version"], 2,
+                    "generic sign-in or Retry requested credential replacement"
+                );
+            }
             let response = self.inner.post_json(url, body, bearer)?;
+            if url.ends_with("/v1/license:refresh") {
+                let mut staff = self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned");
+                if staff.original.is_some() && staff.observe(body, bearer, &response) {
+                    return Err(TransportError(
+                        "lost committed staff refresh response".into(),
+                    ));
+                }
+            }
             if url.ends_with("/v1/activations:bound-with-session")
                 && self.lose_initial_reply.swap(false, Ordering::SeqCst)
             {
@@ -726,6 +813,7 @@ fn django_g1_real_api() {
                         offline: Arc::new(AtomicBool::new(scenario == "race-loss")),
                         expected_remint: Arc::new(AtomicBool::new(false)),
                         lose_initial_reply: Arc::new(AtomicBool::new(false)),
+                        staff: self.staff.clone(),
                     };
                     let base = std::env::var("SELAHCUE_G1_FIXTURE_URL").expect("base");
                     let client =
@@ -759,6 +847,21 @@ fn django_g1_real_api() {
             if self.offline.load(Ordering::SeqCst) {
                 return Err(TransportError("synthetic network unavailable".into()));
             }
+            if url.ends_with("/v1/entitlements/manifest") {
+                let mut staff = self
+                    .staff
+                    .lock()
+                    .expect("staff refresh trace lock poisoned");
+                if staff.original.is_some() {
+                    let sent = bearer.map(Token::new);
+                    let saved = self
+                        .custody
+                        .get(DEVICE_TOKEN_NAME)
+                        .expect("custody at manifest GET");
+                    let matches = sent.is_some() && sent == staff.replacement && sent == saved;
+                    staff.manifests_with_saved_replacement.push(matches);
+                }
+            }
             self.inner.get(url, bearer)
         }
     }
@@ -781,6 +884,7 @@ fn django_g1_real_api() {
     let offline = Arc::new(AtomicBool::new(false));
     let expected_remint = Arc::new(AtomicBool::new(false));
     let lose_initial_reply = Arc::new(AtomicBool::new(false));
+    let staff = Arc::new(std::sync::Mutex::new(StaffRefresh::default()));
     let synthetic_seed: [u8; 32] = std::array::from_fn(|i| i as u8);
     let public_key = ed25519_dalek::SigningKey::from_bytes(&synthetic_seed)
         .verifying_key()
@@ -795,6 +899,7 @@ fn django_g1_real_api() {
             offline: offline.clone(),
             expected_remint: expected_remint.clone(),
             lose_initial_reply: lose_initial_reply.clone(),
+            staff: staff.clone(),
         };
         let api = LicensingClient::new_for_loopback_tests(transport, &base).expect("loopback only");
         AccountController::new(
@@ -813,7 +918,11 @@ fn django_g1_real_api() {
         .expect("local synthetic fixtures");
     let init: Value = serde_json::from_str(&init).expect("fixture inputs");
     let auth = || match scenario.as_str() {
-        "cascade" | "initial-restart" | "lost-initial" => Command::SignIn {
+        "cascade"
+        | "initial-restart"
+        | "lost-initial"
+        | "staff-extension-managed-free"
+        | "staff-extension-response-lost" => Command::SignIn {
             email: init["email"].as_str().expect("fixture email").into(),
             password: Token::new(init["password"].as_str().expect("fixture password")),
             display_name: "G1 live booth".into(),
@@ -917,6 +1026,182 @@ fn django_g1_real_api() {
     operator.select(first);
     let live = operator.go_live().live_index.expect("fixture slide on air");
     checkpoint(&mut input, "activated");
+
+    if scenario.starts_with("staff-extension") {
+        // The parent sends the licence expiry reloaded after the staff writer committed.
+        // Compare instants so UTC offsets and fractional-second formatting can differ.
+        let mut expiry_line = String::new();
+        input
+            .read_line(&mut expiry_line)
+            .expect("staff expiry from database");
+        let parse_expiry = |date: &str| {
+            time::OffsetDateTime::parse(date, &time::format_description::well_known::Rfc3339)
+                .expect("fixture licence expiry")
+        };
+        let extended_expiry = parse_expiry(expiry_line.trim());
+        assert_ne!(
+            parse_expiry(
+                activate["license_expires_at"]
+                    .as_str()
+                    .expect("original signed expiry")
+            ),
+            extended_expiry
+        );
+        let assert_extended_entitlement = |view: &Value| {
+            assert!(
+                view["error_code"].is_null(),
+                "unexpected account command error: {}",
+                view["error_code"]
+            );
+            assert_eq!(view["entitlement_state"], "current");
+            let signed_expiry = view["license_expires_at"]
+                .as_str()
+                .expect("signed licence expiry");
+            assert_eq!(
+                parse_expiry(signed_expiry),
+                extended_expiry,
+                "the verified entitlement must contain the committed staff expiry"
+            );
+        };
+        let loss = scenario == "staff-extension-response-lost";
+        let store_fault = scenario == "staff-extension-store-failed";
+        let restart = scenario == "staff-extension-restart";
+        let managed = scenario == "staff-extension-managed-free";
+        {
+            let mut trace = staff.lock().expect("staff refresh trace lock poisoned");
+            trace.original = Some(original.clone());
+            trace.public_id = public_id.to_owned();
+            trace.lose_reply = loss;
+        }
+        custody.fail_write.store(store_fault, Ordering::SeqCst);
+        let refresh = || Command::Refresh { explicit: true };
+        let first = wire(&account.execute(refresh()));
+        checkpoint(&mut input, "staff refresh returned");
+        assert_eq!(operator.view().live_index, Some(live));
+        assert_eq!(first["entitlement_state"], "current");
+
+        if loss {
+            assert!(staff.lock().expect("staff refresh trace lock poisoned").dropped,
+                "no successful replacement response from the real API to drop after staff extension");
+            assert_eq!(first["error_code"], "network_unavailable");
+        }
+        if store_fault {
+            assert_eq!(
+                custody.denied_device_writes.load(Ordering::SeqCst),
+                1,
+                "staff refresh never attempted to store the replacement in device custody"
+            );
+            assert_eq!(first["device_state"], "credential_not_saved");
+        }
+        if loss || store_fault {
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("old custody"),
+                Some(original.clone())
+            );
+            assert!(staff
+                .lock()
+                .expect("staff refresh trace lock poisoned")
+                .manifests_with_saved_replacement
+                .is_empty());
+            assert_eq!(
+                first["manifest_expires_at"],
+                activate["manifest_expires_at"]
+            );
+            assert_eq!(first["license_expires_at"], activate["license_expires_at"]);
+            checkpoint(&mut input, "replacement unavailable locally");
+        } else {
+            assert_extended_entitlement(&first);
+        }
+        if store_fault {
+            custody.fail_write.store(false, Ordering::SeqCst);
+            let saved = wire(&account.execute(Command::RetryActivation));
+            assert_extended_entitlement(&saved);
+        }
+        if restart || managed {
+            if restart {
+                drop(account);
+                account = make_controller();
+                let startup = wire(&account.execute(Command::Startup));
+                assert_extended_entitlement(&startup);
+            }
+            let next = wire(&account.execute(refresh()));
+            assert_extended_entitlement(&next);
+            assert_eq!(next["instances_used"], 1);
+            assert_eq!(next["instance_limit"], activate["instance_limit"]);
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
+            assert_eq!(trace.calls.len(), 2);
+            let next = &trace.calls[1];
+            assert!(next.replacement && next.capable && next.status == 200 && !next.issued,
+                "the next online refresh must use the already-stored staff replacement and receive status only");
+        }
+        {
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
+            let call = trace.calls.first().expect("real staff refresh POST");
+            assert!(call.capable && call.original && call.status == 200 && call.issued,
+                "the native refresh did not negotiate and receive a replacement for the live original bearer");
+            if !loss {
+                assert_eq!(
+                    trace.manifests_with_saved_replacement,
+                    vec![true; if restart || managed { 2 } else { 1 }],
+                    "every manifest GET must already have the real replacement in device custody and in its bearer header"
+                );
+                assert_eq!(
+                    custody.get(DEVICE_TOKEN_NAME).expect("final custody"),
+                    trace.replacement
+                );
+            }
+            if store_fault {
+                assert!(
+                    trace.calls[1..]
+                        .iter()
+                        .all(|call| call.replacement && !call.issued && call.status == 200),
+                    "retry must use the retained answer without re-posting the revoked original"
+                );
+            }
+        }
+        let calls_before_probe = staff
+            .lock()
+            .expect("staff refresh trace lock poisoned")
+            .calls
+            .len();
+        assert!(matches!(
+            account.client().refresh_license(&original, public_id),
+            Err(selahcue_licensing::ActivationFailure::Unauthenticated)
+        ));
+        {
+            let trace = staff.lock().expect("staff refresh trace lock poisoned");
+            assert_eq!(trace.calls.len(), calls_before_probe + 1);
+            let probe = &trace.calls[calls_before_probe];
+            assert!(probe.original, "probe must present the original bearer");
+            assert_eq!(
+                probe.status, 401,
+                "real API must reject the original bearer with HTTP 401"
+            );
+        }
+        if loss {
+            // Restart has only the previously stored bearer. Generic actions
+            // must preserve the presentation and cannot authorize replacement.
+            drop(account);
+            account = make_controller();
+            for command in [Command::RetryActivation, auth()] {
+                let view = wire(&account.execute(command));
+                assert_eq!(view["entitlement_state"], "current");
+                assert_eq!(
+                    custody.get(DEVICE_TOKEN_NAME).expect("old custody"),
+                    Some(original.clone())
+                );
+                assert_eq!(operator.view().live_index, Some(live));
+            }
+        }
+        let after = storage
+            .load_or_create(CredentialPresence::Present)
+            .expect("preserved staff binding");
+        assert_eq!(after.activated_public_id, initial_id.activated_public_id);
+        assert_eq!(after.fingerprint(), initial_id.fingerprint());
+        assert_eq!(operator.view().live_index, Some(live));
+        println!("G1 staff extension checked");
+        return;
+    }
 
     if scenario == "missing-local" {
         custody
@@ -3029,5 +3314,1305 @@ fn unsafe_dismissal_path_leaves_setup_pending_and_can_be_retried() {
     assert_eq!(
         wire(&worker.skip_setup().expect("dismissal retried"))["setup_state"],
         "skipped"
+    );
+}
+
+// Fabricated values with the same shape as device credentials from the API.
+const STAFF_REPLACEMENT: &str = "SC-DEV-AB23-CD45-EF67-GH89-JK23-LM45-NP67-QR89";
+const SIBLING_REPLACEMENT: &str = "SC-DEV-ST23-UV45-WX67-YZ89-AB23-CD45-EF67-GH89";
+
+enum StaffRefreshReply {
+    Replacement,
+    StaleReplacement,
+    Unauthorized { custody_updated: bool },
+    ManifestUnauthorized { custody_updated: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StaffBearer {
+    Original,
+    Replacement,
+    Sibling,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StaffRoute {
+    Status,
+    Manifest,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StaffRequest {
+    route: StaffRoute,
+    bearer: StaffBearer,
+    stored: bool,
+    replacement_read_back: bool,
+    negotiated_rotation: bool,
+}
+
+#[derive(Default)]
+struct StaffCustodyTrace {
+    saved_replacement: std::cell::Cell<bool>,
+    read_back_replacement: std::cell::Cell<bool>,
+}
+
+#[derive(Clone)]
+struct StaffCustody {
+    inner: Custody,
+    trace: std::rc::Rc<StaffCustodyTrace>,
+}
+
+impl SecretStore for StaffCustody {
+    fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+        let token = self.inner.get(name)?;
+        if name == DEVICE_TOKEN_NAME && token.as_ref().map(Token::expose) == Some(STAFF_REPLACEMENT)
+        {
+            self.trace.read_back_replacement.set(true);
+        }
+        Ok(token)
+    }
+
+    fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+        self.inner.set(name, token)?;
+        if name == DEVICE_TOKEN_NAME {
+            self.trace.read_back_replacement.set(false);
+            if token.expose() == STAFF_REPLACEMENT {
+                self.trace.saved_replacement.set(true);
+            }
+        }
+        Ok(())
+    }
+
+    fn remove(&self, name: &str) -> Result<(), SecretError> {
+        self.inner.remove(name)?;
+        if name == DEVICE_TOKEN_NAME {
+            self.trace.read_back_replacement.set(false);
+        }
+        Ok(())
+    }
+}
+
+struct StaffRefreshTransport {
+    reply: StaffRefreshReply,
+    custody: StaffCustody,
+    storage: AccountMetadataStore,
+    extended_manifest: String,
+    sibling_manifest: String,
+    requests: std::cell::RefCell<Vec<StaffRequest>>,
+}
+
+impl StaffRefreshTransport {
+    fn store_sibling_credential(&self) {
+        // A cooperating controller can take ownership while the response is
+        // outstanding. Closing the handle releases the lock before delivery.
+        let _ownership = self
+            .storage
+            .try_lock_account_session()
+            .expect("sibling can acquire ownership during HTTP");
+        self.custody
+            .inner
+            .set(DEVICE_TOKEN_NAME, &Token::new(SIBLING_REPLACEMENT))
+            .expect("sibling stores its current credential");
+    }
+
+    fn record_request(
+        &self,
+        route: StaffRoute,
+        bearer: Option<&str>,
+        negotiated_rotation: bool,
+    ) -> StaffRequest {
+        let role = match bearer {
+            Some(SECRET) => StaffBearer::Original,
+            Some(STAFF_REPLACEMENT) => StaffBearer::Replacement,
+            Some(SIBLING_REPLACEMENT) => StaffBearer::Sibling,
+            _ => StaffBearer::Other,
+        };
+        // The fixture's observation must not stand in for the controller's own
+        // read-back through SecretStore after a successful write.
+        let saved = self
+            .custody
+            .inner
+            .get(DEVICE_TOKEN_NAME)
+            .expect("custody at HTTP request");
+        let request = StaffRequest {
+            route,
+            bearer: role,
+            stored: bearer.is_some() && saved.as_ref().map(Token::expose) == bearer,
+            replacement_read_back: self.custody.trace.read_back_replacement.get(),
+            negotiated_rotation,
+        };
+        self.requests.borrow_mut().push(request);
+        request
+    }
+}
+
+impl selahcue_licensing::HttpTransport for StaffRefreshTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        use selahcue_cloud::transport::HttpResponse;
+        assert!(url.ends_with("/v1/license:refresh"));
+        let request = serde_json::from_str::<Value>(body).expect("refresh payload");
+        let request = self.record_request(
+            StaffRoute::Status,
+            bearer,
+            request == json!({"token_rotation":"staff-extension-v1"}),
+        );
+        if let (StaffBearer::Original, StaffRefreshReply::Unauthorized { custody_updated }) =
+            (request.bearer, &self.reply)
+        {
+            if *custody_updated {
+                self.store_sibling_credential();
+            }
+            return Ok(HttpResponse {
+                status: 401,
+                body: "{}".into(),
+            });
+        }
+        if !request.stored {
+            return Ok(HttpResponse {
+                status: 401,
+                body: "{}".into(),
+            });
+        }
+        let mut status: Value =
+            serde_json::from_str(&refresh_status(true)).expect("fixture status");
+        status["surface"] = json!("desktop");
+        status["operation"] = json!("license_refresh");
+        status["entitlement"] = json!({"feature_scope":"CHURCH","territory":""});
+        if request.bearer == StaffBearer::Original {
+            if matches!(&self.reply, StaffRefreshReply::StaleReplacement) {
+                self.store_sibling_credential();
+            }
+            if !matches!(&self.reply, StaffRefreshReply::ManifestUnauthorized { .. }) {
+                // Expose adoption and ordering even on the legacy unit request.
+                status["activation_token"] = json!(STAFF_REPLACEMENT);
+            }
+        } else if request.bearer == StaffBearer::Sibling {
+            status["license"]["expires_at"] = json!("2027-02-01T00:00:00Z");
+            status["token"]["expires_at"] = json!("2027-02-01T00:00:00Z");
+        }
+        Ok(HttpResponse {
+            status: 200,
+            body: status.to_string(),
+        })
+    }
+
+    fn get(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        use selahcue_cloud::transport::HttpResponse;
+        assert!(url.ends_with("/v1/entitlements/manifest"));
+        let request = self.record_request(StaffRoute::Manifest, bearer, false);
+        let manifest = match (request.bearer, request.stored, &self.reply) {
+            (StaffBearer::Replacement, true, _) => Some(&self.extended_manifest),
+            (StaffBearer::Sibling, true, _) => Some(&self.sibling_manifest),
+            (StaffBearer::Original, _, StaffRefreshReply::StaleReplacement) => {
+                // Give an erroneously sent GET a distinct, valid but stale
+                // signed result. It must never replace the winning cache.
+                Some(&self.extended_manifest)
+            }
+            (
+                StaffBearer::Original,
+                _,
+                StaffRefreshReply::ManifestUnauthorized {
+                    custody_updated: true,
+                },
+            ) => {
+                self.store_sibling_credential();
+                None
+            }
+            _ => None,
+        };
+        Ok(match manifest {
+            Some(body) => HttpResponse {
+                status: 200,
+                body: body.clone(),
+            },
+            None => HttpResponse {
+                status: 401,
+                body: "{}".into(),
+            },
+        })
+    }
+}
+
+fn staff_refresh_controller(
+    directory: &Path,
+    custody: &Custody,
+    reply: StaffRefreshReply,
+) -> AccountController<StaffRefreshTransport, StaffCustody> {
+    let storage = AccountMetadataStore::new(directory.into());
+    let mut binding = storage
+        .load_or_create(CredentialPresence::Missing)
+        .expect("fixture installation");
+    binding.activated_public_id = Some(DEVICE.into());
+    let binding = storage.save(&binding).expect("established installation");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+        .expect("initial device custody");
+    let manifest = |expiry| {
+        signed_display(
+            binding.fingerprint(),
+            "2026-11-14T12:00:00Z",
+            expiry,
+            expiry,
+        )
+    };
+    let (trust, initial) = manifest("2026-12-01T00:00:00Z");
+    selahcue_licensing::EntitlementCache::new(directory)
+        .replace(initial.as_bytes(), &trust, DEVICE, binding.fingerprint())
+        .expect("current signed cache");
+    let (_, extended_manifest) = manifest("2027-01-01T00:00:00Z");
+    let (_, sibling_manifest) = manifest("2027-02-01T00:00:00Z");
+    let custody = StaffCustody {
+        inner: custody.clone(),
+        trace: Default::default(),
+    };
+    let transport = StaffRefreshTransport {
+        reply,
+        custody: custody.clone(),
+        storage,
+        extended_manifest,
+        sibling_manifest,
+        requests: Default::default(),
+    };
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("static origin");
+    AccountController::new(Some(directory.into()), client, custody, trust, || NOW)
+}
+
+#[test]
+fn negotiated_refresh_stores_replacement_before_requesting_the_signed_manifest() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account =
+        staff_refresh_controller(directory.path(), &custody, StaffRefreshReply::Replacement);
+    let result = wire(&account.execute(Command::Refresh { explicit: true }));
+    let transport = account.client().transport();
+    let requests = transport.requests.borrow();
+    let [status, manifest] = requests.as_slice() else {
+        panic!("refresh must request status and then a manifest");
+    };
+    assert!(
+        manifest.route == StaffRoute::Manifest
+            && manifest.bearer == StaffBearer::Replacement
+            && manifest.stored,
+        "manifest GET must use the replacement already saved in device custody"
+    );
+    assert!(
+        status.route == StaffRoute::Status
+            && status.bearer == StaffBearer::Original
+            && status.negotiated_rotation,
+        "refresh must negotiate staff extension using the original credential"
+    );
+    assert!(result["error_code"].is_null());
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2027-01-01T00:00:00Z");
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("final custody"),
+        Some(Token::new(STAFF_REPLACEMENT))
+    );
+}
+
+#[test]
+fn refresh_store_failure_keeps_answer_for_local_retry() {
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account =
+        staff_refresh_controller(directory.path(), &custody, StaffRefreshReply::Replacement);
+    custody.fail_write.store(true, Ordering::SeqCst);
+    let result = wire(&account.execute(Command::Refresh { explicit: true }));
+    assert_eq!(
+        custody.denied_device_writes.load(Ordering::SeqCst),
+        1,
+        "refresh should attempt to save the real-shaped replacement before fetching a manifest"
+    );
+    assert_eq!(result["device_state"], "credential_not_saved");
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2026-12-01T00:00:00Z");
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("preserved custody"),
+        Some(Token::new(SECRET))
+    );
+    assert!(matches!(
+        account.client().transport().requests.borrow().as_slice(),
+        [StaffRequest {
+            route: StaffRoute::Status,
+            ..
+        }]
+    ));
+
+    custody.fail_write.store(false, Ordering::SeqCst);
+    let result = wire(&account.execute(Command::RetryActivation));
+    let transport = account.client().transport();
+    let requests = transport.requests.borrow();
+    let (initial, retry_requests) = requests.split_first().expect("initial status request");
+    assert!(initial.bearer == StaffBearer::Original && initial.negotiated_rotation);
+    assert!(
+        retry_requests
+            .iter()
+            .all(|request| request.bearer != StaffBearer::Original),
+        "local save retry must not re-use the superseded original bearer"
+    );
+    assert!(
+        retry_requests.iter().all(|request| {
+            request.bearer == StaffBearer::Replacement
+                && request.stored
+                && request.replacement_read_back
+        }),
+        "local retry must save and read back the retained credential before any network use"
+    );
+    assert_eq!(
+        retry_requests
+            .iter()
+            .filter(|request| request.route == StaffRoute::Manifest)
+            .count(),
+        1,
+        "local retry must fetch a signed manifest after saving the credential"
+    );
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("retried custody"),
+        Some(Token::new(STAFF_REPLACEMENT))
+    );
+    assert!(result["error_code"].is_null());
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2027-01-01T00:00:00Z");
+}
+
+#[test]
+fn stale_refresh_response_cannot_replace_newer_custody() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account = staff_refresh_controller(
+        directory.path(),
+        &custody,
+        StaffRefreshReply::StaleReplacement,
+    );
+    let storage = AccountMetadataStore::new(directory.path().into());
+    let before = storage
+        .load_or_create(CredentialPresence::Unavailable)
+        .expect("original metadata");
+    let cache_path = selahcue_licensing::EntitlementCache::new(directory.path()).path();
+    let read_manifest = || {
+        let bytes = std::fs::read(&cache_path).expect("signed cache");
+        serde_json::from_slice::<Value>(&bytes).expect("signed envelope")
+    };
+    let original_manifest = read_manifest();
+    let result = wire(&account.execute(Command::Refresh { explicit: true }));
+    let transport = account.client().transport();
+
+    let requests = transport.requests.borrow();
+    let (initial, follow_ups) = requests.split_first().expect("initial status request");
+    assert!(
+        initial.route == StaffRoute::Status
+            && initial.bearer == StaffBearer::Original
+            && initial.stored,
+        "fixture must start a status request with the originally stored bearer"
+    );
+    assert!(
+        !transport.custody.trace.saved_replacement.get(),
+        "the stale answer must never enter custody, even temporarily"
+    );
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("current custody"),
+        Some(Token::new(SIBLING_REPLACEMENT)),
+        "the older response must leave the sibling's current credential in custody"
+    );
+    assert!(
+        follow_ups
+            .iter()
+            .all(|request| request.bearer != StaffBearer::Original),
+        "the older response must not use the superseded bearer in a follow-up request"
+    );
+    let mut sibling_status_read = false;
+    let mut sibling_manifest_read = false;
+    for request in follow_ups {
+        assert!(
+            request.bearer == StaffBearer::Sibling && request.stored,
+            "a follow-up may use only the sibling's stored credential"
+        );
+        match request.route {
+            StaffRoute::Status => sibling_status_read = true,
+            StaffRoute::Manifest => {
+                assert!(
+                    sibling_status_read,
+                    "a new manifest fetch requires fresh sibling status"
+                );
+                sibling_manifest_read = true;
+            }
+        }
+    }
+    let (expected_manifest, expected_expiry) = if sibling_manifest_read {
+        (
+            serde_json::from_str(&transport.sibling_manifest).expect("sibling signed envelope"),
+            "2027-02-01T00:00:00Z",
+        )
+    } else {
+        (original_manifest, "2026-12-01T00:00:00Z")
+    };
+    assert!(
+        read_manifest() == expected_manifest,
+        "the signed cache may change only to the manifest from a fresh sibling read"
+    );
+    assert_eq!(
+        storage
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("unchanged installation"),
+        before
+    );
+    assert_eq!(result["device_state"], "credential_present");
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["manifest_expires_at"], expected_expiry);
+    assert_eq!(result["license_expires_at"], expected_expiry);
+}
+
+#[test]
+fn stale_refresh_401_does_not_reject_newer_custody() {
+    for custody_updated in [false, true] {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let custody = Custody::default();
+        let mut account = staff_refresh_controller(
+            directory.path(),
+            &custody,
+            StaffRefreshReply::Unauthorized { custody_updated },
+        );
+        let storage = AccountMetadataStore::new(directory.path().into());
+        let before = storage
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("original metadata");
+        let result = wire(&account.execute(Command::Refresh { explicit: true }));
+        let transport = account.client().transport();
+        let requests = transport.requests.borrow();
+        let initial = requests.first().expect("initial status request");
+        assert!(initial.route == StaffRoute::Status && initial.bearer == StaffBearer::Original);
+        assert!(requests
+            .iter()
+            .all(|request| request.route != StaffRoute::Manifest));
+        assert_eq!(
+            storage
+                .load_or_create(CredentialPresence::Unavailable)
+                .expect("unchanged installation"),
+            before
+        );
+        assert_eq!(result["entitlement_state"], "current");
+        if custody_updated {
+            assert_eq!(
+                result["device_state"], "credential_present",
+                "a status 401 for the previous bearer must leave current custody usable"
+            );
+            assert_ne!(
+                result["error_code"], "reauthentication_required",
+                "a stale status error must not ask the operator to sign in"
+            );
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("current custody"),
+                Some(Token::new(SIBLING_REPLACEMENT))
+            );
+        } else {
+            assert_eq!(
+                result["device_state"], "reauthentication_needed",
+                "a 401 for the current bearer still requires reauthentication"
+            );
+        }
+    }
+}
+
+#[test]
+fn stale_manifest_401_does_not_reject_newer_custody() {
+    for custody_updated in [false, true] {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let custody = Custody::default();
+        let mut account = staff_refresh_controller(
+            directory.path(),
+            &custody,
+            StaffRefreshReply::ManifestUnauthorized { custody_updated },
+        );
+        let storage = AccountMetadataStore::new(directory.path().into());
+        let before = storage
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("original metadata");
+        let cache_path = selahcue_licensing::EntitlementCache::new(directory.path()).path();
+        let read_manifest = || {
+            let bytes = std::fs::read(&cache_path).expect("signed cache");
+            serde_json::from_slice::<Value>(&bytes).expect("signed envelope")
+        };
+        let original_manifest = read_manifest();
+        let result = wire(&account.execute(Command::Refresh { explicit: true }));
+        let transport = account.client().transport();
+
+        let requests = transport.requests.borrow();
+        let [status, manifest, follow_ups @ ..] = requests.as_slice() else {
+            panic!("fixture must reach the manifest request");
+        };
+        assert!(
+            status.route == StaffRoute::Status
+                && status.bearer == StaffBearer::Original
+                && status.stored
+        );
+        assert!(
+            manifest.route == StaffRoute::Manifest
+                && manifest.bearer == StaffBearer::Original
+                && manifest.stored
+        );
+
+        if !custody_updated {
+            assert!(
+                follow_ups.is_empty(),
+                "a manifest 401 for the still-current bearer must end the refresh"
+            );
+        }
+        let mut has_fresh_sibling_status = false;
+        let mut sibling_manifest_fetched = false;
+        for request in follow_ups {
+            assert!(
+                request.bearer == StaffBearer::Sibling && request.stored,
+                "after a stale manifest 401, every follow-up must use the stored sibling bearer"
+            );
+            match request.route {
+                StaffRoute::Status => has_fresh_sibling_status = true,
+                StaffRoute::Manifest => {
+                    assert!(
+                        has_fresh_sibling_status,
+                        "a sibling manifest fetch after a stale 401 needs fresh sibling status"
+                    );
+                    has_fresh_sibling_status = false;
+                    sibling_manifest_fetched = true;
+                }
+            }
+        }
+        let (expected_manifest, expected_expiry) = if sibling_manifest_fetched {
+            (
+                serde_json::from_str(&transport.sibling_manifest).expect("sibling signed envelope"),
+                "2027-02-01T00:00:00Z",
+            )
+        } else {
+            (original_manifest, "2026-12-01T00:00:00Z")
+        };
+        assert!(
+            read_manifest() == expected_manifest,
+            "after a manifest 401, the cache may change only to the fresh sibling's signed envelope"
+        );
+        assert_eq!(
+            storage
+                .load_or_create(CredentialPresence::Unavailable)
+                .expect("unchanged installation"),
+            before
+        );
+        assert_eq!(result["entitlement_state"], "current");
+        assert_eq!(result["manifest_expires_at"], expected_expiry);
+        assert_eq!(result["license_expires_at"], expected_expiry);
+        if custody_updated {
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("current custody"),
+                Some(Token::new(SIBLING_REPLACEMENT))
+            );
+            assert_eq!(
+                result["device_state"], "credential_present",
+                "a manifest 401 for the previous bearer must leave current custody usable"
+            );
+            assert_ne!(
+                result["error_code"], "reauthentication_required",
+                "a stale manifest error must not ask the operator to sign in"
+            );
+        } else {
+            assert_eq!(
+                result["device_state"], "reauthentication_needed",
+                "a manifest 401 for the current bearer still requires reauthentication"
+            );
+        }
+    }
+}
+
+const REPLACEMENT_SESSION: &str = "synthetic-unconfirmed-session";
+const OBSOLETE_DEVICE: &str = "synthetic-pre-remint-device";
+const SESSION_ACTIVATION: &str = "/v1/activations:bound-with-session";
+
+struct BootstrapRemoval {
+    candidate_installed: bool,
+    pending_at_owned_read: Option<crate::account::state::PendingActivation>,
+}
+
+struct ObservedEntry {
+    name: &'static str,
+    candidate: &'static str,
+    acknowledge_only: std::cell::Cell<bool>,
+    attempts: std::cell::Cell<usize>,
+    removals: std::cell::Cell<usize>,
+    owned_readback: std::cell::Cell<bool>,
+    pending_at_owned_read: std::cell::RefCell<Option<crate::account::state::PendingActivation>>,
+}
+
+#[derive(Clone)]
+struct ObservedCustody {
+    inner: Custody,
+    storage: AccountMetadataStore,
+    entry: std::rc::Rc<ObservedEntry>,
+    bootstrap_removals: Option<std::rc::Rc<std::cell::RefCell<Vec<BootstrapRemoval>>>>,
+}
+
+impl ObservedCustody {
+    fn new(directory: &Path, inner: Custody, name: &'static str, candidate: &'static str) -> Self {
+        Self {
+            inner,
+            storage: AccountMetadataStore::new(directory.into()),
+            entry: std::rc::Rc::new(ObservedEntry {
+                name,
+                candidate,
+                acknowledge_only: true.into(),
+                attempts: 0.into(),
+                removals: 0.into(),
+                owned_readback: false.into(),
+                pending_at_owned_read: Default::default(),
+            }),
+            bootstrap_removals: None,
+        }
+    }
+
+    // Fixture inspection bypasses the controller-facing SecretStore trace.
+    fn stored(&self, name: &str) -> Option<Token> {
+        self.inner.get(name).expect("fixture custody")
+    }
+
+    fn metadata(&self) -> crate::account::state::AccountMetadata {
+        self.storage
+            .load_or_create(CredentialPresence::Unavailable)
+            .expect("existing metadata")
+    }
+}
+
+impl SecretStore for ObservedCustody {
+    fn get(&self, name: &str) -> Result<Option<Token>, SecretError> {
+        use crate::account::state::AccountStorageError;
+        let value = self.inner.get(name)?;
+        if name == self.entry.name
+            && value.as_ref().map(Token::expose) == Some(self.entry.candidate)
+        {
+            match self.storage.try_lock_account_session() {
+                Ok(_unowned) => {}
+                Err(AccountStorageError::Io(std::io::ErrorKind::WouldBlock)) => {
+                    self.entry.owned_readback.set(true);
+                    if let Some(pending) = self.metadata().pending_activation() {
+                        *self.entry.pending_at_owned_read.borrow_mut() = Some(pending.clone());
+                    }
+                }
+                Err(error) => panic!("could not observe fixture ownership: {error}"),
+            }
+        }
+        Ok(value)
+    }
+
+    fn set(&self, name: &str, token: &Token) -> Result<(), SecretError> {
+        if name == self.entry.name {
+            self.entry.owned_readback.set(false);
+            *self.entry.pending_at_owned_read.borrow_mut() = None;
+            if token.expose() == self.entry.candidate {
+                self.entry.attempts.set(self.entry.attempts.get() + 1);
+                if self.entry.acknowledge_only.get() {
+                    return Ok(());
+                }
+            }
+        }
+        self.inner.set(name, token)
+    }
+
+    fn remove(&self, name: &str) -> Result<(), SecretError> {
+        if let (ACCOUNT_SESSION_NAME, Some(removals)) = (name, &self.bootstrap_removals) {
+            removals.borrow_mut().push(BootstrapRemoval {
+                candidate_installed: self.stored(DEVICE_TOKEN_NAME).as_ref().map(Token::expose)
+                    == Some(self.entry.candidate),
+                pending_at_owned_read: self.entry.pending_at_owned_read.borrow().clone(),
+            });
+        }
+        if name == self.entry.name {
+            self.entry.removals.set(self.entry.removals.get() + 1);
+            self.entry.owned_readback.set(false);
+            *self.entry.pending_at_owned_read.borrow_mut() = None;
+        }
+        self.inner.remove(name)
+    }
+}
+
+type FixtureResponse =
+    Result<selahcue_cloud::transport::HttpResponse, selahcue_cloud::TransportError>;
+struct CustodyHttp<F>(F);
+impl<F: Fn(&str, &str, &str, Option<&str>) -> FixtureResponse> selahcue_cloud::HttpTransport
+    for CustodyHttp<F>
+{
+    fn post_json(&self, url: &str, body: &str, bearer: Option<&str>) -> FixtureResponse {
+        (self.0)(
+            "POST",
+            url.strip_prefix(API_ORIGIN).expect("fixture origin"),
+            body,
+            bearer,
+        )
+    }
+    fn get(&self, url: &str, bearer: Option<&str>) -> FixtureResponse {
+        (self.0)(
+            "GET",
+            url.strip_prefix(API_ORIGIN).expect("fixture origin"),
+            "",
+            bearer,
+        )
+    }
+}
+
+fn custody_controller<F: Fn(&str, &str, &str, Option<&str>) -> FixtureResponse, S: SecretStore>(
+    directory: &Path,
+    custody: S,
+    trust: TrustedKeys,
+    respond: F,
+) -> AccountController<CustodyHttp<F>, S> {
+    AccountController::new(
+        Some(directory.into()),
+        LicensingClient::new(CustodyHttp(respond), API_ORIGIN).expect("client"),
+        custody,
+        trust,
+        || NOW,
+    )
+}
+
+fn fixture_http(status: u16, body: impl Into<String>) -> FixtureResponse {
+    Ok(selahcue_cloud::transport::HttpResponse {
+        status,
+        body: body.into(),
+    })
+}
+
+fn current_device_status(expiry: &str) -> String {
+    let mut status: Value = serde_json::from_str(&refresh_status(true)).expect("status fixture");
+    status["surface"] = json!("desktop");
+    status["operation"] = json!("license_refresh");
+    status["entitlement"] = json!({"feature_scope":"CHURCH","territory":""});
+    status["license"]["expires_at"] = json!(expiry);
+    status["token"]["expires_at"] = json!(expiry);
+    status.to_string()
+}
+
+fn recovery_binding(
+    storage: &AccountMetadataStore,
+    custody: &Custody,
+) -> crate::account::state::AccountMetadata {
+    let mut metadata = storage
+        .load_or_create(CredentialPresence::Missing)
+        .expect("installation");
+    metadata.activated_public_id = Some(DEVICE.into());
+    let binding = storage.save(&metadata).expect("existing device binding");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(OBSOLETE_DEVICE))
+        .expect("previous device token");
+    binding
+}
+
+fn bound_receipt(body: &str, state: &str, token: Option<&str>, reminted: bool) -> FixtureResponse {
+    let request: Value = serde_json::from_str(body).expect("bound request");
+    let mut reply: Value =
+        serde_json::from_str(&activated(token, reminted)).expect("activation fixture");
+    reply
+        .as_object_mut()
+        .expect("fixture response object")
+        .remove("fixture_echo");
+    reply["operation_version"] = json!(1);
+    reply["operation_state"] = json!(state);
+    reply["idempotency_key"] = request["idempotency_key"].clone();
+    fixture_http(200, reply.to_string())
+}
+
+#[test]
+fn activation_keeps_pending_when_successful_device_set_does_not_read_back() {
+    use std::cell::{Cell, RefCell};
+    let directory = tempfile::tempdir().expect("directory");
+    let mut custody = ObservedCustody::new(
+        directory.path(),
+        Custody::default(),
+        DEVICE_TOKEN_NAME,
+        SECRET,
+    );
+    let removals = std::rc::Rc::new(RefCell::new(Vec::new()));
+    custody.bootstrap_removals = Some(removals.clone());
+    recovery_binding(&custody.storage, &custody.inner);
+    let frozen = RefCell::new(None);
+    let logins = Cell::new(0);
+    let activations = Cell::new(0);
+    let follow_ups = RefCell::new(Vec::new());
+    let mut account = custody_controller(
+        directory.path(),
+        custody.clone(),
+        TrustedKeys::new(),
+        |method, route, body, bearer| match (method, route) {
+            ("POST", "/v1/sessions") => {
+                logins.set(logins.get() + 1);
+                fixture_http(200, session_json())
+            }
+            ("POST", SESSION_ACTIVATION) => {
+                assert!(bearer == Some(SESSION));
+                activations.set(activations.get() + 1);
+                let current = custody
+                    .storage
+                    .load_or_create(CredentialPresence::Present)
+                    .expect("dispatch metadata");
+                let pending = current.pending_activation().expect("frozen recovery");
+                assert!(!pending.is_prepared());
+                assert_eq!(pending.expected_device_public_id(), Some(DEVICE));
+                *frozen.borrow_mut() = Some(pending.clone());
+                bound_receipt(body, "completed", Some(SECRET), true)
+            }
+            _ => {
+                let installed = custody
+                    .inner
+                    .get(DEVICE_TOKEN_NAME)
+                    .expect("store at follow-up")
+                    == Some(Token::new(SECRET));
+                let expected_bearer = match route {
+                    "/v1/sessions:revoke" => SESSION,
+                    _ => SECRET,
+                };
+                let frozen = frozen.borrow();
+                follow_ups.borrow_mut().push((
+                    route.to_owned(),
+                    installed
+                        && frozen.is_some()
+                        && custody.entry.pending_at_owned_read.borrow().as_ref() == frozen.as_ref()
+                        && bearer == Some(expected_bearer),
+                ));
+                match (method, route, bearer) {
+                    ("POST", "/v1/sessions:revoke", Some(SESSION)) => {
+                        fixture_http(200, r#"{"revoked":true}"#)
+                    }
+                    ("POST", "/v1/license:refresh", Some(OBSOLETE_DEVICE)) => {
+                        fixture_http(401, "{}")
+                    }
+                    ("POST", "/v1/license:refresh", Some(SECRET)) => {
+                        fixture_http(200, current_device_status("2027-01-01T00:00:00Z"))
+                    }
+                    ("GET", "/v1/entitlements/manifest", Some(SECRET)) => fixture_http(503, "{}"),
+                    _ => fixture_http(404, "{}"),
+                }
+            }
+        },
+    );
+    let failed = wire(&account.execute(sign_in()));
+    assert_eq!(custody.entry.attempts.get(), 1);
+    assert_eq!(
+        custody.stored(DEVICE_TOKEN_NAME),
+        Some(Token::new(OBSOLETE_DEVICE))
+    );
+    assert_eq!(failed["error_code"], "credential_save_failed");
+    assert_eq!(failed["device_state"], "credential_not_saved");
+    assert_eq!(failed["operation_state"], "retry_pending");
+    let saved = custody
+        .storage
+        .load_or_create(CredentialPresence::Present)
+        .expect("pending operation");
+    assert!(frozen.borrow().is_some());
+    assert_eq!(saved.pending_activation(), frozen.borrow().as_ref());
+    assert_eq!(
+        custody.stored(ACCOUNT_SESSION_NAME),
+        Some(Token::new(SESSION))
+    );
+    assert_eq!(logins.get(), 1);
+    assert_eq!(activations.get(), 1);
+    assert!(follow_ups.borrow().is_empty());
+    assert!(
+        removals.borrow().is_empty(),
+        "failed device persistence must retain the bootstrap session without attempting removal"
+    );
+    custody.entry.acknowledge_only.set(false);
+    let retried = wire(&account.execute(Command::RetryActivation));
+    assert_eq!(logins.get(), 1);
+    assert_eq!(activations.get(), 1);
+    assert_eq!(custody.entry.attempts.get(), 2);
+    assert_eq!(retried["setup_state"], "completed");
+    assert_eq!(custody.stored(DEVICE_TOKEN_NAME), Some(Token::new(SECRET)));
+    assert!(custody.stored(ACCOUNT_SESSION_NAME).is_none());
+    let removals = removals.borrow();
+    assert!(
+        !removals.is_empty(),
+        "retry must remove the bootstrap session"
+    );
+    for removal in removals.iter() {
+        assert!(
+            removal.candidate_installed,
+            "replacement missing at bootstrap cleanup"
+        );
+        assert_eq!(
+            removal.pending_at_owned_read.as_ref(),
+            frozen.borrow().as_ref(),
+            "bootstrap cleanup must follow an owned device readback during the frozen operation"
+        );
+    }
+    assert!(custody.metadata().pending_activation().is_none());
+    let traffic = follow_ups.borrow();
+    assert_eq!(
+        traffic
+            .iter()
+            .map(|(route, _)| route.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "/v1/sessions:revoke",
+            "/v1/license:refresh",
+            "/v1/entitlements/manifest"
+        ]
+    );
+    assert!(
+        traffic.iter().all(|(_, verified)| *verified),
+        "controller must read back the stored replacement before cleanup or online use"
+    );
+}
+
+struct UnconfirmedSignIn {
+    projection: Value,
+    activations: usize,
+    revokes_only_candidate: bool,
+    unexpected_requests: usize,
+}
+
+fn sign_in_with_unconfirmed_session(
+    directory: &Path,
+    custody: &ObservedCustody,
+) -> UnconfirmedSignIn {
+    use std::cell::Cell;
+    let activations = Cell::new(0);
+    let revokes_only_candidate = Cell::new(true);
+    let unexpected_requests = Cell::new(0);
+    let mut account = custody_controller(
+        directory,
+        custody.clone(),
+        TrustedKeys::new(),
+        |method, route, _, bearer| match (method, route) {
+            ("POST", "/v1/sessions") => {
+                fixture_http(200, session_json().replace(SESSION, REPLACEMENT_SESSION))
+            }
+            ("POST", SESSION_ACTIVATION) => {
+                activations.set(activations.get() + 1);
+                fixture_http(503, "{}")
+            }
+            ("POST", "/v1/sessions:revoke") => {
+                revokes_only_candidate
+                    .set(revokes_only_candidate.get() && bearer == Some(REPLACEMENT_SESSION));
+                fixture_http(200, r#"{"revoked":true}"#)
+            }
+            _ => {
+                unexpected_requests.set(unexpected_requests.get() + 1);
+                fixture_http(404, "{}")
+            }
+        },
+    );
+    UnconfirmedSignIn {
+        projection: wire(&account.execute(sign_in())),
+        activations: activations.get(),
+        revokes_only_candidate: revokes_only_candidate.get(),
+        unexpected_requests: unexpected_requests.get(),
+    }
+}
+
+#[test]
+fn fresh_sign_in_does_not_dispatch_when_successful_session_set_does_not_read_back() {
+    let directory = tempfile::tempdir().expect("directory");
+    let custody = ObservedCustody::new(
+        directory.path(),
+        Custody::default(),
+        ACCOUNT_SESSION_NAME,
+        REPLACEMENT_SESSION,
+    );
+    assert!(custody.stored(ACCOUNT_SESSION_NAME).is_none());
+    let failed = sign_in_with_unconfirmed_session(directory.path(), &custody);
+    assert_eq!(custody.entry.attempts.get(), 1);
+    assert_eq!(
+        failed.activations, 0,
+        "unconfirmed new session dispatched activation"
+    );
+    assert_eq!(
+        failed.projection["error_code"],
+        "account_session_save_failed"
+    );
+    assert!(failed.revokes_only_candidate);
+    assert_eq!(failed.unexpected_requests, 0);
+    assert!(custody.stored(ACCOUNT_SESSION_NAME).is_none());
+    assert!(custody.metadata().pending_activation().is_none());
+}
+
+#[test]
+fn sent_sign_in_does_not_dispatch_when_successful_session_set_does_not_read_back() {
+    let directory = tempfile::tempdir().expect("directory");
+    let custody = ObservedCustody::new(
+        directory.path(),
+        Custody::default(),
+        ACCOUNT_SESSION_NAME,
+        REPLACEMENT_SESSION,
+    );
+    let mut seed = controller(directory.path(), custody.inner.clone());
+    seed.client()
+        .transport()
+        .push_response(200, session_json())
+        .push_failure("ambiguous activation");
+    assert_eq!(
+        wire(&seed.execute(sign_in()))["operation_state"],
+        "retry_pending"
+    );
+    let original = seed
+        .client()
+        .transport()
+        .request(1)
+        .expect("original activation");
+    let before = custody
+        .storage
+        .load_or_create(CredentialPresence::Missing)
+        .expect("first dispatch");
+    let frozen = before.pending_activation().expect("existing intent");
+    assert!(!frozen.is_prepared());
+    assert_eq!(
+        custody.stored(ACCOUNT_SESSION_NAME),
+        Some(Token::new(SESSION))
+    );
+    let failed = sign_in_with_unconfirmed_session(directory.path(), &custody);
+    assert_eq!(custody.entry.attempts.get(), 1);
+    assert_eq!(
+        failed.activations, 0,
+        "failed session replacement dispatched activation"
+    );
+    assert_eq!(
+        failed.projection["error_code"],
+        "account_session_save_failed"
+    );
+    assert!(failed.revokes_only_candidate);
+    assert_eq!(failed.unexpected_requests, 0);
+    assert_eq!(custody.entry.removals.get(), 0);
+    assert_eq!(
+        custody.stored(ACCOUNT_SESSION_NAME),
+        Some(Token::new(SESSION))
+    );
+    assert_eq!(custody.metadata().pending_activation(), Some(frozen));
+    let retried = std::cell::Cell::new(false);
+    let mut restart = custody_controller(
+        directory.path(),
+        custody.clone(),
+        TrustedKeys::new(),
+        |method, route, body, bearer| {
+            assert_eq!(method, original.method);
+            assert_eq!(format!("{API_ORIGIN}{route}"), original.url);
+            assert!(bearer == Some(SESSION) && body == original.body);
+            assert!(!retried.replace(true), "a single retry sends once");
+            fixture_http(503, "{}")
+        },
+    );
+    assert_eq!(
+        wire(&restart.execute(Command::RetryActivation))["operation_state"],
+        "retry_pending"
+    );
+    assert!(retried.get());
+}
+
+#[test]
+fn nonrotating_replay_401_does_not_reject_sibling_completed_custody() {
+    use selahcue_licensing::{ActivationPath, DeviceCredentials, EntitlementCache, PersistOutcome};
+    use std::cell::{Cell, RefCell};
+
+    let directory = tempfile::tempdir().expect("directory");
+    let custody = ObservedCustody::new(
+        directory.path(),
+        Custody::default(),
+        DEVICE_TOKEN_NAME,
+        SECRET,
+    );
+    custody.entry.acknowledge_only.set(false);
+    let storage = &custody.storage;
+    let binding = recovery_binding(storage, &custody.inner);
+    let expiry = "2026-12-01T00:00:00Z";
+    let (trust, manifest) = signed_display(
+        binding.fingerprint(),
+        "2026-11-14T12:00:00Z",
+        expiry,
+        expiry,
+    );
+    let cache = EntitlementCache::new(directory.path());
+    cache
+        .replace(manifest.as_bytes(), &trust, DEVICE, binding.fingerprint())
+        .expect("signed cache");
+    let signed_cache = std::fs::read(cache.path()).expect("current signed bytes");
+
+    let mut seed = controller(directory.path(), custody.inner.clone());
+    seed.client()
+        .transport()
+        .push_response(200, session_json())
+        .push_failure("first request lost before server processing");
+    assert_eq!(
+        wire(&seed.execute(sign_in()))["operation_state"],
+        "retry_pending"
+    );
+    let original = seed
+        .client()
+        .transport()
+        .request(1)
+        .expect("original recovery");
+    let sibling_session = Token::new(SESSION);
+    let previous_device = Token::new(OBSOLETE_DEVICE);
+    let frozen = {
+        let _owner = storage
+            .try_lock_account_session()
+            .expect("sibling dispatch ownership");
+        let mut current = storage
+            .load_or_create(CredentialPresence::Present)
+            .expect("initial dispatch");
+        assert_eq!(
+            custody.stored(ACCOUNT_SESSION_NAME).as_ref(),
+            Some(&sibling_session)
+        );
+        assert_eq!(
+            custody.stored(DEVICE_TOKEN_NAME).as_ref(),
+            Some(&previous_device)
+        );
+        let intent = current
+            .pending_activation()
+            .expect("possibly-sent recovery")
+            .clone();
+        assert!(!intent.is_prepared());
+        assert_eq!(intent.expected_device_public_id(), Some(DEVICE));
+        current
+            .mark_activation_dispatched()
+            .expect("cooperating sender");
+        storage.save(&current).expect("sibling dispatch CAS");
+        intent
+    };
+
+    // The sibling sent the same request and received the original remint. B is
+    // live on the service; its holder has not yet finished the local commit.
+    let sibling_client = LicensingClient::new(
+        ScriptedTransport::responding(200, activated(Some(SECRET), true)),
+        API_ORIGIN,
+    )
+    .expect("sibling client");
+    let delayed = sibling_client
+        .activate_bound(
+            ActivationPath::AccountSession,
+            &sibling_session,
+            &frozen.device_identity().expect("frozen identity"),
+            &frozen.retry_key().expect("frozen nonce"),
+            Some(DEVICE),
+        )
+        .expect("original remint");
+    assert_eq!(
+        sibling_client
+            .transport()
+            .request(0)
+            .expect("sibling activation"),
+        original
+    );
+    assert_eq!(delayed.token, Some(Token::new(SECRET)));
+    assert!(delayed.reminted);
+
+    let replayed = Cell::new(false);
+    let probed = Cell::new(false);
+    let sibling_commit = RefCell::new(None);
+    let fresh_status = Cell::new(false);
+    let mut retry = custody_controller(
+        directory.path(),
+        custody.clone(),
+        trust,
+        |method, route, body, bearer| match (method, route, bearer) {
+            ("POST", SESSION_ACTIVATION, Some(SESSION)) => {
+                assert!(!replayed.replace(true));
+                assert_eq!(format!("{API_ORIGIN}{route}"), original.url);
+                assert!(
+                    body == original.body,
+                    "restart must replay the identical frozen recovery"
+                );
+                bound_receipt(body, "replay", None, false)
+            }
+            ("POST", "/v1/license:refresh", Some(OBSOLETE_DEVICE)) => {
+                assert!(replayed.get() && !probed.replace(true));
+                assert_eq!(
+                    serde_json::from_str::<Value>(body).expect("probe body"),
+                    json!({})
+                );
+                {
+                    let _owner = storage
+                        .try_lock_account_session()
+                        .expect("sibling owns app data while A probe is in flight");
+                    let mut current = storage
+                        .load_or_create(CredentialPresence::Present)
+                        .expect("latest dispatch");
+                    assert_eq!(current.pending_activation(), Some(&frozen));
+                    assert!(!current.cleanup_reserved);
+                    assert_eq!(
+                        current.activated_public_id.as_deref(),
+                        Some(delayed.device_public_id.as_str())
+                    );
+                    let sibling_credentials = DeviceCredentials::new(custody.inner.clone());
+                    assert_eq!(
+                        sibling_credentials
+                            .device_token()
+                            .expect("sibling device custody")
+                            .as_ref(),
+                        Some(&previous_device)
+                    );
+                    assert_eq!(
+                        delayed
+                            .persist(&sibling_credentials)
+                            .expect("persist original remint"),
+                        PersistOutcome::Stored
+                    );
+                    assert_eq!(
+                        sibling_credentials
+                            .device_token()
+                            .expect("sibling device custody"),
+                        delayed.token
+                    );
+                    current.clear_pending_activation();
+                    *sibling_commit.borrow_mut() = Some(
+                        storage
+                            .save(&current)
+                            .expect("retire matching operation by CAS"),
+                    );
+                }
+                fixture_http(401, r#"{"error":{"code":"UNAUTHENTICATED"}}"#)
+            }
+            ("POST", "/v1/license:refresh", Some(SECRET)) => {
+                assert!(
+                    probed.get() && custody.entry.owned_readback.get(),
+                    "fresh status requires owned B custody"
+                );
+                assert_eq!(custody.stored(DEVICE_TOKEN_NAME), Some(Token::new(SECRET)));
+                fresh_status.set(true);
+                fixture_http(200, current_device_status(expiry))
+            }
+            ("GET", "/v1/entitlements/manifest", Some(SECRET)) => {
+                assert!(
+                    fresh_status.replace(false),
+                    "manifest must use B's own fresh status"
+                );
+                assert_eq!(custody.stored(DEVICE_TOKEN_NAME), Some(Token::new(SECRET)));
+                fixture_http(200, manifest.clone())
+            }
+            _ => panic!("unexpected {method} {route} or credential in replay recovery"),
+        },
+    );
+    let view = wire(&retry.execute(Command::RetryActivation));
+    assert!(
+        replayed.get() && probed.get(),
+        "exact replay must probe the obsolete local credential"
+    );
+    drop(retry);
+    let committed = sibling_commit.into_inner().expect("sibling retirement");
+    assert!(committed.pending_activation().is_none());
+    assert_eq!(custody.metadata(), committed);
+    assert_eq!(custody.stored(DEVICE_TOKEN_NAME), Some(Token::new(SECRET)));
+    assert_eq!(
+        view["device_state"], "credential_present",
+        "A's delayed rejection must not invalidate B"
+    );
+    assert_ne!(view["error_code"], "reauthentication_required");
+    assert_ne!(view["error_code"], "device_recovery_required");
+    assert_eq!(view["entitlement_state"], "current");
+    assert_eq!(view["manifest_expires_at"], expiry);
+    assert_eq!(
+        std::fs::read(cache.path()).expect("surviving signed cache"),
+        signed_cache
     );
 }

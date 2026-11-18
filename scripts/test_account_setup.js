@@ -258,3 +258,74 @@ test("a late browser launch error is discarded when returning to sign-in", async
   assert.equal(state.webPending, false);
   assert.equal(state.webError, false);
 });
+
+test("established-device recovery requires consent and a fresh administrator submission", async () => {
+  const recovery = snapshot(1, { setup_state: "completed", device_state: "reauthentication_needed",
+    error_code: "reauthentication_required", entitlement_state: "current", display_name: "Booth" });
+  const held = defer();
+  const calls = [];
+  let state;
+  const account = createAccount(async (command, args) => {
+    // Inspect the synthetic password at the IPC boundary; retain only its match.
+    calls.push({ command, keys: Object.keys(args || {}).sort(), email: args?.email,
+      displayName: args?.displayName, passwordMatches: args?.password === "fixture-password" });
+    if (command === "account_replace_device_credential") return held.promise;
+    return recovery;
+  }, (next) => { state = next; });
+
+  await account.start();
+  await account.recover();
+  assert.deepEqual(calls.map(call => call.command), ["account_view"],
+    "Opening established-device replacement must let the administrator review consent before any native operation");
+
+  const fields = { email: " operator@example.test ", password: "fixture-password", displayName: "Booth" };
+  const submission = account.submit(fields);
+  assert.equal(state.operationPending, true);
+  const duplicate = account.submit(fields);
+  const [replacement] = calls.slice(1);
+  assert.equal(calls.length, 2, "A second submit must not dispatch while replacement is pending");
+  assert.deepEqual(replacement, { command: "account_replace_device_credential",
+    keys: ["displayName", "email", "password"], email: "operator@example.test",
+    displayName: "Booth", passwordMatches: true });
+  held.resolve(snapshot(2, { setup_state: "completed", device_state: "credential_present" }));
+  await Promise.all([submission, duplicate]);
+  assert.equal(state.operationPending, false);
+});
+
+test("leaving credential replacement restores ordinary sign-in", async () => {
+  const calls = [];
+  const recovery = snapshot(1, { setup_state: "completed", device_state: "reauthentication_needed",
+    error_code: "reauthentication_required", entitlement_state: "current", display_name: "Booth" });
+  const account = createAccount(async (command) => {
+    calls.push(command);
+    return recovery;
+  }, () => {});
+  await account.start();
+  await account.recover();
+  account.close();
+  account.openSettings();
+  account.choose("signIn");
+  await account.submit({ email: "operator@example.test", password: "fixture-password", displayName: "Booth" });
+  assert.deepEqual(calls, ["account_view", "account_sign_in_and_activate"],
+    "Closing recovery must clear replacement consent before ordinary sign-in");
+});
+
+test("background refresh and ordinary Retry on an established device preserve ordinary sign-in", async () => {
+  const calls = [];
+  const established = snapshot(1, { setup_state: "completed", device_state: "reauthentication_needed",
+    error_code: "reauthentication_required", entitlement_state: "current", display_name: "Booth" });
+  const account = createAccount(async (command, args) => {
+    calls.push({ command, explicit: args?.explicit });
+    return established;
+  }, () => {});
+  await account.start();
+  await account.refresh(false);
+  account.openSettings();
+  await account.retry();
+  await account.submit({ email: "operator@example.test", password: "fixture-password", displayName: "Booth" });
+  assert.deepEqual(calls, [
+    { command: "account_view", explicit: undefined },
+    { command: "account_refresh", explicit: false },
+    { command: "account_sign_in_and_activate", explicit: undefined },
+  ]);
+});

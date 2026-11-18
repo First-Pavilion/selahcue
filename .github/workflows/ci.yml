@@ -140,6 +140,7 @@ jobs:
       mobile: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.mobile == 'true' }}
       android: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.android == 'true' }}
       api: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.api == 'true' }}
+      native_account_joint: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.native_account_joint == 'true' }}
       marketing: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.marketing == 'true' }}
       # Whether this run includes the Windows legs, and the matrix that says so: a JSON array
       # the `rust`, `operator` and `operator-native` jobs read with fromJSON. `windows` is also
@@ -271,6 +272,35 @@ jobs:
               - 'deployments.md'
               - 'docs/ops/DEPLOYMENT.md'
               - '.github/workflows/ci.yml'
+            # Changes to either side of the native account wire contract need the joint gate.
+            native_account_joint:
+              - 'implementation/api/selahcue_api/apps/accounts/**'
+              - 'implementation/api/selahcue_api/apps/catalogue/**'
+              - 'implementation/api/selahcue_api/apps/devices/**'
+              - 'implementation/api/selahcue_api/apps/entitlements/**'
+              - 'implementation/api/selahcue_api/apps/license_keys/**'
+              - 'implementation/api/selahcue_api/platform/**'
+              - 'implementation/api/selahcue_api/graphql/account_schema.py'
+              - 'implementation/api/selahcue_api/graphql/admin_schema.py'
+              - 'implementation/api/selahcue_api/graphql/context.py'
+              - 'implementation/api/selahcue_api/graphql/errors.py'
+              - 'implementation/api/tests/conftest.py'
+              - 'implementation/api/tests/test_bound_activation.py'
+              - 'implementation/api/tests/test_device_token_remint.py'
+              - 'implementation/api/tests/test_free_license_lifecycle.py'
+              - 'implementation/api/tests/test_license_revoke_extend.py'
+              - 'implementation/api/tests/test_native_account_*.py'
+              - 'implementation/desktop/crates/selahcue-licensing/**'
+              - 'implementation/desktop/crates/selahcue-operator/src/account/**'
+              - 'implementation/desktop/crates/selahcue-operator/src/main.rs'
+              - 'implementation/desktop/crates/selahcue-operator/src/lib.rs'
+              - 'implementation/desktop/crates/selahcue-operator/dist/account.js'
+              - 'implementation/desktop/crates/selahcue-operator/dist/app.js'
+              - 'implementation/desktop/crates/selahcue-operator/dist/index.html'
+              - 'implementation/desktop/crates/selahcue-operator/Cargo.*'
+              - 'scripts/g1_operator_artifact.py'
+              - 'scripts/test_g1_operator_artifact.py'
+              - '.github/workflows/ci.yml'
             # The marketing site + customer web portal (Vue SPA). This filter is the
             # SAME omission the api one above documents, recurring: implementation/marketing
             # matched no filter at all, so a marketing-only push triggered the workflow
@@ -279,6 +309,8 @@ jobs:
             # desktop catch-all is not a substitute.
             marketing:
               - 'implementation/marketing/**'
+              # apiSeam.test.ts derives the client error-code contract from this enum.
+              - 'implementation/api/selahcue_api/graphql/errors.py'
               - 'scripts/installer_publication/**'
               - 'scripts/publish_installers.py'
               - 'scripts/_installer_publication_fixtures.py'
@@ -377,6 +409,7 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+          python3 -B .github/scripts/test_operator_apt_mirror.py
           # Finite synthetic fixtures/fake orchestration only; no native build or install.
           python3 -m unittest scripts.test_macos_native_proof -v
           python3 .github/scripts/check_installer_scanner_ci.py
@@ -1119,7 +1152,7 @@ jobs:
   operator:
     name: operator shell (${{ matrix.os }})
     needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    if: needs.changes.outputs.desktop == 'true' || needs.changes.outputs.native_account_joint == 'true'
     # Cap the job (like launch-smoke) so a wedged Playwright/apt install step fails in minutes,
     # not GitHub's 6h default (audit #11 review).
     #
@@ -1191,6 +1224,7 @@ jobs:
       - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
+          sudo /usr/bin/python3 -I "$GITHUB_WORKSPACE/.github/scripts/configure_operator_apt_mirror.py"
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
@@ -1239,6 +1273,12 @@ jobs:
           "$PDF_ORACLE_SETUP_PYTHON" -m venv "$venv"
           "$venv/bin/python" -m pip install --only-binary=:all: pypdf==6.21.4 pdfplumber==0.11.9
           "$venv/bin/python" -m pip freeze
+      - name: Set up Node for the account harness (Linux)
+        id: account-node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
       # failure aborted before `cargo test` ever ran -- so this job still had exactly
       # the masking the rest of this change removes, while appearing to be covered.
@@ -1259,8 +1299,38 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
+        id: operator-test-gate
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+      - name: Account command and consent behavior (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.account-node.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: node --test scripts/test_account_setup.js
+      - name: Stage the default-feature G1 operator test (Linux)
+        id: g1-stage
+        if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.native_account_joint == 'true' && steps.operator-test-gate.outcome == 'success' }}
+        shell: bash
+        env:
+          G1_PYTHON: ${{ steps.pdf-python.outputs.python-path }}
+        run: |
+          cargo_json="$(mktemp "$RUNNER_TEMP/g1-operator-cargo.XXXXXX")"
+          trap 'rm -f -- "$cargo_json"' EXIT
+          # Bound only the JSON receipt, so the Cargo build has no file-size limit.
+          # Bash pipefail preserves a Cargo failure. The helper rejects a receipt over 32 MiB.
+          cargo test --locked --no-run --bin selahcue-operator --message-format=json \
+            | head -c 33554433 > "$cargo_json"
+          "$G1_PYTHON" ../../../../scripts/g1_operator_artifact.py stage \
+            --cargo-json "$cargo_json" --source-sha "$(git rev-parse HEAD)" \
+            --output-dir "$RUNNER_TEMP/g1-operator-stage"
+      - name: Upload the same-run G1 operator test (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.native_account_joint == 'true' && steps.g1-stage.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: g1-operator-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/g1-operator-stage/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
       - name: Verify operator PDF export (Linux)
         id: pdf-export-proof
         if: ${{ !cancelled() && runner.os == 'Linux' }}
@@ -1388,6 +1458,7 @@ jobs:
       # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
       # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
       - name: Install Playwright WebKit (Linux)
+        id: operator-webkit-install
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
@@ -1397,6 +1468,10 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages playwright==1.65.2
           python3 -m playwright install --with-deps webkit
+      - name: Account consent in the operator shell (Linux WebKit)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.operator-webkit-install.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/operator_account_browser_test.py --engine webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
@@ -1793,12 +1868,12 @@ jobs:
     name: api (django)
     permissions:
       contents: read
-    needs: changes
-    if: needs.changes.outputs.api == 'true'
+    needs: [changes, operator]
+    if: ${{ always() && !cancelled() && (needs.changes.outputs.api == 'true' || needs.changes.outputs.native_account_joint == 'true') }}
     runs-on: ubuntu-latest
-    # Run 43745074188 reached pytest's 80% progress marker before the 20-minute
-    # job cap. Allow time for the full suite, diagnostics and cleanup.
-    timeout-minutes: 30
+    # Run 43970076858 finished pytest at the 30-minute job boundary, but the cap
+    # cancelled final G1 validation/upload. Allow five minutes of headroom.
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: implementation/api
@@ -1852,6 +1927,7 @@ jobs:
         run: |
           python3 scripts/check_api_gate.py --self-test
           python3 scripts/test_api_dependency_snapshot.py
+          python3 scripts/test_g1_operator_artifact.py
       - name: Django system checks
         run: python manage.py check
       # Migrations here are hand-committed, so a model shipped without one is an easy
@@ -1861,8 +1937,46 @@ jobs:
       # traceback instead of a readable "migration missing" failure.
       - name: Migrations are committed
         run: python manage.py makemigrations --check --noinput
-      - name: Tests
+      - name: Download same-run G1 operator test
+        if: needs.changes.outputs.native_account_joint == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: g1-operator-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/g1-operator
+      - name: Install G1 operator runtime libraries
+        if: needs.changes.outputs.native_account_joint == 'true'
+        run: |
+          # Runtime counterparts of the operator's Linux development dependencies.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-0 libgtk-3-0t64 libayatana-appindicator3-1 \
+            librsvg2-2 libx11-6 libxkbcommon0 libasound2t64
+      - name: Verify G1 operator artifact source, hash and ignored test
+        id: g1-verified
+        if: needs.changes.outputs.native_account_joint == 'true'
+        run: |
+          artifact="$RUNNER_TEMP/g1-operator"
+          python ../../scripts/g1_operator_artifact.py verify --artifact-dir "$artifact" \
+            --expected-source-sha "$(git rev-parse HEAD)"
+          echo "binary=$artifact/operator-test" >> "$GITHUB_OUTPUT"
+          echo "manifest=$artifact/manifest.json" >> "$GITHUB_OUTPUT"
+      - name: Collect the G1 node IDs on this source
+        id: g1-nodeids
+        if: ${{ !cancelled() && needs.changes.outputs.native_account_joint == 'true' }}
         env:
+          SELAHCUE_G1_REQUIRE: '1'
+          SELAHCUE_G1_OPERATOR_TEST_BIN: ${{ steps.g1-verified.outputs.binary }}
+        run: |
+          expected="$RUNNER_TEMP/g1-nodeids.txt"
+          python -m pytest --collect-only -q \
+            tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api \
+            > "$expected"
+          echo "file=$expected" >> "$GITHUB_OUTPUT"
+      - name: Exercise all joint native scenarios for the tests-only checkpoint
+        if: ${{ !cancelled() && needs.changes.outputs.native_account_joint == 'true' }}
+        env:
+          SELAHCUE_G1_REQUIRE: '1'
+          SELAHCUE_G1_OPERATOR_TEST_BIN: ${{ steps.g1-verified.outputs.binary }}
           SQL_ENGINE: django.db.backends.postgresql
           SQL_DATABASE: selahcue_test
           SQL_USER: selahcue
@@ -1872,7 +1986,41 @@ jobs:
           CACHE_URL: redis://localhost:6379/1
           CELERY_BROKER_URL: redis://localhost:6379/2
           TEST_STT_REDIS_URL: redis://localhost:6379/3
-        run: python -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
+        run: |
+          python -m pytest -v -rfEs --maxfail=0 --capture=tee-sys \
+            tests/test_native_account_controller_integration.py::test_native_account_controller_against_local_platform_api
+      - name: Tests
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_G1_REQUIRE: ${{ needs.changes.outputs.native_account_joint == 'true' && '1' || '0' }}
+          SELAHCUE_G1_OPERATOR_TEST_BIN: ${{ steps.g1-verified.outputs.binary }}
+          SQL_ENGINE: django.db.backends.postgresql
+          SQL_DATABASE: selahcue_test
+          SQL_USER: selahcue
+          SQL_PASSWORD: selahcue
+          SQL_HOST: localhost
+          SQL_PORT: "5432"
+          CACHE_URL: redis://localhost:6379/1
+          CELERY_BROKER_URL: redis://localhost:6379/2
+          TEST_STT_REDIS_URL: redis://localhost:6379/3
+        run: python -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys --junitxml=build/api-junit.xml
+      - name: Require passing results for every collected G1 case
+        if: ${{ !cancelled() && needs.changes.outputs.native_account_joint == 'true' }}
+        env:
+          G1_EXPECTED_NODEIDS: ${{ steps.g1-nodeids.outputs.file }}
+        run: |
+          python ../../scripts/g1_operator_artifact.py verify-results --junit build/api-junit.xml \
+            --expected-nodeids "$G1_EXPECTED_NODEIDS" --evidence "$RUNNER_TEMP/g1-junit.xml"
+      - name: Upload G1 manifest and joint JUnit evidence
+        if: ${{ !cancelled() && needs.changes.outputs.native_account_joint == 'true' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: g1-api-evidence-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 1
+          path: |
+            ${{ steps.g1-verified.outputs.manifest }}
+            ${{ runner.temp }}/g1-junit.xml
 
   api-dependency-graph:
     name: api dependency graph (main only)

@@ -5,16 +5,23 @@ silently no-ops (has_select_for_update = False). These tests therefore SKIP on S
 they would pass there for the wrong reason and hide the very races they exist to catch.
 """
 
+import random
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from datetime import timedelta
 
 import pytest
 from django.core.cache import cache
 from django.db import OperationalError, connection, connections, transaction
+from django.test import Client
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from licensing_test_support import issue_key, seat_plan_code, seed_org
+from test_bound_activation import KEY, body, post
+from test_entitlement_manifest_slice import TEST_SEED_B64
+from test_free_license_lifecycle import MANIFEST, REFRESH
 from selahcue_api.apps.accounts import services as account_services
 from selahcue_api.apps.accounts.models import (
     CredentialToken,
@@ -28,6 +35,7 @@ from selahcue_api.apps.accounts.models import (
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import (
     Device,
+    DeviceActivationOperation,
     DeviceStatus,
     DeviceToken,
     DeviceTokenStatus,
@@ -35,16 +43,24 @@ from selahcue_api.apps.devices.models import (
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
     ActivateDeviceWithSessionData,
+    STAFF_EXTENSION_ROTATION,
     activate_device,
     activate_device_with_session,
+    refresh_license,
 )
+from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
+    EXTEND_REFUSED_ACTION,
+    ExtendLicenseKeyData,
     ReinstateLicenseKeyData,
+    RevokeLicenseKeyData,
     SuspendLicenseKeyData,
+    extend_license_key,
     lock_customer_for_key_changes,
     reinstate_license_key,
+    revoke_license_key,
     suspend_license_key,
 )
 from selahcue_api.apps.license_keys.state_machine import (
@@ -678,13 +694,33 @@ def _reinstate_call(key, idem, *, actor_id="staff_race_susp"):
 
 
 def _revoke_call(key, idem):
-    """The revoke mutation (86ak1090r) is a sibling ticket; its writer call is this."""
-    return lambda: apply_license_status_transition(
-        key,
-        to_status=LicenseKeyStatus.REVOKED,
-        actor=ActorContext(kind=ActorKind.STAFF, actor_id="staff_race_revoke"),
-        reason=RACE_REASON,
-        request_id=idem,
+    """The real revoke mutation (86ak1090r), as a staff member holding only the revoke
+    permission."""
+    return lambda: revoke_license_key(
+        ActorContext(
+            kind=ActorKind.STAFF,
+            actor_id="staff_race_revoke",
+            staff_permissions=frozenset({StaffPermission.REVOKE_LICENSE_KEY}),
+        ),
+        RevokeLicenseKeyData(
+            idempotency_key=idem, license_key_id=str(key.pk), reason=RACE_REASON
+        ),
+    )
+
+
+def _extend_call(key, idem, new_expires_at, *, actor_id="staff_race_extend"):
+    return lambda: extend_license_key(
+        ActorContext(
+            kind=ActorKind.STAFF,
+            actor_id=actor_id,
+            staff_permissions=frozenset({StaffPermission.EXTEND_LICENSE_KEY}),
+        ),
+        ExtendLicenseKeyData(
+            idempotency_key=idem,
+            license_key_id=str(key.pk),
+            new_expires_at=new_expires_at,
+            reason=RACE_REASON,
+        ),
     )
 
 
@@ -1230,6 +1266,540 @@ def test_two_simultaneous_issuances_to_two_orgs_both_succeed():
     assert errors == []
     assert len(results) == 2 and all(r.created for r in results)
     assert {k.customer_id for k in AppLicenseKey.objects.all()} == {o.pk for o in orgs}
+
+
+# --- 86ak1090r: staff extend / revoke under a real race -----------------------------------
+# Extend takes the ORG row lock and then the LICENCE row lock. Revoke and suspend lock only the
+# licence row, and activation does too once its lock names `of=("self",)`; before that it also
+# locked the joined org row and deadlocked against extend (see the end of this file), so this was
+# argued and wrong rather than proven.
+# These tests park the callers on a held lock first (the same machinery as the suspend races
+# above) so that the overlap is guaranteed rather than left to scheduling.
+def _applied(results):
+    return [r for _, r in results if r.changed]
+
+
+def test_two_concurrent_extensions_with_the_same_key_apply_once():
+    """A retry racing its own original, both parked on the org lock. One applies; the other
+    waits for it, then recognises the retry under the lock and reports the original row."""
+    key, _ = _seed_license_key(tag="ext-same-key")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    call = _extend_call(key, "ext-same-key-0001", target)
+
+    results, errors, waiting = _race_behind_org_lock(org, [call, call])
+
+    assert waiting == 2, f"both callers should be parked on the org-row lock: {waiting}"
+    assert errors == [], errors
+    assert len(results) == 2 and len(_applied(results)) == 1
+    original = _applied(results)[0].audit_event
+    replay = [r for _, r in results if not r.changed][0]
+    assert replay.audit_event.pk == original.pk
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    key.refresh_from_db()
+    assert key.expires_at == target
+
+
+def test_two_concurrent_extensions_to_the_same_date_apply_once_and_reject_the_other():
+    key, _ = _seed_license_key(tag="ext-same-date")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(key, "ext-same-date-0001", target, actor_id="staff_race_a"),
+            _extend_call(key, "ext-same-date-0002", target, actor_id="staff_race_b"),
+        ],
+    )
+
+    assert waiting == 2
+    assert len(results) == 1 and results[0][1].changed is True
+    assert _error_codes(errors) == [ErrorCode.VALIDATION_FAILED], errors
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    key.refresh_from_db()
+    assert key.expires_at == target
+
+
+def test_two_concurrent_extensions_to_different_dates_leave_a_chain_the_trail_explains():
+    """Whichever is served first, the final date is the later of those that applied, every
+    applied extension has exactly one row, and a second one that applied starts where the first
+    ended. A shorter request that loses the race is rejected, never applied backwards."""
+    key, _ = _seed_license_key(tag="ext-diff-date")
+    org = CustomerOrg.objects.get(pk=key.customer_id)
+    now = timezone.now().replace(microsecond=0)
+    short, long_ = now + timedelta(days=60), now + timedelta(days=90)
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(key, "ext-diff-date-0001", short, actor_id="staff_race_a"),
+            _extend_call(key, "ext-diff-date-0002", long_, actor_id="staff_race_b"),
+        ],
+    )
+
+    assert waiting == 2
+    assert set(_error_codes(errors)) <= {ErrorCode.VALIDATION_FAILED}
+    rows = list(_lifecycle_rows(key, action="license_key.extended"))
+    assert len(rows) == len(results) >= 1
+    key.refresh_from_db()
+    assert key.expires_at == max(
+        {"ext-diff-date-0001": short, "ext-diff-date-0002": long_}[r.request_id] for r in rows
+    )
+    if len(rows) == 2:
+        assert rows[1].before["expires_at"] == rows[0].after["expires_at"]
+        assert rows[0].request_id == "ext-diff-date-0001" and rows[1].request_id == "ext-diff-date-0002"
+    else:
+        assert rows[0].request_id == "ext-diff-date-0002", "only the longer one can win alone"
+        assert _error_codes(errors) == [ErrorCode.VALIDATION_FAILED]
+
+
+def test_an_extension_that_wins_the_race_against_a_revoke_is_followed_by_the_revoke():
+    key, _ = _seed_license_key(tag="ext-then-rev")
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_extend_call(key, "ext-then-rev-0001", target), _revoke_call(key, "ext-then-rev-0002")]
+    )
+
+    assert waiting == 2, f"both callers should be parked on the licence-row lock: {waiting}"
+    assert errors == [], errors
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+    assert key.expires_at == target
+    assert [r.action for r in _lifecycle_rows(key, result="SUCCESS")][-2:] == [
+        "license_key.extended",
+        "license_key.revoked",
+    ]
+    assert not _lifecycle_rows(key, result="DENIED").exists()
+
+
+def test_a_revoke_that_wins_the_race_against_an_extension_is_not_undone_by_it():
+    """THE corruption this ticket must not allow: an extension that read the licence before the
+    revoke must not resurrect it. The extension holds the org lock and waits on the licence
+    row; it is served after the revoke, re-reads under the lock, and is refused with a durable
+    DENIED row."""
+    key, _ = _seed_license_key(tag="rev-then-ext")
+    before = key.expires_at
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_revoke_call(key, "rev-then-ext-0001"), _extend_call(key, "rev-then-ext-0002", target)]
+    )
+
+    assert waiting == 2
+    assert _error_codes(errors) == [ErrorCode.CONFLICT], errors
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+    assert key.expires_at == before, "the refused extension moved nothing"
+    denied = _lifecycle_rows(key, result="DENIED").get()
+    assert denied.action == EXTEND_REFUSED_ACTION and denied.request_id == "rev-then-ext-0002"
+    assert not _lifecycle_rows(key, action="license_key.extended").exists()
+
+
+def test_two_concurrent_revokes_write_exactly_one_audit_row():
+    key, _ = _seed_license_key(tag="two-revokes")
+
+    results, errors, waiting = _race_in_arrival_order(
+        key, [_revoke_call(key, "two-revokes-0001"), _revoke_call(key, "two-revokes-0002")]
+    )
+
+    assert waiting == 2
+    assert errors == [], errors
+    assert [r.changed for _, r in results] == [True, False]
+    assert _lifecycle_rows(key, action="license_key.revoked").count() == 1
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+
+
+def test_an_extension_racing_an_issuance_never_leaves_two_overlapping_valid_keys():
+    """Both move an org's dates, both take the org lock, so exactly one wins. Extending key A
+    past the instant key B starts would overlap it; issuing B while A's extension is in flight
+    would too. Either order must end with the org's valid keys non-overlapping."""
+    org = seed_org("ext-vs-issue")
+    plan_code = seat_plan_code(3)
+    t0 = timezone.now().replace(microsecond=0)
+    first = issue_key(
+        org, tag="ext-vs-issue-a", plan_code=plan_code,
+        starts_at=t0 - timedelta(days=20), expires_at=t0 + timedelta(days=10),
+    ).license_key
+    second_starts = first.expires_at
+
+    results, errors, waiting = _race_behind_org_lock(
+        org,
+        [
+            _extend_call(first, "ext-vs-issue-ext-01", first.expires_at + timedelta(days=5)),
+            lambda: issue_key(
+                org, tag="ext-vs-issue-b", plan_code=plan_code,
+                starts_at=second_starts, expires_at=second_starts + timedelta(days=60),
+            ),
+        ],
+    )
+
+    assert waiting == 2
+    assert len(results) == 1 and len(errors) == 1, (results, errors)
+    assert errors[0][1].code == ErrorCode.POLICY_DENIED
+    keys = list(AppLicenseKey.objects.filter(customer=org).order_by("starts_at"))
+    for left, right in zip(keys, keys[1:]):
+        assert left.expires_at <= right.starts_at, "the org's keys overlap"
+
+
+# Staff extension and session activation acquire the org before the licence.
+# Enrollment starts at the shared licence lock. In activation-first order, an
+# unscoped joined lock there would wait for the org already held by extension.
+def _session_activation_call(key, admin, n):
+    return lambda: activate_device_with_session(
+        admin,
+        ActivateDeviceWithSessionData(
+            idempotency_key=f"ext-vs-act-{key.pk}-{n:04d}",
+            device_fingerprint=f"fp-ext-vs-act-{key.pk}-{n}",
+            platform="macos",
+        ),
+    )
+
+
+def _deadlocks(errors):
+    return [exc for exc in errors if isinstance(exc, OperationalError) and "deadlock" in str(exc).lower()]
+
+
+def _worker_error(error):
+    if isinstance(error, SafeAPIError):
+        return f"{type(error).__name__}/{error.code.value}"
+    return type(error).__name__
+
+
+def _run_activation_lock_arrangement(key, calls, *, session, extension_index):
+    """Park identified backends behind the licence holder before releasing that row."""
+    pool = ThreadPoolExecutor(max_workers=2 if session else 3)
+    workers = []
+    deadline = time.monotonic() + 8
+
+    def run(registered, call):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET lock_timeout = '12s'")
+                cursor.execute("SET statement_timeout = '15s'")
+                cursor.execute("SELECT pg_backend_pid()")
+                registered.set_result(cursor.fetchone()[0])
+            return call()
+        except Exception as error:
+            if not registered.done():
+                registered.set_exception(error)
+            raise
+        finally:
+            connections.close_all()
+
+    def park(call, table, blockers):
+        index = len(workers)
+        registered = Future()
+        worker = pool.submit(run, registered, call)
+        workers.append(worker)
+        try:
+            pid = registered.result(timeout=max(0, deadline - time.monotonic()))
+        except Exception as error:
+            pytest.fail(f"worker {index} backend registration failed: {_worker_error(error)}", pytrace=False)
+
+        while time.monotonic() < deadline:
+            if worker.done():
+                error = worker.exception()
+                outcome = _worker_error(error) if error is not None else "finished without waiting"
+                pytest.fail(f"worker {index} did not queue at {table}: {outcome}", pytrace=False)
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_stat_clear_snapshot()")
+                    cursor.execute(
+                        """SELECT pg_blocking_pids(pid) FROM pg_stat_activity
+                           WHERE datname = current_database() AND pid = %s
+                             AND wait_event_type = 'Lock' AND query ILIKE %s""",
+                        [pid, f"SELECT%{table}%"],
+                    )
+                    activity = cursor.fetchone()
+            except Exception as error:
+                pytest.fail(f"worker {index} activity check failed: {_worker_error(error)}", pytrace=False)
+            if activity and blockers.intersection(activity[0]):
+                return pid
+            time.sleep(0.02)
+        pytest.fail(f"worker {index} did not reach the expected {table} blocker chain", pytrace=False)
+
+    def probe_org():
+        # PostgreSQL may not expose an uncontended row lock in pg_locks. This
+        # harmless reader proves which worker holds the org via a real wait.
+        with transaction.atomic():
+            CustomerOrg.objects.select_for_update(no_key=True).get(pk=key.customer_id)
+
+    licence_table = AppLicenseKey._meta.db_table
+    org_table = CustomerOrg._meta.db_table
+    try:
+        with transaction.atomic():
+            AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_backend_pid()")
+                holder = cursor.fetchone()[0]
+            first = park(calls[0], licence_table, {holder})
+            if session:
+                park(calls[1], org_table, {first})
+            else:
+                # A queued request can be a soft blocker in the same licence queue.
+                second = park(calls[1], licence_table, {holder, first})
+                park(probe_org, org_table, {(first, second)[extension_index]})
+    finally:
+        # Exiting the atomic block releases the held row before joining workers.
+        _, pending = wait(workers, timeout=17)
+        pool.shutdown(wait=False)
+        if pending:
+            indices = [index for index, worker in enumerate(workers) if worker in pending]
+            pytest.fail(f"workers did not finish after licence release: {indices}", pytrace=False)
+
+    errors = [
+        (index, _worker_error(worker.exception()))
+        for index, worker in enumerate(workers) if worker.exception() is not None
+    ]
+    assert errors == [], f"activation/extension worker failures: {errors}"
+    return [worker.result() for worker in workers[:2]]
+
+
+def _assert_activation_and_extension(key, target, results, activation_first):
+    activation, extension = results if activation_first else reversed(results)
+    assert activation.created
+    assert bool(activation.full_token)
+    assert extension.changed
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert key.expires_at == target
+    assert key.staff_extension_generation == 1
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert _lifecycle_rows(key, action="license_key.extended").count() == 1
+    assert _licence_transitions(key) == 1
+
+
+@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
+def test_an_extension_and_a_first_activation_on_one_licence_never_deadlock(activation_first):
+    """Exercise the joined-lock cycle with the enrollment path's licence-first entry."""
+    key, full_key = _seed_license_key(tag=f"ext-act-{int(activation_first)}")
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    activate = _enroll(
+        full_key, idem=f"ext-act-enroll-{int(activation_first)}", fingerprint="ext-act-enrollment",
+    )
+    extend = _extend_call(key, f"ext-act-{int(activation_first)}-0001", target)
+    results = _run_activation_lock_arrangement(
+        key, (activate, extend) if activation_first else (extend, activate),
+        session=False, extension_index=int(activation_first),
+    )
+    _assert_activation_and_extension(key, target, results, activation_first)
+
+
+@pytest.mark.parametrize("activation_first", [True, False], ids=["activation-first", "extension-first"])
+def test_session_activation_and_extension_follow_the_org_then_licence_lock_order(activation_first):
+    tag = f"ext-act-session-{int(activation_first)}"
+    key, _ = _seed_license_key(tag=tag)
+    admin = _session_admin(key, tag=tag)
+    target = timezone.now().replace(microsecond=0) + timedelta(days=90)
+    activate = _session_activation_call(key, admin, 0)
+    extend = _extend_call(key, f"{tag}-0001", target)
+    results = _run_activation_lock_arrangement(
+        key, (activate, extend) if activation_first else (extend, activate),
+        session=True, extension_index=int(activation_first),
+    )
+    _assert_activation_and_extension(key, target, results, activation_first)
+
+
+def test_fifty_unaligned_extension_and_activation_races_never_deadlock_and_end_consistent():
+    """The same pair, started together behind a barrier with a few milliseconds of random
+    jitter, 50 times over fresh licences. Not deterministic (that is the test above); it is the
+    one that would catch a different interleaving, or a deadlock with some other lock."""
+    rng = random.Random(8675309)
+    now = timezone.now().replace(microsecond=0)
+    deadlocks = []
+    for n in range(50):
+        key, _ = _seed_license_key(tag=f"ext-act-rep-{n}")
+        admin = _session_admin(key, tag=f"ext-act-rep-{n}")
+        target = now + timedelta(days=90 + n)
+        activate = _session_activation_call(key, admin, n)
+        # A staff member of their own per iteration: 50 extensions by one actor would meet the
+        # lifecycle throttle (30 a minute), which is not what this test is about.
+        extend = _extend_call(key, f"ext-act-rep-{n:04d}-key", target, actor_id=f"staff_race_rep_{n}")
+        delay_a, delay_b = rng.uniform(0, 0.004), rng.uniform(0, 0.004)
+
+        def jittered(call, delay):
+            def run():
+                time.sleep(delay)
+                return call()
+            return run
+
+        errors, barrier_failures = _run_in_threads([jittered(activate, delay_a), jittered(extend, delay_b)])
+
+        assert barrier_failures == []
+        deadlocks.extend(_deadlocks(errors))
+        assert errors == [], f"iteration {n}: {errors}"
+        key.refresh_from_db()
+        assert key.status == LicenseKeyStatus.ACTIVATED, n
+        assert key.expires_at == target, n
+        assert Device.objects.filter(license_key=key).count() == 1, n
+    assert deadlocks == []
+
+
+def test_the_activation_lock_names_the_licence_row_and_not_the_org_it_joins():
+    """The statement text behind the deadlock above, pinned directly. `select_related("customer")`
+    makes the lock query a join; without `of=("self",)` Postgres is told `FOR UPDATE` on BOTH
+    tables. Cheap and deterministic, so it also guards the fix against someone re-ordering the
+    ORM call without re-running the 50-iteration race."""
+    key, full_key = _seed_license_key(tag="act-lock-sql")
+
+    with CaptureQueriesContext(connection) as queries:
+        _enroll(full_key, idem="act-lock-sql-enroll", fingerprint="act-lock-sql")()
+
+    org_table = CustomerOrg._meta.db_table
+    joined = [
+        q["sql"]
+        for q in queries.captured_queries
+        if "FOR UPDATE" in q["sql"]
+        and AppLicenseKey._meta.db_table in q["sql"]
+        and f'JOIN "{org_table}"' in q["sql"]
+    ]
+    assert joined, "activation no longer takes its licence lock on a join with the org (test is stale)"
+    for sql in joined:
+        assert f'FOR UPDATE OF "{AppLicenseKey._meta.db_table}"' in sql, sql
+        assert org_table not in sql.split("FOR UPDATE", 1)[1], sql
+
+
+def test_ordinary_refresh_does_not_wait_on_licence_write_lock(client, settings):
+    settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
+    key, full_key = _seed_license_key(tag="ordinary-refresh-lock")
+    activated = post(client, KEY, body(license_key=full_key))
+    assert activated.status_code == 200
+    initial = activated.json()
+    bearer = initial["activation_token"]
+    token = DeviceToken.objects.values().get(device__license_key=key)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=key)
+    audit_count = AuditEvent.objects.count()
+
+    def refresh():
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SET statement_timeout = '5s'")
+            started = time.monotonic()
+            with CaptureQueriesContext(connection) as queries:
+                response = post(Client(), REFRESH, {"token_rotation": "staff-extension-v1"}, bearer)
+            return response, queries.captured_queries, time.monotonic() - started
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with transaction.atomic():
+            AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+            worker = pool.submit(refresh)
+            # Leaving this scope releases the write lock even if the future times out.
+            response, queries, elapsed = worker.result(timeout=3)
+
+    assert response.status_code == 200
+    refreshed = response.json()
+    assert refreshed.get("activation_token") is None
+    assert refreshed["device"]["device_public_id"] == initial["device"]["device_public_id"]
+    assert refreshed["license"]["valid_now"] is True
+    assert refreshed["token"]["expires_at"] == token["expires_at"].isoformat()
+    print(f"ordinary refresh SQL statements: {len(queries)}")
+    print(f"ordinary refresh elapsed seconds: {elapsed:.6f}")
+    assert len(queries) == 3
+    assert not any(
+        " FOR UPDATE" in query["sql"].upper() or " FOR NO KEY UPDATE" in query["sql"].upper()
+        for query in queries
+    )
+    assert Device.objects.filter(license_key=key).count() == 1
+    assert DeviceToken.objects.values().get(device__license_key=key) == token
+    assert DeviceActivationOperation.objects.values().get(license_key=key) == receipt
+    assert AuditEvent.objects.count() == audit_count
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
+
+
+# FR-509 refresh renewal: genuine queued row-lock interleavings, not start barriers.
+def _live_extended_device(tag):
+    key, full_key = _seed_license_key(tag=tag)
+    activated = _enroll(full_key, idem=f"{tag}-activation", fingerprint=f"fp-{tag}")()
+    _extend_call(key, f"{tag}-extension", key.expires_at + timedelta(days=30))()
+    return key, activated
+
+
+def test_two_live_refreshes_rotate_only_once_under_real_contention():
+    key, activated = _live_extended_device("two-refreshes")
+    results = []
+    def refresh():
+        results.append(refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION))
+    errors, waiting = _race_behind_row_lock(key, [refresh, refresh])
+    assert waiting == 2
+    assert len(errors) == 1 and errors[0].code == ErrorCode.UNAUTHENTICATED
+    assert len(results) == 1 and results[0].full_token
+    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == 1
+    assert refresh_license(results[0].full_token, token_rotation=STAFF_EXTENSION_ROTATION).full_token is None
+
+
+@pytest.mark.parametrize("revoke_first", [True, False])
+def test_refresh_and_revoke_respect_licence_lock_arrival_order(revoke_first):
+    key, activated = _live_extended_device(f"refresh-revoke-{revoke_first}")
+    renewal = lambda: refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
+    revoke = _revoke_call(key, f"refresh-revoke-{revoke_first}-req")
+    calls = [revoke, renewal] if revoke_first else [renewal, revoke]
+    results, errors, waiting = _race_in_arrival_order(key, calls)
+    assert waiting == 2 and errors == []
+    renewal_result = dict(results)[1 if revoke_first else 0]
+    assert bool(renewal_result.full_token) is (not revoke_first)
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == (not revoke_first)
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.REVOKED
+
+
+@pytest.mark.parametrize("extend_first", [True, False])
+def test_refresh_and_extension_observe_the_serialized_expiry(extend_first):
+    key, full_key = _seed_license_key(tag=f"refresh-extend-{extend_first}")
+    activated = _enroll(full_key, idem=f"refresh-extend-{extend_first}-act", fingerprint="fp-refresh-ext")()
+    # Both orders start pending. An equal-generation refresh is allowed to read
+    # without queuing behind a staff writer it has not observed yet.
+    first_expiry = key.expires_at + timedelta(days=15)
+    _extend_call(key, f"refresh-extend-{extend_first}-first", first_expiry)()
+    target = first_expiry + timedelta(days=15)
+    renewal = lambda: refresh_license(activated.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
+    extension = _extend_call(key, f"refresh-extend-{extend_first}-req", target)
+    results, errors, waiting = _race_in_arrival_order(
+        key, [extension, renewal] if extend_first else [renewal, extension])
+    assert waiting == 2 and errors == []
+    renewed = dict(results)[1 if extend_first else 0]
+    assert renewed.full_token
+    if not extend_first:
+        assert renewed.token_expires_at == first_expiry.isoformat()
+        renewed = refresh_license(renewed.full_token, token_rotation=STAFF_EXTENSION_ROTATION)
+    assert renewed.token_expires_at == target.isoformat() and renewed.full_token
+    active = DeviceToken.objects.get(device=activated.device, status=DeviceTokenStatus.ACTIVE)
+    assert active.staff_extension_generation == 2
+
+
+def test_two_cascades_cannot_duplicate_a_token_revocation_audit():
+    key, full_key = _seed_license_key(tag="concurrent-cascade")
+    activated = _enroll(full_key, idem="concurrent-cascade-act", fingerprint="concurrent-cascade")()
+    _revoke_call(key, "concurrent-cascade-rev")()
+    results = []
+    errors, waiting = _race_behind_row_lock(key, [lambda: results.append(cascade_license_revocations()),
+                                               lambda: results.append(cascade_license_revocations())])
+    assert waiting == 2 and errors == []
+    assert sorted(results) == [0, 1]
+    assert AuditEvent.objects.filter(action="device_token.revoked_by_cascade").count() == 1
+
+
+@pytest.mark.parametrize("same_intent", [True, False])
+def test_concurrent_admin_replacements_are_locked_and_show_once(same_intent):
+    key, full_key = _seed_license_key(tag=f"replace-{same_intent}")
+    activated = _enroll(full_key, idem=f"replace-{same_intent}-activation", fingerprint="fp-replace")()
+    admin = _session_admin(key, tag=f"replace-{same_intent}")
+    def replace(index):
+        return lambda: activate_device_with_session(admin, ActivateDeviceWithSessionData(
+            idempotency_key=f"replace-request-{0 if same_intent else index}",
+            device_fingerprint="fp-replace", platform="macos", replace_token=True))
+    results = _run_activation_lock_arrangement(
+        key, [replace(0), replace(1)], session=True, extension_index=0,
+    )
+    assert sum(bool(result.full_token) for result in results) == (1 if same_intent else 2)
+    assert DeviceToken.objects.filter(device=activated.device, status=DeviceTokenStatus.ACTIVE).count() == 1
+    assert DeviceToken.objects.get(pk=activated.device_token.pk).status == DeviceTokenStatus.REVOKED
+    assert AuditEvent.objects.filter(action="device_token.reminted").count() == (1 if same_intent else 2)
 
 
 # --- 86ak5qy3p: password-reset KDF before row locking ------------------------

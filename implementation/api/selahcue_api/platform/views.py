@@ -15,10 +15,11 @@ from selahcue_api.apps.accounts.services import (
     revoke_native_session as _logout_session_service,
 )
 from selahcue_api.apps.devices.bound_activation import (
-    BoundActivationData, BoundEnrollmentData, CompletedActivationReceipt,
+    BoundActivationData, BoundActivationError, BoundEnrollmentData, CompletedActivationReceipt,
     activate_bound_with_key, activate_bound_with_session,
 )
 from selahcue_api.apps.devices.services import (
+    STAFF_EXTENSION_ROTATION,
     ActivateDeviceData,
     ActivateDeviceWithSessionData,
     activate_device as _activate_device_service,
@@ -344,6 +345,7 @@ def activate_device_with_session(request):
         platform=raw.get("platform", ""),
         app_version=raw.get("app_version", ""),
         display_name=raw.get("display_name", ""),
+        replace_token=raw.get("replace_token", False),
     )
     try:
         result = _activate_device_with_session_service(
@@ -397,17 +399,18 @@ def _bound_activation(request, *, session: bool):
     except CompletedActivationReceipt as completed:
         payload = {
             "error": {"code": completed.code.value, "message": SAFE_MESSAGES[completed.code]},
-            "surface": "desktop", "operation": operation, "operation_version": 1,
+            "surface": "desktop", "operation": operation, "operation_version": completed.operation_version,
             "completed_activation": completed.identity,
         }
         assert_no_restricted_payload_fields(payload)
         return _no_store(JsonResponse(payload, status=409))
     except SafeAPIError as error:
         return _no_store(command_error_response(
-            code=error.code, surface="desktop", operation=operation, operation_version=1,
+            code=error.code, surface="desktop", operation=operation,
+            operation_version=error.operation_version if isinstance(error, BoundActivationError) else 1,
         ))
     payload = _activation_payload(result.activation, operation=operation)
-    payload.update(operation_version=1, idempotency_key=result.idempotency_key,
+    payload.update(operation_version=result.operation_version, idempotency_key=result.idempotency_key,
                    operation_state=result.operation_state)
     return _no_store(JsonResponse(payload))
 
@@ -437,11 +440,18 @@ def refresh_license(request):
     status to update its cached offline entitlement (DEC-004). An eligible managed Free licence
     and the presented live device token may be renewed."""
     try:
-        result = _refresh_license_service(_device_bearer_token(request))
+        body = _json_object(request) or {}
+        capability = body.get("token_rotation")
+        if "token_rotation" in body and capability != STAFF_EXTENSION_ROTATION:
+            raise SafeAPIError(ErrorCode.VALIDATION_FAILED)
+        bearer = _bearer_from_header(request)
+        if bearer is None:
+            bearer = str(body.get("device_token") or "")
+        result = _refresh_license_service(bearer, token_rotation=capability)
     except SafeAPIError as error:
-        return command_error_response(
+        return _no_store(command_error_response(
             code=error.code, surface="desktop", operation="license_refresh"
-        )
+        ))
     payload = {
         "device": {
             "device_public_id": result.device_public_id,
@@ -462,10 +472,14 @@ def refresh_license(request):
         "surface": "desktop",
         "operation": "license_refresh",
     }
-    # Refresh returns only status (no token material), so — unlike the activation payload — it is
-    # safe to run the redaction guard as defense-in-depth against a future field addition.
+    # Guard every status field before adding the one intentional show-once credential,
+    # using the activation response's existing field name. Never include it in an audit.
     assert_no_restricted_payload_fields(payload)
-    return JsonResponse(payload, status=200)
+    if result.full_token is not None:
+        payload["activation_token"] = result.full_token
+    response = JsonResponse(payload, status=200)
+    response["Cache-Control"] = "no-store"
+    return response
 
 
 @require_GET

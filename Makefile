@@ -751,7 +751,7 @@ api-check: ## Django API gate: check + migrations committed + pytest on SQLite; 
 	@echo "api-check: SQLite in memory + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py check
 	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput
-	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys
+	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -v -rfEs --maxfail=1 --capture=tee-sys --junitxml=build/api-junit.xml
 
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.

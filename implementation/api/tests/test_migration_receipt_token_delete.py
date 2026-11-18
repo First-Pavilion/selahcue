@@ -36,13 +36,17 @@ def test_receipt_migration_reversal_and_reapply_preserve_rows_and_database_actio
     before = list(DeviceActivationOperation.objects.values())
     token_pk = DeviceToken.objects.get().pk
     assert action() == "SET NULL"
+    executor = MigrationExecutor(connection)
+    frontier = executor.loader.graph.leaf_nodes()
     try:
-        executor = MigrationExecutor(connection)
         executor.migrate([BEFORE])
         assert action() == "NO ACTION"
         assert list(DeviceActivationOperation.objects.values()) == before
-    finally:
         MigrationExecutor(connection).migrate([AFTER])
+        assert action() == "SET NULL"
+        assert list(DeviceActivationOperation.objects.values()) == before
+    finally:
+        MigrationExecutor(connection).migrate(frontier)
     assert action() == "SET NULL"
     assert list(DeviceActivationOperation.objects.values()) == before
     DeviceToken.objects.get(pk=token_pk).delete()

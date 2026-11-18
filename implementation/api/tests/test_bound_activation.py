@@ -290,3 +290,260 @@ def test_member_and_no_active_license_refusals_are_versioned_and_leave_no_activa
     assert not DeviceActivationOperation.objects.exists()
     assert not Device.objects.exists()
     assert not DeviceToken.objects.exists()
+
+
+def established_v2_recovery(client, *, tag):
+    """A real v1 installation and a separate, explicit ADMIN recovery intent."""
+    from uuid import uuid4
+
+    key, _ = _seed_license_key(tag=tag, device_limit=1)
+    session = admin_session(client, key.customer)
+    response = post(client, SESSION, body(uuid4().hex), session)
+    assert response.status_code == 200
+    initial = response.json()
+    request = body(uuid4().hex, expected=initial["device"]["device_public_id"], operation_version=2)
+    return key, session, initial, request
+
+
+@pytest.mark.django_db(transaction=True)
+def test_bound_v2_admin_recovers_undisclosed_live_replacement(client):
+    from selahcue_api.apps.audit.models import AuditEvent
+    from selahcue_api.apps.devices.models import DeviceActivationOperation, DeviceTokenStatus
+    from test_license_revoke_extend import _extend
+
+    key, session, initial, request = established_v2_recovery(client, tag="v2-lost-rotation")
+    device_before = list(Device.objects.values())
+    original = initial["activation_token"]
+    original_pk = DeviceToken.objects.get().pk
+    _extend(key, key.expires_at + timedelta(days=30), idem="v2-lost-rotation-extension")
+    key.refresh_from_db()
+    assert DeviceToken.objects.get(pk=original_pk).staff_extension_generation < key.staff_extension_generation
+    rotated = post(client, "/v1/license:refresh", {"token_rotation": "staff-extension-v1"}, original)
+    assert rotated.status_code == 200
+    assert rotated.json()["activation_token"]
+    # Simulate loss of custody: keep only the database identity, never the response credential.
+    del rotated
+    undisclosed = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+    assert undisclosed.pk != original_pk
+    assert undisclosed.staff_extension_generation == key.staff_extension_generation
+    assert post(client, "/v1/license:refresh", {}, original).status_code == 401
+
+    recovered = post(client, SESSION, request, session)
+    assert recovered.status_code == 200
+    result = recovered.json()
+    assert result["operation_version"] == 2
+    assert result["operation_state"] == "completed"
+    assert result["idempotency_key"] == request["idempotency_key"]
+    assert result["created"] is False and result["reminted"] is True
+    assert result["device"]["device_public_id"] == initial["device"]["device_public_id"]
+    assert "no-store" in recovered["Cache-Control"]
+    replacement = result["activation_token"]
+    assert replacement and replacement != original
+    assert list(Device.objects.values()) == device_before
+    assert DeviceToken.objects.count() == 3
+    live = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+    assert live.pk not in {original_pk, undisclosed.pk}
+    assert live.staff_extension_generation == key.staff_extension_generation
+    assert DeviceToken.objects.filter(pk__in=[original_pk, undisclosed.pk], status=DeviceTokenStatus.REVOKED).count() == 2
+    receipt = DeviceActivationOperation.objects.get(operation_key=request["idempotency_key"])
+    assert receipt.outcome == "REMINTED"
+    assert receipt.auth_path == "account_session"
+    assert receipt.result_token_id == receipt.issued_token_pk == live.pk
+    assert receipt.device_id == live.device_id
+    assert DeviceActivationOperation.objects.count() == 2
+
+    replay = post(client, SESSION, request, session)
+    assert replay.status_code == 200
+    assert replay.json()["operation_version"] == 2
+    assert replay.json()["operation_state"] == "replay"
+    assert replay.json()["activation_token"] is None
+    assert "no-store" in replay["Cache-Control"]
+    assert DeviceToken.objects.count() == 3
+    assert DeviceActivationOperation.objects.count() == 2
+    usable = post(client, "/v1/license:refresh", {"token_rotation": "staff-extension-v1"}, replacement)
+    assert usable.status_code == 200
+    assert "activation_token" not in usable.json()
+    assert post(client, "/v1/license:refresh", {}, original).status_code == 401
+    audits = json.dumps(list(AuditEvent.objects.values("before", "after", "reason")))
+    assert original not in audits and replacement not in audits
+
+
+@pytest.mark.parametrize("case", [
+    "enrollment", "initial", "member", "member_invalid_input", "foreign_identity",
+    "fingerprint", "platform", "device_bearer",
+])
+def test_bound_v2_refuses_enrollment_initial_member_and_foreign_identity(client, case):
+    from uuid import uuid4
+    from selahcue_api.apps.accounts.models import CustomerRole
+    from selahcue_api.apps.devices.models import DeviceActivationOperation
+
+    key, session, initial, request = established_v2_recovery(client, tag=f"v2-deny-{case}")
+    route, credential = SESSION, session
+    status, code = 409, "ACTIVATION_OPERATION_CONFLICT"
+    if case == "enrollment":
+        _, enrollment = another_license(key, "v2-deny-enrollment-key")
+        route, credential = KEY, None
+        request["license_key"] = enrollment
+        status, code = 400, "VALIDATION_FAILED"
+    elif case == "initial":
+        request.update(mode="initial", expected_device_public_id=None)
+        status, code = 400, "VALIDATION_FAILED"
+    elif case in {"member", "member_invalid_input"}:
+        email, password = f"v2-member-{key.customer_id}@fixture.test", "Synthetic-test-only-248!"
+        seed_user(key.customer, email=email, password=password, role=CustomerRole.MEMBER)
+        credential = post(client, "/v1/sessions", {"email": email, "password": password}).json()["session_token"]
+        if case == "member_invalid_input":
+            request["operation_version"] = "untrusted-version"
+            request["expected_device_public_id"] = "invalid"
+        status, code = 403, "PERMISSION_DENIED"
+    elif case == "foreign_identity":
+        other, _, foreign, _ = established_v2_recovery(client, tag="v2-deny-foreign-target")
+        assert other.customer_id != key.customer_id
+        request["expected_device_public_id"] = foreign["device"]["device_public_id"]
+    elif case == "fingerprint":
+        request["device_fingerprint"] = "different-installation"
+    elif case == "platform":
+        request["platform"] = "windows"
+    else:
+        credential = initial["activation_token"]
+        status, code = 401, "UNAUTHENTICATED"
+    request["idempotency_key"] = uuid4().hex
+    before = [list(model.objects.order_by("pk").values()) for model in (Device, DeviceToken, DeviceActivationOperation)]
+    denied = post(client, route, request, credential)
+    assert denied.status_code == status
+    assert denied.json()["error"]["code"] == code
+    assert "no-store" in denied["Cache-Control"]
+    assert denied.json().get("activation_token") is None
+    assert "completed_activation" not in denied.json()
+    if case in {"foreign_identity", "fingerprint", "platform"}:
+        assert denied.json()["operation_version"] == 2
+    if case == "member_invalid_input":
+        assert denied.json()["operation_version"] == 1  # authority rejects before normalization
+    assert [list(model.objects.order_by("pk").values()) for model in (Device, DeviceToken, DeviceActivationOperation)] == before
+
+
+@pytest.mark.parametrize("first_version,next_version", [(1, 2), (2, 1)])
+def test_nonce_cannot_change_protocol_version(client, first_version, next_version):
+    from selahcue_api.apps.devices.models import DeviceActivationOperation
+
+    _, session, _, request = established_v2_recovery(client, tag=f"v2-version-{first_version}")
+    request["operation_version"] = first_version
+    completed = post(client, SESSION, request, session)
+    assert completed.status_code == 200
+    before = [list(model.objects.order_by("pk").values()) for model in (DeviceToken, DeviceActivationOperation)]
+    changed = post(client, SESSION, {**request, "operation_version": next_version}, session)
+    assert changed.status_code == 409
+    assert changed.json()["error"]["code"] == "ACTIVATION_OPERATION_CONFLICT"
+    assert changed.json()["operation_version"] == next_version
+    assert [list(model.objects.order_by("pk").values()) for model in (DeviceToken, DeviceActivationOperation)] == before
+    replay = post(client, SESSION, request, session)
+    assert replay.status_code == 200
+    assert replay.json()["operation_version"] == first_version
+    assert replay.json()["activation_token"] is None
+
+
+@pytest.mark.parametrize("first_version", [1, 2], ids=["v1", "v2"])
+@pytest.mark.parametrize("delete_original", [False, True], ids=["revoked", "deleted"])
+def test_completed_receipt_never_switches_to_new_result(client, delete_original, first_version):
+    from uuid import uuid4
+    from selahcue_api.apps.devices.models import DeviceActivationOperation, DeviceTokenStatus
+
+    _, session, initial, request = established_v2_recovery(client, tag=f"v2-receipt-{delete_original}")
+    request["operation_version"] = first_version
+    first = post(client, SESSION, request, session)
+    assert first.status_code == 200
+    receipt = DeviceActivationOperation.objects.get(operation_key=request["idempotency_key"])
+    original_pk = receipt.result_token_id
+    immutable = (receipt.issued_token_pk, receipt.request_digest, receipt.completed_at, receipt.device_id)
+    next_request = {**request, "idempotency_key": uuid4().hex, "operation_version": 2}
+    second = post(client, SESSION, next_request, session)
+    assert second.status_code == 200
+    live = DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE)
+    assert live.pk != original_pk
+    assert DeviceToken.objects.get(pk=original_pk).status == DeviceTokenStatus.REVOKED
+    if delete_original:
+        DeviceToken.objects.filter(pk=original_pk).delete()
+    token_count = DeviceToken.objects.count()
+    replay = post(client, SESSION, request, session)
+    assert replay.status_code == 409
+    assert replay.json()["error"]["code"] == "ACTIVATION_OPERATION_COMPLETED"
+    assert replay.json()["operation_version"] == first_version
+    assert replay.json()["completed_activation"] == {
+        "idempotency_key": request["idempotency_key"],
+        "device_public_id": initial["device"]["device_public_id"], "platform": "macos",
+    }
+    assert replay.json().get("activation_token") is None
+    assert "no-store" in replay["Cache-Control"]
+    receipt.refresh_from_db()
+    assert receipt.result_token_id == (None if delete_original else original_pk)
+    assert (receipt.issued_token_pk, receipt.request_digest, receipt.completed_at, receipt.device_id) == immutable
+    assert DeviceToken.objects.count() == token_count
+    assert DeviceToken.objects.get(status=DeviceTokenStatus.ACTIVE).pk == live.pk
+    assert DeviceActivationOperation.objects.count() == 3
+    assert Device.objects.count() == 1
+    original_bearer = first.json()["activation_token"] if first_version == 2 else initial["activation_token"]
+    assert post(client, "/v1/license:refresh", {}, original_bearer).status_code == 401
+    assert post(client, "/v1/license:refresh", {}, second.json()["activation_token"]).status_code == 200
+
+
+@pytest.mark.parametrize("route", [KEY, SESSION])
+def test_bound_v1_still_refuses_replace_token_field(client, route):
+    key, enrollment = _seed_license_key(tag="v1-no-replace-field")
+    session = admin_session(client, key.customer) if route == SESSION else None
+    request = body(replace_token=True)
+    if route == KEY:
+        request["license_key"] = enrollment
+    response = post(client, route, request, session)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
+    assert response.json()["operation_version"] == 1
+    assert not Device.objects.exists()
+    assert not DeviceToken.objects.exists()
+
+
+@pytest.mark.parametrize("change", [
+    {"replace_token": True}, {"operation_version": True}, {"operation_version": 2.0},
+    {"operation_version": "2"}, {"operation_version": 3},
+    {"operation_version": {"untrusted": 2}}, {"idempotency_key": "not-a-bound-nonce"},
+    {"expected_device_public_id": None},
+])
+def test_bound_v2_keeps_strict_fields_and_version_types(client, change):
+    from selahcue_api.apps.devices.models import DeviceActivationOperation
+
+    _, session, _, request = established_v2_recovery(client, tag="v2-strict")
+    before = [list(model.objects.order_by("pk").values()) for model in (Device, DeviceToken, DeviceActivationOperation)]
+    denied = post(client, SESSION, {**request, **change}, session)
+    assert denied.status_code == 400
+    assert denied.json()["error"]["code"] == "VALIDATION_FAILED"
+    assert "no-store" in denied["Cache-Control"]
+    if "operation_version" in change:
+        assert denied.json()["operation_version"] == 1
+    missing = {name: value for name, value in request.items() if name != "display_name"}
+    assert post(client, SESSION, missing, session).status_code == 400
+    assert [list(model.objects.order_by("pk").values()) for model in (Device, DeviceToken, DeviceActivationOperation)] == before
+
+
+@pytest.mark.parametrize("policy", ["revoked_device", "revoked_license", "suspended_license", "over_allowance"])
+def test_bound_v2_policy_denial_leaves_existing_credential_and_receipts_unchanged(client, policy):
+    from selahcue_api.apps.devices.models import DeviceActivationOperation, DeviceStatus
+    from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+
+    key, session, _, request = established_v2_recovery(client, tag=f"v2-policy-{policy}")
+    if policy == "revoked_device":
+        Device.objects.filter(license_key=key).update(status=DeviceStatus.REVOKED)
+    elif policy == "over_allowance":
+        AppLicenseKey.objects.filter(pk=key.pk).update(device_limit=0)
+    else:
+        status = LicenseKeyStatus.REVOKED if policy == "revoked_license" else LicenseKeyStatus.SUSPENDED
+        key.refresh_from_db()
+        AppLicenseKey.objects.filter(pk=key.pk).update(
+            status=status, prior_status=key.status if status == LicenseKeyStatus.SUSPENDED else "",
+        )
+    models = (Device, DeviceToken, DeviceActivationOperation, AppLicenseKey)
+    before = [list(model.objects.order_by("pk").values()) for model in models]
+    denied = post(client, SESSION, request, session)
+    assert denied.status_code == 403
+    assert denied.json()["operation_version"] == 2
+    assert denied.json().get("activation_token") is None
+    assert "completed_activation" not in denied.json()
+    assert [list(model.objects.order_by("pk").values()) for model in models] == before

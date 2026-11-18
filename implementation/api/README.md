@@ -14,8 +14,77 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 - **Device activation** `POST /v1/activations` — enrollment-key authed, instance-limit enforced, show-once device token
 - **Account-based activation** `activateDeviceWithSession` (GraphQL, ADMIN-only per DEC-005)
 - **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls (`selahcue-licensing`, ClickUp 17tnw2b1we2); it never calls `/graphql/account`, which authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. These routes and the single-session cleanup route below are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
-- **License refresh** `POST /v1/license:refresh` — device-token authed, pure read
+- **License refresh** `POST /v1/license:refresh` — device-token authed; reports status, with explicitly negotiated staff-extension rotation (FR-509)
+- **Bound activation/recovery** `POST /v1/activations:bound` (v1 enrollment) and `/v1/activations:bound-with-session` (v1 activation/recovery; v2 explicit ADMIN credential replacement) — immutable, no-secret replay receipts
 - **Signed offline entitlement** `GET /v1/entitlements/manifest` — see below
+
+## Live-token renewal and response-loss recovery (FR-509)
+
+`POST /v1/license:refresh` keeps the existing status fields. Staff extension advances
+`staff_extension_generation` on the licence; an issued device token snapshots that
+generation. A live bearer with an older generation can rotate only when its request
+explicitly sends `{"token_rotation":"staff-extension-v1"}`. An expiry difference alone
+does not trigger staff rotation. Existing `{}` and header-only requests remain status
+reads for staff extensions; app version never implies capability. Managed Free renewal
+without a pending staff extension retains its automatic same-bearer renewal/catch-up.
+
+A negotiated replacement response additionally contains the show-once `activation_token`;
+`token.expires_at` names its expiry. Its generation matches the licence, and every
+superseded credential for that installation is revoked in the same transaction as
+issuance and audit. Persist the new credential securely before subsequent API calls;
+never log the response. Status-only responses omit `activation_token`. Responses use
+`Cache-Control: no-store`. Expired/revoked bearers and revoked devices return 401 and
+cannot recover themselves. Blocked licences do not mint replacements. Eligibility and
+liveness are rechecked under the existing licence/device/token and managed Free locks.
+
+If a rotating response is lost before persistence, the old bearer is rejected. Explicit
+ADMIN recovery uses the established installation identity on the bound session route:
+
+```http
+POST /v1/activations:bound-with-session
+Authorization: Bearer <admin account session>
+Content-Type: application/json
+
+{"operation_version":2,"mode":"recover","idempotency_key":"8c31a6b04ce64d57a2b3e75cf867a901","expected_device_public_id":"dev_0123456789abcdef0123456789abcdef","device_fingerprint":"same-install-id","platform":"macos","app_version":"0.1","display_name":"Main"}
+```
+
+The example nonce and device identity are illustrative. Generate a fresh 32-character
+lowercase-hex nonce once for an explicitly authorized replacement intent; send the
+installation's recorded public ID and original metadata. All eight fields are required;
+unknown fields (including `replace_token`) refuse. V2 accepts only account-session ADMIN
+`mode:"recover"`, never enrollment or initial activation. It replaces even an already
+current-generation live credential, preserves the device/public ID/seat, and checks the
+same organization, fingerprint, platform, active-device, commercial/Free and plan policies.
+
+The first response has `operation_version:2`, `operation_state:"completed"`,
+`created:false`, `reminted:true` and the show-once `activation_token`. Persist it through
+the secret-store path. Exact retries preserve the original nonce/version/payload and
+return no secret: a live original result yields 200 `operation_state:"replay"` with
+`activation_token:null`; a dead/deleted result yields 409
+`ACTIVATION_OPERATION_COMPLETED` and its recorded nonce/device/platform proof. A completed
+receipt never switches to a newer credential. Changed version/payload/identity under the
+same nonce yields 409 `ACTIVATION_OPERATION_CONFLICT`. Success and post-validation
+errors echo the validated version; pre-validation refusals retain the v1 envelope.
+
+If the recovery response is also uncertain, reconcile that exact receipt first. A
+confirmed completed operation without custody requires a new explicit replacement
+intent; ordinary Retry must not automatically change nonce or protocol. Existing v1
+bound requests remain unchanged and never replace a usable credential. The legacy
+`POST /v1/activations:with-session` boolean `replace_token:true` and account GraphQL
+`replaceToken:true` remain available with their existing ADMIN, identity and policy gates;
+they are not additional fields on either bound protocol.
+
+This API checkpoint does not establish native adoption of rotated credentials, durable
+custody after response loss, or the explicit v2 recovery UI. Those are Task 4 work with
+separate runtime gates. API/full-suite/joint native qualification and deployment approval
+must be recorded separately; production staff identity integration remains out of scope.
+
+The cascade processes 500-token working sets until drained or its 240-second delivery
+budget ends, then requests a continuation. The minute beat tick recovers remaining ACTIVE
+rows after worker/broker interruption; their database status is the durable queue. Each
+token/status audit transaction rechecks licence and token under locks. NFR-503's 65-minute
+deadline still requires healthy worker/database capacity; this does not claim unlimited
+fleet throughput or availability during a prolonged outage.
 
 ## Still stubbed (`501`)
 
@@ -84,7 +153,7 @@ The signed offline entitlement (DEC-004). Device-token auth via `Authorization: 
 
 **Verify the signature over the `payload` string exactly as received, then decode it.** Do not re-serialize the decoded JSON and verify against that — the signature covers the transmitted bytes, which is what lets a Rust verifier agree without matching Python's JSON formatting. Check `alg` against an allow-list of exactly `Ed25519`; dispatching on a caller-supplied algorithm field is how confusion attacks work.
 
-Issued **only** when the licence status is in `ACTIVATABLE_KEY_STATUSES` and the validity window is open — deliberately stricter than `license:refresh`, which reports honestly because it mints nothing. This endpoint mints a credential cacheable to the licence expiry, and with no revocation list issuance is the only enforcement point.
+Issued **only** when the licence status is in `ACTIVATABLE_KEY_STATUSES` and the validity window is open — deliberately stricter than `license:refresh`, which reports status honestly even for a blocked licence, and rotates credentials only while commercial validity holds. This endpoint mints a credential cacheable to the licence expiry, and with no revocation list issuance is the only enforcement point.
 
 Requires `SELAHCUE_ENTITLEMENT_SIGNING_KEY` (see `docs/ops/DEPLOYMENT.md` §6a). Without it the endpoint returns `500` rather than serving an unsigned manifest.
 

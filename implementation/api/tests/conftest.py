@@ -23,8 +23,85 @@ whose author never thought about this cache.
 
 import pytest
 
+from api_phase_timings import ApiPhaseTimings
 from selahcue_api.apps.throttling import services as throttle_services
 from selahcue_api.apps.throttling.circuit import CacheCircuit
+
+
+_G1_REQUIRED_CONTROL_IDS = {
+    "tests/test_native_account_controller_integration.py::test_required_g1_missing_binary_fails",
+    "tests/test_native_account_controller_integration.py::"
+    "test_required_g1_workflow_keeps_api_reachable_and_requires_same_source_artifact",
+}
+_G1_FAILURE_BODY_LIMIT = 65_536
+_API_PHASE_TIMINGS = pytest.StashKey[ApiPhaseTimings]()
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(items):
+    result = yield
+    # Promote only the G1 controls after pytest-django orders the suite. The
+    # stable sort keeps every other selected item in its existing order.
+    items.sort(key=lambda item: item.nodeid not in _G1_REQUIRED_CONTROL_IDS)
+    return result
+
+
+def pytest_collection_finish(session):
+    session.stash[_API_PHASE_TIMINGS] = ApiPhaseTimings(item.nodeid for item in session.items)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if (
+        report.nodeid in _G1_REQUIRED_CONTROL_IDS
+        and report.when == "call"
+        and report.failed
+        and call.excinfo is not None
+    ):
+        # The API job can time out before pytest's final summary. Emit the
+        # observed failure now, with no locals, arguments or captured sections.
+        body = str(call.excinfo.getrepr(style="short", showlocals=False, funcargs=False))
+        print(f"\n--- G1 call failure for {report.nodeid} ---")
+        print(body[:_G1_FAILURE_BODY_LIMIT], flush=True)
+        if len(body) > _G1_FAILURE_BODY_LIMIT:
+            print(f"[G1 failure trace truncated at {_G1_FAILURE_BODY_LIMIT} characters]", flush=True)
+    timings = item.session.stash.get(_API_PHASE_TIMINGS, None)
+    if timings is not None:
+        timings.observe(report.nodeid, report.when, report.duration)
+    return report
+
+
+def _write_api_phase_timing(config, record):
+    terminal = config.pluginmanager.get_plugin("terminalreporter")
+    if terminal is None:
+        print(f"\n{record}", flush=True)
+        return
+    terminal.ensure_newline()
+    writer = config.get_terminal_writer()
+    if writer.width_of_current_line:
+        writer.line()
+    writer.line(record)
+    writer.flush()
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_protocol(item):
+    result = yield
+    # The protocol has logged outcome rows, including teardown errors.
+    # Writing during makereport could split a row under tee capture.
+    timings = item.session.stash.get(_API_PHASE_TIMINGS, None)
+    if timings is not None and (record := timings.progress(item.nodeid)):
+        _write_api_phase_timing(item.config, record)
+    return result
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session):
+    timings = session.stash.get(_API_PHASE_TIMINGS, None)
+    if timings is not None:
+        for record in timings.finish():
+            _write_api_phase_timing(session.config, record)
 
 
 @pytest.fixture(autouse=True)

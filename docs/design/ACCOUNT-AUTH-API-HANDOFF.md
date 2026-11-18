@@ -4,7 +4,7 @@ Traditional email/password customer authentication on the Platform API (DEC-007 
 
 ## Endpoint
 
-**Browser clients** use the **account GraphQL surface**: `POST /graphql/account` (contract `customer_session_with_csrf`) — the SPA seeds the CSRF cookie with `GET /graphql/csrf` first. **Native clients (the desktop) must NOT call `/graphql/account`**: it authenticates from a session cookie, so it enforces CSRF, and a client with no cookie jar and no `X-CSRFToken` gets Django's `403` HTML page on every request (86ak5t1gw). They use the two `/v1` routes in "Native client routes" below instead. Errors use the shared envelope `extensions.code` ∈ {`UNAUTHENTICATED`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `NOT_FOUND`, `POLICY_DENIED`, `RATE_LIMITED`}; messages are fixed + safe (no detail leakage).
+**Browser clients** use the **account GraphQL surface**: `POST /graphql/account` (contract `customer_session_with_csrf`) — the SPA seeds the CSRF cookie with `GET /graphql/csrf` first. **Native clients (the desktop) must NOT call `/graphql/account`**: it authenticates from a session cookie, so it enforces CSRF, and a client with no cookie jar and no `X-CSRFToken` gets Django's `403` HTML page on every request (86ak5t1gw). They use the `/v1` routes in "Native client routes" below instead. Errors use the shared envelope `extensions.code` ∈ {`UNAUTHENTICATED`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `NOT_FOUND`, `POLICY_DENIED`, `RATE_LIMITED`}; messages are fixed + safe (no detail leakage).
 
 ## Session token — storage & transport
 
@@ -45,12 +45,90 @@ Decision and safety argument: `docs/architecture/adr/ADR-0029-native-client-acco
 **`POST /v1/activations:with-session`** — activate this device for the signed-in administrator's organisation (the `activateDeviceWithSession` mutation's native twin; ADMIN only, same instance limit).
 
 - Header: `Authorization: Bearer <session_token>` (the session is **not** read from a cookie or the body).
-- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?}` — the `POST /v1/activations` body without `license_key`.
-- All supplied fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd).
-- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
-- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `429 RATE_LIMITED`.
+- Request: `{"idempotency_key", "device_fingerprint", "platform", "app_version"?, "display_name"?, "replace_token"?: boolean}` — the `POST /v1/activations` body without `license_key`.
+- Device metadata fields must be strings; optional version/name may be omitted or empty. Control characters are refused before storage. Platform is `macos`, `windows`, or `linux`; fingerprint/name are at most128 characters and version at most32. Invalid types, unknown platforms, oversized bodies and excessively nested JSON return400 `VALIDATION_FAILED` in the same JSON envelope on both native activation routes (17tnw2b1wqd). `replace_token`, when sent, must be a JSON boolean.
+- `200`: exactly the `POST /v1/activations` response (`created`, `reminted`, `activation_token` — show-once, `null` on a successful replay — `device`, `token`, `license`), with `"operation": "activation_with_session"`.
+- `401 UNAUTHENTICATED` (no/invalid/expired session), `403 PERMISSION_DENIED` (MEMBER), `403 POLICY_DENIED` (instance limit, licence not activatable), `404 NOT_FOUND` (org has no active licence key), `400 VALIDATION_FAILED`, `409 CONFLICT` (consumed recovery intent with no live token), `429 RATE_LIMITED`.
+
+For explicit response-loss recovery, an ADMIN may send `replace_token: true` with the
+known installation fingerprint and a new idempotency key. The same org/licence/plan checks
+apply; this cannot create a new device or replace another org's token. The old credential
+is revoked atomically; persist the show-once replacement. A retry of that intent returns
+`activation_token: null` while a live token remains. If no live token remains, retrying
+the consumed intent returns `409 CONFLICT`; an ADMIN must use a fresh explicit recovery
+intent with a new idempotency key. Another lost response also requires a fresh explicit
+intent. The default remains unchanged. See `implementation/api/README.md` for live-token
+renewal and recovery.
 
 The device token returned here is used exactly as one from the enrollment-key path (`POST /v1/license:refresh`, `GET /v1/entitlements/manifest`).
+
+### Bound activation receipts and explicit v2 recovery
+
+`POST /v1/activations:bound` supports v1 enrollment with an additional `license_key` field.
+`POST /v1/activations:bound-with-session` requires an ADMIN account bearer in
+`Authorization`; cookies and device bearers grant no account authority. Both require
+`application/json`, retain the existing activation throttle scopes and return no-store
+application responses. Their exact common request fields are:
+
+```json
+{"operation_version":2,"mode":"recover","idempotency_key":"8c31a6b04ce64d57a2b3e75cf867a901","expected_device_public_id":"dev_0123456789abcdef0123456789abcdef","device_fingerprint":"same-install-id","platform":"macos","app_version":"0.1","display_name":"Main"}
+```
+
+The example identity and nonce are placeholders for the installation's established
+identity and a fresh explicit intent. All eight fields are mandatory; unknown fields,
+including `replace_token`, refuse. `operation_version` must be the literal supported
+integer, not a string, float or boolean. `idempotency_key` is 32 lowercase hex characters;
+recovery targets a `dev_` public ID followed by 32 lowercase hex characters. Preserve
+original fingerprint/platform/app version/display name.
+
+- V1 remains unchanged: initial uses `mode:"initial"` and a null expected ID; recover
+  uses `mode:"recover"` and an established expected ID. V1 never replaces a usable token.
+- V2 accepts only account-session `mode:"recover"` with an established expected ID.
+  Enrollment and initial v2 refuse with 400 `VALIDATION_FAILED`. Invalid/expired account
+  bearer is 401; MEMBER is 403 `PERMISSION_DENIED` before request normalization. Same-org
+  device/fingerprint/platform binding is mandatory; mismatches give 409
+  `ACTIVATION_OPERATION_CONFLICT`. Active-device, commercial/Free eligibility and plan
+  allowance remain required.
+- A fresh v2 intent replaces this installation's token even if its live bearer already
+  matches the licence's staff-extension generation. The response is 200 with
+  `operation_version:2`, the same `idempotency_key`, `operation_state:"completed"`,
+  `created:false`, `reminted:true` and a show-once `activation_token`. No device or seat is
+  added. Supersession, audit and receipt insertion are atomic.
+- Exact receipt replay happens before replacement and discloses no credential. While the
+  original result is live it returns 200 `operation_state:"replay"`,
+  `activation_token:null`. A dead/deleted original returns 409
+  `ACTIVATION_OPERATION_COMPLETED` with `completed_activation` containing only the
+  recorded `idempotency_key`, `device_public_id` and `platform`. Its original token FK
+  (null after deletion) and issued-token snapshot remain authoritative; it never adopts
+  a later token. A reused nonce with changed version/payload/org conflicts.
+- Success, completed proofs and post-normalization policy/conflict errors echo the
+  validated supported version. Pre-validation failures retain `operation_version:1`;
+  arbitrary submitted version values are never reflected.
+
+Persist a disclosed credential before using it. Retrying an uncertain request retains
+its exact nonce, protocol, mode and identity. If replay proves completion without local
+custody, a new explicit replacement consent may prepare a fresh v2 nonce; generic Retry
+must not do that automatically. Never fall back to legacy activation after unsupported v2.
+These server rules do not by themselves establish the native Task 4 consent/custody
+implementation or its runtime qualification.
+
+### Negotiated staff-extension refresh
+
+Staff extension advances a licence generation; each device token snapshots its issuance
+generation. `POST /v1/license:refresh` rotates a live older-generation token only when
+sent with `{"token_rotation":"staff-extension-v1"}`. An expiry gap alone is insufficient.
+Old `{}` or header-only clients receive status only for staff extensions; app version
+never negotiates rotation. Without a pending staff extension, managed Free renewal and
+catch-up retain the same bearer.
+
+Negotiated issuance snapshots the current generation, revokes superseded bearers and
+returns a show-once `activation_token` with its replacement expiry. Persist it before fetching a manifest or
+making another authenticated call. A status-only response omits `activation_token`.
+A lost replacement cannot be recovered with the now-revoked bearer; use explicit ADMIN
+v2 recovery above. Dead bearers, revoked devices, blocked licences and over-allowance
+installations cannot use refresh to mint credentials. Native rotation adoption and
+response-loss custody remain separate Task 4 work; this handoff is not production
+IdP, native end-to-end, full-suite or deployment acceptance.
 
 Enrollment `POST /v1/activations` also requires `application/json` before spending throttle budget or querying the database. For `POST /v1/license:refresh`, that guard applies when the token comes from the JSON body. Existing bearer-header refresh requests may omit the body and Content-Type: the Authorization header already requires a cross-origin preflight, and its token still passes the existing authentication checks. A header credential continues to take precedence over a body token; no cookie authentication or GET requirement is added (17tnw2b1wqb).
 
@@ -60,7 +138,7 @@ The Rust `activate_with_session` method returns a valid `Activation` even if its
 
 An unsuccessful/ambiguous activation retains the session for an idempotent activation retry. For an abandoned attempt or unconfirmed cleanup, a host may explicitly call `revoke_session` with that same token; only a confirmed acknowledgement permits clearing its local account entry. A lost revoke acknowledgement may leave an already inactive token retained; the client does not pretend it confirmed revocation. The existing DEC-007 expiry/password-change/all-session logout rules remain the server fallback, with no new grant or TTL policy. If device-token persistence fails after server activation, the returned activation still carries its show-once token for retrying persistence; do not repeat activation expecting that secret to be re-shown.
 
-Current `main` has no operator licensing activation UI/command or pending-session orchestration. This ticket implements and tests the actual licensing-library path and secret-store seam, not operator/physical-booth E2E. The operator's separate hosted-provider `account_token` is untouched. ADR-0029 remains Proposed; implementing this task's route-only option does not assert owner acceptance of the broader wire/residual-risk decision.
+The API v2 recovery checkpoint does not qualify operator/physical-booth E2E. Native rotation adoption, explicit replacement consent and pending-operation custody are Task 4 work with separate runtime evidence. The operator's separate hosted-provider `account_token` is untouched. ADR-0029 remains Proposed; implementing this task's route-only option does not assert owner acceptance of the broader wire/residual-risk decision.
 
 ## Frontend follow-ups (net-new vs the current A0/A1 design)
 

@@ -7,15 +7,19 @@ from django.core.cache import cache
 from django.utils import timezone
 
 from test_bound_activation import KEY, SESSION, admin_session, another_license, body, post
+from test_entitlement_manifest_slice import TEST_SEED_B64
 from test_native_account_surface import seed_license, seed_org
 from selahcue_api.apps.accounts.models import CustomerStatus
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
-from selahcue_api.apps.devices.models import Device, DeviceActivationOperation, DeviceToken
+from selahcue_api.apps.devices.models import (
+    Device, DeviceActivationOperation, DeviceToken, DeviceTokenStatus,
+)
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 
 pytestmark = pytest.mark.django_db
 REFRESH = "/v1/license:refresh"
+MANIFEST = "/v1/entitlements/manifest"
 NOW = datetime(2028, 2, 29, 12, tzinfo=UTC)
 RENEWED_TO = datetime(2029, 2, 28, 12, tzinfo=UTC)
 
@@ -87,12 +91,57 @@ def test_renewal_at_30_days_extends_only_presented_live_token(client, monkeypatc
     expected = RENEWED_TO if renews else old_expiry
     assert response.json()["license"]["expires_at"] == expected.isoformat()
     assert response.json()["token"]["expires_at"] == expected.isoformat()
+    licence.refresh_from_db()
     first.refresh_from_db()
     other.refresh_from_db()
     assert first.expires_at == expected
     assert other.expires_at == old_expiry
+    assert {
+        licence.staff_extension_generation,
+        first.staff_extension_generation,
+        other.staff_extension_generation,
+    } == {0}
     assert DeviceToken.objects.count() == 2
     assert AuditEvent.objects.filter(action="license_key.free_renewed").count() == int(renews)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_expiring_free_refresh_keeps_live_bearer_and_commits_one_audit(client, monkeypatch, settings):
+    settings.ENTITLEMENT_SIGNING_KEY = TEST_SEED_B64
+    monkeypatch.setattr(timezone, "now", lambda: NOW)
+    org, _session, initial, licence = activate_free(client)
+    bearer = initial["activation_token"]
+    token = DeviceToken.objects.get(device__license_key=licence)
+    receipt = DeviceActivationOperation.objects.values().get(license_key=licence)
+    old_expiry = NOW + timedelta(days=2)
+    AppLicenseKey.objects.filter(pk=licence.pk).update(
+        status=LicenseKeyStatus.EXPIRING, expires_at=old_expiry,
+    )
+    DeviceToken.objects.filter(pk=token.pk).update(expires_at=old_expiry)
+
+    for _ in range(2):
+        response = post(client, REFRESH, {}, bearer)
+        assert response.status_code == 200
+        refreshed = response.json()
+        assert refreshed.get("activation_token") is None
+        assert refreshed["device"]["device_public_id"] == initial["device"]["device_public_id"]
+        assert refreshed["license"]["status"] == LicenseKeyStatus.ACTIVATED
+        assert refreshed["license"]["expires_at"] == RENEWED_TO.isoformat()
+        assert refreshed["token"]["expires_at"] == RENEWED_TO.isoformat()
+
+    licence.refresh_from_db()
+    token.refresh_from_db()
+    assert licence.status == LicenseKeyStatus.ACTIVATED
+    assert token.status == DeviceTokenStatus.ACTIVE
+    assert licence.expires_at == token.expires_at == RENEWED_TO
+    event = AuditEvent.objects.get(action="license_key.free_renewed", target_id=str(licence.pk))
+    assert event.result == AuditResult.SUCCESS
+    assert event.before["expires_at"] == old_expiry.isoformat()
+    assert event.after["expires_at"] == RENEWED_TO.isoformat()
+    assert Device.objects.filter(customer=org).count() == 1
+    assert DeviceToken.objects.filter(device=token.device).count() == 1
+    assert DeviceActivationOperation.objects.values().get(license_key=licence) == receipt
+    assert client.get(MANIFEST, HTTP_AUTHORIZATION=f"Bearer {bearer}").status_code == 200
 
 
 def test_expired_token_requires_admin_same_fingerprint_recovery(client, monkeypatch):
