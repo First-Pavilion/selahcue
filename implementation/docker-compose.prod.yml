@@ -202,6 +202,11 @@ services:
 
   beat:
     <<: *api-common
+    environment:
+      <<: *api-env
+      # Opt in only after the corresponding dedicated worker is deployed and verified.
+      SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED: "${SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED:-0}"
+      SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED: "${SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED:-0}"
     # Exactly one beat instance, ever: two would double-schedule the maintenance tasks.
     command: ["celery", "-A", "selahcue_api", "beat", "--loglevel=info", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
     depends_on:

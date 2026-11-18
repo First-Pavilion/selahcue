@@ -7,7 +7,7 @@ with Coolify's **Docker Compose** build pack:
 |---|---|---|
 | `api` | API image | Gunicorn on :8000 (default image command) |
 | `worker` | API image | Celery maintenance worker on `celery`, concurrency two. Sends account mail. |
-| `beat` | API image | Celery beat. Run exactly one |
+| `beat` | API image | Celery beat in the maintenance role. Run exactly one. |
 | `migrate` | API image | One-off `manage.py migrate`. The app processes wait for it to succeed |
 | `website` | marketing image | nginx serving the SPA on :80 |
 | `db` | `postgres:16-alpine` | PostgreSQL, volume `selahcue-pgdata` |
@@ -75,10 +75,9 @@ after verifying both HTTPS routes. Retain the approved policy on existing resour
    [runtime environment procedure](../../DEPLOYMENT.md#runtime-environment) and
    [matching entitlement seed](../../DEPLOYMENT.md#entitlement-signing-key).
 4. Leave every Domains field empty. Apply the edge controls below and review the migration plan.
-   Before the owner triggers sustained or unattended production deployment, complete the
-   [account-only scheduler prerequisite](../../DEPLOYMENT.md#account-only-scheduler-prerequisite)
-   in bounded isolated staging. Check the selected source ref against the recorded release commit,
-   then have the owner select **Deploy** in Coolify.
+   Rehearse [scheduled work](../../DEPLOYMENT.md#scheduled-work) in bounded isolated staging.
+   Check the selected source ref against the recorded release commit, then have the owner
+   select **Deploy** in Coolify.
 5. Verify the deployed commit and image digests. Run the
    [platform checks](../../DEPLOYMENT.md#deploy-and-verify-the-platform) from the runtime
    containers and the `curl` checks from outside. Complete the
@@ -92,11 +91,21 @@ keeps serving while the migration runs. That is fine for additive migrations. **
 that drops a column (docs/ops/DEPLOYMENT.md section 6d), stop the resource in Coolify first,
 then deploy.** Take a database backup before any deploy that migrates.
 
-For sustained account-only deployments, use a scheduler arrangement that passed the staging
-queue and maintenance checks above. Recheck the manual trigger policy and runtime-only secret
-scopes before the owner deploys the recorded commit. `API_IMAGE`, `WEBSITE_IMAGE` and
+Recheck the manual trigger policy and runtime-only secret scopes before the owner deploys
+the recorded commit. `API_IMAGE`, `WEBSITE_IMAGE` and
 `RELEASE_TAG` set the image references. The Compose build declarations remain active. Verify how
 Coolify resolves the images and record the actual deployed digests.
+
+## Beat schedules
+
+For the account stack, leave both `SELAHCUE_BEAT_PROVIDER_PROVISIONING_ENABLED` and
+`SELAHCUE_BEAT_PROVIDER_USAGE_ENABLED` unset or `0`. Compose passes them only to beat.
+Beat retains the usage retention, licence revocation and expired credential jobs on `celery`.
+
+Set either input to `1` only after verifying the matching dedicated worker
+(`provider_provisioning` or `provider_usage`). To disable a sweep, set its input to `0`, recreate
+beat and reconcile pending messages before stopping the consumer. Follow the
+[verification and rollback procedure](../../DEPLOYMENT.md#scheduled-work).
 
 ## Backups
 
@@ -169,8 +178,8 @@ with `http`/`https` entrypoints and a `letsencrypt` resolver, the way Coolify do
   `POST /v1/activations:bound-with-session`, `POST /v1/activations:with-session` and the
   other device routes in the [ingress procedure](../../DEPLOYMENT.md#deploy-and-verify-the-platform).
   Check actual client IP and verify edge and nginx log exclusions with synthetic tokens.
-- **Cloud roles.** The stack supplies no provider-specific settings, mounts or queue workers.
-  Coolify values only reach containers through the service definitions. See
+- **Cloud roles.** The stack supplies the beat schedule inputs. Dedicated provider workers
+  and their role-specific settings and mounts require deployment wiring. See
   [the public cloud boundary](../../DEPLOYMENT.md#public-cloud-boundary) for the open requirements.
 - **Network isolation.** Coolify attaches every service to the resource network, which has
   outbound access. The web process only needs the database and Redis.
