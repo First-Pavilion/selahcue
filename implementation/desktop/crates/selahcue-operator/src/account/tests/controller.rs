@@ -3316,3 +3316,243 @@ fn unsafe_dismissal_path_leaves_setup_pending_and_can_be_retried() {
         "skipped"
     );
 }
+
+const STAFF_REPLACEMENT: &str = "synthetic-staff-extension-replacement";
+
+enum StaffRefreshReply {
+    Replacement,
+    Unauthorized { custody_updated: bool },
+}
+
+struct StaffRefreshTransport {
+    reply: StaffRefreshReply,
+    custody: Custody,
+    extended_manifest: String,
+    // Only flags are recorded. The two POST flags indicate use of the old bearer
+    // and negotiation; each GET records whether the sent replacement was stored.
+    requests: std::cell::RefCell<Vec<(bool, bool)>>,
+    manifest_custody: std::cell::RefCell<Vec<bool>>,
+}
+
+impl selahcue_licensing::HttpTransport for StaffRefreshTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        use selahcue_cloud::transport::HttpResponse;
+        assert!(url.ends_with("/v1/license:refresh"));
+        let original = bearer == Some(SECRET);
+        let request = serde_json::from_str::<Value>(body).expect("refresh payload");
+        self.requests.borrow_mut().push((
+            original,
+            request == json!({"token_rotation":"staff-extension-v1"}),
+        ));
+        if let (true, StaffRefreshReply::Unauthorized { custody_updated }) = (original, &self.reply)
+        {
+            if *custody_updated {
+                // A different local operation has already saved the current credential.
+                // The only reply to the outstanding status query is a 401, with no secret.
+                self.custody
+                    .set(DEVICE_TOKEN_NAME, &Token::new(STAFF_REPLACEMENT))
+                    .expect("current custody");
+            }
+            return Ok(HttpResponse {
+                status: 401,
+                body: "{}".into(),
+            });
+        }
+        let mut status: Value =
+            serde_json::from_str(&refresh_status(true)).expect("fixture status");
+        if original {
+            // Return the successful wire shape even on a legacy request so GET
+            // ordering and capability can be observed independently in this unit test.
+            status["activation_token"] = json!(STAFF_REPLACEMENT);
+        } else {
+            assert!(
+                bearer == Some(STAFF_REPLACEMENT),
+                "unknown fixture credential"
+            );
+        }
+        Ok(HttpResponse {
+            status: 200,
+            body: status.to_string(),
+        })
+    }
+
+    fn get(
+        &self,
+        url: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        assert!(url.ends_with("/v1/entitlements/manifest"));
+        let saved = self
+            .custody
+            .get(DEVICE_TOKEN_NAME)
+            .expect("custody at manifest request");
+        let stored =
+            saved == Some(Token::new(STAFF_REPLACEMENT)) && bearer == Some(STAFF_REPLACEMENT);
+        self.manifest_custody.borrow_mut().push(stored);
+        Ok(selahcue_cloud::transport::HttpResponse {
+            status: if stored { 200 } else { 401 },
+            body: if stored {
+                self.extended_manifest.clone()
+            } else {
+                "{}".into()
+            },
+        })
+    }
+}
+
+fn staff_refresh_controller(
+    directory: &Path,
+    custody: &Custody,
+    reply: StaffRefreshReply,
+) -> AccountController<StaffRefreshTransport, Custody> {
+    let storage = AccountMetadataStore::new(directory.into());
+    let mut binding = storage
+        .load_or_create(CredentialPresence::Missing)
+        .expect("fixture installation");
+    binding.activated_public_id = Some(DEVICE.into());
+    let binding = storage.save(&binding).expect("established installation");
+    custody
+        .set(DEVICE_TOKEN_NAME, &Token::new(SECRET))
+        .expect("initial device custody");
+    let manifest = |expiry| {
+        signed_display(
+            binding.fingerprint(),
+            "2026-11-14T12:00:00Z",
+            expiry,
+            expiry,
+        )
+    };
+    let (trust, initial) = manifest("2026-12-01T00:00:00Z");
+    selahcue_licensing::EntitlementCache::new(directory)
+        .replace(initial.as_bytes(), &trust, DEVICE, binding.fingerprint())
+        .expect("current signed cache");
+    let (_, extended_manifest) = manifest("2027-01-01T00:00:00Z");
+    let transport = StaffRefreshTransport {
+        reply,
+        custody: custody.clone(),
+        extended_manifest,
+        requests: Default::default(),
+        manifest_custody: Default::default(),
+    };
+    let client = LicensingClient::new(transport, API_ORIGIN).expect("static origin");
+    AccountController::new(
+        Some(directory.into()),
+        client,
+        custody.clone(),
+        trust,
+        || NOW,
+    )
+}
+
+#[test]
+fn negotiated_refresh_stores_replacement_before_requesting_the_signed_manifest() {
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account =
+        staff_refresh_controller(directory.path(), &custody, StaffRefreshReply::Replacement);
+    let result = wire(&account.execute(Command::Refresh { explicit: true }));
+    let transport = account.client().transport();
+    assert_eq!(
+        transport.manifest_custody.borrow().as_slice(),
+        [true],
+        "manifest GET must use the replacement already saved in device custody"
+    );
+    assert_eq!(
+        transport.requests.borrow().as_slice(),
+        [(true, true)],
+        "refresh must negotiate staff extension using the original credential"
+    );
+    assert!(result["error_code"].is_null());
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2027-01-01T00:00:00Z");
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("final custody"),
+        Some(Token::new(STAFF_REPLACEMENT))
+    );
+}
+
+#[test]
+fn refresh_store_failure_keeps_answer_for_local_retry() {
+    use std::sync::atomic::Ordering;
+    let directory = tempfile::tempdir().expect("fixture directory");
+    let custody = Custody::default();
+    let mut account =
+        staff_refresh_controller(directory.path(), &custody, StaffRefreshReply::Replacement);
+    custody.fail_write.store(true, Ordering::SeqCst);
+    let result = wire(&account.execute(Command::Refresh { explicit: true }));
+    assert_eq!(
+        custody.denied_device_writes.load(Ordering::SeqCst),
+        1,
+        "refresh should attempt to save the real-shaped replacement before fetching a manifest"
+    );
+    assert_eq!(result["device_state"], "credential_not_saved");
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2026-12-01T00:00:00Z");
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("preserved custody"),
+        Some(Token::new(SECRET))
+    );
+    assert!(account
+        .client()
+        .transport()
+        .manifest_custody
+        .borrow()
+        .is_empty());
+
+    custody.fail_write.store(false, Ordering::SeqCst);
+    let result = wire(&account.execute(Command::RetryActivation));
+    let transport = account.client().transport();
+    let requests = transport.requests.borrow();
+    assert_eq!(requests.first(), Some(&(true, true)));
+    assert!(
+        requests[1..].iter().all(|(original, _)| !original),
+        "local save retry must not re-use the superseded original bearer"
+    );
+    assert_eq!(transport.manifest_custody.borrow().as_slice(), [true]);
+    assert_eq!(
+        custody.get(DEVICE_TOKEN_NAME).expect("retried custody"),
+        Some(Token::new(STAFF_REPLACEMENT))
+    );
+    assert!(result["error_code"].is_null());
+    assert_eq!(result["entitlement_state"], "current");
+    assert_eq!(result["license_expires_at"], "2027-01-01T00:00:00Z");
+}
+
+#[test]
+fn stale_refresh_401_does_not_reject_newer_custody() {
+    for custody_updated in [false, true] {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let custody = Custody::default();
+        let mut account = staff_refresh_controller(
+            directory.path(),
+            &custody,
+            StaffRefreshReply::Unauthorized { custody_updated },
+        );
+        let result = wire(&account.execute(Command::Refresh { explicit: true }));
+        let transport = account.client().transport();
+        assert!(transport
+            .requests
+            .borrow()
+            .first()
+            .is_some_and(|(original, _)| *original));
+        assert_eq!(result["entitlement_state"], "current");
+        if custody_updated {
+            assert_ne!(result["device_state"], "reauthentication_needed",
+                "a late 401 for the previous credential must not mark current device custody rejected");
+            assert_eq!(
+                custody.get(DEVICE_TOKEN_NAME).expect("current custody"),
+                Some(Token::new(STAFF_REPLACEMENT))
+            );
+        } else {
+            assert_eq!(
+                result["device_state"], "reauthentication_needed",
+                "a 401 for the current bearer still requires reauthentication"
+            );
+        }
+    }
+}

@@ -1271,6 +1271,12 @@ jobs:
           "$PDF_ORACLE_SETUP_PYTHON" -m venv "$venv"
           "$venv/bin/python" -m pip install --only-binary=:all: pypdf==6.21.4 pdfplumber==0.11.9
           "$venv/bin/python" -m pip freeze
+      - name: Set up Node for the account harness (Linux)
+        id: account-node
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
       # Three steps, not one `run:` block. As a single block under `bash -e`, a clippy
       # failure aborted before `cargo test` ever ran -- so this job still had exactly
       # the masking the rest of this change removes, while appearing to be covered.
@@ -1294,6 +1300,10 @@ jobs:
         id: operator-test-gate
         if: ${{ !cancelled() }}
         run: cargo test --no-fail-fast
+      - name: Account command and consent behavior (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.account-node.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: node --test scripts/test_account_setup.js
       - name: Stage the default-feature G1 operator test (Linux)
         id: g1-stage
         if: ${{ !cancelled() && runner.os == 'Linux' && needs.changes.outputs.native_account_joint == 'true' && steps.operator-test-gate.outcome == 'success' }}
@@ -1446,6 +1456,7 @@ jobs:
       # break Blink can't. Playwright bundles its own WebKit (self-contained; no GTK-version
       # coupling). REQUIRE=1 makes a missing engine a hard fail, never a silent no-op.
       - name: Install Playwright WebKit (Linux)
+        id: operator-webkit-install
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         # Pinned so the WebKit engine under test is reproducible (bump deliberately); the
@@ -1455,6 +1466,10 @@ jobs:
         run: |
           python3 -m pip install --user --break-system-packages playwright==1.65.2
           python3 -m playwright install --with-deps webkit
+      - name: Account consent in the operator shell (Linux WebKit)
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.operator-webkit-install.outcome == 'success' }}
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/operator_account_browser_test.py --engine webkit
       - name: Webview WebKit-engine smoke (Linux, Playwright WebKit)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
