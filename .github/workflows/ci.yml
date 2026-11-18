@@ -1939,8 +1939,8 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install
-        id: npm_install
         run: npm ci
+        id: npm_install
       - name: Installer publication offline self-test
         working-directory: .
         run: python3 scripts/publish_installers.py --self-test
