@@ -48,6 +48,8 @@ alternate nginx route produces different trusted depths, normalise the chains at
 or use separate API services with their own correct count. Verify forwarded headers and effective
 client IP on both routes. [Proxy trust](../../docs/ops/DEPLOYMENT.md#6c-ops-requirements--django-behind-a-tls-terminating-proxy)
 
+Compose passes the signup and named reset-trace hourly limits to the API image. Signup needs a healthy Redis cache. Restore the previous limits and recreate the API workers to roll back a tuning change. [Defaults and outage behavior](../../docs/ops/DEPLOYMENT.md#signup-admission)
+
 The labels require Traefik entrypoints named `http` and `https` and a certificate resolver
 named `letsencrypt`. Check the server's proxy configuration (Servers, then Proxy) before the
 first deploy. Verify that the configured labels match. Start a new resource's HSTS at the

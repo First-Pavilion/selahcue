@@ -14,6 +14,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import runpy
 import statistics
 import threading
 import time
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import timezone as dt_timezone
 from io import StringIO
+from types import SimpleNamespace
 
 import celery
 import django
@@ -32,6 +34,8 @@ from celery.backends.redis import RedisBackend
 from django.conf import settings as django_settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.cache import cache
+from django.core.cache.backends import base, locmem
+from django.core.exceptions import ImproperlyConfigured
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import IntegrityError, OperationalError, connection, transaction
@@ -58,6 +62,7 @@ from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle, LicenseKeyStatus
 from selahcue_api.apps.throttling import circuit, guards
+from selahcue_api.apps.throttling import services as throttle_services
 from selahcue_api.apps.throttling.services import ip_bucket_identity
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
@@ -184,6 +189,133 @@ def signup_and_verify(client, sender, *, email="pastor@grace.example", password=
     token = sender.verify_tokens[-1]
     post_account(client, VERIFY, {"t": token})
     return email, password
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("refusal", ["global", "source", "global_outage", "source_outage"])
+def test_signup_refusal_is_uniform_private_and_precedes_work(
+    client, sender, settings, monkeypatch, caplog, django_assert_num_queries, refusal
+):
+    known = "known@signup.example"
+    fresh = "fresh@signup.example"
+    password = "synthetic-signup-password"
+    settings.SELAHCUE_THROTTLE_REGISTER_GLOBAL = (1 if refusal == "global" else 10, 3600)
+    settings.SELAHCUE_THROTTLE_REGISTER_IP = (1 if refusal == "source" else 10, 3600)
+    assert error_code(post_account(client, REGISTER, register_input(email=known))) is None
+    guards._reset_denial_log_suppression()
+    monkeypatch.setattr(throttle_services, "_last_store_error_log", float("-inf"))
+    # A source-only outage must occur after a successful shared global claim.
+    real_increment = guards.CacheStore.incr_with_expiry
+    scopes = []
+
+    def increment(store, key, window):
+        scope = key.split(":")[1]
+        scopes.append(scope)
+        if refusal == {"register_global": "global_outage", "register_ip": "source_outage"}[scope]:
+            raise ConnectionError("synthetic outage")
+        return real_increment(store, key, window)
+
+    monkeypatch.setattr(guards.CacheStore, "incr_with_expiry", increment)
+    hashes = []
+    monkeypatch.setattr(services, "make_password", lambda value: hashes.append(value) or "synthetic-hash")
+    caplog.set_level(logging.WARNING)
+    caplog.clear()
+    responses = []
+    with django_assert_num_queries(0):
+        for email in (known, fresh):
+            # Inline literals also exercise Strawberry's ordinary error logger.
+            query = (
+                'mutation { registerCustomerUser(input: {idempotencyKey: "inline-signup-1", '
+                f'email: "{email}", password: "{password}", '
+                'orgName: "Grace Chapel", country: "NG"}) { accepted } }'
+            )
+            response = post_account(client, query)
+            assert error_code(response) == "RATE_LIMITED"
+            responses.append(response.content)
+    assert responses[0] == responses[1]
+    assert not hashes and not sender.exists_notifications and len(sender.verify_tokens) == 1
+    expected = ["register_global"] if refusal.startswith("global") else ["register_global", "register_ip"]
+    assert scopes == expected * 2
+    assert len(caplog.records) == 1
+    assert all(literal not in caplog.text for literal in (known, fresh, password, "inline-signup-1"))
+
+
+def _clocked_local_budget_cache(monkeypatch):
+    clock = FakeClock(monkeypatch)
+    timer = SimpleNamespace(time=lambda: clock.now)
+    monkeypatch.setattr(base, "time", timer)
+    monkeypatch.setattr(locmem, "time", timer)
+    cache = locmem.LocMemCache("registration-and-trace-window-test", {})
+    cache.clear()
+    monkeypatch.setattr(guards, "cache", cache)
+    return clock
+
+
+@pytest.mark.django_db
+def test_signup_global_bounds_source_keys_and_uses_trusted_ip(client, sender, settings, monkeypatch):
+    clock = _clocked_local_budget_cache(monkeypatch)
+    settings.SELAHCUE_THROTTLE_REGISTER_GLOBAL = (4, 81)
+    settings.SELAHCUE_THROTTLE_REGISTER_IP = (1, 72)
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    touched = _record_limiter_keys(monkeypatch)
+
+    def signup(forwarded):
+        return error_code(post_account(client, REGISTER, register_input(),
+                                       REMOTE_ADDR="192.0.2.9", HTTP_X_FORWARDED_FOR=forwarded))
+
+    assert signup("192.0.2.1") is None
+    assert signup("192.0.2.2") == "RATE_LIMITED"
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 1
+    assert signup("192.0.2.5, 192.0.2.1") is None
+    assert signup("192.0.2.6, 192.0.2.1") == "RATE_LIMITED"
+    assert signup("192.0.2.3") == "RATE_LIMITED"
+    assert touched == {
+        "throttle:register_global:all": 81,
+        f"throttle:register_ip:{ip_bucket_identity('192.0.2.9')}": 72,
+        f"throttle:register_ip:{ip_bucket_identity('192.0.2.1')}": 72,
+    }
+    assert all("192.0.2." not in key for key in touched)
+    clock.advance(80)
+    assert signup("192.0.2.9") == "RATE_LIMITED"
+    clock.advance(1)
+    assert signup("192.0.2.9") is None
+
+
+@pytest.mark.django_db
+def test_signup_direct_call_spends_fixed_unresolved_source(sender, settings, monkeypatch):
+    settings.SELAHCUE_THROTTLE_REGISTER_IP = (1, 3600)
+    touched = _record_limiter_keys(monkeypatch)
+    data = services.RegisterCustomerUserData(
+        idempotency_key="direct-signup-1", email="one@signup.example",
+        password="synthetic-password", org_name="Grace", country="NG",
+    )
+    assert services.register_customer_user(data).accepted
+    with pytest.raises(SafeAPIError) as error:
+        services.register_customer_user(data)
+    assert error.value.code == ErrorCode.RATE_LIMITED
+    assert f"throttle:register_ip:{ip_bucket_identity('unresolved-client-ip')}" in touched
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(("name", "shipped"), [
+    ("SELAHCUE_THROTTLE_REGISTER_GLOBAL", 500),
+    ("SELAHCUE_THROTTLE_REGISTER_IP", 20),
+    ("SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED", 6000),
+    ("SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING", 600),
+])
+def test_registration_and_trace_hourly_configuration(monkeypatch, name, shipped):
+    # Load settings without mutating either the active Django settings or the imported module.
+    def read():
+        return runpy.run_path(project_settings.__file__).get(name)
+
+    monkeypatch.delenv(name, raising=False)
+    assert read() == (shipped, 3600)
+    monkeypatch.setenv(name, "7")
+    assert read() == (7, 3600)
+    for invalid in ("0", "-1", "bad", "2147483648"):
+        monkeypatch.setenv(name, invalid)
+        with pytest.raises(ImproperlyConfigured, match=name):
+            read()
 
 
 # --- AUTH-2: signup --------------------------------------------------------
@@ -2161,7 +2293,7 @@ def _record_limiter_keys(monkeypatch):
     return touched
 
 
-# --- the two allowances: noise cannot blind the trace to a probe of an account's link ----------
+# --- separate anonymous and named trace allowances ---------------------------------------------
 def _fresh_account_with_a_live_link(client, sender, tag):
     """A verified account with a live reset link; returns (user id, raw token)."""
     email = f"{tag}@grace.example"
@@ -2221,7 +2353,7 @@ def test_while_the_limiter_store_is_down_each_account_has_its_own_process_local_
     client, sender, settings, monkeypatch
 ):
     """The same split in the outage ceiling: noise spends the shared per-worker ceiling, a named
-    outcome spends only its account's, and a second account is unaffected by the first."""
+    outcome spends the named aggregate and its own account allowance."""
     user_a, token_a = _fresh_account_with_a_live_link(client, sender, "alpha")
     user_b, token_b = _fresh_account_with_a_live_link(client, sender, "bravo")
     settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (2, 3600)
@@ -2238,27 +2370,149 @@ def test_while_the_limiter_store_is_down_each_account_has_its_own_process_local_
     assert len(_rows_naming(user_b)) == 2, "account B was held to account A's spent allowance"
 
 
-def test_the_per_account_outage_table_is_bounded_and_counts_each_account_separately(monkeypatch):
-    """Bounded memory, in a form that bites: 5000 distinct accounts through a table of 8 never hold
-    more than 8, the limit still applies per account, and a window that has lapsed starts over."""
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("outage", [False, True])
+def test_named_trace_aggregate_caps_rows_before_account_keys(
+    client, sender, settings, monkeypatch, outage
+):
+    first_user, first = _fresh_account_with_a_live_link(client, sender, "first")
+    second_user, second = _fresh_account_with_a_live_link(client, sender, "second")
+    third_user, third = _fresh_account_with_a_live_link(client, sender, "third")
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED = (2, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = (2, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (1, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (1, 3600)
+    clock = _clocked_local_budget_cache(monkeypatch)
+    if outage:
+        monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    touched = _record_limiter_keys(monkeypatch)
+    for _ in range(2):
+        assert error_code(confirm(client, "synthetic-unknown", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    allowed = confirm(client, first, SHORT_PASSWORD)
+    assert error_code(allowed) == "PASSWORD_INVALID"
+    assert confirm(client, second, SHORT_PASSWORD).content == allowed.content
+    for _ in range(2):
+        assert confirm(client, third, SHORT_PASSWORD).content == allowed.content
+    assert len(failed_rows()) == 3
+    assert len(_rows_naming(first_user)) == len(_rows_naming(second_user)) == 1
+    assert not _rows_naming(third_user) and token_row(third).consumed_at is None
+    if outage:
+        assert all("trace" not in key for key in touched)
+    else:
+        assert touched["throttle:password_reset_confirm_trace_named:all"] == 3600
+        assert f"throttle:password_reset_confirm_trace_account:{first_user}" in touched
+        assert f"throttle:password_reset_confirm_trace_account:{second_user}" in touched
+        assert f"throttle:password_reset_confirm_trace_account:{third_user}" not in touched
+    clock.advance(3599)
+    assert confirm(client, third, SHORT_PASSWORD).content == allowed.content
+    assert not _rows_naming(third_user)
+    clock.advance(1)
+    assert confirm(client, third, SHORT_PASSWORD).content == allowed.content
+    assert len(_rows_naming(third_user)) == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("failed_scope", ["named", "account"])
+def test_named_trace_store_failure_charges_local_aggregate_without_retry(settings, monkeypatch, failed_scope):
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = (1, 3600)
+    seen = []
+
+    def spend(scope, *args, **kwargs):
+        seen.append(scope)
+        if scope == f"password_reset_confirm_trace_{failed_scope}":
+            return services.BudgetOutcome.STORE_UNAVAILABLE
+        return services.BudgetOutcome.ALLOWED
+
+    monkeypatch.setattr(services, "spend_budget", spend)
+    trace = services._ResetConfirmTrace(customer_user_id=1)
+    assert services._trace_skip_reason(trace, limiter_degraded=False) is None
+    assert seen == (["password_reset_confirm_trace_named"] if failed_scope == "named" else
+                    ["password_reset_confirm_trace_named", "password_reset_confirm_trace_account"])
+    seen.clear()
+    assert services._trace_skip_reason(trace, limiter_degraded=True) is not None
+    assert not seen
+
+
+@pytest.mark.django_db
+def test_the_per_account_outage_table_preserves_live_windows_during_churn(settings, monkeypatch):
     clock = FakeClock(monkeypatch)
-    table = services._AccountCeilings(setting_name="W2_UNSET_SETTING", default=(2, 3600), max_entries=8)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = (10_000, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (2, 3600)
+    table = services._AccountCeilings(setting_name="TEST_ACCOUNT_LIMIT", default=(1, 3600), max_entries=2)
+    monkeypatch.setattr(services, "_reset_confirm_trace_account_ceilings", table)
 
-    for account in range(5000):
-        assert table.claim(account) is True
-    assert len(table._windows) <= 8
+    def reason(account):
+        return services._trace_skip_reason(services._ResetConfirmTrace(customer_user_id=account), True)
 
-    table.reset()
-    assert [table.claim(1), table.claim(1), table.claim(1), table.claim(2)] == [True, True, False, True]
-    clock.advance(3601)
-    assert table.claim(1) is True, "a lapsed window must start over"
+    assert reason(1) is None
+    clock.advance(1)
+    assert reason(2) is None
+    assert reason(1) == "account outage allowance spent"  # no overflow credit for tracked accounts
+    assert reason(3) is None and reason(4) is None
+    for account in range(5, 5005):
+        assert reason(account) == "outage ceiling spent"
+    assert list(table._windows) == [1, 2]
+    assert reason(1) == "account outage allowance spent"
+    assert reason(None) == "outage ceiling spent"  # overflow used the shared outage ceiling
+    clock.advance(3599)
+    assert reason(5) is None
+    assert list(table._windows) == [2, 5]
+    assert reason(2) == "account outage allowance spent"
+
+
+@pytest.mark.django_db
+def test_outage_overflow_still_spends_named_aggregate(settings, monkeypatch):
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = (2, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (5, 3600)
+    table = services._AccountCeilings(setting_name="TEST_ACCOUNT_LIMIT", default=(3, 3600), max_entries=1)
+    monkeypatch.setattr(services, "_reset_confirm_trace_account_ceilings", table)
+
+    def reason(account):
+        return services._trace_skip_reason(services._ResetConfirmTrace(customer_user_id=account), True)
+
+    assert [reason(1), reason(2), reason(3)] == [None, None, "named aggregate spent"]
+    assert list(table._windows) == [1]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("outage", [False, True])
+def test_skip_summary_remembers_named_aggregate_among_other_reasons(client, sender, settings, monkeypatch, caplog, outage):
+    _, token = _fresh_account_with_a_live_link(client, sender, "summary")
+    clock = FakeClock(monkeypatch)
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_NAMED = (3, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_NAMED_DEGRADED_CEILING = (3, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE_ACCOUNT = (1, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_ACCOUNT_DEGRADED_CEILING = (1, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_CONFIRM_TRACE = (1, 3600)
+    settings.SELAHCUE_RESET_CONFIRM_TRACE_DEGRADED_CEILING = (1, 3600)
+    if outage:
+        monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+
+    def summaries():
+        return [r.getMessage() for r in caplog.records if r.name == services.__name__ and r.getMessage().startswith("skipped ")]
+
+    # The second named attempt emits the first summary. The third queues an
+    # account-level reason and the fourth trips the aggregate in the same minute.
+    for _ in range(4):
+        assert error_code(confirm(client, token, SHORT_PASSWORD)) == "PASSWORD_INVALID"
+    assert len(summaries()) == 1 and "named_aggregate_cap_hit" not in summaries()[0]
+    assert error_code(confirm(client, "synthetic-unknown", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    clock.advance(60)
+    assert error_code(confirm(client, "synthetic-unknown", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    lines = summaries()
+    assert len(lines) == 2 and "skipped 3 audit row(s)" in lines[1]
+    assert "reason=account " in lines[1] and "named_aggregate_cap_hit" in lines[1]
+    clock.advance(60)
+    assert error_code(confirm(client, "synthetic-unknown", GOOD_PASSWORD)) == "VALIDATION_FAILED"
+    assert len(summaries()) == 3 and "named_aggregate_cap_hit" not in summaries()[2]
 
 
 def test_the_tally_caps_the_detail_it_keeps():
     """The real details are short, so only a direct test shows the cap: a first-event detail of a
     megabyte is kept as at most `_TRACE_REPORT_DETAIL_MAX` characters."""
     tally = services._SuppressedTally()
-    _count, first, _accounts = tally.note("x" * 1_000_000)
+    _count, first, _accounts, _aggregate_hit = tally.note("x" * 1_000_000)
     assert len(first) == services._TRACE_REPORT_DETAIL_MAX
     tally.note("y" * 1_000_000)
     assert len(tally._first) <= services._TRACE_REPORT_DETAIL_MAX
@@ -2271,7 +2525,7 @@ def test_the_skip_report_names_at_most_twenty_distinct_accounts():
         tally.note("again", account)
     assert len(tally._accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX
     tally._last_report = float("-inf")
-    count, first, accounts = tally.note("last", 3)
+    count, first, accounts, _aggregate_hit = tally.note("last", 3)
     assert len(accounts) <= services._TRACE_REPORT_ACCOUNTS_MAX and accounts == sorted(accounts)
     assert count == 101
 

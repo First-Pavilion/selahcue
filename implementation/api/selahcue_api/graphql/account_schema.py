@@ -375,6 +375,7 @@ class AccountMutation:
     def register_customer_user(
         self, info: strawberry.Info, input: RegisterCustomerUserInput
     ) -> RegisterPayload:
+        request = getattr(getattr(info, "context", None), "request", None)
         result = register_customer_user(
             RegisterCustomerUserData(
                 idempotency_key=input.idempotency_key,
@@ -384,7 +385,8 @@ class AccountMutation:
                 country=input.country,
                 display_name=input.display_name,
                 timezone=input.timezone,
-            )
+            ),
+            client_ip=client_ip(request) if request is not None else "",
         )
         return RegisterPayload(accepted=result.accepted)
 
