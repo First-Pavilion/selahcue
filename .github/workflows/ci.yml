@@ -1921,6 +1921,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
+        id: node_setup
         with:
           node-version: "22"
           cache: npm
@@ -1934,10 +1935,12 @@ jobs:
       # externally-managed environment. Measured: the 29-code-point whitespace set is
       # identical under 3.12 and 3.14.5, so this pin is a guard, not a fix.
       - uses: actions/setup-python@v7
+        id: python_setup
         with:
           python-version: "3.14"
       - name: Install
         run: npm ci
+        id: npm_install
       - name: Installer publication offline self-test
         working-directory: .
         run: python3 scripts/publish_installers.py --self-test
@@ -1950,6 +1953,8 @@ jobs:
       # runs from the repo root, so this step overrides the job's default
       # `working-directory`. It never installs; the step above did.
       - name: Type-check, lint, test, build (make marketing-check)
+        id: marketing_build
+        if: ${{ !cancelled() && steps.npm_install.outcome == 'success' }}
         working-directory: .
         run: make marketing-check
       # The client/server predicate mirrors, re-derived from the runtimes that decide:
@@ -1960,6 +1965,8 @@ jobs:
       # elsewhere on a runner cannot downgrade this gate to a skip. A skip that reads as
       # a pass is how the email mirror shipped with two wrong verdicts (PR #17, round 3).
       - name: Install the pinned Django for the mirror check
+        id: django_install
+        if: ${{ !cancelled() && steps.python_setup.outcome == 'success' }}
         run: |
           python3 -m pip install --quiet --upgrade pip
           # Anchored on a version specifier: the project DESCRIPTION in the same file
@@ -1969,6 +1976,7 @@ jobs:
           echo "installing $pin"
           python3 -m pip install --quiet "$pin"
       - name: Client/server mirrors
+        if: ${{ !cancelled() && steps.django_install.outcome == 'success' }}
         env:
           SELAHCUE_MIRRORS_REQUIRE: "1"
         run: npm run test:mirrors
@@ -1977,6 +1985,7 @@ jobs:
       # Chrome into a hard failure — without it the script skips, which on a runner
       # would silently report success while checking nothing.
       - name: Auth page states (headless)
+        if: ${{ !cancelled() && steps.npm_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:states
@@ -1989,16 +1998,19 @@ jobs:
       # engines under test are reproducible; bump them together. REQUIRE=1 makes a missing
       # engine a hard failure instead of a silent skip that reads as a pass.
       - name: Install Playwright (Chromium + WebKit)
+        id: playwright_install
+        if: ${{ !cancelled() && steps.python_setup.outcome == 'success' }}
         run: |
           python3 -m pip install --quiet playwright==1.65.2
           python3 -m playwright install --with-deps chromium webkit
       - name: Responsive sweep (Chromium)
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
         run: python3 scripts/responsive_sweep.py --engine chromium
       - name: Responsive sweep (WebKit)
         id: responsive_webkit
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_SWEEP_REQUIRE: "1"
           DEBUG: "pw:browser"
@@ -2017,7 +2029,7 @@ jobs:
         run: python3 scripts/webkit_crash_journal.py --profile webkit --candidate-source-sha "$CANDIDATE_SOURCE_SHA" --since "$WEBKIT_SWEEP_STARTED_AT" --until "$(date +%s)"
 
       - name: Responsive touch-target and geometry controls (WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.playwright_install.outcome == 'success' }}
         run: >-
           python3 tests/responsive_diagnostic_regression.py
           DiagnosticRegression.test_legal_table_prose_reference_keeps_standalone_touch_controls_checked
@@ -2026,50 +2038,50 @@ jobs:
           DiagnosticLedgerPrivacy
           HostChronologyInertRegression
 
-      # Existing page suites need the built bundle and BOTH installed engines.
-      # Keep failures visible even if an earlier browser suite fails.
+      # The shared component menu check uses the host bundle. Core, Home and Secondary
+      # build their own bundles. These suites all use the installed browser engines.
       - name: Shared components (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:components
       - name: Core pages (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.npm_install.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:core
       - name: Home page (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.npm_install.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:home
       - name: Secondary pages (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.npm_install.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:secondary
 
       - name: Legal source and generated pages agree
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.node_setup.outcome == 'success' }}
         run: npm run check:legal
       - name: Legal pages (full Chromium suite)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: python3 scripts/legal_pages_headless.py --only all
       - name: Public acquisition and route exclusions (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         run: |
           python3 tests/public_acquisition_fixture_regression.py
           python3 tests/public_routes_headless.py --engine both
       - name: Public downloads (Chromium + WebKit)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.marketing_build.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         run: python3 tests/public_downloads_headless.py --engine both
 
       # Build the shipping nginx configuration, then exercise real response headers in
       # both installed browsers. A preview server cannot verify nginx CSP inheritance.
       - name: Build and verify production security headers
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.node_setup.outcome == 'success' && steps.playwright_install.outcome == 'success' }}
         run: |
           docker build --pull -f Dockerfile -t selahcue-marketing-csp ../..
           docker run --detach --rm --name marketing-csp -p 127.0.0.1:4188:80 selahcue-marketing-csp

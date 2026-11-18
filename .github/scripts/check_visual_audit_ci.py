@@ -81,11 +81,19 @@ def check(root: Path) -> None:
         raise ValueError("make ci does not call the shared visual-audit-check target")
     scripts = json.loads((root / "implementation/marketing/package.json").read_text())["scripts"]
     marketing = workflow["jobs"]["marketing"]
-    for suite in ("components", "core", "home", "secondary"):
+    for suite, provider in (
+        ("components", "marketing_build"),
+        ("core", "npm_install"),
+        ("home", "npm_install"),
+        ("secondary", "npm_install"),
+    ):
         steps = [s for s in marketing["steps"] if s.get("run") == f"npm run test:{suite}"]
-        if (len(steps) != 1 or steps[0].get("env", {}).get("SELAHCUE_HEADLESS_REQUIRE") != "1"
-                or steps[0].get("if") != "${{ !cancelled() }}"):
-            raise ValueError(f"Missing required-engine/not-cancelled browser suite: {suite}")
+        if len(steps) != 1 or steps[0].get("env", {}).get("SELAHCUE_HEADLESS_REQUIRE") != "1":
+            raise ValueError(f"Missing required-engine browser suite: {suite}")
+        guard = ("${{ !cancelled() && steps." + provider + ".outcome == 'success' "
+                 "&& steps.playwright_install.outcome == 'success' }}")
+        if steps[0].get("if") != guard:
+            raise ValueError(f"Unexpected cancellation or prerequisite guard for browser suite: {suite}")
         if "--engine both" not in scripts[f"test:{suite}"]:
             raise ValueError(f"Both browser engines are required: {suite}")
     print(f"Visual CI wiring: {len(CASES) * 2} ordered push/PR path cases and shared/browser gates pass")

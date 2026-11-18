@@ -1888,18 +1888,21 @@ esac
                 path = tmp / name
                 path.write_text(fake)
                 path.chmod(0o700)
-            for gate, diagnostic, witness, statuses in (
+            for gate, diagnostic, witness, statuses, guard in (
                 (
                     "Test (workspace, incl. GPU parity where an adapter exists)",
                     "Collect existing GPU parity crash summaries",
                     "cargo",
                     (0, 101, 2),
+                    "!cancelled()",
                 ),
                 (
                     "Responsive sweep (WebKit)",
                     "Collect existing WebKit crash summaries",
                     "sweep",
                     (0, 101, 2, 1, 3),
+                    "!cancelled() && steps.marketing_build.outcome == 'success' "
+                    "&& steps.playwright_install.outcome == 'success'",
                 ),
             ):
                 block, command = self.step(gate)
@@ -1909,7 +1912,8 @@ esac
                 command = expression.sub(lambda match: match[1].replace("''", "'"), command)
                 self.assertNotIn("${{", command)
                 self.assertNotIn("shell:", block)
-                self.assertIn("if: ${{ !cancelled() }}", block)
+                conditions = [line for line in block.splitlines() if line.startswith("        if: ")]
+                self.assertEqual(conditions, ["        if: ${{ " + guard + " }}"], gate)
                 self.assertNotIn("continue-on-error:", block)
                 for code in statuses:
                     output.write_text("")
