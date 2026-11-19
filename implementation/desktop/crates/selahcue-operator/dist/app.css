@@ -5213,9 +5213,15 @@
         border-radius: 8px;
       }
 
-      .clear-layer-menu button:hover {
+      .clear-layer-menu button:hover:not(:disabled) {
         background: var(--sc-surface);
         border-color: var(--sc-border-strong);
+      }
+
+      /* Review I2: unavailable while a deck slide is live (deck slides clear as a whole). */
+      .clear-layer-menu button:disabled {
+        color: var(--sc-text-secondary);
+        cursor: not-allowed;
       }
 
       .clear-layer-name {

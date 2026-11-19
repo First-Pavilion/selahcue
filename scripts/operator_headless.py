@@ -2093,6 +2093,14 @@ EXPECTED_MIN_CHECKS = 3057
 # once (+ setup/engaged/restore, 4); a mouse selection leaves page focus and → is Next again
 # (2); Tab out closes the menu (+ setup, 2). The round-1 held-back loop dropped B (-1).
 EXPECTED_MIN_CHECKS = 3072
+# 3072 -> 3087 (86ajpy59e final fix wave): measured, 0 FAIL. +17 / -2. I1: a mouse-opened
+# menu with focus on <body> no longer holds keys back — →, Space and Enter each close it and
+# invoke next / next / GO LIVE once (3 checks + 3 setups), a trigger-focus control still holds →
+# back (+ setup), and the Esc,Esc setup is re-stated (-2: the old held-back-on-body check and
+# its setup). I2: with a deck slide live, Background / Lower third / Logo are :disabled with
+# cursor:not-allowed and a stated reason, Text stays enabled, a disabled entry invokes nothing,
+# '.' focuses Text and ↓ skips the disabled ones, plus an enabled-again control (8).
+EXPECTED_MIN_CHECKS = 3087
 
 
 def find_chrome():
@@ -16450,6 +16458,14 @@ DRIVER = r"""
       }
       ok(el("surface-console").classList.contains("active"),
          "86ajpy59e (premise): the Live Console is the active surface, where Backspace is bound");
+      // Earlier deck checks leave an authored slide live in the stub; this block's plain-item
+      // picker checks need a title+body slide live (review I2 disables entries on a deck slide),
+      // so pin it off BEFORE any command here (an in-flight reply re-renders the V it cloned)
+      // and restore it at the end.
+      var plcOrigHadAuth = Object.prototype.hasOwnProperty.call(V, "live_authored_id");
+      var plcOrigAuth = V.live_authored_id;
+      V.live_authored_id = null;
+      lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
       var plcClears = function(){ return window.__calls.filter(function(c){ return c.cmd === "clear" || c.cmd === "clear_layer"; }); };
       var plcBs = function(target){
         var ev = new KeyboardEvent("keydown", {key:"Backspace", code:"Backspace", bubbles:true, cancelable:true});
@@ -16619,17 +16635,35 @@ DRIVER = r"""
         ok(!window.__calls.slice(plcEscFrom).some(function(c){ return c.cmd === "clear"; }),
            "86ajpy59e: Esc, Esc with the menu open (keyboard-opened) records NO clear — the first Esc never arms Clear All");
         plcKey(document.body, "Shift"); // disarm the lone second tap so later checks start clean
-        // Esc, Esc with a MOUSE-opened menu and focus left on <body> (WKWebView does not focus a
-        // clicked button, so the menu never holds focus on that path).
-        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
-        plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
-        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        // Review I1 — a MOUSE-opened menu with focus left on <body> (WKWebView does not focus a
+        // clicked button) must not leave the transport dead on air: the key closes the menu and
+        // falls through to its normal action, exactly once.
+        var plcMouseOpen = function(){
+          if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+          plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+          if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+          return getComputedStyle(plcMenu).display !== "none" && document.activeElement === document.body;
+        };
+        [["ArrowRight", ["next"], "\u2192 / Next"], [" ", ["next"], "Space / Next"],
+         ["Enter", ["go_live", "present_plan_deck_slide"], "Enter / GO LIVE"]].forEach(function(row){
+          ok(plcMouseOpen(), "86ajpy59e I1 (setup): a mouse-style click opens the menu with focus left on <body> (" + row[2] + ")");
+          var from = window.__calls.length;
+          plcKey(document.body, row[0]);
+          var got = window.__calls.slice(from).filter(function(c){ return row[1].indexOf(c.cmd) >= 0; });
+          ok(got.length === 1 && getComputedStyle(plcMenu).display === "none" && plcBtn.getAttribute("aria-expanded") === "false",
+             "86ajpy59e I1: with a mouse-opened menu and focus on <body>, " + row[2] + " closes the menu and invokes " + row[1][0] + " exactly once (" + JSON.stringify(got) + ")");
+        });
+        // Control: with focus ON the trigger (Blink focuses a clicked button), live keys are
+        // still held back and the menu stays open.
+        ok(plcMouseOpen(), "86ajpy59e I1 (setup): menu reopened for the trigger-focus control");
+        plcBtn.focus();
+        var plcTrigFrom = window.__calls.length;
+        var plcTrigEv = plcKey(plcBtn, "ArrowRight");
+        ok(plcLive(plcTrigFrom).length === 0 && plcTrigEv.defaultPrevented && getComputedStyle(plcMenu).display !== "none",
+           "86ajpy59e I1 (control): with focus on the CLEAR \u25be trigger, \u2192 is held back and the menu stays open (" + JSON.stringify(plcLive(plcTrigFrom)) + ")");
+        plcBtn.blur();
         ok(getComputedStyle(plcMenu).display !== "none" && document.activeElement === document.body,
-           "86ajpy59e (setup): a mouse-style click opens the menu with focus left on <body>");
-        var plcFrom2 = window.__calls.length;
-        var plcPrev2 = ["ArrowLeft", "ArrowRight", "Backspace"].map(function(k){ return plcKey(document.body, k).defaultPrevented; });
-        ok(plcLive(plcFrom2).length === 0 && getComputedStyle(plcMenu).display !== "none" && plcPrev2.every(Boolean),
-           "86ajpy59e: with a mouse-opened menu and focus on <body>, ←/→/Backspace invoke nothing and are consumed (" + JSON.stringify(plcLive(plcFrom2)) + ", prevented " + JSON.stringify(plcPrev2) + ")");
+           "86ajpy59e (setup): the menu is open with focus on <body> for the Esc, Esc check");
         var plcEscFrom2 = window.__calls.length;
         plcKey(document.body, "Escape");
         ok(getComputedStyle(plcMenu).display === "none", "86ajpy59e: Esc closes the mouse-opened menu even with focus on <body>");
@@ -16685,6 +16719,39 @@ DRIVER = r"""
         ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }) && plcBtn.getAttribute("aria-expanded") === "false",
            "86ajpy59e: a click outside closes the layer menu (cleanup)");
         delete V.cleared_layers;
+        // Review I2 — while a deck (authored) slide is live only Text can clear it (as a whole),
+        // so Background / Lower third / Logo are DISABLED: the real :disabled state, a computed
+        // not-allowed cursor and a stated reason — not a class.
+        var plcHadAuth = Object.prototype.hasOwnProperty.call(V, "live_authored_id");
+        var plcPrevAuth = V.live_authored_id;
+        V.live_authored_id = 101;
+        lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
+        var plcOff = ["background", "lower-third", "logo"].map(function(t){ return plcMenu.querySelector('[data-layer="' + t + '"]'); });
+        var plcTxt = plcMenu.querySelector('[data-layer="text"]');
+        ok(plcOff.every(function(b){ return b && b.matches(":disabled") && b.hasAttribute("disabled"); }),
+           "86ajpy59e I2: with a deck slide live, Background / Lower third / Logo are :disabled (disabled attribute)");
+        ok(plcOff.every(function(b){ return getComputedStyle(b).cursor === "not-allowed"; }),
+           "86ajpy59e I2: the disabled entries compute cursor:not-allowed (" + plcOff.map(function(b){ return getComputedStyle(b).cursor; }).join(",") + ")");
+        ok(plcOff.every(function(b){ return /deck slides clear as a whole/i.test(b.title) && /deck slides clear as a whole/i.test(b.getAttribute("aria-label") || ""); }),
+           "86ajpy59e I2: each disabled entry states why in its title and accessible name (\"" + (plcOff[0] ? plcOff[0].title : "") + "\")");
+        ok(!!plcTxt && !plcTxt.matches(":disabled") && getComputedStyle(plcTxt).cursor !== "not-allowed",
+           "86ajpy59e I2: the Text entry stays enabled while a deck slide is live");
+        var plcOffFrom = window.__calls.length;
+        plcOff.forEach(function(b){ b.click(); });
+        ok(!window.__calls.slice(plcOffFrom).some(function(c){ return c.cmd === "clear_layer"; }),
+           "86ajpy59e I2: activating a disabled entry invokes no clear_layer");
+        document.body.dispatchEvent(new KeyboardEvent("keydown", {key:".", code:"Period", bubbles:true, cancelable:true}));
+        ok(getComputedStyle(plcMenu).display !== "none" && document.activeElement === plcTxt,
+           "86ajpy59e I2: '.' with a deck slide live moves focus to the first ENABLED entry (Text)");
+        plcKey(document.activeElement, "ArrowDown");
+        ok(document.activeElement === plcTxt, "86ajpy59e I2: \u2193 skips the disabled entries (focus stays on Text, the only enabled one)");
+        plcKey(document.activeElement, "Escape");
+        plcKey(document.body, "Shift");
+        if (plcHadAuth) V.live_authored_id = plcPrevAuth; else delete V.live_authored_id;
+        lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
+        ok(plcOff.every(function(b){ return !b.matches(":disabled") && !b.hasAttribute("title"); }),
+           "86ajpy59e I2 (control): with no deck slide live every entry is enabled again, with no reason title");
+        if (plcOrigHadAuth) V.live_authored_id = plcOrigAuth; else delete V.live_authored_id;
         lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
       }
 

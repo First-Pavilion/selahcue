@@ -424,11 +424,21 @@
         // 86ajpy59e — each CLEAR ▾ entry reflects view.cleared_layers. The host omits the field
         // while nothing is cleared (and an older host never sends it), so missing means [].
         const clearedLayers = Array.isArray(view.cleared_layers) ? view.cleared_layers : [];
+        // Review I2: a deck (authored) slide has no per-layer model — only Text clears it, as a
+        // whole (the host acknowledges any other layer and changes nothing). So while one is live
+        // the Background / Lower third / Logo entries are disabled, with the reason as a title.
+        const deckLive = view.live_authored_id != null;
         document.querySelectorAll("#clear-layer-menu [data-layer]").forEach((b) => {
           const cleared = clearedLayers.indexOf(b.dataset.layer) >= 0;
           b.classList.toggle("cleared", cleared);
           const name = b.dataset.name || b.dataset.layer;
-          b.setAttribute("aria-label", cleared ? name + " layer: cleared" : "Clear the " + name.toLowerCase() + " layer");
+          const off = deckLive && b.dataset.layer !== "text";
+          b.disabled = off;
+          if (off) b.title = "Deck slides clear as a whole";
+          else b.removeAttribute("title");
+          b.setAttribute("aria-label", off
+            ? name + " layer: unavailable. Deck slides clear as a whole"
+            : cleared ? name + " layer: cleared" : "Clear the " + name.toLowerCase() + " layer");
         });
         // The trigger keeps the cleared state visible while the menu is closed (fix round 2):
         // a neutral outline chip naming the cleared layer(s) — never a red fill.
@@ -3584,13 +3594,14 @@
       const clearLayerMenu = document.getElementById("clear-layer-menu");
       const clearLayerItems = () =>
         Array.prototype.slice.call(clearLayerMenu ? clearLayerMenu.querySelectorAll("[data-layer]") : []);
+      const clearLayerEnabledItems = () => clearLayerItems().filter((b) => !b.disabled);
       const clearLayerMenuOpen = () => !!clearLayerMenu && !clearLayerMenu.hidden;
       const openClearLayerMenu = (focusFirst) => {
         if (!clearLayerMenu || !clearLayerBtn) return;
         clearLayerMenu.hidden = false;
         clearLayerBtn.setAttribute("aria-expanded", "true");
         if (focusFirst) {
-          const first = clearLayerItems()[0];
+          const first = clearLayerEnabledItems()[0];
           if (first) first.focus();
         }
       };
@@ -3644,7 +3655,8 @@
       // keydown handler's open-menu branch, so the verse cursor never moves instead).
       const clearLayerMenuNav = (e) => {
         if (!clearLayerMenuOpen() || !clearLayerMenu.contains(e.target)) return false;
-        const items = clearLayerItems();
+        const items = clearLayerEnabledItems();
+        if (!items.length) return false;
         const i = items.indexOf(e.target);
         let next = -1;
         if (e.key === "ArrowDown") next = (i + 1) % items.length;
@@ -4481,12 +4493,15 @@
           }
         }
         // 86ajpy59e — the CLEAR ▾ layer menu is a popover too, so it follows the same rule. While
-        // it is open only its own keys act: Esc is CONSUMED (closes it, disarms, never arms the
-        // double-Esc Clear All — however the menu was opened, mouse or keyboard, and wherever focus
-        // is), ↑/↓/Home/End move between entries, Enter/Space activate the focused entry natively,
-        // Tab may leave. Every other canonical live key (←/→, Enter/Space → GO LIVE/Next, B,
-        // Backspace, `.`) is held back. Placed before the console-only guard because the footer —
-        // and so this menu — is on every surface. The emergency chords above still pierce.
+        // it is open, Esc is CONSUMED (closes it, disarms, never arms the double-Esc Clear All —
+        // however the menu was opened, mouse or keyboard, and wherever focus is). Plain B is never
+        // dead. Every other key is held back ONLY while focus is inside the menu or on its trigger
+        // (there ↑/↓/Home/End move between entries, Enter/Space activate the focused control
+        // natively, Tab may leave). With focus anywhere else — a mouse-opened menu leaves it on
+        // the trigger in Blink but on <body> in WKWebView — the menu closes and the key falls
+        // through, so → / Space / Enter still drive Next / GO LIVE on air (review I1). Placed
+        // before the console-only guard because the footer — and so this menu — is on every
+        // surface. The emergency chords above still pierce.
         if (clearLayerMenuOpen()) {
           disarm();
           if (e.key === "Escape") {
@@ -4495,9 +4510,11 @@
             closeClearLayerMenu(true);
             return;
           }
+          const inMenu = e.target instanceof Node &&
+            (clearLayerMenu.contains(e.target) || e.target === clearLayerBtn);
           // Plain B is the emergency key and is never dead: close the menu, then fall through to
-          // the normal Blackout handling below (fix round 2).
-          if ((e.key === "b" || e.key === "B") && !mod && !e.altKey) {
+          // the normal Blackout handling below (fix round 2). Outside the menu, so does every key.
+          if (!inMenu || ((e.key === "b" || e.key === "B") && !mod && !e.altKey)) {
             closeClearLayerMenu(false);
           } else {
             if (clearLayerMenuNav(e)) return;
