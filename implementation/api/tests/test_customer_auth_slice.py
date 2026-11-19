@@ -41,6 +41,7 @@ from django.core.management.base import CommandError
 from django.db import IntegrityError, OperationalError, connection, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
+from graphql import GraphQLError
 from redis import Redis
 
 from selahcue_api import settings as project_settings
@@ -64,6 +65,7 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLife
 from selahcue_api.apps.throttling import circuit, guards
 from selahcue_api.apps.throttling import services as throttle_services
 from selahcue_api.apps.throttling.services import ip_bucket_identity
+from selahcue_api.graphql import account_schema
 from selahcue_api.graphql.context import ActorContext, ActorKind
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
@@ -442,6 +444,91 @@ def test_signup_rejects_invalid_profile_before_database_access(
     assert not response.cookies
     assert [model.objects.count() for model in models] == row_counts
     assert [len(messages) for messages in sent] == email_counts
+
+
+@pytest.mark.django_db
+def test_signup_invalid_inline_profile_keeps_input_out_of_logs(client, sender, caplog):
+    email = "local-signup-log-marker@example.test"
+    password = "synthetic-signup-log-marker"
+    timezone = "Invalid/SignupLogMarker"
+    idempotency_key = "signup-log-marker-01"
+    query = (
+        'mutation { registerCustomerUser(input: {'
+        f'idempotencyKey: "{idempotency_key}", email: "{email}", password: "{password}", '
+        f'orgName: "Local Signup", country: "NG", timezone: "{timezone}"'
+        '}) { accepted } }'
+    )
+    models = (CustomerOrg, CustomerUser, CredentialToken, AuditEvent)
+    row_counts = [model.objects.count() for model in models]
+
+    framework_logger = logging.getLogger("strawberry.execution")
+    attempted_source_log = False
+
+    def block_source_record(record):
+        nonlocal attempted_source_log
+        if isinstance(record.msg, GraphQLError) and record.msg.nodes:
+            attempted_source_log = True
+            return False
+        return True
+
+    # Detect the unsafe record at the logger before any handler can render its source.
+    framework_logger.addFilter(block_source_record)
+    try:
+        with caplog.at_level(logging.INFO), _block_signup_queries():
+            response = post_account(client, query)
+    finally:
+        framework_logger.removeFilter(block_source_record)
+
+    assert response.status_code == 200
+    assert body(response) == {
+        "data": None,
+        "errors": [{"message": "The request is invalid.", "extensions": {"code": "VALIDATION_FAILED"}}],
+    }
+    assert not response.cookies
+    assert [model.objects.count() for model in models] == row_counts
+    assert not (sender.verify_tokens or sender.reset_tokens or sender.exists_notifications)
+    assert not attempted_source_log, "Expected signup validation must not emit a source-bearing log record."
+    assert all(marker not in caplog.text for marker in (email, password, timezone, idempotency_key))
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("failure", "public_code", "logs_traceback"),
+    [
+        pytest.param(RuntimeError("synthetic signup failure"), "VALIDATION_FAILED", True, id="unexpected"),
+        pytest.param(SafeAPIError(ErrorCode.INTERNAL), "INTERNAL", True, id="typed-internal"),
+        pytest.param(
+            GraphQLError("synthetic validation lookalike", extensions={"code": "VALIDATION_FAILED"}),
+            "VALIDATION_FAILED", True, id="untyped-validation",
+        ),
+        pytest.param(
+            GraphQLError("synthetic budget lookalike", extensions={"code": "RATE_LIMITED"}),
+            "RATE_LIMITED", True, id="untyped-rate-limit",
+        ),
+        pytest.param(SafeAPIError(ErrorCode.RATE_LIMITED), "RATE_LIMITED", False, id="typed-rate-limit"),
+    ],
+)
+def test_signup_preserves_framework_logging_for_unexpected_failures(
+    client, monkeypatch, caplog, failure, public_code, logs_traceback
+):
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(account_schema, "register_customer_user", fail)
+    with caplog.at_level(logging.ERROR, logger="strawberry.execution"), _block_signup_queries():
+        response = post_account(client, REGISTER, register_input())
+
+    assert response.status_code == 200
+    assert error_code(response) == public_code
+    errors = [
+        record for record in caplog.records
+        if record.name == "strawberry.execution" and record.levelno >= logging.ERROR
+    ]
+    assert len(errors) == int(logs_traceback)
+    if logs_traceback:
+        assert errors[0].exc_info is not None
+        assert errors[0].exc_info[1] is failure
+        assert errors[0].exc_info[2] is not None
 
 
 @pytest.mark.django_db

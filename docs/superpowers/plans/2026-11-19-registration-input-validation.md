@@ -34,3 +34,9 @@ Base `306a8f3a4eb9cc4a388af0b6091f52ad947f14b9`, branch `codex/registration-inpu
 ## Review and merge
 
 Code/spec, security and performance task review are required for this request-path change. Use source/query/ordering evidence for performance; no latency promise or timing benchmark is part of acceptance on the paged host. Then most-capable final whole-branch QA review, bounded remediation and re-review. Root verifies current live main, reviewed head and merge tree; merge under standing authority, then move only this ticket to QA with readback. Native release qualification remains separate.
+
+### Fix expected validation logging
+
+- [x] Add a guarded regression for a rejected signup with synthetic inline fields. Confirm the validation rejection reaches the framework log guard before repair. Confirm typed rate limits, untyped code matches and unexpected errors keep their existing handling.
+- [x] In the registration resolver, send typed validation errors through the existing query-free account-field handler. Preserve the public error and all other error paths.
+- [x] Rerun the logging regression, guarded profile cases, valid signup and admission controls. Retain both runs for scoped re-review.
