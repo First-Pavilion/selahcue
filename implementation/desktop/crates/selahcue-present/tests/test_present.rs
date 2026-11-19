@@ -5,8 +5,8 @@
 use selahcue_engine::analysis::analyze_flashes;
 use selahcue_engine::raster::FrameBuffer;
 use selahcue_present::{
-    AuthoredSlide, Background, Element, Fit, ImageBackground, LayerMask, MediaRef, Presenter, Rgba,
-    Slide, SlideId, StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
+    AuthoredSlide, Background, Element, Fit, ImageBackground, LayerMask, LiveLayer, MediaRef,
+    Presenter, Rgba, Slide, SlideId, StageDisplay, StageTheme, TextAlign, Theme, TimerView, VAlign,
 };
 use std::time::{Duration, Instant};
 
@@ -828,4 +828,153 @@ fn scripture_follow_burst_with_an_image_theme_is_within_budget() {
         p.live_output().average_luminance() > 1e-6,
         "the last followed verse is actually on air"
     );
+}
+
+// ---- per-layer clear (live-only cleared layers) ----
+
+fn layer_slide() -> Slide {
+    Slide::new("Song 1", ["line one", "line two"])
+}
+
+fn raster_of(slide: &Slide, theme: &Theme, mask: LayerMask) -> Vec<u8> {
+    selahcue_engine::raster::render(&selahcue_present::compose_slide_masked(
+        slide, theme, 320, 180, mask,
+    ))
+    .bytes()
+    .to_vec()
+}
+
+const TEXT_OFF: LayerMask = LayerMask {
+    text: false,
+    ..LayerMask::ALL
+};
+
+fn live_with_text_cleared() -> Presenter {
+    let mut p = presenter();
+    p.stage(layer_slide());
+    assert!(p.go_live());
+    assert!(p.clear_live_layer(LiveLayer::Text));
+    p
+}
+
+#[test]
+fn clear_text_layer_keeps_background_on_live() {
+    let mut p = presenter();
+    p.stage(layer_slide());
+    assert!(p.go_live());
+    let full = p.live_output().bytes().to_vec();
+    assert!(p.clear_live_layer(LiveLayer::Text));
+    let expected = raster_of(&layer_slide(), &Theme::dark(), TEXT_OFF);
+    assert_eq!(p.live_output().bytes(), expected.as_slice());
+    assert_ne!(p.live_output().bytes(), full.as_slice());
+    assert!(!is_black(p.live_output()), "background still renders");
+    assert_eq!(p.cleared_live_layers(), vec![LiveLayer::Text]);
+}
+
+#[test]
+fn clear_layer_leaves_preview_untouched() {
+    let mut p = presenter();
+    p.stage(layer_slide());
+    assert!(p.go_live());
+    let before = p.preview_output().bytes().to_vec();
+    assert!(p.clear_live_layer(LiveLayer::Text));
+    assert_eq!(p.preview_output().bytes(), before.as_slice());
+}
+
+#[test]
+fn go_live_resets_cleared_layers() {
+    let mut p = live_with_text_cleared();
+    p.stage(Slide::new("Song 2", ["other"]));
+    assert!(p.go_live());
+    assert!(p.cleared_live_layers().is_empty());
+    let full = raster_of(
+        &Slide::new("Song 2", ["other"]),
+        &Theme::dark(),
+        LayerMask::ALL,
+    );
+    assert_eq!(p.live_output().bytes(), full.as_slice());
+}
+
+#[test]
+fn cleared_layer_survives_theme_and_mask_changes() {
+    let mut p = live_with_text_cleared();
+    let other = Theme::classic();
+    p.set_theme(other.clone());
+    assert_eq!(
+        p.live_output().bytes(),
+        raster_of(&layer_slide(), &other, TEXT_OFF).as_slice()
+    );
+    let t = Theme::dark();
+    p.set_live_theme(Some(t.clone()));
+    assert_eq!(
+        p.live_output().bytes(),
+        raster_of(&layer_slide(), &t, TEXT_OFF).as_slice()
+    );
+    p.set_main_screen_theme(Some(other.clone()));
+    assert_eq!(
+        p.live_output().bytes(),
+        raster_of(&layer_slide(), &other, TEXT_OFF).as_slice()
+    );
+    p.set_main_layer_mask(LayerMask {
+        logo: false,
+        ..LayerMask::ALL
+    });
+    assert_eq!(
+        p.live_output().bytes(),
+        raster_of(
+            &layer_slide(),
+            &other,
+            LayerMask {
+                text: false,
+                logo: false,
+                ..LayerMask::ALL
+            }
+        )
+        .as_slice()
+    );
+}
+
+#[test]
+fn secondary_screen_drops_cleared_layer() {
+    let p = live_with_text_cleared();
+    let fb = p.compose_screen_live(None, LayerMask::ALL);
+    assert_eq!(
+        fb.bytes(),
+        raster_of(&layer_slide(), &Theme::dark(), TEXT_OFF).as_slice()
+    );
+}
+
+#[test]
+fn clear_layer_with_nothing_live_is_noop() {
+    let mut p = presenter();
+    assert!(!p.clear_live_layer(LiveLayer::Text));
+    assert!(p.cleared_live_layers().is_empty());
+    assert!(is_black(p.live_output()));
+}
+
+#[test]
+fn clear_layer_on_authored_slide_is_noop() {
+    let mut p = presenter();
+    let mut slide = AuthoredSlide::new(SlideId(7));
+    slide.background = Some(Background::Solid(Rgba::rgb(200, 30, 30)));
+    assert!(p.present_authored(&slide, &Theme::dark()));
+    let before = p.live_output().bytes().to_vec();
+    assert!(!p.clear_live_layer(LiveLayer::Text));
+    assert_eq!(p.live_output().bytes(), before.as_slice());
+    assert!(p.cleared_live_layers().is_empty());
+}
+
+#[test]
+fn clear_live_resets_cleared_layers() {
+    let mut p = live_with_text_cleared();
+    p.clear_live();
+    assert!(p.cleared_live_layers().is_empty());
+}
+
+#[test]
+fn live_layer_tags_round_trip() {
+    for l in LiveLayer::ALL {
+        assert_eq!(LiveLayer::from_tag(l.tag()), Some(l));
+    }
+    assert_eq!(LiveLayer::from_tag("timer"), None);
 }

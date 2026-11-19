@@ -8,7 +8,7 @@
 //!
 //! [`go_live`]: Presenter::go_live
 
-use crate::compose::{compose_authored_slide, compose_slide_masked, LayerMask};
+use crate::compose::{compose_authored_slide, compose_slide_masked, LayerMask, LiveLayer};
 use crate::deck::AuthoredSlide;
 use crate::health::OutputHealth;
 use crate::slide::Slide;
@@ -63,6 +63,10 @@ pub struct Presenter {
     /// category (hiding a layer never blanks the frame — NFR-024). Secondary audience screens
     /// carry their own mask, passed per call to [`Presenter::compose_screen_live`].
     main_layer_mask: LayerMask,
+    /// Layers the operator has cleared on the LIVE surface only (per-layer clear). Live-only and
+    /// transient: never persisted, reset by every new live content, and bounded by the four
+    /// layer flags. Preview ignores it.
+    live_cleared: LayerMask,
     /// Fault/recovery record for the LIVE surface (NFR-024 observability).
     ///
     /// Every live `apply` is routed through [`Presenter::apply_live`], which folds the
@@ -97,6 +101,7 @@ impl Presenter {
             live_authored_next: None,
             main_screen_theme: None,
             main_layer_mask: LayerMask::ALL,
+            live_cleared: LayerMask::NONE,
             health: OutputHealth::default(),
         }
     }
@@ -205,6 +210,7 @@ impl Presenter {
         self.live_slide = Some(slide);
         self.live_theme = self.staged_theme.clone();
         self.live_authored = None;
+        self.live_cleared = LayerMask::NONE;
         self.live_authored_next = None;
         true
     }
@@ -237,6 +243,7 @@ impl Presenter {
         self.live_slide = None;
         self.live_theme = None;
         self.live_authored = Some(slide.clone());
+        self.live_cleared = LayerMask::NONE;
         // A fresh present resets any stale coming-slide; the operator re-supplies it via
         // `set_authored_next` (the new slide may be last-in-deck, so the default is "no next").
         self.live_authored_next = None;
@@ -273,7 +280,7 @@ impl Presenter {
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
-                self.main_layer_mask,
+                self.live_mask(),
             );
             self.apply_live(EngineCommand::SetScene { frame });
         }
@@ -308,7 +315,7 @@ impl Presenter {
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
-                self.main_layer_mask,
+                self.live_mask(),
             );
             self.apply_live(EngineCommand::SetScene { frame });
         }
@@ -349,7 +356,7 @@ impl Presenter {
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
-                self.main_layer_mask,
+                self.live_mask(),
             );
             self.apply_live(EngineCommand::SetScene { frame });
         }
@@ -360,6 +367,51 @@ impl Presenter {
             let frame = compose_authored_slide(&slide, &theme, self.width, self.height);
             self.apply_live(EngineCommand::SetScene { frame });
         }
+    }
+
+    /// The mask the LIVE main surface composes with: the per-output mask minus any layers the
+    /// operator cleared on Live. Every Live compose site uses this; Preview uses
+    /// `main_layer_mask`.
+    fn live_mask(&self) -> LayerMask {
+        self.main_layer_mask.without(self.live_cleared)
+    }
+
+    /// Clear one layer on the LIVE surface only and recompose Live from the retained slide.
+    /// Returns `false` (no state change) when no title+body slide is live (nothing live, or an
+    /// authored slide). Like [`set_theme`](Self::set_theme) it does not handle blackout; the
+    /// caller re-applies it. Preview is untouched; the clear lasts until new live content.
+    pub fn clear_live_layer(&mut self, layer: LiveLayer) -> bool {
+        let Some(slide) = self.live_slide.clone() else {
+            return false;
+        };
+        match layer {
+            LiveLayer::Background => self.live_cleared.background = true,
+            LiveLayer::Text => self.live_cleared.text = true,
+            LiveLayer::LowerThird => self.live_cleared.lower_third = true,
+            LiveLayer::Logo => self.live_cleared.logo = true,
+        }
+        let frame = compose_slide_masked(
+            &slide,
+            self.effective(self.live_theme.as_ref()),
+            self.width,
+            self.height,
+            self.live_mask(),
+        );
+        self.apply_live(EngineCommand::SetScene { frame });
+        true
+    }
+
+    /// The layers currently cleared on Live, in [`LiveLayer::ALL`] order.
+    pub fn cleared_live_layers(&self) -> Vec<LiveLayer> {
+        LiveLayer::ALL
+            .into_iter()
+            .filter(|l| match l {
+                LiveLayer::Background => self.live_cleared.background,
+                LiveLayer::Text => self.live_cleared.text,
+                LiveLayer::LowerThird => self.live_cleared.lower_third,
+                LiveLayer::Logo => self.live_cleared.logo,
+            })
+            .collect()
     }
 
     /// The `main` audience screen's current per-output layer mask.
@@ -406,7 +458,7 @@ impl Presenter {
             theme,
             self.width,
             self.height,
-            mask,
+            mask.without(self.live_cleared),
         ))
     }
 
@@ -426,7 +478,7 @@ impl Presenter {
                 self.effective(self.live_theme.as_ref()),
                 self.width,
                 self.height,
-                self.main_layer_mask,
+                self.live_mask(),
             );
             self.apply_live(EngineCommand::SetScene { frame });
         }
@@ -445,6 +497,7 @@ impl Presenter {
         self.live_slide = None;
         self.live_theme = None;
         self.live_authored = None;
+        self.live_cleared = LayerMask::NONE;
     }
 
     /// Clear the Preview/staged slot (e.g. session restore establishing "nothing is
@@ -474,6 +527,7 @@ impl Presenter {
         self.apply_live(EngineCommand::SetScene { frame });
         self.live_slide = None;
         self.live_authored = None;
+        self.live_cleared = LayerMask::NONE;
     }
 
     /// The Preview readback (offscreen, FR-013).

@@ -515,6 +515,67 @@ impl LayerMask {
         lower_third: true,
         logo: true,
     };
+
+    /// Every layer hidden (all flags false) — also the "nothing cleared" value of a
+    /// cleared-layers set.
+    pub const NONE: LayerMask = LayerMask {
+        background: false,
+        text: false,
+        lower_third: false,
+        logo: false,
+    };
+
+    /// This mask with every layer flagged in `cleared` switched off (field-wise
+    /// `self.x && !cleared.x`).
+    pub fn without(self, cleared: LayerMask) -> LayerMask {
+        LayerMask {
+            background: self.background && !cleared.background,
+            text: self.text && !cleared.text,
+            lower_third: self.lower_third && !cleared.lower_third,
+            logo: self.logo && !cleared.logo,
+        }
+    }
+}
+
+/// A layer the operator can clear on the Live surface (the `timer` layer is not composed here
+/// and is not clearable).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveLayer {
+    Background,
+    Text,
+    LowerThird,
+    Logo,
+}
+
+impl LiveLayer {
+    /// All four layers, in composite order.
+    pub const ALL: [LiveLayer; 4] = [
+        LiveLayer::Background,
+        LiveLayer::LowerThird,
+        LiveLayer::Logo,
+        LiveLayer::Text,
+    ];
+
+    /// Parse a wire tag; anything else (including `timer`) is `None`.
+    pub fn from_tag(tag: &str) -> Option<LiveLayer> {
+        match tag {
+            "background" => Some(LiveLayer::Background),
+            "text" => Some(LiveLayer::Text),
+            "lower-third" => Some(LiveLayer::LowerThird),
+            "logo" => Some(LiveLayer::Logo),
+            _ => None,
+        }
+    }
+
+    /// The wire tag for this layer.
+    pub fn tag(self) -> &'static str {
+        match self {
+            LiveLayer::Background => "background",
+            LiveLayer::Text => "text",
+            LiveLayer::LowerThird => "lower-third",
+            LiveLayer::Logo => "logo",
+        }
+    }
 }
 
 impl Default for LayerMask {
