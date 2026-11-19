@@ -42,7 +42,15 @@ The plan on file (17 Nov, `docs/superpowers/specs/2026-11-17-public-free-deploym
 ### W3. Desktop features
 - **Auto-update:** the Tauri updater plugin in `selahcue-operator` signs updates with a separate Ed25519 updater key in owner custody. The feed is a JSON file next to `releases/current.json` on DO Spaces, written by `publish_installers.py emit-manifest`. Updates are offered only when nothing is live. The app never restarts during a service. This replaces the disabled "coming soon" button (`dist/index.html:1621,1932`), ticket 86ak0qmza.
 - **Timers:** turn the single `timer: Option<Timer>` (`selahcue-app/src/controller.rs:102`) into a bounded set. **My call:** at most 8 timers. Each timer has a configurable TIME UP message and behaviour. Ticket 86ajpzhbh.
-- **Per-layer clear:** route `ClearLayer` to clearing that one layer rather than clearing everything (`selahcue-desktop/src/main.rs:3925`). Ticket 86ajpy59e.
+- **Per-layer clear (owner kept it in the beta on 2026-11-19, knowing it is the largest W3 item):** the live output is a single slide today (`Presenter.live_slide: Option<Slide>`, `selahcue-present/src/present.rs:34`), so clearing one layer first needs a multi-layer output model. The work:
+  - a persistent base layer plus a small, fixed set of named overlay layers (**my call:** base plus scripture overlay plus lower-third, no more than that) in `selahcue-present`
+  - a `ClearLayer { layer }` LAN command with controller handler and RBAC, read-safe like Clear, changed on both sides of the cross-language wire fixtures
+  - `Backspace` clears the topmost active layer, in the operator webview and the Flutter mirror
+  - a console control to clear one layer
+  - tests that clearing one layer leaves the others on the audience output unchanged
+  - blackout and clear-all keep working exactly as now
+
+  Ticket 86ajpy59e. This touches the live render path, so it gets the full review gate and is part of the 12-hour soak. **If it isn't merged and soaked by the 5 Dec freeze, it is cut from the beta** and `ClearLayer` keeps aliasing to clear-all, rather than going live untested.
 - **Scripture history and favourites:** enable the disabled controls (`dist/settings-scripture.js:14-19`). The history is bounded (**my call:** the last 100 entries). Ticket 86ak0qn2u.
 - **Plan export/import bundles:** import goes through the existing `selahcue-import/src/safe_extract.rs`. Ticket 86ak0qn15.
 - Follow the repo rules: every buffer is bounded with a test that actually fails if the bound breaks, and the LAN protocol fixtures change together with their tests.
