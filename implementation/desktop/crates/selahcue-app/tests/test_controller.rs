@@ -122,6 +122,94 @@ fn clear_and_blackout_act_on_live() {
     assert!(!c.is_blackout());
 }
 
+fn clear_layer(tag: &str) -> Command {
+    Command::ClearLayer { layer: tag.into() }
+}
+
+#[test]
+fn clear_layer_text_keeps_item_live() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let live = c.live_index();
+    assert!(live.is_some());
+    assert!(c.operator_view().cleared_layers.is_empty());
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(
+        c.live_index(),
+        live,
+        "clearing one layer keeps the item live"
+    );
+    assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+}
+
+#[test]
+fn clear_layer_rejects_unknown_and_timer() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    for tag in ["timer", "bogus", ""] {
+        assert_eq!(
+            c.apply(&clear_layer(tag)),
+            ControllerReply::Deny(DenyReason::BadRequest),
+            "{tag:?}"
+        );
+    }
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+#[test]
+fn clear_layer_on_authored_slide_clears_all() {
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&slide).unwrap(),
+            theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+            next_slide_json: None,
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.operator_view().live_authored_id.is_some());
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(c.operator_view().live_authored_id, None, "same as Clear");
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+#[test]
+fn blackout_then_clear_layer_then_unblackout() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.apply(&Command::Blackout { on: true });
+    assert!(live_is_black(&c));
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert!(c.is_blackout(), "clear_layer never changes blackout");
+    assert!(live_is_black(&c), "output stays black during blackout");
+
+    c.apply(&Command::Blackout { on: false });
+    let view = c.operator_view();
+    assert!(!view.blackout);
+    assert_eq!(view.cleared_layers, vec!["text".to_string()]);
+}
+
+#[test]
+fn clear_layer_within_200ms_budget() {
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let t = Instant::now();
+    let reply = c.apply(&clear_layer("text"));
+    let ms = t.elapsed().as_millis();
+    assert_eq!(reply, ControllerReply::Ack);
+    assert!(ms < 200, "clear_layer took {ms}ms (>200ms budget)");
+}
+
 #[test]
 fn get_state_reports_live_item_and_blackout() {
     let (mut c, ids) = controller();

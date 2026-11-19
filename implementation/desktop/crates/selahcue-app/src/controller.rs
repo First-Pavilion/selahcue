@@ -2623,6 +2623,12 @@ impl LiveController {
             live_scripture: self.live_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
             live_authored_id: self.presenter.authored_live_id(),
+            cleared_layers: self
+                .presenter
+                .cleared_live_layers()
+                .into_iter()
+                .map(|l| l.tag().to_string())
+                .collect(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
             // Advertise only translations that can actually be rendered RIGHT NOW. Every bundled
@@ -2783,6 +2789,18 @@ impl LiveController {
 
     /// Stage the plan item at `idx` in Preview at slide 0 (Live is untouched),
     /// advancing the navigation cursor to it.
+    /// Clear the whole live output back to idle (shared by `Clear` and the authored-slide
+    /// `ClearLayer` path).
+    fn clear_all_live(&mut self) -> ControllerReply {
+        self.presenter.clear_live();
+        self.live_idx = None;
+        self.live_scripture = None;
+        self.live_free_text = None;
+        self.live_free_body = Vec::new();
+        self.blackout = false;
+        ControllerReply::Ack
+    }
+
     fn stage_index(&mut self, idx: usize) -> ControllerReply {
         self.stage_slide(idx, 0)
     }
@@ -2975,13 +2993,20 @@ impl LiveController {
                     ControllerReply::Deny(DenyReason::BadRequest)
                 }
             }
-            Command::Clear => {
-                self.presenter.clear_live();
-                self.live_idx = None;
-                self.live_scripture = None;
-                self.live_free_text = None;
-                self.live_free_body = Vec::new();
-                self.blackout = false;
+            Command::Clear => self.clear_all_live(),
+            Command::ClearLayer { layer } => {
+                let Some(layer) = selahcue_present::LiveLayer::from_tag(layer) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                if self.presenter.authored_live_id().is_some() {
+                    // An authored slide has no per-layer model: behave exactly like Clear.
+                    return self.clear_all_live();
+                }
+                self.presenter.clear_live_layer(layer);
+                // Re-apply blackout (as the theme-switch paths do); `self.blackout` is untouched.
+                if self.blackout {
+                    self.presenter.blackout(true);
+                }
                 ControllerReply::Ack
             }
             Command::Blackout { on } => {
