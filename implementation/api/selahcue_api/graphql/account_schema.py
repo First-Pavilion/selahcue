@@ -43,7 +43,7 @@ _logger = logging.getLogger(__name__)
 
 
 class _AccountFieldError(SafeAPIError):
-    """Only new account fields use bounded, query-free fault reporting."""
+    """Account field error with bounded, query-free fault reporting."""
 
     def __init__(self, code: ErrorCode, field: str):
         super().__init__(code)
@@ -376,18 +376,24 @@ class AccountMutation:
         self, info: strawberry.Info, input: RegisterCustomerUserInput
     ) -> RegisterPayload:
         request = getattr(getattr(info, "context", None), "request", None)
-        result = register_customer_user(
-            RegisterCustomerUserData(
-                idempotency_key=input.idempotency_key,
-                email=input.email,
-                password=input.password,
-                org_name=input.org_name,
-                country=input.country,
-                display_name=input.display_name,
-                timezone=input.timezone,
-            ),
-            client_ip=client_ip(request) if request is not None else "",
-        )
+        try:
+            result = register_customer_user(
+                RegisterCustomerUserData(
+                    idempotency_key=input.idempotency_key,
+                    email=input.email,
+                    password=input.password,
+                    org_name=input.org_name,
+                    country=input.country,
+                    display_name=input.display_name,
+                    timezone=input.timezone,
+                ),
+                client_ip=client_ip(request) if request is not None else "",
+            )
+        except SafeAPIError as error:
+            if error.code == ErrorCode.VALIDATION_FAILED:
+                # Expected signup refusals can carry inline credentials in their GraphQL location.
+                raise _AccountFieldError(error.code, "registerCustomerUser") from None
+            raise
         return RegisterPayload(accepted=result.accepted)
 
     @strawberry.mutation

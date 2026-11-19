@@ -807,6 +807,20 @@ class ConfirmPasswordResetResult:
 
 
 # --- services --------------------------------------------------------------
+def _validate_registration_profile(org_name: str, display_name: str, timezone: str) -> None:
+    org = CustomerOrg(name=org_name, timezone=timezone)
+    user = CustomerUser(display_name=display_name)
+    # Apply only the submitted profile's format rules. Model uniqueness checks
+    # belong to creation, where they can consult the database transaction.
+    try:
+        org._meta.get_field("name").clean(org_name, org)
+        user._meta.get_field("display_name").clean(display_name, user)
+        org._meta.get_field("timezone").clean(timezone, org)
+        org.clean()
+    except ValidationError:
+        raise _validation_error() from None
+
+
 def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "") -> AcceptedResult:
     """Self-serve signup (DEC-007 product answer): create a NEW CustomerOrg (TRIAL) and its first
     Admin user atomically, then email a verification token. Returns a UNIFORM accepted:true whether
@@ -828,6 +842,11 @@ def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "
     )
     if source_claim is not BudgetOutcome.ALLOWED:
         raise SafeAPIError(ErrorCode.RATE_LIMITED)
+
+    display_name = " ".join(data.display_name.strip().split())
+    timezone = data.timezone.strip() or "UTC"
+    _validate_registration_profile(org_name, display_name, timezone)
+
     fingerprint = _email_fingerprint(email)
     # Namespace the (actor, idempotency_key) guard PER EMAIL: two distinct signups that happen to
     # pick the same client idempotency key must not alias and swallow one another. Email is the real
@@ -856,7 +875,7 @@ def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "
                 status=CustomerStatus.TRIAL,
                 primary_contact_email=email,
                 country=country,
-                timezone=data.timezone.strip() or "UTC",
+                timezone=timezone,
                 plan="TRIAL",
                 seat_limit=1,
                 created_by_actor_id=self_actor,
@@ -869,7 +888,7 @@ def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "
                 password_hash=password_hash,
                 status=CustomerUserStatus.INVITED,
                 role=CustomerRole.ADMIN,  # first (and only) user in a self-serve org is the Admin
-                display_name=" ".join(data.display_name.strip().split()),
+                display_name=display_name,
                 created_by_actor_id=self_actor,
                 idempotency_key=idempotency_key,
             )
