@@ -2078,6 +2078,10 @@ EXPECTED_MIN_CHECKS = 2987
 # measured 2999 checks, 0 FAIL; both new TR fallback assertions passed. The run exited 4
 # only because this exact-count guard still expected 2997. Keep equality and every assertion.
 EXPECTED_MIN_CHECKS = 2999
+# 2999 -> 3042 (86ajpy59e per-layer clear): measured locally, 0 FAIL. 41 new Backspace /
+# editable-guard / CLEAR ▾ picker checks, plus 2 CON-046 key-chip contrast checks that
+# enumerate every `.key` chip and now also measure the picker's two new chips.
+EXPECTED_MIN_CHECKS = 3042
 
 
 def find_chrome():
@@ -3346,11 +3350,26 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
     }
     if (cmd === "go_live") {
       if (V.__lastApprovedRef) V.live_scripture = V.__lastApprovedRef;
+      delete V.cleared_layers; // the real host resets per-layer clears on go-live (86ajpy59e)
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "clear") {
       V.live_scripture = null;
       V.live_free_text = null;
+      delete V.cleared_layers; // Clear All resets per-layer state; the field is omitted when empty
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    // 86ajpy59e — per-layer clear. Mirrors the host: the cleared tag accumulates in
+    // view.cleared_layers (omitted on the wire while empty), and clearing the TEXT layer takes the
+    // live text off. A non-tag is rejected like the host's own validation.
+    if (cmd === "clear_layer") {
+      var clTag = args && args.layer;
+      if (["background", "text", "lower-third", "logo"].indexOf(clTag) < 0)
+        return Promise.reject("unknown layer: " + clTag);
+      if (clTag === "text") { V.live_scripture = null; V.live_free_text = null; }
+      var clNow = (V.cleared_layers || []).slice();
+      if (clNow.indexOf(clTag) < 0) clNow.push(clTag);
+      V.cleared_layers = clNow;
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     // --- Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6): the read-only
@@ -16408,6 +16427,148 @@ DRIVER = r"""
       wRes2.click();
       ok(await wWait(function(){ return !wEmFoot.classList.contains("blackout"); }),
          "CON-098: restoring output un-tints the footer again (cleanup — later checks expect the resting footer)");
+
+      // --- 86ajpy59e: per-layer clear. Backspace clears the TEXT layer (clear_layer, never the
+      // whole output), the editable-target guard holds for EVERY editable kind, and the footer's
+      // CLEAR ▾ picker drives clear_layer per tag and shows each layer's cleared state from
+      // view.cleared_layers. Cleared/painted state is asserted on COMPUTED style — a class
+      // display rule defeats [hidden] in this webview. ---
+      if (!el("surface-console").classList.contains("active")) {
+        document.querySelector('.nav-item[data-surface="console"]').click();
+        await wWait(function(){ return el("surface-console").classList.contains("active"); });
+      }
+      ok(el("surface-console").classList.contains("active"),
+         "86ajpy59e (premise): the Live Console is the active surface, where Backspace is bound");
+      var plcClears = function(){ return window.__calls.filter(function(c){ return c.cmd === "clear" || c.cmd === "clear_layer"; }); };
+      var plcBs = function(target){
+        var ev = new KeyboardEvent("keydown", {key:"Backspace", code:"Backspace", bubbles:true, cancelable:true});
+        target.dispatchEvent(ev);
+        return ev;
+      };
+      if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+      var plcN = plcClears().length;
+      var plcEv = plcBs(document.body);
+      var plcNew = plcClears().slice(plcN);
+      ok(plcNew.length === 1 && plcNew[0].cmd === "clear_layer" && plcNew[0].args && plcNew[0].args.layer === "text",
+         "86ajpy59e: Backspace on the console body invokes clear_layer{layer:\"text\"} exactly once (" + JSON.stringify(plcNew) + ")");
+      ok(!plcNew.some(function(c){ return c.cmd === "clear"; }),
+         "86ajpy59e: Backspace never invokes the whole-output clear — Clear All stays on Esc Esc / the footer");
+      ok(plcEv.defaultPrevented, "86ajpy59e: Backspace on the body is consumed (no browser back-navigation)");
+      // Editable targets: an input, a textarea, a select and a contenteditable each own Backspace.
+      var plcHost = el("surface-console");
+      [["input", function(){ var x = document.createElement("input"); x.type = "text"; x.value = "abc"; return x; }],
+       ["textarea", function(){ var x = document.createElement("textarea"); x.value = "abc"; return x; }],
+       ["select", function(){ var x = document.createElement("select"); x.innerHTML = "<option>a</option>"; return x; }],
+       ["contenteditable", function(){ var x = document.createElement("div"); x.setAttribute("contenteditable", "true"); x.textContent = "abc"; return x; }]
+      ].forEach(function(pair){
+        var node = pair[1]();
+        plcHost.appendChild(node);
+        node.focus();
+        var before = plcClears().length;
+        var ev = plcBs(node);
+        ok(plcClears().length === before,
+           "86ajpy59e: Backspace inside a focused " + pair[0] + " records NO clear command at all (Review Focus 1)");
+        ok(!ev.defaultPrevented, "86ajpy59e: Backspace inside a focused " + pair[0] + " still edits (default not prevented)");
+        node.remove();
+      });
+      if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+
+      // The CLEAR ▾ picker beside Clear All.
+      var plcBtn = el("clear-layer-btn"), plcMenu = el("clear-layer-menu");
+      ok(!!plcBtn && !!plcMenu, "86ajpy59e: the footer carries a CLEAR ▾ layer picker (#clear-layer-btn + #clear-layer-menu)");
+      if (plcBtn && plcMenu) {
+        ok(plcBtn.tagName === "BUTTON" && /CLEAR/.test(plcBtn.textContent) && /▾/.test(plcBtn.textContent),
+           "86ajpy59e: the picker trigger is a button labelled CLEAR ▾ (\"" + plcBtn.textContent.replace(/\s+/g, " ").trim() + "\")");
+        ok(plcBtn.getAttribute("aria-haspopup") === "menu" && plcBtn.getAttribute("aria-controls") === "clear-layer-menu",
+           "86ajpy59e: the trigger announces its menu (aria-haspopup=menu, aria-controls)");
+        ok(el("emergency").contains(plcBtn) && plcBtn.compareDocumentPosition(el("clear-all")) & Node.DOCUMENT_POSITION_PRECEDING,
+           "86ajpy59e: the picker sits in the emergency footer, after Clear All");
+        ok(!el("emergency").querySelector("select"),
+           "86ajpy59e: no <select> in the emergency footer (a flex <select> collapses in WKWebView)");
+        ok(getComputedStyle(plcMenu).display === "none" && plcMenu.getClientRects().length === 0 && plcBtn.getAttribute("aria-expanded") === "false",
+           "86ajpy59e (control): the layer menu starts closed and unpainted (computed display " + getComputedStyle(plcMenu).display + ")");
+        plcBtn.click();
+        ok(await wWait(function(){ return getComputedStyle(plcMenu).display !== "none"; }) && plcMenu.getClientRects().length > 0 && plcBtn.getAttribute("aria-expanded") === "true",
+           "86ajpy59e: clicking CLEAR ▾ paints the layer menu and sets aria-expanded=true");
+        var plcItems = Array.prototype.slice.call(plcMenu.querySelectorAll("[data-layer]"));
+        ok(plcItems.map(function(b){ return b.dataset.layer; }).join(",") === "background,lower-third,logo,text",
+           "86ajpy59e: four entries in composite order — background, lower-third, logo, text (" + plcItems.map(function(b){ return b.dataset.layer; }).join(",") + ")");
+        var plcNames = ["Background", "Lower third", "Logo", "Text"];
+        ok(plcItems.length === 4 && plcItems.every(function(b, i){ return b.tagName === "BUTTON" && b.textContent.indexOf(plcNames[i]) >= 0; }),
+           "86ajpy59e: every entry is a real <button> named Background / Lower third / Logo / Text");
+        ok(plcItems.length === 4 && plcItems.every(function(b){ return b.getAttribute("role") === "menuitem"; }) && plcMenu.getAttribute("role") === "menu",
+           "86ajpy59e: the menu and its entries carry menu / menuitem roles");
+        // Layout: the open menu stays inside the viewport and every entry is the real hit target
+        // (the menu opens UPWARD from a 56px footer — never clipped below the window).
+        var plcR = plcMenu.getBoundingClientRect();
+        ok(plcR.top >= 0 && plcR.bottom <= el("emergency").getBoundingClientRect().top + 1 && plcR.height > 0,
+           "86ajpy59e: the open menu sits above the footer, inside the viewport (top " + Math.round(plcR.top) + ", bottom " + Math.round(plcR.bottom) + ")");
+        ok(plcItems.length === 4 && plcItems.every(function(b){
+             var r = b.getBoundingClientRect();
+             var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+             return r.height >= 24 && (hit === b || b.contains(hit));
+           }), "86ajpy59e: every entry is painted at a usable height and is the real hit-test target");
+        // Each entry invokes clear_layer with ITS tag (and only that).
+        ["background", "lower-third", "logo", "text"].forEach(function(tag){
+          var b = plcMenu.querySelector('[data-layer="' + tag + '"]');
+          var before = plcClears().length;
+          if (b) b.click();
+          var got = plcClears().slice(before);
+          ok(got.length === 1 && got[0].cmd === "clear_layer" && got[0].args && got[0].args.layer === tag,
+             "86ajpy59e: the " + tag + " entry invokes clear_layer{layer:\"" + tag + "\"} (" + JSON.stringify(got) + ")");
+        });
+        // Cleared state from view.cleared_layers. Reset through Clear All (the real command path),
+        // then clear ONLY text and read every entry's painted state.
+        var plcStatus = function(b){ return b && b.querySelector(".clear-layer-state"); };
+        var plcPainted = function(n){ return !!n && getComputedStyle(n).display !== "none" && n.getClientRects().length > 0; };
+        el("clear-all").click();
+        ok(await wWait(function(){ return plcItems.every(function(b){ return !b.classList.contains("cleared"); }); }),
+           "86ajpy59e: Clear All still invokes clear and resets every entry to present (cleared_layers omitted = [])");
+        ok(window.__calls.filter(function(c){ return c.cmd === "clear"; }).length > 0 && plcItems.every(function(b){ return !plcPainted(plcStatus(b)); }),
+           "86ajpy59e (control): with nothing cleared no entry paints a Cleared marker");
+        if (getComputedStyle(plcMenu).display === "none") plcBtn.click();
+        var plcText = plcMenu.querySelector('[data-layer="text"]'), plcBg = plcMenu.querySelector('[data-layer="background"]');
+        var plcBgRestBorder = plcBg ? getComputedStyle(plcBg).borderTopStyle + " " + getComputedStyle(plcBg).borderTopColor : "";
+        if (plcText) plcText.click();
+        ok(await wWait(function(){ return plcText && plcText.classList.contains("cleared"); }),
+           "86ajpy59e (setup): the host's cleared_layers:[\"text\"] marks the Text entry");
+        ok(plcPainted(plcStatus(plcText)) && /cleared/i.test(plcStatus(plcText).textContent),
+           "86ajpy59e: the Text entry PAINTS a 'Cleared' marker in words (computed display " + (plcStatus(plcText) ? getComputedStyle(plcStatus(plcText)).display : "n/a") + ")");
+        ok(plcText && /cleared/i.test(plcText.getAttribute("aria-label") || "") &&
+           plcBg && !/cleared/i.test(plcBg.getAttribute("aria-label") || "cleared"),
+           "86ajpy59e: the cleared state is in the entry's accessible name (\"" + (plcText ? plcText.getAttribute("aria-label") : "") + "\"), and a present entry's name does not claim it (\"" + (plcBg ? plcBg.getAttribute("aria-label") : "") + "\")");
+        ok(!plcPainted(plcStatus(plcBg)) && !plcBg.classList.contains("cleared"),
+           "86ajpy59e: the Background entry (not in cleared_layers) stays present — no marker painted");
+        var plcTcs = plcText ? getComputedStyle(plcText) : null;
+        ok(plcTcs && (plcTcs.borderTopStyle + " " + plcTcs.borderTopColor) !== plcBgRestBorder,
+           "86ajpy59e: the cleared entry's computed outline differs from a present entry's (" + (plcTcs ? plcTcs.borderTopStyle + " " + plcTcs.borderTopColor : "") + " vs " + plcBgRestBorder + ")");
+        var plcBoEng = "rgb(143, 32, 48)", plcLive = "rgb(255, 77, 77)", plcCanon = "rgb(163, 40, 58)";
+        ok(plcTcs && [plcBoEng, plcLive, plcCanon].indexOf(plcTcs.backgroundColor) < 0 && plcTcs.backgroundImage === "none",
+           "86ajpy59e: a cleared entry never wears the solid red of an engaged Blackout (background " + (plcTcs ? plcTcs.backgroundColor : "") + ")");
+        // A view WITHOUT the field (older host / nothing cleared) is treated as [].
+        var plcV = JSON.parse(JSON.stringify(V)); delete plcV.cleared_layers;
+        lastRendered = ""; render(plcV);
+        ok(plcItems.every(function(b){ return !b.classList.contains("cleared") && !plcPainted(plcStatus(b)); }),
+           "86ajpy59e: a view with cleared_layers omitted renders every entry present (missing field = [])");
+        // The `.` shortcut (UX-STATE-MATRIX §11) opens the picker; it is not itself a clear.
+        if (getComputedStyle(plcMenu).display !== "none") plcBtn.click();
+        ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }),
+           "86ajpy59e: clicking CLEAR ▾ again closes the menu");
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        var plcDotN = plcClears().length;
+        document.body.dispatchEvent(new KeyboardEvent("keydown", {key:".", code:"Period", bubbles:true, cancelable:true}));
+        ok(await wWait(function(){ return getComputedStyle(plcMenu).display !== "none"; }) && plcClears().length === plcDotN,
+           "86ajpy59e: '.' opens the layer picker without clearing anything");
+        ok(document.activeElement === plcItems[0],
+           "86ajpy59e: opening the picker from the keyboard moves focus to its first entry");
+        // Click outside closes it; double-Esc and Blackout are untouched (no new state on them).
+        document.body.dispatchEvent(new MouseEvent("pointerdown", {bubbles:true}));
+        document.body.click();
+        ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }) && plcBtn.getAttribute("aria-expanded") === "false",
+           "86ajpy59e: a click outside closes the layer menu (cleanup)");
+        delete V.cleared_layers;
+        lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
+      }
 
       // --- §10 case 5: the emergency-ready chip is the canonical frame's PILL --------------
       // Asserting the declared radius alone would pass on an element nobody paints, and "999px"

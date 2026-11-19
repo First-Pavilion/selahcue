@@ -421,6 +421,15 @@
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
         // CON-098 (blocker) — the footer bar itself re-tints, not just the button label.
         document.getElementById("emergency").classList.toggle("blackout", view.blackout);
+        // 86ajpy59e — each CLEAR ▾ entry reflects view.cleared_layers. The host omits the field
+        // while nothing is cleared (and an older host never sends it), so missing means [].
+        const clearedLayers = Array.isArray(view.cleared_layers) ? view.cleared_layers : [];
+        document.querySelectorAll("#clear-layer-menu [data-layer]").forEach((b) => {
+          const cleared = clearedLayers.indexOf(b.dataset.layer) >= 0;
+          b.classList.toggle("cleared", cleared);
+          const name = b.dataset.name || b.dataset.layer;
+          b.setAttribute("aria-label", cleared ? name + " layer: cleared" : "Clear the " + name.toLowerCase() + " layer");
+        });
         // CON-161 — both monitor pills flag a blackout, not just the Live panel's own marker.
         // Preview's pixels are unaffected (blackout only blanks the audience/Live output, per
         // present.rs's blackout() doc comment), so its pill is a STATUS echo, never a claim that
@@ -3517,6 +3526,9 @@
         act(() => invoke("blackout", { on }));
       };
       const clearAll = () => act(() => invoke("clear"));
+      // 86ajpy59e — clear ONE layer (background / text / lower-third / logo); other layers and
+      // Clear All are untouched (FR-078). The returned view carries cleared_layers.
+      const clearLayer = (layer) => act(() => invoke("clear_layer", { layer }));
 
       const goPrev = () => act(() => invoke("previous"));
       const goNext = () => act(() => invoke("next"));
@@ -3549,6 +3561,65 @@
       document.getElementById("golive").onclick = goLive;
       document.getElementById("blackout").onclick = toggleBlackout;
       document.getElementById("clear-all").onclick = clearAll;
+      // 86ajpy59e — the CLEAR ▾ per-layer picker. The menu stays open after an entry is used so
+      // the operator sees that layer's Cleared marker land; a click outside, Escape or the
+      // trigger closes it. Escape still reaches the canonical double-Esc handler unchanged.
+      const clearLayerBtn = document.getElementById("clear-layer-btn");
+      const clearLayerMenu = document.getElementById("clear-layer-menu");
+      const clearLayerItems = () =>
+        Array.prototype.slice.call(clearLayerMenu ? clearLayerMenu.querySelectorAll("[data-layer]") : []);
+      const clearLayerMenuOpen = () => !!clearLayerMenu && !clearLayerMenu.hidden;
+      const openClearLayerMenu = (focusFirst) => {
+        if (!clearLayerMenu || !clearLayerBtn) return;
+        clearLayerMenu.hidden = false;
+        clearLayerBtn.setAttribute("aria-expanded", "true");
+        if (focusFirst) {
+          const first = clearLayerItems()[0];
+          if (first) first.focus();
+        }
+      };
+      const closeClearLayerMenu = (returnFocus) => {
+        if (!clearLayerMenu || !clearLayerBtn) return;
+        const hadFocus = clearLayerMenu.contains(document.activeElement);
+        clearLayerMenu.hidden = true;
+        clearLayerBtn.setAttribute("aria-expanded", "false");
+        // Never strand focus on a now-hidden entry (WCAG 2.4.3).
+        if (returnFocus || hadFocus) clearLayerBtn.focus();
+      };
+      if (clearLayerBtn && clearLayerMenu) {
+        clearLayerBtn.onclick = (e) => {
+          if (clearLayerMenuOpen()) closeClearLayerMenu(false);
+          else openClearLayerMenu(e.detail === 0); // keyboard activation moves into the menu
+        };
+        clearLayerItems().forEach((b) => {
+          b.onclick = () => clearLayer(b.dataset.layer);
+        });
+        document.addEventListener("click", (e) => {
+          if (!clearLayerMenuOpen()) return;
+          const wrap = document.getElementById("clear-layer");
+          if (wrap && e.target instanceof Node && wrap.contains(e.target)) return;
+          closeClearLayerMenu(false);
+        });
+        clearLayerMenu.addEventListener("keydown", (e) => {
+          if (e.key === "Escape") closeClearLayerMenu(true);
+        });
+      }
+      // ↑/↓/Home/End move between entries while focus is in the menu (called from the canonical
+      // keydown handler before its own arrow handling, so the verse cursor never moves instead).
+      const clearLayerMenuNav = (e) => {
+        if (!clearLayerMenuOpen() || !clearLayerMenu.contains(e.target)) return false;
+        const items = clearLayerItems();
+        const i = items.indexOf(e.target);
+        let next = -1;
+        if (e.key === "ArrowDown") next = (i + 1) % items.length;
+        else if (e.key === "ArrowUp") next = (i - 1 + items.length) % items.length;
+        else if (e.key === "Home") next = 0;
+        else if (e.key === "End") next = items.length - 1;
+        if (next < 0) return false;
+        e.preventDefault();
+        items[next].focus();
+        return true;
+      };
       // CON-102 — Restore explicitly turns blackout OFF (never a toggle: this button only ever
       // means "bring the audience back", so double-activation cannot re-black the output).
       // The button disappears with the state it undoes, so focus is returned to #blackout
@@ -4429,8 +4500,12 @@
         // inline editor owns Enter/Escape there) and on a focused button
         // (Enter/Space must activate THAT control, not fire Go Live/Next).
         const tag = (e.target && e.target.tagName) || "";
-        if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+        // A contenteditable region is a field too (86ajpy59e Review Focus 1): Backspace there
+        // deletes a character, it must never clear the live text layer.
+        if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
         if (tag === "BUTTON" && (e.key === "Enter" || e.key === " ")) return;
+        // The open CLEAR ▾ menu owns ↑/↓/Home/End while focus is inside it.
+        if (clearLayerMenuNav(e)) return;
         // ↑/↓ own the chapter browser when one is open: move + stage the
         // highlighted verse (Enter then goes live via the canonical map).
         if ((e.key === "ArrowUp" || e.key === "ArrowDown") && currentChapter) {
@@ -4458,10 +4533,16 @@
             toggleBlackout();
             break;
           case "Backspace":
-            // Clear current layer (§1). The live output is single-layer until
-            // per-layer clearing (86ajpy59e) — today this equals Clear-all.
+            // Clear the TEXT layer (§1, 86ajpy59e) — the host maps Backspace the same way.
+            // Never the whole output: Clear All stays on Esc Esc and the footer button.
             e.preventDefault();
-            clearAll();
+            clearLayer("text");
+            break;
+          case ".":
+            // UX-STATE-MATRIX §11: `.` opens the CLEAR ▾ layer picker. Opening is not a clear.
+            if (mod) break;
+            e.preventDefault();
+            openClearLayerMenu(true);
             break;
           case "Escape": {
             e.preventDefault();
