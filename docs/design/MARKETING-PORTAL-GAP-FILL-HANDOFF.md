@@ -129,6 +129,11 @@ Below the entitled rows, a separator + section for bundled public-domain transla
 
 **Location:** Existing frame `505:124`. Spec all states for implementation.
 
+> **Verified auth contract for §§3–5.** The validation rules and accepted states here follow the
+> shipped [accounts service](../../implementation/api/selahcue_api/apps/accounts/services.py) and
+> [marketing auth views](../../implementation/marketing/src/views/). Follow these rules where older
+> design copy differs. See the [auth landing pages handoff](AUTH-LANDING-PAGES-HANDOFF.md) for link recovery.
+
 ### 3a. Field States
 
 Each form field (Email, Password) cycles through:
@@ -161,7 +166,9 @@ Each form field (Email, Password) cycles through:
 | Email | Empty | "Email is required" |
 | Email | Invalid format | "Please enter a valid email address" |
 | Password | Empty | "Password is required" |
-| Password | Too short (<8 chars) | "Password must be at least 8 characters" |
+
+Submit any nonempty password as entered. Skip length and composition checks on sign-in so credentials
+created under earlier rules can still be submitted. See §4d for choosing a new password.
 
 ### 3d. Accessibility
 
@@ -206,6 +213,9 @@ Below the password field, a 4-segment strength bar:
 
 Each segment is 8px tall, `--sc-border` bg when unfilled, 4px gap between, 999px radius.
 
+The indicator is advisory. Use the validation rules in §4d to decide whether the password can be
+submitted, regardless of the rating or character mix.
+
 ### 4c. States
 
 | State | Content |
@@ -214,9 +224,17 @@ Each segment is 8px tall, `--sc-border` bg when unfilled, 4px gap between, 999px
 | **Validation errors** | Per-field inline errors (same style as Sign In §3a) |
 | **Terms unchecked** | "Create account" button disabled (50% opacity) until checkbox checked |
 | **Submitting** | Spinner on button, all fields disabled |
-| **Email taken** | Inline error on email: "An account with this email already exists. [Sign in instead]" |
-| **Server error** | Red banner at top |
-| **Success** | Green banner "✓ Account created! Redirecting…" → redirect to `/account` |
+| **Rate limited** | Keep the form open with a banner asking the user to wait before retrying |
+| **Server or connection error** | Keep the form open with a red banner and a retry option |
+| **Accepted** | Show "Check your email to finish setting up" for both new and existing addresses. Stay on this screen with "Back to Sign in" and the option to request another verification link. |
+
+Valid requests that pass admission and receive `accepted: true` use the same state for any address.
+Use "Your request for **{email}** was accepted. If an email arrives, follow the instructions in it."
+On signup for a new address, the service queues a verification link. On the existing-account path,
+the service queues sign-in guidance only for the owner of that address via the
+[transactional email](TRANSACTIONAL-EMAIL-spec.md). Acceptance confirms request processing only.
+It establishes neither account creation nor email delivery and creates no sign-in session.
+Verification links expire 24 hours after issuance by default.
 
 ### 4d. Validation Rules
 
@@ -227,10 +245,16 @@ Each segment is 8px tall, `--sc-border` bg when unfilled, 4px gap between, 999px
 | Email | Empty | "Email is required" |
 | Email | Invalid format | "Please enter a valid email address" |
 | Password | Empty | "Password is required" |
-| Password | <8 chars | "Password must be at least 8 characters" |
-| Password | No uppercase + number | "Include at least one uppercase letter and one number" |
+| Password | Shorter than 10 characters | "Password must be at least 10 characters" |
+| Password | Longer than 200 characters | "Password must be 200 characters or fewer" |
+| Password | All whitespace | "Password must contain more than spaces" |
 | Confirm password | Mismatch | "Passwords do not match" |
 | Terms | Unchecked | Button stays disabled (no inline error) |
+
+The shipped default length range for new and reset passwords is 10–200 Unicode code points inclusive.
+There is no composition requirement.
+The API rejects empty, all-whitespace and non-UTF-8-encodable passwords. Preserve the entered
+password verbatim and check that confirmation matches it on the client.
 
 ---
 
@@ -241,18 +265,22 @@ Each segment is 8px tall, `--sc-border` bg when unfilled, 4px gap between, 999px
 ### 5a. Step 1: Request Reset
 
 - **Heading:** "Reset your password" — Bold 22px
-- **Subheading:** "Enter your email and we'll send you a reset link." — 15px, `--sc-text-secondary`
+- **Subheading:** "Enter your email to request a reset link." — 15px, `--sc-text-secondary`
 - **Field:** Email input
 - **Button:** "Send reset link" — primary button
 - **Footer:** "Back to [Sign in]"
 
-### 5b. Step 2: Email Sent (Success)
+### 5b. Step 2: Request Accepted
 
 - **Icon:** ✉ mail icon in `--sc-primary`, 48px
 - **Heading:** "Check your inbox" — Bold 22px
-- **Body:** "We sent a password reset link to **{email}**. It expires in 15 minutes." — 15px
-- **Secondary text:** "Didn't receive it? Check your spam folder or [resend]."
+- **Body:** "Your request for **{email}** was accepted. If this address has a SelahCue account, check your inbox for a reset link. A reset link expires 1 hour after it is issued." — 15px
+- **Secondary text:** "If no email arrives, check your spam folder or try again in a moment."
 - **Button:** "Back to Sign in" — secondary button
+
+One hour is the shipped reset-link default. The displayed lifetime alone cannot diagnose why a
+presented link fails. Use the combined invalid-link recovery state in the
+[auth landing pages handoff](AUTH-LANDING-PAGES-HANDOFF.md#102-the-api-cannot-distinguish-expired-from-invalid--owner-decision).
 
 ### 5c. States
 
@@ -261,10 +289,10 @@ Each segment is 8px tall, `--sc-border` bg when unfilled, 4px gap between, 999px
 | **Default** | Empty email field |
 | **Validation error** | Inline: "Please enter a valid email address" |
 | **Submitting** | Spinner on button, field disabled |
-| **Email not found** | Inline: "We couldn't find an account with this email. [Create one]" |
-| **Rate limited** | Banner: "Too many requests. Please wait before trying again." |
-| **Success** | Transitions to Step 2 (Email Sent) |
-| **Resend** | "Resend" link triggers submitting state → success toast "Link resent" |
+| **Rate limited** | Keep the form open with "Too many requests. Please wait before trying again." |
+| **Server or connection error** | Keep the form open with an error and a retry option |
+| **Accepted** | On `accepted: true`, show the same Step 2 wording for registered and unregistered addresses. The request creates no sign-in session. |
+| **Resend** | Use the same submitting, accepted and error states. An accepted resend uses the same conditional copy as Step 2. |
 
 ---
 
