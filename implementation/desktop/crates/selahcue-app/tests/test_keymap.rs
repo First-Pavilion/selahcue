@@ -217,3 +217,8 @@ fn host_handled_keys_disarm_via_the_disarm_api() {
         "the Esc after a host key is a fresh first tap"
     );
 }
+
+#[test]
+fn clear_layer_targets_text() {
+    assert_eq!(selahcue_app::keymap::CLEAR_LAYER_DEFAULT_TAG, "text");
+}

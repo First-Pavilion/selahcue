@@ -12,11 +12,10 @@
 //! | Blackout (toggle)      | `B`                       |
 //! | Clear current layer    | `Backspace`               |
 //!
-//! `Backspace` clears the current (topmost) **live** layer. The live output is
-//! single-layer until per-layer clearing (story 86ajpy59e, split from 86ajp0awx
-//! and blocked on the R2 multi-layer output model), so today it performs the
-//! same clear as `Esc Esc`; the two actions stay distinct in the map so the
-//! bindings do not change when layers arrive.
+//! `Backspace` clears the **text** layer of the live output only (story
+//! 86ajpy59e): the media and background layers, and a blackout, stay as they
+//! are. `Esc Esc` still clears every live layer; the two actions stay distinct
+//! in the map and in the commands they drive.
 //!
 //! **Emergency actions are non-unbindable:** Clear-all (`Esc Esc`) and Blackout
 //! (`B`) are always present in the map — there is no configuration surface that
@@ -54,11 +53,14 @@ pub enum CanonicalAction {
     ClearAll,
     /// Toggle the audience blackout.
     BlackoutToggle,
-    /// Clear the current (topmost) live layer only (see the module doc: equal
-    /// to a full clear while the live output is single-layer — real per-layer
-    /// semantics land with story 86ajpy59e).
+    /// Clear the text layer of the live output only (see
+    /// [`CLEAR_LAYER_DEFAULT_TAG`]); distinct from [`CanonicalAction::ClearAll`].
     ClearLayer,
 }
+
+/// The layer tag `Backspace` clears: the text layer. The desktop shell sends it
+/// as `Command::ClearLayer { layer }`.
+pub const CLEAR_LAYER_DEFAULT_TAG: &str = "text";
 
 /// How long the second `Esc` of the double-tap may lag the first.
 pub const DOUBLE_ESC_WINDOW: Duration = Duration::from_millis(1000);
