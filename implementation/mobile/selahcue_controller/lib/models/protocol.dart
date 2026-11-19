@@ -263,6 +263,12 @@ class OperatorStateView {
   /// absence parses to empty.
   final List<String> clearedLayers;
 
+  /// The id of the authored deck slide on Live, if one is presented rather
+  /// than plan/scripture content. A deck slide has no per-layer model, so the
+  /// per-layer "Clear text" control is unavailable while this is set. The host
+  /// omits the key when nothing authored is live, so absence parses to null.
+  final int? liveAuthoredId;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -280,6 +286,7 @@ class OperatorStateView {
     this.partialTranscript,
     this.detections = const [],
     this.clearedLayers = const [],
+    this.liveAuthoredId,
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -316,6 +323,7 @@ class OperatorStateView {
         clearedLayers: ((j['cleared_layers'] as List?) ?? const [])
             .whereType<String>()
             .toList(),
+        liveAuthoredId: j['live_authored_id'] as int?,
       );
 }
 

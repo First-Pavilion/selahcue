@@ -492,6 +492,10 @@ class SelahButton extends StatelessWidget {
   /// `aria-pressed` equivalent, spec §6.3).
   final bool? toggled;
 
+  /// Announced as the control's current value (a status such as "Text
+  /// cleared"), for state that is not a pressed/unpressed toggle.
+  final String? semanticValue;
+
   /// A leading glyph drawn with the label (■ ✕). Text rather than an icon only
   /// where the exact glyph is part of the label contract; arrows use [icon]
   /// because U+25B6/U+25C0 pick up an emoji presentation on iOS that ignores the
@@ -521,6 +525,7 @@ class SelahButton extends StatelessWidget {
     this.semanticLabel,
     this.disabledReason,
     this.toggled,
+    this.semanticValue,
     this.glyph,
     this.icon,
     this.trailingIcon,
@@ -591,6 +596,7 @@ class SelahButton extends StatelessWidget {
       button: true,
       enabled: !_disabled,
       toggled: toggled,
+      value: semanticValue,
       label: (_disabled && disabledReason != null)
           ? '$spoken, $disabledReason'
           : spoken,

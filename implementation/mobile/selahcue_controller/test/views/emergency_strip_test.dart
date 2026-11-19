@@ -1,6 +1,8 @@
 /// The emergency strip's Blackout / Clear are role-gated (hide-not-disable).
 library;
 
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,8 +19,10 @@ class _Fake implements ControllerSession {
   @override
   final MobileRole grantedRole;
   final List<String> clearedLayers;
+  final int? liveAuthoredId;
   final List<Map<String, dynamic>> sentCmds = [];
-  _Fake(this.grantedRole, {this.clearedLayers = const []});
+  _Fake(this.grantedRole,
+      {this.clearedLayers = const [], this.liveAuthoredId});
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     sentCmds.add(cmd);
@@ -34,6 +38,7 @@ class _Fake implements ControllerSession {
         blackout: false,
         timer: null,
         clearedLayers: clearedLayers,
+        liveAuthoredId: liveAuthoredId,
       );
   @override
   Future<void> close() async {}
@@ -92,7 +97,7 @@ void main() {
     live.dispose();
   });
 
-  testWidgets('Clear text shows as pressed, not solid red, when cleared',
+  testWidgets('Clear text states "Text cleared", not solid red, when cleared',
       (tester) async {
     final handle = tester.ensureSemantics();
     for (final cleared in [true, false]) {
@@ -101,17 +106,22 @@ void main() {
       final live = LiveController(session: fake, stored: _stored);
       await tester.pumpWidget(host(live));
       await tester.pump(const Duration(milliseconds: 60));
+      // A status, not a toggle: a second tap does not bring the text back, so
+      // the row must not announce itself as a pressed/unpressed switch.
+      final node = tester.getSemantics(find.bySemanticsLabel('Clear text'));
       expect(
-          tester.getSemantics(find.bySemanticsLabel('Clear text')),
+          node,
           matchesSemantics(
             label: 'Clear text',
+            value: cleared ? 'Text cleared' : null,
             isButton: true,
             hasEnabledState: true,
             isEnabled: true,
-            hasToggledState: true,
-            isToggled: cleared,
           ),
           reason: 'cleared=$cleared');
+      expect(node.getSemanticsData().flagsCollection.isToggled, Tristate.none,
+          reason: 'no toggled state at all (cleared=$cleared)');
+      if (!cleared) expect(node.value, isEmpty);
       final material = tester.widget<Material>(find.descendant(
           of: find.byType(ClearTextRow), matching: find.byType(Material)).last);
       if (cleared) {
@@ -121,6 +131,31 @@ void main() {
       live.dispose();
     }
     handle.dispose();
+  });
+
+  testWidgets('Clear text is disabled, with a reason, while a deck slide is live',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake(MobileRole.operator, liveAuthoredId: 7);
+    final live = LiveController(session: fake, stored: _stored);
+    await tester.pumpWidget(host(live));
+    await tester.pump(const Duration(milliseconds: 60));
+    final row = find.bySemanticsLabel(RegExp(r'^Clear text'));
+    expect(row, findsOneWidget, reason: 'stays visible');
+    expect(
+        tester.getSemantics(row),
+        matchesSemantics(
+          label: 'Clear text, deck slides clear as a whole',
+          isButton: true,
+          hasEnabledState: true,
+          isEnabled: false,
+        ));
+    await tester.tap(row, warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(fake.sentCmds, isEmpty,
+        reason: 'one tap must never wipe a deck slide (review I2)');
+    handle.dispose();
+    live.dispose();
   });
 
   testWidgets('Viewer does not see Clear text', (tester) async {

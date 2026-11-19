@@ -674,7 +674,10 @@ String spokenClock(int secs) {
 
 /// Full-width "Clear text" row, hosted directly above [EmergencyStrip] (its own
 /// row so the strip's two buttons keep room for "CONFIRM BLACKOUT" at 320 px).
-/// Visible only for roles holding [Capability.clearLive].
+/// Visible only for roles holding [Capability.clearLive]. While a deck
+/// (authored) slide is live it stays visible but disabled: a deck slide has no
+/// per-layer model and clears only as a whole, which must go through Clear
+/// All's arm-then-confirm, never a single tap (review I2).
 class ClearTextRow extends StatelessWidget {
   final LiveController live;
   const ClearTextRow({super.key, required this.live});
@@ -683,8 +686,12 @@ class ClearTextRow extends StatelessWidget {
   Widget build(BuildContext context) {
     if (!live.can(Capability.clearLive)) return const SizedBox.shrink();
     final textCleared = live.view?.clearedLayers.contains('text') ?? false;
-    final disabledReason =
-        live.syncing ? 'unavailable while reconnecting' : 'sending…';
+    final deckLive = live.view?.liveAuthoredId != null;
+    final disabledReason = deckLive
+        ? 'deck slides clear as a whole'
+        : live.syncing
+        ? 'unavailable while reconnecting'
+        : 'sending…';
     return Container(
       decoration: const BoxDecoration(
         color: DesignTokens.d2Surface,
@@ -701,7 +708,8 @@ class ClearTextRow extends StatelessWidget {
         label: 'CLEAR TEXT',
         semanticLabel: 'Clear text',
         disabledReason: disabledReason,
-        toggled: textCleared,
+        // A status, not a toggle: tapping again does not restore the text.
+        semanticValue: textCleared ? 'Text cleared' : null,
         haptic: true,
         // Solid red is reserved for Blackout and armed confirms; an engaged
         // text clear is shown as an outline.
@@ -715,7 +723,7 @@ class ClearTextRow extends StatelessWidget {
         ),
         // Not `_guarded`: a single tap with no arm step (it only blanks the
         // text layer), so the syncing/busy block is repeated here directly.
-        onPressed: (live.syncing || live.busy)
+        onPressed: (deckLive || live.syncing || live.busy)
             ? null
             : () => live.act(cmdClearLayer('text')),
       ),

@@ -131,6 +131,19 @@ void main() {
     expect(v.clearedLayers, ['text']);
   });
 
+  test('operator state carries live_authored_id when a deck slide is live', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false,'
+            '"live_authored_id":42}')
+        as Map<String, dynamic>);
+    expect(v.liveAuthoredId, 42);
+    // Optional and additive: an older host (or nothing authored live) omits it.
+    final none = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false}')
+        as Map<String, dynamic>);
+    expect(none.liveAuthoredId, isNull);
+  });
+
   // Exact host verdict bytes mirror Rust's auth_verdict_wire_fixtures_are_stable
   // and pair_verdict_wire_fixtures_are_stable, including all current deny reasons.
   test('verdict wire fixture: auth granted', () {
