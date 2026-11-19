@@ -5150,6 +5150,27 @@
         white-space: nowrap;
       }
 
+      /* Fix round 2: with the menu closed, the trigger still says what is cleared — the same
+         outline + uppercase marker treatment a cleared entry uses, never a red fill. */
+      .clear-layer-summary {
+        display: none;
+        margin: 0 6px 0 8px;
+        padding: 0 6px;
+        line-height: 16px;
+        border: 1px solid var(--sc-text-secondary);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--sc-text-secondary);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      #clear-layer-btn.has-cleared .clear-layer-summary {
+        display: inline-block;
+      }
+
       #clear-layer-btn[aria-expanded="true"] {
         border-color: var(--sc-live);
       }

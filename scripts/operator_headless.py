@@ -2087,6 +2087,12 @@ EXPECTED_MIN_CHECKS = 3042
 # focus, Esc closes it (focus to trigger), Esc,Esc never sends Clear All (both open paths),
 # plus a closed-menu Esc,Esc control and a reopen setup check.
 EXPECTED_MIN_CHECKS = 3057
+# 3057 -> 3072 (86ajpy59e fix round 2): measured, 0 FAIL. +16 / -1: selecting each entry
+# closes the menu (4); the closed trigger paints an outline 'Text cleared' marker, names it,
+# and paints none when nothing is cleared (4); B with the menu open closes it and blacks out
+# once (+ setup/engaged/restore, 4); a mouse selection leaves page focus and → is Next again
+# (2); Tab out closes the menu (+ setup, 2). The round-1 held-back loop dropped B (-1).
+EXPECTED_MIN_CHECKS = 3072
 
 
 def find_chrome():
@@ -16514,13 +16520,17 @@ DRIVER = r"""
              return r.height >= 24 && (hit === b || b.contains(hit));
            }), "86ajpy59e: every entry is painted at a usable height and is the real hit-test target");
         // Each entry invokes clear_layer with ITS tag (and only that).
+        // Fix round 2: selecting an entry also CLOSES the menu, so each one is reopened first.
         ["background", "lower-third", "logo", "text"].forEach(function(tag){
+          if (getComputedStyle(plcMenu).display === "none") plcBtn.click();
           var b = plcMenu.querySelector('[data-layer="' + tag + '"]');
           var before = plcClears().length;
           if (b) b.click();
           var got = plcClears().slice(before);
           ok(got.length === 1 && got[0].cmd === "clear_layer" && got[0].args && got[0].args.layer === tag,
              "86ajpy59e: the " + tag + " entry invokes clear_layer{layer:\"" + tag + "\"} (" + JSON.stringify(got) + ")");
+          ok(getComputedStyle(plcMenu).display === "none" && plcBtn.getAttribute("aria-expanded") === "false",
+             "86ajpy59e: selecting the " + tag + " entry closes the menu (an open menu holds back live keys)");
         });
         // Cleared state from view.cleared_layers. Reset through Clear All (the real command path),
         // then clear ONLY text and read every entry's painted state.
@@ -16537,6 +16547,17 @@ DRIVER = r"""
         if (plcText) plcText.click();
         ok(await wWait(function(){ return plcText && plcText.classList.contains("cleared"); }),
            "86ajpy59e (setup): the host's cleared_layers:[\"text\"] marks the Text entry");
+        // With the menu now CLOSED, the trigger itself still shows what is cleared.
+        var plcSum = el("clear-layer-summary");
+        ok(getComputedStyle(plcMenu).display === "none" && plcPainted(plcSum) && /text cleared/i.test(plcSum.textContent),
+           "86ajpy59e: with the menu closed the CLEAR \u25be trigger paints a 'Text cleared' marker (\"" + (plcSum ? plcSum.textContent : "") + "\")");
+        var plcSumCs = plcSum ? getComputedStyle(plcSum) : null;
+        ok(plcSumCs && ["rgb(143, 32, 48)", "rgb(255, 77, 77)", "rgb(163, 40, 58)"].indexOf(plcSumCs.backgroundColor) < 0 &&
+           plcSumCs.backgroundImage === "none" && plcSumCs.borderTopStyle === "solid",
+           "86ajpy59e: the trigger's cleared marker is an outline chip, never solid red (bg " + (plcSumCs ? plcSumCs.backgroundColor : "") + ")");
+        ok(/cleared: text/i.test(plcBtn.getAttribute("aria-label") || ""),
+           "86ajpy59e: the trigger's accessible name states the cleared layer(s) (\"" + plcBtn.getAttribute("aria-label") + "\")");
+        plcBtn.click(); // reopen to read the entries' own painted state
         ok(plcPainted(plcStatus(plcText)) && /cleared/i.test(plcStatus(plcText).textContent),
            "86ajpy59e: the Text entry PAINTS a 'Cleared' marker in words (computed display " + (plcStatus(plcText) ? getComputedStyle(plcStatus(plcText)).display : "n/a") + ")");
         ok(plcText && /cleared/i.test(plcText.getAttribute("aria-label") || "") &&
@@ -16555,6 +16576,8 @@ DRIVER = r"""
         lastRendered = ""; render(plcV);
         ok(plcItems.every(function(b){ return !b.classList.contains("cleared") && !plcPainted(plcStatus(b)); }),
            "86ajpy59e: a view with cleared_layers omitted renders every entry present (missing field = [])");
+        ok(!plcPainted(el("clear-layer-summary")) && !plcBtn.classList.contains("has-cleared"),
+           "86ajpy59e: with nothing cleared the trigger paints no cleared marker");
         // The `.` shortcut (UX-STATE-MATRIX §11) opens the picker; it is not itself a clear.
         if (getComputedStyle(plcMenu).display !== "none") plcBtn.click();
         ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }),
@@ -16575,7 +16598,7 @@ DRIVER = r"""
           target.dispatchEvent(ev);
           return ev;
         };
-        ["ArrowLeft", "ArrowRight", "b", "Backspace"].forEach(function(k){
+        ["ArrowLeft", "ArrowRight", "Backspace"].forEach(function(k){
           var from = window.__calls.length;
           var kev = plcKey(document.activeElement || document.body, k);
           ok(plcLive(from).length === 0 && getComputedStyle(plcMenu).display !== "none" && kev.defaultPrevented,
@@ -16604,9 +16627,9 @@ DRIVER = r"""
         ok(getComputedStyle(plcMenu).display !== "none" && document.activeElement === document.body,
            "86ajpy59e (setup): a mouse-style click opens the menu with focus left on <body>");
         var plcFrom2 = window.__calls.length;
-        ["ArrowLeft", "ArrowRight", "b", "Backspace"].forEach(function(k){ plcKey(document.body, k); });
-        ok(plcLive(plcFrom2).length === 0 && getComputedStyle(plcMenu).display !== "none",
-           "86ajpy59e: with a mouse-opened menu and focus on <body>, ←/→/b/Backspace invoke nothing (" + JSON.stringify(plcLive(plcFrom2)) + ")");
+        var plcPrev2 = ["ArrowLeft", "ArrowRight", "Backspace"].map(function(k){ return plcKey(document.body, k).defaultPrevented; });
+        ok(plcLive(plcFrom2).length === 0 && getComputedStyle(plcMenu).display !== "none" && plcPrev2.every(Boolean),
+           "86ajpy59e: with a mouse-opened menu and focus on <body>, ←/→/Backspace invoke nothing and are consumed (" + JSON.stringify(plcLive(plcFrom2)) + ", prevented " + JSON.stringify(plcPrev2) + ")");
         var plcEscFrom2 = window.__calls.length;
         plcKey(document.body, "Escape");
         ok(getComputedStyle(plcMenu).display === "none", "86ajpy59e: Esc closes the mouse-opened menu even with focus on <body>");
@@ -16620,6 +16643,40 @@ DRIVER = r"""
         plcKey(document.body, "Escape"); plcKey(document.body, "Escape");
         ok(window.__calls.slice(plcEscFrom3).filter(function(c){ return c.cmd === "clear"; }).length === 1,
            "86ajpy59e (control): with the menu closed, Esc, Esc still sends exactly one Clear All");
+        // Fix round 2 — plain B is never dead: with the menu open (keyboard-opened, focus on an
+        // entry) B closes the menu AND blacks out, exactly once.
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        document.body.dispatchEvent(new KeyboardEvent("keydown", {key:".", code:"Period", bubbles:true, cancelable:true}));
+        ok(getComputedStyle(plcMenu).display !== "none" && plcMenu.contains(document.activeElement),
+           "86ajpy59e (setup): '.' reopens the menu with focus on an entry for the B check");
+        var plcBFrom = window.__calls.length;
+        plcKey(document.activeElement, "b");
+        var plcBCalls = window.__calls.slice(plcBFrom).filter(function(c){ return c.cmd === "blackout"; });
+        ok(plcBCalls.length === 1 && plcBCalls[0].args && plcBCalls[0].args.on === true && getComputedStyle(plcMenu).display === "none",
+           "86ajpy59e: with the menu open, B closes it and sends exactly one blackout{on:true} (" + JSON.stringify(plcBCalls) + ")");
+        ok(await wWait(function(){ return el("blackout").dataset.on === "1"; }), "86ajpy59e (setup): the blackout engaged");
+        el("restore-output").click();
+        ok(await wWait(function(){ return el("blackout").dataset.on !== "1"; }), "86ajpy59e (cleanup): Restore brings the output back");
+        // After a MOUSE selection the menu is closed and → is Next again (nothing held back).
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+        var plcLogo = plcMenu.querySelector('[data-layer="logo"]');
+        plcLogo.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+        ok(getComputedStyle(plcMenu).display === "none" && !plcMenu.contains(document.activeElement) && document.activeElement !== plcBtn,
+           "86ajpy59e: a mouse selection closes the menu and leaves focus on the page, not the trigger");
+        var plcNextFrom = window.__calls.length;
+        plcKey(document.activeElement || document.body, "ArrowRight");
+        ok(window.__calls.slice(plcNextFrom).filter(function(c){ return c.cmd === "next"; }).length === 1,
+           "86ajpy59e: after selecting an entry, \u2192 records the next-slide command again");
+        // Tab out / focus leaving the menu and its trigger closes it.
+        document.body.dispatchEvent(new KeyboardEvent("keydown", {key:".", code:"Period", bubbles:true, cancelable:true}));
+        ok(getComputedStyle(plcMenu).display !== "none" && plcMenu.contains(document.activeElement),
+           "86ajpy59e (setup): menu reopened with focus inside for the Tab-out check");
+        var plcTabEv = plcKey(document.activeElement, "Tab");
+        el("golive").focus(); // where Tab would land: focus moves to a control outside #clear-layer
+        ok(!plcTabEv.defaultPrevented && getComputedStyle(plcMenu).display === "none" && plcBtn.getAttribute("aria-expanded") === "false",
+           "86ajpy59e: Tab out (focus leaving the menu and its trigger) closes the menu, and Tab itself is not swallowed");
+        el("golive").blur();
         // Click outside closes it; double-Esc and Blackout are untouched (no new state on them).
         plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
         ok(getComputedStyle(plcMenu).display !== "none", "86ajpy59e (setup): menu reopened for the click-outside check");
