@@ -2082,6 +2082,11 @@ EXPECTED_MIN_CHECKS = 2999
 # editable-guard / CLEAR ▾ picker checks, plus 2 CON-046 key-chip contrast checks that
 # enumerate every `.key` chip and now also measure the picker's two new chips.
 EXPECTED_MIN_CHECKS = 3042
+# 3042 -> 3057 (86ajpy59e fix round 1): measured, 0 FAIL. 15 new checks: with the CLEAR ▾
+# menu open, ←/→/b/Backspace invoke nothing (keyboard- and mouse-opened), ↓/End move
+# focus, Esc closes it (focus to trigger), Esc,Esc never sends Clear All (both open paths),
+# plus a closed-menu Esc,Esc control and a reopen setup check.
+EXPECTED_MIN_CHECKS = 3057
 
 
 def find_chrome():
@@ -16561,7 +16566,63 @@ DRIVER = r"""
            "86ajpy59e: '.' opens the layer picker without clearing anything");
         ok(document.activeElement === plcItems[0],
            "86ajpy59e: opening the picker from the keyboard moves focus to its first entry");
+        // Fix round 1 — while the menu is open ONLY its own keys act (the notification-panel
+        // popover rule). Live shortcuts dispatched at the focused entry must invoke nothing.
+        var plcLiveCmds = ["next", "previous", "go_live", "blackout", "clear", "clear_layer", "select", "present_plan_deck_slide"];
+        var plcLive = function(from){ return window.__calls.slice(from).filter(function(c){ return plcLiveCmds.indexOf(c.cmd) >= 0; }); };
+        var plcKey = function(target, key){
+          var ev = new KeyboardEvent("keydown", {key:key, bubbles:true, cancelable:true});
+          target.dispatchEvent(ev);
+          return ev;
+        };
+        ["ArrowLeft", "ArrowRight", "b", "Backspace"].forEach(function(k){
+          var from = window.__calls.length;
+          var kev = plcKey(document.activeElement || document.body, k);
+          ok(plcLive(from).length === 0 && getComputedStyle(plcMenu).display !== "none" && kev.defaultPrevented,
+             "86ajpy59e: with the menu open, " + k + " invokes no live command, is consumed (no back-navigation) and leaves the menu open (" + JSON.stringify(plcLive(from)) + ")");
+        });
+        plcKey(document.activeElement, "ArrowDown");
+        ok(document.activeElement === plcItems[1], "86ajpy59e: ↓ inside the open menu moves focus to the next entry (Lower third)");
+        plcKey(document.activeElement, "End");
+        ok(document.activeElement === plcItems[3], "86ajpy59e: End inside the open menu moves focus to the last entry (Text)");
+        // Esc, Esc with a KEYBOARD-opened menu (focus on an entry): the first Esc closes the menu
+        // and is consumed, the second is only a first tap — never CLEAR ALL.
+        var plcEscFrom = window.__calls.length;
+        var plcEsc1 = plcKey(document.activeElement, "Escape");
+        ok(getComputedStyle(plcMenu).display === "none" && plcBtn.getAttribute("aria-expanded") === "false" && plcEsc1.defaultPrevented,
+           "86ajpy59e: Esc closes the keyboard-opened menu (consumed)");
+        ok(document.activeElement === plcBtn, "86ajpy59e: closing with Esc returns focus to the CLEAR ▾ trigger");
+        plcKey(document.activeElement, "Escape");
+        ok(!window.__calls.slice(plcEscFrom).some(function(c){ return c.cmd === "clear"; }),
+           "86ajpy59e: Esc, Esc with the menu open (keyboard-opened) records NO clear — the first Esc never arms Clear All");
+        plcKey(document.body, "Shift"); // disarm the lone second tap so later checks start clean
+        // Esc, Esc with a MOUSE-opened menu and focus left on <body> (WKWebView does not focus a
+        // clicked button, so the menu never holds focus on that path).
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        ok(getComputedStyle(plcMenu).display !== "none" && document.activeElement === document.body,
+           "86ajpy59e (setup): a mouse-style click opens the menu with focus left on <body>");
+        var plcFrom2 = window.__calls.length;
+        ["ArrowLeft", "ArrowRight", "b", "Backspace"].forEach(function(k){ plcKey(document.body, k); });
+        ok(plcLive(plcFrom2).length === 0 && getComputedStyle(plcMenu).display !== "none",
+           "86ajpy59e: with a mouse-opened menu and focus on <body>, ←/→/b/Backspace invoke nothing (" + JSON.stringify(plcLive(plcFrom2)) + ")");
+        var plcEscFrom2 = window.__calls.length;
+        plcKey(document.body, "Escape");
+        ok(getComputedStyle(plcMenu).display === "none", "86ajpy59e: Esc closes the mouse-opened menu even with focus on <body>");
+        plcKey(document.body, "Escape");
+        ok(!window.__calls.slice(plcEscFrom2).some(function(c){ return c.cmd === "clear"; }),
+           "86ajpy59e: Esc, Esc with a mouse-opened menu records NO clear");
+        plcKey(document.body, "Shift");
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        // Control: with the menu CLOSED, Esc, Esc is still Clear All (double-Esc unchanged).
+        var plcEscFrom3 = window.__calls.length;
+        plcKey(document.body, "Escape"); plcKey(document.body, "Escape");
+        ok(window.__calls.slice(plcEscFrom3).filter(function(c){ return c.cmd === "clear"; }).length === 1,
+           "86ajpy59e (control): with the menu closed, Esc, Esc still sends exactly one Clear All");
         // Click outside closes it; double-Esc and Blackout are untouched (no new state on them).
+        plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+        ok(getComputedStyle(plcMenu).display !== "none", "86ajpy59e (setup): menu reopened for the click-outside check");
         document.body.dispatchEvent(new MouseEvent("pointerdown", {bubbles:true}));
         document.body.click();
         ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }) && plcBtn.getAttribute("aria-expanded") === "false",

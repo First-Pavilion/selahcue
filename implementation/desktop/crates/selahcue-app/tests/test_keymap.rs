@@ -162,7 +162,10 @@ fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
         "case \"Backspace\":",
         "case \"Escape\":",
         "clearAll()",
-        // Backspace still aliases to Clear-all until per-layer clearing lands.
+        // Backspace clears the TEXT layer (86ajpy59e), mirroring
+        // `CanonicalAction::ClearLayer` -> `Command::ClearLayer { layer: "text" }`.
+        "clearLayer(\"text\")",
+        "invoke(\"clear_layer\", { layer })",
         "86ajpy59e",
     ] {
         assert!(html.contains(needle), "webview keymap missing {needle:?}");
@@ -187,8 +190,10 @@ fn operator_webview_mirrors_the_canonical_keymap_and_pierces_modals() {
     // MODAL-PIERCE: the chords must be handled BEFORE the input-focus early
     // return, so they fire even while a text field / dialog owns focus. Assert
     // that ordering structurally (chord positions precede the input bail-out).
-    let input_bailout =
-        "if (tag === \"INPUT\" || tag === \"SELECT\" || tag === \"TEXTAREA\") return;";
+    // The bail-out covers every editable kind, contenteditable included (86ajpy59e:
+    // Backspace in a contenteditable must delete a character, never clear a layer).
+    let input_bailout = "if (tag === \"INPUT\" || tag === \"SELECT\" || tag === \"TEXTAREA\" \
+                         || (e.target && e.target.isContentEditable)) return;";
     let bail = html
         .find(input_bailout)
         .expect("input-focus bail-out present");

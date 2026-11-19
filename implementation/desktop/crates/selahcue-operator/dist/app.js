@@ -3563,7 +3563,7 @@
       document.getElementById("clear-all").onclick = clearAll;
       // 86ajpy59e — the CLEAR ▾ per-layer picker. The menu stays open after an entry is used so
       // the operator sees that layer's Cleared marker land; a click outside, Escape or the
-      // trigger closes it. Escape still reaches the canonical double-Esc handler unchanged.
+      // trigger closes it. Escape with the menu open is consumed: it never arms double-Esc.
       const clearLayerBtn = document.getElementById("clear-layer-btn");
       const clearLayerMenu = document.getElementById("clear-layer-menu");
       const clearLayerItems = () =>
@@ -3600,12 +3600,11 @@
           if (wrap && e.target instanceof Node && wrap.contains(e.target)) return;
           closeClearLayerMenu(false);
         });
-        clearLayerMenu.addEventListener("keydown", (e) => {
-          if (e.key === "Escape") closeClearLayerMenu(true);
-        });
+        // The menu's keys (Esc / ↑ ↓ Home End / everything held back) are handled in the
+        // canonical capture-phase keydown handler, beside the notification-panel popover rule.
       }
       // ↑/↓/Home/End move between entries while focus is in the menu (called from the canonical
-      // keydown handler before its own arrow handling, so the verse cursor never moves instead).
+      // keydown handler's open-menu branch, so the verse cursor never moves instead).
       const clearLayerMenuNav = (e) => {
         if (!clearLayerMenuOpen() || !clearLayerMenu.contains(e.target)) return false;
         const items = clearLayerItems();
@@ -4444,6 +4443,31 @@
             return;
           }
         }
+        // 86ajpy59e — the CLEAR ▾ layer menu is a popover too, so it follows the same rule. While
+        // it is open only its own keys act: Esc is CONSUMED (closes it, disarms, never arms the
+        // double-Esc Clear All — however the menu was opened, mouse or keyboard, and wherever focus
+        // is), ↑/↓/Home/End move between entries, Enter/Space activate the focused entry natively,
+        // Tab may leave. Every other canonical live key (←/→, Enter/Space → GO LIVE/Next, B,
+        // Backspace, `.`) is held back. Placed before the console-only guard because the footer —
+        // and so this menu — is on every surface. The emergency chords above still pierce.
+        if (clearLayerMenuOpen()) {
+          disarm();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            closeClearLayerMenu(true);
+            return;
+          }
+          if (clearLayerMenuNav(e)) return;
+          // Held-back keys are also consumed (a stray Backspace must not become browser
+          // back-navigation). Tab and Enter/Space on a focused button keep their native action;
+          // typing in a field elsewhere is never touched.
+          const t = e.target || {};
+          const editable = t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+          const nativeActivate = (e.key === "Enter" || e.key === " ") && t.tagName === "BUTTON";
+          if (e.key !== "Tab" && !mod && !editable && !nativeActivate) e.preventDefault();
+          return;
+        }
         // CON-089 (global chord `F`, Figma 337:174): fullscreen the SELECTED output's console-
         // local preview. Placed here (outside the console-only guard below) because its target —
         // Screens & Outputs' "selected output" — is a DIFFERENT surface than the console; mirrors
@@ -4504,8 +4528,6 @@
         // deletes a character, it must never clear the live text layer.
         if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
         if (tag === "BUTTON" && (e.key === "Enter" || e.key === " ")) return;
-        // The open CLEAR ▾ menu owns ↑/↓/Home/End while focus is inside it.
-        if (clearLayerMenuNav(e)) return;
         // ↑/↓ own the chapter browser when one is open: move + stage the
         // highlighted verse (Enter then goes live via the canonical map).
         if ((e.key === "ArrowUp" || e.key === "ArrowDown") && currentChapter) {
