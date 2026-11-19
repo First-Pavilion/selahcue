@@ -129,10 +129,11 @@ Below the entitled rows, a separator + section for bundled public-domain transla
 
 **Location:** Existing frame `505:124`. Spec all states for implementation.
 
-> **Verified auth contract for §§3–5.** The validation rules and accepted states here follow the
-> shipped [accounts service](../../implementation/api/selahcue_api/apps/accounts/services.py) and
-> [marketing auth views](../../implementation/marketing/src/views/). Follow these rules where older
-> design copy differs. See the [auth landing pages handoff](AUTH-LANDING-PAGES-HANDOFF.md) for link recovery.
+> **Verified auth guidance for §§3–5.** Follow the password rules, the handling of accepted and failed
+> signup and reset requests, and the link lifetimes below where older design copy differs. These rules
+> follow the shipped [accounts service](../../implementation/api/selahcue_api/apps/accounts/services.py)
+> and [marketing auth views](../../implementation/marketing/src/views/). See the
+> [auth landing pages handoff](AUTH-LANDING-PAGES-HANDOFF.md) for link recovery.
 
 ### 3a. Field States
 

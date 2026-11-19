@@ -4,7 +4,7 @@ Authority: [existing ticket86ak120kw](https://app.clickup.com/t/86ak120kw), its 
 
 ## Intent and scope
 
-Make `docs/design/MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §§3–5 safe to build from. Reconcile directly related signup, verification-resend, reset-password and correction notes in `docs/design/AUTH-LANDING-PAGES-HANDOFF.md`, plus the signup and reset-request Notes cells in `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`. Confirm the contract against backend and current marketing code; sweep `docs/design/` and shipped account email templates for equivalent contradictory normative instructions. Preserve historical descriptions when clearly labeled as superseded, rather than erasing evidence.
+Make `docs/design/MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §§3–5 safe to build from. Reconcile directly related signup, verification-resend, reset-password and correction notes in `docs/design/AUTH-LANDING-PAGES-HANDOFF.md`, the signup and reset-request Notes cells in `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`, and the two landing-page state cells and adjacent handoff text in `docs/design/TRANSACTIONAL-EMAIL-spec.md`. Confirm the contract against backend and current marketing code; sweep `docs/design/` and shipped account email templates for equivalent contradictory normative instructions. Preserve historical descriptions when clearly labeled as superseded, rather than erasing evidence.
 
 ## Approaches considered
 
@@ -12,7 +12,7 @@ Use narrow source-backed corrections in the two handoffs and any equivalent live
 
 ## Binding contract
 
-- Registration: valid, admitted submissions use one accepted/check-email state for existing and new addresses. Only the address owner receives account-exists guidance out of band. Acceptance neither proves account creation nor delivery and creates no authenticated session; remove both the email-taken error and the automatic account-success redirect. Validation, rate-limit and transient errors remain errors, never existence signals.
+- Registration: valid, admitted submissions use one accepted/check-email state for existing and new addresses. Only the address owner receives account-exists guidance out of band. Acceptance creates no authenticated session and confirms neither account creation nor delivery. Remove both the email-taken error and the automatic account-success redirect. Render validation, rate-limit and transient failures as errors, without interpreting them as evidence of account existence.
 - Forgot password: use the same conditional accepted state for known/unknown addresses. Remove email-not-found. Resend success means accepted request, not guaranteed delivery. A failed request stays in its error/form state.
 - Verification resend: the shipped mutation gives admitted callers one accepted result across address states. Use conditional check-inbox copy on acceptance and retain error states. Mark the previous missing-mutation estimate as historical.
 - Sign-in: require a nonempty submitted password, with no new-password minimum, maximum or composition checks and no silent trimming. This follows current `SignInView.validate` and `accounts.services.login`; the old ticket's request to apply10 characters to §3c is superseded by this source-backed distinction. Acceptance of input is not successful authentication.

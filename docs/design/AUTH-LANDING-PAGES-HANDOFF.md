@@ -290,13 +290,13 @@ submitted address. When a verification link is issued, it has a **24-hour** life
 - a **"BEFORE SIGNING IN"** panel (`bg/inset`, 1px border, radius 12) with four rows:
   - `✓` Live presentation, scripture, media and timers — all working
   - `✓` Your work is saved locally as normal
-  - `–` Signing in and activating this device — verify your email first if needed
-  - `–` Cloud AI notes, plan and device management — sign in to access these features
+  - `–` Activating this device — sign in as an administrator. Activation depends on your license and device eligibility.
+  - `–` Cloud AI notes, plan and device management — sign in first. Availability depends on your role, plan and device.
 - primary **"I've verified — continue"**, ghost **"Resend verification email"**, and a muted line offering
   *Go back and change it* / *Skip — set up later*.
 
-The two `–` rows are not a guess: `login` raises `POLICY_DENIED` for an unverified user *after* a correct
-password, so activation genuinely cannot proceed until verification lands.
+For an unverified account, `login` raises `POLICY_DENIED` after a correct password. Complete any required email
+verification before signing in.
 
 ---
 
@@ -370,13 +370,13 @@ license and devices." / **Continue to sign in** / banner "You don't need an acco
 "Not your account?" + "Contact support"
 
 **V3** · "This verification link didn't work" / "The link may have expired, already been used, or been copied
-incompletely. Enter your email address and we'll send a fresh one." / label "Email", placeholder
+incompletely. Enter your email address to request a new link." / label "Email", placeholder
 "you@yourchurch.org" / **Send a new verification link** / banner "Already verified? Just sign in" — "A
 verification link stops working once it has been used. If you have already confirmed this address, sign in as
 normal." / "Remembered everything?" + "Back to Sign in"
 
-**V4** · "This verification link has expired" / "Verification links expire 24 hours after they are sent. Enter
-your email address and we'll send you a new one." / **Send a new verification link** / banner "Why links
+**V4 (deferred, see §10.2)** · "This verification link has expired" / "Verification links expire 24 hours after
+issuance. Enter your email address to request a new link." / **Send a new verification link** / banner "Why links
 expire" — "A 24-hour window limits how long the link is useful if the email is forwarded or sits in a shared
 inbox." / "Wrong address?" + "Back to Sign in"
 
@@ -386,8 +386,8 @@ verification, check your inbox for a new link. A verification link expires 24 ho
 banner "Only the newest link works" — "Issuing a new link cancels the previous one.
 Use the most recent email you received." / "Need a hand?" + "Contact support"
 
-**V6** · "This page needs a verification link" / "Open the link in the email we sent you. If you no longer have
-it, enter your address to request a new one." / **Send a verification link** / "Already verified?" +
+**V6** · "This page needs a verification link" / "If you received a verification email, open its link.
+Enter your email address to request a new link." / **Send a verification link** / "Already verified?" +
 "Back to Sign in"
 
 ### 8.2 `/reset`
@@ -442,9 +442,9 @@ run without an account — signing up only unlocks cloud features, licensing and
 If an email arrives, follow the instructions in it. Verification links expire 24 hours after issuance."
 / banner "You are ready to present right now" — "SelahCue works fully offline. Slides, local scripture, media,
 blackout/clear and timers are available before sign-in." / "BEFORE SIGNING IN" / "Live presentation,
-scripture, media and timers — all working" · "Your work is saved locally as normal" · "Signing in and
-activating this device — verify your email first if needed" · "Cloud AI notes, plan and device management —
-sign in to access these features" /
+scripture, media and timers — all working" · "Your work is saved locally as normal" · "Activating this device —
+sign in as an administrator. Activation depends on your license and device eligibility." · "Cloud AI notes,
+plan and device management — sign in first. Availability depends on your role, plan and device." /
 **I've verified — continue** / **Resend verification email** / "Wrong address? Go back and change it.   ·
 Skip — set up later"
 

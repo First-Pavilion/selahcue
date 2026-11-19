@@ -94,11 +94,13 @@ Three per email. There are no loading, empty, or permission states — an email 
 
 | Email | Default | Link expired | Plain-text fallback |
 |---|---|---|---|
-| Verification | As designed | Landing page says the link expired and offers to resend; the email itself is unchanged | Below |
-| Password reset | As designed | Landing page says expired, offers to request a new reset. **Must not** reveal whether the address has an account | Below |
+| Verification | As designed | V3 uses one "This verification link didn't work" state for invalid, used and expired links. Enter an email address to request a fresh verification link. | Below |
+| Password reset | As designed | R4 uses one "This reset link didn't work" state for invalid, used and expired links. Enter an email address to request a fresh reset link. Acceptance copy is conditional for every address. | Below |
 | Account-exists | As designed | n/a — no link, nothing to expire | Below |
 
-Expiry is handled by the **landing page**, not the email — the email cannot know its own age when opened. Those two landing states belong to the desktop/web sign-in work (slice 4, [86ajy7anx](https://app.clickup.com/t/86ajy7anx)) and are noted here so they are not lost.
+The landing pages use the combined V3 and R4 states for desktop/web sign-in (slice 4). The default
+lifetimes from issuance are 24 hours for verification and 1 hour for reset. V4 and R5 remain
+deferred. [Auth landing pages handoff](AUTH-LANDING-PAGES-HANDOFF.md#102-the-api-cannot-distinguish-expired-from-invalid--owner-decision) · [86ajy7anx](https://app.clickup.com/t/86ajy7anx)
 
 ## Copy deck
 

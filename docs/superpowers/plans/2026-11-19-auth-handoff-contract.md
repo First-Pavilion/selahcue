@@ -21,7 +21,7 @@ Basea53d2ca5b97d72d4f353a9a9748f1e3ccc1eaf54; branchcodex/86ak120kw-auth-handoff
 
 ## Task1: Correct and verify the complete documentation ticket
 
-**Files:** modify `docs/design/MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §§3–5, the directly related signup and reset-password guidance in `docs/design/AUTH-LANDING-PAGES-HANDOFF.md`, and the two signup and reset-request Notes cells in `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`. Include this plan and its spec. Report further live contradictions before expanding file ownership. No executable changes.
+**Files:** modify `docs/design/MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §§3–5, the directly related signup, verification-resend and reset-password guidance in `docs/design/AUTH-LANDING-PAGES-HANDOFF.md`, the signup and reset-request Notes cells in `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`, and the two landing-page state cells and adjacent handoff text in `docs/design/TRANSACTIONAL-EMAIL-spec.md`. Include this plan and its spec. Report further live contradictions before expanding file ownership. No executable changes.
 
 **Interfaces:** consumes the existing `register_customer_user`, `request_password_reset`, `login`, `_validate_password`, `_consume_reset_token`, marketing auth views/passwordPolicy and shipped account email templates. Produces consistent implementation guidance for those unchanged interfaces.
 
@@ -29,6 +29,7 @@ Basea53d2ca5b97d72d4f353a9a9748f1e3ccc1eaf54; branchcodex/86ak120kw-auth-handoff
 - [ ] Record the four original contradictions plus companion reset error-order discrepancy. Run and retain a bounded search over `docs/design/` and shipped email templates for eight-character/composition rules, email-existence responses and15-minute reset copy. Classify matches rather than mechanically replacing unrelated or historical content.
 - [ ] Correct primary §§3c,4b/4c/4d,5b/5c and narrow precedence/context text as needed. Use one conditional accepted state, sign-in nonempty,10–200 length-only creation/reset policy and1-hour reset lifetime.
 - [ ] Reconcile companion acceptance, reset critical note and superseded-corrections list. Use conditional A13 and V5 copy, document the shipped resend mutation in §10.3 and mark the original gap inventory as historical. Correct the two API Notes cells. Preserve the collapsed token-failure contract and explicitly handle `PASSWORD_INVALID` behind a live token. Keep device and transport guidance outside this correction.
+- [ ] Align the transactional-email landing-page guidance with V3 and R4. Keep V4 and R5 deferred and preserve the issued-link lifetimes.
 - [ ] Repeat the scoped search, map every remaining relevant match to its disposition, verify cited files/anchors and changed-path scope, then run `git diff --check`. No new application tests: source/test inspection and content validation are the evidence for this documentation-only change.
 - [ ] Self-review and commit only owned docs plus plan/spec. Report source anchors, exact validation commands/output, all changed files and limitations in the SDD workspace. No push or external tracker mutations by the worker.
 
