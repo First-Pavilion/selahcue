@@ -12,7 +12,6 @@ import 'package:selahcue_controller/models/selah_theme.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/widgets/mobile_widgets.dart';
-import 'package:selahcue_controller/views/widgets/primitives.dart';
 
 class _Fake implements ControllerSession {
   @override
