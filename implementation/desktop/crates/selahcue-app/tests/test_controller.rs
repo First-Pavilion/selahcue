@@ -180,6 +180,25 @@ fn clear_layer_on_authored_slide_clears_all() {
 }
 
 #[test]
+fn clear_layer_on_authored_slide_keeps_blackout() {
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    c.apply(&Command::PresentAuthoredSlide {
+        slide_json: serde_json::to_string(&slide).unwrap(),
+        theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+        next_slide_json: None,
+    });
+    // Presenting an authored slide lifts blackout itself, so turn it on afterwards.
+    c.apply(&Command::Blackout { on: true });
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    let view = c.operator_view();
+    assert!(view.blackout, "ClearLayer never lifts blackout");
+    assert!(live_is_black(&c));
+    assert_eq!(view.live_authored_id, None);
+}
+
+#[test]
 fn blackout_then_clear_layer_then_unblackout() {
     let (mut c, _) = controller();
     c.apply(&Command::Next);

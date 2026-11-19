@@ -2787,8 +2787,6 @@ impl LiveController {
             .map(|item| item_slide(item, slide))
     }
 
-    /// Stage the plan item at `idx` in Preview at slide 0 (Live is untouched),
-    /// advancing the navigation cursor to it.
     /// Clear the whole live output back to idle (shared by `Clear` and the authored-slide
     /// `ClearLayer` path).
     fn clear_all_live(&mut self) -> ControllerReply {
@@ -2801,6 +2799,8 @@ impl LiveController {
         ControllerReply::Ack
     }
 
+    /// Stage the plan item at `idx` in Preview at slide 0 (Live is untouched),
+    /// advancing the navigation cursor to it.
     fn stage_index(&mut self, idx: usize) -> ControllerReply {
         self.stage_slide(idx, 0)
     }
@@ -2999,8 +2999,15 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
                 if self.presenter.authored_live_id().is_some() {
-                    // An authored slide has no per-layer model: behave exactly like Clear.
-                    return self.clear_all_live();
+                    // An authored slide has no per-layer model: clear it exactly like Clear, but
+                    // ClearLayer never changes blackout, so restore it afterwards.
+                    let was_blackout = self.blackout;
+                    let reply = self.clear_all_live();
+                    if was_blackout {
+                        self.blackout = true;
+                        self.presenter.blackout(true);
+                    }
+                    return reply;
                 }
                 self.presenter.clear_live_layer(layer);
                 // Re-apply blackout (as the theme-switch paths do); `self.blackout` is untouched.
