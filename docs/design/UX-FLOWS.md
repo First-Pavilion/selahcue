@@ -331,7 +331,7 @@ The **Show-on** scoping block is the primary safety mechanism — audience outpu
      (un-blackout restores exact prior)  (undo restores)
 
  Per-layer clear (console CLEAR ▾ picker, or phone "Clear text"):
-   CLEAR ▾  →  Text (Backspace) · Background · Lower-third · Logo
+   CLEAR ▾  →  Text (Backspace) · Background · Lower third · Logo
    (each independent — FR-078; the rest stays on the audience output.
     Media joins the picker once video lands, DEC-003.)
 ```
@@ -348,7 +348,7 @@ The **Show-on** scoping block is the primary safety mechanism — audience outpu
 | # | Operator action | System response |
 |---|---|---|
 | 1 | Press **`Esc Esc`** (or tap **CLEAR ALL**) | All live layers removed from output <200ms, offline (FR-076) |
-| 2 | *or* Press **`Backspace`** (text layer) or pick one layer from **CLEAR ▾** (open it with **`.`**, webview only) | Only that part (text, background, lower-third or logo) clears; the rest stays on the audience output (FR-078). The closed button shows a cleared-layers chip. Going live with new content resets it. On a deck (authored) slide a layer clear clears the whole slide but keeps blackout. Clearing every part leaves a black frame while the slide stays live. While the menu is open it consumes `Esc`, `B` still works, and it closes on selection or when focus leaves it. The phone has its own "Clear text" row; its emergency strip is unchanged |
+| 2 | *or* Press **`Backspace`** (text layer) or pick one layer from **CLEAR ▾** (open it with **`.`**, webview only) | Only that part (text, background, lower third or logo) clears; the rest stays on the audience output (FR-078). The closed button shows a cleared-layers chip. Going live with new content resets it. Cleared layers are not persisted, so after a crash restore the slide comes back whole. On a deck (authored) slide only Text applies: it clears the whole slide (as Backspace always has) and keeps blackout; Background, Lower third and Logo are disabled in CLEAR ▾ ("Deck slides clear as a whole"), the host ignores them, and the phone's "Clear text" row is disabled while a deck slide is live. Clearing every part leaves a black frame while the slide stays live. While the menu is open it consumes `Esc`, `B` still works, and it closes on selection or when focus leaves it. The phone has its own "Clear text" row; its emergency strip is unchanged |
 | 3 | `⌘Z` / re-stage | Prior live content restored |
 
 ### Branches
