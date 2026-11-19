@@ -45,7 +45,7 @@ from redis import Redis
 
 from selahcue_api import settings as project_settings
 from selahcue_api.apps.accounts import email as email_module
-from selahcue_api.apps.accounts import services
+from selahcue_api.apps.accounts import models as account_models, services
 from selahcue_api.apps.accounts.email import CeleryEmailSender
 from selahcue_api.apps.accounts.management.commands import failed_reset_confirms as reset_confirms_command
 from selahcue_api.apps.accounts.models import (
@@ -389,6 +389,106 @@ def test_signup_weak_password_rejected(client, sender):
     resp = post_account(client, REGISTER, register_input(password="short"))
     assert error_code(resp) == "VALIDATION_FAILED"
     assert CustomerUser.objects.count() == 0
+
+
+@contextmanager
+def _block_signup_queries():
+    attempted_query = False
+
+    def block_query(execute, sql, params, many, context):
+        nonlocal attempted_query
+        attempted_query = True
+        raise RuntimeError("Signup validation must precede database access.")
+
+    with connection.execute_wrapper(block_query):
+        yield
+
+    assert not attempted_query, "Signup validation must precede database access."
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("invalid_fields", "timezones"),
+    [
+        pytest.param({"timezone": "Not/A_Real_Zone"}, None, id="unknown-timezone"),
+        pytest.param({"timezone": "X" * 65}, None, id="long-timezone"),
+        pytest.param({"orgName": "N" * 201}, None, id="long-org-name"),
+        pytest.param({"displayName": "D" * 201}, None, id="long-display-name"),
+        pytest.param({"timezone": "X" * 64}, None, id="unknown-timezone-at-limit"),
+        pytest.param({"timezone": "X" * 65}, {"X" * 65}, id="known-timezone-over-limit"),
+    ],
+)
+def test_signup_rejects_invalid_profile_before_database_access(
+    client, sender, monkeypatch, invalid_fields, timezones
+):
+    signup_and_verify(client, sender)
+    models = (CustomerOrg, CustomerUser, CredentialToken, AuditEvent)
+    row_counts = [model.objects.count() for model in models]
+    sent = (sender.verify_tokens, sender.reset_tokens, sender.exists_notifications)
+    email_counts = [len(messages) for messages in sent]
+    if timezones is not None:
+        # Exercise the field length validator independently of timezone membership.
+        monkeypatch.setattr(account_models, "available_timezones", lambda: timezones)
+
+    # Fail before the database can evaluate an invalid request.
+    with _block_signup_queries():
+        response = post_account(client, REGISTER, register_input(idem="invalid-profile-01", **invalid_fields))
+
+    assert response.status_code == 200
+    assert body(response) == {
+        "data": None,
+        "errors": [{"message": "The request is invalid.", "extensions": {"code": "VALIDATION_FAILED"}}],
+    }
+    assert not response.cookies
+    assert [model.objects.count() for model in models] == row_counts
+    assert [len(messages) for messages in sent] == email_counts
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("timezone_fields", "expected_timezone"),
+    [
+        pytest.param({}, "UTC", id="default"),
+        pytest.param({"timezone": "UTC"}, "UTC", id="explicit-utc"),
+        pytest.param({"timezone": "Africa/Lagos"}, "Africa/Lagos", id="iana-zone"),
+        pytest.param({"timezone": " \tUTC  "}, "UTC", id="trimmed-utc"),
+        pytest.param({"timezone": " \t "}, "UTC", id="blank-to-utc"),
+    ],
+)
+def test_signup_persists_normalized_profile(client, sender, timezone_fields, expected_timezone):
+    first, last = "N" * 100, "N" * 99
+    display_name = " \t " if not timezone_fields else f" {last}\t  {first}  "
+    response = post_account(
+        client,
+        REGISTER,
+        register_input(orgName=f" {first}\t  {last} ", displayName=display_name, **timezone_fields),
+    )
+
+    assert body(response)["data"]["registerCustomerUser"]["accepted"] is True
+    user = CustomerUser.objects.select_related("customer").get()
+    assert user.display_name == (f"{last} {first}" if timezone_fields else "")
+    assert user.customer.name == f"{first} {last}"
+    assert user.customer.timezone == expected_timezone
+    assert len(sender.verify_tokens) == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("limited_budget", ["global", "source"])
+def test_signup_admission_precedes_profile_validation(client, sender, settings, limited_budget):
+    settings.SELAHCUE_THROTTLE_REGISTER_GLOBAL = (1 if limited_budget == "global" else 10, 3600)
+    settings.SELAHCUE_THROTTLE_REGISTER_IP = (1 if limited_budget == "source" else 10, 3600)
+    seed_response = post_account(client, REGISTER, register_input())
+    assert body(seed_response)["data"]["registerCustomerUser"]["accepted"] is True
+
+    with _block_signup_queries():
+        response = post_account(
+            client,
+            REGISTER,
+            register_input(idem="refused-invalid-profile-01", displayName="D" * 201),
+        )
+    assert error_code(response) == "RATE_LIMITED"
+    assert len(sender.verify_tokens) == 1
+    assert not sender.exists_notifications
 
 
 @pytest.mark.django_db
