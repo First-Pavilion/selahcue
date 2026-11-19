@@ -19,12 +19,12 @@ Login/refresh return a **show-once opaque session token** (`sessionToken`). It i
 
 | Mutation | Auth | Input → Output | Notes |
 |---|---|---|---|
-| `registerCustomerUser(input)` | none | `{idempotencyKey, email, password, orgName, country, displayName?, timezone?}` → `{accepted}` | **Self-serve** (DEC-007): creates a NEW org (TRIAL) + first Admin. Always `accepted:true` (no enumeration). Triggers a verification email. |
+| `registerCustomerUser(input)` | none | `{idempotencyKey, email, password, orgName, country, displayName?, timezone?}` → `{accepted}` | **Self-serve** (DEC-007). Valid, admitted requests have the same `accepted: true` result for new and existing addresses. A new address can create a trial org and first Admin and queue a verification email. The existing-account path queues sign-in guidance to the address owner. Acceptance creates no session and confirms neither account creation nor delivery. |
 | `verifyEmail(token)` | none (token) | `token` → `{verified}` | Consumes the emailed token; activates the account. All failures → `VALIDATION_FAILED`. |
 | `login(input)` | none | `{email, password}` → `{sessionToken, expiresAt, role, orgId}` | Unknown-email == wrong-password (`UNAUTHENTICATED`). Unverified/disabled → `POLICY_DENIED`. A locked account → the same `UNAUTHENTICATED` (never a distinct code: that would be an account-existence oracle). |
 | `refreshSession` | session | → `{sessionToken, expiresAt}` | Rotates the token (old revoked). |
 | `logout(allSessions?)` | session | → `{revoked}` | Revokes this (or all) session(s). Device tokens untouched. |
-| `requestPasswordReset(email)` | none | `email` → `{accepted}` | Always `accepted:true` (no enumeration). Emails a reset link when the account exists. |
+| `requestPasswordReset(email)` | none | `email` → `{accepted}` | Valid, admitted requests have the same `accepted: true` result for registered and unregistered addresses. The service can queue a link only for a registered address. Acceptance creates no session and confirms no delivery. |
 | `confirmPasswordReset(input)` | none (token) | `{token, newPassword}` → `{reset}` | Sets the new password; **revokes all sessions**. |
 | `activateDeviceWithSession(input)` | session, **ADMIN** | `{idempotencyKey, deviceFingerprint, platform, appVersion?, displayName?}` → `{fullToken, created, devicePublicId, platform}` | DEC-005 account-based activation. `fullToken` is the show-once device token (null on replay). MEMBER → `PERMISSION_DENIED`; no active license → `NOT_FOUND`; at device limit → `POLICY_DENIED`. |
 

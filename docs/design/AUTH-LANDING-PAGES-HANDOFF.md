@@ -22,7 +22,7 @@ Four surfaces that the product needs and that had **no design anywhere**:
 
 1. **`/verify`** — where the verification email's button lands. Shipped emails link here **today**; the route 404s.
 2. **`/reset`** — where the password-reset email's button lands. Same. This is the continuation of the
-   *request reset* / *email sent* steps specified (prose only) in `MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §5.
+   *request reset* / *request accepted* steps specified in `MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §5.
 3. **Desktop sign-up + verify-pending** — `ACCOUNT-SETUP-HANDOFF.md` covers sign-**in** (A0–A10) only.
 4. **Manage devices** — the account-portal page that desktop frame **A8** and the Account dashboard's
    **"Manage devices"** button (`506:223`) already link to.
@@ -31,11 +31,10 @@ Four surfaces that the product needs and that had **no design anywhere**:
 must **never** block, blank or imply blocking of live presentation (NFR-015 offline, CON-2 offline-core,
 NFR-024 never-blank). Every error, expiry and destructive frame states this explicitly.
 
-**Second invariant, specific to these surfaces: no account-existence oracle.** The API deliberately returns an
-identical response whether or not an address is registered (`register_customer_user`, `request_password_reset`
-both return `accepted: true` unconditionally; `login` equalises timing). Copy on these pages must never leak
-existence. This is why V5 reads *"If you@yourchurch.org has a SelahCue account waiting to be verified…"* rather
-than *"We've sent…"*, and why **there is no "email already registered" error on sign-up** — see §10.1.
+**Second invariant for these surfaces — protect account existence.** On valid, admitted signup and reset
+requests, `register_customer_user` and `request_password_reset` return the same `accepted: true` response
+whether the address is registered or unregistered. Use conditional check-inbox copy and keep validation,
+rate-limit and server or connection failures in error states. See §10.1 for the signup transition.
 
 ---
 
@@ -130,7 +129,7 @@ Desktop frames follow the **A0–A10** conventions instead: 1760×1000, `#0b0d12
 | V2 | Verified (success) | `743:139` | yes |
 | V3 | **Link no longer valid** (merged default) | `746:124` | **yes — ship this one** |
 | V4 | Link expired · 24h + resend | `746:148` | no — needs §10.2 |
-| V5 | New link sent (resend confirmation) | `746:172` | needs §10.3 |
+| V5 | Verification request accepted | `746:172` | yes, on acceptance (§10.3) |
 | V6 | No verification link (missing `?token=`) | `747:124` | yes |
 
 ### 3.2 `/reset` — set-new-password landing (web)
@@ -151,7 +150,7 @@ Desktop frames follow the **A0–A10** conventions instead: 1760×1000, `#0b0d12
 |---|---|---|
 | A11 | Create your SelahCue account (sign-up) | `752:124` |
 | A12 | Sign-up — inline validation (password + terms) | `752:172` |
-| A13 | Verify your email (pending) | `752:219` |
+| A13 | Signup request accepted | `752:219` |
 
 ### 3.4 Manage devices (web account portal)
 
@@ -194,11 +193,10 @@ Same layout, `!` disc in `accent/warn`, title **"This verification link has expi
 **24-hour** TTL, warn banner "Why links expire". Identical mechanics to V3.
 **Only render this when the backend can prove expiry** (§10.2). Until then V3 is the single failure state.
 
-### 4.5 V5 — New link sent — `746:172`
-`✉︎` disc in `accent/brand`, title **"Check your inbox"**. Body is **conditional by construction** —
-*"If you@yourchurch.org has a SelahCue account waiting to be verified…"* — this phrasing is load-bearing for
-no-enumeration and must not be "improved" into a direct claim. Secondary **"Back to Sign in"**, a muted retry
-line, and an info banner "Only the newest link works" (true: minting a token consumes prior unconsumed ones).
+### 4.5 V5 — Verification request accepted — `746:172`
+`✉︎` disc in `accent/brand`, title **"Check your inbox"**, and conditional copy about the submitted address.
+Secondary **"Back to Sign in"**, a muted retry line, and an info banner "Only the newest link works".
+Issuing a new verification token consumes prior unconsumed verification tokens for the account (§10.3).
 
 ### 4.6 V6 — No verification link — `747:124`
 Reached when `/verify` is opened without `?token=` (bookmark, stripped query, hand-typed). `!` disc in
@@ -211,12 +209,13 @@ Reached when `/verify` is opened without `?token=` (bookmark, stripped query, ha
 Route: `GET /reset?token=<raw_token>`. Built by `apps/accounts/tasks.py:64`.
 Mutation: `confirmPasswordReset(input: {token, newPassword}) → { reset: Boolean! }`.
 
-> **Critical implementation note.** `confirm_password_reset` runs `_validate_password` **before** it looks at the
-> token, and *both* failures raise the same `VALIDATION_FAILED`. If you submit a password shorter than 10
-> characters, the server's answer is indistinguishable from "your link is dead" — the user would be told their
-> link expired when their password was simply too short. **Validate length client-side (R2) and never submit a
-> password outside 10–200 characters.** With that guard, a `VALIDATION_FAILED` from this mutation can be safely
-> attributed to the token (R4).
+> **Critical implementation note.** Under [DEC-017](../decisions/DECISION-LOG.md), `_consume_reset_token`
+> validates the reset token before evaluating the new password and checks token liveness again under the
+> write lock before consuming it. `PASSWORD_INVALID` means a live link was presented with a rejected
+> password. Keep the password form open with a correctable error. The API leaves the token unconsumed.
+> Use R4 for `VALIDATION_FAILED` on a submitted token. The causes remain collapsed (§10.2).
+> Validate the new password on the client (R2) using the default length-only policy of 10–200 Unicode
+> code points, require a nonblank value and matching confirmation, and preserve the entered password.
 
 ### 5.1 R1 — Choose a new password — `747:143`
 Title **Bold 26** "Choose a new password". The page **cannot display the user's email address** — the reset
@@ -229,7 +228,10 @@ is why the banner promises devices keep presenting.
 
 ### 5.2 R2 — Validation errors — `747:173`
 Both fields in error (1.5px `accent/live`), each with `✕ ` + message beneath, primary button at 45% opacity.
-Messages: **"Password must be at least 10 characters."** / **"Both passwords must match."**
+Show the applicable client validation message for minimum length, maximum length, whitespace-only input or
+confirmation mismatch. The API also rejects values it cannot encode as UTF-8. If it returns
+`PASSWORD_INVALID`, keep the form available and show **"That password wasn't accepted"** with a prompt to
+choose a different password. The code carries no specific policy reason.
 
 ### 5.3 R3 — Updating password — `749:124`
 Fields at 50% opacity, primary button disabled with `↻` + **"Updating password…"**, muted **"Don't close this
@@ -280,21 +282,21 @@ The A4 precedent (a dedicated inline-error frame). Password field in error with
 Terms unchecked with a `warn` line **"Accept the terms to continue."** Button disabled.
 Info banner **"Nothing has been sent yet"**.
 
-### 6.3 A13 — Verify your email (pending) — `752:219`
-The answer to "what the desktop does while unverified". `✉︎` disc, title **"Check your email to finish setting
-up"**, body naming the address and the **24-hour** window, then:
+### 6.3 A13 — Signup request accepted — `752:219`
+`✉︎` disc, title **"Check your email to finish setting up"**, and conditional check-inbox copy for the
+submitted address. When a verification link is issued, it has a **24-hour** lifetime by default. Then:
 
 - a **success banner** — "You are ready to present right now" — the flagship never-blank statement;
-- a **"WHILE THIS ADDRESS IS UNVERIFIED"** panel (`bg/inset`, 1px border, radius 12) with four honest rows:
+- a **"BEFORE SIGNING IN"** panel (`bg/inset`, 1px border, radius 12) with four rows:
   - `✓` Live presentation, scripture, media and timers — all working
   - `✓` Your work is saved locally as normal
-  - `–` Signing in and activating this device — available once verified
-  - `–` Cloud AI notes, plan and device management — available once verified
+  - `–` Activating this device — sign in as an administrator. Activation depends on your license and device eligibility.
+  - `–` Cloud AI notes, plan and device management — sign in first. Availability depends on your role, plan and device.
 - primary **"I've verified — continue"**, ghost **"Resend verification email"**, and a muted line offering
   *Go back and change it* / *Skip — set up later*.
 
-The two `–` rows are not a guess: `login` raises `POLICY_DENIED` for an unverified user *after* a correct
-password, so activation genuinely cannot proceed until verification lands.
+For an unverified account, `login` raises `POLICY_DENIED` after a correct password. Complete any required email
+verification before signing in.
 
 ---
 
@@ -368,23 +370,24 @@ license and devices." / **Continue to sign in** / banner "You don't need an acco
 "Not your account?" + "Contact support"
 
 **V3** · "This verification link didn't work" / "The link may have expired, already been used, or been copied
-incompletely. Enter your email address and we'll send a fresh one." / label "Email", placeholder
+incompletely. Enter your email address to request a new link." / label "Email", placeholder
 "you@yourchurch.org" / **Send a new verification link** / banner "Already verified? Just sign in" — "A
 verification link stops working once it has been used. If you have already confirmed this address, sign in as
 normal." / "Remembered everything?" + "Back to Sign in"
 
-**V4** · "This verification link has expired" / "Verification links expire 24 hours after they are sent. Enter
-your email address and we'll send you a new one." / **Send a new verification link** / banner "Why links
+**V4 (deferred, see §10.2)** · "This verification link has expired" / "Verification links expire 24 hours after
+issuance. Enter your email address to request a new link." / **Send a new verification link** / banner "Why links
 expire" — "A 24-hour window limits how long the link is useful if the email is forwarded or sits in a shared
 inbox." / "Wrong address?" + "Back to Sign in"
 
-**V5** · "Check your inbox" / "If you@yourchurch.org has a SelahCue account waiting to be verified, a new link
-is on its way. It expires in 24 hours." / **Back to Sign in** / "Didn't arrive? Check your spam folder, then
-request another link." / banner "Only the newest link works" — "Sending a new link cancels the previous one.
+**V5** · "Check your inbox" / "Your request for you@yourchurch.org was accepted. If this account needs
+verification, check your inbox for a new link. A verification link expires 24 hours after issuance." /
+**Back to Sign in** / "Didn't arrive? Check your spam folder, then request another link." /
+banner "Only the newest link works" — "Issuing a new link cancels the previous one.
 Use the most recent email you received." / "Need a hand?" + "Contact support"
 
-**V6** · "This page needs a verification link" / "Open the link in the email we sent you. If you no longer have
-it, enter your address and we'll send a new one." / **Send a verification link** / "Already verified?" +
+**V6** · "This page needs a verification link" / "If you received a verification email, open its link.
+Enter your email address to request a new link." / **Send a verification link** / "Already verified?" +
 "Back to Sign in"
 
 ### 8.2 `/reset`
@@ -395,7 +398,11 @@ the new one." / labels "New password", "Confirm new password", trailing "Show" /
 SelahCue session on this account. Devices you have already activated keep presenting offline — live output is
 never interrupted." / "Remembered it?" + "Back to Sign in"
 
-**R2** · errors "Password must be at least 10 characters." · "Both passwords must match."
+**R2** · errors "Password must be at least 10 characters." · "Password must be 200 characters or fewer." ·
+"Password must contain more than spaces." · "Both passwords must match."
+
+**Password rejected by the API** · "That password wasn't accepted" / "Choose a different password and try
+again." Keep the password form open.
 
 **R3** · **Updating password…** / "Don't close this tab."
 
@@ -404,8 +411,8 @@ incompletely. Reset links last 1 hour and work once. Enter your email address to
 **Send a new reset link** / banner "Your password has not changed" — "A link that fails changes nothing on your
 account. Your old password still works until you set a new one."
 
-**R5** · "This reset link has expired" / "Password reset links expire 1 hour after they are sent — sooner than
-verification links, because they can change your password. Enter your email address and we'll send a new one." /
+**R5 (deferred, see §10.2)** · "This reset link has expired" / "Password reset links expire 1 hour after
+issuance. Enter your email address to request a new link." /
 **Send a new reset link** / banner "Why only 1 hour" — "A reset link can take over an account, so it is
 short-lived and single-use. Verification links, which only confirm an address, last 24 hours."
 
@@ -431,13 +438,13 @@ run without an account — signing up only unlocks cloud features, licensing and
 **A12** · "Use at least 10 characters — that is 4 more." / "Accept the terms to continue." / banner
 "Nothing has been sent yet" — "Your details stay on this computer until you press Create account."
 
-**A13** · "Check your email to finish setting up" / "We sent a verification link to alex@gracecommunity.org.
-Open it within 24 hours to activate the account. You can leave SelahCue open — this screen updates on its own."
+**A13** · "Check your email to finish setting up" / "Your request for alex@gracecommunity.org was accepted.
+If an email arrives, follow the instructions in it. Verification links expire 24 hours after issuance."
 / banner "You are ready to present right now" — "SelahCue works fully offline. Slides, local scripture, media,
-blackout/clear and timers all work while this address is unverified — verification is never required to run
-your service." / "WHILE THIS ADDRESS IS UNVERIFIED" / "Live presentation, scripture, media and timers — all
-working" · "Your work is saved locally as normal" · "Signing in and activating this device — available once
-verified" · "Cloud AI notes, plan and device management — available once verified" /
+blackout/clear and timers are available before sign-in." / "BEFORE SIGNING IN" / "Live presentation,
+scripture, media and timers — all working" · "Your work is saved locally as normal" · "Activating this device —
+sign in as an administrator. Activation depends on your license and device eligibility." · "Cloud AI notes,
+plan and device management — sign in first. Availability depends on your role, plan and device." /
 **I've verified — continue** / **Resend verification email** / "Wrong address? Go back and change it.   ·
 Skip — set up later"
 
@@ -479,16 +486,17 @@ off — every device keeps presenting, and no live output is affected."
 | Frame / control | Source |
 |---|---|
 | `/verify` and `/reset` routes exist at all | `apps/accounts/tasks.py:55,64` — `{FRONTEND_BASE_URL}/verify?token=`, `/reset?token=` |
-| "expires in 24 hours" (V4, V5, A13) | `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS = 24*3600` (`settings.py:269`) |
-| "expire 1 hour … single-use" (R4, R5) | `ACCOUNT_PASSWORD_RESET_TTL_SECONDS = 3600` (`settings.py:270`) |
-| "At least 10 characters" (R1, R2, A11, A12) | `ACCOUNT_MIN_PASSWORD_LENGTH = 10` (`settings.py:273`); `_validate_password` is **length-only**, 10–200 |
+| Verification link lifetime (V4, V5, A13) | [Settings defaults](../../implementation/api/selahcue_api/settings.py) set `ACCOUNT_EMAIL_VERIFY_TTL_SECONDS` to 24 hours |
+| Reset link lifetime (R4, R5) | [Settings defaults](../../implementation/api/selahcue_api/settings.py) set `ACCOUNT_PASSWORD_RESET_TTL_SECONDS` to 1 hour |
+| New/reset password length (R1, R2, A11, A12) | [Settings defaults](../../implementation/api/selahcue_api/settings.py) set `ACCOUNT_MIN_PASSWORD_LENGTH` to 10. `_validate_password` applies the length-only policy with a 200-code-point maximum. |
 | V3 / R4 merged failure state | `verify_email` + `confirm_password_reset` collapse unknown/wrong-purpose/consumed/expired to one `VALIDATION_FAILED` |
-| "Only the newest link works" (V5) | `request_password_reset` consumes prior unconsumed tokens before minting |
+| Reset password rejected, form stays open | `_consume_reset_token` signals `PASSWORD_INVALID` for a password-policy failure behind a live reset token (DEC-017) |
+| "Only the newest link works" (V5) | `resend_email_verification` consumes prior unconsumed verification tokens when it issues a new link |
 | "signs you out everywhere" (R1, R6) | `confirm_password_reset` revokes every ACTIVE `CustomerSession` |
 | "your devices keep presenting" (R1, R6) | `logout_session` docstring — revokes the ACCOUNT session only, never a `DeviceToken` or cached entitlement |
 | "this link still works until it expires" (R7) | `confirm_password_reset` is `transaction.atomic()` — a failure rolls back `consumed_at` |
-| Conditional phrasing in V5; no "email already registered" | `register_customer_user` / `request_password_reset` always return `accepted: true`; `login` equalises timing |
-| A13's two unavailable rows | `login` raises `POLICY_DENIED` for unverified users only *after* a correct password |
+| Conditional check-inbox phrasing | `register_customer_user` and `request_password_reset` return the same `accepted: true` on valid, admitted requests regardless of address existence |
+| A13's sign-in guidance | `login` raises `POLICY_DENIED` for unverified users only *after* a correct password |
 | A11 field set + detected meta line | `RegisterCustomerUserInput{idempotencyKey,email,password,orgName,country,displayName,timezone}` |
 | Device slot meter, "N of M used" | DEC-004; `AppLicenseKey.device_limit`; active `Device` count |
 | D3 instance-limit copy | `activate_device` instance-limit `POLICY_DENIED`; matches desktop A5 `656:124` |
@@ -499,20 +507,23 @@ off — every device keeps presenting, and no live output is affected."
 
 ---
 
-## 10. Backend that does not exist yet — read before estimating
+## 10. Auth contracts and original backend gap inventory
 
-These are **not** design assumptions; each was verified against the source. Four of the five block a frame.
+Sections 10.1–10.3 describe the current auth contract. Sections 10.4–10.5 retain the original device gap
+inventory from the design pass. Verify the current device code before estimating work from those notes.
 
-### 10.1 There is no "email already registered" error — by design
-`register_customer_user` returns `accepted: true` whether or not the address exists; the real owner instead
-receives the *"Someone tried to sign up with your address"* email (`TRANSACTIONAL-EMAIL-spec.md` §3).
-**A11 therefore always proceeds to A13** on submit. `MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §4c specifies an
-inline "An account with this email already exists" error — **do not build it**; it would re-introduce exactly
-the enumeration oracle the backend was written to avoid. §11 records the correction.
+### 10.1 Signup acceptance is uniform across addresses
+Advance A11 to A13 only after the API accepts a valid, admitted request. Keep the form and show the
+appropriate error for a validation, rate-limit, server or connection failure. Use one accepted screen
+for new and existing addresses. On the existing-account path the service queues guidance for the
+address owner only. See the [transactional email spec](TRANSACTIONAL-EMAIL-spec.md) and the corrected
+[signup states](MARKETING-PORTAL-GAP-FILL-HANDOFF.md#4c-states). Acceptance does not confirm account
+creation or email delivery and does not create a session.
 
 ### 10.2 The API cannot distinguish "expired" from "invalid" — owner decision
 `verify_email` and `confirm_password_reset` both collapse *unknown / wrong-purpose / already-consumed / expired*
 into a single `VALIDATION_FAILED`, deliberately ("no oracle").
+The reset `PASSWORD_INVALID` outcome applies to password rejection behind a live token (§5, DEC-017).
 **Consequence:** V4 and R5 — the frames the brief asks for, which name the TTL and explain it — are **not
 reachable today**. V3 and R4 are the merged states that ship now and cover the same ground without claiming
 knowledge the client does not have.
@@ -521,13 +532,15 @@ Making V4/R5 reachable needs a product/security decision plus a backend change: 
 past `expires_at`. That leaks strictly less than a working link does, but it is a security posture change and
 **not mine to make**. Owner: product + security. Until then, ship V3/R4 and keep V4/R5 as the target design.
 
-### 10.3 There is no resend-verification mutation
-`account_schema.py` exposes `registerCustomerUser`, `verifyEmail`, `login`, `refreshSession`, `logout`,
-`requestPasswordReset`, `confirmPasswordReset`, `activateDeviceWithSession` — and **no resend**. A workspace
-grep for "resend" across `implementation/api` returns nothing.
-V3, V4, V5, V6 and A13's **"Resend verification email"** all depend on a new mutation, which must mirror
-`request_password_reset`'s shape: take an email, always return `accepted: true`, consume prior unconsumed
-`EMAIL_VERIFY` tokens, and be rate-limited. Owner: backend.
+### 10.3 Verification resend acceptance is uniform across addresses
+The original gap inventory proposed adding a resend mutation. The [account schema](../../implementation/api/selahcue_api/graphql/account_schema.py)
+now exposes `resendVerificationEmail(email)` and returns `{accepted}`. An accepted request returns the
+same `accepted: true` for unknown addresses, accounts awaiting verification, and already verified or
+ineligible accounts. Only an eligible pending account can receive a new link. When a new link is
+issued, the service consumes the previous unused verification tokens for that account.
+
+Advance to V5 only on acceptance. The response confirms request processing. Use conditional inbox
+copy and keep validation, rate-limit, server and connection failures in their error states.
 
 ### 10.4 Device data the list needs
 - **`Device` has no `last_seen_at`.** The "Last seen …" column in D1/D3/D6 has no backing field. Either add one
@@ -553,15 +566,15 @@ Owner: backend (being ticketed).
 
 ## 11. Corrections to existing design docs
 
-Found while grounding this work. None are addressed by the audit.
+Items 1–3 record superseded onboarding guidance corrected in [86ak120kw](https://app.clickup.com/t/86ak120kw).
 
-1. **`MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §4c** — "Email taken → *An account with this email already
-   exists*" contradicts the shipped no-enumeration API. Must not be implemented (§10.1).
-2. **Same doc §3c and §4d** — password rules given as "at least 8 characters" plus "one uppercase letter and one
-   number". The API enforces **10–200 characters, length only, no complexity rule**. The rules in this handoff
-   are the correct ones.
-3. **Same doc §5b** — "It expires in 15 minutes" for the reset link. The real TTL is **1 hour**
-   (`ACCOUNT_PASSWORD_RESET_TTL_SECONDS = 3600`). Fix the request/email-sent copy when those frames are built.
+1. **`MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §§4c and 5c** — the former "Email taken" and "Email not found"
+   rows are superseded by one accepted state per form for both new and existing addresses. See §10.1.
+2. **Same doc §§3c and 4d** — the old 8-character and composition guidance is superseded. Sign-in accepts
+   any nonempty password as entered. Choosing a new password on signup or reset uses the default
+   length-only range of **10–200 Unicode code points**.
+3. **Same doc §5b** — the former 15-minute reset lifetime is superseded by **1 hour after issuance** by
+   default. The accepted screen uses conditional copy for the submitted address.
 4. **Same doc §6/§2** — states it "reuses … Design 2.0 `--sc-*` tokens", but the Figma frames on that page bind
    to the legacy `SelahCue Color` collection. Both statements are half-true; §2.2 is the reconciliation.
 5. **The audit's "Manage devices … designed nowhere" is slightly overstated.** Account `506:124` already ships a
@@ -629,10 +642,10 @@ Follows `MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §8 — no new rules.
 
 ---
 
-## 15. Pending ClickUp update (no ticket exists to receive it)
+## 15. Original ClickUp proposals (2026-08-14)
 
-A workspace search on 2026-08-14 returns **no task** covering the `/verify` + `/reset` landing pages — matching
-audit §11.3. Recommended, for the owner/PM to create:
+At the time of the design pass a workspace search found no task covering the `/verify` and `/reset`
+landing pages. The proposals below record that estimate. For the shipped resend contract, see §10.3.
 
 | Proposed work | Owner role | Depends on |
 |---|---|---|
