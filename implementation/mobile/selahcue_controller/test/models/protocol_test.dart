@@ -58,6 +58,9 @@ void main() {
     expect(jsonEncode(cmdPrevious()), '{"cmd":"previous"}');
     expect(jsonEncode(cmdGoLive()), '{"cmd":"go_live"}');
     expect(jsonEncode(cmdClear()), '{"cmd":"clear"}');
+    // Mirrors the Rust `command_tag_encoding_is_stable` string byte-for-byte.
+    expect(jsonEncode(cmdClearLayer('text')),
+        '{"cmd":"clear_layer","layer":"text"}');
     expect(jsonEncode(cmdBlackout(true)), '{"cmd":"blackout","on":true}');
     expect(jsonEncode(cmdStartTimer(300)), '{"cmd":"start_timer","seconds":300}');
     expect(jsonEncode(cmdStopTimer()), '{"cmd":"stop_timer"}');
@@ -111,6 +114,21 @@ void main() {
     expect(v.transcript, isEmpty);
     expect(v.partialTranscript, isNull);
     expect(v.detections, isEmpty);
+  });
+
+  test('operator state without cleared_layers parses to empty', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false}')
+        as Map<String, dynamic>);
+    expect(v.clearedLayers, isEmpty);
+  });
+
+  test('operator state with cleared_layers parses', () {
+    final v = OperatorStateView.fromJson(jsonDecode(
+            '{"plan_name":"Sunday","items":[],"blackout":false,'
+            '"cleared_layers":["text"]}')
+        as Map<String, dynamic>);
+    expect(v.clearedLayers, ['text']);
   });
 
   // Exact host verdict bytes mirror Rust's auth_verdict_wire_fixtures_are_stable

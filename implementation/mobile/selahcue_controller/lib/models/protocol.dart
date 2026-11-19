@@ -42,6 +42,11 @@ Map<String, dynamic> cmdNext() => {'cmd': 'next'};
 Map<String, dynamic> cmdPrevious() => {'cmd': 'previous'};
 Map<String, dynamic> cmdGoLive() => {'cmd': 'go_live'};
 Map<String, dynamic> cmdClear() => {'cmd': 'clear'};
+
+/// Clear one audience-output layer (`background`, `text`, `lower-third`,
+/// `logo`). Mirrors the Rust `Command::ClearLayer` wire shape.
+Map<String, dynamic> cmdClearLayer(String layer) =>
+    {'cmd': 'clear_layer', 'layer': layer};
 Map<String, dynamic> cmdBlackout(bool on) => {'cmd': 'blackout', 'on': on};
 Map<String, dynamic> cmdSelectItem(int itemId) =>
     {'cmd': 'select_item', 'item_id': itemId};
@@ -253,6 +258,11 @@ class OperatorStateView {
   /// Pending scripture detections awaiting approval (the Scripture-Operator gate).
   final List<DetectionView> detections;
 
+  /// Layers currently cleared on the Live output (`background`, `text`,
+  /// `lower-third`, `logo`). The host omits the key when none are cleared, so
+  /// absence parses to empty.
+  final List<String> clearedLayers;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -269,6 +279,7 @@ class OperatorStateView {
     this.transcript = const [],
     this.partialTranscript,
     this.detections = const [],
+    this.clearedLayers = const [],
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -301,6 +312,9 @@ class OperatorStateView {
         detections: ((j['detections'] as List?) ?? const [])
             .whereType<Map<String, dynamic>>()
             .map(DetectionView.fromJson)
+            .toList(),
+        clearedLayers: ((j['cleared_layers'] as List?) ?? const [])
+            .whereType<String>()
             .toList(),
       );
 }

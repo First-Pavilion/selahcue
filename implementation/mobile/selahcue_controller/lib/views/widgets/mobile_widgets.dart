@@ -564,6 +564,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final canClear = live.can(Capability.clearLive);
     final armedBlackout = _armed?.which == _Armed.blackout;
     final armedClear = _armed?.which == _Armed.clear;
+    final textCleared = live.view?.clearedLayers.contains('text') ?? false;
     // Reconnecting is the more urgent/informative reason when both are true:
     // it means the link is down or unproven, open-ended until a reconnect.
     // busy is bounded, but not "well under" a single commandTimeout: each
@@ -648,6 +649,28 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                 onPressed: _guarded(_Armed.clear, cmdClear),
               ),
             ),
+          // Per-layer clear: one tap, no arm step — it blanks only the text
+          // layer and is undone by the next slide, unlike Clear All.
+          if (canClear) ...[
+            const SizedBox(width: SelahSpace.sm),
+            Expanded(
+              child: SelahButton(
+                glyph: '✕',
+                label: 'CLEAR TEXT',
+                semanticLabel: 'Clear text',
+                disabledReason: disabledReason,
+                toggled: textCleared,
+                haptic: true,
+                variant: textCleared
+                    ? SelahButtonVariant.alarm
+                    : SelahButtonVariant.dangerQuiet,
+                textStyle: _emgLabel,
+                onPressed: (live.syncing || live.busy)
+                    ? null
+                    : () => live.act(cmdClearLayer('text')),
+              ),
+            ),
+          ],
         ],
       ),
     );

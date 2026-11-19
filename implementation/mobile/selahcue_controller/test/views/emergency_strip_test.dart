@@ -13,17 +13,24 @@ import 'package:selahcue_controller/views/widgets/mobile_widgets.dart';
 class _Fake implements ControllerSession {
   @override
   final MobileRole grantedRole;
-  _Fake(this.grantedRole);
+  final List<String> clearedLayers;
+  final List<Map<String, dynamic>> sentCmds = [];
+  _Fake(this.grantedRole, {this.clearedLayers = const []});
   @override
-  Future<ServerMessage> command(Map<String, dynamic> cmd) async => const Ack(1);
+  Future<ServerMessage> command(Map<String, dynamic> cmd) async {
+    sentCmds.add(cmd);
+    return const Ack(1);
+  }
+
   @override
-  Future<OperatorStateView> operatorState() async => const OperatorStateView(
+  Future<OperatorStateView> operatorState() async => OperatorStateView(
         planName: 'S',
-        items: [],
+        items: const [],
         liveIndex: null,
         stagedIndex: null,
         blackout: false,
         timer: null,
+        clearedLayers: clearedLayers,
       );
   @override
   Future<void> close() async {}
@@ -55,6 +62,75 @@ void main() {
     await tester.pump(const Duration(milliseconds: 60));
     expect(find.bySemanticsLabel('Blackout'), findsNothing);
     expect(find.bySemanticsLabel('Clear all'), findsNothing);
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets('Clear text sends clear_layer for the text layer', (
+    tester,
+  ) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake(MobileRole.operator);
+    final live = LiveController(session: fake, stored: _stored);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: EmergencyStrip(live: live)),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+    await tester.tap(find.bySemanticsLabel('Clear text'));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(fake.sentCmds, [cmdClearLayer('text')]);
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets('Clear text shows as pressed while the text layer is cleared', (
+    tester,
+  ) async {
+    final handle = tester.ensureSemantics();
+    for (final cleared in [true, false]) {
+      final fake = _Fake(
+        MobileRole.operator,
+        clearedLayers: cleared ? const ['text'] : const [],
+      );
+      final live = LiveController(session: fake, stored: _stored);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: EmergencyStrip(live: live)),
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 60));
+      expect(
+        tester.getSemantics(find.bySemanticsLabel('Clear text')),
+        matchesSemantics(
+          label: 'Clear text',
+          isButton: true,
+          hasEnabledState: true,
+          isEnabled: true,
+          hasToggledState: true,
+          isToggled: cleared,
+        ),
+        reason: 'cleared=$cleared',
+      );
+      live.dispose();
+    }
+    handle.dispose();
+  });
+
+  testWidgets('Viewer does not see Clear text', (tester) async {
+    final handle = tester.ensureSemantics();
+    final live = LiveController(
+      session: _Fake(MobileRole.viewer),
+      stored: _stored,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: EmergencyStrip(live: live)),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(find.bySemanticsLabel('Clear text'), findsNothing);
     handle.dispose();
     live.dispose();
   });
