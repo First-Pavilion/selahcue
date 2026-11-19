@@ -180,6 +180,46 @@ fn clear_layer_on_authored_slide_clears_all() {
 }
 
 #[test]
+fn clear_layer_non_text_on_authored_slide_is_a_no_op() {
+    // Review I2: a deck slide has no per-layer model, so only `text` clears it (as a whole, like
+    // Backspace always has). The other valid tags are acknowledged and change nothing — a phone
+    // or console "Clear logo" must never wipe the whole deck slide off the audience screen.
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&slide).unwrap(),
+            theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+            next_slide_json: None,
+        }),
+        ControllerReply::Ack
+    );
+    let id = c.operator_view().live_authored_id;
+    assert!(id.is_some());
+    let before = c.presenter().live_output().clone();
+    for tag in ["logo", "background", "lower-third"] {
+        assert_eq!(c.apply(&clear_layer(tag)), ControllerReply::Ack, "{tag}");
+        let view = c.operator_view();
+        assert_eq!(
+            view.live_authored_id, id,
+            "{tag}: the deck slide stays live"
+        );
+        assert!(view.cleared_layers.is_empty(), "{tag}");
+        assert!(
+            c.presenter().live_output() == &before,
+            "{tag}: the live frame is unchanged"
+        );
+    }
+    // Unknown tags are still rejected while a deck slide is live.
+    assert_eq!(
+        c.apply(&clear_layer("timer")),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(c.operator_view().live_authored_id, id);
+}
+
+#[test]
 fn clear_layer_on_authored_slide_keeps_blackout() {
     let (mut c, _) = controller();
     let mut slide = AuthoredSlide::new(SlideId(1));

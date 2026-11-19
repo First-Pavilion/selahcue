@@ -13,9 +13,11 @@
 //! | Clear current layer    | `Backspace`               |
 //!
 //! `Backspace` clears the **text** layer of the live output only (story
-//! 86ajpy59e): the media and background layers, and a blackout, stay as they
-//! are. `Esc Esc` still clears every live layer; the two actions stay distinct
-//! in the map and in the commands they drive.
+//! 86ajpy59e): every other layer (background, lower-third, logo) and blackout
+//! stay as they are. `Esc Esc` still clears every live layer; the two actions
+//! stay distinct in the map and in the commands they drive. (`.`, which opens
+//! the console's CLEAR layer picker, is a webview-only binding and is not part
+//! of this map.)
 //!
 //! **Emergency actions are non-unbindable:** Clear-all (`Esc Esc`) and Blackout
 //! (`B`) are always present in the map — there is no configuration surface that

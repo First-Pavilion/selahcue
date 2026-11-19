@@ -2999,8 +2999,14 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
                 if self.presenter.authored_live_id().is_some() {
-                    // An authored slide has no per-layer model: clear it exactly like Clear, but
-                    // ClearLayer never changes blackout, so restore it afterwards.
+                    // An authored slide has no per-layer model. Only `text` clears it, as a
+                    // whole, exactly like Clear (so Backspace on a deck still clears); every
+                    // other layer is acknowledged and changes nothing, so a one-tap "Clear
+                    // logo" can never wipe the deck slide without Clear All's arm-then-confirm
+                    // (review I2). ClearLayer never changes blackout, so restore it afterwards.
+                    if layer != selahcue_present::LiveLayer::Text {
+                        return ControllerReply::Ack;
+                    }
                     let was_blackout = self.blackout;
                     let reply = self.clear_all_live();
                     if was_blackout {
