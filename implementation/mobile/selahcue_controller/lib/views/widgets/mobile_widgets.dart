@@ -564,7 +564,6 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final canClear = live.can(Capability.clearLive);
     final armedBlackout = _armed?.which == _Armed.blackout;
     final armedClear = _armed?.which == _Armed.clear;
-    final textCleared = live.view?.clearedLayers.contains('text') ?? false;
     // Reconnecting is the more urgent/informative reason when both are true:
     // it means the link is down or unproven, open-ended until a reconnect.
     // busy is bounded, but not "well under" a single commandTimeout: each
@@ -649,28 +648,6 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                 onPressed: _guarded(_Armed.clear, cmdClear),
               ),
             ),
-          // Per-layer clear: one tap, no arm step — it blanks only the text
-          // layer and is undone by the next slide, unlike Clear All.
-          if (canClear) ...[
-            const SizedBox(width: SelahSpace.sm),
-            Expanded(
-              child: SelahButton(
-                glyph: '✕',
-                label: 'CLEAR TEXT',
-                semanticLabel: 'Clear text',
-                disabledReason: disabledReason,
-                toggled: textCleared,
-                haptic: true,
-                variant: textCleared
-                    ? SelahButtonVariant.alarm
-                    : SelahButtonVariant.dangerQuiet,
-                textStyle: _emgLabel,
-                onPressed: (live.syncing || live.busy)
-                    ? null
-                    : () => live.act(cmdClearLayer('text')),
-              ),
-            ),
-          ],
         ],
       ),
     );
@@ -693,4 +670,55 @@ String spokenClock(int secs) {
   final m = secs ~/ 60, s = secs % 60;
   return '$m ${m == 1 ? "minute" : "minutes"} $s '
       '${s == 1 ? "second" : "seconds"} remaining';
+}
+
+/// Full-width "Clear text" row, hosted directly above [EmergencyStrip] (its own
+/// row so the strip's two buttons keep room for "CONFIRM BLACKOUT" at 320 px).
+/// Visible only for roles holding [Capability.clearLive].
+class ClearTextRow extends StatelessWidget {
+  final LiveController live;
+  const ClearTextRow({super.key, required this.live});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!live.can(Capability.clearLive)) return const SizedBox.shrink();
+    final textCleared = live.view?.clearedLayers.contains('text') ?? false;
+    final disabledReason =
+        live.syncing ? 'unavailable while reconnecting' : 'sending…';
+    return Container(
+      decoration: const BoxDecoration(
+        color: DesignTokens.d2Surface,
+        border: Border(top: BorderSide(color: DesignTokens.d2Border)),
+      ),
+      padding: const EdgeInsets.fromLTRB(
+        SelahSpace.md,
+        SelahSpace.xs,
+        SelahSpace.md,
+        0,
+      ),
+      child: SelahButton(
+        glyph: '✕',
+        label: 'CLEAR TEXT',
+        semanticLabel: 'Clear text',
+        disabledReason: disabledReason,
+        toggled: textCleared,
+        haptic: true,
+        // Solid red is reserved for Blackout and armed confirms; an engaged
+        // text clear is shown as an outline.
+        variant: textCleared
+            ? SelahButtonVariant.dangerOutline
+            : SelahButtonVariant.dangerQuiet,
+        textStyle: const TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.4,
+        ),
+        // Not `_guarded`: a single tap with no arm step (it only blanks the
+        // text layer), so the syncing/busy block is repeated here directly.
+        onPressed: (live.syncing || live.busy)
+            ? null
+            : () => live.act(cmdClearLayer('text')),
+      ),
+    );
+  }
 }
