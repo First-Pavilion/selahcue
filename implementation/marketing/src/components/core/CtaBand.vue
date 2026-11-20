@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import UiButton from '@/components/UiButton.vue'
 
-import { freeOffer } from '@/lib/content/freeOffer.ts'
+import { betaOffer } from '@/lib/content/betaOffer.ts'
 
 // Features and About share this closing band and its acquisition links.
 defineProps({
   title: { type: String, default: 'Ready to run your best service yet?' },
   lead: {
     type: String,
-    default: 'Start with the Free plan. Core live controls keep working with no network.',
+    default: 'Join the free public beta. Core live controls keep working with no network.',
   },
 })
 </script>
@@ -20,8 +20,8 @@ defineProps({
         <h2>{{ title }}</h2>
         <p>{{ lead }}</p>
         <div class="cta-actions">
-          <UiButton variant="inverse" size="lg" :to="freeOffer.downloadTo">View downloads</UiButton>
-          <UiButton variant="inverse-outline" size="lg" :to="freeOffer.signupTo">Create an account</UiButton>
+          <UiButton variant="inverse" size="lg" :to="betaOffer.downloadTo">View downloads</UiButton>
+          <UiButton variant="inverse-outline" size="lg" :to="betaOffer.signupTo">Create an account</UiButton>
         </div>
       </div>
     </div>

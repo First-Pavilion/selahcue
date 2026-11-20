@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { freeOffer } from '@/lib/content/freeOffer.ts'
+import { betaOffer } from '@/lib/content/betaOffer.ts'
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
 
@@ -30,7 +30,7 @@ const columns = [
     links: [
       { to: '/features', label: 'Features' },
       { to: '/pricing', label: 'Pricing' },
-      { to: freeOffer.downloadTo, label: 'Download' },
+      { to: betaOffer.downloadTo, label: 'Download' },
       { to: '/changelog', label: 'Changelog' },
     ],
   },

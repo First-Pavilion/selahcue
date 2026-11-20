@@ -2,7 +2,7 @@
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import PageHero from '@/components/core/PageHero.vue'
-import { freeOffer } from '@/lib/content/freeOffer.ts'
+import { betaOffer } from '@/lib/content/betaOffer.ts'
 </script>
 
 <template>
@@ -24,13 +24,13 @@ import { freeOffer } from '@/lib/content/freeOffer.ts'
     <!-- The h2 keeps the outline from jumping from the h1 to the footer's h3 headings (audit pricing-bug-01). -->
     <section class="plans-section" aria-labelledby="plans-heading">
       <div class="container">
-        <h2 id="plans-heading" class="plans-heading">SelahCue Free</h2>
+        <h2 id="plans-heading" class="plans-heading">SelahCue Beta</h2>
         <div class="free-plan">
-          <p>{{ freeOffer.summary }}</p>
-          <p>{{ freeOffer.paidLater }}</p>
+          <p>{{ betaOffer.summary }}</p>
+          <p>{{ betaOffer.afterBeta }}</p>
           <div class="free-actions">
-            <UiButton :to="freeOffer.downloadTo" variant="primary" size="lg">View downloads</UiButton>
-            <UiButton :to="freeOffer.signupTo" variant="secondary" size="lg">Create an account</UiButton>
+            <UiButton :to="betaOffer.downloadTo" variant="primary" size="lg">View downloads</UiButton>
+            <UiButton :to="betaOffer.signupTo" variant="secondary" size="lg">Create an account</UiButton>
           </div>
         </div>
       </div>

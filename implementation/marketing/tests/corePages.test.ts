@@ -22,7 +22,7 @@
  *   - the unbacked claims the audit named stay out of the rendered text (honest content wins over
  *     Figma: owner decision). There is NO allow-listed region any more: the Pricing FAQ and its unbacked
  *     answers were removed by ClickUp 17tnw2b0x3h;
- *   - Pricing: show the ongoing Free offer without a paid price, comparison table, billing toggle or FAQ;
+ *   - Pricing: show the public beta offer without a paid price, comparison table, billing toggle or FAQ;
  *   - the views use the shared container and carry no container rule of their own.
  */
 import assert from 'node:assert/strict'
@@ -361,9 +361,9 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   pricing: [
     "PRICING",
     "Pricing that grows with your church",
-    "SelahCue Free",
-    "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.",
-    "Paid subscriptions will come later.",
+    "SelahCue Beta",
+    "The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week.",
+    "After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.",
     "View downloads",
     "Create an account",
   ],
@@ -420,7 +420,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "ASSIST",
     "ON-DEVICE",
     "Ready to run your best service yet?",
-    "Start with the Free plan. Core live controls keep working with no network.",
+    "Join the free public beta. Core live controls keep working with no network.",
     "View downloads",
     "Create an account",
   ],
@@ -428,7 +428,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "DOWNLOAD",
     "Get SelahCue for your platform",
     "Choose the desktop installer for your platform when downloads are available.",
-    "Free plan · Core live controls work offline",
+    "Public beta · Core live controls work offline",
     "Desktop installers",
     "Checking installer availability…",
     "Windows",
@@ -485,7 +485,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Bounded & respectful",
     "Memory use is designed to stay within fixed limits, so SelahCue stays light.",
     "Ready to run your best service yet?",
-    "Start with the Free plan. Core live controls keep working with no network.",
+    "Join the free public beta. Core live controls keep working with no network.",
     "View downloads",
     "Create an account",
   ],
@@ -574,13 +574,13 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
 // ------------------------------------------------------------------------------------ Pricing
 
 describe('Pricing', () => {
-  test('the existing pricing layout shows the Free offer and both acquisition paths', () => {
+  test('the existing pricing layout shows the beta offer and both acquisition paths', () => {
     assert.equal(textOf(byTag(pages.pricing, 'h1')[0] as HtmlNode), 'Pricing that grows with your church')
-    assert.deepEqual(byTag(pages.pricing, 'h2').map(textOf), ['SelahCue Free'])
+    assert.deepEqual(byTag(pages.pricing, 'h2').map(textOf), ['SelahCue Beta'])
     const plan = byClass(pages.pricing, 'free-plan')[0] as HtmlNode
     assert.deepEqual(byTag(plan, 'p').map(textOf), [
-      'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week.',
-      'Paid subscriptions will come later.',
+      'The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week.',
+      'After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.',
     ])
     assert.deepEqual(byTag(plan, 'a').map((link) => [textOf(link), link.attrs.href]), [
       ['View downloads', '/download#public-downloads'],
@@ -595,7 +595,7 @@ describe('Pricing', () => {
     assert.deepEqual(all(pages.pricing, (n) => n.attrs.role === 'radiogroup'), [])
     assert.deepEqual(byClass(pages.pricing, 'faq-section'), [])
     assert.deepEqual(byTag(pages.pricing, 'form'), [])
-    assert.doesNotMatch(textOf(pages.pricing), /\$|\bPro\b|\bPlatinum\b|\bCore\b|checkout|prorat|PayPal|ACH|MOST POPULAR|Monthly|Annual/i)
+    assert.doesNotMatch(textOf(pages.pricing), /\$|\bPro\b|\bPlatinum\b|\bCore\b|checkout|prorat|PayPal|\bACH\b|MOST POPULAR|Monthly|Annual/i)
   })
 })
 

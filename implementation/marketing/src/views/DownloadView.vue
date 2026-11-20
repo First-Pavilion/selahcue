@@ -21,7 +21,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
       </template>
       Choose the desktop installer for your platform when downloads are available.
       <template #after>
-        <p class="trust-line">Free plan · Core live controls work offline</p>
+        <p class="trust-line">Public beta · Core live controls work offline</p>
       </template>
     </PageHero>
 

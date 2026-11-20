@@ -8,7 +8,7 @@ import FeatureCard from '@/components/FeatureCard.vue'
 import ReliabilityPillar from '@/components/ReliabilityPillar.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import HomeIcon from '@/components/home/HomeIcon.vue'
-import { freeOffer } from '@/lib/content/freeOffer.ts'
+import { betaOffer } from '@/lib/content/betaOffer.ts'
 
 // Use the shared Free offer so the Home and Pricing pages describe the same weekly allowance.
 
@@ -108,8 +108,8 @@ const faqItems = [
     answer: "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional."
   },
   {
-    question: 'What does Free include?',
-    answer: `${freeOffer.summary} ${freeOffer.paidLater}`
+    question: 'What does the beta include?',
+    answer: `${betaOffer.summary} ${betaOffer.afterBeta}`
   }
 ]
 </script>
@@ -135,7 +135,7 @@ const faqItems = [
         </p>
 
         <div class="hero-actions">
-          <UiButton variant="primary" size="lg" :to="freeOffer.downloadTo">
+          <UiButton variant="primary" size="lg" :to="betaOffer.downloadTo">
             View downloads
           </UiButton>
           <!-- The demo video does not exist yet (audit home-18). It was a link to #demo, which did nothing. The
@@ -258,8 +258,8 @@ const faqItems = [
       <div class="container">
         <div class="section-header">
           <UiBadge variant="eyebrow">PRICING</UiBadge>
-          <h2 class="section-title">SelahCue Free</h2>
-          <p class="section-subtitle">{{ freeOffer.summary }} {{ freeOffer.paidLater }}</p>
+          <h2 class="section-title">SelahCue Beta</h2>
+          <p class="section-subtitle">{{ betaOffer.summary }} {{ betaOffer.afterBeta }}</p>
         </div>
       </div>
     </section>
@@ -286,8 +286,8 @@ const faqItems = [
             Start free. Core live controls keep working with no network.
           </p>
           <div class="cta-btn-group">
-            <UiButton variant="inverse" size="lg" :to="freeOffer.downloadTo">View downloads</UiButton>
-            <UiButton variant="inverse-outline" size="lg" :to="freeOffer.signupTo">Create an account</UiButton>
+            <UiButton variant="inverse" size="lg" :to="betaOffer.downloadTo">View downloads</UiButton>
+            <UiButton variant="inverse-outline" size="lg" :to="betaOffer.signupTo">Create an account</UiButton>
           </div>
         </div>
       </div>

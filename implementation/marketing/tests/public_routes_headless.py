@@ -544,7 +544,7 @@ def run(engine, server):
 
         page.goto(base + '/pricing')
         expect(page.locator('main')).to_contain_text(
-            '20 cloud transcription minutes and 1 sermon note per church per week',
+            '3 hours of cloud transcription and 5 sermon notes per church each week',
         )
         signup = page.locator('main').get_by_role('link', name='Create an account')
         expect(signup).to_have_attribute('href', '/signup')
