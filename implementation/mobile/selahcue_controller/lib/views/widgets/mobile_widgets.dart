@@ -671,3 +671,62 @@ String spokenClock(int secs) {
   return '$m ${m == 1 ? "minute" : "minutes"} $s '
       '${s == 1 ? "second" : "seconds"} remaining';
 }
+
+/// Full-width "Clear text" row, hosted directly above [EmergencyStrip] (its own
+/// row so the strip's two buttons keep room for "CONFIRM BLACKOUT" at 320 px).
+/// Visible only for roles holding [Capability.clearLive]. While a deck
+/// (authored) slide is live it stays visible but disabled: a deck slide has no
+/// per-layer model and clears only as a whole, which must go through Clear
+/// All's arm-then-confirm, never a single tap (review I2).
+class ClearTextRow extends StatelessWidget {
+  final LiveController live;
+  const ClearTextRow({super.key, required this.live});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!live.can(Capability.clearLive)) return const SizedBox.shrink();
+    final textCleared = live.view?.clearedLayers.contains('text') ?? false;
+    final deckLive = live.view?.liveAuthoredId != null;
+    final disabledReason = deckLive
+        ? 'deck slides clear as a whole'
+        : live.syncing
+        ? 'unavailable while reconnecting'
+        : 'sending…';
+    return Container(
+      decoration: const BoxDecoration(
+        color: DesignTokens.d2Surface,
+        border: Border(top: BorderSide(color: DesignTokens.d2Border)),
+      ),
+      padding: const EdgeInsets.fromLTRB(
+        SelahSpace.md,
+        SelahSpace.xs,
+        SelahSpace.md,
+        0,
+      ),
+      child: SelahButton(
+        glyph: '✕',
+        label: 'CLEAR TEXT',
+        semanticLabel: 'Clear text',
+        disabledReason: disabledReason,
+        // A status, not a toggle: tapping again does not restore the text.
+        semanticValue: textCleared ? 'Text cleared' : null,
+        haptic: true,
+        // Solid red is reserved for Blackout and armed confirms; an engaged
+        // text clear is shown as an outline.
+        variant: textCleared
+            ? SelahButtonVariant.dangerOutline
+            : SelahButtonVariant.dangerQuiet,
+        textStyle: const TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.4,
+        ),
+        // Not `_guarded`: a single tap with no arm step (it only blanks the
+        // text layer), so the syncing/busy block is repeated here directly.
+        onPressed: (deckLive || live.syncing || live.busy)
+            ? null
+            : () => live.act(cmdClearLayer('text')),
+      ),
+    );
+  }
+}

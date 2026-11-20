@@ -307,6 +307,17 @@ impl Backend {
             Backend::Local(s) => Ok(s.clear()),
         }
     }
+    async fn clear_layer(&self, layer: String) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .clear_layer(&layer)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.clear_layer(&layer)),
+        }
+    }
     async fn blackout(&self, on: bool) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m.lock().await.blackout(on).await.map_err(|e| e.to_string()),
@@ -1864,6 +1875,10 @@ async fn go_live(state: State<'_, AppState>) -> Result<OperatorView, String> {
 #[tauri::command]
 async fn clear(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.clear().await
+}
+#[tauri::command]
+async fn clear_layer(layer: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.clear_layer(layer).await
 }
 #[tauri::command]
 async fn set_theme(name: String, state: State<'_, AppState>) -> Result<OperatorView, String> {
@@ -12854,6 +12869,7 @@ fn main() {
             previous,
             go_live,
             clear,
+            clear_layer,
             blackout,
             select,
             select_slide,

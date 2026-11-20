@@ -335,6 +335,8 @@ class _ControllerViewState extends State<ControllerView> {
               ),
               // Persistent emergency chrome — on every tab, above the nav.
               // Hidden entirely for a role that can neither blackout nor clear.
+              if (_live.can(Capability.clearLive))
+                ResponsiveBody(child: ClearTextRow(live: _live)),
               if (_live.can(Capability.blackout) ||
                   _live.can(Capability.clearLive))
                 ResponsiveBody(child: EmergencyStrip(live: _live)),

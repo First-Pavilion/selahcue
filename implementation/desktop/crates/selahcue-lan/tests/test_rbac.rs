@@ -798,3 +798,15 @@ fn the_view_only_verdict_never_widens_what_a_role_may_do() {
         }
     }
 }
+
+#[test]
+fn clear_layer_is_clear_live_privilege_producer_and_up() {
+    let cmd = Command::ClearLayer {
+        layer: "text".into(),
+    };
+    assert_eq!(required_permission(&cmd), Permission::ClearLive);
+    assert!(authorize(Role::Operator, &cmd), "operator");
+    assert!(authorize(Role::Producer, &cmd), "producer");
+    assert!(!authorize(Role::Assistant, &cmd), "assistant");
+    assert!(!authorize(Role::Viewer, &cmd), "viewer");
+}

@@ -2702,6 +2702,26 @@
           id="blackout-label">BLACKOUT</span><span class="key">B</span></button>
       <button id="clear-all" aria-label="Clear all live layers (double-Escape)">Clear Output<span class="key">Esc
           Esc</span></button>
+      <!-- 86ajpy59e — per-layer clear (FR-078; COMPONENT-SPECS "Clear: menu of layers"; UX-STATE-MATRIX
+           §11 `.`). Buttons, never a <select> (a flex <select> collapses in WKWebView). Entries are
+           in composite order and each shows its cleared state from view.cleared_layers. Clear All
+           stays the separate control beside it. -->
+      <div id="clear-layer" class="clear-layer">
+        <button id="clear-layer-btn" type="button" aria-haspopup="menu" aria-expanded="false"
+          aria-controls="clear-layer-menu" aria-label="Clear one layer (period)">CLEAR ▾<span
+            id="clear-layer-summary" class="clear-layer-summary"></span><span class="key">.</span></button>
+        <div id="clear-layer-menu" class="clear-layer-menu" role="menu" aria-label="Clear one layer" hidden>
+          <button type="button" role="menuitem" data-layer="background" data-name="Background"><span
+              class="clear-layer-name">Background</span><span class="clear-layer-state">Cleared</span></button>
+          <button type="button" role="menuitem" data-layer="lower-third" data-name="Lower third"><span
+              class="clear-layer-name">Lower third</span><span class="clear-layer-state">Cleared</span></button>
+          <button type="button" role="menuitem" data-layer="logo" data-name="Logo"><span
+              class="clear-layer-name">Logo</span><span class="clear-layer-state">Cleared</span></button>
+          <button type="button" role="menuitem" data-layer="text" data-name="Text"><span
+              class="clear-layer-name">Text</span><span class="clear-layer-state">Cleared</span><span
+              class="key">⌫</span></button>
+        </div>
+      </div>
       <!-- CON-102 (blocker): a dedicated way BACK. Restoring live output currently requires knowing
            that BLACKOUT is a toggle — nothing on screen says so. Present only while output is black. -->
       <button id="restore-output" class="restore-output" type="button" hidden>↺ Restore output</button>
@@ -2771,6 +2791,14 @@
         <div class="sc-row">
           <dt><kbd>Esc</kbd> <kbd>Esc</kbd></dt>
           <dd>Clear the output</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>⌫</kbd></dt>
+          <dd>Clear the text layer</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>.</kbd></dt>
+          <dd>Clear one layer (opens the layer picker)</dd>
         </div>
         <div class="sc-row">
           <dt><kbd>⌘K</kbd></dt>

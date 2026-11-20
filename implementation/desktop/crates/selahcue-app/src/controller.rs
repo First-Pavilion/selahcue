@@ -2623,6 +2623,12 @@ impl LiveController {
             live_scripture: self.live_scripture.clone(),
             live_free_text: self.live_free_text.clone(),
             live_authored_id: self.presenter.authored_live_id(),
+            cleared_layers: self
+                .presenter
+                .cleared_live_layers()
+                .into_iter()
+                .map(|l| l.tag().to_string())
+                .collect(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
             // Advertise only translations that can actually be rendered RIGHT NOW. Every bundled
@@ -2779,6 +2785,18 @@ impl LiveController {
             .items()
             .get(idx)
             .map(|item| item_slide(item, slide))
+    }
+
+    /// Clear the whole live output back to idle (shared by `Clear` and the authored-slide
+    /// `ClearLayer` path).
+    fn clear_all_live(&mut self) -> ControllerReply {
+        self.presenter.clear_live();
+        self.live_idx = None;
+        self.live_scripture = None;
+        self.live_free_text = None;
+        self.live_free_body = Vec::new();
+        self.blackout = false;
+        ControllerReply::Ack
     }
 
     /// Stage the plan item at `idx` in Preview at slide 0 (Live is untouched),
@@ -2975,13 +2993,33 @@ impl LiveController {
                     ControllerReply::Deny(DenyReason::BadRequest)
                 }
             }
-            Command::Clear => {
-                self.presenter.clear_live();
-                self.live_idx = None;
-                self.live_scripture = None;
-                self.live_free_text = None;
-                self.live_free_body = Vec::new();
-                self.blackout = false;
+            Command::Clear => self.clear_all_live(),
+            Command::ClearLayer { layer } => {
+                let Some(layer) = selahcue_present::LiveLayer::from_tag(layer) else {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                };
+                if self.presenter.authored_live_id().is_some() {
+                    // An authored slide has no per-layer model. Only `text` clears it, as a
+                    // whole, exactly like Clear (so Backspace on a deck still clears); every
+                    // other layer is acknowledged and changes nothing, so a one-tap "Clear
+                    // logo" can never wipe the deck slide without Clear All's arm-then-confirm
+                    // (review I2). ClearLayer never changes blackout, so restore it afterwards.
+                    if layer != selahcue_present::LiveLayer::Text {
+                        return ControllerReply::Ack;
+                    }
+                    let was_blackout = self.blackout;
+                    let reply = self.clear_all_live();
+                    if was_blackout {
+                        self.blackout = true;
+                        self.presenter.blackout(true);
+                    }
+                    return reply;
+                }
+                self.presenter.clear_live_layer(layer);
+                // Re-apply blackout (as the theme-switch paths do); `self.blackout` is untouched.
+                if self.blackout {
+                    self.presenter.blackout(true);
+                }
                 ControllerReply::Ack
             }
             Command::Blackout { on } => {

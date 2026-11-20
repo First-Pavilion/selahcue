@@ -188,6 +188,8 @@ const Map<String, CommandAction> _commandActions = {
       CommandAction(Capability.navigate, 'Staging a slide', 'STAGE A SLIDE'),
   'clear': CommandAction(
       Capability.clearLive, 'Clearing the live output', 'CLEAR THE OUTPUT'),
+  'clear_layer': CommandAction(
+      Capability.clearLive, 'Clearing a layer', 'CLEAR THE OUTPUT'),
   'blackout': CommandAction(
       Capability.blackout, 'Blacking out the output', 'BLACK OUT THE OUTPUT'),
   'start_timer':

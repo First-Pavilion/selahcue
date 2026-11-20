@@ -3921,11 +3921,12 @@ impl ApplicationHandler for App {
                             .unwrap_or(true);
                         drive(&self.controller, &Command::Blackout { on });
                     }
-                    Some(CanonicalAction::ClearLayer) => {
-                        // Single-layer live output today: clearing the current
-                        // layer IS the full clear (per-layer arrives with 86ajpy59e).
-                        drive(&self.controller, &Command::Clear)
-                    }
+                    Some(CanonicalAction::ClearLayer) => drive(
+                        &self.controller,
+                        &Command::ClearLayer {
+                            layer: selahcue_app::keymap::CLEAR_LAYER_DEFAULT_TAG.into(),
+                        },
+                    ),
                     None => {}
                 }
             }

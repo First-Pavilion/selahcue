@@ -23,7 +23,9 @@ pub mod theme;
 pub mod tokens;
 pub mod trash;
 
-pub use compose::{compose_authored_slide, compose_slide, compose_slide_masked, LayerMask};
+pub use compose::{
+    compose_authored_slide, compose_slide, compose_slide_masked, LayerMask, LiveLayer,
+};
 pub use deck::{
     crossfade, media_usage, AuthoredSlide, DeckId, DeckSession, SlideDeck, SlideId, Transition,
     UsageReport, MAX_DECK_SLIDES, MAX_NOTES_LEN,

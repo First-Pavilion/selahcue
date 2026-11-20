@@ -42,6 +42,11 @@ Map<String, dynamic> cmdNext() => {'cmd': 'next'};
 Map<String, dynamic> cmdPrevious() => {'cmd': 'previous'};
 Map<String, dynamic> cmdGoLive() => {'cmd': 'go_live'};
 Map<String, dynamic> cmdClear() => {'cmd': 'clear'};
+
+/// Clear one audience-output layer (`background`, `text`, `lower-third`,
+/// `logo`). Mirrors the Rust `Command::ClearLayer` wire shape.
+Map<String, dynamic> cmdClearLayer(String layer) =>
+    {'cmd': 'clear_layer', 'layer': layer};
 Map<String, dynamic> cmdBlackout(bool on) => {'cmd': 'blackout', 'on': on};
 Map<String, dynamic> cmdSelectItem(int itemId) =>
     {'cmd': 'select_item', 'item_id': itemId};
@@ -253,6 +258,17 @@ class OperatorStateView {
   /// Pending scripture detections awaiting approval (the Scripture-Operator gate).
   final List<DetectionView> detections;
 
+  /// Layers currently cleared on the Live output (`background`, `text`,
+  /// `lower-third`, `logo`). The host omits the key when none are cleared, so
+  /// absence parses to empty.
+  final List<String> clearedLayers;
+
+  /// The id of the authored deck slide on Live, if one is presented rather
+  /// than plan/scripture content. A deck slide has no per-layer model, so the
+  /// per-layer "Clear text" control is unavailable while this is set. The host
+  /// omits the key when nothing authored is live, so absence parses to null.
+  final int? liveAuthoredId;
+
   const OperatorStateView({
     required this.planName,
     required this.items,
@@ -269,6 +285,8 @@ class OperatorStateView {
     this.transcript = const [],
     this.partialTranscript,
     this.detections = const [],
+    this.clearedLayers = const [],
+    this.liveAuthoredId,
   });
 
   static OperatorStateView fromJson(Map<String, dynamic> j) => OperatorStateView(
@@ -302,6 +320,10 @@ class OperatorStateView {
             .whereType<Map<String, dynamic>>()
             .map(DetectionView.fromJson)
             .toList(),
+        clearedLayers: ((j['cleared_layers'] as List?) ?? const [])
+            .whereType<String>()
+            .toList(),
+        liveAuthoredId: j['live_authored_id'] as int?,
       );
 }
 

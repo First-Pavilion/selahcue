@@ -57,6 +57,10 @@ pub enum Command {
     SelectSlide { item_id: u64, slide_index: u32 },
     /// Clear the live output (return to logo/idle).
     Clear,
+    /// Clear ONE layer of the live title+body slide (per-layer clear, 86ajpy59e): `layer` is
+    /// one of `background`, `text`, `lower-third`, `logo`. Unknown tags (including `timer`)
+    /// are denied. Same `ClearLive` permission as [`Clear`]; additive/back-compatible.
+    ClearLayer { layer: String },
     /// Toggle blackout of the live output.
     Blackout { on: bool },
     /// Start a countdown/count-up timer on the live output.
@@ -1170,6 +1174,10 @@ pub struct OperatorStateView {
     /// when absent so the pinned v2 fixtures stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_authored_id: Option<u64>,
+    /// The live layers currently cleared (per-layer clear, 86ajpy59e), as tags in composite
+    /// order. Omitted when empty so the pinned v2 fixtures stay byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cleared_layers: Vec<String>,
     /// The physical outputs (main/stage) and their display assignments — filled
     /// by the desktop host; empty (and omitted on the wire) elsewhere.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -90,6 +90,8 @@ pub struct OperatorView {
     /// ring — the deck editor's local `live` annotation can go stale when the console drives plan
     /// content, so the grid rings THIS instead.
     pub live_authored_id: Option<u64>,
+    /// Live layers currently cleared (per-layer clear), as tags in composite order.
+    pub cleared_layers: Vec<String>,
     /// Physical outputs and their display assignments (desktop host only).
     pub outputs: Vec<selahcue_lan::protocol::OutputStatusView>,
     /// Attached physical displays for the assignment picker (desktop host only).
@@ -276,6 +278,13 @@ impl OperatorShell {
     /// Clear the Live output back to idle.
     pub fn clear(&self) -> OperatorView {
         self.act(&Command::Clear)
+    }
+
+    /// Clear one layer (`background`, `text`, `lower-third`, `logo`) of the Live slide.
+    pub fn clear_layer(&self, layer: &str) -> OperatorView {
+        self.act(&Command::ClearLayer {
+            layer: layer.to_string(),
+        })
     }
 
     /// Set the blackout state of the Live output.
@@ -910,6 +919,7 @@ impl From<OperatorView> for OperatorStateView {
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
             live_authored_id: v.live_authored_id,
+            cleared_layers: v.cleared_layers,
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
@@ -949,6 +959,7 @@ impl From<OperatorStateView> for OperatorView {
             live_scripture: v.live_scripture,
             live_free_text: v.live_free_text,
             live_authored_id: v.live_authored_id,
+            cleared_layers: v.cleared_layers,
             outputs: v.outputs,
             displays: v.displays,
             translations: v.translations,
@@ -1129,6 +1140,17 @@ impl RemoteOperator {
     /// Clear the host's Live output.
     pub async fn clear(&mut self) -> Result<OperatorView, selahcue_lan::TransportError> {
         self.act(Command::Clear).await
+    }
+
+    /// Clear one layer of the host's Live slide.
+    pub async fn clear_layer(
+        &mut self,
+        layer: &str,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::ClearLayer {
+            layer: layer.to_string(),
+        })
+        .await
     }
 
     /// Set the host's blackout state.

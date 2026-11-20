@@ -75,6 +75,7 @@ void _commandMirror() {
     expect(capOf(cmdSelectItem(1)), Capability.navigate);
     expect(capOf(cmdSelectSlide(1, 0)), Capability.navigate);
     expect(capOf(cmdClear()), Capability.clearLive);
+    expect(capOf(cmdClearLayer('text')), Capability.clearLive);
     expect(capOf(cmdBlackout(true)), Capability.blackout);
     for (final cmd in [
       cmdStartTimer(60),
@@ -89,6 +90,14 @@ void _commandMirror() {
     expect(capOf(cmdGetChapter('John 3')), Capability.searchScripture);
     expect(capOf(cmdGetOperatorState()), Capability.monitor);
     expect(capOf(cmdSetTheme('x')), Capability.configureOutputs);
+  });
+
+  test('clear_layer is allowed for operator and producer, denied otherwise', () {
+    final cap = commandActionFor(cmdClearLayer('text'))!.capability;
+    expect(MobileRole.operator.can(cap), isTrue);
+    expect(MobileRole.producer.can(cap), isTrue);
+    expect(MobileRole.assistant.can(cap), isFalse);
+    expect(MobileRole.viewer.can(cap), isFalse);
   });
 
   test('approving a detection is SearchScripture, never GoLive', () {

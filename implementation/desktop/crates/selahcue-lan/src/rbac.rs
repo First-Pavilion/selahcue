@@ -135,7 +135,7 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::Previous
         | Command::SelectItem { .. }
         | Command::SelectSlide { .. } => Navigate,
-        Command::Clear => ClearLive,
+        Command::Clear | Command::ClearLayer { .. } => ClearLive,
         Command::Blackout { .. } => Blackout,
         Command::StartTimer { .. }
         | Command::StopTimer

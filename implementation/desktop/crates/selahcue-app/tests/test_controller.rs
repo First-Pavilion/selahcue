@@ -122,6 +122,224 @@ fn clear_and_blackout_act_on_live() {
     assert!(!c.is_blackout());
 }
 
+fn clear_layer(tag: &str) -> Command {
+    Command::ClearLayer { layer: tag.into() }
+}
+
+#[test]
+fn clear_layer_text_keeps_item_live() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let live = c.live_index();
+    assert!(live.is_some());
+    assert!(c.operator_view().cleared_layers.is_empty());
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(
+        c.live_index(),
+        live,
+        "clearing one layer keeps the item live"
+    );
+    assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+}
+
+#[test]
+fn clear_layer_rejects_unknown_and_timer() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    for tag in ["timer", "bogus", ""] {
+        assert_eq!(
+            c.apply(&clear_layer(tag)),
+            ControllerReply::Deny(DenyReason::BadRequest),
+            "{tag:?}"
+        );
+    }
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+#[test]
+fn clear_layer_on_authored_slide_clears_all() {
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&slide).unwrap(),
+            theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+            next_slide_json: None,
+        }),
+        ControllerReply::Ack
+    );
+    assert!(c.operator_view().live_authored_id.is_some());
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(c.operator_view().live_authored_id, None, "same as Clear");
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+#[test]
+fn clear_layer_non_text_on_authored_slide_is_a_no_op() {
+    // Review I2: a deck slide has no per-layer model, so only `text` clears it (as a whole, like
+    // Backspace always has). The other valid tags are acknowledged and change nothing — a phone
+    // or console "Clear logo" must never wipe the whole deck slide off the audience screen.
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    assert_eq!(
+        c.apply(&Command::PresentAuthoredSlide {
+            slide_json: serde_json::to_string(&slide).unwrap(),
+            theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+            next_slide_json: None,
+        }),
+        ControllerReply::Ack
+    );
+    let id = c.operator_view().live_authored_id;
+    assert!(id.is_some());
+    let before = c.presenter().live_output().clone();
+    for tag in ["logo", "background", "lower-third"] {
+        assert_eq!(c.apply(&clear_layer(tag)), ControllerReply::Ack, "{tag}");
+        let view = c.operator_view();
+        assert_eq!(
+            view.live_authored_id, id,
+            "{tag}: the deck slide stays live"
+        );
+        assert!(view.cleared_layers.is_empty(), "{tag}");
+        assert!(
+            c.presenter().live_output() == &before,
+            "{tag}: the live frame is unchanged"
+        );
+    }
+    // Unknown tags are still rejected while a deck slide is live.
+    assert_eq!(
+        c.apply(&clear_layer("timer")),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(c.operator_view().live_authored_id, id);
+}
+
+#[test]
+fn clear_layer_on_authored_slide_keeps_blackout() {
+    let (mut c, _) = controller();
+    let mut slide = AuthoredSlide::new(SlideId(1));
+    slide.elements = vec![full_frame_shape(Rgba::rgb(210, 30, 40))];
+    c.apply(&Command::PresentAuthoredSlide {
+        slide_json: serde_json::to_string(&slide).unwrap(),
+        theme_json: serde_json::to_string(&Theme::dark()).unwrap(),
+        next_slide_json: None,
+    });
+    // Presenting an authored slide lifts blackout itself, so turn it on afterwards.
+    c.apply(&Command::Blackout { on: true });
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    let view = c.operator_view();
+    assert!(view.blackout, "ClearLayer never lifts blackout");
+    assert!(live_is_black(&c));
+    assert_eq!(view.live_authored_id, None);
+}
+
+#[test]
+fn blackout_then_clear_layer_then_unblackout() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    c.apply(&Command::Blackout { on: true });
+    assert!(live_is_black(&c));
+
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert!(c.is_blackout(), "clear_layer never changes blackout");
+    assert!(live_is_black(&c), "output stays black during blackout");
+
+    c.apply(&Command::Blackout { on: false });
+    let view = c.operator_view();
+    assert!(!view.blackout);
+    assert_eq!(view.cleared_layers, vec!["text".to_string()]);
+
+    // The frame that comes back is the text-off composition, not the full slide: the flags
+    // alone would stay right even if the lyrics reappeared on air after the restore.
+    let restored = c.presenter().live_output().bytes().to_vec();
+    let (mut reference, _) = controller();
+    reference.apply(&Command::Next);
+    reference.apply(&Command::GoLive);
+    let full = reference.presenter().live_output().bytes().to_vec();
+    reference.apply(&clear_layer("text"));
+    let text_off = reference.presenter().live_output().bytes().to_vec();
+    assert_ne!(full, text_off, "positive control: the text layer draws");
+    assert_eq!(restored, text_off, "unblackout restores the text-off frame");
+    assert_ne!(restored, full, "the cleared text must not reappear");
+}
+
+#[test]
+fn clear_layer_is_reset_by_next_go_live() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+// Logic smoke check only: 320x180, blackout off, one sample. It proves the path is not
+// pathologically slow; the real budget check is the 1080p blackout test below.
+#[test]
+fn clear_layer_logic_smoke_is_fast() {
+    use std::time::Instant;
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    let t = Instant::now();
+    let reply = c.apply(&clear_layer("text"));
+    let ms = t.elapsed().as_millis();
+    assert_eq!(reply, ControllerReply::Ack);
+    assert!(ms < 200, "clear_layer took {ms}ms (>200ms budget)");
+}
+
+// The user-facing budget is 200 ms, measured in RELEASE. Debug builds pay roughly a 50x penalty
+// on the blackout render, and CI runs this in debug on a loaded 2-vCPU runner alongside hundreds
+// of parallel tests, so debug allows 600 ms: still catches a ~10x slowdown over the ~58 ms
+// debug median without flaking.
+#[cfg(debug_assertions)]
+const CLEAR_LAYER_P95_LIMIT: std::time::Duration = std::time::Duration::from_millis(600);
+#[cfg(not(debug_assertions))]
+const CLEAR_LAYER_P95_LIMIT: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[test]
+fn clear_layer_with_blackout_at_1080p_stays_within_budget() {
+    // The worst case: a full-size frame recomposed AND blackout re-applied. Fresh Next+GoLive
+    // per sample (untimed); only the ClearLayer apply is timed. Gate on p95, never the max.
+    use std::time::{Duration, Instant};
+    let mut samples: Vec<Duration> = Vec::new();
+    for _ in 0..20 {
+        let mut plan = ServicePlan::new("Sunday");
+        plan.add_item(ItemKind::Song, "Opening Song");
+        let mut c = LiveController::new(plan, 1920, 1080, Theme::dark());
+        c.apply(&Command::Next);
+        c.apply(&Command::GoLive);
+        c.apply(&Command::Blackout { on: true });
+        let t = Instant::now();
+        let reply = c.apply(&clear_layer("text"));
+        samples.push(t.elapsed());
+        assert_eq!(reply, ControllerReply::Ack);
+        assert!(c.is_blackout());
+        assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+    }
+    samples.sort();
+    let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+    println!(
+        "clear_layer 1080p blackout: min {:?} median {:?} p95 {:?} max {:?}",
+        samples[0],
+        samples[samples.len() / 2],
+        p95,
+        samples[samples.len() - 1]
+    );
+    assert!(
+        p95 < CLEAR_LAYER_P95_LIMIT,
+        "ClearLayer p95 {p95:?} exceeds the {CLEAR_LAYER_P95_LIMIT:?} limit"
+    );
+}
+
 #[test]
 fn get_state_reports_live_item_and_blackout() {
     let (mut c, ids) = controller();
@@ -5635,6 +5853,17 @@ fn live_generation_covers_every_output_changing_command_class() {
     bumped(&c, "Blackout off");
     c.apply(&Command::Clear);
     bumped(&c, "Clear");
+    c.apply(&Command::Next);
+    bumped(&c, "Next (re-stage after Clear)");
+    c.apply(&Command::GoLive);
+    bumped(&c, "GoLive (re-live after Clear)");
+    c.apply(&Command::ClearLayer {
+        layer: "text".into(),
+    });
+    bumped(
+        &c,
+        "ClearLayer (secondary + NDI recompose from the cleared set)",
+    );
     c.apply(&Command::SetTheme {
         name: "warm".into(),
     });

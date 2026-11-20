@@ -216,7 +216,7 @@ Format: `ID | Requirement | Priority | Acceptance criteria (measurable) | Trace`
 | FR-075 | Crash recovery + crash-loop breaker | MVP | After forced shutdown, relaunch restores live content, plan position, and running timers (countdowns re-anchored to wall-clock, count-up resumes accumulated). **Crash-loop breaker:** after **3 crashes within 60s** the app does not silently auto-resume — it offers "Resume last live state" vs "Start clean / skip last item" and disables the suspected offending item | FLOW-008; MAJOR-02 |
 | FR-076 | Emergency clear (per-layer and all-layer) without network | MVP | Clear removes chosen layer(s) from live output <200ms with no network dependency | CON-2; JTBD-6 |
 | FR-077 | Emergency blackout (instant) without network | MVP | Blackout blanks audience output(s) <200ms offline; un-blackout restores prior content | CON-2 |
-| FR-078 | Per-layer clearing (text/background/lower-third/media independently) | MVP | Each layer clears independently without affecting others | brief §core |
+| FR-078 | Per-layer clearing (text/background/lower-third/media independently) | MVP | Each layer clears independently without affecting others. **Delivered (86ajpy59e) for text, background, lower-third and logo**; media clearing waits on video (DEC-003) | brief §core |
 | FR-079 | Database integrity check + safe backup (WAL-aware) | MVP | Integrity check runnable; backups are crash-safe (checkpoint or backup API), never corrupt | RP-08 §7 |
 | FR-080 | Automatic backups on a schedule | R2 | Periodic backups created and retained per policy; restore verified | RP-reliability |
 | FR-081 | Storage-space warning and safe-mode | R2 | Low-disk warns before capture/record; safe-mode boots with minimal subsystems on repeated crash | RP-reliability |

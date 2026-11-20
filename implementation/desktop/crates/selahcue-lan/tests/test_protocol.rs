@@ -38,6 +38,21 @@ fn command_tag_encoding_is_stable() {
         },
         "wire form round-trips back to the command"
     );
+    // ClearLayer (per-layer clear, 86ajpy59e) — additive; the `layer` tag is a string.
+    assert_eq!(
+        to_json(&Command::ClearLayer {
+            layer: "text".into()
+        })
+        .unwrap(),
+        r#"{"cmd":"clear_layer","layer":"text"}"#
+    );
+    assert_eq!(
+        from_json::<Command>(r#"{"cmd":"clear_layer","layer":"text"}"#).unwrap(),
+        Command::ClearLayer {
+            layer: "text".into()
+        },
+        "wire form round-trips back to the command"
+    );
 }
 
 #[test]
@@ -683,6 +698,7 @@ fn transcript_and_detection_view_fields_are_additive() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1010,6 +1026,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: Some("John 3:16".into()),
         live_free_text: Some("Removed Song".into()),
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1058,6 +1075,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1107,6 +1125,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1162,6 +1181,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![selahcue_lan::protocol::OutputStatusView {
             role: "main".into(),
             display: Some("Projector".into()),
@@ -1228,6 +1248,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1275,6 +1296,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -1321,6 +1343,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         live_scripture: None,
         live_free_text: None,
         live_authored_id: None,
+        cleared_layers: vec![],
         outputs: vec![],
         displays: vec![],
         translations: vec![],
@@ -2451,4 +2474,22 @@ fn transcript_storage_health_is_additive_and_unknown_on_old_hosts() {
         roundtrip.transcript_storage_health,
         view.transcript_storage_health
     );
+}
+
+#[test]
+fn operator_state_cleared_layers_is_additive() {
+    use selahcue_lan::protocol::OperatorStateView;
+    let old = r#"{"plan_name":"Sunday","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null}"#;
+    let mut view: OperatorStateView = serde_json::from_str(old).unwrap();
+    assert!(view.cleared_layers.is_empty());
+    let wire = serde_json::to_value(&view).unwrap();
+    assert!(
+        wire.get("cleared_layers").is_none(),
+        "an empty set is omitted so the pinned fixtures stay byte-identical"
+    );
+    view.cleared_layers = vec!["text".into()];
+    let json = serde_json::to_string(&view).unwrap();
+    assert!(json.contains(r#""cleared_layers":["text"]"#), "{json}");
+    let back: OperatorStateView = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.cleared_layers, vec!["text".to_string()]);
 }

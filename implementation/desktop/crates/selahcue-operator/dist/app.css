@@ -5009,6 +5009,15 @@
         display: flex;
         align-items: center;
         gap: 10px;
+        /* 86ajpy59e: with the CLEAR ▾ picker in this row, a narrow (900px) window squeezed the
+           emergency buttons until their labels wrapped (Clear Output measured 79px tall in WebKit).
+           The safety controls keep their size; the general note beside them wraps instead. */
+        flex: none;
+      }
+
+      .emergency-actions > button,
+      .emergency-actions #clear-layer-btn {
+        white-space: nowrap;
       }
 
       #emergency .note {
@@ -5120,6 +5129,124 @@
         background: var(--sc-live);
         border-color: var(--sc-live);
         color: var(--sc-live-soft);
+      }
+
+      /* 86ajpy59e — the CLEAR ▾ per-layer picker. The trigger rests like Clear Output (it is the
+         same family of action). The menu opens UPWARD out of the 56px footer, absolutely
+         positioned so it adds no row to any grid or flex track. A cleared entry takes an OUTLINE
+         (neutral ink, transparent fill) — never a red fill: solid red is reserved for an engaged
+         Blackout and armed confirms, and a cleared layer is neither. */
+      .clear-layer {
+        position: relative;
+        flex: none;
+      }
+
+      #clear-layer-btn {
+        background: var(--sc-live-soft);
+        border: 1px solid var(--sc-live-border);
+        color: var(--sc-live);
+        padding: 9px 14px;
+        border-radius: 10px;
+        white-space: nowrap;
+      }
+
+      /* Fix round 2: with the menu closed, the trigger still says what is cleared — the same
+         outline + uppercase marker treatment a cleared entry uses, never a red fill. */
+      .clear-layer-summary {
+        display: none;
+        margin: 0 6px 0 8px;
+        padding: 0 6px;
+        line-height: 16px;
+        border: 1px solid var(--sc-text-secondary);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--sc-text-secondary);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+      }
+
+      #clear-layer-btn.has-cleared .clear-layer-summary {
+        display: inline-block;
+      }
+
+      #clear-layer-btn[aria-expanded="true"] {
+        border-color: var(--sc-live);
+      }
+
+      .clear-layer-menu {
+        position: absolute;
+        left: 0;
+        /* The trigger sits ~8px below the footer's top edge; 16px clears the footer entirely. */
+        bottom: calc(100% + 16px);
+        z-index: 150;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 220px;
+        box-sizing: border-box;
+        padding: 6px;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border-strong);
+        border-radius: 10px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .45);
+      }
+
+      .clear-layer-menu[hidden] {
+        display: none;
+      }
+
+      .clear-layer-menu button {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        min-height: 34px;
+        box-sizing: border-box;
+        padding: 7px 10px;
+        text-align: left;
+        font-weight: 500;
+        color: var(--sc-text);
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+      }
+
+      .clear-layer-menu button:hover:not(:disabled) {
+        background: var(--sc-surface);
+        border-color: var(--sc-border-strong);
+      }
+
+      /* Review I2: unavailable while a deck slide is live (deck slides clear as a whole). */
+      .clear-layer-menu button:disabled {
+        color: var(--sc-text-secondary);
+        cursor: not-allowed;
+      }
+
+      .clear-layer-name {
+        flex: 1 1 auto;
+      }
+
+      .clear-layer-state {
+        display: none;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: .04em;
+        text-transform: uppercase;
+        color: var(--sc-text-secondary);
+      }
+
+      .clear-layer-menu button.cleared {
+        border-color: var(--sc-text-secondary);
+      }
+
+      .clear-layer-menu button.cleared .clear-layer-name {
+        color: var(--sc-text-secondary);
+      }
+
+      .clear-layer-menu button.cleared .clear-layer-state {
+        display: inline;
       }
 
       /* --- Command palette (⌘K) + Shortcuts modal (app menu → Shortcuts) --- */
