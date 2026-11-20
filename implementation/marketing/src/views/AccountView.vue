@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { SIGN_OUT_LABEL, SIGN_OUT_PENDING_LABEL } from '@/lib/auth/signOutFlow.ts'
 import { useSignOut } from '@/lib/auth/useSignOut.ts'
 import SrOnly from '@/components/core/SrOnly.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
-import ConfirmDialog from '@/components/ConfirmDialog.vue'
-import Toast from '@/components/Toast.vue'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
+import { accountOverview, deactivateOwnDevice, type AccountOverview } from '@/lib/api/account.ts'
+import { newIdempotencyKey } from '@/lib/auth/signupPolicy.ts'
+import {
+  countLeftLine,
+  countUsed,
+  deviceLabel,
+  formatAccountDate,
+  formatPlanEnd,
+  minutesLeftLine,
+  minutesUsed,
+} from '@/lib/accountDisplay.ts'
 
 /**
  * Sign out for real (ClickUp 17tnw2b2cbr). This was a link to /signin: it navigated and never
@@ -29,118 +38,115 @@ const handleSignOut = async () => {
   ;(signOutButton.value?.$el as HTMLElement | undefined)?.focus()
 }
 
-// Active Tab
-const activeTab = ref('overview') // 'overview' | 'subscription' | 'license' | 'bibles' | 'invoices' | 'settings'
+/**
+ * The page shows only what `accountOverview` returns (ClickUp 17tnw2bhkd2). It used to be mock data
+ * (a Pro plan, invoices, a licence key, Bible entitlements); none of that exists on the server, so
+ * none of it is here. Server errors are never rendered: the API's messages are generic by design,
+ * so the page maps every failure to one sentence of its own.
+ */
+const LOAD_FAILED = "We couldn't load your account. Check your connection and try again."
+const DEACTIVATE_FAILED = 'We could not deactivate that computer. Please try again.'
 
-// Loading State
-const isLoading = ref(false)
+const status = ref<'loading' | 'ready' | 'error'>('loading')
+const overview = ref<AccountOverview | null>(null)
+let loadController: AbortController | null = null
 
-// Toast State
-const toastShow = ref(false)
-const toastMessage = ref('')
-const toastVariant = ref('success')
-
-const showToast = (msg: string, variant = 'success') => {
-  toastMessage.value = msg
-  toastVariant.value = variant
-  toastShow.value = true
-}
-
-interface Device {
-  id: string
-  name: string
-  os: string
-  ip: string
-  lastActive: string
-  version: string
-  isCurrent: boolean
-}
-
-// Dialog States
-const showCancelDialog = ref(false)
-const showDeactivateDialog = ref(false)
-const targetDevice = ref<Device | null>(null)
-
-// User Data Mock
-const user = ref({
-  orgName: 'Grace Community Church',
-  primaryContact: 'Sarah Jenkins',
-  email: 'sarah@gracechurch.org',
-  role: 'Organization Owner',
-  memberSince: 'March 2025'
-})
-
-// Subscription State Mock
-const subscription = ref({
-  plan: 'Pro',
-  status: 'active', // 'active' | 'past_due' | 'cancelled'
-  period: 'annual',
-  amount: '$15',
-  interval: 'month',
-  nextBillingDate: '1 Sep 2026',
-  seatsUsed: 2,
-  seatsTotal: 5
-})
-
-// License Key & Devices Mock
-const licenseKey = ref('sc_live_9f82k3m4n5p6q7r8s9t0')
-const isKeyMasked = ref(true)
-
-const copyLicenseKey = () => {
-  navigator.clipboard.writeText(licenseKey.value)
-  showToast('License key copied to clipboard!')
-}
-
-const devices = ref<Device[]>([
-  { id: 'dev_1', name: 'Sanctuary Main PC', os: 'Windows 11 Pro', ip: '192.168.1.104', lastActive: 'Today at 10:45 AM', version: 'v1.2.0', isCurrent: true },
-  { id: 'dev_2', name: 'Youth Room Mac Studio', os: 'macOS Sonoma 14.5', ip: '192.168.1.112', lastActive: 'Yesterday at 4:15 PM', version: 'v1.2.0', isCurrent: false }
-])
-
-const promptDeactivateDevice = (dev: Device) => {
-  targetDevice.value = dev
-  showDeactivateDialog.value = true
-}
-
-const confirmDeactivateDevice = () => {
-  const target = targetDevice.value
-  if (target) {
-    devices.value = devices.value.filter(d => d.id !== target.id)
-    subscription.value.seatsUsed -= 1
-    showToast(`Deactivated "${target.name}" successfully`)
-    targetDevice.value = null
+const load = async (quiet = false) => {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
+  if (!quiet) status.value = 'loading'
+  try {
+    const next = await accountOverview(undefined, undefined, { signal: controller.signal })
+    if (controller.signal.aborted) return
+    overview.value = next
+    status.value = 'ready'
+  } catch {
+    // A cancelled load (the visitor left, or a newer load replaced this one) is not a failure.
+    if (controller.signal.aborted) return
+    if (quiet && overview.value) return
+    status.value = 'error'
   }
 }
 
-const confirmCancelSubscription = () => {
-  subscription.value.status = 'cancelled'
-  showToast('Subscription cancelled. Pro access ends on 1 Sep 2026.', 'info')
+onMounted(() => {
+  void load()
+})
+onBeforeUnmount(() => loadController?.abort())
+
+// Further computers, when the account has more than one page of them.
+const loadingMore = ref(false)
+const loadMore = async () => {
+  const current = overview.value
+  const cursor = current?.devices.nextCursor
+  if (!current || !cursor || loadingMore.value) return
+  loadingMore.value = true
+  try {
+    const page = await accountOverview(undefined, cursor)
+    current.devices = { nodes: [...current.devices.nodes, ...page.devices.nodes], nextCursor: page.devices.nextCursor }
+  } catch {
+    deactivateError.value = LOAD_FAILED
+  } finally {
+    loadingMore.value = false
+  }
 }
 
-// Bible Entitlements Data (CRITICAL GAP COVERED!)
-const bibles = ref([
-  { id: 'b_1', name: 'New International Version (NIV)', language: 'English', publisher: 'Biblica, Inc.', status: 'active', size: '42 MB', lastSynced: '2 Aug 2026', expires: '1 Sep 2027', isCopyrighted: true },
-  { id: 'b_2', name: 'English Standard Version (ESV)', language: 'English', publisher: 'Crossway', status: 'active', size: '38 MB', lastSynced: '2 Aug 2026', expires: '1 Sep 2027', isCopyrighted: true },
-  { id: 'b_3', name: 'New Living Translation (NLT)', language: 'English', publisher: 'Tyndale House', status: 'expiring', size: '40 MB', lastSynced: '15 Jul 2026', expires: '28 Aug 2026', isCopyrighted: true }
-])
+const LICENSE_STATUS: Record<string, string> = {
+  ACTIVATED: 'Active',
+  EXPIRING: 'Expiring soon',
+  EXPIRED: 'Expired',
+  SUSPENDED: 'Suspended',
+  REVOKED: 'Revoked',
+  CONVERTED: 'Converted',
+  ARCHIVED: 'Archived',
+}
+const licenseStatusLabel = (value: string) => LICENSE_STATUS[value] ?? value.charAt(0) + value.slice(1).toLowerCase()
+const ROLE_LABEL: Record<string, string> = { ADMIN: 'Administrator', MEMBER: 'Member' }
+const roleLabel = (value: string) => ROLE_LABEL[value] ?? value.charAt(0) + value.slice(1).toLowerCase()
 
-const bundledBibles = [
-  { name: 'World English Bible (WEB)', language: 'English', status: 'installed' },
-  { name: 'American Standard Version (ASV)', language: 'English', status: 'installed' },
-  { name: 'Berean Standard Bible (BSB)', language: 'English', status: 'installed' },
-  { name: 'Bible in Basic English (BBE)', language: 'English', status: 'installed' },
-  { name: 'Darby Translation', language: 'English', status: 'installed' },
-  { name: 'Webster Bible', language: 'English', status: 'installed' }
-]
+// Deactivating a computer. The confirm step lives in the page: `window.confirm` is unavailable in
+// the desktop webview and in embedded browsers, and a native dialog cannot be styled or tested.
+const confirmingId = ref('')
+const deactivatingId = ref('')
+const deactivateError = ref('')
+const notice = ref('')
+// One request id per computer per attempt: a retry after a timeout must converge on the first request.
+const requestIds = new Map<string, string>()
 
-const redownloadBible = (bible: { name: string; size: string }) => {
-  showToast(`Initiated re-download of ${bible.name} (${bible.size})`)
+const askDeactivate = (id: string) => {
+  deactivateError.value = ''
+  notice.value = ''
+  confirmingId.value = id
+}
+const cancelDeactivate = () => {
+  confirmingId.value = ''
 }
 
-// Invoices Mock
-const invoices = ref([
-  { id: 'INV-2026-008', date: '1 Sep 2025', amount: '$180.00', status: 'Paid', period: 'Annual Pro Plan' },
-  { id: 'INV-2024-008', date: '1 Sep 2024', amount: '$180.00', status: 'Paid', period: 'Annual Pro Plan' }
-])
+const confirmDeactivate = async (id: string) => {
+  if (deactivatingId.value !== '') return
+  deactivatingId.value = id
+  deactivateError.value = ''
+  let requestId = requestIds.get(id)
+  if (requestId === undefined) {
+    requestId = newIdempotencyKey()
+    requestIds.set(id, requestId)
+  }
+  try {
+    await deactivateOwnDevice(id, requestId)
+    requestIds.delete(id)
+    const name = deviceLabel(overview.value?.devices.nodes.find((d) => d.publicId === id) ?? { displayName: '', platform: '' })
+    confirmingId.value = ''
+    notice.value = `${name} was deactivated.`
+    await load(true)
+  } catch {
+    confirmingId.value = ''
+    deactivateError.value = DEACTIVATE_FAILED
+  } finally {
+    deactivatingId.value = ''
+  }
+}
+
+const planEnd = () => formatPlanEnd(overview.value?.allowance?.planEndsAt ?? null)
 </script>
 
 <template>
@@ -149,10 +155,12 @@ const invoices = ref([
       <!-- Portal Top Header -->
       <header class="portal-header">
         <div class="user-lockup">
-          <div class="avatar">{{ user.orgName.charAt(0) }}</div>
+          <div class="avatar">{{ overview?.orgName.charAt(0) || 'S' }}</div>
           <div>
-            <h1 class="org-title">{{ user.orgName }}</h1>
-            <p class="user-sub">{{ user.primaryContact }} ({{ user.email }}) &middot; <span class="role-tag">{{ user.role }}</span></p>
+            <h1 class="org-title">{{ overview?.orgName || 'Your account' }}</h1>
+            <p v-if="overview" class="user-sub">
+              {{ overview.displayName }} ({{ overview.email }}) &middot; <span class="role-tag">{{ roleLabel(overview.role) }}</span>
+            </p>
           </div>
         </div>
         <div class="header-actions">
@@ -176,294 +184,144 @@ const invoices = ref([
         </div>
       </header>
 
-      <!-- Past-Due Warning Banner -->
-      <div v-if="subscription.status === 'past_due'" class="alert-banner past-due" role="alert">
-        <svg viewBox="0 0 20 20" fill="currentColor" class="alert-icon">
+      <!-- Loading -->
+      <div v-if="status === 'loading'" class="portal-card" role="status" aria-live="polite">
+        <p class="card-subtitle loading-text">Loading your account&hellip;</p>
+        <SkeletonLoader :lines="4" :widths="[30, 80, 100, 50]" />
+      </div>
+
+      <!-- Error -->
+      <div v-else-if="status === 'error' || !overview" class="alert-banner past-due" role="alert">
+        <svg viewBox="0 0 20 20" fill="currentColor" class="alert-icon" aria-hidden="true">
           <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
         </svg>
-        <span>Your last payment failed. Please update your payment method to avoid Pro feature interruption.</span>
-        <UiButton variant="gradient" size="sm">Update Payment</UiButton>
+        <span>{{ LOAD_FAILED }}</span>
+        <UiButton type="button" variant="outline" size="sm" @click="load()">Try again</UiButton>
       </div>
 
-      <!-- Navigation Tabs -->
-      <nav class="portal-tabs" aria-label="Account sections">
-        <button 
-          v-for="tab in ['overview', 'subscription', 'license', 'bibles', 'invoices', 'settings']" 
-          :key="tab"
-          :class="['tab-btn', { active: activeTab === tab }]"
-          @click="activeTab = tab"
-        >
-          {{ tab.charAt(0).toUpperCase() + tab.slice(1) }}
-          <UiBadge v-if="tab === 'bibles'" variant="preview" size="sm">3 Entitled</UiBadge>
-        </button>
-      </nav>
-
-      <!-- Skeleton Loading State -->
-      <div v-if="isLoading" class="portal-grid">
-        <div class="portal-card">
-          <SkeletonLoader :lines="4" :widths="[30, 80, 100, 50]" />
-        </div>
-      </div>
-
-      <!-- Tab Content Grid -->
       <div v-else class="portal-content">
-        <!-- OVERVIEW / SUBSCRIPTION CARD -->
-        <section v-if="activeTab === 'overview' || activeTab === 'subscription'" class="portal-card">
+        <p v-if="notice" class="notice" role="status">{{ notice }}</p>
+        <p v-if="deactivateError" class="signout-error" role="alert">{{ deactivateError }}</p>
+
+        <!-- PLAN -->
+        <section class="portal-card" aria-labelledby="plan-heading">
           <div class="card-header">
             <div>
-              <h2>Subscription & Plan</h2>
-              <p class="card-subtitle">Manage your tier and billing terms</p>
+              <h2 id="plan-heading">Plan</h2>
+              <p class="card-subtitle">What your church can use today</p>
             </div>
-            <UiBadge :variant="subscription.status === 'active' ? 'preview' : 'live'">
-              {{ subscription.status.toUpperCase() }}
+            <UiBadge v-if="overview.license" :variant="overview.license.validNow ? 'preview' : 'warn'">
+              {{ licenseStatusLabel(overview.license.status) }}
             </UiBadge>
           </div>
 
           <div class="plan-summary-box">
             <div class="summary-col">
-              <span class="label">Current Plan</span>
-              <span class="value-highlight">{{ subscription.plan }} Tier</span>
+              <span class="label">Current plan</span>
+              <span class="value-highlight">{{ overview.allowance?.planDisplayName ?? 'No plan' }}</span>
+              <span v-if="planEnd()" class="value">until {{ planEnd() }}</span>
+            </div>
+            <div v-if="overview.license" class="summary-col">
+              <span class="label">Licence</span>
+              <span class="value">{{ licenseStatusLabel(overview.license.status) }}</span>
+              <span v-if="formatAccountDate(overview.license.expiresAt)" class="value">
+                Expires {{ formatAccountDate(overview.license.expiresAt) }}
+              </span>
+            </div>
+            <div v-if="overview.license" class="summary-col">
+              <span class="label">Computers</span>
+              <span class="value">{{ overview.license.activeDeviceCount }} of {{ overview.license.deviceLimit }} computers</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- THIS WEEK -->
+        <section v-if="overview.allowance" class="portal-card" aria-labelledby="week-heading">
+          <div class="card-header">
+            <div>
+              <h2 id="week-heading">This week</h2>
+              <p v-if="formatAccountDate(overview.allowance.stt.resetsAt)" class="card-subtitle">
+                Resets {{ formatAccountDate(overview.allowance.stt.resetsAt) }}
+              </p>
+            </div>
+          </div>
+
+          <div class="plan-summary-box">
+            <div class="summary-col">
+              <span class="label">Cloud transcription</span>
+              <span class="value-highlight">{{ minutesLeftLine(overview.allowance.stt) || 'Not available' }}</span>
+              <span v-if="minutesUsed(overview.allowance.stt) !== null" class="value">
+                {{ minutesUsed(overview.allowance.stt) }} min used
+              </span>
             </div>
             <div class="summary-col">
-              <span class="label">Billing Rate</span>
-              <span class="value">{{ subscription.amount }} / {{ subscription.interval }} (billed {{ subscription.period }})</span>
-            </div>
-            <div class="summary-col">
-              <span class="label">Renewal Date</span>
-              <span class="value">{{ subscription.nextBillingDate }}</span>
-            </div>
-          </div>
-
-          <div class="card-actions">
-            <UiButton variant="primary" size="md">Change Plan</UiButton>
-            <UiButton variant="outline" size="md">Update Payment Method</UiButton>
-            <UiButton 
-              v-if="subscription.status === 'active'" 
-              variant="ghost" 
-              size="md" 
-              class="danger-text"
-              @click="showCancelDialog = true"
-            >
-              Cancel Subscription
-            </UiButton>
-          </div>
-        </section>
-
-        <!-- LICENSE & DEVICES CARD -->
-        <section v-if="activeTab === 'overview' || activeTab === 'license'" class="portal-card">
-          <div class="card-header">
-            <div>
-              <h2>App License & Devices</h2>
-              <p class="card-subtitle">Manage your activation key and authorized venue devices</p>
-            </div>
-            <UiBadge variant="ndi">{{ subscription.seatsUsed }} / {{ subscription.seatsTotal }} Seats Active</UiBadge>
-          </div>
-
-          <div class="license-key-box">
-            <div class="key-info">
-              <span class="label">App License Key</span>
-              <code class="key-code">
-                {{ isKeyMasked ? licenseKey.substring(0, 10) + '••••••••••••' : licenseKey }}
-              </code>
-            </div>
-            <div class="key-btn-group">
-              <UiButton variant="ghost" size="sm" @click="isKeyMasked = !isKeyMasked">
-                {{ isKeyMasked ? 'Reveal' : 'Mask' }}
-              </UiButton>
-              <UiButton variant="secondary" size="sm" @click="copyLicenseKey">
-                Copy Key
-              </UiButton>
-            </div>
-          </div>
-
-          <div class="devices-section">
-            <h3>Registered Venue Devices</h3>
-            <div class="table-responsive" tabindex="0" role="region" aria-label="Registered devices, scrolls sideways when wide">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>Device Name</th>
-                    <th>OS / Platform</th>
-                    <th>IP Address</th>
-                    <th>Last Active</th>
-                    <th>App Version</th>
-                    <th>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="dev in devices" :key="dev.id">
-                    <td class="font-medium">
-                      {{ dev.name }}
-                      <span v-if="dev.isCurrent" class="current-tag">(This device)</span>
-                    </td>
-                    <td>{{ dev.os }}</td>
-                    <td><code>{{ dev.ip }}</code></td>
-                    <td>{{ dev.lastActive }}</td>
-                    <td><UiBadge variant="preview" size="sm">{{ dev.version }}</UiBadge></td>
-                    <td>
-                      <button type="button" class="btn-text-danger" @click="promptDeactivateDevice(dev)">
-                        Deactivate
-                      </button>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <span class="label">Notes</span>
+              <span class="value-highlight">{{ countLeftLine(overview.allowance.notes) || 'Not available' }}</span>
+              <span v-if="countUsed(overview.allowance.notes) !== null" class="value">
+                {{ countUsed(overview.allowance.notes) }} used
+              </span>
             </div>
           </div>
         </section>
 
-        <!-- BIBLE ENTITLEMENTS CARD (CRITICAL GAP IMPLEMENTED!) -->
-        <section v-if="activeTab === 'overview' || activeTab === 'bibles'" class="portal-card">
+        <!-- DEVICES -->
+        <section class="portal-card" aria-labelledby="devices-heading">
           <div class="card-header">
             <div>
-              <h2>Bible Translation Entitlements</h2>
-              <p class="card-subtitle">Licensed Bibles authorized for encrypted download on your venue hardware</p>
-            </div>
-            <UiBadge variant="ready">3 Entitlements Granted</UiBadge>
-          </div>
-
-          <div class="entitlements-list">
-            <div v-for="b in bibles" :key="b.id" class="entitlement-row">
-              <div class="ent-icon">📖</div>
-              <div class="ent-details">
-                <div class="ent-title-line">
-                  <h4 class="ent-name">{{ b.name }}</h4>
-                  <UiBadge :variant="b.status === 'active' ? 'preview' : 'warn'">
-                    {{ b.status.toUpperCase() }}
-                  </UiBadge>
-                </div>
-                <p class="ent-sub">{{ b.language }} &middot; Rights Holder: {{ b.publisher }}</p>
-                <div class="ent-meta">
-                  <span>Downloaded ({{ b.size }})</span> &middot;
-                  <span>Last synced: {{ b.lastSynced }}</span> &middot;
-                  <span :class="{ 'expiring-text': b.status === 'expiring' }">Expires: {{ b.expires }}</span>
-                </div>
-              </div>
-              <div class="ent-action">
-                <UiButton variant="outline" size="sm" @click="redownloadBible(b)">
-                  Re-download
-                </UiButton>
-              </div>
+              <h2 id="devices-heading">Computers</h2>
+              <p class="card-subtitle">Computers signed in to SelahCue for your church</p>
             </div>
           </div>
 
-          <div class="bundled-bibles-section">
-            <h3>Bundled Public-Domain Bibles (Always Included)</h3>
-            <div class="bundled-grid">
-              <div v-for="bb in bundledBibles" :key="bb.name" class="bundled-chip">
-                <span>📖 {{ bb.name }}</span>
-                <UiBadge variant="preview" size="sm">INSTALLED</UiBadge>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- INVOICES CARD -->
-        <section v-if="activeTab === 'overview' || activeTab === 'invoices'" class="portal-card">
-          <div class="card-header">
-            <div>
-              <h2>Billing History & Invoices</h2>
-              <p class="card-subtitle">Download PDF receipts and view payment ledger</p>
-            </div>
-          </div>
-
-          <div class="table-responsive" tabindex="0" role="region" aria-label="Invoices, scrolls sideways when wide">
+          <p v-if="overview.devices.nodes.length === 0" class="card-subtitle">No computers are registered yet.</p>
+          <div
+            v-else
+            class="table-responsive"
+            tabindex="0"
+            role="region"
+            aria-label="Registered computers, scrolls sideways when wide"
+          >
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Invoice ID</th>
-                  <th>Date</th>
-                  <th>Description</th>
-                  <th>Amount</th>
-                  <th>Status</th>
-                  <th>Receipt</th>
+                  <th>Computer</th>
+                  <th>Platform</th>
+                  <th>Added</th>
+                  <th v-if="overview.canDeactivateDevices">Action</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="inv in invoices" :key="inv.id">
-                  <td class="font-mono">{{ inv.id }}</td>
-                  <td>{{ inv.date }}</td>
-                  <td>{{ inv.period }}</td>
-                  <td class="font-bold">{{ inv.amount }}</td>
-                  <td><UiBadge variant="preview">{{ inv.status }}</UiBadge></td>
-                  <td>
-                    <button type="button" class="btn-link" @click="showToast('Downloading PDF invoice...')">
-                      Download PDF
+                <tr v-for="dev in overview.devices.nodes" :key="dev.publicId">
+                  <td class="font-medium">{{ deviceLabel(dev) }}</td>
+                  <td>{{ dev.platform }}<template v-if="dev.appVersion"> &middot; v{{ dev.appVersion }}</template></td>
+                  <td>{{ formatAccountDate(dev.createdAt) }}</td>
+                  <td v-if="overview.canDeactivateDevices">
+                    <span v-if="dev.status !== 'ACTIVE'" class="current-tag">Deactivated</span>
+                    <span v-else-if="confirmingId === dev.publicId" class="confirm-step" role="group" aria-label="Confirm deactivation">
+                      <strong>Deactivate this computer?</strong>
+                      <button type="button" class="btn-text-danger" :disabled="deactivatingId !== ''" @click="confirmDeactivate(dev.publicId)">
+                        Yes, deactivate
+                      </button>
+                      <button type="button" class="btn-link" :disabled="deactivatingId !== ''" @click="cancelDeactivate">
+                        Cancel
+                      </button>
+                    </span>
+                    <button v-else type="button" class="btn-text-danger" @click="askDeactivate(dev.publicId)">
+                      Deactivate<SrOnly> {{ deviceLabel(dev) }}</SrOnly>
                     </button>
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
-        </section>
-
-        <!-- SETTINGS CARD -->
-        <section v-if="activeTab === 'settings'" class="portal-card">
-          <div class="card-header">
-            <div>
-              <h2>Account Settings</h2>
-              <p class="card-subtitle">Update organization details and primary contact email</p>
-            </div>
+          <div v-if="overview.devices.nextCursor" class="card-actions more-actions">
+            <UiButton type="button" variant="outline" size="sm" :disabled="loadingMore" @click="loadMore">
+              Show more computers
+            </UiButton>
           </div>
-
-          <form class="settings-form" @submit.prevent="showToast('Settings saved successfully!')">
-            <div class="form-row">
-              <div class="form-group">
-                <label class="form-label">Organization Name</label>
-                <input v-model="user.orgName" type="text" class="form-input" />
-              </div>
-              <div class="form-group">
-                <label class="form-label">Primary Contact</label>
-                <input v-model="user.primaryContact" type="text" class="form-input" />
-              </div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Email Address</label>
-              <input v-model="user.email" type="email" class="form-input" />
-            </div>
-
-            <div class="form-actions">
-              <UiButton variant="gradient" size="md">Save Changes</UiButton>
-            </div>
-          </form>
         </section>
       </div>
     </div>
-
-    <!-- Confirmation Dialogs -->
-    <ConfirmDialog
-      v-model:show="showCancelDialog"
-      title="Cancel your Pro subscription?"
-      description="Your Pro features will remain active until 1 Sep 2026. After that date, multi-output, NDI streaming, and stage monitor features will be disabled."
-      :consequences="[
-        'Multi-output presentation disabled',
-        'NDI streaming to OBS/vMix disabled',
-        'Stage confidence monitor disabled',
-        'Your account reverts to Free tier'
-      ]"
-      confirmLabel="Cancel subscription"
-      cancelLabel="Keep my plan"
-      requireType="cancel"
-      variant="danger"
-      @confirm="confirmCancelSubscription"
-    />
-
-    <ConfirmDialog
-      v-model:show="showDeactivateDialog"
-      title="Deactivate this device?"
-      :description="`Are you sure you want to deactivate &quot;${targetDevice?.name || 'this device'}&quot;? It will lose access to Pro features.`"
-      confirmLabel="Deactivate"
-      cancelLabel="Keep active"
-      variant="warning"
-      @confirm="confirmDeactivateDevice"
-    />
-
-    <!-- Toast Notification -->
-    <Toast 
-      v-model:show="toastShow" 
-      :message="toastMessage" 
-      :variant="toastVariant" 
-    />
   </div>
 </template>
 
@@ -575,44 +433,6 @@ const invoices = ref([
   flex-shrink: 0;
 }
 
-/* Tabs */
-.portal-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 32px;
-  border-bottom: 1px solid var(--sc-border);
-  padding-bottom: 12px;
-  overflow-x: auto;
-}
-
-.tab-btn {
-  background: none;
-  border: none;
-  padding: 10px 18px;
-  font-family: var(--font-family);
-  font-size: 15px;
-  font-weight: 500;
-  color: var(--sc-text-secondary);
-  border-radius: 8px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  transition: all var(--transition-fast);
-  white-space: nowrap;
-}
-
-.tab-btn:hover {
-  color: var(--sc-text);
-  background: var(--sc-surface);
-}
-
-.tab-btn.active {
-  color: var(--sc-text);
-  background: var(--sc-elevated);
-  font-weight: 600;
-}
-
 /* Content & Cards */
 .portal-content {
   display: flex;
@@ -691,54 +511,7 @@ const invoices = ref([
   gap: 12px;
 }
 
-.danger-text {
-  color: var(--sc-live) !important;
-  margin-left: auto;
-}
-
-/* License Box */
-.license-key-box {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: var(--sc-inset);
-  border: 1px solid var(--sc-border);
-  border-radius: 12px;
-  padding: 16px 20px;
-  margin-bottom: 28px;
-}
-
-.key-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.key-info .label {
-  font-size: 12px;
-  color: var(--sc-text-muted);
-}
-
-.key-code {
-  font-family: monospace;
-  font-size: 16px;
-  color: var(--sc-gold);
-  font-weight: 600;
-}
-
-.key-btn-group {
-  display: flex;
-  gap: 8px;
-}
-
 /* Data Table */
-.devices-section h3, .bundled-bibles-section h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--sc-text);
-  margin: 0 0 16px 0;
-}
-
 .table-responsive {
   overflow-x: auto;
 }
@@ -772,8 +545,6 @@ const invoices = ref([
 }
 
 .font-medium { font-weight: 500; color: var(--sc-text); }
-.font-mono { font-family: monospace; }
-.font-bold { font-weight: 600; color: var(--sc-text); }
 .current-tag { color: var(--sc-preview); font-size: 12px; margin-left: 6px; }
 
 .btn-text-danger {
@@ -798,127 +569,30 @@ const invoices = ref([
 
 .btn-link:hover { text-decoration: underline; }
 
-/* Entitlements List */
-.entitlements-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  margin-bottom: 28px;
-}
+.btn-text-danger:disabled, .btn-link:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.entitlement-row {
-  display: flex;
+/* The in-page confirm step for deactivating a computer. */
+.confirm-step {
+  display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 16px;
-  background: var(--sc-elevated);
-  border: 1px solid var(--sc-border);
-  border-radius: 12px;
-  padding: 18px 20px;
-}
-
-.ent-icon {
-  font-size: 28px;
-}
-
-.ent-details {
-  flex: 1;
-  min-width: 0;
-}
-
-.ent-title-line {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 4px;
-}
-
-.ent-name {
-  font-size: 16px;
-  font-weight: 600;
+  gap: 8px 14px;
   color: var(--sc-text);
+}
+
+.notice {
   margin: 0;
-}
-
-.ent-sub {
-  font-size: 13px;
-  color: var(--sc-text-secondary);
-  margin: 0 0 6px 0;
-}
-
-.ent-meta {
-  font-size: 12px;
-  color: var(--sc-text-muted);
-}
-
-.expiring-text {
-  color: var(--sc-warn);
-  font-weight: 600;
-}
-
-/* Bundled Bibles */
-.bundled-bibles-section {
-  padding-top: 24px;
-  border-top: 1px solid var(--sc-border);
-}
-
-.bundled-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
-  gap: 12px;
-}
-
-.bundled-chip {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: var(--sc-inset);
-  border: 1px solid var(--sc-border);
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--sc-text-secondary);
-}
-
-/* Settings Form */
-.settings-form {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  max-width: 600px;
-}
-
-.form-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-label {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--sc-text);
-}
-
-.form-input {
+  padding: 8px 12px;
   background: var(--sc-elevated);
   border: 1px solid var(--sc-border);
   border-radius: 8px;
-  padding: 10px 14px;
-  font-family: var(--font-family);
-  font-size: 14px;
   color: var(--sc-text);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
-.form-input:focus {
-  outline: none;
-  border-color: var(--sc-primary);
-}
+.loading-text { margin-bottom: 16px; }
+.more-actions { margin-top: 16px; }
 
 /* Cards are always 1-up (no sidebar), so tablet only needs tighter chrome; the real
    reflow is below 768. */
@@ -944,10 +618,6 @@ const invoices = ref([
 
   .alert-banner { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
 
-  .portal-tabs { margin-bottom: 24px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
-  .portal-tabs::-webkit-scrollbar { display: none; }
-  .tab-btn { flex: 0 0 auto; min-height: 44px; }
-
   .portal-content { gap: 20px; }
   .portal-card { padding: 20px; border-radius: 14px; }
   .card-header { flex-wrap: wrap; gap: 10px 12px; margin-bottom: 20px; }
@@ -957,33 +627,12 @@ const invoices = ref([
 
   .card-actions { flex-direction: column; align-items: stretch; }
   .card-actions > * { width: 100%; }
-  .danger-text { margin-left: 0; }
-
-  .license-key-box {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
-    padding: 16px;
-  }
-  .key-info { min-width: 0; }
-  .key-code { font-size: 14px; overflow-wrap: anywhere; }
-  .key-btn-group > * { flex: 1 1 0; }
 
   /* Wide tables scroll inside .table-responsive; their cells do not wrap into slivers. */
   .table-responsive { -webkit-overflow-scrolling: touch; }
   .data-table th, .data-table td { white-space: nowrap; }
   .btn-text-danger, .btn-link { min-height: 44px; padding: 0 8px; font-family: inherit; }
 
-  .entitlement-row { flex-direction: column; align-items: flex-start; padding: 16px; gap: 12px; }
-  .ent-details { min-width: 0; width: 100%; }
-  .ent-title-line { flex-wrap: wrap; gap: 6px 12px; }
-  .ent-action { width: 100%; }
-  .ent-action > * { width: 100%; }
-
-  .bundled-chip { gap: 8px; }
-
-  .form-row { grid-template-columns: minmax(0, 1fr); }
-  .form-input { min-height: 44px; font-size: 16px; }
-  .form-actions > * { width: 100%; }
+  .confirm-step { white-space: normal; }
 }
 </style>
