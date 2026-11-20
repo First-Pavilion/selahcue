@@ -237,6 +237,17 @@ def test_the_free_tier_watermarks_and_the_paid_tiers_do_not(activated):
     assert _payload(token)["grants"][WATERMARK_KEY] is False
 
 
+def test_the_beta_plan_publishes_no_watermark_and_unlimited_outputs(activated):
+    _device, token, key = activated
+    _assign(key, "BETA")
+    grants = _payload(token)["grants"]
+    assert grants[WATERMARK_KEY] is False
+    # INTEGER "unlimited" is published as an explicit null, distinct from an absent key.
+    assert SCREEN_KEY in grants and grants[SCREEN_KEY] is None
+    assert NDI_KEY in grants and grants[NDI_KEY] is None
+    assert grants[STT_KEY] == 180
+
+
 def test_a_rename_does_not_change_a_single_granted_value(activated):
     _device, token, key = activated
     _assign(key, "CORE")

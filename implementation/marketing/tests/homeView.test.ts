@@ -187,7 +187,7 @@ describe('the page is the eight designed sections, in Figma\'s order (the testim
       "Built for the one moment you can't repeat",
       'One live moment, every output',
       'Live in three steps',
-      'SelahCue Free',
+      'SelahCue Beta',
       'Questions, answered',
       'Ready to run your best service yet?',
     ])
@@ -510,13 +510,13 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.equal(rule['color'], 'var(--sc-text-secondary)')
   })
 
-  test('the pricing section describes ongoing Free without paid tiers or a billing period', () => {
+  test('the pricing section describes the public beta and what follows without paid tiers or a billing period', () => {
     const pricing = section(page, 'pricing-section')
     assert.equal(findAll(pricing, (e) => hasClass(e, 'pricing-card')).length, 0)
     assert.equal(findAll(pricing, (e) => hasClass(e, 'ui-button')).length, 0, 'no plan button')
     assert.equal(findAll(pricing, (e) => e.tag === 'a').length, 0, 'and nothing in the section links anywhere')
     assert.deepEqual(findAll(pricing, (e) => e.tag === 'h3'), [], 'no plan name')
-    assert.match(textOf(pricing), /The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week\. Paid subscriptions will come later\./)
+    assert.ok(textOf(pricing).includes('The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week. After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.'))
     assert.doesNotMatch(textOf(pricing), /\$|\bPro\b|month|year|forever|trial/i)
     assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '/contact').length, 0, 'nothing on Home sends a visitor to the contact form')
   })
@@ -672,8 +672,8 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   // The single Free offer replaces the older empty pricing state.
   'pricing-section': [
     'PRICING',
-    'SelahCue Free',
-    'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.',
+    'SelahCue Beta',
+    'The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week. After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.',
   ],
   'faq-section': [
     'Questions, answered',
@@ -686,8 +686,8 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Yes. Build multi-slide presentations with text, shapes and images, stage any scripture from the bundled Bibles, and design your own scripture themes in the Theme Designer.',
     'What is NDI, and do I need it?',
     "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
-    'What does Free include?',
-    'The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.',
+    'What does the beta include?',
+    'The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week. After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.',
   ],
   'final-cta-section': [
     'Ready to run your best service yet?',
@@ -804,7 +804,7 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
       'Which platforms are supported?',
       'Can I use my own slides and designs?',
       'What is NDI, and do I need it?',
-      'What does Free include?',
+      'What does the beta include?',
     ])
   })
 })
@@ -868,7 +868,7 @@ describe('no unbacked claim is added', () => {
 
   test('CONTROL: the list catches a planted claim of each kind, and passes the honest wording', () => {
     for (const { re, why, sample } of FORBIDDEN) assert.ok(re.test(sample), `${re} does not catch "${sample}" (${why})`)
-    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.'
+    const honest = 'Starts fast and keeps memory bounded. NDI output for OBS or vMix. The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week. After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.'
     assert.deepEqual(FORBIDDEN.filter(({ re }) => re.test(honest)), [])
   })
 })

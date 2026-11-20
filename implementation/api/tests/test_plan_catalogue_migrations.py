@@ -136,3 +136,25 @@ def test_actual_forward_and_backup_recovery_contract(tmp_path, mode):
     receipt=json.loads(run.stdout.strip().splitlines()[-1])
     assert receipt["mode"]==mode
     assert any(v is True for v in receipt.values())
+
+
+def test_beta_plan_unlocks_everything():
+    from selahcue_api.apps.catalogue.models import Plan, PlanGrant
+
+    beta = Plan.objects.get(code="BETA")
+    assert beta.rank == 4
+    assert beta.display_name == "Beta"
+    assert beta.sort_order == 40
+    assert not beta.is_fallback
+    assert len(beta.reason) >= 8
+    assert list(Plan.objects.filter(is_fallback=True).values_list("code", flat=True)) == ["FREE"]
+    assert set(Plan.objects.values_list("code", flat=True)) == {"FREE", "CORE", "PRO", "BETA"}
+    grants = {g.dimension.key: g.raw_value for g in PlanGrant.objects.filter(plan=beta).select_related("dimension")}
+    assert grants == {
+        "device_instances": "10",
+        "screen_outputs": "unlimited",
+        "ndi_outputs": "unlimited",
+        "watermark": "false",
+        "cloud_transcript_minutes_per_week": "180",
+        "sermon_notes_per_week": "5",
+    }

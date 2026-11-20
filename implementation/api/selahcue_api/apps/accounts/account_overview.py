@@ -11,6 +11,7 @@ from selahcue_api.apps.accounts.models import (
 )
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.catalogue.org_plans import effective_plan
+from selahcue_api.apps.devices.limits import effective_device_limit
 from selahcue_api.apps.devices.models import Device, DeviceStatus
 from selahcue_api.apps.license_keys.free_lifecycle import _may_renew
 from selahcue_api.apps.license_keys.models import AppLicenseKey, FreeLicenseLifecycle
@@ -44,6 +45,7 @@ class AccountLicense:
 @dataclass(frozen=True)
 class AccountAllowance:
     plan_display_name: str
+    plan_ends_at: datetime | None
     stt: QuotaSnapshot
     notes: QuotaSnapshot
 
@@ -181,7 +183,7 @@ def _allowance(org: CustomerOrg, at: datetime) -> AccountAllowance | None:
     status = 'not_initialized' if mapping_id is None else read_stt_readiness(
         org_id=org.pk, mapping_id=mapping_id, at=at,
     ).status
-    return AccountAllowance(display_name, _quota(replace(stt, status=status), at), _quota(notes, at))
+    return AccountAllowance(display_name, None if plan.ends_at is None else aware_utc(plan.ends_at), _quota(replace(stt, status=status), at), _quota(notes, at))
 
 
 def _license(org: CustomerOrg, at: datetime) -> AccountLicense | None:
@@ -208,7 +210,7 @@ def _license(org: CustomerOrg, at: datetime) -> AccountLicense | None:
         selected.status, aware_utc(selected.starts_at), aware_utc(selected.expires_at),
         license_window_allows_service(status=selected.status, starts_at=selected.starts_at,
                                       expires_at=selected.expires_at, at=at),
-        renewal, selected.device_limit, count,
+        renewal, effective_device_limit(selected, at), count,
     )
 
 

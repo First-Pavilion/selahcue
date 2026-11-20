@@ -916,6 +916,10 @@ def register_customer_user(data: RegisterCustomerUserData, *, client_ip: str = "
             # Persistent non-email collision (astronomically unlikely) — fail closed, create nothing.
             raise _validation_error()
 
+        # Brand-new org inside this transaction: no lock needed. No-op unless beta is configured.
+        from selahcue_api.apps.catalogue.beta import ensure_beta_grant
+
+        ensure_beta_grant(org, at=djtz.now())
         raw_token = _mint_credential_token(user, CredentialTokenPurpose.EMAIL_VERIFY, EMAIL_VERIFY_TTL)
         record_audit_event(
             _customer_actor(user),

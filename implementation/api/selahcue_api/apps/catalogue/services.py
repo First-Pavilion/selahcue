@@ -97,12 +97,11 @@ class ResolvedEntitlement:
     `plan` is None only when the catalogue resolves nothing at all — an unseeded database —
     in which case `values` is empty and the caller keeps whatever it had.
 
-    Deliberately carries no seat-limit accessor. `AppLicenseKey.device_limit` is the number
-    activation enforces and the only one the manifest publishes as `instances_limit`; a
-    second, catalogue-derived seat number reachable from here is how the two came to
-    disagree inside one signed artefact. The ONE place the catalogue's seat count is read is
-    `plan_device_instances_for_issuance`, below, which licence issuance calls once to COPY the
-    number onto the key; it is not a field of this result and never reaches the manifest.
+    Deliberately carries no seat-limit accessor. `devices.limits.effective_device_limit` is
+    the number activation enforces and the only one the manifest publishes as
+    `instances_limit`; a second, catalogue-derived seat number reachable from here is how the
+    two came to disagree inside one signed artefact. The catalogue's seat count is read only
+    through `plan_device_instances_for_issuance`, below; it is not a field of this result.
     """
 
     plan: Plan | None
@@ -255,10 +254,11 @@ MAX_DEVICE_INSTANCES = 2_147_483_647
 def plan_device_instances_for_issuance(plan: Plan) -> int | None:
     """How many device instances a licence issued on `plan` admits, or None if it has none to give.
 
-    ISSUANCE-ONLY. `generate_license_key` calls this once and copies the number onto the new
-    key's `device_limit`; from then on the KEY's field is the one number activation enforces,
-    the manifest publishes (`instances_limit`) and the refresh endpoint reports. This is not a
-    second seat number to read from anywhere else, and it deliberately lives beside, not on,
+    Two callers, no more. `generate_license_key` calls this once and copies the number onto
+    the new key's `device_limit`. `devices.limits.effective_device_limit` reads it for the
+    plan of a winning `OrgPlanGrant` only (the beta, 17tnw2bhkd2) and enforces the larger of
+    that and the key's `device_limit`; activation, re-mint, refresh and the manifest's
+    `instances_limit` all go through that one function. It deliberately lives beside, not on,
     `ResolvedEntitlement`, so nothing that builds a manifest can reach it by accident.
 
     Returns a whole number of at least 1, or None. None covers every case the catalogue cannot
@@ -315,7 +315,7 @@ def resolve_entitlement(license_key, *, at: datetime | None = None) -> ResolvedE
     failed = ResolvedEntitlement(plan=None, values={}, plan_display_label="", degraded=True)
     try:
         evaluated_at = at if at is not None else timezone.now()
-        plan, _ = _select_org_plan(license_key.customer_id, evaluated_at)
+        plan, _, _ = _select_org_plan(license_key.customer_id, evaluated_at)
     except Exception:  # pragma: no cover - defensive; never deny a manifest over catalogue state
         logger.exception("catalogue plan resolution failed; issuing a degraded entitlement")
         return failed

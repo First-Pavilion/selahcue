@@ -3,7 +3,7 @@
   "synthetic": true,
   "operations": {
     "accountOverview": {
-      "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+      "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
       "operationName": "AccountOverview"
     },
     "deactivateOwnDevice": {
@@ -15,7 +15,7 @@
     {
       "name": "null_license_allowance",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {}
       },
@@ -40,7 +40,7 @@
     {
       "name": "administrator_current",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {}
       },
@@ -63,6 +63,7 @@
             },
             "allowance": {
               "planDisplayName": "Free",
+              "planEndsAt": null,
               "stt": {
                 "limit": "1200",
                 "settled": "0",
@@ -112,7 +113,7 @@
     {
       "name": "member",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {}
       },
@@ -135,6 +136,7 @@
             },
             "allowance": {
               "planDisplayName": "Free",
+              "planEndsAt": null,
               "stt": {
                 "limit": "1200",
                 "settled": "0",
@@ -184,7 +186,7 @@
     {
       "name": "large_counter",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {}
       },
@@ -207,6 +209,7 @@
             },
             "allowance": {
               "planDisplayName": "Free",
+              "planEndsAt": null,
               "stt": {
                 "limit": "1200",
                 "settled": "0",
@@ -256,7 +259,7 @@
     {
       "name": "page_first",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {
           "first": 1
@@ -281,6 +284,7 @@
             },
             "allowance": {
               "planDisplayName": "Free",
+              "planEndsAt": null,
               "stt": {
                 "limit": "1200",
                 "settled": "0",
@@ -322,7 +326,7 @@
     {
       "name": "page_next",
       "request": {
-        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
+        "query": "query AccountOverview($first: Int! = 20, $after: String) {\n  accountOverview(first: $first, after: $after) {\n    orgName displayName email role canDeactivateDevices\n    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n    allowance { planDisplayName planEndsAt\n      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n    }\n    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n  }\n}",
         "operationName": "AccountOverview",
         "variables": {
           "first": 1,
@@ -348,6 +352,7 @@
             },
             "allowance": {
               "planDisplayName": "Free",
+              "planEndsAt": null,
               "stt": {
                 "limit": "1200",
                 "settled": "0",

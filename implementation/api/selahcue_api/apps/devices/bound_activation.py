@@ -139,6 +139,10 @@ def _transaction(data, org_id, auth_path, digest, *, enrollment, actor):
     customer = lock_customer_for_key_changes(org_id)
     now = timezone.now()
     receipt = DeviceActivationOperation.objects.filter(operation_key=data.idempotency_key).first()
+    # Beta grants: only the final branch (self-service Free issuance) goes through
+    # ensure_free_license_under_org_lock, which creates the beta grant. The receipt replay,
+    # enrollment-key and expected-device paths are staff-issued or repeat activations, and the
+    # beta applies to self-service orgs, so they deliberately create no grant.
     if receipt is not None:
         _verify_receipt(receipt, org_id, auth_path, digest, enrollment)
         license_id = receipt.license_key_id

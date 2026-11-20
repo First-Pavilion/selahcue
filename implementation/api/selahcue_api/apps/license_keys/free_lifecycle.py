@@ -14,6 +14,7 @@ from selahcue_api.apps.accounts.services import (
 )
 from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
+from selahcue_api.apps.catalogue.beta import ensure_beta_grant
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.devices.models import Device, DeviceStatus, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.license_keys.models import (
@@ -209,6 +210,23 @@ def ensure_free_license_under_org_lock(
     *,
     defer_renewal: bool = False,
 ) -> AppLicenseKey:
+    """Select the activation licence, then (self-service only) the beta grant, under the org lock."""
+    license_key = _select_free_license_under_org_lock(
+        customer, actor, now, request_id, defer_renewal=defer_renewal,
+    )
+    if is_self_service_org(customer):
+        ensure_beta_grant(customer, at=now)
+    return license_key
+
+
+def _select_free_license_under_org_lock(
+    customer: CustomerOrg,
+    actor: ActorContext,
+    now: datetime,
+    request_id: str,
+    *,
+    defer_renewal: bool = False,
+) -> AppLicenseKey:
     """Select the activation licence, with an optional exact-device check before renewal."""
     selected = find_eligible_org_license(customer.pk, now)
     if selected is None:
@@ -248,7 +266,11 @@ def ensure_free_license_under_org_lock(
 
 
 def ensure_free_license(actor: ActorContext, now: datetime, request_id: str) -> AppLicenseKey:
-    """Issue once or return the org's existing eligible licence."""
+    """Issue once or return the org's existing eligible licence.
+
+    This also creates the self-service beta grant (via the under-lock function), so orgs
+    registered before the beta started are covered on their next activation.
+    """
     checked = require_customer_role(actor, CustomerRole.ADMIN)
     try:
         with transaction.atomic():

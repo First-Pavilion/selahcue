@@ -29,6 +29,8 @@ pub(crate) struct AccountView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) plan_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_ends_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) instances_used: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) instance_limit: Option<u32>,
@@ -169,6 +171,7 @@ impl AccountView {
             platform: None,
             app_version: None,
             plan_label: None,
+            plan_ends_at: None,
             instances_used: None,
             instance_limit: None,
             license_expires_at: None,

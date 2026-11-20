@@ -806,6 +806,38 @@ def check_narrow(browser, base: str, c: Checks, shots: Path | None) -> None:
     ctx.close()
 
 
+def check_overlays_narrow(browser, base: str, c: Checks) -> None:
+    """The dialog and the toast are `position: fixed`, so the page-level scroll check cannot see them.
+
+    The responsive sweep used to open them on /account; nothing routed still renders either component
+    (the admin and affiliate-dashboard views are not in the router), so the checks live with the
+    gallery that does: containment in the viewport, 44px targets, Escape closes, the toast fully on screen.
+    """
+    for width in (320, 375):
+        ctx = browser.new_context(viewport={"width": width, "height": 800}, has_touch=True)
+        page = ctx.new_page()
+        open_gallery(page, f"{base}/index.html", '[data-case="dialogs"]')
+        wait_for_fonts(page, c.engine)
+        open_dialog(page, "#open-type")
+        page.wait_for_function("document.querySelector('.dialog-card').getAnimations().length === 0")
+        d = style(page, ".dialog-card")
+        c.ok(d["x"] >= 0 and d["right"] <= width and d["y"] >= 0 and d["bottom"] <= 800, f"{width}px: the confirm dialog is fully on screen")
+        bad = page.evaluate("[...document.querySelectorAll('.dialog-card button, .dialog-card input')].filter((e) => e.getBoundingClientRect().height < 43.5).map((e) => e.tagName + ' ' + (e.textContent || '').trim())")
+        c.eq(bad, [], f"{width}px: dialog controls are at least 44px tall")
+        page.keyboard.press("Escape")
+        page.wait_for_selector(".dialog-card", state="detached")
+        c.ok(True, f"{width}px: Escape closes the dialog")
+        page.click("#open-toast")
+        page.wait_for_selector(".toast-notification")
+        page.wait_for_function(
+            "(() => { const t = document.querySelector('.toast-notification'); "
+            "return !!t && getComputedStyle(t).opacity === '1' && t.getAnimations().length === 0; })()"
+        )
+        t = style(page, ".toast-notification")
+        c.ok(t["x"] >= 0 and t["right"] <= width and t["y"] >= 0 and t["bottom"] <= 800, f"{width}px: the toast is fully on screen")
+        ctx.close()
+
+
 def snapshot_defaults(page) -> dict:
     """Computed styles of everything that existed BEFORE this ticket: the default fields and the two default dialogs."""
     out: dict[str, object] = {"fields": page.evaluate(SNAPSHOT_JS, '[data-case="defaults"]')}
@@ -953,6 +985,7 @@ def main() -> int:
                             c.failures.append(f"[{engine}] {fn.__name__} aborted: {str(exc).splitlines()[0][:240]}")
                     try:
                         check_narrow(browser, base, c, shots if engine == engines[0] else None)
+                        check_overlays_narrow(browser, base, c)
                     except Exception as exc:  # noqa: BLE001
                         c.failures.append(f"[{engine}] narrow dialog aborted: {str(exc).splitlines()[0][:240]}")
                     c.ok(not errors, f"page errors: {errors[:3]}")

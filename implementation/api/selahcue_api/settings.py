@@ -215,6 +215,11 @@ ASGI_APPLICATION = "selahcue_api.asgi.application"
 
 DATABASES = {"default": _database_config()}
 
+# Public beta (17tnw2bhkd2): both must be set for self-service orgs to receive a time-boxed
+# plan grant. The end is exclusive. Empty (the default) switches the beta off.
+SELAHCUE_BETA_PLAN_CODE = os.getenv("SELAHCUE_BETA_PLAN_CODE", "").strip()
+SELAHCUE_BETA_ENDS_AT = os.getenv("SELAHCUE_BETA_ENDS_AT", "").strip()
+
 # P13 is intentionally closed until the operator supplies every deployment/policy
 # prerequisite. These settings contain server credentials; never expose them to
 # Vite, the form/browser, logs, or ticket evidence. Numeric strings are validated

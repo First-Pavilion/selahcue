@@ -217,7 +217,7 @@ def check_pricing(page, base: str, engine: str) -> None:
     text = page.inner_text("main") if page.query_selector("main") else page.inner_text("body")
     check("pricing: no price figure is shown", "$" not in text, "a dollar sign is on the page")
     check("pricing: weekly church allowance and deferred paid subscriptions",
-          "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week." in text and "Paid subscriptions will come later." in text, text)
+          "The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week." in text and "After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends." in text, text)
     links = page.locator(".free-actions a").evaluate_all("(links) => links.map((link) => link.getAttribute('href'))")
     check("pricing: links point to downloads and signup", links == ["/download#public-downloads", "/signup"], str(links))
     levels = page.evaluate("[...document.querySelectorAll('main h1, main h2')].map((h) => h.tagName)")

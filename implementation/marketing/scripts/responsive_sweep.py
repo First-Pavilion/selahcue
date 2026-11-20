@@ -447,6 +447,14 @@ def skip_or_fail(msg: str) -> int:
     return 0
 
 
+def _account_overview_response() -> dict:
+    contract = json.loads((Path(__file__).resolve().parents[3] / "docs/contracts/account-overview-v1.json").read_text())
+    return next(c for c in contract["cases"] if c["name"] == "administrator_current")["response"]
+
+
+ACCOUNT_OVERVIEW_RESPONSE = _account_overview_response()
+
+
 def install_stubs(context) -> None:
     """No network: abort fonts, answer the account API deterministically."""
 
@@ -457,6 +465,11 @@ def install_stubs(context) -> None:
         body = req.post_data or ""
         if "AccountViewer" in body:
             payload = {"data": {"accountViewer": {"surface": "account", "actorId": "a", "orgId": "o"}}}
+        elif "AccountOverview" in body:
+            # The producer contract's own `administrator_current` response, so /account renders real content.
+            payload = ACCOUNT_OVERVIEW_RESPONSE
+        elif "DeactivateOwnDevice" in body:
+            payload = {"data": {"deactivateOwnDevice": {"alreadyInactive": False}}}
         else:
             payload = {"errors": [{"message": "stub", "extensions": {"code": "VALIDATION_FAILED"}}], "data": None}
         route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
@@ -1812,58 +1825,51 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
         fail(f"{tag}: transition durations not neutralised under reduced motion: {bad[:4]}")
 
 
-def check_overlays(context, base: str, width: int, fail, count) -> None:
-    """Dialog and toast (both `position: fixed`, so neither can fail the scrollWidth check)."""
-    tag = f"overlays {width}px"
+def _inside(page, sel: str) -> tuple[bool, str]:
+    """Whether the first match of `sel` lies fully inside the viewport, and where it is."""
+    r = page.evaluate(
+        """(sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
+          return {l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), vw: innerWidth, vh: innerHeight}; }""",
+        sel,
+    )
+    if r is None:
+        return False, "not rendered"
+    ok = r["l"] >= 0 and r["r"] <= r["vw"] and r["t"] >= 0 and r["b"] <= r["vh"]
+    return ok, f"{r['l']}..{r['r']} x {r['t']}..{r['b']} in {r['vw']}x{r['vh']}"
+
+
+def check_account_confirm(context, base: str, width: int, fail, count) -> None:
+    """The Account page's in-page deactivate confirm step."""
+    tag = f"account confirm {width}px"
     page = context.new_page()
     page.goto(f"{base}/account", wait_until="load")
     page.wait_for_selector(".portal-content", timeout=10000)
-
-    def inside(sel: str) -> tuple[bool, str]:
-        r = page.evaluate(
-            """(sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
-              return {l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), vw: innerWidth, vh: innerHeight}; }""",
-            sel,
-        )
-        if r is None:
-            return False, "not rendered"
-        ok = r["l"] >= 0 and r["r"] <= r["vw"] and r["t"] >= 0 and r["b"] <= r["vh"]
-        return ok, f"{r['l']}..{r['r']} x {r['t']}..{r['b']} in {r['vw']}x{r['vh']}"
-
-    # confirm dialog
-    page.get_by_role("button", name="Cancel Subscription").click()
-    page.wait_for_selector(".dialog-card")
-    # the card slides/scales in (`slideUp`); measure only once it has stopped
-    page.wait_for_function("document.querySelector('.dialog-card').getAnimations().length === 0")
+    page.locator(".data-table .btn-text-danger").first.click()
+    page.wait_for_selector(".confirm-step")
     count()
-    ok, where = inside(".dialog-card")
+    sw = page.evaluate("[document.documentElement.scrollWidth, innerWidth]")
+    if sw[0] > sw[1]:
+        fail(f"{tag}: the confirm step widens the page ({sw[0]} > {sw[1]})")
+    count()
+    # It sits in a table that scrolls sideways on a phone, so bring it into view first; then it must be fully on screen.
+    page.evaluate("document.querySelector('.confirm-step').scrollIntoView({block: 'center', inline: 'center'})")
+    ok, where = _inside(page, ".confirm-step")
     if not ok:
-        fail(f"{tag}: confirm dialog is not fully on screen ({where})")
+        fail(f"{tag}: the confirm step is not fully on screen ({where})")
     count()
-    bad = page.evaluate(TOUCH_JS, [".dialog-card button", ".dialog-card input"])
+    bad = page.evaluate(TOUCH_JS, [".confirm-step button"]) if width < 768 else []
     if bad:
-        fail(f"{tag}: dialog controls under 44px: {'; '.join(bad)}")
-    page.keyboard.press("Escape")
+        fail(f"{tag}: confirm controls under 44px: {'; '.join(bad)}")
+    count()
+    labels = page.evaluate("[...document.querySelectorAll('.confirm-step button')].map((b) => b.textContent.trim())")
+    if labels != ["Yes, deactivate", "Cancel"]:
+        fail(f"{tag}: confirm step buttons read {labels}")
+    page.get_by_role("button", name="Cancel").click()
     count()
     try:
-        page.wait_for_selector(".dialog-card", state="detached")
+        page.wait_for_selector(".confirm-step", state="detached")
     except Exception:  # noqa: BLE001
-        fail(f"{tag}: Escape did not close the dialog")
-
-    # toast
-    page.locator(".btn-link").first.click()
-    page.wait_for_selector(".toast-notification")
-    # Vue starts the enter transition a frame AFTER the element exists, so "no animations" is
-    # briefly true while the toast is still fully transparent and 20px low. Wait for it to be
-    # fully opaque AND idle.
-    page.wait_for_function(
-        "(() => { const t = document.querySelector('.toast-notification'); "
-        "return !!t && getComputedStyle(t).opacity === '1' && t.getAnimations().length === 0; })()"
-    )
-    count()
-    ok, where = inside(".toast-notification")
-    if not ok:
-        fail(f"{tag}: toast is not fully on screen ({where})")
+        fail(f"{tag}: Cancel did not close the confirm step")
     page.close()
 
 
@@ -2220,7 +2226,7 @@ def main() -> int:
                     if width < 768 and not args.routes:
                         ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
                         install_stubs(ctx)
-                        guarded(check_overlays, ctx, base, width)
+                        guarded(check_account_confirm, ctx, base, width)
                         ctx.close()
                     if width == 375 and not args.routes:
                         guarded(check_reduced_motion, browser, base, width)

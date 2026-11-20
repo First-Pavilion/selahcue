@@ -413,6 +413,7 @@ fn signed_display(
             "plan_display_label": "Signed fixture plan",
             "instances_used": 1,
             "instances_limit": 2,
+            "plan_ends_at": "2027-05-06T00:00:00+00:00",
             "grants": {}
         })
         .to_string(),
@@ -423,6 +424,38 @@ fn signed_display(
         "payload": payload, "signature": signature
     });
     (trust, wire.to_string())
+}
+
+#[test]
+fn account_view_carries_plan_end() {
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let identity = AccountMetadataStore::new(dir.path().into())
+        .load_or_create(CredentialPresence::Missing)
+        .expect("stable identity");
+    let (trust, manifest) = signed_display(
+        identity.fingerprint(),
+        "2026-11-14T16:00:00Z",
+        "2026-11-15T16:00:00Z",
+        "2026-11-15T16:00:00Z",
+    );
+    let client = LicensingClient::new(ScriptedTransport::new(), API_ORIGIN).expect("static origin");
+    let mut account = AccountController::new(
+        Some(dir.path().into()),
+        client,
+        Custody::default(),
+        trust,
+        || NOW,
+    );
+    account
+        .client()
+        .transport()
+        .push_response(200, activated(Some(SECRET), false))
+        .push_response(200, refresh_status(true))
+        .push_response(200, manifest);
+    let view = wire(&account.execute(enroll()));
+    assert_eq!(view["plan_label"], "Signed fixture plan");
+    // The signed instant is passed through untouched. The WebView formats it.
+    assert_eq!(view["plan_ends_at"], "2027-05-06T00:00:00+00:00");
 }
 
 #[test]

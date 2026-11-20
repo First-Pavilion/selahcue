@@ -2106,6 +2106,15 @@ EXPECTED_MIN_CHECKS = 3087
 # and act once (3 x 2). N2: keyboard-open, focus Logo, a deck slide goes live -> focus moves to
 # Text and the menu stays open (+ setup, 2).
 EXPECTED_MIN_CHECKS = 3095
+# 3095 -> 3100 (17tnw2bhkd2): measured, 0 FAIL. +5 explicit ok() calls, all in the new BETA block
+# (Account page, Settings): the plan line reads 'Beta until 5 May 2027' for a signed exclusive end
+# of 2027-05-06T00:00:00Z (1), the plan line is computed-visible (1), licence and manifest expiry
+# are readable dates not RFC 3339 (1), the <time> keeps its machine value and is computed-visible
+# (1), and with no plan end the line is just the label (1).
+EXPECTED_MIN_CHECKS = 3100
+# 3100 -> 3102 (17tnw2bhkd2 fix round 1): +2 explicit ok() calls, BETA-6 (POLICY_DENIED on an
+# activated device shows the Free-plan text) and BETA-7 (during activation the old text stays).
+EXPECTED_MIN_CHECKS = 3102
 
 
 def find_chrome():
@@ -4156,6 +4165,7 @@ STUB = _CHAPTER_FIXTURE_SCRIPT + r"""
     }
     // --- Providers & Privacy (Settings 338:124) ---
     if (cmd === "pilot_access_status") return Promise.resolve(window.__task3PilotStatus || null);
+    if (cmd === "account_view") return Promise.resolve(window.__acctView || null);
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
     // exercise the "host rejected a setting" path — the optimistic control must revert to the
@@ -18536,6 +18546,45 @@ DRIVER = r"""
       } catch (e) { NT.fail(e, "geometry 900x720"); }
       NT.reap();
       // NOTIF-BLOCK-END
+
+      // ---- Beta licensing (17tnw2bhkd2): the Account page reads a signed plan end and shows dates in words.
+      try {
+        window.__acctView = {revision: 90, setup_state: "completed", device_state: "unregistered",
+          entitlement_state: "current", operation_state: "idle", pending_cleanup: false,
+          plan_label: "Beta", plan_ends_at: "2027-05-06T00:00:00Z",
+          license_expires_at: "2027-05-06T00:00:00.123456789Z", manifest_expires_at: "2026-12-01T12:34:56Z"};
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("account");
+        await waitFor(function(){ return el("account-plan-label").textContent !== ""; });
+        var bePlan = el("account-plan-label"), beRow = bePlan.closest("dl > div");
+        ok(bePlan.textContent === "Beta until 5 May 2027",
+           "BETA-1: the plan line reads 'Beta until 5 May 2027' for an exclusive end of midnight UTC on 6 May (got '" + bePlan.textContent + "')");
+        ok(getComputedStyle(beRow).display !== "none" && bePlan.getClientRects().length > 0,
+           "BETA-2: the plan line is computed-visible");
+        var beLic = el("account-license-expiry"), beMan = el("account-manifest-expiry");
+        ok(beLic.textContent === "6 May 2027" && beMan.textContent === "1 December 2026",
+           "BETA-3: licence and manifest expiry show as readable dates, not RFC 3339 (got '" + beLic.textContent + "' / '" + beMan.textContent + "')");
+        ok(beLic.dateTime === "2027-05-06T00:00:00.123456789Z" && getComputedStyle(beLic.closest("dl > div")).display !== "none",
+           "BETA-4: the <time> element keeps the machine-readable value and the row is computed-visible");
+        window.__acctView = Object.assign({}, window.__acctView, {revision: 91, plan_ends_at: undefined});
+        await window.scAccount.activateSettings();
+        ok(el("account-plan-label").textContent === "Beta",
+           "BETA-5: with no plan end the plan line is just the label (got '" + el("account-plan-label").textContent + "')");
+        var beDenied = "This computer isn\u2019t included in your church\u2019s current plan. On the Free plan, only the first computer you set up stays connected. SelahCue keeps working here, but it can\u2019t refresh its licence or use cloud features.";
+        window.__acctView = Object.assign({}, window.__acctView, {revision: 92, device_state: "credential_present",
+          error_code: "policy_denied"});
+        await window.scAccount.activateSettings();
+        await waitFor(function(){ return !el("account-status-error").hidden; });
+        ok(el("account-status-error").textContent === beDenied && getComputedStyle(el("account-status-error")).display !== "none",
+           "BETA-6: POLICY_DENIED on an already-activated device shows the Free-plan text exactly, computed-visible (got '" + el("account-status-error").textContent + "')");
+        window.__acctView = Object.assign({}, window.__acctView, {revision: 93, device_state: "unregistered",
+          error_code: "policy_denied"});
+        await window.scAccount.activateSettings();
+        await waitFor(function(){ return el("account-status-error").textContent !== beDenied; });
+        ok(el("account-status-error").textContent === "This device could not be activated under the organisation\u2019s activation policy. Ask your administrator for help.",
+           "BETA-7: POLICY_DENIED during activation keeps the activation-policy text exactly (got '" + el("account-status-error").textContent + "')");
+        window.__acctView = null;
+      } catch (e) { R.push("FAIL: BETA block threw " + e.message); }
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";

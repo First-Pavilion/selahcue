@@ -397,3 +397,109 @@ export async function accountViewer(options?: GraphQLRequestOptions): Promise<Ac
   const data = await graphqlRequest<{ accountViewer: AccountViewer }>(ACCOUNT_VIEWER, {}, options)
   return data.accountViewer
 }
+
+/**
+ * The account overview query, byte-for-byte what `docs/contracts/account-overview-v1.json`
+ * pins (`operations.accountOverview.query` and every query case). The API's contract test
+ * (`tests/test_account_overview.py`) replays these exact bytes over real HTTP, and
+ * `tests/apiSeam.test.ts` fails if this text and the fixture drift apart. Change them together.
+ *
+ * It selects `allowance.planEndsAt` (the EXCLUSIVE end of a time-limited plan such as the beta;
+ * null otherwise) and `license.deviceLimit`. It selects no credential of any kind.
+ */
+export const ACCOUNT_OVERVIEW =
+  'query AccountOverview($first: Int! = 20, $after: String) {\n' +
+  '  accountOverview(first: $first, after: $after) {\n' +
+  '    orgName displayName email role canDeactivateDevices\n' +
+  '    license { status startsAt expiresAt validNow renewal deviceLimit activeDeviceCount }\n' +
+  '    allowance { planDisplayName planEndsAt\n' +
+  '      stt { limit settled held carriedDebt remaining asOf resetsAt status }\n' +
+  '      notes { limit settled held carriedDebt remaining asOf resetsAt status }\n' +
+  '    }\n' +
+  '    devices { nodes { publicId displayName platform appVersion createdAt status } nextCursor }\n' +
+  '  }\n' +
+  '}'
+
+/** Pinned by the same fixture (`operations.deactivateOwnDevice.query`). */
+export const DEACTIVATE_OWN_DEVICE =
+  'mutation DeactivateOwnDevice($devicePublicId: String!, $requestId: String!) {\n' +
+  '  deactivateOwnDevice(devicePublicId: $devicePublicId, requestId: $requestId) { alreadyInactive }\n' +
+  '}'
+
+export interface AccountQuota {
+  limit: string
+  settled: string
+  held: string
+  carriedDebt: string
+  remaining: string
+  asOf: string
+  resetsAt: string
+  status: 'CURRENT_OBSERVED' | 'STALE' | 'NOT_INITIALIZED' | string
+}
+
+export interface AccountOverview {
+  orgName: string
+  displayName: string
+  email: string
+  role: string
+  canDeactivateDevices: boolean
+  license: {
+    status: string
+    startsAt: string
+    expiresAt: string
+    validNow: boolean
+    renewal: string
+    deviceLimit: number
+    activeDeviceCount: string
+  } | null
+  allowance: {
+    planDisplayName: string
+    planEndsAt: string | null
+    stt: AccountQuota
+    notes: AccountQuota
+  } | null
+  devices: {
+    nodes: {
+      publicId: string
+      displayName: string
+      platform: string
+      appVersion: string
+      createdAt: string
+      status: string
+    }[]
+    nextCursor: string | null
+  }
+}
+
+/**
+ * The signed-in church's account: who, plan, this week's allowance and registered computers.
+ * Only the arguments given are sent, so the server's own page-size default applies otherwise.
+ */
+export async function accountOverview(
+  first?: number,
+  after?: string,
+  options?: GraphQLRequestOptions,
+): Promise<AccountOverview> {
+  const variables: Record<string, unknown> = {}
+  if (first !== undefined) variables['first'] = first
+  if (after !== undefined) variables['after'] = after
+  const data = await graphqlRequest<{ accountOverview: AccountOverview }>(ACCOUNT_OVERVIEW, variables, options)
+  return data.accountOverview
+}
+
+/**
+ * Deactivate one of the signed-in church's own computers. `requestId` must match
+ * `^[A-Za-z0-9._:-]{12,128}$` and stay the same across retries of one attempt.
+ */
+export async function deactivateOwnDevice(
+  devicePublicId: string,
+  requestId: string,
+  options?: GraphQLRequestOptions,
+): Promise<{ alreadyInactive: boolean }> {
+  const data = await graphqlRequest<{ deactivateOwnDevice: { alreadyInactive: boolean } }>(
+    DEACTIVATE_OWN_DEVICE,
+    { devicePublicId, requestId },
+    options,
+  )
+  return data.deactivateOwnDevice
+}

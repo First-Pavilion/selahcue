@@ -52,12 +52,18 @@ console.log(JSON.stringify([...blogPosts.map(p=>'/blog/'+p.slug), ...docsArticle
     result += json.loads(subprocess.check_output(['node', '--input-type=module', '-e', script], cwd=ROOT, text=True))
     return sorted(set(result + ['/blog/missing-csp-article', '/docs/missing/article', '/support/missing/article', '/csp-not-found']))
 
+_CONTRACT = json.loads((Path(__file__).resolve().parents[3] / 'docs/contracts/account-overview-v1.json').read_text())
+# The producer contract's own `administrator_current` response, so /account renders real content.
+ACCOUNT_OVERVIEW_RESPONSE = next(c for c in _CONTRACT['cases'] if c['name'] == 'administrator_current')['response']
+
 def graphql(route):
     if route.request.method == 'GET':
         return route.fulfill(status=204, headers={'Set-Cookie': 'csrftoken=csp; Path=/'})
     body = route.request.post_data or ''
     if 'AccountViewer' in body:
         payload = {'data': {'accountViewer': {'surface': 'account', 'actorId': 'csp', 'orgId': 'csp'}}}
+    elif 'AccountOverview' in body:
+        payload = ACCOUNT_OVERVIEW_RESPONSE
     else:
         payload = {'errors': [{'message': 'Test fixture', 'extensions': {'code': 'VALIDATION_FAILED'}}], 'data': None}
     route.fulfill(status=200, content_type='application/json', body=json.dumps(payload))

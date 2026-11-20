@@ -4,6 +4,65 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-020 - Public beta licensing is a time-boxed BETA OrgPlanGrant; FREE stays the fallback; after the beta only the oldest device keeps working
+
+- **Date:** 2026-11-20
+- **Stage:** Public beta, W1 beta licensing, ClickUp [17tnw2bhkd2](https://app.clickup.com/t/17tnw2bhkd2)
+- **Decided by:** User (product owner)
+- **Type:** Licensing / product
+- **Status:** DECIDED
+
+**Decision.**
+- The public beta is delivered as a time-boxed BETA `OrgPlanGrant`, given to every self-service church on top of its ordinary Free licence.
+  - The grant is created at registration, or at the first activation for orgs that registered earlier.
+  - It runs `[at, 2027-05-06T00:00:00Z)`, so it ends at the end of 5 May 2027 UTC.
+  - BETA has rank 4 and unlocks: no watermark, unlimited outputs, 10 devices, and 180 min of cloud transcription plus 5 notes a week.
+- FREE stays the fallback. Free licence issuance and its 365-day renewal are unchanged.
+- The switch is `SELAHCUE_BETA_PLAN_CODE` / `SELAHCUE_BETA_ENDS_AT`. Leaving either empty turns the beta off.
+
+**Owner rulings.**
+- The end date was moved from 31 Mar 2027 to 5 May 2027.
+- After the beta, only the oldest device keeps working:
+  - The church's first-activated device stays connected.
+  - Every other device is refused at its next authenticated request (refresh, manifest, cloud) and on re-mint, and new devices are refused.
+  - No device is deactivated, and a later paid plan restores them.
+  - This settles the re-mint "assumption awaiting an owner ruling", and records how DEC-009's "downgrade never deactivates surplus devices" applies.
+
+**Why.** Making BETA the fallback plan would have stopped Free renewal (`_may_renew` needs a fallback assignment). Renewal also adds 365 days, which runs past the beta end. Expanding DEC-014's permissive fallback was the risk DEC-014 itself warned about.
+
+**Consequences accepted.**
+- The device limit comes from the winning org grant, through `effective_device_limit`. A non-beta staff grant raises seats too.
+- When the grant ends mid-week, the cloud allowance drops to Free limits at once. This is the existing usage behaviour.
+- At device auth, a catalogue read fault fails open (NFR-024). Activation and re-mint fail closed to the key's own limit.
+- Devices over a staff-lowered key limit now lose service on their next call instead of when their token expires.
+- A beta-era signed manifest stays verifiable offline until licence expiry. The desktop never blanks the output (never-blank rule), so after the beta, "refused" means losing refresh and cloud features, not the projector output.
+  - Today the desktop does not enforce the watermark or output grants, so there is no effect.
+  - **When the desktop starts enforcing grants, it must treat grants as Free once trusted time reaches `plan_ends_at`.** Otherwise devices 2..N would keep Beta offline. Ship that rule in the same change that first enforces grants.
+- The off switch is not a full revert. With the env empty, device auth still runs the oldest-device check, which refuses devices over a staff-lowered key limit, and a non-beta staff grant still raises seats and emits `plan_ends_at`.
+- Churches that registered and activated before the switch was set get their grant on their next self-service activation. No backfill was built, because production has no self-service churches before launch.
+- The legal Terms still quote the old Free numbers. That is left for the legal workstream (W7).
+
+**Enforcement.** The switch is the two environment variables above; the grant window, rank and limits live in `apps/catalogue/beta.py` (migration 0011), and the device-limit rules in `apps/devices/limits.py` and `services.py`, covered by the API test suite run in `make ci`.
+
+**Release obligation.** The marketing beta copy must go out in the same release that sets the beta env in production (15 Dec). The legal Terms update (W7) blocks that release.
+
+**Supersedes.** This entry replaces the "fallback becomes BETA" line of the public-beta design section W1.
+
+**Affected items.**
+- `apps/catalogue/beta.py` and migration 0011.
+- `apps/devices/limits.py` and `services.py`.
+- `apps/entitlements/services.py` (`plan_ends_at`).
+- `account_overview`.
+- The `selahcue-licensing` display, the operator account view and `account.js`.
+- The marketing Account page and `betaOffer`.
+- Exact list: `git diff --stat 300859fc..HEAD`.
+
+**Reversibility.** Reversible: leaving `SELAHCUE_BETA_PLAN_CODE` or `SELAHCUE_BETA_ENDS_AT` empty turns the beta off for new grants; existing grants end on their own date.
+- Emptying the env stops new grants only. Changing `SELAHCUE_BETA_ENDS_AT` later does not move existing grants.
+- No production code path sets `OrgPlanGrant.ended_at`, and the admin catalogue is dev-only, so ending a church's grant early needs an ops or database step. **Follow-up:** build a staff action for ending a grant early.
+
+---
+
 ## DEC-019 - The cloud client trusts the operating-system certificate store; ring stays the only crypto provider (reqwest 0.13)
 
 - **Date:** 2026-10-24

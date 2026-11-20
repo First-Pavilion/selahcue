@@ -403,7 +403,7 @@ def run_engine(p, engine_name: str) -> Run:
         pr = m["pricing"]
         r.eq(pr["pad"], {"top": 90, "bottom": 90}, "Pricing padding 90 (477:124)")
         r.eq(pr["cards"], 0, "the pricing section draws no plan card")
-        r.eq(pr["sub"], "The ongoing Free plan includes 20 cloud transcription minutes and 1 sermon note per church per week. Paid subscriptions will come later.", "the pricing section describes ongoing Free and deferred paid subscriptions")
+        r.eq(pr["sub"], "The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week. After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends.", "the pricing section describes ongoing Free and deferred paid subscriptions")
 
         # 478:153: padding 90; title 38; the list 780 wide.
         q = m["faq"]
@@ -460,7 +460,7 @@ def run_engine(p, engine_name: str) -> Run:
             "Which platforms are supported?",
             "Can I use my own slides and designs?",
             "What is NDI, and do I need it?",
-            "What does Free include?",
+            "What does the beta include?",
             "View downloads",  # the final band
             "Create an account",
         ]

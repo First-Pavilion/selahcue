@@ -34,7 +34,7 @@ import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification, verifyEmail } from '@/lib/api/account.ts'
-import { freeOffer } from '@/lib/content/freeOffer.ts'
+import { betaOffer } from '@/lib/content/betaOffer.ts'
 import { ApiError } from '@/lib/api/graphql.ts'
 import { validateEmail } from '@/lib/auth/emailPolicy.ts'
 import { takeLandingToken } from '@/lib/auth/useLandingToken.ts'
@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
         Open SelahCue on your computer, then sign in and activate your device to use cloud features.
       </p>
       <div class="au-actions">
-        <UiButton :to="freeOffer.downloadTo" variant="primary" size="lg" class="au-btn au-btn-primary">
+        <UiButton :to="betaOffer.downloadTo" variant="primary" size="lg" class="au-btn au-btn-primary">
           View downloads
         </UiButton>
       </div>

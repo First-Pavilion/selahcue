@@ -591,3 +591,64 @@ fn a_signed_label_with_nul_is_omitted_from_display() {
     let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
     assert_eq!(verified.display().plan_display_label, None);
 }
+
+#[test]
+fn display_reads_plan_ends_at_when_present() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    for given in ["2027-05-06T00:00:00+00:00", "2027-05-06T00:00:00Z"] {
+        let mut payload = facts(FIRST_ISSUANCE);
+        payload["plan_ends_at"] = json!(given);
+        let body = wire(&sign(&key, &key_id, &payload));
+        let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+        assert_eq!(
+            verified.display().plan_ends_at.as_deref(),
+            Some(given),
+            "stored as given, formatted only in the WebView"
+        );
+    }
+}
+
+#[test]
+fn display_without_plan_ends_at_is_none() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    // Positive control: an older entitlement with no such field still verifies.
+    let absent = facts(FIRST_ISSUANCE);
+    assert!(absent.get("plan_ends_at").is_none());
+    let body = wire(&sign(&key, &key_id, &absent));
+    let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(verified.display().plan_ends_at, None);
+
+    let mut null = facts(FIRST_ISSUANCE);
+    null["plan_ends_at"] = json!(null);
+    let body = wire(&sign(&key, &key_id, &null));
+    let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(verified.display().plan_ends_at, None);
+
+    // An unsigned outer field is never read.
+    let mut outer = serde_json::to_value(sign(&key, &key_id, &absent)).unwrap();
+    outer["plan_ends_at"] = json!("2027-05-06T00:00:00Z");
+    let body = serde_json::to_vec(&outer).unwrap();
+    let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+    assert_eq!(verified.display().plan_ends_at, None);
+}
+
+#[test]
+fn a_malformed_plan_ends_at_is_treated_as_absent_and_never_invalidates_the_licence() {
+    let key = key(11);
+    let (keys, key_id) = trust(&key);
+    for bad in [
+        json!("garbage"),
+        json!(5),
+        json!("2027-05-06"),
+        json!({}),
+        json!(true),
+    ] {
+        let mut payload = facts(FIRST_ISSUANCE);
+        payload["plan_ends_at"] = bad;
+        let body = wire(&sign(&key, &key_id, &payload));
+        let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+        assert_eq!(verified.display().plan_ends_at, None);
+    }
+}

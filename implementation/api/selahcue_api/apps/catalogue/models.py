@@ -32,7 +32,10 @@ manifest reports (`instances_limit`). A plan's `device_instances` grant is the c
 view of what a tier *should* allow. Licence issuance COPIES it onto the new key's
 `device_limit` (86ak5mn0m), but nothing re-copies it afterwards, because FR-516's write-back
 **is not built**: `device_limit` is written only at issuance, so a plan changed later does not
-move a key that already exists.
+move a key that already exists. The one exception is a time-boxed `OrgPlanGrant` (the beta,
+17tnw2bhkd2): while it wins, `devices.limits.effective_device_limit` enforces and reports the
+larger of the key's `device_limit` and the grant plan's `device_instances`, without writing
+the key.
 Publishing both would put two disagreeing numbers for one quantity inside a signed artefact
 cached offline for the licence's lifetime, and nothing in the payload distinguishes an
 advisory value from an enforceable one — there is no fourth grant state meaning "do not

@@ -147,6 +147,7 @@ class AccountQuota:
 @strawberry.type
 class AccountAllowance:
     plan_display_name: str
+    plan_ends_at: str | None
     stt: AccountQuota
     notes: AccountQuota
 
@@ -212,7 +213,9 @@ def _account_projection(row) -> AccountOverview:
         active_device_count=str(license_row.active_device_count),
     )
     allowance = None if row.allowance is None else AccountAllowance(
-        plan_display_name=row.allowance.plan_display_name, stt=_account_quota(row.allowance.stt),
+        plan_display_name=row.allowance.plan_display_name,
+        plan_ends_at=None if row.allowance.plan_ends_at is None else row.allowance.plan_ends_at.isoformat(),
+        stt=_account_quota(row.allowance.stt),
         notes=_account_quota(row.allowance.notes),
     )
     return AccountOverview(

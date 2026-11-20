@@ -28,6 +28,13 @@ def test_fake_mint_failures_under_concurrent_grant_and_refresh(live_org, real_bu
     if connection.vendor != "postgresql":
         pytest.skip("PostgreSQL is required for this load measurement")
     _, key, _, _, _ = live_org("PRO")
+    # Seat the licence for every device this test authenticates: live_org's own device plus
+    # the 32 below. `device_limit` defaults to 1, and device authentication refuses a device
+    # outside the plan allowance (only the oldest `device_limit` devices keep service, see
+    # `_remint_is_within_plan_allowance`), so without this all 32 get 403 POLICY_DENIED. This
+    # test measures fake mint failures under load, not seat limits.
+    key.device_limit = 33
+    key.save(update_fields=["device_limit"])
     tokens = [token_for(device(key))[1] for _ in range(32)]
     lock = Lock()
     monitor_stop = Event()
@@ -111,6 +118,11 @@ def test_two_request_slots_both_waiting_on_mint_queue_refresh(live_org, real_bud
     from threading import Barrier
 
     _, key, _, _, _ = live_org()
+    # live_org's device plus the three below must all be inside the plan allowance, or device
+    # authentication refuses them with 403 POLICY_DENIED before any mint (see the note in the
+    # test above). This test is about request slots queuing on the mint, not seat limits.
+    key.device_limit = 4
+    key.save(update_fields=["device_limit"])
     raws = [token_for(device(key))[1] for _ in range(3)]
     in_mint = Barrier(3, timeout=5)
 

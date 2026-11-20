@@ -12,7 +12,7 @@
  * wording is asserted to stay what the repo can back, so a Figma claim cannot slip in unnoticed.
  */
 import assert from 'node:assert/strict'
-import { freeOffer } from '../src/lib/content/freeOffer.ts'
+import { betaOffer } from '../src/lib/content/betaOffer.ts'
 import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 
@@ -136,7 +136,7 @@ describe('navbar: the View downloads button (shared-chrome-06, 25)', () => {
   test('it is rendered by UiButton, compact, so the nav no longer carries a private copy of the button', () => {
     const tag = /<UiButton[^>]*class="download-cta"[^>]*>/.exec(navbar)?.[0] ?? ''
     assert.ok(tag, 'the navbar CTA is not a UiButton with class download-cta')
-    assert.match(tag, /:to="freeOffer\.downloadTo"/)
+    assert.match(tag, /:to="betaOffer\.downloadTo"/)
     assert.match(tag, /size="compact"/)
     assert.match(navbar, /import UiButton from '@\/components\/UiButton\.vue'/)
   })
@@ -262,7 +262,7 @@ describe('navbar: How it works is a real link (shared-chrome-07)', () => {
   test('every other navbar link goes to a real route', () => {
     const links = [...navbar.matchAll(/<(?:router-link|UiButton)\b[^>]*>/g)].map((m) => m[0])
     const targets = links.flatMap((tag) => {
-      if (tag.includes(':to="freeOffer.downloadTo"')) return [freeOffer.downloadTo]
+      if (tag.includes(':to="betaOffer.downloadTo"')) return [betaOffer.downloadTo]
       return [...tag.matchAll(/(?<![:\w])to="([^"]+)"/g)].map((m) => m[1] as string)
     })
     assert.ok(targets.length >= 8)
@@ -276,8 +276,8 @@ function footerColumns(source: string): { title: string; links: { to: string; la
   const block = /const columns = \[([\s\S]*?)\n\]\n/.exec(source)?.[1] ?? ''
   return [...block.matchAll(/title:\s*'([^']+)',\s*links:\s*\[([\s\S]*?)\],?\s*\}/g)].map((m) => ({
     title: m[1] as string,
-    links: [...(m[2] ?? '').matchAll(/\{\s*to:\s*(?:'([^']+)'|(freeOffer\.downloadTo)),\s*label:\s*'([^']+)'\s*\}/g)].map((l) => ({
-      to: l[2] ? freeOffer.downloadTo : l[1] as string,
+    links: [...(m[2] ?? '').matchAll(/\{\s*to:\s*(?:'([^']+)'|(betaOffer\.downloadTo)),\s*label:\s*'([^']+)'\s*\}/g)].map((l) => ({
+      to: l[2] ? betaOffer.downloadTo : l[1] as string,
       label: l[3] as string,
     })),
   }))

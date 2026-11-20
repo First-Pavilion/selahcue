@@ -1083,6 +1083,7 @@ impl<T: HttpTransport, S: SecretStore> AccountController<T, S> {
             view.manifest_expires_at = rfc3339(facts.expires_at());
             view.license_expires_at = rfc3339(facts.license_expires_at());
             view.plan_label = display.plan_display_label.clone();
+            view.plan_ends_at = display.plan_ends_at.clone();
             view.instances_used = display.instances_used;
             view.instance_limit = display.instances_limit;
             SignedTime {

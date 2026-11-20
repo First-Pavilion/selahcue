@@ -18,8 +18,12 @@ import {
   isTransportFailure,
 } from '../src/lib/api/graphql.ts'
 import {
+  ACCOUNT_OVERVIEW,
+  DEACTIVATE_OWN_DEVICE,
   RESEND_VERIFICATION_FIELD,
+  accountOverview,
   confirmPasswordReset,
+  deactivateOwnDevice,
   resendVerification,
   verifyEmail,
 } from '../src/lib/api/account.ts'
@@ -389,5 +393,47 @@ describe('cancellation', () => {
       () => graphqlRequest('query { x }', {}, { timeoutMs: 10, fetchImpl: hangs }),
       (error: unknown) => error instanceof ApiError && error.code === 'NETWORK',
     )
+  })
+})
+
+describe('account overview documents', () => {
+  const contract = JSON.parse(
+    readFileSync(new URL('../../../docs/contracts/account-overview-v1.json', import.meta.url), 'utf8'),
+  ) as {
+    operations: Record<string, { query: string; operationName: string }>
+    cases: { request: { query: string } }[]
+  }
+
+  test('the website query is byte-identical to the one the producer fixture pins', () => {
+    assert.equal(ACCOUNT_OVERVIEW, contract.operations['accountOverview']!.query)
+    assert.equal(DEACTIVATE_OWN_DEVICE, contract.operations['deactivateOwnDevice']!.query)
+    for (const c of contract.cases.filter((k) => k.request.query.startsWith('query'))) {
+      assert.equal(c.request.query, ACCOUNT_OVERVIEW)
+    }
+  })
+
+  test('it asks for the plan end, the device limit, and no credential', () => {
+    assert.match(ACCOUNT_OVERVIEW, /planEndsAt/)
+    assert.match(ACCOUNT_OVERVIEW, /deviceLimit/)
+    assert.doesNotMatch(ACCOUNT_OVERVIEW, /sessionToken|token/i)
+  })
+
+  test('accountOverview sends only the arguments it was given, as variables', async () => {
+    const { calls, impl } = recorder(() => json({ data: { accountOverview: { orgName: 'x' } } }))
+    await accountOverview(undefined, undefined, { fetchImpl: impl })
+    await accountOverview(5, 'cursor-1', { fetchImpl: impl })
+    const [a, b] = calls.map((c) => JSON.parse(String(c.init.body)))
+    assert.equal(a.query, ACCOUNT_OVERVIEW)
+    assert.deepEqual(a.variables, {})
+    assert.deepEqual(b.variables, { first: 5, after: 'cursor-1' })
+  })
+
+  test('deactivateOwnDevice sends the device and a request id as variables', async () => {
+    const { calls, impl } = recorder(() => json({ data: { deactivateOwnDevice: { alreadyInactive: false } } }))
+    const result = await deactivateOwnDevice('dev-1', 'req-0123456789ab', { fetchImpl: impl })
+    assert.deepEqual(result, { alreadyInactive: false })
+    const body = JSON.parse(String(calls[0]!.init.body))
+    assert.equal(body.query, DEACTIVATE_OWN_DEVICE)
+    assert.deepEqual(body.variables, { devicePublicId: 'dev-1', requestId: 'req-0123456789ab' })
   })
 })
