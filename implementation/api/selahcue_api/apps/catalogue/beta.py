@@ -34,7 +34,10 @@ def _warn_once(code: str, raw_end: str) -> None:
 
 
 def beta_window() -> tuple[Plan, datetime] | None:
-    """Return (plan, exclusive end) when beta is configured and valid, else None. Never raises."""
+    """Return (plan, exclusive end) when beta is configured and valid, else None.
+
+    Never raises on bad config (a malformed end or an unknown plan code logs once and returns
+    None); database errors propagate."""
     code = str(getattr(settings, "SELAHCUE_BETA_PLAN_CODE", "") or "").strip()
     raw_end = str(getattr(settings, "SELAHCUE_BETA_ENDS_AT", "") or "").strip()
     if not code or not raw_end:

@@ -36,9 +36,15 @@ Durable record of material product/scope/architecture decisions, with traceabili
 - At device auth, a catalogue read fault fails open (NFR-024). Activation and re-mint fail closed to the key's own limit.
 - Devices over a staff-lowered key limit now lose service on their next call instead of when their token expires.
 - A beta-era signed manifest stays verifiable offline until licence expiry. The desktop never blanks the output (never-blank rule), so after the beta, "refused" means losing refresh and cloud features, not the projector output.
+  - Today the desktop does not enforce the watermark or output grants, so there is no effect.
+  - **When the desktop starts enforcing grants, it must treat grants as Free once trusted time reaches `plan_ends_at`.** Otherwise devices 2..N would keep Beta offline. Ship that rule in the same change that first enforces grants.
+- The off switch is not a full revert. With the env empty, device auth still runs the oldest-device check, which refuses devices over a staff-lowered key limit, and a non-beta staff grant still raises seats and emits `plan_ends_at`.
+- Churches that registered and activated before the switch was set get their grant on their next self-service activation. No backfill was built, because production has no self-service churches before launch.
 - The legal Terms still quote the old Free numbers. That is left for the legal workstream (W7).
 
 **Enforcement.** The switch is the two environment variables above; the grant window, rank and limits live in `apps/catalogue/beta.py` (migration 0011), and the device-limit rules in `apps/devices/limits.py` and `services.py`, covered by the API test suite run in `make ci`.
+
+**Release obligation.** The marketing beta copy must go out in the same release that sets the beta env in production (15 Dec). The legal Terms update (W7) blocks that release.
 
 **Supersedes.** This entry replaces the "fallback becomes BETA" line of the public-beta design section W1.
 
@@ -51,7 +57,9 @@ Durable record of material product/scope/architecture decisions, with traceabili
 - The marketing Account page and `betaOffer`.
 - Exact list: `git diff --stat 300859fc..HEAD`.
 
-**Reversibility.** Reversible: leaving `SELAHCUE_BETA_PLAN_CODE` or `SELAHCUE_BETA_ENDS_AT` empty turns the beta off for new grants; existing grants end on their own date or can be revoked by staff.
+**Reversibility.** Reversible: leaving `SELAHCUE_BETA_PLAN_CODE` or `SELAHCUE_BETA_ENDS_AT` empty turns the beta off for new grants; existing grants end on their own date.
+- Emptying the env stops new grants only. Changing `SELAHCUE_BETA_ENDS_AT` later does not move existing grants.
+- No production code path sets `OrgPlanGrant.ended_at`, and the admin catalogue is dev-only, so ending a church's grant early needs an ops or database step. **Follow-up:** build a staff action for ending a grant early.
 
 ---
 

@@ -389,3 +389,31 @@ def test_a_new_grant_after_the_beta_lets_the_same_devices_back_in(client, clock)
     for token in tokens:
         assert refresh(client, token).status_code == 200
     assert device_rows(org) == rows
+
+
+@override_settings(**BETA_ON)
+def test_one_instant_per_manifest_at_exactly_the_beta_end(client, clock, monkeypatch):
+    """Right at the beta end a signed manifest must not combine two instants: its grants, its
+    `instances_limit` and its `plan_ends_at` all come from the same `now`. The wrapper makes any
+    grant resolution that is not handed the manifest's instant read a second earlier, the way a
+    second clock read would right at the boundary."""
+    from selahcue_api.apps.entitlements import services as entitlement_services
+
+    org, email = self_service_org()
+    reply = activate(client, login(client, email), 1)
+    assert reply.status_code == 200, reply.json()
+    token = reply.json()["activation_token"]
+    assert payload(token)["grants"]["watermark"] is False  # still Beta before the end
+
+    original = entitlement_services.resolve_entitlement
+
+    def second_clock_read(license_key, *, at=None):
+        return original(license_key, at=at if at is not None else END - timedelta(seconds=1))
+
+    monkeypatch.setattr(entitlement_services, "resolve_entitlement", second_clock_read)
+    clock["now"] = END
+    signed = payload(token)
+    assert signed["issued_at"] == END.isoformat()
+    assert signed["plan_ends_at"] is None
+    assert signed["instances_limit"] == 1
+    assert signed["grants"]["watermark"] is True  # Free value, not Beta's False

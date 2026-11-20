@@ -137,7 +137,9 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
     # malformed catalogue yields empty grants and the manifest still issues. A licensing
     # lookup that can refuse a device its entitlement because of a bad admin edit is
     # exactly the failure NFR-024 forbids.
-    entitlement = resolve_entitlement(license_key)
+    # One instant for the whole manifest: grants, `instances_limit` and `plan_ends_at` all use
+    # `now`, so right at a time-boxed grant's end one signed artefact cannot mix two instants.
+    entitlement = resolve_entitlement(license_key, at=now)
 
     # A degraded manifest still issues — refusing one would deny a live service over a
     # server-side fault — but it must not outlive the fault.
