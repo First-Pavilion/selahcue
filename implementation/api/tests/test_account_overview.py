@@ -550,7 +550,7 @@ def test_wire_schema_names_nullability_and_default():
             'activeDeviceCount': 'String!',
         },
         'AccountAllowance': {
-            'planDisplayName': 'String!', 'stt': 'AccountQuota!', 'notes': 'AccountQuota!',
+            'planDisplayName': 'String!', 'planEndsAt': 'String', 'stt': 'AccountQuota!', 'notes': 'AccountQuota!',
         },
         'AccountQuota': {
             'limit': 'String!', 'settled': 'String!', 'held': 'String!',
@@ -798,3 +798,40 @@ def test_real_overview_snapshot_is_once_and_read_only(monkeypatch, request, stat
         'uninitialized': 'not_initialized', 'ledger_week': 'not_initialized',
         'published_current': 'current_observed', 'published_stale': 'stale',
     }[state]
+
+
+# --- beta end date and effective device limit (17tnw2bhkd2) ----------------
+BETA_ON = {'SELAHCUE_BETA_PLAN_CODE': 'BETA', 'SELAHCUE_BETA_ENDS_AT': '2027-05-06T00:00:00+00:00'}
+
+
+def _beta_org():
+    from django.test import override_settings
+    from selahcue_api.apps.catalogue.beta import ensure_beta_grant
+    user, actor = principal()
+    licence(user.customer, 'FREE', length=400)
+    with override_settings(**BETA_ON):
+        assert ensure_beta_grant(user.customer, at=NOW) is not None
+    return actor
+
+
+def test_overview_shows_beta_plan_and_end_date():
+    actor = _beta_org()
+    result = overview_module().account_overview(actor, NOW, None)
+    assert result.allowance.plan_display_name == 'Beta'
+    assert result.allowance.plan_ends_at.isoformat() == '2027-05-06T00:00:00+00:00'
+    assert result.license.device_limit == 10
+    assert result.allowance.stt.limit == 10800
+
+
+def test_overview_after_beta_end_shows_free():
+    actor = _beta_org()
+    result = overview_module().account_overview(actor, NOW + timedelta(days=200), None)
+    assert result.allowance.plan_display_name == 'Free'
+    assert result.allowance.plan_ends_at is None
+    assert result.license.device_limit == 1
+
+
+def test_beta_end_and_limit_reach_the_wire(settings):
+    from selahcue_api.graphql.account_schema import schema
+    fields = schema._schema.get_type('AccountAllowance').fields
+    assert str(fields['planEndsAt'].type) == 'String'
