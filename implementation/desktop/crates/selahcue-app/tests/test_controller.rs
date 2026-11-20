@@ -296,6 +296,15 @@ fn clear_layer_logic_smoke_is_fast() {
     assert!(ms < 200, "clear_layer took {ms}ms (>200ms budget)");
 }
 
+// The user-facing budget is 200 ms, measured in RELEASE. Debug builds pay roughly a 50x penalty
+// on the blackout render, and CI runs this in debug on a loaded 2-vCPU runner alongside hundreds
+// of parallel tests, so debug allows 600 ms: still catches a ~10x slowdown over the ~58 ms
+// debug median without flaking.
+#[cfg(debug_assertions)]
+const CLEAR_LAYER_P95_LIMIT: std::time::Duration = std::time::Duration::from_millis(600);
+#[cfg(not(debug_assertions))]
+const CLEAR_LAYER_P95_LIMIT: std::time::Duration = std::time::Duration::from_millis(200);
+
 #[test]
 fn clear_layer_with_blackout_at_1080p_stays_within_budget() {
     // The worst case: a full-size frame recomposed AND blackout re-applied. Fresh Next+GoLive
@@ -326,8 +335,8 @@ fn clear_layer_with_blackout_at_1080p_stays_within_budget() {
         samples[samples.len() - 1]
     );
     assert!(
-        p95 < Duration::from_millis(200),
-        "ClearLayer p95 {p95:?} exceeds the 200 ms budget"
+        p95 < CLEAR_LAYER_P95_LIMIT,
+        "ClearLayer p95 {p95:?} exceeds the {CLEAR_LAYER_P95_LIMIT:?} limit"
     );
 }
 
