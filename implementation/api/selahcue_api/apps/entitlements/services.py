@@ -51,7 +51,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.utils import timezone
 
 from selahcue_api.apps.audit.models import AuditResult
@@ -110,7 +110,7 @@ def _plan_ends_at(license_key, now) -> str | None:
             ends_at = effective_plan(license_key.customer, now).ends_at
     except LookupError:
         return None
-    except Exception:
+    except DatabaseError:
         logger.exception("plan end read failed; issuing the manifest with plan_ends_at=None")
         return None
     return ends_at.isoformat() if ends_at is not None else None

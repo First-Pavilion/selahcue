@@ -199,3 +199,76 @@ def test_effective_plan_ends_at_is_set_only_by_a_winning_grant():
     OrgPlanGrant.objects.filter(pk=grant.pk).update(ended_at=early)
     assert effective_plan(org, DURING).ends_at == early
     assert effective_plan(org, early).ends_at is None
+
+
+def refresh(client, token):
+    cache.clear()
+    return post(client, "/v1/license:refresh", {}, token)
+
+
+def token_rows(org):
+    from selahcue_api.apps.devices.models import DeviceToken
+
+    return sorted(
+        DeviceToken.objects.filter(device__customer=org).values_list("pk", "status", "expires_at")
+    )
+
+
+@override_settings(**BETA_ON)
+def test_after_the_beta_end_non_oldest_device_with_valid_token_is_refused(client, clock):
+    from selahcue_api.graphql.errors import SafeAPIError
+
+    org, email = self_service_org()
+    session = login(client, email)
+    tokens = []
+    for n in (1, 2, 3):
+        reply = activate(client, session, n)
+        assert reply.status_code == 200, reply.json()
+        tokens.append(reply.json()["activation_token"])
+        clock["now"] += timedelta(seconds=1)
+
+    # Positive control: during the beta every device refreshes and gets a manifest.
+    for token in tokens:
+        assert refresh(client, token).status_code == 200
+        assert payload(token)["instances_limit"] == 10
+
+    clock["now"] = END + timedelta(days=30)
+    before = token_rows(org)
+    oldest = refresh(client, tokens[0])
+    assert oldest.status_code == 200, oldest.json()
+    assert payload(tokens[0])["instances_limit"] == 1
+    after_oldest = token_rows(org)
+    for token in tokens[1:]:
+        reply = refresh(client, token)
+        assert reply.status_code == 403
+        assert reply.json()["error"]["code"] == "POLICY_DENIED"
+        with pytest.raises(SafeAPIError) as caught:
+            build_entitlement_manifest(token)
+        assert caught.value.code == "POLICY_DENIED"
+    # No token issued or extended for the refused devices, and nothing deactivated.
+    assert token_rows(org) == after_oldest
+    assert len(after_oldest) == len(before) == 3
+    statuses = set(Device.objects.filter(customer=org).values_list("status", flat=True))
+    assert statuses == {DeviceStatus.ACTIVE}
+
+
+@override_settings(**BETA_ON)
+def test_a_grant_plan_without_a_usable_seat_number_falls_back_to_the_key_limit(client, clock):
+    from selahcue_api.apps.catalogue.cache import GRANT_CACHE
+    from selahcue_api.apps.catalogue.models import PlanGrant
+
+    org, email = self_service_org()
+    assert activate(client, login(client, email), 1).status_code == 200
+    key = licence_of(org)
+    AppLicenseKey.objects.filter(pk=key.pk).update(device_limit=2)
+    key.refresh_from_db()
+    assert effective_device_limit(key, DURING) == 10  # positive control: the grant applies
+    updated = PlanGrant.objects.filter(
+        plan__code="BETA", dimension__key="device_instances",
+    ).update(raw_value="unlimited")
+    assert updated == 1
+    GRANT_CACHE.clear()
+    try:
+        assert effective_device_limit(key, DURING) == 2
+    finally:
+        GRANT_CACHE.clear()

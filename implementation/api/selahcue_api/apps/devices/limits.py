@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from django.db import transaction
+from django.db import DatabaseError, transaction
 
 from selahcue_api.apps.catalogue.org_plans import _select_org_plan
 from selahcue_api.apps.catalogue.services import plan_device_instances_for_issuance
@@ -28,13 +28,14 @@ def effective_device_limit(license_key: AppLicenseKey, at: datetime) -> int:
     """max(the licence's `device_limit`, the winning plan GRANT's `device_instances`) at `at`.
 
     Only a plan that won through an `OrgPlanGrant` (`source == "staff_grant"`) can raise the
-    number. The licence's own base plan (assignment, scope alias, fallback) is where
+    number. The grant is the ORG's, so it raises the limit for every key that org holds. The licence's own base plan (assignment, scope alias, fallback) is where
     `device_limit` was COPIED FROM at issuance, and a staff edit of `device_limit` after that
     is deliberate (`test_key_device_limit_is_the_only_limit.py`), so reading the base plan's
     value here would silently override it.
 
     A grant plan that gives no usable seat number (none declared, `unlimited`, switched off)
-    adds nothing. A failed catalogue read also adds nothing: it is logged and the licence's
+    adds nothing. A failed catalogue read (`DatabaseError`, or `LookupError` from an unseeded
+catalogue) also adds nothing: it is logged and the licence's
     own number stands, inside a savepoint so the caller's transaction (activation holds the
     licence row lock) stays usable. That fails toward the smaller, always-paid-for number.
     """
@@ -47,7 +48,7 @@ def effective_device_limit(license_key: AppLicenseKey, at: datetime) -> int:
                 plan_device_instances_for_issuance(plan)
                 if plan is not None and source == "staff_grant" else None
             )
-    except Exception:
+    except (DatabaseError, LookupError):
         logger.exception(
             "effective device limit: plan read failed for licence %s; using its device_limit",
             getattr(license_key, "id", "<unknown>"),

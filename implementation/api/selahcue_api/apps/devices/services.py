@@ -685,7 +685,10 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
     a constant-time `hmac.compare_digest` re-confirm of that same fingerprint (not
     `check_password` — see 86ak69u8u/DEC-013: the token is high-entropy, so PBKDF2 bought
     nothing here); any failure (unknown / fingerprint-mismatch / non-ACTIVE token / expired
-    token / non-ACTIVE device) → UNAUTHENTICATED, with no oracle distinguishing them."""
+    token / non-ACTIVE device) → UNAUTHENTICATED, with no oracle distinguishing them. A
+    genuine, live token for a device outside the plan allowance (see
+    `_remint_is_within_plan_allowance`; e.g. device 2 after the beta ends) → POLICY_DENIED:
+    the caller has proved possession, so "no seat" reveals nothing it did not already hold."""
     token_value = (presented_token or "").strip()
     if not token_value:
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
@@ -708,6 +711,15 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if token.device.status != DeviceStatus.ACTIVE:
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
+    # The plan allowance, at request time (owner ruling 2026-11-20, 17tnw2bhkd2). A live token
+    # is valid until the LICENCE expires, so without this a church whose beta grant ended
+    # would keep every device for up to a year. Checking here, the one device-auth choke
+    # point, stops refresh, the manifest and every cloud route for a device outside the
+    # allowance, and so also stops a refresh from extending its token. Same error as the
+    # re-mint refusal; the device row is not touched, so a later upgrade lets it back in.
+    # Cost: one indexed COUNT plus the plan selection.
+    if not _remint_is_within_plan_allowance(token.device, token.device.license_key):
+        raise SafeAPIError(ErrorCode.POLICY_DENIED)
     return token
 
 
