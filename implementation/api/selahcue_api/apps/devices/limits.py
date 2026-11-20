@@ -24,36 +24,61 @@ from selahcue_api.apps.license_keys.models import AppLicenseKey
 logger = logging.getLogger(__name__)
 
 
+def _grant_device_instances(license_key: AppLicenseKey, at: datetime) -> int | None:
+    """The winning plan GRANT's `device_instances` at `at`, or None when no grant wins or its
+    plan gives no usable seat number. Raises `DatabaseError`/`LookupError` on a failed read;
+    the savepoint keeps that failure from poisoning the caller's transaction."""
+    if at.utcoffset() is None:
+        raise ValueError("An aware datetime is required")
+    with transaction.atomic():
+        plan, source, _ends_at = _select_org_plan(license_key.customer_id, at)
+        if plan is None or source != "staff_grant":
+            return None
+        return plan_device_instances_for_issuance(plan)
+
+
+def _log_read_failure(license_key: AppLicenseKey, outcome: str) -> None:
+    logger.exception(
+        "effective device limit: plan read failed for licence %s; %s",
+        getattr(license_key, "id", "<unknown>"), outcome,
+    )
+
+
 def effective_device_limit(license_key: AppLicenseKey, at: datetime) -> int:
     """max(the licence's `device_limit`, the winning plan GRANT's `device_instances`) at `at`.
 
     Only a plan that won through an `OrgPlanGrant` (`source == "staff_grant"`) can raise the
-    number. The grant is the ORG's, so it raises the limit for every key that org holds. The licence's own base plan (assignment, scope alias, fallback) is where
-    `device_limit` was COPIED FROM at issuance, and a staff edit of `device_limit` after that
-    is deliberate (`test_key_device_limit_is_the_only_limit.py`), so reading the base plan's
-    value here would silently override it.
+    number. The grant is the ORG's, so it raises the limit for every key that org holds. The
+    licence's own base plan (assignment, scope alias, fallback) is where `device_limit` was
+    COPIED FROM at issuance, and a staff edit of `device_limit` after that is deliberate
+    (`test_key_device_limit_is_the_only_limit.py`), so reading the base plan's value here
+    would silently override it.
 
     A grant plan that gives no usable seat number (none declared, `unlimited`, switched off)
     adds nothing. A failed catalogue read (`DatabaseError`, or `LookupError` from an unseeded
-catalogue) also adds nothing: it is logged and the licence's
-    own number stands, inside a savepoint so the caller's transaction (activation holds the
-    licence row lock) stays usable. That fails toward the smaller, always-paid-for number.
+    catalogue) also adds nothing: it is logged and the licence's own number stands. That fails
+    toward the smaller, always-paid-for number, which is right where a credential or a seat is
+    being GRANTED (activation, re-mint). Device authentication must not deny a live service
+    over a catalogue fault (NFR-024), so it uses `effective_device_limit_or_none` instead.
     """
-    if at.utcoffset() is None:
-        raise ValueError("An aware datetime is required")
     try:
-        with transaction.atomic():
-            plan, source, _ends_at = _select_org_plan(license_key.customer_id, at)
-            plan_value = (
-                plan_device_instances_for_issuance(plan)
-                if plan is not None and source == "staff_grant" else None
-            )
+        grant_value = _grant_device_instances(license_key, at)
     except (DatabaseError, LookupError):
-        logger.exception(
-            "effective device limit: plan read failed for licence %s; using its device_limit",
-            getattr(license_key, "id", "<unknown>"),
-        )
+        _log_read_failure(license_key, "using its device_limit")
         return license_key.device_limit
-    if plan_value is None:
+    if grant_value is None:
         return license_key.device_limit
-    return max(license_key.device_limit, plan_value)
+    return max(license_key.device_limit, grant_value)
+
+
+def effective_device_limit_or_none(license_key: AppLicenseKey, at: datetime) -> int | None:
+    """`effective_device_limit`, except a failed plan read returns None ("unknown") instead
+    of falling back. For the device-auth check only, which then fails OPEN (NFR-024)."""
+    try:
+        grant_value = _grant_device_instances(license_key, at)
+    except (DatabaseError, LookupError):
+        _log_read_failure(license_key, "allowing the authenticated device")
+        return None
+    if grant_value is None:
+        return license_key.device_limit
+    return max(license_key.device_limit, grant_value)

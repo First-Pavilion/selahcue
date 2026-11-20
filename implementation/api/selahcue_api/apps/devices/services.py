@@ -22,7 +22,10 @@ from selahcue_api.apps.devices.models import (
     DeviceTokenStatus,
 )
 from selahcue_api.apps.accounts.models import CustomerRole
-from selahcue_api.apps.devices.limits import effective_device_limit
+from selahcue_api.apps.devices.limits import (
+    effective_device_limit,
+    effective_device_limit_or_none,
+)
 from selahcue_api.apps.license_keys.free_lifecycle import (
     FreeRenewalDenied,
     ensure_free_license_under_org_lock,
@@ -347,19 +350,23 @@ def _remint_device_token(
     return token, full_token
 
 
-def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey) -> bool:
+def _remint_is_within_plan_allowance(
+    device: Device, license_key: AppLicenseKey, *, fail_open_on_plan_read: bool = False,
+) -> bool:
     """THE re-mint / device-limit policy (DEC-004). CHANGE IT HERE AND NOWHERE ELSE.
 
     ================================ OWNER RULING, 2026-11-20 =================================
     The owner ruled on this (17tnw2bhkd2, the end of the public beta):
 
-        re-mint is permitted only for the OLDEST-ACTIVATED devices under the licence, as many
-        as the effective limit (`effective_device_limit`) allows at this instant; every other
-        device is refused on its next re-mint, and NONE is deactivated — device `status`
-        never changes here. A slot is freed only by someone explicitly deactivating a device.
+        only the OLDEST-ACTIVATED devices under the licence, as many as the effective limit
+        (`effective_device_limit`) allows at this instant, keep service; every other device
+        is refused on its next authenticated call (`authenticate_device_token`: refresh,
+        manifest, cloud routes) and on its next re-mint, and NONE is deactivated — device
+        `status` never changes here. A slot is freed only by someone deactivating a device.
 
     So when a church's beta grant (10 devices) ends and it falls back to Free (1 device), its
-    first-activated device keeps working and the rest stop at their next reconnect.
+    first-activated device keeps working and the rest stop at their next authenticated call,
+    even while their tokens are still live.
 
     Rationale: a downgrading customer keeps working on exactly the plan they pay for, rather
     than either losing everything (the pre-re-mint behaviour, which bricked every device) or
@@ -386,6 +393,11 @@ def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey)
 
     `pk` breaks a `created_at` tie so the ordering is total and the same device wins every
     time — a flapping rank would let two devices alternate into the last slot.
+
+    `fail_open_on_plan_read` is for device AUTHENTICATION only: if the catalogue cannot be
+    read, an already-credentialed device is allowed rather than refused (NFR-024). Re-mint
+    keeps the default and falls back to the key's own limit, because it is issuing a new
+    credential.
     """
     devices_activated_earlier = (
         Device.objects.filter(license_key=license_key, status=DeviceStatus.ACTIVE)
@@ -395,7 +407,17 @@ def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey)
         )
         .count()
     )
-    return devices_activated_earlier < effective_device_limit(license_key, timezone.now())
+    # The key's own number is always granted, so the common case (a device within it) needs
+    # no catalogue read at all.
+    if devices_activated_earlier < license_key.device_limit:
+        return True
+    if fail_open_on_plan_read:
+        limit = effective_device_limit_or_none(license_key, timezone.now())
+        if limit is None:  # the plan read failed: never deny a live service over it (NFR-024)
+            return True
+    else:
+        limit = effective_device_limit(license_key, timezone.now())
+    return devices_activated_earlier < limit
 
 
 def _existing_device_result(
@@ -422,9 +444,10 @@ def _existing_device_result(
     _assert_device_activatable(device)
     live = _live_token(device, lock=lock_result_token)
     if live is not None:
-        # Untouched by the allowance check on purpose: this device is already running, so
-        # refusing its replay would revoke nothing and would break retry-idempotency for a
-        # device that never lost its token. The plan is enforced where a credential is ISSUED.
+        # Untouched by the allowance check on purpose: refusing this replay would revoke
+        # nothing and would break retry-idempotency for a device that never lost its token.
+        # The allowance is still enforced on every authenticated call that token makes
+        # (`authenticate_device_token`), so an over-allowance device cannot use it.
         return ActivateDeviceResult(
             device=device,
             device_token=live,
@@ -717,8 +740,11 @@ def authenticate_device_token(presented_token: str) -> DeviceToken:
     # point, stops refresh, the manifest and every cloud route for a device outside the
     # allowance, and so also stops a refresh from extending its token. Same error as the
     # re-mint refusal; the device row is not touched, so a later upgrade lets it back in.
-    # Cost: one indexed COUNT plus the plan selection.
-    if not _remint_is_within_plan_allowance(token.device, token.device.license_key):
+    # Cost: one indexed COUNT, plus the plan selection only past the key's own limit. A failed
+    # plan read fails OPEN here (NFR-024); activation and re-mint fall back to the key limit.
+    if not _remint_is_within_plan_allowance(
+        token.device, token.device.license_key, fail_open_on_plan_read=True,
+    ):
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
     return token
 
@@ -727,7 +753,9 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
     """Return the current license/entitlement status for an authenticated device token, so the
     desktop can refresh its cached offline entitlement (DEC-004). An eligible managed Free
     licence and the presented live token can be extended. Blocked licences still report
-    their current status through the existing refresh contract."""
+    their current status through the existing refresh contract. A device outside the plan
+    allowance is refused (POLICY_DENIED) by `authenticate_device_token` before any of this,
+    so its token is never extended."""
     token = authenticate_device_token(presented_token)
     renewal = renew_free_license_for_device(token, None, uuid4().hex)
     device = token.device
