@@ -266,7 +266,11 @@ def _select_free_license_under_org_lock(
 
 
 def ensure_free_license(actor: ActorContext, now: datetime, request_id: str) -> AppLicenseKey:
-    """Issue once or return the org's existing eligible licence."""
+    """Issue once or return the org's existing eligible licence.
+
+    This also creates the self-service beta grant (via the under-lock function), so orgs
+    registered before the beta started are covered on their next activation.
+    """
     checked = require_customer_role(actor, CustomerRole.ADMIN)
     try:
         with transaction.atomic():

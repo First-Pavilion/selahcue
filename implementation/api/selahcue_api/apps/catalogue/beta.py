@@ -20,6 +20,19 @@ BETA_ACTOR = "system:beta"
 BETA_REASON = "Public beta: all features until the beta end date"
 
 
+_WARNED: set[tuple[str, str]] = set()
+_WARNED_CAP = 8
+
+
+def _warn_once(code: str, raw_end: str) -> None:
+    """One warning per distinct bad (code, end) pair per process; the set stays tiny."""
+    key = (code, raw_end)
+    if key in _WARNED or len(_WARNED) >= _WARNED_CAP:
+        return
+    _WARNED.add(key)
+    logger.warning("Beta licensing is misconfigured and has been skipped.")
+
+
 def beta_window() -> tuple[Plan, datetime] | None:
     """Return (plan, exclusive end) when beta is configured and valid, else None. Never raises."""
     code = str(getattr(settings, "SELAHCUE_BETA_PLAN_CODE", "") or "").strip()
@@ -28,14 +41,14 @@ def beta_window() -> tuple[Plan, datetime] | None:
         return None
     try:
         ends_at = datetime.fromisoformat(raw_end)
-        if ends_at.tzinfo is None:
-            ends_at = ends_at.replace(tzinfo=UTC)
-        plan = Plan.objects.filter(code=code).first()
-    except Exception:
-        logger.warning("Beta licensing is misconfigured and has been skipped.")
+    except (ValueError, TypeError):
+        _warn_once(code, raw_end)
         return None
+    if ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=UTC)
+    plan = Plan.objects.filter(code=code).first()  # database errors propagate
     if plan is None:
-        logger.warning("Beta licensing is misconfigured and has been skipped.")
+        _warn_once(code, raw_end)
         return None
     return plan, ends_at
 

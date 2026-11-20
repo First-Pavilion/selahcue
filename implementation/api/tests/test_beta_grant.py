@@ -8,9 +8,10 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from test_bound_activation import SESSION, admin_session, body, post
-from test_native_account_surface import seed_org
+from test_native_account_surface import seed_license, seed_org
 from selahcue_api.apps.accounts import services
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
+from selahcue_api.apps.catalogue import beta
 from selahcue_api.apps.catalogue.beta import beta_window, ensure_beta_grant
 from selahcue_api.apps.catalogue.models import OrgPlanGrant
 from selahcue_api.apps.license_keys.models import AppLicenseKey
@@ -24,6 +25,7 @@ REASON = "Public beta: all features until the beta end date"
 @pytest.fixture(autouse=True)
 def fresh_state():
     cache.clear()
+    beta._WARNED.clear()
     services.set_email_sender(services.EmailSender())
     yield
     cache.clear()
@@ -100,6 +102,7 @@ def test_no_grant_when_beta_is_switched_off(client, off):
     assert OrgPlanGrant.objects.count() == 0
     licence = AppLicenseKey.objects.get(customer=other)
     assert licence.expires_at - licence.starts_at == timedelta(days=365)
+    org.refresh_from_db()
     assert org.status == CustomerStatus.TRIAL
     assert reply["operation_state"] != "replay"
 
@@ -116,15 +119,30 @@ def test_no_grant_after_the_beta_end():
     {"SELAHCUE_BETA_PLAN_CODE": "NOPE", "SELAHCUE_BETA_ENDS_AT": "2027-05-06T00:00:00+00:00"},
     {"SELAHCUE_BETA_PLAN_CODE": "BETA", "SELAHCUE_BETA_ENDS_AT": "not-a-date"},
 ])
-def test_bad_beta_config_does_not_break_registration(cfg, caplog):
-    with override_settings(**cfg):
+def test_bad_beta_config_does_not_break_registration_or_activation(cfg, client, caplog):
+    with override_settings(**cfg), caplog.at_level("WARNING", logger=beta.logger.name):
         org = register()
+        other = self_service_org()
+        activate(client, other)
     assert org.pk and not OrgPlanGrant.objects.exists()
+    assert AppLicenseKey.objects.filter(customer=other).count() == 1
+    warnings = [r for r in caplog.records if "misconfigured" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+@override_settings(SELAHCUE_BETA_PLAN_CODE="NOPE", SELAHCUE_BETA_ENDS_AT="2027-05-06T00:00:00+00:00")
+def test_repeated_bad_config_logs_one_warning(caplog):
+    with caplog.at_level("WARNING", logger=beta.logger.name):
+        assert beta_window() is None
+        assert beta_window() is None
+    assert len([r for r in caplog.records if "misconfigured" in r.getMessage()]) == 1
 
 
 @override_settings(**BETA_ON)
 def test_staff_managed_org_gets_no_beta_grant(client):
-    org = seed_org(tag="staff")
+    org = seed_org(tag="staff")  # actor "test": not self-service
+    seed_license(org)
     session = admin_session(client, org)
-    post(client, SESSION, body(), session)  # a staff-managed org is refused; either way, no grant
+    response = post(client, SESSION, body(), session)
+    assert response.status_code == 200, response.json()
     assert not OrgPlanGrant.objects.filter(org=org).exists()
