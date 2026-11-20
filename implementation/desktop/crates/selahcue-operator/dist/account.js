@@ -59,6 +59,31 @@
     },
   };
 
+  const months = ["January", "February", "March", "April", "May", "June", "July", "August",
+    "September", "October", "November", "December"];
+
+  // "5 May 2027" in UTC. Built by hand so the month name never depends on the ICU locale data
+  // (en-GB abbreviates September as "Sept" in newer engines). Unparseable input comes back
+  // unchanged, so a surprising value is shown rather than hidden.
+  function formatAccountDate(rfc3339) {
+    const when = new Date(rfc3339);
+    if (Number.isNaN(when.getTime())) return rfc3339;
+    return when.getUTCDate() + " " + months[when.getUTCMonth()] + " " + when.getUTCFullYear();
+  }
+
+  // An exclusive end such as the plan end: the last day it covers is the day before the instant,
+  // so midnight UTC on 6 May reads "5 May 2027".
+  function formatAccountEndDate(rfc3339) {
+    const when = new Date(rfc3339);
+    if (Number.isNaN(when.getTime())) return rfc3339;
+    return formatAccountDate(new Date(when.getTime() - 1).toISOString());
+  }
+
+  function planLine(view) {
+    if (!view.plan_label) return null;
+    return view.plan_ends_at ? view.plan_label + " until " + formatAccountEndDate(view.plan_ends_at) : view.plan_label;
+  }
+
   function needsSignIn(view) {
     return view.device_state === "reauthentication_needed" || view.error_code === "reauthentication_required";
   }
@@ -267,7 +292,7 @@
   }
 
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { createAccount };
+    module.exports = { createAccount, formatAccountDate, formatAccountEndDate };
     return;
   }
 
@@ -290,10 +315,10 @@
     if (element.textContent !== value) element.textContent = value;
   }
 
-  function optionalField(id, value) {
+  function optionalField(id, value, text = value) {
     const field = $(id);
     field.closest("dl > div").hidden = value == null || value === "";
-    put(id, value ?? "");
+    put(id, text ?? "");
     if (field.tagName === "TIME") field.dateTime = value ?? "";
   }
 
@@ -325,10 +350,13 @@
     $("account-entitlement-chip").hidden = view.entitlement_state !== "current";
     $("account-status-banner").classList.toggle("account-entitlement-current",
       view.device_state === "credential_present" && view.entitlement_state === "current");
-    optionalField("account-plan-label", view.plan_label);
+    optionalField("account-plan-label", planLine(view));
     optionalField("account-license-status", statuses.license[view.license_state]);
-    optionalField("account-license-expiry", view.license_expires_at);
-    optionalField("account-manifest-expiry", view.manifest_expires_at);
+    // The <time> keeps the machine-readable value; the text is the readable date.
+    optionalField("account-license-expiry", view.license_expires_at,
+      view.license_expires_at && formatAccountDate(view.license_expires_at));
+    optionalField("account-manifest-expiry", view.manifest_expires_at,
+      view.manifest_expires_at && formatAccountDate(view.manifest_expires_at));
     optionalField("account-last-checked", view.last_checked_at);
     const counts = Number.isInteger(view.instances_used) && Number.isInteger(view.instance_limit);
     optionalField("account-instance-count", counts ? view.instances_used + " of " + view.instance_limit + " used" : null);

@@ -2,7 +2,7 @@
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { createAccount } = require("../implementation/desktop/crates/selahcue-operator/dist/account.js");
+const { createAccount, formatAccountDate, formatAccountEndDate } = require("../implementation/desktop/crates/selahcue-operator/dist/account.js");
 
 function snapshot(revision, fields = {}) {
   return { revision, setup_state: "needed", device_state: "unregistered",
@@ -257,4 +257,16 @@ test("a late browser launch error is discarded when returning to sign-in", async
   assert.equal(state.stage, "signIn");
   assert.equal(state.webPending, false);
   assert.equal(state.webError, false);
+});
+
+test("account dates read as day, full month, year in UTC, and an exclusive end shows the day before", () => {
+  assert.equal(formatAccountDate("2027-05-05T23:59:59Z"), "5 May 2027");
+  assert.equal(formatAccountDate("2027-05-06T00:00:00+00:00"), "6 May 2027");
+  assert.equal(formatAccountDate("2026-09-01T00:00:00.123456789Z"), "1 September 2026");
+  assert.equal(formatAccountDate("2026-12-31T23:30:00-05:00"), "1 January 2027", "UTC, not local");
+  assert.equal(formatAccountEndDate("2027-05-06T00:00:00+00:00"), "5 May 2027");
+  assert.equal(formatAccountEndDate("2027-05-06T00:00:00Z"), "5 May 2027");
+  assert.equal(formatAccountEndDate("2027-03-01T00:00:00Z"), "28 February 2027");
+  assert.equal(formatAccountEndDate("2027-01-01T00:00:00Z"), "31 December 2026");
+  assert.equal(formatAccountDate("not a date"), "not a date");
 });
