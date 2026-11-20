@@ -32,6 +32,7 @@
 - **Rank and overlap:** BETA has rank 4, above PRO (3). An org with an active staff grant of a higher rank keeps it. Only one active BETA grant exists per org.
 - **The grant record:** `granted_by_actor_id = "system:beta"` and reason `"Public beta: all features until the beta end date"`. These satisfy the accountability constraints.
 - **The `deviceLimit` shown to the church** is the effective limit: the larger of the licence's own `device_limit` and the effective plan's `device_instances`.
+- **After the beta, only the oldest device keeps working.** This is the owner's decision of 2026-11-20. Once the grant ends, the church's first-activated device keeps working. Every other device is refused on its next reconnect (re-mint), and new devices are refused. This is the existing re-mint policy (`_remint_is_within_plan_allowance`, `devices/services.py:350`) applied to the effective limit, with no new code. It resolves the open "ASSUMPTION AWAITING AN OWNER RULING" note on that function, so update the note to cite the decision. Nothing is deactivated, so a church that later moves to a paid plan gets its devices back.
 
 ## Review Focus
 1. **Activating devices 2 to 10 on a Free licence while Beta is active** must succeed, and the 11th must be refused. All three checks that read `license_key.device_limit` (`devices/services.py:390`, `:520`, and the entitlement's `instances_limit` at `:728`) must use the effective limit. Test in Task 3.
@@ -120,6 +121,11 @@
   - `test_entitlement_reports_ten_instances_and_the_beta_end`: the signed payload has `instances_limit == 10` and `plan_ends_at == "2027-05-06T00:00:00Z"`, in the repo's RFC 3339 form, and `grants.watermark is False`.
   - `test_after_the_beta_end_a_second_new_device_is_refused`: with the clock at the end, the effective limit is 1 and `plan_ends_at` is None (Review Focus 2).
   - `test_free_church_without_beta_keeps_one_device`: no grant means limit 1.
+  - `test_after_the_beta_end_only_the_oldest_device_reconnects`: activate 3 devices during Beta, then move the clock to the end.
+    - The first-activated device re-mints successfully.
+    - Devices 2 and 3 are refused with the same error the re-mint policy uses today.
+    - No device's `status` changes; nothing is deactivated.
+    - A positive control: with the clock before the end, all 3 re-mint.
   
   In `test_usage_weeks.py`, add `test_week_open_at_beta_end_keeps_its_limits_until_monday`. The week opened under BETA keeps 180 min and 5 notes. The week after the next Monday opens with FREE's 20 min and 1 note.
 - [ ] **Step 2: Run** these tests. Expected: FAIL.
@@ -223,7 +229,7 @@
 - `betaOffer` exports `endsOn = "5 May 2027"`, `cloudTranscriptionHours = 3`, `sermonNotes = 5`, `devices = 10`, `signupTo = "/signup"`, `downloadTo = "/download#public-downloads"`, `summary` and `afterBeta`.
 - Exact copy:
   - **summary:** "The SelahCue public beta is free and includes every feature until 5 May 2027: up to 10 devices, no watermark, and 3 hours of cloud transcription and 5 sermon notes per church each week."
-  - **afterBeta:** "After the beta, your church keeps using SelahCue on the Free plan. Paid plans will be announced before the beta ends."
+  - **afterBeta:** "After the beta, your church keeps using SelahCue on the Free plan, which runs on one computer: the first one you set up. Paid plans will be announced before the beta ends."
 - Pricing h2: "SelahCue Beta".
 
 - [ ] **Step 1: Update the tests** to the exact strings above, including the headless /pricing sentence. Run `npm test`. Expected: FAIL.
@@ -235,7 +241,7 @@
 
 **Files:**
 - Modify:
-  - `docs/decisions/DECISION-LOG.md`. Add a new DEC entry: the beta is a time-boxed BETA `OrgPlanGrant` for self-service orgs ending at 2027-05-06T00:00Z. FREE stays the fallback. The device limit is effective (licence versus plan). Supersede the W1 "fallback becomes BETA" line.
+  - `docs/decisions/DECISION-LOG.md`. Add a new DEC entry: the beta is a time-boxed BETA `OrgPlanGrant` for self-service orgs ending at 2027-05-06T00:00Z. FREE stays the fallback. The device limit is effective (licence versus plan). After the beta, only the oldest device keeps working: others are refused on reconnect, and none are deactivated. This settles the open re-mint assumption and how DEC-009's "never deactivates surplus devices" applies. Supersede the W1 "fallback becomes BETA" line.
   - `docs/superpowers/specs/2026-11-19-public-beta-design.md` §W1. Change the end date to 5 May 2027 and the mechanism to the grant. Point to this plan.
 
 - [ ] **Step 1:** Edit both docs and commit `docs: beta licensing decision (17tnw2bhkd2)`.
