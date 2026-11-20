@@ -15,6 +15,7 @@ import FormField from '@/components/FormField.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import PricingCard from '@/components/PricingCard.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
+import Toast from '@/components/Toast.vue'
 
 const faq = [
   { question: 'First question?', answer: 'The first answer is long enough to take two lines when it is shown in the boxed card, which is the case the row height depends on, so it keeps going for a while.' },
@@ -39,6 +40,7 @@ const lastEvent = ref('')
 const showCentered = ref(false)
 const showType = ref(false)
 const showLeft = ref(false)
+const showToast = ref(false)
 
 // Two dialogs at once, and closing either first (review of PR 173, Vera 1).
 const openBoth = () => {
@@ -143,6 +145,7 @@ const deactivate = () => {
       <button id="open-centered" type="button" @click="showCentered = true">Open default dialog</button>
       <button id="open-type" type="button" @click="showType = true">Open type-to-confirm</button>
       <button id="open-left" type="button" @click="showLeft = true">Open devices confirm</button>
+      <button id="open-toast" type="button" @click="showToast = true">Open toast</button>
       <button id="open-both" type="button" @click="openBoth">Open two dialogs</button>
       <button id="close-first" type="button" @click="showCentered = false">Close the first</button>
       <button id="close-second" type="button" @click="showType = false">Close the second</button>
@@ -172,6 +175,8 @@ const deactivate = () => {
       <button id="fallback-on" type="button" @click="fallbackSel = '#devices-heading'">Fallback to the heading</button>
       <button id="fallback-bad" type="button" @click="fallbackSel = '##(not a selector['">A selector that does not parse</button>
     </section>
+
+    <Toast v-model:show="showToast" message="Saved." :duration="0" />
 
     <ConfirmDialog
       v-model:show="showCentered"

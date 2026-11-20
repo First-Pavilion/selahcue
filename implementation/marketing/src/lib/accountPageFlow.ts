@@ -6,6 +6,12 @@
  *   - the three codes `confirmSession` reads as "no session" (UNAUTHENTICATED, PERMISSION_DENIED,
  *     NOT_FOUND) end the visit: the hint is dropped and the visitor goes to sign-in. Retrying can
  *     never fix those, so they are never shown as "check your connection".
+ *   - except where a stale list could be the cause (a computer that is already gone answers
+ *     NOT_FOUND; PERMISSION_DENIED can mean the role changed): there the server is asked whether the
+ *     session is really over (`confirmSession`) and only then is the visitor signed out. A working
+ *     user is never sent to sign-in because of an out-of-date list. UNAUTHENTICATED on deactivate
+ *     signs out directly.
+ *   - a computer already gone (NOT_FOUND on deactivate) counts as deactivated.
  *   - anything else is an error state the visitor can retry. A cancelled request is no failure.
  *   - the API's own messages are never rendered.
  */
@@ -30,6 +36,8 @@ export interface AccountPageDeps {
   deactivate: (devicePublicId: string, requestId: string) => Promise<{ alreadyInactive: boolean }>
   /** Drop the session hint and go to sign-in (the same as the route guard does). */
   onSessionEnded: () => void
+  /** Ask the server whether the session is really over (`confirmSession`). */
+  confirmSession: () => Promise<'live' | 'ended' | 'unreachable'>
   newRequestId: () => string
 }
 
@@ -46,6 +54,7 @@ export function createAccountPageFlow(deps: AccountPageDeps) {
   const deactivateError = ref('')
   const notice = ref('')
   let controller: AbortController | null = null
+  let moreController: AbortController | null = null
   // One request id per computer per attempt: a retry after a timeout must converge on the first request.
   const requestIds = new Map<string, string>()
 
@@ -71,21 +80,42 @@ export function createAccountPageFlow(deps: AccountPageDeps) {
     }
   }
 
+  const reloadSize = () =>
+    Math.min(MAX_PAGE, Math.max(PAGE, overview.value?.devices.nodes.length ?? PAGE))
+
+  /** True when the server confirms the session is over (and the visitor has been sent to sign-in). */
+  async function endedAfterCheck(signal?: AbortSignal): Promise<boolean> {
+    const check = await deps.confirmSession()
+    if (signal?.aborted) return false
+    if (check !== 'ended') return false
+    deps.onSessionEnded()
+    return true
+  }
+
   async function loadMore(): Promise<void> {
     const current = overview.value
     const cursor = current?.devices.nextCursor
     if (!current || !cursor || loadingMore.value) return
+    moreController?.abort()
+    const mine = new AbortController()
+    moreController = mine
     loadingMore.value = true
     loadMoreError.value = ''
     try {
-      const page = await deps.fetchOverview(undefined, cursor)
+      const page = await deps.fetchOverview(undefined, cursor, { signal: mine.signal })
+      if (mine.signal.aborted) return
       current.devices = {
         nodes: [...current.devices.nodes, ...page.devices.nodes],
         nextCursor: page.devices.nextCursor,
       }
     } catch (error) {
-      if (isSessionEnded(error)) deps.onSessionEnded()
-      else loadMoreError.value = LOAD_MORE_FAILED
+      // A late answer after the visitor left must not redirect or write state.
+      if (mine.signal.aborted) return
+      // A stale cursor can fail like a signed-out request: ask before signing anyone out.
+      if (isSessionEnded(error) && (await endedAfterCheck(mine.signal))) return
+      if (mine.signal.aborted) return
+      loadMoreError.value = LOAD_MORE_FAILED
+      if (isSessionEnded(error)) await load(true, reloadSize())
     } finally {
       loadingMore.value = false
     }
@@ -113,11 +143,18 @@ export function createAccountPageFlow(deps: AccountPageDeps) {
     try {
       await deps.deactivate(id, requestId)
     } catch (error) {
-      confirmingId.value = ''
-      deactivatingId.value = ''
-      if (isSessionEnded(error)) deps.onSessionEnded()
-      else deactivateError.value = DEACTIVATE_FAILED
-      return
+      const code = error instanceof ApiError ? error.code : ''
+      // NOT_FOUND: the computer is already gone, which is what was asked for. Fall through as success.
+      if (code !== 'NOT_FOUND') {
+        confirmingId.value = ''
+        deactivatingId.value = ''
+        if (code === 'UNAUTHENTICATED') return deps.onSessionEnded()
+        if (code === 'PERMISSION_DENIED' && (await endedAfterCheck())) return
+        deactivateError.value = DEACTIVATE_FAILED
+        // The list may be stale (role or computers changed): refresh it rather than leave it wrong.
+        if (code === 'PERMISSION_DENIED') await load(true, reloadSize())
+        return
+      }
     }
     requestIds.delete(id)
     confirmingId.value = ''
@@ -144,6 +181,9 @@ export function createAccountPageFlow(deps: AccountPageDeps) {
     askDeactivate,
     cancelDeactivate,
     confirmDeactivate,
-    abort: () => controller?.abort(),
+    abort: () => {
+      controller?.abort()
+      moreController?.abort()
+    },
   }
 }

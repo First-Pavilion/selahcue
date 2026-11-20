@@ -9,7 +9,7 @@ import UiButton from '@/components/UiButton.vue'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
 import { accountOverview, deactivateOwnDevice } from '@/lib/api/account.ts'
 import { createAccountPageFlow, LOAD_FAILED } from '@/lib/accountPageFlow.ts'
-import { forgetSession } from '@/lib/auth/sessionStore.ts'
+import { confirmSession, forgetSession } from '@/lib/auth/sessionStore.ts'
 import { newIdempotencyKey } from '@/lib/auth/signupPolicy.ts'
 import {
   countLeftLine,
@@ -55,6 +55,7 @@ const flow = createAccountPageFlow({
     forgetSession()
     void router.replace({ path: '/signin', query: { next: '/account', reason: 'expired' } })
   },
+  confirmSession: () => confirmSession(),
   newRequestId: newIdempotencyKey,
 })
 const {

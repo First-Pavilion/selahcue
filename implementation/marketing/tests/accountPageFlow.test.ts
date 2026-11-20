@@ -26,7 +26,7 @@ const body = (ids: string[], nextCursor: string | null = null): AccountOverview 
 
 type Reply = () => Promise<Response> | Response
 /** Real clients over a scripted transport; each GraphQL call takes the next reply. */
-function harness(replies: Reply[]) {
+function harness(replies: Reply[], session: 'live' | 'ended' | 'unreachable' = 'live') {
   const sent: { query: string; variables: Record<string, unknown> }[] = []
   const impl = (async (_url: unknown, init: RequestInit) => {
     const parsed = JSON.parse(String(init.body))
@@ -36,14 +36,16 @@ function harness(replies: Reply[]) {
     return next()
   }) as unknown as typeof fetch
   const ended: number[] = []
+  const checks: number[] = []
   let ids = 0
   const flow = createAccountPageFlow({
     fetchOverview: (first, after, options) => accountOverview(first, after, { ...options, fetchImpl: impl }),
     deactivate: (id, requestId) => deactivateOwnDevice(id, requestId, { fetchImpl: impl }),
     onSessionEnded: () => void ended.push(1),
+    confirmSession: async () => (checks.push(1), session),
     newRequestId: () => `request-id-${(ids += 1)}-0000000`,
   })
-  return { flow, sent, ended }
+  return { flow, sent, ended, checks }
 }
 const ok = (data: unknown): Reply => () =>
   new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -89,14 +91,54 @@ describe('loading', () => {
 })
 
 describe('show more', () => {
-  test('a failed page has its own message; an ended session goes to sign-in', BOUND, async () => {
-    const { flow, ended } = harness([overviewOk(['a'], 'c1'), down, apiError('UNAUTHENTICATED')])
+  test('a failed page has its own message and does not sign out', BOUND, async () => {
+    const { flow, ended } = harness([overviewOk(['a'], 'c1'), down])
     await flow.load()
     await flow.loadMore()
     assert.equal(flow.loadMoreError.value, LOAD_MORE_FAILED)
     assert.equal(ended.length, 0)
-    await flow.loadMore()
-    assert.equal(ended.length, 1)
+  })
+
+  test('a signed-out code asks the server first; only a confirmed end signs out', BOUND, async () => {
+    const h = harness([overviewOk(['a'], 'c1'), apiError('UNAUTHENTICATED')], 'ended')
+    await h.flow.load()
+    await h.flow.loadMore()
+    assert.equal(h.checks.length, 1)
+    assert.equal(h.ended.length, 1)
+  })
+
+  for (const code of ['UNAUTHENTICATED', 'PERMISSION_DENIED', 'NOT_FOUND']) {
+    test(`${code} on show more with a live session shows the message and reloads, no sign-out`, BOUND, async () => {
+      const h = harness([overviewOk(['a'], 'c1'), apiError(code), overviewOk(['a', 'b'])], 'live')
+      await h.flow.load()
+      await h.flow.loadMore()
+      assert.equal(h.checks.length, 1)
+      assert.equal(h.ended.length, 0)
+      assert.equal(h.flow.loadMoreError.value, LOAD_MORE_FAILED)
+      assert.equal(h.flow.overview.value?.devices.nodes.length, 2)
+    })
+  }
+
+  test('an unreachable check is not a sign-out either', BOUND, async () => {
+    const h = harness([overviewOk(['a'], 'c1'), apiError('UNAUTHENTICATED'), overviewOk(['a'])], 'unreachable')
+    await h.flow.load()
+    await h.flow.loadMore()
+    assert.equal(h.ended.length, 0)
+  })
+
+  test('a late failure after the page was left neither redirects nor sets state', BOUND, async () => {
+    let release!: () => void
+    const late: Reply = () => new Promise<Response>((resolve) => { release = () => resolve(apiError('UNAUTHENTICATED')()) })
+    const h = harness([overviewOk(['a'], 'c1'), late], 'ended')
+    await h.flow.load()
+    const pending = h.flow.loadMore()
+    await new Promise((r) => setImmediate(r))
+    h.flow.abort()
+    release()
+    await pending
+    assert.equal(h.ended.length, 0)
+    assert.equal(h.checks.length, 0)
+    assert.equal(h.flow.loadMoreError.value, '')
   })
 
   test('a good page is appended', BOUND, async () => {
@@ -140,6 +182,42 @@ describe('deactivating', () => {
     await flow.confirmDeactivate('a')
     assert.equal(ended.length, 1)
     assert.equal(flow.deactivateError.value, '')
+  })
+
+  test('NOT_FOUND means the computer is already gone: success notice, quiet reload, no sign-out', BOUND, async () => {
+    const h = harness([overviewOk(['a', 'b']), apiError('NOT_FOUND'), overviewOk(['b'])], 'ended')
+    await h.flow.load()
+    await h.flow.confirmDeactivate('a')
+    assert.equal(h.ended.length, 0)
+    assert.equal(h.checks.length, 0)
+    assert.equal(h.flow.deactivateError.value, '')
+    assert.match(h.flow.notice.value, /was deactivated/)
+    assert.deepEqual(h.flow.overview.value?.devices.nodes.map((d) => d.publicId), ['b'])
+  })
+
+  test('PERMISSION_DENIED with a confirmed ended session signs out', BOUND, async () => {
+    const h = harness([overviewOk(['a']), apiError('PERMISSION_DENIED')], 'ended')
+    await h.flow.load()
+    await h.flow.confirmDeactivate('a')
+    assert.equal(h.checks.length, 1)
+    assert.equal(h.ended.length, 1)
+  })
+
+  test('PERMISSION_DENIED with a live session shows DEACTIVATE_FAILED and reloads the list', BOUND, async () => {
+    const h = harness([overviewOk(['a', 'b']), apiError('PERMISSION_DENIED'), overviewOk(['b'])], 'live')
+    await h.flow.load()
+    await h.flow.confirmDeactivate('a')
+    assert.equal(h.ended.length, 0)
+    assert.equal(h.flow.deactivateError.value, DEACTIVATE_FAILED)
+    assert.deepEqual(h.flow.overview.value?.devices.nodes.map((d) => d.publicId), ['b'])
+  })
+
+  test('UNAUTHENTICATED on deactivate signs out directly, without asking', BOUND, async () => {
+    const h = harness([overviewOk(['a']), apiError('UNAUTHENTICATED')], 'live')
+    await h.flow.load()
+    await h.flow.confirmDeactivate('a')
+    assert.equal(h.checks.length, 0)
+    assert.equal(h.ended.length, 1)
   })
 
   test('if the reload after success fails the computer is shown deactivated, not active', BOUND, async () => {

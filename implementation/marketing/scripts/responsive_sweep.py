@@ -1825,31 +1825,37 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
         fail(f"{tag}: transition durations not neutralised under reduced motion: {bad[:4]}")
 
 
-def check_overlays(context, base: str, width: int, fail, count) -> None:
+def _inside(page, sel: str) -> tuple[bool, str]:
+    """Whether the first match of `sel` lies fully inside the viewport, and where it is."""
+    r = page.evaluate(
+        """(sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
+          return {l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), vw: innerWidth, vh: innerHeight}; }""",
+        sel,
+    )
+    if r is None:
+        return False, "not rendered"
+    ok = r["l"] >= 0 and r["r"] <= r["vw"] and r["t"] >= 0 and r["b"] <= r["vh"]
+    return ok, f"{r['l']}..{r['r']} x {r['t']}..{r['b']} in {r['vw']}x{r['vh']}"
+
+
+def check_account_confirm(context, base: str, width: int, fail, count) -> None:
     """The Account page's in-page deactivate confirm step."""
-    tag = f"overlays {width}px"
+    tag = f"account confirm {width}px"
     page = context.new_page()
     page.goto(f"{base}/account", wait_until="load")
     page.wait_for_selector(".portal-content", timeout=10000)
-
-    def inside(sel: str) -> tuple[bool, str]:
-        r = page.evaluate(
-            """(sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
-              return {l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), vw: innerWidth, vh: innerHeight}; }""",
-            sel,
-        )
-        if r is None:
-            return False, "not rendered"
-        ok = r["l"] >= 0 and r["r"] <= r["vw"] and r["t"] >= 0 and r["b"] <= r["vh"]
-        return ok, f"{r['l']}..{r['r']} x {r['t']}..{r['b']} in {r['vw']}x{r['vh']}"
-
-    # The in-page deactivate confirm step (no dialog, no toast: the page has neither any more).
     page.locator(".data-table .btn-text-danger").first.click()
     page.wait_for_selector(".confirm-step")
     count()
     sw = page.evaluate("[document.documentElement.scrollWidth, innerWidth]")
     if sw[0] > sw[1]:
         fail(f"{tag}: the confirm step widens the page ({sw[0]} > {sw[1]})")
+    count()
+    # It sits in a table that scrolls sideways on a phone, so bring it into view first; then it must be fully on screen.
+    page.evaluate("document.querySelector('.confirm-step').scrollIntoView({block: 'center', inline: 'center'})")
+    ok, where = _inside(page, ".confirm-step")
+    if not ok:
+        fail(f"{tag}: the confirm step is not fully on screen ({where})")
     count()
     bad = page.evaluate(TOUCH_JS, [".confirm-step button"]) if width < 768 else []
     if bad:
@@ -2220,7 +2226,7 @@ def main() -> int:
                     if width < 768 and not args.routes:
                         ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
                         install_stubs(ctx)
-                        guarded(check_overlays, ctx, base, width)
+                        guarded(check_account_confirm, ctx, base, width)
                         ctx.close()
                     if width == 375 and not args.routes:
                         guarded(check_reduced_motion, browser, base, width)
