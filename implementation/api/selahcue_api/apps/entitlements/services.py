@@ -20,7 +20,8 @@ offline; so `feature_scope` and `plan_display_label` are labels for humans to re
 nothing else. Adding a tier, or a whole new grant dimension, is a data change that an
 unmodified client already honours.
 
-**One quantity, one field.** `instances_limit` is `AppLicenseKey.device_limit` and nothing
+**One quantity, one field.** `instances_limit` is `effective_device_limit` (the licence's
+`device_limit`, raised by an active plan grant such as the beta, 17tnw2bhkd2) and nothing
 else, because that is the number `activate_device` enforces. Two fields in one signed,
 offline-cached artefact disagreeing about the same quantity is worse than either being
 wrong: the client cannot tell which to trust, and the artefact outlives the disagreement.
@@ -50,11 +51,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+from django.db import transaction
 from django.utils import timezone
 
 from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.catalogue.services import resolve_entitlement
+from selahcue_api.apps.catalogue.org_plans import effective_plan
+from selahcue_api.apps.devices.limits import effective_device_limit
 from selahcue_api.apps.devices.models import Device, DeviceStatus
 from selahcue_api.apps.devices.services import (
     authenticate_device_token,
@@ -93,6 +97,23 @@ class EntitlementManifestResult:
     envelope: dict[str, Any]
     payload: dict[str, Any]
     device_public_id: str
+
+
+def _plan_ends_at(license_key, now) -> str | None:
+    """The effective plan's end as `isoformat()`, or None.
+
+    An unconfigured catalogue has no effective plan at all, and a failed read has none we can
+    trust; neither may deny a manifest (NFR-024), so both report None. The savepoint keeps a
+    failed query from poisoning the surrounding transaction."""
+    try:
+        with transaction.atomic():
+            ends_at = effective_plan(license_key.customer, now).ends_at
+    except LookupError:
+        return None
+    except Exception:
+        logger.exception("plan end read failed; issuing the manifest with plan_ends_at=None")
+        return None
+    return ends_at.isoformat() if ends_at is not None else None
 
 
 def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResult:
@@ -145,15 +166,20 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "plan_display_label": entitlement.plan_display_label,
         "territory": license_key.territory,
         "instances_used": instances_used,
-        # ALWAYS `device_limit` — the number `activate_device` actually enforces, and the
-        # ONLY seat number in this payload. The catalogue's `device_instances` grant is
+        # ALWAYS `effective_device_limit` — the number `activate_device` actually enforces
+        # (the key's `device_limit`, raised while a plan grant such as the beta is active),
+        # and the ONLY seat number in this payload. The catalogue's `device_instances` grant is
         # deliberately unpublished (`publish_in_manifest=False`). Issuance copies it onto the
         # key, but a plan changed AFTER issuance does not move the key (FR-516's write-back is
         # specified but not built), so a licence moved to PLATINUM would otherwise carry "7
         # seats" beside an enforced 3 — one signed artefact promising seats the server
         # refuses, for as long as it stays cached. Publish it only once a plan change
-        # actually moves `device_limit`.
-        "instances_limit": license_key.device_limit,
+        # actually moves the enforced number. A winning plan GRANT does move it, and that is
+        # already reflected here through `effective_device_limit`.
+        "instances_limit": effective_device_limit(license_key, now),
+        # When the plan behind `grants` and `instances_limit` stops applying (a time-boxed
+        # grant such as the beta), else None. Same formatter as `license_expires_at`.
+        "plan_ends_at": _plan_ends_at(license_key, now),
         # The typed grant dimensions (FR-545). Keys come from catalogue rows, so a new
         # dimension appears here without a code change; a client reads the keys it knows
         # and applies its own default to anything absent, which is what makes a removed

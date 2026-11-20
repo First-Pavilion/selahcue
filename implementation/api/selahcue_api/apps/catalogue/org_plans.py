@@ -17,7 +17,9 @@ _NOTES = "sermon_notes_per_week"
 _MAX_LEDGER_UNITS = 2**63 - 1
 
 
-def _select_org_plan(org_id: int, at: datetime) -> tuple[Plan | None, str]:
+def _select_org_plan(org_id: int, at: datetime) -> tuple[Plan | None, str, datetime | None]:
+    """(plan, source, ends_at). `ends_at` is the winning grant's end, and None unless a staff
+    grant won: an early `ended_at` counts, since that is when the grant actually stops."""
     key = find_eligible_org_license(org_id, at)
     base = _base_plan_for_license(key) if key else Plan.objects.filter(is_fallback=True).first()
     grant = (
@@ -28,8 +30,11 @@ def _select_org_plan(org_id: int, at: datetime) -> tuple[Plan | None, str]:
         .first()
     )
     if grant is not None and (base is None or grant.plan.rank > base.rank):
-        return grant.plan, "staff_grant"
-    return base, "license" if key and base and not base.is_fallback else "fallback"
+        ends_at = grant.ends_at
+        if grant.ended_at is not None and grant.ended_at < ends_at:
+            ends_at = grant.ended_at
+        return grant.plan, "staff_grant", ends_at
+    return base, "license" if key and base and not base.is_fallback else "fallback", None
 
 
 def _quota_units(value: str | None, multiplier: int) -> int | None:
@@ -44,7 +49,7 @@ def effective_plan(org: CustomerOrg, at: datetime) -> EffectivePlan:
     """Read live plan/limits without caching a grant selection or any org data."""
     if at.utcoffset() is None:
         raise ValueError("An aware datetime is required")
-    plan, source = _select_org_plan(org.pk, at)
+    plan, source, ends_at = _select_org_plan(org.pk, at)
     if plan is None:
         raise LookupError("No effective catalogue plan is configured")
     revision = CatalogueRevision.objects.filter(pk=CatalogueRevision.SINGLETON_PK).values_list(
@@ -63,5 +68,5 @@ def effective_plan(org: CustomerOrg, at: datetime) -> EffectivePlan:
         quotas[dimension.key] = limit or 0
     return EffectivePlan(
         plan.pk, plan.rank, revision or 0, quotas.get(_STT_MINUTES, 0),
-        quotas.get(_NOTES, 0), source,
+        quotas.get(_NOTES, 0), source, ends_at,
     )

@@ -22,6 +22,7 @@ from selahcue_api.apps.devices.models import (
     DeviceTokenStatus,
 )
 from selahcue_api.apps.accounts.models import CustomerRole
+from selahcue_api.apps.devices.limits import effective_device_limit
 from selahcue_api.apps.license_keys.free_lifecycle import (
     FreeRenewalDenied,
     ensure_free_license_under_org_lock,
@@ -347,19 +348,26 @@ def _remint_device_token(
 
 
 def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey) -> bool:
-    """THE re-mint / `device_limit` policy (DEC-004). CHANGE IT HERE AND NOWHERE ELSE.
+    """THE re-mint / device-limit policy (DEC-004). CHANGE IT HERE AND NOWHERE ELSE.
 
-    ============================ ASSUMPTION AWAITING AN OWNER RULING ============================
-    This encodes a licensing decision the owner has NOT ruled on. The stated default is:
+    ================================ OWNER RULING, 2026-11-20 =================================
+    The owner ruled on this (17tnw2bhkd2, the end of the public beta):
 
-        re-mint is permitted only for the `device_limit` OLDEST-ACTIVATED devices under the
-        licence; devices beyond that are refused until a slot is explicitly freed.
+        re-mint is permitted only for the OLDEST-ACTIVATED devices under the licence, as many
+        as the effective limit (`effective_device_limit`) allows at this instant; every other
+        device is refused on its next re-mint, and NONE is deactivated — device `status`
+        never changes here. A slot is freed only by someone explicitly deactivating a device.
+
+    So when a church's beta grant (10 devices) ends and it falls back to Free (1 device), its
+    first-activated device keeps working and the rest stop at their next reconnect.
 
     Rationale: a downgrading customer keeps working on exactly the plan they pay for, rather
     than either losing everything (the pre-re-mint behaviour, which bricked every device) or
-    keeping everything (which is what the unguarded re-mint did). If the owner rules
-    differently — newest-first, an explicit customer choice of which seat survives, or a grace
-    window — this function is the only thing that changes.
+    keeping everything (which is what the unguarded re-mint did). Refusing rather than
+    deactivating keeps the downgrade reversible: an upgrade, or a new grant, lets the same
+    devices re-mint again with nothing to restore. If the ruling changes — newest-first, an
+    explicit customer choice of which seat survives, or a grace window — this function is the
+    only thing that changes.
     ============================================================================================
 
     WHY THIS CHECK CANNOT LIVE WITH THE OTHER ONE. `_activate_device_for_key` refuses a NEW
@@ -387,7 +395,7 @@ def _remint_is_within_plan_allowance(device: Device, license_key: AppLicenseKey)
         )
         .count()
     )
-    return devices_activated_earlier < license_key.device_limit
+    return devices_activated_earlier < effective_device_limit(license_key, timezone.now())
 
 
 def _existing_device_result(
@@ -513,11 +521,12 @@ def _activate_device_for_key(
                 lock_result_token=lock_result_token,
             )
 
-        # Instance limit (DEC-004): active devices under this key may not exceed the plan limit.
+        # Instance limit (DEC-004): active devices under this key may not exceed the effective
+        # limit (the licence's own seats, raised by an active plan grant such as the beta).
         active_devices = Device.objects.filter(
             license_key=license_key, status=DeviceStatus.ACTIVE
         ).count()
-        if active_devices >= license_key.device_limit:
+        if active_devices >= effective_device_limit(license_key, timezone.now()):
             raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
         device_public_id = f"dev_{secrets.token_hex(16)}"
@@ -725,7 +734,7 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
         license_expires_at=renewal.license_expires_at.isoformat(),
         license_valid_now=valid_now,
         instances_used=instances_used,
-        instances_limit=license_key.device_limit,
+        instances_limit=effective_device_limit(license_key, timezone.now()),
         token_expires_at=renewal.token_expires_at.isoformat(),
         feature_scope=license_key.feature_scope,
         territory=license_key.territory,
