@@ -411,7 +411,7 @@ class InertSweep:
                                                    time_ns=lambda: (1000 + self.clock) * 10**6),
                         emit_browser_identity=lambda *args: self.record('identity'),
                         install_stubs=lambda *args: self.record('stubs'))
-        for name in ('check_nav_sheet', 'check_boundaries', 'check_overlays', 'check_reduced_motion',
+        for name in ('check_nav_sheet', 'check_boundaries', 'check_account_confirm', 'check_reduced_motion',
                      'check_footer', 'check_signed_in_nav'):
             bindings[name] = self.behavior(name)
         self.real_begin_cell = sweep.SweepChronology.begin_cell
@@ -593,7 +593,7 @@ class HostChronologyInertRegression(unittest.TestCase):
                 expected.append(('page-close',))
             expected.append(('context-close',))
             if width < 768:
-                for name in ('check_nav_sheet', 'check_overlays'):
+                for name in ('check_nav_sheet', 'check_account_confirm'):
                     context(width, has_touch=True)
                     expected.extend([(name,), ('context-close',)])
             if width == 375:
