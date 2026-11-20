@@ -40,8 +40,10 @@ def _data(**kwargs):
 
 
 def test_catalogue_contains_exactly_the_approved_unpriced_lineup():
-    plans = list(Plan.objects.order_by("rank"))
-    assert [(p.code, p.rank, p.is_fallback) for p in plans] == [("FREE",1,True),("CORE",2,False),("PRO",3,False)]
+    all_plans = list(Plan.objects.order_by("rank"))
+    assert [(p.code, p.rank, p.is_fallback) for p in all_plans] == [
+        ("FREE",1,True),("CORE",2,False),("PRO",3,False),("BETA",4,False)]
+    plans = all_plans[:3]  # BETA is a limited-time grant plan, covered by test_beta_plan_unlocks_everything
     assert not PlanPrice.objects.exists()
     assert not GrantDimension.objects.get(key="stt_minutes_per_period").is_active
     for key in ("cloud_transcript_minutes_per_week", "sermon_notes_per_week"):

@@ -74,7 +74,8 @@ ACCOUNTABLE = {
 API_ROOT = Path(selahcue_api.__file__).resolve().parent
 SEED_MIGRATIONS = frozenset(
     API_ROOT / "apps" / "catalogue" / "migrations" / name
-    for name in ("0002_seed_catalogue_reference_data.py", "0007_weekly_catalogue_reference_data.py")
+    for name in ("0002_seed_catalogue_reference_data.py", "0007_weekly_catalogue_reference_data.py",
+                 "0011_beta_plan_reference_data.py")
 )
 
 # Dimension KEYS are a wire contract (FR-545: the client is written against them), so
