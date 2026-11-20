@@ -2112,6 +2112,9 @@ EXPECTED_MIN_CHECKS = 3095
 # are readable dates not RFC 3339 (1), the <time> keeps its machine value and is computed-visible
 # (1), and with no plan end the line is just the label (1).
 EXPECTED_MIN_CHECKS = 3100
+# 3100 -> 3102 (17tnw2bhkd2 fix round 1): +2 explicit ok() calls, BETA-6 (POLICY_DENIED on an
+# activated device shows the Free-plan text) and BETA-7 (during activation the old text stays).
+EXPECTED_MIN_CHECKS = 3102
 
 
 def find_chrome():
@@ -18567,6 +18570,19 @@ DRIVER = r"""
         await window.scAccount.activateSettings();
         ok(el("account-plan-label").textContent === "Beta",
            "BETA-5: with no plan end the plan line is just the label (got '" + el("account-plan-label").textContent + "')");
+        var beDenied = "This computer isn\u2019t included in your church\u2019s current plan. On the Free plan, only the first computer you set up stays connected. SelahCue keeps working here, but it can\u2019t refresh its licence or use cloud features.";
+        window.__acctView = Object.assign({}, window.__acctView, {revision: 92, device_state: "credential_present",
+          error_code: "policy_denied"});
+        await window.scAccount.activateSettings();
+        await waitFor(function(){ return !el("account-status-error").hidden; });
+        ok(el("account-status-error").textContent === beDenied && getComputedStyle(el("account-status-error")).display !== "none",
+           "BETA-6: POLICY_DENIED on an already-activated device shows the Free-plan text exactly, computed-visible (got '" + el("account-status-error").textContent + "')");
+        window.__acctView = Object.assign({}, window.__acctView, {revision: 93, device_state: "unregistered",
+          error_code: "policy_denied"});
+        await window.scAccount.activateSettings();
+        await waitFor(function(){ return el("account-status-error").textContent !== beDenied; });
+        ok(el("account-status-error").textContent === "This device could not be activated under the organisation\u2019s activation policy. Ask your administrator for help.",
+           "BETA-7: POLICY_DENIED during activation keeps the activation-policy text exactly (got '" + el("account-status-error").textContent + "')");
         window.__acctView = null;
       } catch (e) { R.push("FAIL: BETA block threw " + e.message); }
 

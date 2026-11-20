@@ -270,3 +270,11 @@ test("account dates read as day, full month, year in UTC, and an exclusive end s
   assert.equal(formatAccountEndDate("2027-01-01T00:00:00Z"), "31 December 2026");
   assert.equal(formatAccountDate("not a date"), "not a date");
 });
+
+test("a timezone-less value is returned unchanged and never shifted to local time", () => {
+  for (const naive of ["2027-05-06T00:00:00", "2027-05-06", "2027-05-06 00:00:00"]) {
+    assert.equal(formatAccountDate(naive), naive);
+    assert.equal(formatAccountEndDate(naive), naive);
+  }
+  assert.equal(formatAccountEndDate("2027-05-06T00:00:00+00:00"), "5 May 2027");
+});

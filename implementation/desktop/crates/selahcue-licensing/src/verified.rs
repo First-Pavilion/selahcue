@@ -125,9 +125,10 @@ struct Payload {
     plan_display_label: Option<String>,
     instances_used: Option<u32>,
     instances_limit: Option<u32>,
-    // Absent in entitlements issued before beta licensing. `Option` also maps null to None.
+    // Absent in entitlements issued before beta licensing. Read leniently: a display-only
+    // field must never invalidate a signed licence, so any bad value is treated as absent.
     #[serde(default)]
-    plan_ends_at: Option<String>,
+    plan_ends_at: Option<serde_json::Value>,
 }
 
 /// Verify the API's transmitted base64url string before decoding the signed payload.
@@ -200,10 +201,10 @@ pub(crate) fn verify_with_envelope(
             .map(|value| (value.timestamp(), value.timestamp_subsec_nanos()))
             .map_err(|_| MalformedPayload)
     };
-    if let Some(ends) = payload.plan_ends_at.as_deref() {
-        // Display only, but a value the WebView cannot format is a malformed payload.
-        timestamp(ends)?;
-    }
+    let plan_ends_at = payload
+        .plan_ends_at
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .filter(|ends| DateTime::parse_from_rfc3339(ends).is_ok());
     let facts = SignedFacts::with_precision(
         timestamp(&payload.expires_at)?,
         timestamp(&payload.license_expires_at)?,
@@ -225,7 +226,7 @@ pub(crate) fn verify_with_envelope(
                 .filter(|label| !label.chars().any(char::is_control)),
             instances_used: payload.instances_used,
             instances_limit: payload.instances_limit,
-            plan_ends_at: payload.plan_ends_at,
+            plan_ends_at,
         },
     };
     Ok((envelope, verified))

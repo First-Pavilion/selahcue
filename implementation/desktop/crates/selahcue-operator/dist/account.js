@@ -6,6 +6,8 @@
     invalid_credentials: "The email or password could not be verified.",
     account_not_active: "This account can’t sign in yet. Check your email for a verification link or contact your administrator.",
     unknown_key: "We don’t recognise that key. Check for typos or ask your administrator for a new one.",
+    // Refused for a device that is already activated (a refresh after the beta, for example).
+    policy_denied_activated: "This computer isn’t included in your church’s current plan. On the Free plan, only the first computer you set up stays connected. SelahCue keeps working here, but it can’t refresh its licence or use cloud features.",
     policy_denied: "This device could not be activated under the organisation’s activation policy. Ask your administrator for help.",
     permission_denied: "This account doesn’t have permission to activate this device. Ask your administrator for help.",
     no_active_license: "This account has no active SelahCue plan. Ask your administrator to check the plan.",
@@ -65,7 +67,20 @@
   // "5 May 2027" in UTC. Built by hand so the month name never depends on the ICU locale data
   // (en-GB abbreviates September as "Sept" in newer engines). Unparseable input comes back
   // unchanged, so a surprising value is shown rather than hidden.
+  // Only an explicit UTC marker or numeric offset is trusted: a timezone-less value would be read
+  // as local time and shift the day.
+  const zoned = /(Z|[+-]\d{2}:\d{2})$/;
+
+  // The error text for the view. POLICY_DENIED on an already-activated device (credential present)
+  // can only come from a refresh or another call on it, never from activating.
+  function viewError(view) {
+    const code = view.error_code;
+    return code === "policy_denied" && view.device_state === "credential_present" ?
+      errors.policy_denied_activated : errors[code];
+  }
+
   function formatAccountDate(rfc3339) {
+    if (typeof rfc3339 !== "string" || !zoned.test(rfc3339)) return rfc3339;
     const when = new Date(rfc3339);
     if (Number.isNaN(when.getTime())) return rfc3339;
     return when.getUTCDate() + " " + months[when.getUTCMonth()] + " " + when.getUTCFullYear();
@@ -74,6 +89,7 @@
   // An exclusive end such as the plan end: the last day it covers is the day before the instant,
   // so midnight UTC on 6 May reads "5 May 2027".
   function formatAccountEndDate(rfc3339) {
+    if (typeof rfc3339 !== "string" || !zoned.test(rfc3339)) return rfc3339;
     const when = new Date(rfc3339);
     if (Number.isNaN(when.getTime())) return rfc3339;
     return formatAccountDate(new Date(when.getTime() - 1).toISOString());
@@ -369,7 +385,7 @@
     }
     let issue = "";
     if (localError) issue = errors.worker_unavailable;
-    else if (view.error_code) issue = errors[view.error_code] || "SelahCue couldn’t confirm the account status.";
+    else if (view.error_code) issue = viewError(view) || "SelahCue couldn’t confirm the account status.";
     setError("account-status-error", state.source === "settings" ? "" : issue);
     setError("account-preparation-error", errors[view.preparation_error_code] || "");
     put("account-cleanup-status", errors[view.cleanup_error_code] ||
@@ -430,10 +446,10 @@
     $("account-email").setAttribute("aria-invalid", String(formError === "invalid_credentials"));
     password.setAttribute("aria-invalid", String(formError === "invalid_credentials"));
     enrollmentKey.setAttribute("aria-invalid", String(formError === "unknown_key"));
-    put("account-policy-message", errors[view.error_code] || errors.policy_denied);
+    put("account-policy-message", viewError(view) || errors.policy_denied);
     put("account-offline-message", errors[view.error_code] || errors.network_unavailable);
     put("account-attention-message", localError ? errors.worker_unavailable :
-      errors[view.error_code] || "Check your device status in Settings › Account, or try setting up again.");
+      viewError(view) || "Check your device status in Settings › Account, or try setting up again.");
     for (const form of forms) {
       form.querySelector("button[type=submit]").disabled = state.operationPending || view.operation_state === "busy";
     }

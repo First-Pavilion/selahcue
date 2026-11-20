@@ -635,16 +635,20 @@ fn display_without_plan_ends_at_is_none() {
 }
 
 #[test]
-fn a_malformed_plan_ends_at_is_a_malformed_payload() {
+fn a_malformed_plan_ends_at_is_treated_as_absent_and_never_invalidates_the_licence() {
     let key = key(11);
     let (keys, key_id) = trust(&key);
-    for bad in [json!("soon"), json!(5), json!("2027-05-06")] {
+    for bad in [
+        json!("garbage"),
+        json!(5),
+        json!("2027-05-06"),
+        json!({}),
+        json!(true),
+    ] {
         let mut payload = facts(FIRST_ISSUANCE);
         payload["plan_ends_at"] = bad;
         let body = wire(&sign(&key, &key_id, &payload));
-        assert_eq!(
-            verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap_err(),
-            VerifyError::MalformedPayload
-        );
+        let verified = verify_entitlement(&body, &keys, DEVICE, FINGERPRINT).unwrap();
+        assert_eq!(verified.display().plan_ends_at, None);
     }
 }
