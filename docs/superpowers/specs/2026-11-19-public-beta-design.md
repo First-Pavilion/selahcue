@@ -27,8 +27,9 @@ The plan on file (17 Nov, `docs/superpowers/specs/2026-11-17-public-free-deploym
 
 ### W1. Beta licensing (small; it reuses what exists)
 - Add a **BETA plan** to the catalogue (`implementation/api/selahcue_api/apps/catalogue/`, new data migration alongside `0007_weekly_catalogue_reference_data.py`). It gets all grants, no watermark, unlimited outputs, a high device limit, and weekly allowances of 3 hours of cloud STT and 5 notes.
-- Assign BETA to new self-service sign-ups. Today they get the Free licence via `apps/license_keys/free_lifecycle.py`. This also settles DEC-014's LEGACY fallback for the beta: the fallback becomes BETA while the beta runs.
-- The entitlement already expires; the beta's end date is set as that expiry. **My call:** the beta ends on **31 Mar 2027**, and that date is shown on the website and in Account Setup (`crates/selahcue-operator/src/account/`). After it, DEC-009's 7-day grace applies and the account falls back to Free. The grace envelope itself isn't built yet (`devices/services.py:254`). It must exist before 31 Mar, not before 15 Dec.
+- **Amended 2026-11-20 by owner decision (DEC-020).** Beta is a time-boxed BETA `OrgPlanGrant` on top of each self-service church's ordinary Free licence. It is *not* the fallback plan, because that would break Free renewal. The grant is created at registration, or at first activation for orgs registered earlier. It ends at the end of **5 May 2027** UTC (`2027-05-06T00:00:00Z`, exclusive), and it ends by itself: no grace envelope is needed. FREE stays the fallback.
+- **After the beta, only the oldest device keeps working.** Every other device is refused at its next request (refresh, manifest, cloud) and on reconnect, and new devices are refused. No device is deactivated. When the grant ends mid-week, the cloud allowance drops to Free immediately.
+- The end date is shown on the website Account page and in desktop Account Setup ("Beta until 5 May 2027"). Implementation plan: `docs/superpowers/plans/2026-11-20-beta-licensing.md`.
 - The desktop app still enforces nothing. The crate's "never blank" rule in `selahcue-licensing/tests/test_never_blank.rs` stays. Only the cloud allowance is enforced, on the server, by the existing ledger in `apps/usage/` and `/v1/quota`.
 - Wire the marketing `AccountView.vue` to the existing `accountOverview` query and remove the mock data. The page should show the plan, the beta end date, devices, and the AI allowance used this week. Replace Free-offer copy (`lib/content/freeOffer.ts`, `PricingView.vue`) with beta copy.
 
@@ -77,7 +78,7 @@ Follow `docs/release/mobile/RELEASE-CHECKLIST.md`:
 **Submit to both stores by 5 Dec**, ahead of Apple's holiday slowdown. The 4-role access model stays for the beta (the 7-role model is ticket 86ajxuf81).
 
 ### W7. Legal and support
-- Nathan fills the placeholders in `docs/legal/`: PRIVACY 9, TERMS 10, platform privacy 12, notes 30. Add the beta terms (no warranty, the 31 Mar end date, the AI allowances) and the Sentry disclosure. The owner signs them off, and they are published without noindex.
+- Nathan fills the placeholders in `docs/legal/`: PRIVACY 9, TERMS 10, platform privacy 12, notes 30. Add the beta terms (no warranty, the 5 May 2027 end date, the AI allowances, and that only the first computer stays connected on Free afterwards) and the Sentry disclosure. The owner signs them off, and they are published without noindex.
 - Write a short support page for installing, activating, pairing the phone, and what to do when something breaks.
 
 ### W8. Quality gate before go/no-go
@@ -105,7 +106,7 @@ Follow `docs/release/mobile/RELEASE-CHECKLIST.md`:
 
 ## Verification
 - `make ci` is green, and `scripts/check_launch_reachability.py` passes once the cloud features are reclassified.
-- On staging, the flow works end to end: sign up → verify email → activate the desktop app → the Beta plan shows the 31 Mar end date → use 3 hours of STT and the server refuses more → on Monday the allowance resets.
+- On staging, the flow works end to end: sign up → verify email → activate the desktop app → the Beta plan shows the 5 May 2027 end date → use 3 hours of STT and the server refuses more → on Monday the allowance resets.
 - Updates: install version N, publish version N+1, and N updates itself while nothing is live. It does not update while something is live.
 - Signing: on Windows, `signtool verify` passes and SmartScreen shows no warning. On macOS, `spctl -a -vv` and `stapler validate` pass.
 - The 12-hour soak report and the time-to-first-slide report are attached to the go/no-go ticket.
