@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { SIGN_OUT_LABEL, SIGN_OUT_PENDING_LABEL } from '@/lib/auth/signOutFlow.ts'
 import { useSignOut } from '@/lib/auth/useSignOut.ts'
 import SrOnly from '@/components/core/SrOnly.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
-import { accountOverview, deactivateOwnDevice, type AccountOverview } from '@/lib/api/account.ts'
+import { accountOverview, deactivateOwnDevice } from '@/lib/api/account.ts'
+import { createAccountPageFlow, LOAD_FAILED } from '@/lib/accountPageFlow.ts'
+import { forgetSession } from '@/lib/auth/sessionStore.ts'
 import { newIdempotencyKey } from '@/lib/auth/signupPolicy.ts'
 import {
   countLeftLine,
@@ -14,6 +17,7 @@ import {
   deviceLabel,
   formatAccountDate,
   formatPlanEnd,
+  quotaUnavailable,
   minutesLeftLine,
   minutesUsed,
 } from '@/lib/accountDisplay.ts'
@@ -41,55 +45,38 @@ const handleSignOut = async () => {
 /**
  * The page shows only what `accountOverview` returns (ClickUp 17tnw2bhkd2). It used to be mock data
  * (a Pro plan, invoices, a licence key, Bible entitlements); none of that exists on the server, so
- * none of it is here. Server errors are never rendered: the API's messages are generic by design,
- * so the page maps every failure to one sentence of its own.
+ * none of it is here. Load and deactivate rules live in `lib/accountPageFlow.ts`.
  */
-const LOAD_FAILED = "We couldn't load your account. Check your connection and try again."
-const DEACTIVATE_FAILED = 'We could not deactivate that computer. Please try again.'
-
-const status = ref<'loading' | 'ready' | 'error'>('loading')
-const overview = ref<AccountOverview | null>(null)
-let loadController: AbortController | null = null
-
-const load = async (quiet = false) => {
-  loadController?.abort()
-  const controller = new AbortController()
-  loadController = controller
-  if (!quiet) status.value = 'loading'
-  try {
-    const next = await accountOverview(undefined, undefined, { signal: controller.signal })
-    if (controller.signal.aborted) return
-    overview.value = next
-    status.value = 'ready'
-  } catch {
-    // A cancelled load (the visitor left, or a newer load replaced this one) is not a failure.
-    if (controller.signal.aborted) return
-    if (quiet && overview.value) return
-    status.value = 'error'
-  }
-}
+const router = useRouter()
+const flow = createAccountPageFlow({
+  fetchOverview: accountOverview,
+  deactivate: (id, requestId) => deactivateOwnDevice(id, requestId),
+  onSessionEnded: () => {
+    forgetSession()
+    void router.replace({ path: '/signin', query: { next: '/account', reason: 'expired' } })
+  },
+  newRequestId: newIdempotencyKey,
+})
+const {
+  status,
+  overview,
+  loadingMore,
+  loadMoreError,
+  confirmingId,
+  deactivatingId,
+  deactivateError,
+  notice,
+  load,
+  loadMore,
+  askDeactivate,
+  cancelDeactivate,
+  confirmDeactivate,
+} = flow
 
 onMounted(() => {
   void load()
 })
-onBeforeUnmount(() => loadController?.abort())
-
-// Further computers, when the account has more than one page of them.
-const loadingMore = ref(false)
-const loadMore = async () => {
-  const current = overview.value
-  const cursor = current?.devices.nextCursor
-  if (!current || !cursor || loadingMore.value) return
-  loadingMore.value = true
-  try {
-    const page = await accountOverview(undefined, cursor)
-    current.devices = { nodes: [...current.devices.nodes, ...page.devices.nodes], nextCursor: page.devices.nextCursor }
-  } catch {
-    deactivateError.value = LOAD_FAILED
-  } finally {
-    loadingMore.value = false
-  }
-}
+onBeforeUnmount(() => flow.abort())
 
 const LICENSE_STATUS: Record<string, string> = {
   ACTIVATED: 'Active',
@@ -103,48 +90,6 @@ const LICENSE_STATUS: Record<string, string> = {
 const licenseStatusLabel = (value: string) => LICENSE_STATUS[value] ?? value.charAt(0) + value.slice(1).toLowerCase()
 const ROLE_LABEL: Record<string, string> = { ADMIN: 'Administrator', MEMBER: 'Member' }
 const roleLabel = (value: string) => ROLE_LABEL[value] ?? value.charAt(0) + value.slice(1).toLowerCase()
-
-// Deactivating a computer. The confirm step lives in the page: `window.confirm` is unavailable in
-// the desktop webview and in embedded browsers, and a native dialog cannot be styled or tested.
-const confirmingId = ref('')
-const deactivatingId = ref('')
-const deactivateError = ref('')
-const notice = ref('')
-// One request id per computer per attempt: a retry after a timeout must converge on the first request.
-const requestIds = new Map<string, string>()
-
-const askDeactivate = (id: string) => {
-  deactivateError.value = ''
-  notice.value = ''
-  confirmingId.value = id
-}
-const cancelDeactivate = () => {
-  confirmingId.value = ''
-}
-
-const confirmDeactivate = async (id: string) => {
-  if (deactivatingId.value !== '') return
-  deactivatingId.value = id
-  deactivateError.value = ''
-  let requestId = requestIds.get(id)
-  if (requestId === undefined) {
-    requestId = newIdempotencyKey()
-    requestIds.set(id, requestId)
-  }
-  try {
-    await deactivateOwnDevice(id, requestId)
-    requestIds.delete(id)
-    const name = deviceLabel(overview.value?.devices.nodes.find((d) => d.publicId === id) ?? { displayName: '', platform: '' })
-    confirmingId.value = ''
-    notice.value = `${name} was deactivated.`
-    await load(true)
-  } catch {
-    confirmingId.value = ''
-    deactivateError.value = DEACTIVATE_FAILED
-  } finally {
-    deactivatingId.value = ''
-  }
-}
 
 const planEnd = () => formatPlanEnd(overview.value?.allowance?.planEndsAt ?? null)
 </script>
@@ -224,8 +169,8 @@ const planEnd = () => formatPlanEnd(overview.value?.allowance?.planEndsAt ?? nul
             <div v-if="overview.license" class="summary-col">
               <span class="label">Licence</span>
               <span class="value">{{ licenseStatusLabel(overview.license.status) }}</span>
-              <span v-if="formatAccountDate(overview.license.expiresAt)" class="value">
-                Expires {{ formatAccountDate(overview.license.expiresAt) }}
+              <span v-if="formatPlanEnd(overview.license.expiresAt)" class="value">
+                Valid until {{ formatPlanEnd(overview.license.expiresAt) }}
               </span>
             </div>
             <div v-if="overview.license" class="summary-col">
@@ -249,15 +194,15 @@ const planEnd = () => formatPlanEnd(overview.value?.allowance?.planEndsAt ?? nul
           <div class="plan-summary-box">
             <div class="summary-col">
               <span class="label">Cloud transcription</span>
-              <span class="value-highlight">{{ minutesLeftLine(overview.allowance.stt) || 'Not available' }}</span>
-              <span v-if="minutesUsed(overview.allowance.stt) !== null" class="value">
+              <span class="value-highlight">{{ quotaUnavailable(overview.allowance.stt) ? 'Not available yet' : minutesLeftLine(overview.allowance.stt) || 'Not available' }}</span>
+              <span v-if="!quotaUnavailable(overview.allowance.stt) && minutesUsed(overview.allowance.stt) !== null" class="value">
                 {{ minutesUsed(overview.allowance.stt) }} min used
               </span>
             </div>
             <div class="summary-col">
               <span class="label">Notes</span>
-              <span class="value-highlight">{{ countLeftLine(overview.allowance.notes) || 'Not available' }}</span>
-              <span v-if="countUsed(overview.allowance.notes) !== null" class="value">
+              <span class="value-highlight">{{ quotaUnavailable(overview.allowance.notes) ? 'Not available yet' : countLeftLine(overview.allowance.notes) || 'Not available' }}</span>
+              <span v-if="!quotaUnavailable(overview.allowance.notes) && countUsed(overview.allowance.notes) !== null" class="value">
                 {{ countUsed(overview.allowance.notes) }} used
               </span>
             </div>
@@ -306,14 +251,21 @@ const planEnd = () => formatPlanEnd(overview.value?.allowance?.planEndsAt ?? nul
                         Cancel
                       </button>
                     </span>
-                    <button v-else type="button" class="btn-text-danger" @click="askDeactivate(dev.publicId)">
-                      Deactivate<SrOnly> {{ deviceLabel(dev) }}</SrOnly>
+                    <button
+                      v-else
+                      type="button"
+                      class="btn-text-danger"
+                      :aria-label="`Deactivate ${deviceLabel(dev)}`"
+                      @click="askDeactivate(dev.publicId)"
+                    >
+                      Deactivate
                     </button>
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <p v-if="loadMoreError" class="signout-error" role="alert">{{ loadMoreError }}</p>
           <div v-if="overview.devices.nextCursor" class="card-actions more-actions">
             <UiButton type="button" variant="outline" size="sm" :disabled="loadingMore" @click="loadMore">
               Show more computers

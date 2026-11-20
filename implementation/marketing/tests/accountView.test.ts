@@ -101,6 +101,31 @@ describe('with the real account loaded', () => {
     for (const re of MOCK_RESIDUE) assert.doesNotMatch(text, re, `mock text survived: ${re}`)
   })
 
+  test('the licence window is exclusive like the plan end: both 2027-05-06T00:00Z read 5 May', async () => {
+    const text = await render({ status: 'ready', overview: await fetched(overviewBody()) })
+    assert.match(text, /until 5 May 2027/)
+    assert.match(text, /Valid until 5 May 2027/)
+    assert.doesNotMatch(text, /6 May 2027/)
+    assert.doesNotMatch(text, /Expires/)
+  })
+
+  test('a quota that is stale or not initialised shows "Not available yet", not numbers', async () => {
+    const body = overviewBody()
+    body.allowance!.stt.status = 'STALE'
+    body.allowance!.notes.status = 'NOT_INITIALIZED'
+    const text = await render({ status: 'ready', overview: await fetched(body) })
+    assert.equal((text.match(/Not available yet/g) ?? []).length, 2)
+    assert.doesNotMatch(text, /min left|1 left of 3/)
+  })
+
+  test('a failed Show more has its own message', async () => {
+    const body = overviewBody()
+    body.devices.nextCursor = 'c1'
+    const html = await renderHtml({ status: 'ready', overview: await fetched(body), loadMoreError: "Couldn't load more computers. Try again." })
+    assert.match(html, /role="alert"[^>]*>[^<]*Couldn&#39;t load more computers\. Try again\./)
+    assert.match(textOf(html), /Show more computers/)
+  })
+
   test('a Free church with no end date shows "Free" and no end date', async () => {
     const body = overviewBody({
       license: null,

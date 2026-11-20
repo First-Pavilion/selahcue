@@ -12,6 +12,7 @@ import {
   countLeftLine,
   minutesLeftLine,
   minutesUsed,
+  quotaUnavailable,
   wholeMinutes,
 } from '../src/lib/accountDisplay.ts'
 
@@ -70,6 +71,19 @@ describe('minutes', () => {
   test('used minutes come from the limit less what remains, so holds and debt count', () => {
     assert.equal(minutesUsed({ remaining: '7200', limit: '10800' }), '60')
     assert.equal(minutesUsed({ remaining: '20000', limit: '10800' }), '0')
+  })
+
+  test('used and left add up to the total even when the seconds do not divide evenly', () => {
+    // 100 s total is 1 min, 59 s left is 0 min: used must be 1, not floor(41/60) = 0.
+    const q = { remaining: '59', limit: '100' }
+    assert.equal(Number(minutesUsed(q)) + Number(wholeMinutes(q.remaining)), Number(wholeMinutes(q.limit)))
+    assert.equal(minutesUsed(q), '1')
+  })
+
+  test('a quota not yet observed or stale is unavailable', () => {
+    assert.equal(quotaUnavailable({ status: 'NOT_INITIALIZED' }), true)
+    assert.equal(quotaUnavailable({ status: 'STALE' }), true)
+    assert.equal(quotaUnavailable({ status: 'CURRENT_OBSERVED' }), false)
   })
 
   test('an unreadable quota gives no line', () => {

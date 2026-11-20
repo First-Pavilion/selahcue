@@ -106,6 +106,11 @@ function remember(metadata: SessionHint): void {
   writeSessionHint(hint.value)
 }
 
+/** Drop the local session hint (for a page that finds the server has ended the session). */
+export function forgetSession(): void {
+  forget()
+}
+
 function forget(): void {
   hint.value = null
   serverConfirmed.value = false

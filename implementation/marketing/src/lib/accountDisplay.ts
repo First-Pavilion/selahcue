@@ -49,13 +49,21 @@ export function minutesLeftLine(quota: QuotaFigures): string {
   return left === null || of === null ? '' : `${left} min left of ${of}`
 }
 
-/** Used minutes = limit less what remains, so holds and carried debt count as used. */
+/**
+ * Used minutes = total less left, both already in whole minutes (one rounding), so used and
+ * left always add up to the total shown beside them. Holds and carried debt count as used.
+ */
 export function minutesUsed(quota: QuotaFigures): string | null {
-  const limit = counter(quota.limit)
-  const remaining = counter(quota.remaining)
-  if (limit === null || remaining === null) return null
-  const used = limit > remaining ? limit - remaining : 0n
-  return (used / 60n).toString()
+  const total = wholeMinutes(quota.limit)
+  const left = wholeMinutes(quota.remaining)
+  if (total === null || left === null) return null
+  const used = BigInt(total) - BigInt(left)
+  return (used > 0n ? used : 0n).toString()
+}
+
+/** A quota the server has not observed yet (or has not refreshed) must not be shown as numbers. */
+export function quotaUnavailable(quota: { status: string }): boolean {
+  return quota.status === 'NOT_INITIALIZED' || quota.status === 'STALE'
 }
 
 /** Notes are counted, not timed: "1 left of 3". */

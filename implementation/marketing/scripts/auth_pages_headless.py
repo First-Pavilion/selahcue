@@ -414,6 +414,15 @@ DRIVER = r"""
   function VIEWER_OK() {
     return json({ data: { accountViewer: { surface: 'account', actorId: 'user-1', orgId: 'org-harness' } } });
   }
+  function OVERVIEW_OK() {
+    var quota = { limit: '1200', settled: '0', held: '0', carriedDebt: '0', remaining: '1200',
+                  asOf: '2026-11-15T12:00:00+00:00', resetsAt: '2026-11-16T00:00:00+00:00', status: 'CURRENT_OBSERVED' };
+    return json({ data: { accountOverview: {
+      orgName: 'Grace Chapel', displayName: 'Ada', email: 'admin@grace.example.test', role: 'ADMIN',
+      canDeactivateDevices: true, license: null,
+      allowance: { planDisplayName: 'Free', planEndsAt: null, stt: quota, notes: quota },
+      devices: { nodes: [], nextCursor: null } } } });
+  }
   function REGISTERED() { return json({ data: { registerCustomerUser: { accepted: true } } }); }
   function RESET_REQUESTED() { return json({ data: { requestPasswordReset: { accepted: true } } }); }
 
@@ -708,6 +717,10 @@ DRIVER = r"""
                  // newlines are literal \\n escapes — regexing that with \\s never matches.
                  query: body.query || '', raw: (init && init.body) || '',
                  headers: (init && init.headers) || {} });
+    // The Account page loads its real account (17tnw2bhkd2). The scenarios here are about the session, not
+    // the account, so every one of them is answered with the same church; the page's own states are covered
+    // by tests/accountView.test.ts and tests/accountPageFlow.test.ts.
+    if (op === 'AccountOverview') return Promise.resolve(OVERVIEW_OK());
     var reply = REPLIES[SCENARIO];
     if (!reply) return Promise.reject(new TypeError('no scripted reply for ' + SCENARIO));
     try { return Promise.resolve(reply(op)); } catch (e) { return Promise.reject(e); }
@@ -2894,7 +2907,7 @@ DRIVER = r"""
     'account-signout': async function () {
       await wait(800);
       check('started on the Account page, signed in', location.pathname === '/account' &&
-            has(pageText(), 'Grace Community Church'), 'pathname: ' + location.pathname);
+            has(pageText(), 'Grace Chapel'), 'pathname: ' + location.pathname);
       var control = accountSignOutControl();
       check('the Account page offers a sign-out control', !!control);
       check('it is a real <button>, not a link that merely navigates',
