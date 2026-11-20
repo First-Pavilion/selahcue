@@ -2101,6 +2101,11 @@ EXPECTED_MIN_CHECKS = 3072
 # cursor:not-allowed and a stated reason, Text stays enabled, a disabled entry invokes nothing,
 # '.' focuses Text and ↓ skips the disabled ones, plus an enabled-again control (8).
 EXPECTED_MIN_CHECKS = 3087
+# 3087 -> 3095 (86ajpy59e N1/N2): measured, 0 FAIL. +8. N1: a pointer click (detail 1) on a
+# FOCUSED trigger opens the menu and leaves focus off it, then →, Space and Enter each close it
+# and act once (3 x 2). N2: keyboard-open, focus Logo, a deck slide goes live -> focus moves to
+# Text and the menu stays open (+ setup, 2).
+EXPECTED_MIN_CHECKS = 3095
 
 
 def find_chrome():
@@ -16653,8 +16658,24 @@ DRIVER = r"""
           ok(got.length === 1 && getComputedStyle(plcMenu).display === "none" && plcBtn.getAttribute("aria-expanded") === "false",
              "86ajpy59e I1: with a mouse-opened menu and focus on <body>, " + row[2] + " closes the menu and invokes " + row[1][0] + " exactly once (" + JSON.stringify(got) + ")");
         });
-        // Control: with focus ON the trigger (Blink focuses a clicked button), live keys are
-        // still held back and the menu stays open.
+        // Review N1: Blink / WebView2 focus a clicked button. A POINTER activation (detail 1) of a
+        // focused trigger must leave focus off it, so the same keys close the menu and act once.
+        [["ArrowRight", ["next"], "\u2192 / Next"], [" ", ["next"], "Space / Next"],
+         ["Enter", ["go_live", "present_plan_deck_slide"], "Enter / GO LIVE"]].forEach(function(row){
+          if (getComputedStyle(plcMenu).display !== "none") plcKey(document.body, "Escape");
+          plcKey(document.body, "Shift");
+          plcBtn.focus();
+          plcBtn.dispatchEvent(new MouseEvent("click", {bubbles:true, cancelable:true, detail:1}));
+          ok(document.activeElement !== plcBtn && getComputedStyle(plcMenu).display !== "none",
+             "86ajpy59e N1: a pointer click on the FOCUSED trigger opens the menu and leaves focus off the trigger (" + row[2] + ", focus " + (document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : "none") + ")");
+          var from = window.__calls.length;
+          plcKey(document.activeElement || document.body, row[0]);
+          var got = window.__calls.slice(from).filter(function(c){ return row[1].indexOf(c.cmd) >= 0; });
+          ok(got.length === 1 && getComputedStyle(plcMenu).display === "none",
+             "86ajpy59e N1: after a Blink-style pointer open, " + row[2] + " closes the menu and invokes " + row[1][0] + " exactly once (" + JSON.stringify(got) + ")");
+        });
+        // Control: with KEYBOARD focus on the trigger, live keys are still held back and the
+        // menu stays open.
         ok(plcMouseOpen(), "86ajpy59e I1 (setup): menu reopened for the trigger-focus control");
         plcBtn.focus();
         var plcTrigFrom = window.__calls.length;
@@ -16719,6 +16740,24 @@ DRIVER = r"""
         ok(await wWait(function(){ return getComputedStyle(plcMenu).display === "none"; }) && plcBtn.getAttribute("aria-expanded") === "false",
            "86ajpy59e: a click outside closes the layer menu (cleanup)");
         delete V.cleared_layers;
+        // Review N2 — a deck slide going live elsewhere while the menu is open with focus on an
+        // entry that render() now disables: focus moves to Text, the menu stays open.
+        if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+        document.body.dispatchEvent(new KeyboardEvent("keydown", {key:".", code:"Period", bubbles:true, cancelable:true}));
+        var plcLogoN2 = plcMenu.querySelector('[data-layer="logo"]');
+        plcLogoN2.focus();
+        ok(getComputedStyle(plcMenu).display !== "none" && document.activeElement === plcLogoN2,
+           "86ajpy59e N2 (setup): keyboard-opened menu with focus on the Logo entry");
+        var plcN2Prev = V.live_authored_id;
+        V.live_authored_id = 101;
+        lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
+        ok(document.activeElement === plcMenu.querySelector('[data-layer="text"]') && getComputedStyle(plcMenu).display !== "none",
+           "86ajpy59e N2: when a render disables the focused entry, focus moves to Text and the menu stays open (focus " + (document.activeElement ? (document.activeElement.dataset.layer || document.activeElement.id || document.activeElement.tagName) : "none") + ")");
+        plcKey(document.activeElement, "Escape");
+        plcKey(document.body, "Shift");
+        plcBtn.blur();
+        V.live_authored_id = plcN2Prev;
+        lastRendered = ""; render(JSON.parse(JSON.stringify(V)));
         // Review I2 — while a deck (authored) slide is live only Text can clear it (as a whole),
         // so Background / Lower third / Logo are DISABLED: the real :disabled state, a computed
         // not-allowed cursor and a stated reason — not a class.

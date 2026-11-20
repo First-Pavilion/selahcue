@@ -428,6 +428,10 @@
         // whole (the host acknowledges any other layer and changes nothing). So while one is live
         // the Background / Lower third / Logo entries are disabled, with the reason as a title.
         const deckLive = view.live_authored_id != null;
+        // Review N2: if this render disables the entry that holds focus (a deck slide went live
+        // from elsewhere while the menu was open), move focus to Text rather than let it drop to
+        // <body> with the menu still open.
+        const clFocused = document.activeElement;
         document.querySelectorAll("#clear-layer-menu [data-layer]").forEach((b) => {
           const cleared = clearedLayers.indexOf(b.dataset.layer) >= 0;
           b.classList.toggle("cleared", cleared);
@@ -440,6 +444,11 @@
             ? name + " layer: unavailable. Deck slides clear as a whole"
             : cleared ? name + " layer: cleared" : "Clear the " + name.toLowerCase() + " layer");
         });
+        const clMenuEl = document.getElementById("clear-layer-menu");
+        if (clMenuEl && !clMenuEl.hidden && clFocused && clMenuEl.contains(clFocused) && clFocused.disabled) {
+          const clText = clMenuEl.querySelector('[data-layer="text"]');
+          if (clText) clText.focus();
+        }
         // The trigger keeps the cleared state visible while the menu is closed (fix round 2):
         // a neutral outline chip naming the cleared layer(s) — never a red fill.
         const clBtn = document.getElementById("clear-layer-btn");
@@ -3620,6 +3629,13 @@
         clearLayerBtn.onclick = (e) => {
           if (clearLayerMenuOpen()) closeClearLayerMenu(false);
           else openClearLayerMenu(e.detail === 0); // keyboard activation moves into the menu
+          // Review N1: Blink / WebView2 focus a button on a mouse click, and a focused trigger
+          // counts as "inside" the menu, so the live keys stayed held back on Windows. A pointer
+          // activation (detail !== 0) therefore drops focus to the page — the state WKWebView
+          // already gives — so →/Space/Enter close the menu and act on every engine. The blur's
+          // focusout has a null relatedTarget, which the focusout rule below ignores, so it never
+          // closes the menu. Keyboard activation (detail 0) is unchanged.
+          if (e.detail !== 0) clearLayerBtn.blur();
         };
         // Selecting an entry clears that layer and closes the menu (fix round 2): an open menu
         // holds back the live keys, so it must not linger after it has done its job. The
