@@ -254,10 +254,37 @@ fn blackout_then_clear_layer_then_unblackout() {
     let view = c.operator_view();
     assert!(!view.blackout);
     assert_eq!(view.cleared_layers, vec!["text".to_string()]);
+
+    // The frame that comes back is the text-off composition, not the full slide: the flags
+    // alone would stay right even if the lyrics reappeared on air after the restore.
+    let restored = c.presenter().live_output().bytes().to_vec();
+    let (mut reference, _) = controller();
+    reference.apply(&Command::Next);
+    reference.apply(&Command::GoLive);
+    let full = reference.presenter().live_output().bytes().to_vec();
+    reference.apply(&clear_layer("text"));
+    let text_off = reference.presenter().live_output().bytes().to_vec();
+    assert_ne!(full, text_off, "positive control: the text layer draws");
+    assert_eq!(restored, text_off, "unblackout restores the text-off frame");
+    assert_ne!(restored, full, "the cleared text must not reappear");
 }
 
 #[test]
-fn clear_layer_within_200ms_budget() {
+fn clear_layer_is_reset_by_next_go_live() {
+    let (mut c, _) = controller();
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert_eq!(c.apply(&clear_layer("text")), ControllerReply::Ack);
+    assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+    c.apply(&Command::Next);
+    c.apply(&Command::GoLive);
+    assert!(c.operator_view().cleared_layers.is_empty());
+}
+
+// Logic smoke check only: 320x180, blackout off, one sample. It proves the path is not
+// pathologically slow; the real budget check is the 1080p blackout test below.
+#[test]
+fn clear_layer_logic_smoke_is_fast() {
     use std::time::Instant;
     let (mut c, _) = controller();
     c.apply(&Command::Next);
@@ -267,6 +294,41 @@ fn clear_layer_within_200ms_budget() {
     let ms = t.elapsed().as_millis();
     assert_eq!(reply, ControllerReply::Ack);
     assert!(ms < 200, "clear_layer took {ms}ms (>200ms budget)");
+}
+
+#[test]
+fn clear_layer_with_blackout_at_1080p_stays_within_budget() {
+    // The worst case: a full-size frame recomposed AND blackout re-applied. Fresh Next+GoLive
+    // per sample (untimed); only the ClearLayer apply is timed. Gate on p95, never the max.
+    use std::time::{Duration, Instant};
+    let mut samples: Vec<Duration> = Vec::new();
+    for _ in 0..20 {
+        let mut plan = ServicePlan::new("Sunday");
+        plan.add_item(ItemKind::Song, "Opening Song");
+        let mut c = LiveController::new(plan, 1920, 1080, Theme::dark());
+        c.apply(&Command::Next);
+        c.apply(&Command::GoLive);
+        c.apply(&Command::Blackout { on: true });
+        let t = Instant::now();
+        let reply = c.apply(&clear_layer("text"));
+        samples.push(t.elapsed());
+        assert_eq!(reply, ControllerReply::Ack);
+        assert!(c.is_blackout());
+        assert_eq!(c.operator_view().cleared_layers, vec!["text".to_string()]);
+    }
+    samples.sort();
+    let p95 = samples[(samples.len() * 95).div_ceil(100) - 1];
+    println!(
+        "clear_layer 1080p blackout: min {:?} median {:?} p95 {:?} max {:?}",
+        samples[0],
+        samples[samples.len() / 2],
+        p95,
+        samples[samples.len() - 1]
+    );
+    assert!(
+        p95 < Duration::from_millis(200),
+        "ClearLayer p95 {p95:?} exceeds the 200 ms budget"
+    );
 }
 
 #[test]
@@ -5782,6 +5844,17 @@ fn live_generation_covers_every_output_changing_command_class() {
     bumped(&c, "Blackout off");
     c.apply(&Command::Clear);
     bumped(&c, "Clear");
+    c.apply(&Command::Next);
+    bumped(&c, "Next (re-stage after Clear)");
+    c.apply(&Command::GoLive);
+    bumped(&c, "GoLive (re-live after Clear)");
+    c.apply(&Command::ClearLayer {
+        layer: "text".into(),
+    });
+    bumped(
+        &c,
+        "ClearLayer (secondary + NDI recompose from the cleared set)",
+    );
     c.apply(&Command::SetTheme {
         name: "warm".into(),
     });
