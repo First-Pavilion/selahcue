@@ -14,6 +14,7 @@ from selahcue_api.apps.accounts.services import (
 )
 from selahcue_api.apps.audit.models import AuditResult
 from selahcue_api.apps.audit.services import record_audit_event
+from selahcue_api.apps.catalogue.beta import ensure_beta_grant
 from selahcue_api.apps.catalogue.models import LicensePlanAssignment, Plan
 from selahcue_api.apps.devices.models import Device, DeviceStatus, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.license_keys.models import (
@@ -202,6 +203,23 @@ def _issue_initial_free(customer: CustomerOrg, now: datetime, request_id: str) -
 
 
 def ensure_free_license_under_org_lock(
+    customer: CustomerOrg,
+    actor: ActorContext,
+    now: datetime,
+    request_id: str,
+    *,
+    defer_renewal: bool = False,
+) -> AppLicenseKey:
+    """Select the activation licence, then (self-service only) the beta grant, under the org lock."""
+    license_key = _select_free_license_under_org_lock(
+        customer, actor, now, request_id, defer_renewal=defer_renewal,
+    )
+    if is_self_service_org(customer):
+        ensure_beta_grant(customer, at=now)
+    return license_key
+
+
+def _select_free_license_under_org_lock(
     customer: CustomerOrg,
     actor: ActorContext,
     now: datetime,
